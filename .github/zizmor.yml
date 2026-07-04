@@ -24,3 +24,4 @@ rules:
     ignore:
       - ci.yml
       - npm-publish.yml
+      - release-container.yml

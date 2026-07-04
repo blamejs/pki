@@ -1,0 +1,31 @@
+# Caddy config for pkijs.com — automatic Let's Encrypt TLS, reverse-proxy
+# to the wiki container on the docker-compose network.
+#
+# Caddy issues + renews certificates automatically; the operator only
+# points pkijs.com A/AAAA records at the host running this stack.
+
+pkijs.com, www.pkijs.com {
+	# Canonicalize www.* → apex.
+	@www host www.pkijs.com
+	redir @www https://pkijs.com{uri} 308
+
+	encode zstd gzip
+
+	# Forward to the wiki container by service name on the compose
+	# network. Caddy reads {$WIKI_PORT} from its own environment (the
+	# prod compose passes it to both services) so an operator override
+	# keeps the upstream in step — avoiding the class where the wiki
+	# listens on one port while Caddy forwards to another.
+	reverse_proxy wiki:{$WIKI_PORT:3009}
+
+	# Pin the TLS floor to 1.3.
+	tls {
+		protocols tls1.3
+	}
+
+	# Log to stdout so Docker captures it.
+	log {
+		output stdout
+		format json
+	}
+}

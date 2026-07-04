@@ -35,6 +35,15 @@ function createServer(site) {
   return http.createServer(function (req, res) {
     var url = req.url.split("?")[0];
 
+    // Liveness/readiness probe for the container healthcheck + the
+    // release-container post-publish smoke test. Pages are generated at
+    // boot, so a served /healthz means the site is up.
+    if (url === "/healthz") {
+      res.writeHead(200, { "content-type": "application/json" });
+      res.end(JSON.stringify({ status: "ok", pages: Object.keys(site.pages).length }));
+      return;
+    }
+
     if (url === "/pkijs-logo.png") {
       fs.readFile(LOGO_PATH, function (err, buf) {
         if (err) { res.writeHead(404, { "content-type": "text/plain" }); res.end("not found"); return; }

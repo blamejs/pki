@@ -1,0 +1,19 @@
+# Hadolint config — strict by default, with a small set of explicit
+# exceptions for patterns we use intentionally. Lints
+# examples/wiki/Dockerfile in release-container.yml.
+
+failure-threshold: warning
+
+# Trust the registries we pull bases from (their tag immutability +
+# digest pinning is stronger than tag pinning for most operators).
+trustedRegistries:
+  - cgr.dev
+  - docker.io
+  - ghcr.io
+
+ignored:
+  # DL3007 (always tag the version) — the base is pinned by DIGEST
+  # (tag@sha256); release-container.yml resolves the rolling tag to a
+  # fresh digest at build time, so the rolling `:latest` reference IS the
+  # recommended shape for continuous CVE rebuilds. We accept the trade-off.
+  - DL3007
