@@ -243,7 +243,7 @@ function build(opts) {
   homeMain.push('<img src="/pkijs-logo.png" alt="' + esc(BRAND) + ' logo">');
   homeMain.push("<div><h1>" + esc(BRAND) + '</h1><div class="tag">A pure-JavaScript PKI toolkit that owns its stack — X.509, ASN.1/DER, OID, PQC-first.</div></div>');
   homeMain.push("</div>");
-  homeMain.push("<p class=\"intro\">Every page in this reference is generated from the toolkit's own source comments. Zero npm runtime dependencies; everything is vendored and auditable.</p>");
+  homeMain.push("<p class=\"intro\">Every page in this reference is generated from the toolkit's own source comments. Zero npm runtime dependencies — the cryptography runs on Node's native <code>node:crypto</code> (classical and FIPS post-quantum), nothing vendored.</p>");
 
   var featured = entries.filter(function (e) { return e.featured; });
   var cardSet = featured.length ? featured : entries;
