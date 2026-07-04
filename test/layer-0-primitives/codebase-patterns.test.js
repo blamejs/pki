@@ -683,6 +683,14 @@ var KNOWN_ANTIPATTERNS = [
     reason: "Date.UTC normalizes out-of-range calendar fields instead of returning NaN, so isNaN is an inadequate strictness gate — a malformed UTCTime/GeneralizedTime parses to a shifted validity instant (a cert-validity parser differential). Require every component to round-trip.",
   },
   {
+    id: "asn1-time-year-remap",
+    primitive: "build the Date via new Date(0) + setUTCFullYear(year, ...) — the Date.UTC(year,...) / new Date() constructors remap a year in 0..99 to 1900..1999, corrupting a GeneralizedTime year below 100",
+    regex: /function readTime\b(?:(?!setUTCFullYear)[\s\S]){0,2000}?Date\.UTC\(\s*year\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "readTime reaching Date.UTC(year, ...) without a setUTCFullYear remaps a 4-digit GeneralizedTime year below 100 (0099 -> 1999) — the round-trip check only holds when the year is not silently shifted a century. setUTCFullYear takes the literal year and uses its own calendar.",
+  },
+  {
     id: "asn1-bitstring-unused-bits",
     primitive: "a final-octet `(c[c.length-1] & mask)` zero-check (mask = (1<<unusedBits)-1) — X.690 11.2.1 DER requires unused BIT STRING bits to be zero",
     regex: /if \(unusedBits > 7\)(?:(?!c\[c\.length - 1\] & mask)[\s\S]){0,600}?return \{ unusedBits: unusedBits, bytes: c\.subarray\(1\) \}/,

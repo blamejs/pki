@@ -125,6 +125,11 @@ function testTimeOutOfRange() {
   // A valid time still parses.
   check("valid GeneralizedTime parses", readGen("20260704070027Z").getTime() === Date.UTC(2026, 6, 4, 7, 0, 27));
   check("valid UTCTime parses", readUtc("260704070027Z").getTime() === Date.UTC(2026, 6, 4, 7, 0, 27));
+  // A GeneralizedTime year below 100 keeps its literal century — the
+  // Date.UTC()/new Date() constructors remap 0..99 to 1900..1999, which
+  // would corrupt "0099" to 1999. setUTCFullYear takes the year literally.
+  check("GeneralizedTime year 0099 stays year 99", readGen("00990704000000Z").getUTCFullYear() === 99);
+  check("GeneralizedTime year 0050 stays year 50", readGen("00500101000000Z").getUTCFullYear() === 50);
 }
 
 function testBitStringUnusedBits() {
