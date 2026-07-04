@@ -926,6 +926,12 @@ var KNOWN_ANTIPATTERNS = [
     regex: /function _intContent\b(?:(?!DER_MAX_INTEGER_BYTES)[\s\S]){0,800}?\r?\nfunction /, skipCommentLines: true, allowlist: [],
     reason: "The INTEGER builder producing content with no size ceiling is an encode/decode asymmetry — build.integer(hugeBigInt) or a huge Buffer emits an INTEGER read.integer rejects as over-cap. Cap the content length like the reader.",
   },
+  {
+    id: "x509-attrvalue-swallows-bad-string",
+    primitive: "_attrValueToString must discriminate a malformed KNOWN string (only asn1/expected-string falls back to hex) — a blanket catch hex-encodes an invalid-UTF8 DN and bypasses strict string validation",
+    regex: /function _attrValueToString\b(?:(?!expected-string)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
+    reason: "Catching every read.string error and hex-encoding lets a malformed known string type (invalid UTF-8 CN, non-IA5 byte) parse as CN=#... instead of failing the certificate closed — the decoder's strict string validation is silently bypassed on the DN path. Rethrow anything but asn1/expected-string.",
+  },
 ];
 
 function testKnownAntipatterns() {

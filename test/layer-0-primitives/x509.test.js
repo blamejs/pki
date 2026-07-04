@@ -194,6 +194,35 @@ function testVersionValidation() {
   check("extensions on a v1 cert rejected", code(function () { pki.x509.parse(v1WithExts); }) === "x509/bad-version");
 }
 
+// A malformed KNOWN string type in a DN (invalid UTF-8 CN) must fail the
+// certificate closed — _attrValueToString must not hex-encode it away and
+// silently bypass the decoder's strict string validation. An ANY-typed value
+// (a non-string tag) still legitimately falls back to a hex #-string.
+function testMalformedDnStringRejected() {
+  var badCn = build.sequence([
+    build.oid("2.5.4.3"),
+    pki.asn1.encode(0x00, false, pki.asn1.TAGS.UTF8_STRING, Buffer.from([0xFF, 0xFE])), // invalid UTF-8
+  ]);
+  var badSubject = build.sequence([build.set([badCn])]);
+  var badCert = _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), badSubject, _spki(),
+  ]);
+  var c = code(function () { pki.x509.parse(badCert); });
+  check("x509.parse rejects a malformed UTF8String in a DN (fails closed, not hex)",
+    typeof c === "string" && c.indexOf("x509/") === 0);
+
+  var anyVal = build.sequence([build.oid("2.5.4.3"), build.integer(5n)]); // ANY-typed (non-string) value
+  var anySubject = build.sequence([build.set([anyVal])]);
+  var anyCert = _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), anySubject, _spki(),
+  ]);
+  check("x509.parse still hex-encodes an ANY-typed DN value", (function () {
+    try { return pki.x509.parse(anyCert).subject.dn.indexOf("#") !== -1; } catch (_e) { return false; }
+  })());
+}
+
 function run() {
   testParseFields();
   testExtensions();
@@ -202,6 +231,7 @@ function run() {
   testShortTbsWithVersion();
   testDuplicateExtension();
   testVersionValidation();
+  testMalformedDnStringRejected();
 }
 
 module.exports = { run: run };
