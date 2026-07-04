@@ -109,6 +109,12 @@ function testIntegerAndOidCaps() {
     return pki.asn1.read.integer(pki.asn1.decode(pki.asn1.build.integer(big))) === big;
   })());
   check("in-cap OID round-trips", pki.asn1.decodeOidContent(pki.asn1.encodeOidContent("2.16.840.1.101.3.4.2.1")) === "2.16.840.1.101.3.4.2.1");
+  // A 128-bit UUID-based OID arc (X.667, e.g. 2.25.<uuid>) encodes as 19
+  // base-128 bytes — the sub-identifier cap must admit it, not reject a
+  // legitimate UUID OID as hostile.
+  var uuidOid = "2.25.340282366920938463463374607431768211455"; // 2.25.(2^128 - 1)
+  check("128-bit UUID OID arc round-trips",
+    pki.asn1.read.oid(pki.asn1.decode(pki.asn1.build.oid(uuidOid))) === uuidOid);
 }
 
 function testTimeOutOfRange() {
