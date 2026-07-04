@@ -607,6 +607,14 @@ function testReleaseWaitsForCodex() {
     bad.push({ file: "scripts/release.js", line: 0,
       content: "fetch the newest reviews (reviews(last:N)) for the Codex-reviewed-head lookup — reviews(first:N) misses the current-head review on a many-iteration PR" });
   }
+  // Codex posts a CLEAN verdict as an issue comment citing the head sha, with
+  // no formal review node — recognising only formal reviews times out on every
+  // clean review (the common case), so the head lookup must also scan comments.
+  var reviewedFn = /function _codexReviewedHead\b([\s\S]*?)\r?\nfunction /.exec(src);
+  if (!reviewedFn || reviewedFn[1].indexOf("comments") === -1 || !/head\.slice\(/.test(reviewedFn[1])) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "_codexReviewedHead must also detect Codex's clean-verdict issue comment (cites the head sha) — recognising only formal review nodes times out on every clean review" });
+  }
   bad = _filterMarkers(bad, "release-codex-async-race");
   _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
 }

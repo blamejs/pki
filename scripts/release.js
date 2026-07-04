@@ -557,14 +557,22 @@ function _sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 }
 
-// True once Codex has submitted a review whose commit is the PR's current
-// head — i.e. it reviewed THIS revision (a push after the review moves the
-// head and this goes false until Codex re-reviews the new head).
+// True once Codex has reviewed the PR's current head — i.e. it reviewed THIS
+// revision (a push after the review moves the head and this goes false until
+// Codex re-reviews the new head). Codex signals a review in TWO forms and both
+// must count, or the gate times out on the common case:
+//   (1) when it HAS findings, a formal review node whose commit is the head;
+//   (2) when it is CLEAN, an issue comment ("Reviewed commit: `<sha>` — Didn't
+//       find any major issues") with NO formal review node and NO commit.oid.
+// Recognising only (1) means every clean review times out — the gate would
+// only ever pass when Codex complains, which is backwards.
 function _codexReviewedHead(prNum) {
   var slug = _repoSlug();
   var head = (_capture("gh", ["pr", "view", prNum, "--json", "headRefOid",
                               "--jq", ".headRefOid"]).stdout || "").trim();
   if (!head) return false;
+
+  // (1) Formal review node whose commit is the current head.
   var rv = _capture("gh", ["api", "graphql",
     "-f", "query=query { repository(owner:\"" + slug.owner + "\",name:\"" + slug.name +
       "\") { pullRequest(number:" + prNum +
@@ -572,9 +580,19 @@ function _codexReviewedHead(prNum) {
     "--jq", ".data.repository.pullRequest.reviews.nodes"]);
   var nodes;
   try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
-  return (nodes || []).some(function (r) {
+  if ((nodes || []).some(function (r) {
     return r && r.author && _isCodexLogin(r.author.login) &&
            r.commit && r.commit.oid === head;
+  })) return true;
+
+  // (2) Clean-verdict issue comment citing the current head's commit sha.
+  var cv = _capture("gh", ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
+  var comments;
+  try { comments = JSON.parse(cv.stdout || "[]"); } catch (_e) { comments = []; }
+  var headPrefix = head.slice(0, 10);
+  return (comments || []).some(function (c) {
+    return c && c.author && _isCodexLogin(c.author.login) &&
+           typeof c.body === "string" && c.body.indexOf(headPrefix) !== -1;
   });
 }
 
