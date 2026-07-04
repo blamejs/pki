@@ -569,6 +569,122 @@ function testWikiPortAgreesAcrossArtifacts() {
 }
 
 // ---------------------------------------------------------------------------
+// (j) release.js waits for Codex before merge (closes the async-review race)
+// ---------------------------------------------------------------------------
+
+function testReleaseWaitsForCodex() {
+  // class: release-codex-async-race
+  // Codex (chatgpt-codex-connector) reviews a PR a minute or two AFTER the
+  // status checks go green; required_review_thread_resolution can only block
+  // threads that EXIST at merge time, so a merge fired the instant CI is
+  // green outruns Codex and ships its findings (this is how a P1 and a
+  // version-drift P2 reached npm). The authoritative merge step must WAIT
+  // for Codex to review the current head before the thread gate runs.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "scripts/release.js"), "utf8"); }
+  catch (_e) { return; }
+  if (!/function _waitForCodexReview\b/.test(src)) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "missing the _waitForCodexReview gate that closes the async bot-review race" });
+  }
+  var mergeBody = /function cmdMerge\b([\s\S]*?)\r?\nfunction /.exec(src);
+  if (!mergeBody || mergeBody[1].indexOf("_waitForCodexReview(") === -1) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "cmdMerge must call _waitForCodexReview before the merge-state / thread gate" });
+  }
+  // The Codex reviewer login arrives bare in GraphQL but "[bot]"-suffixed in
+  // some REST surfaces; a strict `.login === CODEX_LOGIN` misidentifies Codex
+  // and the gate would silently pass un-reviewed. Require the tolerant match.
+  if (/\.login\s*===\s*CODEX_LOGIN/.test(src) || !/function _isCodexLogin\b/.test(src)) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "match the Codex login via _isCodexLogin (tolerating the [bot] suffix), not a strict `.login === CODEX_LOGIN`" });
+  }
+  // The current-head review is the NEWEST one; reviews(first:N) fetches the
+  // OLDEST N, so on a PR with many review iterations the head review falls
+  // outside the window and the gate falsely concludes Codex hasn't reviewed.
+  if (/reviews\(first:/.test(src)) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "fetch the newest reviews (reviews(last:N)) for the Codex-reviewed-head lookup — reviews(first:N) misses the current-head review on a many-iteration PR" });
+  }
+  // Codex posts a CLEAN verdict as an issue comment citing the head sha, with
+  // no formal review node — recognising only formal reviews times out on every
+  // clean review (the common case), so the head lookup must also scan comments.
+  var reviewedFn = /function _codexReviewedHead\b([\s\S]*?)\r?\nfunction /.exec(src);
+  if (!reviewedFn || reviewedFn[1].indexOf("comments") === -1 || !/head\.slice\(/.test(reviewedFn[1])) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "_codexReviewedHead must also detect Codex's clean-verdict issue comment (cites the head sha) — recognising only formal review nodes times out on every clean review" });
+  }
+  bad = _filterMarkers(bad, "release-codex-async-race");
+  _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
+}
+
+function testDecoderRejectsConstructedPrimitiveOnly() {
+  // class: der-constructed-primitive-only
+  // X.690 §8.x/§10.2 (DER): a universal primitive-only type (INTEGER, OID, the
+  // restricted strings, times, BIT/OCTET STRING) encoded constructed is not
+  // valid DER — the mirror of the primitive-SEQUENCE/SET rejection. The decoder
+  // must reject BOTH directions, or a constructed string tag decodes to a
+  // childless node an X.509 DN attribute value hex-renders instead of failing
+  // closed, bypassing the restricted-string content checks.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-der.js"), "utf8"); }
+  catch (_e) { return; }
+  var tlvBody = /function _decodeTLV\b([\s\S]*?)\r?\nfunction /.exec(src);
+  var body = tlvBody ? tlvBody[1] : src;
+  if (body.indexOf("asn1/constructed-primitive-type") === -1 ||
+      !/PRIMITIVE_ONLY_UNIVERSAL_TAGS\s*\[/.test(body)) {
+    bad.push({ file: "lib/asn1-der.js", line: 0,
+      content: "_decodeTLV must reject a constructed encoding of a universal primitive-only type " +
+        "(throw asn1/constructed-primitive-type via PRIMITIVE_ONLY_UNIVERSAL_TAGS) — the mirror of the " +
+        "primitive-SEQUENCE/SET rejection; without it a constructed string tag bypasses the restricted-string checks" });
+  }
+  bad = _filterMarkers(bad, "der-constructed-primitive-only");
+  _report("asn1 decoder rejects a constructed encoding of a primitive-only type (DER §10.2)", bad);
+}
+
+function testTbsTrailingFieldsMonotonic() {
+  // class: x509-tbs-trailing-fields
+  // RFC 5280 §4.1 — the tbs trailing fields issuerUniqueID [1], subjectUniqueID
+  // [2], extensions [3] each appear at most once, in strictly increasing tag
+  // order. Without a monotonic guard a second [3] overwrites the first, hiding
+  // its extensions and splitting duplicate extension OIDs across two wrappers
+  // past the per-sequence duplicate-extension check.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  catch (_e) { return; }
+  if (/tagNumber === 3/.test(src) && !/lastTrailingTag/.test(src) && !/repeated or out of order/.test(src)) {
+    bad.push({ file: "lib/x509.js", line: 0,
+      content: "the tbs trailing-field loop must reject a repeated or out-of-order context tag (a monotonic guard) — " +
+        "a second [3] overwrites the first, hides its extensions, and splits duplicate extension OIDs across two wrappers" });
+  }
+  bad = _filterMarkers(bad, "x509-tbs-trailing-fields");
+  _report("x509 tbs trailing fields [1]/[2]/[3] are at-most-once and in order (RFC 5280 §4.1)", bad);
+}
+
+function testSignatureAlgorithmAgreement() {
+  // class: x509-sig-alg-agreement
+  // RFC 5280 §4.1.1.2 — the outer signatureAlgorithm MUST equal
+  // tbsCertificate.signature (same AlgorithmIdentifier). Surfacing the two
+  // fields without enforcing equality lets a certificate claim one algorithm
+  // in the signed body and another in the outer wrapper — a signature-
+  // algorithm-substitution vector.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  catch (_e) { return; }
+  if (/innerSigAlg/.test(src) && !/bad-signature-algorithm/.test(src)) {
+    bad.push({ file: "lib/x509.js", line: 0,
+      content: "parse must reject a certificate whose outer signatureAlgorithm differs from tbsCertificate.signature " +
+        "(RFC 5280 §4.1.1.2) — compare the two AlgorithmIdentifiers and throw x509/bad-signature-algorithm on a mismatch" });
+  }
+  bad = _filterMarkers(bad, "x509-sig-alg-agreement");
+  _report("x509 parse enforces signatureAlgorithm == tbsCertificate.signature (RFC 5280 §4.1.1.2)", bad);
+}
+
+// ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
 
@@ -634,6 +750,260 @@ var KNOWN_ANTIPATTERNS = [
       "test/layer-0-primitives/codebase-patterns.test.js",
     ],
     reason: "Every 'passes alone, fails under SMOKE_PARALLEL=64 / macOS' test flake is the same root cause: a fixed-budget setTimeout sleep too short for runner-contention reality. helpers.waitUntil polls the actual condition every 25ms up to a 5000ms cap and exits early when the predicate is truthy — fast platforms finish in milliseconds, contended platforms get the full budget. helpers.passiveObserve(ms, label) is the sibling for verifying the ABSENCE of an event over a window. Convert a hand-tuned sleep to waitUntil rather than bumping N.",
+  },
+
+  // --- DER codec correctness (lib scope) ---
+  {
+    id: "asn1-quadratic-bigint-accumulator",
+    primitive: "one-shot BigInt('0x'+hex) (base-256) or a bounded base-128 fold, with a C.LIMITS byte cap BEFORE the read — never a per-byte `<< n) | BigInt(` shift-accumulate",
+    regex: /<<\s*[78]n\)\s*\|\s*BigInt\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A byte-at-a-time BigInt shift-accumulator over attacker-length content is O(n^2) in the content length — the quadratic decoder-DoS class (readInteger + decodeOidContent). The 16 MiB document cap does not bound a single value, so a ~2 MB INTEGER/OID pins a core for minutes. Build the magnitude in one pass and cap the per-value byte length.",
+  },
+  {
+    id: "asn1-time-utc-rollover",
+    primitive: "a getUTC* component round-trip check after Date.UTC (throw asn1/bad-time on any field mismatch) — Date.UTC silently rolls Feb 30 / month 13 / hour 25",
+    regex: /Date\.UTC\((?:(?!getUTCFullYear)[\s\S]){0,600}?return new Date\(t\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Date.UTC normalizes out-of-range calendar fields instead of returning NaN, so isNaN is an inadequate strictness gate — a malformed UTCTime/GeneralizedTime parses to a shifted validity instant (a cert-validity parser differential). Require every component to round-trip.",
+  },
+  {
+    id: "asn1-time-year-remap",
+    primitive: "build the Date via new Date(0) + setUTCFullYear(year, ...) — the Date.UTC(year,...) / new Date() constructors remap a year in 0..99 to 1900..1999, corrupting a GeneralizedTime year below 100",
+    regex: /function readTime\b(?:(?!setUTCFullYear)[\s\S]){0,2000}?Date\.UTC\(\s*year\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "readTime reaching Date.UTC(year, ...) without a setUTCFullYear remaps a 4-digit GeneralizedTime year below 100 (0099 -> 1999) — the round-trip check only holds when the year is not silently shifted a century. setUTCFullYear takes the literal year and uses its own calendar.",
+  },
+  {
+    id: "asn1-bitstring-unused-bits",
+    primitive: "a final-octet `(c[c.length-1] & mask)` zero-check (mask = (1<<unusedBits)-1) — X.690 11.2.1 DER requires unused BIT STRING bits to be zero",
+    regex: /if \(unusedBits > 7\)(?:(?!c\[c\.length - 1\] & mask)[\s\S]){0,600}?return \{ unusedBits: unusedBits, bytes: c\.subarray\(1\) \}/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "readBitString reaching its return with no tail-mask check admits non-canonical BIT STRING encodings (encoding malleability on signature/key-usage bits). The zero-unused-bits invariant is easy to drop on refactor.",
+  },
+  {
+    id: "asn1-bitstring-empty-body-unused-bits",
+    primitive: "build.bitString must reject an empty body with unusedBits>0 (X.690 8.6.2.3) — an empty BIT STRING has no bits to leave unused; the encoder must not emit what the decoder rejects",
+    regex: /bitString: function \(buf, unusedBits\)(?:(?!body\.length === 0)[\s\S]){0,600}?return _universal\(TAGS\.BIT_STRING/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "build.bitString reaching its return with no `body.length === 0` guard lets it emit an empty BIT STRING declaring unused bits — invalid DER the reader rejects, an encode/decode asymmetry. Reject u>0 over an empty body.",
+  },
+  {
+    id: "asn1-universalstring-scalar-range",
+    primitive: "a `cp > 0x10FFFF || (cp>=0xD800 && cp<=0xDFFF)` guard before String.fromCodePoint (throw asn1/bad-universal-string) — keeps the Asn1Error-only contract and rejects lone surrogates",
+    regex: /for \(var i = 0; i < buf\.length; i \+= 4\)(?:(?!0x10FFFF)[\s\S]){0,600}?String\.fromCodePoint\(cp\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "_decodeUtf32be calling String.fromCodePoint on an unvalidated 4-byte value throws a bare native RangeError (not Asn1Error) for cp>0x10FFFF and silently admits lone surrogates — a contract break on any code-point-to-string path over attacker bytes.",
+  },
+
+  // --- WebCrypto access-control + conformance (lib scope) ---
+  {
+    id: "webcrypto-unwrapkey-usage-dominance",
+    primitive: "_requireUsage(unwrappingKey, \"unwrapKey\") at the TOP of unwrapKey, before the AES-KW branch fork (mirror wrapKey) — the _cloneWithUsage delegation is only sound below the gate",
+    regex: /unwrapAlgorithm, "unwrapKey"\);(?:(?!_requireUsage\(unwrappingKey, "unwrapKey"\))[\s\S]){0,400}?if \(alg\.name === "AES-KW"\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "unwrapKey enforcing the usage only inside the AES-KW branch leaves the RSA-OAEP/AES-GCM else path fail-open (it injects 'decrypt' via _cloneWithUsage and delegates to this.decrypt). The usage gate must dominate the branch fork.",
+  },
+  {
+    id: "webcrypto-derivekey-wrong-usage",
+    primitive: "deriveKey calls _requireUsage(baseKey, \"deriveKey\") then _deriveBitsRaw — it must NOT delegate to this.deriveBits (which enforces the distinct 'deriveBits' usage)",
+    regex: /this\.deriveBits\(algorithm, baseKey/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "deriveKey delegating to deriveBits inherits the wrong usage check: it false-rejects an idiomatic ['deriveKey'] key AND fail-open allows a ['deriveBits']-only key. An op that fulfils itself via a sibling subtle method must enforce its OWN usage first.",
+  },
+  {
+    id: "webcrypto-hmac-verify-length-gate",
+    primitive: "`var mac = hm.digest(); return mac.length === sig.length && timingSafeEqual(mac, sig)` — timingSafeEqual throws RangeError on an attacker-length mismatch",
+    regex: /timingSafeEqual\(hm\.digest\(\), sig\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Passing a fresh hm.digest() straight to timingSafeEqual against an attacker-length signature throws RangeError instead of resolving false (WebCrypto verify must resolve false for any invalid signature) — an unhandled-rejection DoS surface driven purely by the supplied length.",
+  },
+  {
+    id: "webcrypto-aesctr-length-guard",
+    primitive: "_requireCtrLength128(alg) before the AES-CTR createCipheriv/createDecipheriv — node only honors a full 128-bit counter, so length!=128 must fail closed (webcrypto/not-supported)",
+    regex: /if \(name === "AES-CTR"\) \{(?:(?!_requireCtrLength128)[\s\S]){0,120}?create(?:Cipher|Decipher)iv\("aes-" \+ key\.algorithm\.length \+ "-ctr"/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "The AES-CTR branch building the cipher without reading alg.length silently ignores a security-relevant, spec-required parameter — a length<128 diverges from a conformant WebCrypto past the counter wrap. Read or reject the parameter.",
+  },
+
+  // --- X.509 parser fail-closed (lib scope) ---
+  {
+    id: "x509-tbs-fixed-childcount-guard",
+    primitive: "a version-aware tbs child-count guard (`< idx + 6`) throwing CertificateError — a fixed `< 6` ignores the slot an explicit version [0] consumes and dereferences undefined",
+    regex: /children\.length\s*<\s*6\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A fixed tbs.children.length < 6 guard passes a 6-child tbs whose explicit version [0] leaves SPKI undefined, throwing a raw TypeError instead of the advertised CertificateError. Bounds-check positionally against the version-aware minimum.",
+  },
+  {
+    id: "x509-extensions-no-uniqueness",
+    primitive: "a Set of seen extnID OIDs in _parseExtensions (throw x509/duplicate-extension on a repeat) — RFC 5280 §4.2 forbids duplicate extensions",
+    regex: /function _parseExtensions\b(?:(?!seen)[\s\S])*?out\.push\(/,
+    skipCommentLines: false,
+    allowlist: [],
+    reason: "_parseExtensions pushing each parsed extension with no seen-OID tracking accepts duplicate extensions (extension-shadowing differential: first-hit vs last-hit consumers disagree on a security-critical extension). Reject the second occurrence of any extnID.",
+  },
+  {
+    id: "x509-version-unvalidated-enum",
+    primitive: "read the version as a BigInt and allowlist {0n,1n,2n} (reject explicit 0n as a DER DEFAULT, gate extensions on v3) — never `Number(read.integer(...)) + 1`",
+    regex: /Number\(\s*asn1\.read\.integer\([\s\S]*?\)\s*\)\s*\+\s*1/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Number(readInteger())+1 as an enum accepts an arbitrary/negative/precision-losing version. Any small-enum INTEGER field (cert version, future CRL/OCSP version) needs a BigInt allowlist, not a coerce-and-offset.",
+  },
+
+  // --- OID + version single-source (lib scope) ---
+  {
+    id: "oid-fromarcs-bigint-sign-guard",
+    primitive: "a `< 0n` sign guard before the bigint branch returns a.toString() — the number branch already enforces >= 0, so both branches must enforce the same non-negative contract",
+    regex: /typeof\s+\w+\s*===\s*"bigint"\s*\)\s*return\s+\w+\.toString\(\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "fromArcs's bigint branch returning a.toString() with no sign check emits a malformed OID like \"2.-5.1\" while the number branch rejects a negative — a self-inconsistent contract that blows up late, away from the bad arc. (Anchored on `return X.toString()` so a bigint branch that returns a validating expression like `a >= 0n` is not flagged.)",
+  },
+  {
+    id: "oid-dotted-decimal-literal",
+    primitive: "declare OIDs by family via pki.oid.registerFamily(base, {name: leaf}) — a dotted-decimal OID literal in source both re-spells the arc hierarchy and reads as an IP to a supply-chain scanner",
+    regex: /"[0-9]+(?:\.[0-9]+){3,}"/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A 4+-arc dotted-decimal string literal in executable lib code is an OID re-spelled as a full path (should be a family base + leaf) and matches a URL/IP heuristic (Socket 'URL strings'). Route OIDs through the family registry; dotted strings belong only in comments/@example and dotted<->arc format code.",
+  },
+  {
+    id: "constants-hardcoded-version-literal",
+    primitive: "derive VERSION from require('../package.json').version — a hand-maintained semver literal drifts from the published package (0.1.1 shipped reporting 0.1.0)",
+    regex: /var\s+VERSION\s*=\s*["'][0-9]+\.[0-9]+\.[0-9]+["']/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A hard-coded VERSION string literal decoupled from package.json makes drift the default outcome on any release that forgets to bump it. Single-source it from the manifest so pki.version can never disagree with the package.",
+  },
+  {
+    id: "oid-subidentifier-cap-too-small",
+    primitive: "OID_MAX_SUBIDENTIFIER_BYTES must be >= 19 — the largest standard OID sub-identifier is a 128-bit UUID-based arc (X.667), which is 19 base-128 bytes; a smaller cap rejects legitimate UUID OIDs",
+    regex: /OID_MAX_SUBIDENTIFIER_BYTES:\s*(?:[0-9]|1[0-8])\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A per-value defense-in-depth cap set below the largest value it must legitimately admit turns into a false-reject. A 128-bit UUID OID arc needs 19 base-128 bytes, so a sub-identifier cap under 19 rejects valid DER. Keep the cap above the largest legitimate arc while still bounding a pathologically long one.",
+  },
+  {
+    id: "oid-isarc-rejects-bigint",
+    primitive: "_isArc must accept a non-negative BigInt as well as a safe-integer Number — a 128-bit UUID-based OID arc (X.667) exceeds 2^53 and only survives as BigInt, so arc validation must not be number-only",
+    regex: /function _isArc\b(?:(?!"bigint")[\s\S]){0,200}?===\s*"number"/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "_isArc reaching a `=== \"number\"` type check with no `\"bigint\"` branch before it rejects large arcs — a 128-bit UUID OID arc can only be represented losslessly as a BigInt, so registerFamily would drop it. Accept a non-negative BigInt too.",
+  },
+  {
+    id: "oid-arc-unsafe-integer",
+    primitive: "OID arc validation must use Number.isSafeInteger (not Number.isInteger) — an integer above 2^53 is not representable precisely as a Number, so a large arc must be supplied as a BigInt",
+    regex: /=== "number" && Number\.isInteger\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Number.isInteger accepts integers beyond MAX_SAFE_INTEGER that a Number cannot represent precisely — an OID arc validated that way silently loses precision. Use Number.isSafeInteger so a large arc must be a BigInt.",
+  },
+  {
+    id: "asn1-integer-cap-ignores-sign-pad",
+    primitive: "the INTEGER length cap must allow the DER sign octet (cap + 1) — a positive INTEGER at the magnitude cap with its top bit set carries a leading 0x00, so a bare `> DER_MAX_INTEGER_BYTES` rejects legitimate key material",
+    regex: /c\.length > constants\.LIMITS\.DER_MAX_INTEGER_BYTES(?!\s*\+\s*1)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A `c.length > DER_MAX_INTEGER_BYTES` cap with no `+ 1` for the DER sign octet rejects a positive INTEGER at the magnitude cap whose top bit is set (an RSA-131072 modulus). The cap bounds the magnitude; DER content may carry one leading 0x00 sign pad.",
+  },
+
+  // --- DER encoder/decoder canonical + range conformance (lib scope) ---
+  {
+    id: "asn1-utctime-year-window",
+    primitive: "build.utcTime must reject a year outside 1950..2049 (RFC 5280 §4.1.2.5.1) before reducing it mod 100 — a bare %100 wraps 2050 to 1950",
+    regex: /getUTCFullYear\(\)\s*%\s*100/, skipCommentLines: true, allowlist: [],
+    reason: "UTCTime carries a 2-digit year and the reader pivots <50=>20YY else 19YY, so encoding a year outside 1950..2049 without a window guard silently shifts a security-critical validity timestamp a century. Range-check before %100.",
+  },
+  {
+    id: "asn1-generalizedtime-year-pad",
+    primitive: "build.generalizedTime must zero-pad the year to 4 digits — an unpadded \"\"+getUTCFullYear() emits 12-14 char content the reader rejects",
+    regex: /""\s*\+\s*date\.getUTCFullYear\(\)/, skipCommentLines: true, allowlist: [],
+    reason: "GeneralizedTime requires a fixed 4-digit year; concatenating an unpadded year emits malformed DER for years <1000 — the encoder cannot round-trip a value the reader accepts. Zero-pad and range-check 0000..9999.",
+  },
+  {
+    id: "asn1-sequence-set-constructed",
+    primitive: "_decodeTLV must reject a primitive-tagged universal SEQUENCE/SET (X.690 8.9.1/8.11.1) before building the node",
+    regex: /tagNumber = first & 0x1f;(?:(?!must be constructed)[\s\S]){0,4000}?var node = \{/, skipCommentLines: true, allowlist: [],
+    reason: "A primitive-tagged 0x10/0x11 decodes to a leaf (children=null) that constructed-structure consumers dereference as a parent — the uncaught TypeError that crashed x509.parse on hostile input. The decoder reaching node construction without enforcing constructed-ness is the bug shape.",
+  },
+  {
+    id: "asn1-ia5-encode-7bit",
+    primitive: "build.ia5 must reject bytes > 0x7F (IA5String is 7-bit ASCII) — an immediate `return _universal(TAGS.IA5_STRING` emits 8-bit bytes verbatim",
+    regex: /ia5:\s*function\s*\(s\)\s*\{\s*return _universal\(TAGS\.IA5_STRING/, skipCommentLines: true, allowlist: [],
+    reason: "build.ia5 emitting a caller string with no 7-bit validation lets an 8-bit byte into an IA5String — an encoder/decoder asymmetry (the reader must reject it). Validate every output byte < 0x80.",
+  },
+  {
+    id: "asn1-set-der-ordering",
+    primitive: "build.set must sort component encodings ascending (X.690 §11.6) — a caller-order Buffer.concat emits non-canonical DER",
+    regex: /set:\s*function\s*\(children\)\s*\{\s*return _universal\(TAGS\.SET, true, Buffer\.concat\(_asBufferArray/, skipCommentLines: true, allowlist: [],
+    reason: "DER requires the component encodings of a SET in ascending order; concatenating in caller order emits a non-canonical encoding (breaking the one-valid-encoding contract). Sort with Buffer.compare like setOf.",
+  },
+  {
+    id: "asn1-integer-buffer-minimal",
+    primitive: "build.integer/enumerated must validate a raw Buffer is non-empty + minimal — a verbatim passthrough emits content read.integer rejects",
+    regex: /_universal\(TAGS\.(?:INTEGER|ENUMERATED), false, Buffer\.isBuffer\(v\) \? v : intToDer\(v\)\)/, skipCommentLines: true, allowlist: [],
+    reason: "Passing a caller Buffer straight into an INTEGER/ENUMERATED with no minimality/emptiness check lets the encoder emit content the decoder rejects (encode/decode asymmetry). Route the Buffer path through a validator.",
+  },
+  {
+    id: "asn1-oid-encode-subid-cap",
+    primitive: "encodeOidContent must cap each sub-identifier at OID_MAX_SUBIDENTIFIER_BYTES — symmetric with the decoder, so build.oid can't emit a sub-id read.oid rejects",
+    regex: /body\.unshift\(Number\(v & 0x7fn\)\); v >>= 7n; \} while \(v > 0n\);(?:(?!OID_MAX_SUBIDENTIFIER)[\s\S]){0,400}?for \(var k = 0/, skipCommentLines: true, allowlist: [],
+    reason: "The OID encoder building a sub-identifier without the same per-arc byte cap the decoder enforces is an encode/decode asymmetry — build.oid could emit an OID read.oid refuses.",
+  },
+  {
+    id: "asn1-ia5-decode-7bit",
+    primitive: "readString IA5String must reject content bytes > 0x7F (7-bit) — _decodeText keeps 8-bit bytes",
+    regex: /case TAGS\.IA5_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "Decoding IA5String via the lenient text decoder admits 8-bit bytes an IA5String cannot contain — a fail-closed/conformance gap and a decoder/encoder asymmetry.",
+  },
+  {
+    id: "asn1-printable-decode-charset",
+    primitive: "readString PrintableString must validate the restricted charset — _decodeText returns raw latin1",
+    regex: /case TAGS\.PRINTABLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "PrintableString is restricted to A-Z a-z 0-9 and a small punctuation set; decoding raw latin1 admits characters outside it (a parser-differential / injection surface for DN values). Validate against the charset.",
+  },
+  {
+    id: "asn1-utf8-decode-strict",
+    primitive: "readString UTF8String must reject invalid UTF-8 (TextDecoder fatal) — _decodeText substitutes U+FFFD",
+    regex: /case TAGS\.UTF8_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "A lenient UTF-8 decode substitutes U+FFFD for malformed input, silently mutating a DN/name value instead of rejecting it — a parser-differential. Strict-decode with a fatal TextDecoder.",
+  },
+  {
+    id: "asn1-visible-decode-range",
+    primitive: "readString VisibleString must reject bytes outside 0x20..0x7E — _decodeText keeps control chars and high bytes",
+    regex: /case TAGS\.VISIBLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "VisibleString is printable ASCII 0x20..0x7E; decoding raw latin1 admits control characters and 8-bit bytes it cannot contain — a fail-closed/conformance gap.",
+  },
+  {
+    id: "asn1-ia5-encode-input-validation",
+    primitive: "build.ia5 must validate the INPUT code points (charCodeAt > 0x7F) before latin1 conversion — latin1 truncates a code point > 0xFF to a low byte that slips past a post-conversion byte check",
+    regex: /ia5:\s*function\s*\(s\)\s*\{\s*var\s+\w+\s*=\s*Buffer\.from\(String\(s\), "latin1"\)/, skipCommentLines: true, allowlist: [],
+    reason: "Buffer.from(str, \"latin1\") truncates a code point > 0xFF to its low byte (U+0141 -> 0x41), so checking output bytes admits a non-IA5 character as a different one. Validate charCodeAt on the input string before converting.",
+  },
+  {
+    id: "asn1-integer-build-size-cap",
+    primitive: "_intContent must enforce DER_MAX_INTEGER_BYTES on the built content — symmetric with read.integer, so a builder can't emit an over-cap INTEGER the decoder refuses",
+    regex: /function _intContent\b(?:(?!DER_MAX_INTEGER_BYTES)[\s\S]){0,800}?\r?\nfunction /, skipCommentLines: true, allowlist: [],
+    reason: "The INTEGER builder producing content with no size ceiling is an encode/decode asymmetry — build.integer(hugeBigInt) or a huge Buffer emits an INTEGER read.integer rejects as over-cap. Cap the content length like the reader.",
+  },
+  {
+    id: "x509-attrvalue-swallows-bad-string",
+    primitive: "_attrValueToString's hex fallback must be reached only for a non-decodable-primitive-string value (asn1/expected-string non-string tag AND asn1/expected-primitive constructed type); an asn1/bad-* content error must fail the certificate closed",
+    regex: /function _attrValueToString\b(?:(?!expected-primitive)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
+    reason: "The DN hex fallback must discriminate on BOTH structural codes. Catching every read.string error hex-encodes a malformed known string (invalid-UTF8 CN) — a fail-open that bypasses strict string validation. Handling only asn1/expected-string over-rejects a legitimate constructed ANY value (a SEQUENCE throws asn1/expected-primitive) — the certificate is wrongly refused. Hex-render only asn1/expected-string + asn1/expected-primitive (full DER via node.bytes); rethrow every asn1/bad-* content error as x509/bad-atv.",
   },
 ];
 
@@ -1029,6 +1399,10 @@ function run() {
   testNoFailOpenVerify();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
+  testReleaseWaitsForCodex();
+  testDecoderRejectsConstructedPrimitiveOnly();
+  testTbsTrailingFieldsMonotonic();
+  testSignatureAlgorithmAgreement();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();

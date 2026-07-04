@@ -47,6 +47,11 @@ function _report(findings) {
 var findings = engine.validate({
   libDir: LIB_DIR,
   parser: parser,
+  // Every primitive must name the normative reference it builds off of. The
+  // backfill is complete, so this is enforced: a new primitive that names no
+  // @spec fails the doc gate (use `@spec internal (design: ...)` for genuine
+  // infrastructure with no external standard).
+  requireSpec: true,
 });
 
 process.exit(_report(findings));

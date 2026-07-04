@@ -70,7 +70,10 @@ function _describe(value, depth, ancestors) {
 // Capture the whole exported surface. `rootExports` is the object returned
 // by require("../index.js"); `meta.packageVersion` stamps the snapshot for
 // human diffing (it is NOT part of the surface comparison — a version bump
-// alone never counts as a breaking change).
+// alone never counts as a breaking change). `meta.sinceByPrimitive` records
+// each documented primitive's @since so the introduction version can be
+// gated (see checkSince): a primitive's @since is immutable once shipped and
+// a newly-added primitive's @since must equal the version introducing it.
 function capture(rootExports, meta) {
   meta = meta || {};
   var surface = {};
@@ -78,10 +81,84 @@ function capture(rootExports, meta) {
     surface[k] = _describe(rootExports[k], 0, []);
   });
   return {
-    generator:      "scripts/refresh-api-snapshot.js",
-    packageVersion: meta.packageVersion || null,
-    surface:        surface,
+    generator:        "scripts/refresh-api-snapshot.js",
+    packageVersion:   meta.packageVersion || null,
+    surface:          surface,
+    sinceByPrimitive: meta.sinceByPrimitive || {},
   };
+}
+
+// Scan the shipped source for every `@primitive <token>` … `@since <ver>`
+// pair. Self-contained (no dependency on the wiki comment-block parser) so
+// the snapshot tooling stays inside scripts/. Returns { "<token>": "<ver>" }.
+function extractSince(libDir) {
+  libDir = libDir || path.join(__dirname, "..", "lib");
+  var out = {};
+  fs.readdirSync(libDir).filter(function (f) { return /\.js$/.test(f); }).sort()
+    .forEach(function (f) {
+      var src = fs.readFileSync(path.join(libDir, f), "utf8");
+      var cur = null;                     // token of the @primitive block in scope
+      src.split(/\r?\n/).forEach(function (line) {
+        var mp = line.match(/@primitive\s+(\S+)/);
+        if (mp) { cur = mp[1]; return; }
+        var ms = line.match(/@since\s+(\S+)/);
+        if (ms && cur) { out[cur] = ms[1]; cur = null; }
+      });
+    });
+  return out;
+}
+
+// Parse a plain "X.Y.Z" version into comparable numbers. Returns null for a
+// non-semver string so callers can flag it rather than mis-order it.
+function _verParts(v) {
+  if (typeof v !== "string" || !/^\d+\.\d+\.\d+$/.test(v)) return null;
+  return v.split(".").map(Number);
+}
+
+// -1 / 0 / 1 for a<b / a==b / a>b; null if either side is un-parseable.
+function _cmpVer(a, b) {
+  var pa = _verParts(a), pb = _verParts(b);
+  if (!pa || !pb) return null;
+  for (var i = 0; i < 3; i++) { if (pa[i] !== pb[i]) return pa[i] < pb[i] ? -1 : 1; }
+  return 0;
+}
+
+// Gate the @since map against the introduction-version contract. `oldMap` is
+// the prior on-disk snapshot's sinceByPrimitive (undefined/null on the first
+// run that seeds the field — bootstrap: skip the immutability / new-primitive
+// checks that need a baseline, but still enforce the always-valid ≤ bound).
+// Returns an array of human-readable violation strings (empty = clean):
+//   (a) any primitive whose @since is not valid semver or is > packageVersion
+//       (a primitive cannot be introduced in a future version);
+//   (b) a primitive present in both maps whose @since changed (immutable once
+//       shipped);
+//   (c) a primitive absent from oldMap (newly added) whose @since is not
+//       exactly packageVersion (this is the registerFamily-@since-0.1.1 class).
+function checkSince(oldMap, newMap, packageVersion) {
+  var violations = [];
+  var haveBaseline = oldMap && typeof oldMap === "object";
+  Object.keys(newMap).sort().forEach(function (tok) {
+    var since = newMap[tok];
+    var cmp = _cmpVer(since, packageVersion);
+    if (cmp === null) {
+      violations.push(tok + ": @since " + JSON.stringify(since) + " is not a valid X.Y.Z version");
+      return;
+    }
+    if (cmp > 0) {
+      violations.push(tok + ": @since " + since + " is later than the package version " +
+        packageVersion + " (a primitive cannot be introduced in a future version)");
+    }
+    if (haveBaseline && Object.prototype.hasOwnProperty.call(oldMap, tok)) {
+      if (oldMap[tok] !== since) {
+        violations.push(tok + ": @since changed " + oldMap[tok] + " -> " + since +
+          " (a shipped primitive's introduction version is immutable)");
+      }
+    } else if (haveBaseline && cmp !== 0) {
+      violations.push(tok + ": new primitive @since " + since + " must equal the introducing " +
+        "version " + packageVersion + " (set @since to the release that adds it)");
+    }
+  });
+  return violations;
 }
 
 // Compare two captured snapshots. Only the `surface` tree is compared —
@@ -155,18 +232,35 @@ function write(snapshot, p) {
 }
 
 module.exports = {
-  capture:    capture,
-  compare:    compare,
-  formatDiff: formatDiff,
-  read:       read,
-  write:      write,
+  capture:      capture,
+  compare:      compare,
+  formatDiff:   formatDiff,
+  extractSince: extractSince,
+  checkSince:   checkSince,
+  read:         read,
+  write:        write,
 };
 
 if (require.main === module) {
   var pki = require("../index.js");
   var pkg = require("../package.json");
-  var snapshot = capture(pki, { packageVersion: pkg.version });
   var outPath = path.join(__dirname, "..", "api-snapshot.json");
+  var sinceByPrimitive = extractSince();
+
+  // Gate @since against the prior on-disk snapshot BEFORE overwriting it —
+  // this is the only point where "what existed before this refresh" is still
+  // readable, so a newly-added primitive with the wrong introduction version
+  // (or a mutated @since) is refused here rather than silently baked in.
+  var prior = null;
+  try { prior = read(outPath); } catch (_e) { /* first run — nothing to compare */ }
+  var sinceViolations = checkSince(prior && prior.sinceByPrimitive, sinceByPrimitive, pkg.version);
+  if (sinceViolations.length > 0) {
+    process.stderr.write("[refresh-api-snapshot] @since violations (fix the source @since tags):\n");
+    sinceViolations.forEach(function (m) { process.stderr.write("  - " + m + "\n"); });
+    process.exit(2);
+  }
+
+  var snapshot = capture(pki, { packageVersion: pkg.version, sinceByPrimitive: sinceByPrimitive });
   write(snapshot, outPath);
   process.stdout.write("[refresh-api-snapshot] wrote " + outPath +
     " (packageVersion=" + snapshot.packageVersion + ")\n");

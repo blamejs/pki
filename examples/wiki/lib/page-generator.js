@@ -98,6 +98,45 @@ function _renderRelated(relatedTag, index) {
   return parts.join(", ");
 }
 
+// Map an @spec / @defends reference to its canonical URL, or null when the
+// source has no stable deep link (paywalled ISO/ANSI, internal, semver) —
+// those render as plain <code>. Deep links: RFC section anchors on the IETF
+// datatracker, FIPS/SP on NIST CSRC, X.NNN on ITU, W3C, CVE, CWE.
+function _specUrl(ref) {
+  var r = String(ref).trim();
+  var m;
+  if ((m = r.match(/^RFC (\d+)(?:\s+§([\w.]+))?/)))      return "https://datatracker.ietf.org/doc/html/rfc" + m[1] + (m[2] ? "#section-" + m[2] : "");
+  if ((m = r.match(/^FIPS (\d+(?:-\d+)?)/)))             return "https://csrc.nist.gov/pubs/fips/" + m[1].toLowerCase() + "/final";
+  if ((m = r.match(/^(?:NIST )?SP (800-\d+[A-Za-z]?)/))) return "https://csrc.nist.gov/publications/detail/sp/" + m[1].toLowerCase() + "/final";
+  if ((m = r.match(/^(X\.\d+)/)))                        return "https://www.itu.int/rec/T-REC-" + m[1];
+  if ((m = r.match(/^SEC (\d+)/)))                       return "https://www.secg.org/sec" + m[1] + "-v2.pdf";
+  if (/^W3C WebCrypto/.test(r))                          return "https://www.w3.org/TR/WebCryptoAPI/";
+  if ((m = r.match(/^CVE-(\d{4}-\d+)/)))                 return "https://www.cve.org/CVERecord?id=CVE-" + m[1];
+  if ((m = r.match(/^CWE-(\d+)/)))                       return "https://cwe.mitre.org/data/definitions/" + m[1] + ".html";
+  return null;
+}
+
+// Render @spec / @defends as a per-primitive "References" section: each entry
+// linked to its normative source where one exists, so a reader (or auditor)
+// jumps from the primitive to the clause it implements or the attack it guards.
+function _renderReferences(tags) {
+  var items = [];
+  function add(tagVal, kind) {
+    if (!tagVal) return;
+    String(tagVal).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (ref) {
+      var url = _specUrl(ref);
+      var body = url
+        ? '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer">' + esc(ref) + "</a>"
+        : "<code>" + esc(ref) + "</code>";
+      items.push('<li><span class="ref-kind">' + esc(kind) + "</span> " + body + "</li>");
+    });
+  }
+  add(tags.spec, "spec");
+  add(tags.defends, "defends");
+  if (!items.length) return null;
+  return '<h3 class="sub">References</h3><ul class="refs">' + items.join("") + "</ul>";
+}
+
 function _renderPrimitive(p, index) {
   var tags = p.tags || {};
   var primTag = tags.primitive;
@@ -131,6 +170,8 @@ function _renderPrimitive(p, index) {
   if (tags.related) {
     out.push('<p class="related"><strong>See also:</strong> ' + _renderRelated(tags.related, index) + "</p>");
   }
+  var refsHtml = _renderReferences(tags);
+  if (refsHtml) out.push(refsHtml);
   out.push("</section>");
   return out.join("\n");
 }
@@ -164,6 +205,8 @@ function _shell(opts) {
     ".badge-experimental{color:#d29922;border-color:#3b3320}.badge-deprecated{color:#f85149;border-color:#3b2323}",
     ".badge-since{color:var(--accent2)}.badge-compliance{color:var(--accent)}",
     ".primitive{margin-bottom:10px}.related{color:var(--muted);font-size:14px}",
+    ".refs{list-style:none;margin:6px 0 4px;padding:0;font-size:14px}.refs li{margin:2px 0;color:var(--muted)}",
+    ".ref-kind{display:inline-block;min-width:64px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent)}",
     ".hero{display:flex;align-items:center;gap:22px;margin:6px 0 30px}",
     ".hero img{width:96px;height:96px;border-radius:18px;box-shadow:0 8px 40px rgba(124,92,255,.25)}",
     ".hero h1{font-size:40px;margin:0}.hero .tag{color:var(--muted);font-size:18px;margin-top:4px}",
@@ -290,4 +333,4 @@ function build(opts) {
   };
 }
 
-module.exports = { build: build };
+module.exports = { build: build, specUrl: _specUrl };

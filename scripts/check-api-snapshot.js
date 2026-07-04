@@ -39,7 +39,8 @@ try {
     process.exit(2);
   }
 
-  var current = snap.capture(pki, { packageVersion: pkg.version });
+  var sinceByPrimitive = snap.extractSince();
+  var current = snap.capture(pki, { packageVersion: pkg.version, sinceByPrimitive: sinceByPrimitive });
   var diff = snap.compare(baseline, current);
 
   console.log(snap.formatDiff(diff));
@@ -48,6 +49,19 @@ try {
     console.error("[check-api-snapshot] BREAKING changes detected. If intentional, " +
       "regenerate the baseline with `node scripts/refresh-api-snapshot.js` and commit it " +
       "alongside the version bump per the LTS calendar.");
+    process.exit(1);
+  }
+
+  // @since contract: a shipped primitive's introduction version is immutable
+  // and never exceeds the package version. (A newly-added primitive is gated
+  // against the introducing version at refresh time, where the pre-refresh
+  // baseline is still on disk — see refresh-api-snapshot.js.)
+  var sinceViolations = snap.checkSince(baseline.sinceByPrimitive, sinceByPrimitive, pkg.version);
+  if (sinceViolations.length > 0) {
+    console.error("[check-api-snapshot] @since contract violation(s):");
+    sinceViolations.forEach(function (m) { console.error("  - " + m); });
+    console.error("[check-api-snapshot] a shipped primitive's @since is immutable and cannot " +
+      "exceed the package version; fix the source @since tag.");
     process.exit(1);
   }
 

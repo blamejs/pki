@@ -150,6 +150,70 @@ async function testWrap() {
   check("AES-KW wrap/unwrap round-trips the key", hex(origRaw) === hex(unwrappedRaw));
 }
 
+async function testUnwrapKeyUsage() {
+  // unwrapKey must enforce the "unwrapKey" usage on BOTH the AES-KW path and
+  // the delegated (RSA-OAEP) path — the latter previously fell open because
+  // it only ever checked "decrypt" on an internally-cloned key.
+  var rkp = await subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, hash: "SHA-256" }, true, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
+  var target = await subtle.generateKey({ name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  var wrapped = await subtle.wrapKey("raw", target, rkp.publicKey, { name: "RSA-OAEP" });
+  // A private key holding "decrypt" but NOT "unwrapKey" must be refused.
+  var pkcs8 = await subtle.exportKey("pkcs8", rkp.privateKey);
+  var privNoUnwrap = await subtle.importKey("pkcs8", pkcs8, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt"]);
+  check("unwrapKey (RSA-OAEP) enforces 'unwrapKey' usage", (await code(async function () {
+    await subtle.unwrapKey("raw", wrapped, privNoUnwrap, { name: "RSA-OAEP" }, { name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  })) === "webcrypto/invalid-access");
+  // With the usage present it round-trips.
+  var privUnwrap = await subtle.importKey("pkcs8", pkcs8, { name: "RSA-OAEP", hash: "SHA-256" }, true, ["decrypt", "unwrapKey"]);
+  var unwrapped = await subtle.unwrapKey("raw", wrapped, privUnwrap, { name: "RSA-OAEP" }, { name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  check("unwrapKey (RSA-OAEP) round-trips with the usage present",
+    hex(await subtle.exportKey("raw", target)) === hex(await subtle.exportKey("raw", unwrapped)));
+}
+
+async function testDeriveKeyUsage() {
+  // deriveKey requires the "deriveKey" usage — not "deriveBits".
+  var pubB = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  var withDeriveKey = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  var derived = await subtle.deriveKey({ name: "ECDH", public: pubB.publicKey }, withDeriveKey.privateKey, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  check("deriveKey accepts a ['deriveKey'] base key", derived.type === "secret" && derived.algorithm.length === 256);
+  // A ['deriveBits']-only key must NOT be usable for deriveKey (fail closed).
+  var deriveBitsOnly = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  check("deriveKey rejects a ['deriveBits']-only base key", (await code(async function () {
+    await subtle.deriveKey({ name: "ECDH", public: pubB.publicKey }, deriveBitsOnly.privateKey, { name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  })) === "webcrypto/invalid-access");
+  // deriveBits still enforces its own "deriveBits" usage.
+  check("deriveBits still rejects a ['deriveKey']-only base key", (await code(async function () {
+    await subtle.deriveBits({ name: "ECDH", public: pubB.publicKey }, withDeriveKey.privateKey, 256);
+  })) === "webcrypto/invalid-access");
+}
+
+async function testHmacVerifyLength() {
+  var hkey = await subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
+  var data = Buffer.from("authenticated message");
+  var goodSig = await subtle.sign({ name: "HMAC" }, hkey, data);
+  check("HMAC valid signature verifies", (await subtle.verify({ name: "HMAC" }, hkey, goodSig, data)) === true);
+  // A wrong-length signature must RESOLVE false, not throw RangeError.
+  var threw = false, result;
+  try { result = await subtle.verify({ name: "HMAC" }, hkey, new Uint8Array(5), data); } catch (_e) { threw = true; }
+  check("HMAC verify resolves false for a wrong-length signature", threw === false && result === false);
+}
+
+async function testAesCtrLength() {
+  var ctrKey = await subtle.generateKey({ name: "AES-CTR", length: 256 }, true, ["encrypt", "decrypt"]);
+  var counter = pki.webcrypto.getRandomValues(new Uint8Array(16));
+  // node cannot honor a counter width < 128, so any non-128 length is refused.
+  check("AES-CTR encrypt rejects length != 128", (await code(async function () {
+    await subtle.encrypt({ name: "AES-CTR", counter: counter, length: 64 }, ctrKey, Buffer.from("x"));
+  })) === "webcrypto/not-supported");
+  check("AES-CTR decrypt rejects length != 128", (await code(async function () {
+    await subtle.decrypt({ name: "AES-CTR", counter: counter, length: 64 }, ctrKey, Buffer.from("x"));
+  })) === "webcrypto/not-supported");
+  // length:128 round-trips.
+  var ct = await subtle.encrypt({ name: "AES-CTR", counter: counter, length: 128 }, ctrKey, Buffer.from("ctr payload"));
+  var back = await subtle.decrypt({ name: "AES-CTR", counter: counter, length: 128 }, ctrKey, ct);
+  check("AES-CTR length:128 round-trips", Buffer.from(back).toString() === "ctr payload");
+}
+
 async function testSurface() {
   check("pki.webcrypto is a Crypto instance", pki.webcrypto instanceof pki.WebCrypto.Crypto);
   check("pki.webcrypto.subtle is a SubtleCrypto", pki.webcrypto.subtle instanceof pki.WebCrypto.SubtleCrypto);
@@ -168,6 +232,10 @@ async function run() {
   await testEncrypt();
   await testDerive();
   await testWrap();
+  await testUnwrapKeyUsage();
+  await testDeriveKeyUsage();
+  await testHmacVerifyLength();
+  await testAesCtrLength();
 }
 
 module.exports = { run: run };

@@ -54,6 +54,49 @@ var KNOWN_POSTURES = {
 
 var SEMVER_RE = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$/;
 
+// @spec — the normative reference(s) a primitive is DERIVED FROM. For a
+// standards-implementation library, every primitive traces to a standard;
+// a citation is validated (not free text) so it can be linked in the wiki
+// and so naming the clause forces opening the spec. A crypto primitive
+// cites BOTH the algorithm standard (FIPS / SP 800 / SEC / ANSI X9) AND the
+// PKIX/encoding profile (RFC / X.690) — this checks each entry's shape, not
+// the pairing. A trailing `§clause` and/or `(label)` is allowed in any
+// order; `internal (design: ...)` is the only escape for genuine
+// infrastructure with no external standard.
+var _SPEC_OPT = "(?:\\s+(?:§[\\w.]+|\\([^)]*\\)))*";
+var SPEC_PATTERNS = [
+  new RegExp("^FIPS \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^(?:NIST )?SP 800-\\d+[A-Za-z]?(?:\\s+Rev\\.?\\s*\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^RFC \\d+" + _SPEC_OPT + "$"),
+  new RegExp("^X\\.\\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^ISO/IEC \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^SEC \\d+" + _SPEC_OPT + "$"),
+  new RegExp("^ANSI X9\\.\\d+" + _SPEC_OPT + "$"),
+  new RegExp("^IEC \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^PKCS#\\d+" + _SPEC_OPT + "$"),
+  new RegExp("^W3C \\S.*$"),
+  new RegExp("^CA/Browser Forum\\b.*$"),
+  new RegExp("^(?:SemVer|semver\\.org)\\b.*$"),
+  new RegExp("^internal(?:\\s+\\([^)]*\\))?$"),
+];
+function _isValidSpecRef(ref) {
+  var r = String(ref).trim();
+  for (var i = 0; i < SPEC_PATTERNS.length; i++) if (SPEC_PATTERNS[i].test(r)) return true;
+  return false;
+}
+
+// @defends — the attack CLASS / CVE / CWE a primitive guards.
+function _isValidDefendsRef(ref) {
+  var r = String(ref).trim();
+  // A ref that announces itself as a CVE/CWE MUST match the strict id form,
+  // so a malformed "CVE-14-1568" is rejected rather than waved through as a
+  // "named class" by the permissive fallback below.
+  if (/^CVE-/i.test(r)) return /^CVE-\d{4}-\d+$/.test(r);
+  if (/^CWE-/i.test(r)) return /^CWE-\d+$/.test(r);
+  // Otherwise a named class, optionally suffixed with the id it maps to.
+  return /^[A-Za-z][A-Za-z0-9 /_.+-]*(?:\s+\((?:CVE-\d{4}-\d+|CWE-\d+)\))?$/.test(r);
+}
+
 // Placeholder patterns in @example bodies that signal unexecutable code.
 var EXAMPLE_PLACEHOLDERS = [
   { id: "ascii-arrow",    re: /\/\/\s*>\s+/m,                  hint: 'use "// -> ..." for expected-result comments — "// > " reads as a shell prompt' },
@@ -318,6 +361,38 @@ function validate(config) {
         });
       }
 
+      // 7b. @spec — the normative reference(s) the primitive is derived from.
+      //     Validated so a citation can't be free text; required on every
+      //     primitive when config.requireSpec is set (a primitive with no
+      //     named source is undocumented or unmoored from a standard).
+      if (tags.spec) {
+        String(tags.spec).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (ref) {
+          if (!_isValidSpecRef(ref)) {
+            findings.push({
+              kind: "catalog", file: rel, primitive: primTag,
+              msg: "@spec `" + ref + "` is not a recognized normative reference (FIPS / SP 800 / RFC / X.NNN / ISO/IEC / SEC / ANSI X9 / W3C / IEC / PKCS# / CA/Browser Forum / semver / internal)",
+            });
+          }
+        });
+      } else if (config.requireSpec) {
+        findings.push({
+          kind: "schema", file: rel, primitive: primTag,
+          msg: "missing @spec — every primitive must name the normative reference it builds off of (or `@spec internal (design: ...)` for genuine infrastructure)",
+        });
+      }
+
+      // 7c. @defends — the attack class / CVE / CWE the primitive guards.
+      if (tags.defends) {
+        String(tags.defends).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (ref) {
+          if (!_isValidDefendsRef(ref)) {
+            findings.push({
+              kind: "catalog", file: rel, primitive: primTag,
+              msg: "@defends `" + ref + "` must be a CVE-YYYY-N, CWE-N, or a named class optionally suffixed with `(CVE-.../CWE-...)`",
+            });
+          }
+        });
+      }
+
       // 8. @related resolution.
       if (tags.related) {
         String(tags.related).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (refSig) {
@@ -430,4 +505,6 @@ module.exports = {
   KNOWN_STATUSES:       KNOWN_STATUSES,
   KNOWN_POSTURES:       KNOWN_POSTURES,
   EXAMPLE_PLACEHOLDERS: EXAMPLE_PLACEHOLDERS,
+  isValidSpecRef:       _isValidSpecRef,
+  isValidDefendsRef:    _isValidDefendsRef,
 };
