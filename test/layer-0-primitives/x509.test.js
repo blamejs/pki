@@ -260,6 +260,46 @@ function testTbsTrailingFieldGrammar() {
     code(function () { pki.x509.parse(tbs([uid1, exts])); }) === "NO-THROW");
 }
 
+// Additional RFC 5280 tbsCertificate conformance MUSTs.
+function testRfc5280Conformance() {
+  // §4.1.1.2 — outer signatureAlgorithm MUST equal tbsCertificate.signature.
+  function certSig(innerOid, outerOid) {
+    var tbs = build.sequence([
+      build.explicit(0, build.integer(2n)), build.integer(1n), _algId(innerOid),
+      _name("issuer"), _validity(), _name("subject"), _spki(),
+    ]);
+    return build.sequence([tbs, _algId(outerOid), build.bitString(Buffer.from([0x30, 0x03]), 0)]);
+  }
+  check("mismatched outer/inner signatureAlgorithm rejected (algorithm substitution)",
+    code(function () { pki.x509.parse(certSig("1.2.840.10045.4.3.2", "1.2.840.10045.4.3.4")); }) === "x509/bad-signature-algorithm");
+  check("matching signatureAlgorithm parses",
+    code(function () { pki.x509.parse(certSig("1.2.840.10045.4.3.2", "1.2.840.10045.4.3.2")); }) === "NO-THROW");
+
+  // §4.1.2.9 — Extensions ::= SEQUENCE SIZE (1..MAX) OF Extension.
+  function certExt(extNode) {
+    return _cert([
+      build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), _validity(), _name("subject"), _spki(), build.explicit(3, extNode),
+    ]);
+  }
+  check("empty extensions SEQUENCE rejected",
+    code(function () { pki.x509.parse(certExt(build.sequence([]))); }) === "x509/bad-extensions");
+  check("non-SEQUENCE extensions wrapper rejected (CertificateError, not a raw TypeError)",
+    code(function () { pki.x509.parse(certExt(build.integer(5n))); }) === "x509/bad-extensions");
+
+  // §4.1.2.4 — issuer MUST be non-empty; §4.1.2.6 — empty subject is permitted.
+  function certNames(issuerNode, subjectNode) {
+    return _cert([
+      build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+      issuerNode, _validity(), subjectNode, _spki(),
+    ]);
+  }
+  check("empty issuer distinguished name rejected",
+    code(function () { pki.x509.parse(certNames(build.sequence([]), _name("subject"))); }) === "x509/bad-issuer");
+  check("empty subject distinguished name permitted (subjectAltName case)",
+    code(function () { pki.x509.parse(certNames(_name("issuer"), build.sequence([]))); }) === "NO-THROW");
+}
+
 function run() {
   testParseFields();
   testExtensions();
@@ -270,6 +310,7 @@ function run() {
   testVersionValidation();
   testMalformedDnStringRejected();
   testTbsTrailingFieldGrammar();
+  testRfc5280Conformance();
 }
 
 module.exports = { run: run };

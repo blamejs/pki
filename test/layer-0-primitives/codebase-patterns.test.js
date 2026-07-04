@@ -664,6 +664,26 @@ function testTbsTrailingFieldsMonotonic() {
   _report("x509 tbs trailing fields [1]/[2]/[3] are at-most-once and in order (RFC 5280 §4.1)", bad);
 }
 
+function testSignatureAlgorithmAgreement() {
+  // class: x509-sig-alg-agreement
+  // RFC 5280 §4.1.1.2 — the outer signatureAlgorithm MUST equal
+  // tbsCertificate.signature (same AlgorithmIdentifier). Surfacing the two
+  // fields without enforcing equality lets a certificate claim one algorithm
+  // in the signed body and another in the outer wrapper — a signature-
+  // algorithm-substitution vector.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  catch (_e) { return; }
+  if (/innerSigAlg/.test(src) && !/bad-signature-algorithm/.test(src)) {
+    bad.push({ file: "lib/x509.js", line: 0,
+      content: "parse must reject a certificate whose outer signatureAlgorithm differs from tbsCertificate.signature " +
+        "(RFC 5280 §4.1.1.2) — compare the two AlgorithmIdentifiers and throw x509/bad-signature-algorithm on a mismatch" });
+  }
+  bad = _filterMarkers(bad, "x509-sig-alg-agreement");
+  _report("x509 parse enforces signatureAlgorithm == tbsCertificate.signature (RFC 5280 §4.1.1.2)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
@@ -1382,6 +1402,7 @@ function run() {
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
+  testSignatureAlgorithmAgreement();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();
