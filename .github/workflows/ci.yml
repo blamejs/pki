@@ -171,8 +171,27 @@ jobs:
             exit 1
           fi
           echo "[gitleaks] resolved latest release: v${GITLEAKS_VERSION}"
-          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
-            | tar -xz -C /tmp gitleaks
+          TARBALL="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
+          # Authenticate the github.com asset downloads too (the token is already
+          # in scope for the API call above), so they don't share the shared-
+          # runner-IP unauthenticated rate limit. curl drops the Authorization
+          # header on the cross-host redirect to the release-asset CDN, so it is
+          # only sent to github.com — the CDN uses its own signed URL.
+          AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
+          curl -fsSL "${AUTH[@]}" -o "/tmp/${TARBALL}" "${BASE}/${TARBALL}"
+          # Integrity: verify the downloaded tarball against the checksums file
+          # published in the same release before extracting it, so a corrupted
+          # or tampered download can't be run as the secret-scan gate. Tracking
+          # "latest" keeps detection current; the checksum still fails closed.
+          curl -fsSL "${AUTH[@]}" -o /tmp/gitleaks_checksums.txt "${BASE}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
+          EXPECTED=$(awk -v f="${TARBALL}" '$2 == f {print $1}' /tmp/gitleaks_checksums.txt)
+          if [ -z "$EXPECTED" ]; then
+            echo "::error::no sha256 for ${TARBALL} in the gitleaks checksums file"
+            exit 1
+          fi
+          echo "${EXPECTED}  /tmp/${TARBALL}" | sha256sum -c -
+          tar -xzf "/tmp/${TARBALL}" -C /tmp gitleaks
           sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version
 

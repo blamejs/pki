@@ -27,6 +27,7 @@ on:
       - '.github/workflows/**'
       - '.github/actions/**'
       - '.pinact.yaml'
+      - '.github/zizmor.yml'
   workflow_dispatch:
 
 permissions:

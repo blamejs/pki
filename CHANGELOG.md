@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.5 — 2026-07-04
+
+Container healthcheck honors WIKI_PORT; release-tooling supply-chain hardening.
+
+### Fixed
+
+- The example wiki container's HEALTHCHECK now probes the port from WIKI_PORT (defaulting to 3009) rather than a hardcoded 3009, so overriding WIKI_PORT at runtime no longer leaves the container reporting unhealthy while the server is serving on the configured port.
+
+### Security
+
+- The CI secret-scan gate now fetches the gitleaks binary over authenticated requests and verifies it against the checksums file published in the same release before executing it, so a corrupted or tampered download fails closed instead of running as the gate. Tracking the latest release keeps detection rules current.
+- The release-container workflow validates that the base image resolved to a well-formed sha256 digest before building against it, so a failed resolution can no longer silently produce an unpinned base — the scanned image is always the published one.
+- The workflow-security audit re-runs when its own configuration file changes, so an edit that would suppress a finding is itself audited.
+
 ## v0.1.4 — 2026-07-04
 
 The ASN.1 codec's universal-type metadata moves to a single descriptor registry.
