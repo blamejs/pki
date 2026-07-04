@@ -699,6 +699,14 @@ var KNOWN_ANTIPATTERNS = [
     reason: "readBitString reaching its return with no tail-mask check admits non-canonical BIT STRING encodings (encoding malleability on signature/key-usage bits). The zero-unused-bits invariant is easy to drop on refactor.",
   },
   {
+    id: "asn1-bitstring-empty-body-unused-bits",
+    primitive: "build.bitString must reject an empty body with unusedBits>0 (X.690 8.6.2.3) — an empty BIT STRING has no bits to leave unused; the encoder must not emit what the decoder rejects",
+    regex: /bitString: function \(buf, unusedBits\)(?:(?!body\.length === 0)[\s\S]){0,600}?return _universal\(TAGS\.BIT_STRING/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "build.bitString reaching its return with no `body.length === 0` guard lets it emit an empty BIT STRING declaring unused bits — invalid DER the reader rejects, an encode/decode asymmetry. Reject u>0 over an empty body.",
+  },
+  {
     id: "asn1-universalstring-scalar-range",
     primitive: "a `cp > 0x10FFFF || (cp>=0xD800 && cp<=0xDFFF)` guard before String.fromCodePoint (throw asn1/bad-universal-string) — keeps the Asn1Error-only contract and rejects lone surrogates",
     regex: /for \(var i = 0; i < buf\.length; i \+= 4\)(?:(?!0x10FFFF)[\s\S]){0,600}?String\.fromCodePoint\(cp\)/,

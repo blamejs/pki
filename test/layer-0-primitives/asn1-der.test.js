@@ -152,6 +152,12 @@ function testBitStringUnusedBits() {
     code(function () { pki.asn1.build.bitString(Buffer.from([0xFF]), 3); }) === "asn1/bad-bit-string");
   check("build.bitString accepts a canonical tail",
     code(function () { pki.asn1.build.bitString(Buffer.from([0xF8]), 3); }) === "NO-THROW");
+  // X.690 8.6.2.3 — an empty BIT STRING has no content octets, so it must
+  // declare zero unused bits; the encoder must not emit unused bits over nothing.
+  check("build.bitString rejects empty body with unused bits",
+    code(function () { pki.asn1.build.bitString(Buffer.alloc(0), 3); }) === "asn1/bad-bit-string");
+  check("build.bitString accepts empty body with zero unused bits",
+    code(function () { pki.asn1.build.bitString(Buffer.alloc(0), 0); }) === "NO-THROW");
 }
 
 function testUniversalStringScalarRange() {
