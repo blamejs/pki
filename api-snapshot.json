@@ -496,5 +496,24 @@
         }
       }
     }
+  },
+  "sinceByPrimitive": {
+    "pki.asn1.decode": "0.1.0",
+    "pki.asn1.readOid": "0.1.0",
+    "pki.asn1.encode": "0.1.0",
+    "pki.asn1.build": "0.1.0",
+    "pki.C.TIME": "0.1.0",
+    "pki.C.BYTES": "0.1.0",
+    "pki.errors.PkiError": "0.1.0",
+    "pki.errors.defineClass": "0.1.0",
+    "pki.oid.name": "0.1.0",
+    "pki.oid.register": "0.1.0",
+    "pki.oid.registerFamily": "0.1.2",
+    "pki.webcrypto.CryptoKey": "0.1.0",
+    "pki.webcrypto.subtle": "0.1.0",
+    "pki.webcrypto": "0.1.0",
+    "pki.x509.pemDecode": "0.1.0",
+    "pki.x509.pemEncode": "0.1.0",
+    "pki.x509.parse": "0.1.0"
   }
 }
