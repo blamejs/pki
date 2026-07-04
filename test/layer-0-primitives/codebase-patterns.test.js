@@ -792,6 +792,14 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "A hard-coded VERSION string literal decoupled from package.json makes drift the default outcome on any release that forgets to bump it. Single-source it from the manifest so pki.version can never disagree with the package.",
   },
+  {
+    id: "oid-subidentifier-cap-too-small",
+    primitive: "OID_MAX_SUBIDENTIFIER_BYTES must be >= 19 — the largest standard OID sub-identifier is a 128-bit UUID-based arc (X.667), which is 19 base-128 bytes; a smaller cap rejects legitimate UUID OIDs",
+    regex: /OID_MAX_SUBIDENTIFIER_BYTES:\s*(?:[0-9]|1[0-8])\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A per-value defense-in-depth cap set below the largest value it must legitimately admit turns into a false-reject. A 128-bit UUID OID arc needs 19 base-128 bytes, so a sub-identifier cap under 19 rejects valid DER. Keep the cap above the largest legitimate arc while still bounding a pathologically long one.",
+  },
 ];
 
 function testKnownAntipatterns() {
