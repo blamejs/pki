@@ -102,6 +102,52 @@ async function testImportExport() {
   })) === "webcrypto/invalid-access");
 }
 
+// W3C WebCrypto §ECDSA/ECDH "import key" — the imported EC key's curve is taken
+// from the KEY material; it MUST equal the requested namedCurve (else DataError)
+// and MUST be a supported curve (else NotSupportedError), across spki, pkcs8 and
+// jwk. generateKey already enforces this (webcrypto.js:194); importKey must not
+// be more lenient — a mismatch mislabels the CryptoKey (algorithm confusion) and
+// an unsupported curve smuggles a non-approved curve past the P-256/384/521 set.
+async function testEcImportCurveValidation() {
+  function ecDer(nodeCurve) {
+    var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: nodeCurve });
+    return {
+      spki:   kp.publicKey.export({ format: "der", type: "spki" }),
+      pkcs8:  kp.privateKey.export({ format: "der", type: "pkcs8" }),
+      pubJwk: kp.publicKey.export({ format: "jwk" }),
+    };
+  }
+  var p256 = ecDer("prime256v1");
+  var p384 = ecDer("secp384r1");
+  var k256 = ecDer("secp256k1"); // not in the framework's CURVE_NODE set
+
+  // Unsupported curve → NotSupportedError, on every parse-based format.
+  check("spki import of an unsupported curve (secp256k1) rejects (not-supported)",
+    (await code(async function () { await subtle.importKey("spki", k256.spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/not-supported");
+  check("pkcs8 import of an unsupported curve rejects (not-supported)",
+    (await code(async function () { await subtle.importKey("pkcs8", k256.pkcs8, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]); })) === "webcrypto/not-supported");
+  check("jwk import of an unsupported curve rejects (not-supported)",
+    (await code(async function () { await subtle.importKey("jwk", k256.pubJwk, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/not-supported");
+
+  // Curve mismatch: a real P-384 key claimed as P-256 → DataError.
+  check("spki import with namedCurve != key curve rejects (data)",
+    (await code(async function () { await subtle.importKey("spki", p384.spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
+  check("pkcs8 import with namedCurve != key curve rejects (data)",
+    (await code(async function () { await subtle.importKey("pkcs8", p384.pkcs8, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]); })) === "webcrypto/data");
+  check("jwk import with jwk.crv != namedCurve rejects (data)",
+    (await code(async function () { await subtle.importKey("jwk", p384.pubJwk, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
+
+  // ECDH routes through the same path.
+  check("ECDH import with namedCurve != key curve rejects (data)",
+    (await code(async function () { await subtle.importKey("spki", p384.spki, { name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]); })) === "webcrypto/data");
+
+  // Matching + supported succeeds, and algorithm.namedCurve is taken from the key.
+  check("spki import with matching P-256 succeeds, namedCurve from key",
+    (await (async function () { var k = await subtle.importKey("spki", p256.spki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); return k.algorithm.namedCurve; })()) === "P-256");
+  check("pkcs8 import with matching P-384 succeeds, namedCurve from key",
+    (await (async function () { var k = await subtle.importKey("pkcs8", p384.pkcs8, { name: "ECDSA", namedCurve: "P-384" }, true, ["sign"]); return k.algorithm.namedCurve; })()) === "P-384");
+}
+
 async function testEncrypt() {
   // AES-GCM round-trip with AAD.
   var key = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
@@ -229,6 +275,7 @@ async function run() {
   await testClassicalSign();
   await testPqcSign();
   await testImportExport();
+  await testEcImportCurveValidation();
   await testEncrypt();
   await testDerive();
   await testWrap();
