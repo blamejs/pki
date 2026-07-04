@@ -209,11 +209,10 @@ function testGeneralizedTimeYearPad() {
   // FIX B — a GeneralizedTime year below 1000 must zero-pad to 4 digits, or
   // it emits 12-14 char content that read.time rejects.
   check("build.generalizedTime year 99 round-trips to 99", (function () {
+    // No try/catch: a regression that makes read.time reject the year-99 value
+    // should surface that error here, not be swallowed into a bare `false`.
     var d = new Date(0); d.setUTCFullYear(99, 0, 1); d.setUTCHours(0, 0, 0, 0);
-    var got;
-    try { got = pki.asn1.read.time(pki.asn1.decode(b.generalizedTime(d))).getUTCFullYear(); }
-    catch (_e) { return false; }
-    return got === 99;
+    return pki.asn1.read.time(pki.asn1.decode(b.generalizedTime(d))).getUTCFullYear() === 99;
   })());
   check("build.generalizedTime year 99 emits a 4-digit year", (function () {
     var d = new Date(0); d.setUTCFullYear(99, 0, 1); d.setUTCHours(0, 0, 0, 0);

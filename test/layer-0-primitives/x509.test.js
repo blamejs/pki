@@ -207,7 +207,9 @@ function testMalformedDnStringRejected() {
       _name("issuer"), _validity(), subject, _spki(),
     ]);
   }
-  function dnOf(cert) { try { return pki.x509.parse(cert).subject.dn; } catch (_e) { return null; } }
+  // No try/catch: these certs are built to parse; a regression that made one
+  // throw should surface the real parse error, not be hidden behind a null.
+  function dnOf(cert) { return pki.x509.parse(cert).subject.dn; }
 
   // A malformed KNOWN string type (invalid UTF-8 UTF8String) must fail the
   // certificate closed — not hex-encode the invalid bytes away.
@@ -300,6 +302,37 @@ function testRfc5280Conformance() {
     code(function () { pki.x509.parse(certNames(_name("issuer"), build.sequence([]))); }) === "NO-THROW");
 }
 
+// A certificate is validated as a whole structure before the cross-field
+// checks (signatureAlgorithm agreement §4.1.1.2, non-empty issuer §4.1.2.4,
+// extension uniqueness §4.2) run, so which typed error a MULTIPLY-malformed
+// certificate reports first is precedence-dependent and deliberately not
+// pinned. The invariant that must hold for every such combination is that it
+// stays fail-closed: rejected with a typed x509/* or asn1/* error, never
+// accepted and never a raw crash.
+function testMultiDefectFailClosed() {
+  function rejected(label, cert) {
+    var c = code(function () { pki.x509.parse(cert); });
+    check(label, c !== "NO-THROW" && c.indexOf("RAW:") !== 0);
+  }
+  var badValidity = build.sequence([build.utcTime(new Date("2026-01-01T00:00:00Z"))]); // 1 child, not 2
+  rejected("multi-defect: sig-alg mismatch + malformed validity stays fail-closed", _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.4"),
+    _name("issuer"), badValidity, _name("subject"), _spki(),
+  ]));
+  rejected("multi-defect: empty issuer + malformed validity stays fail-closed", _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    build.sequence([]), badValidity, _name("subject"), _spki(),
+  ]));
+  var dupExts = build.explicit(3, build.sequence([
+    _ext("2.5.29.14"),
+    build.sequence([build.oid("2.5.29.14"), build.integer(5n)]), // dup OID, value is INTEGER not OCTET STRING
+  ]));
+  rejected("multi-defect: duplicate extension OID + malformed value stays fail-closed", _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), _spki(), dupExts,
+  ]));
+}
+
 function run() {
   testParseFields();
   testExtensions();
@@ -311,6 +344,7 @@ function run() {
   testMalformedDnStringRejected();
   testTbsTrailingFieldGrammar();
   testRfc5280Conformance();
+  testMultiDefectFailClosed();
 }
 
 module.exports = { run: run };

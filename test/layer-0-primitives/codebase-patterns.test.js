@@ -663,6 +663,14 @@ function testTbsTrailingFieldsMonotonic() {
       content: "_consumeTrailing must reject a repeated or out-of-order context tag (the `<= last` monotonic guard + orderCode) — " +
         "a second [3] would overwrite the first and split duplicate extension OIDs across two wrappers" });
   }
+  // The monotonic sentinel `last` must initialize BELOW the lowest accepted tag;
+  // when minTag is absent the fallback must be negative (`: -1`), not a
+  // non-negative literal, or a trailing block whose first member is [0] rejects
+  // that first field as out-of-order (0 <= last==0). Codex PR #9.
+  if (/\blast\s*=\s*[^;]*\bminTag\b[^;]*:\s*[0-9]/.test(body)) {
+    bad.push({ file: "lib/asn1-schema.js", line: 0,
+      content: "_consumeTrailing's monotonic sentinel `last` must initialize below the lowest accepted tag — the minTag-absent fallback must be negative (`: -1`), not a non-negative literal, or a trailing block starting at [0] rejects its first field as out-of-order" });
+  }
   var x509;
   try { x509 = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
   catch (_e) { x509 = ""; }
@@ -839,6 +847,28 @@ var KNOWN_ANTIPATTERNS = [
       "test/layer-0-primitives/codebase-patterns.test.js",
     ],
     reason: "Every 'passes alone, fails under SMOKE_PARALLEL=64 / macOS' test flake is the same root cause: a fixed-budget setTimeout sleep too short for runner-contention reality. helpers.waitUntil polls the actual condition every 25ms up to a 5000ms cap and exits early when the predicate is truthy — fast platforms finish in milliseconds, contended platforms get the full budget. helpers.passiveObserve(ms, label) is the sibling for verifying the ABSENCE of an event over a window. Convert a hand-tuned sleep to waitUntil rather than bumping N.",
+  },
+
+  {
+    // A caught error discarded (underscore binding) and swallowed into a bare
+    // `return` inside a test assertion. This is the lint-silence reflex: when
+    // no-unused-vars flags `catch (e)`, renaming e->_e to pass the linter hides
+    // that the try/catch itself was scaffolding — a throw from the code under
+    // test becomes a bare `return false/null`, so a regression fails the check
+    // WITHOUT the diagnostic error. Assert directly (let the throw surface), or
+    // if the error is genuinely expected, capture it (`catch (e) { code = e.code }`).
+    id: "test-catch-underscore-return-swallow",
+    primitive: "assert directly and let a throw surface (more diagnostic), or capture the error you claim to expect — never rename catch(e)->catch(_e) to silence no-unused-vars around your own throw-capable call",
+    scanScope: "test",
+    regex: /catch\s*\(\s*_\w*\s*\)\s*\{\s*return\b/,
+    skipCommentLines: true,
+    allowlist: [
+      // The scanner harness itself: its catch(_e){ return } guards skip files
+      // that do not exist / do not parse during the sweep — scan robustness,
+      // not a swallowed assertion. This file also carries the pattern literal.
+      "test/layer-0-primitives/codebase-patterns.test.js",
+    ],
+    reason: "Renaming catch(e)->catch(_e) to clear no-unused-vars is a silence, not a fix: the `_`-prefix tells the linter the error is intentionally discarded, but a `catch (_e) { return <sentinel> }` around the code under test turns a real throw into a bare false/null, so a reintroduced bug fails the check with no underlying error. The no-unused signal means the binding (and usually the try/catch that introduced it) is dead — remove the catch and assert directly (the throw is the most diagnostic failure), or capture the error if you actually expect it. See feedback_rewrite_over_silence.",
   },
 
   // --- DER codec correctness (lib scope) ---

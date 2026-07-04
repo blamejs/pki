@@ -76,6 +76,31 @@ function testTrailing() {
   check("absent trailing member binds present:false", (function () { var m = walk(spec, b.sequence([b.integer(0n)])).result; return m.three.present === false; })());
 }
 
+function testTrailingNoMinTag() {
+  // Regression (Codex PR #9): a trailing block that OMITS minTag with a member
+  // at tag [0] must accept a leading [0] field. The monotonic-order sentinel
+  // starts BELOW the lowest accepted tag; a fallback of 0 rejected the first
+  // [0] field as "repeated or out of order". x509's tbs always passes minTag:1,
+  // so only the general combinator exercised the minTag-absent path.
+  var spec = S.seq([
+    S.field("head", S.integerLeaf()),
+    S.trailing([
+      { tag: 0, name: "zero", schema: S.any() },
+      { tag: 2, name: "two", schema: S.integerLeaf(), explicit: true, emptyCode: "t/bad-two" },
+    ], { unexpectedCode: "t/bad-trailing", orderCode: "t/bad-order" }),
+  ], { assert: "sequence", code: "t/bad", build: function (m) { return m.fields; } });
+  check("trailing without minTag accepts a leading [0] field",
+    code(function () { walk(spec, b.sequence([b.integer(0n), b.contextPrimitive(0, Buffer.from([1]))])); }) === "NO-THROW");
+  check("trailing without minTag reads [0] then [2] in tag order", (function () {
+    // No try/catch: a regression that rejects the [0] field should surface the
+    // real order-error here, not be swallowed into a bare `false`.
+    var m = walk(spec, b.sequence([b.integer(0n), b.contextPrimitive(0, Buffer.from([1])), b.explicit(2, b.integer(7n))])).result;
+    return m.zero.present === true && m.two.present === true && m.two.value === 7n;
+  })());
+  check("trailing without minTag still rejects out-of-order ([2] then [0])",
+    code(function () { walk(spec, b.sequence([b.integer(0n), b.explicit(2, b.integer(7n)), b.contextPrimitive(0, Buffer.from([1]))])); }) === "t/bad-order");
+}
+
 function testRepeatUniqueness() {
   var uniq = S.setOfUnique(S.seq([S.field("k", S.oidLeaf())], { assert: "sequence", code: "t/bad-item", build: function (m) { return m.fields.k.value; } }),
     function (item) { return item.value.result; }, { assert: "set", code: "t/bad-set", dupCode: "t/dup" });
@@ -105,6 +130,7 @@ function run() {
   testSeqAssertAndArity();
   testOptional();
   testTrailing();
+  testTrailingNoMinTag();
   testRepeatUniqueness();
   testChoiceAndExplicit();
 }
