@@ -644,6 +644,26 @@ function testDecoderRejectsConstructedPrimitiveOnly() {
   _report("asn1 decoder rejects a constructed encoding of a primitive-only type (DER §10.2)", bad);
 }
 
+function testTbsTrailingFieldsMonotonic() {
+  // class: x509-tbs-trailing-fields
+  // RFC 5280 §4.1 — the tbs trailing fields issuerUniqueID [1], subjectUniqueID
+  // [2], extensions [3] each appear at most once, in strictly increasing tag
+  // order. Without a monotonic guard a second [3] overwrites the first, hiding
+  // its extensions and splitting duplicate extension OIDs across two wrappers
+  // past the per-sequence duplicate-extension check.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  catch (_e) { return; }
+  if (/tagNumber === 3/.test(src) && !/lastTrailingTag/.test(src) && !/repeated or out of order/.test(src)) {
+    bad.push({ file: "lib/x509.js", line: 0,
+      content: "the tbs trailing-field loop must reject a repeated or out-of-order context tag (a monotonic guard) — " +
+        "a second [3] overwrites the first, hides its extensions, and splits duplicate extension OIDs across two wrappers" });
+  }
+  bad = _filterMarkers(bad, "x509-tbs-trailing-fields");
+  _report("x509 tbs trailing fields [1]/[2]/[3] are at-most-once and in order (RFC 5280 §4.1)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
@@ -1361,6 +1381,7 @@ function run() {
   testWikiPortAgreesAcrossArtifacts();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
+  testTbsTrailingFieldsMonotonic();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();

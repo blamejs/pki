@@ -234,6 +234,32 @@ function testMalformedDnStringRejected() {
     (dnOf(certWithDnValue(build.sequence([build.integer(1n)]))) || "").indexOf("#3003020101") !== -1);
 }
 
+// RFC 5280 §4.1 — the optional trailing tbs fields (issuerUniqueID [1],
+// subjectUniqueID [2], extensions [3]) each appear at most once, in strictly
+// increasing tag order. A second [3] would otherwise overwrite the first and
+// split duplicate extension OIDs across two wrappers past the per-sequence
+// duplicate-extension check.
+function testTbsTrailingFieldGrammar() {
+  function tbs(trailing) {
+    return _cert([
+      build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), _validity(), _name("subject"), _spki(),
+    ].concat(trailing));
+  }
+  var exts = build.explicit(3, build.sequence([_ext("2.5.29.14")]));
+  var uid1 = build.explicit(1, build.bitString(Buffer.from([0x01]), 0));
+  check("two [3] extension wrappers rejected",
+    code(function () { pki.x509.parse(tbs([exts, build.explicit(3, build.sequence([_ext("2.5.29.15")]))])); }) === "x509/bad-tbs");
+  check("out-of-order trailing fields ([3] before [1]) rejected",
+    code(function () { pki.x509.parse(tbs([exts, uid1])); }) === "x509/bad-tbs");
+  check("unknown trailing context tag [4] rejected",
+    code(function () { pki.x509.parse(tbs([build.explicit(4, build.integer(1n))])); }) === "x509/bad-tbs");
+  check("a single extensions [3] still parses",
+    code(function () { pki.x509.parse(tbs([exts])); }) === "NO-THROW");
+  check("ordered issuerUniqueID [1] then extensions [3] still parses",
+    code(function () { pki.x509.parse(tbs([uid1, exts])); }) === "NO-THROW");
+}
+
 function run() {
   testParseFields();
   testExtensions();
@@ -243,6 +269,7 @@ function run() {
   testDuplicateExtension();
   testVersionValidation();
   testMalformedDnStringRejected();
+  testTbsTrailingFieldGrammar();
 }
 
 module.exports = { run: run };
