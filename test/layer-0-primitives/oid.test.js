@@ -39,6 +39,8 @@ function testRegister() {
   pki.oid.registerFamily([2, 25], { bigUuidArc: 340282366920938463463374607431768211455n });
   check("registerFamily preserves a 128-bit BigInt arc",
     pki.oid.name("2.25.340282366920938463463374607431768211455") === "bigUuidArc");
+  check("registerFamily rejects an unsafe Number arc",
+    code(function () { pki.oid.registerFamily([2, 26], { x: 9007199254740992 }); }) === "oid/bad-arc");
 }
 
 function testArcs() {
@@ -47,6 +49,11 @@ function testArcs() {
   check("arc round-trip", pki.oid.fromArcs(pki.oid.toArcs("2.16.840.1.101.3.4.2.1")) === "2.16.840.1.101.3.4.2.1");
   check("fromArcs rejects short", code(function () { pki.oid.fromArcs([1]); }) === "oid/bad-input");
   check("fromArcs rejects negative bigint arc", code(function () { pki.oid.fromArcs([2n, -5n, 1n]); }) === "oid/bad-arc");
+  // An integer above 2^53 is not representable precisely as a Number, so a
+  // large arc must be a BigInt — reject an unsafe-integer Number outright.
+  check("fromArcs rejects an unsafe (>2^53) Number arc",
+    code(function () { pki.oid.fromArcs([2, 9007199254740992]); }) === "oid/bad-arc");
+  check("fromArcs accepts the same arc as a BigInt", pki.oid.fromArcs([2, 9007199254740992n]) === "2.9007199254740992");
 }
 
 function testDer() {

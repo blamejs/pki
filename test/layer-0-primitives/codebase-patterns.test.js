@@ -823,6 +823,14 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "_isArc reaching a `=== \"number\"` type check with no `\"bigint\"` branch before it rejects large arcs — a 128-bit UUID OID arc can only be represented losslessly as a BigInt, so registerFamily would drop it. Accept a non-negative BigInt too.",
   },
+  {
+    id: "oid-arc-unsafe-integer",
+    primitive: "OID arc validation must use Number.isSafeInteger (not Number.isInteger) — an integer above 2^53 is not representable precisely as a Number, so a large arc must be supplied as a BigInt",
+    regex: /=== "number" && Number\.isInteger\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Number.isInteger accepts integers beyond MAX_SAFE_INTEGER that a Number cannot represent precisely — an OID arc validated that way silently loses precision. Use Number.isSafeInteger so a large arc must be a BigInt.",
+  },
 ];
 
 function testKnownAntipatterns() {
