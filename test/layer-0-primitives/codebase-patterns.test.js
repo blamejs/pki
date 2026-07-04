@@ -928,9 +928,9 @@ var KNOWN_ANTIPATTERNS = [
   },
   {
     id: "x509-attrvalue-swallows-bad-string",
-    primitive: "_attrValueToString must discriminate a malformed KNOWN string (only asn1/expected-string falls back to hex) — a blanket catch hex-encodes an invalid-UTF8 DN and bypasses strict string validation",
-    regex: /function _attrValueToString\b(?:(?!expected-string)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
-    reason: "Catching every read.string error and hex-encoding lets a malformed known string type (invalid UTF-8 CN, non-IA5 byte) parse as CN=#... instead of failing the certificate closed — the decoder's strict string validation is silently bypassed on the DN path. Rethrow anything but asn1/expected-string.",
+    primitive: "_attrValueToString's hex fallback must be reached only for a non-decodable-primitive-string value (asn1/expected-string non-string tag AND asn1/expected-primitive constructed type); an asn1/bad-* content error must fail the certificate closed",
+    regex: /function _attrValueToString\b(?:(?!expected-primitive)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
+    reason: "The DN hex fallback must discriminate on BOTH structural codes. Catching every read.string error hex-encodes a malformed known string (invalid-UTF8 CN) — a fail-open that bypasses strict string validation. Handling only asn1/expected-string over-rejects a legitimate constructed ANY value (a SEQUENCE throws asn1/expected-primitive) — the certificate is wrongly refused. Hex-render only asn1/expected-string + asn1/expected-primitive (full DER via node.bytes); rethrow every asn1/bad-* content error as x509/bad-atv.",
   },
 ];
 
