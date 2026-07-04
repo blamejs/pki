@@ -846,6 +846,74 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "A `c.length > DER_MAX_INTEGER_BYTES` cap with no `+ 1` for the DER sign octet rejects a positive INTEGER at the magnitude cap whose top bit is set (an RSA-131072 modulus). The cap bounds the magnitude; DER content may carry one leading 0x00 sign pad.",
   },
+
+  // --- DER encoder/decoder canonical + range conformance (lib scope) ---
+  {
+    id: "asn1-utctime-year-window",
+    primitive: "build.utcTime must reject a year outside 1950..2049 (RFC 5280 §4.1.2.5.1) before reducing it mod 100 — a bare %100 wraps 2050 to 1950",
+    regex: /getUTCFullYear\(\)\s*%\s*100/, skipCommentLines: true, allowlist: [],
+    reason: "UTCTime carries a 2-digit year and the reader pivots <50=>20YY else 19YY, so encoding a year outside 1950..2049 without a window guard silently shifts a security-critical validity timestamp a century. Range-check before %100.",
+  },
+  {
+    id: "asn1-generalizedtime-year-pad",
+    primitive: "build.generalizedTime must zero-pad the year to 4 digits — an unpadded \"\"+getUTCFullYear() emits 12-14 char content the reader rejects",
+    regex: /""\s*\+\s*date\.getUTCFullYear\(\)/, skipCommentLines: true, allowlist: [],
+    reason: "GeneralizedTime requires a fixed 4-digit year; concatenating an unpadded year emits malformed DER for years <1000 — the encoder cannot round-trip a value the reader accepts. Zero-pad and range-check 0000..9999.",
+  },
+  {
+    id: "asn1-sequence-set-constructed",
+    primitive: "_decodeTLV must reject a primitive-tagged universal SEQUENCE/SET (X.690 8.9.1/8.11.1) before building the node",
+    regex: /tagNumber = first & 0x1f;(?:(?!must be constructed)[\s\S]){0,4000}?var node = \{/, skipCommentLines: true, allowlist: [],
+    reason: "A primitive-tagged 0x10/0x11 decodes to a leaf (children=null) that constructed-structure consumers dereference as a parent — the uncaught TypeError that crashed x509.parse on hostile input. The decoder reaching node construction without enforcing constructed-ness is the bug shape.",
+  },
+  {
+    id: "asn1-ia5-encode-7bit",
+    primitive: "build.ia5 must reject bytes > 0x7F (IA5String is 7-bit ASCII) — an immediate `return _universal(TAGS.IA5_STRING` emits 8-bit bytes verbatim",
+    regex: /ia5:\s*function\s*\(s\)\s*\{\s*return _universal\(TAGS\.IA5_STRING/, skipCommentLines: true, allowlist: [],
+    reason: "build.ia5 emitting a caller string with no 7-bit validation lets an 8-bit byte into an IA5String — an encoder/decoder asymmetry (the reader must reject it). Validate every output byte < 0x80.",
+  },
+  {
+    id: "asn1-set-der-ordering",
+    primitive: "build.set must sort component encodings ascending (X.690 §11.6) — a caller-order Buffer.concat emits non-canonical DER",
+    regex: /set:\s*function\s*\(children\)\s*\{\s*return _universal\(TAGS\.SET, true, Buffer\.concat\(_asBufferArray/, skipCommentLines: true, allowlist: [],
+    reason: "DER requires the component encodings of a SET in ascending order; concatenating in caller order emits a non-canonical encoding (breaking the one-valid-encoding contract). Sort with Buffer.compare like setOf.",
+  },
+  {
+    id: "asn1-integer-buffer-minimal",
+    primitive: "build.integer/enumerated must validate a raw Buffer is non-empty + minimal — a verbatim passthrough emits content read.integer rejects",
+    regex: /_universal\(TAGS\.(?:INTEGER|ENUMERATED), false, Buffer\.isBuffer\(v\) \? v : intToDer\(v\)\)/, skipCommentLines: true, allowlist: [],
+    reason: "Passing a caller Buffer straight into an INTEGER/ENUMERATED with no minimality/emptiness check lets the encoder emit content the decoder rejects (encode/decode asymmetry). Route the Buffer path through a validator.",
+  },
+  {
+    id: "asn1-oid-encode-subid-cap",
+    primitive: "encodeOidContent must cap each sub-identifier at OID_MAX_SUBIDENTIFIER_BYTES — symmetric with the decoder, so build.oid can't emit a sub-id read.oid rejects",
+    regex: /body\.unshift\(Number\(v & 0x7fn\)\); v >>= 7n; \} while \(v > 0n\);(?:(?!OID_MAX_SUBIDENTIFIER)[\s\S]){0,400}?for \(var k = 0/, skipCommentLines: true, allowlist: [],
+    reason: "The OID encoder building a sub-identifier without the same per-arc byte cap the decoder enforces is an encode/decode asymmetry — build.oid could emit an OID read.oid refuses.",
+  },
+  {
+    id: "asn1-ia5-decode-7bit",
+    primitive: "readString IA5String must reject content bytes > 0x7F (7-bit) — _decodeText keeps 8-bit bytes",
+    regex: /case TAGS\.IA5_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "Decoding IA5String via the lenient text decoder admits 8-bit bytes an IA5String cannot contain — a fail-closed/conformance gap and a decoder/encoder asymmetry.",
+  },
+  {
+    id: "asn1-printable-decode-charset",
+    primitive: "readString PrintableString must validate the restricted charset — _decodeText returns raw latin1",
+    regex: /case TAGS\.PRINTABLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "PrintableString is restricted to A-Z a-z 0-9 and a small punctuation set; decoding raw latin1 admits characters outside it (a parser-differential / injection surface for DN values). Validate against the charset.",
+  },
+  {
+    id: "asn1-utf8-decode-strict",
+    primitive: "readString UTF8String must reject invalid UTF-8 (TextDecoder fatal) — _decodeText substitutes U+FFFD",
+    regex: /case TAGS\.UTF8_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "A lenient UTF-8 decode substitutes U+FFFD for malformed input, silently mutating a DN/name value instead of rejecting it — a parser-differential. Strict-decode with a fatal TextDecoder.",
+  },
+  {
+    id: "asn1-visible-decode-range",
+    primitive: "readString VisibleString must reject bytes outside 0x20..0x7E — _decodeText keeps control chars and high bytes",
+    regex: /case TAGS\.VISIBLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
+    reason: "VisibleString is printable ASCII 0x20..0x7E; decoding raw latin1 admits control characters and 8-bit bytes it cannot contain — a fail-closed/conformance gap.",
+  },
 ];
 
 function testKnownAntipatterns() {

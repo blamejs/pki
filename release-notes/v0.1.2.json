@@ -1,23 +1,26 @@
 {
   "version": "0.1.2",
   "headline": "Fail-closed hardening across the DER codec, WebCrypto engine, and X.509 parser.",
-  "summary": "A correctness and security release: the ASN.1/DER decoder gains per-value bounds that close a remotely-triggerable decode denial-of-service, the WebCrypto engine closes two key-usage-enforcement gaps, the X.509 parser fails closed on malformed certificates, and the OID registry is now declared by family. pki.version once again reports the installed package version.",
+  "summary": "A correctness and security release: the ASN.1/DER decoder gains per-value bounds that close a remotely-triggerable decode denial-of-service and rejects a primitive-encoded SEQUENCE/SET that crashed certificate parsing, the encoder is made symmetric with the decoder and the restricted string types are validated, the WebCrypto engine closes two key-usage-enforcement gaps, and the X.509 parser fails closed on malformed certificates. Every primitive now declares the normative standard it implements.",
   "sections": {
     "Security": [
       "The DER decoder now builds every INTEGER and OID sub-identifier in a single linear pass and refuses any that exceed a per-value byte ceiling (C.LIMITS.DER_MAX_INTEGER_BYTES / OID sub-identifier limit), before reading them. Previously these values were accumulated a byte at a time, which is quadratic in their length: a certificate carrying an oversized serial number or OID arc — well within the overall size cap — could pin a CPU for minutes. This closes a remotely-triggerable decode denial-of-service reachable through pki.x509.parse and pki.asn1.read.*.",
+      "The DER decoder rejects a primitive-encoded SEQUENCE or SET (X.690 §8.9.1/§8.11.1 require these to be constructed) rather than producing a leaf node. Previously such input decoded to a leaf that pki.x509.parse dereferenced as a structured node, crashing with an uncaught TypeError on attacker-controlled bytes; it now fails closed with a typed error.",
       "pki.webcrypto.subtle.unwrapKey now enforces the 'unwrapKey' key usage on every unwrap path, including the RSA-OAEP and AES-GCM delegate paths that previously skipped it — an unwrapping key without the 'unwrapKey' usage is now rejected. deriveKey now enforces the distinct 'deriveKey' usage rather than inheriting 'deriveBits'. Both close cases where an operator-set key-usage restriction could be bypassed."
     ],
     "Fixed": [
-      "pki.asn1.read.time rejects semantically invalid UTCTime/GeneralizedTime values (Feb 30, month 13, hour 25, second 60, day 00) instead of silently normalizing them, so a malformed certificate validity window no longer parses to a shifted instant that disagrees with a strict verifier.",
-      "BIT STRING decoding enforces DER's requirement that unused trailing bits be zero; UniversalString and BMPString decoding reject out-of-range and lone-surrogate code points with a typed Asn1Error instead of a bare RangeError.",
-      "HMAC verify resolves false for a wrong-length signature instead of throwing, per the Web Cryptography API.",
-      "AES-CTR encrypt/decrypt reject a counter length other than 128 rather than silently ignoring the parameter and diverging from a conformant implementation.",
+      "pki.asn1.read.time rejects semantically invalid UTCTime/GeneralizedTime values (Feb 30, month 13, hour 25, second 60, day 00) instead of silently normalizing them, and preserves a four-digit GeneralizedTime year below 100 instead of remapping it a century, so a malformed or edge-case certificate validity window no longer parses to a shifted instant that disagrees with a strict verifier.",
+      "The DER encoder is now symmetric with the decoder — no builder can emit DER the decoder would reject: build.utcTime rejects a year outside RFC 5280's 1950-2049 window rather than wrapping it a century, build.generalizedTime zero-pads the year to four digits, build.set orders its components as DER requires, build.integer/enumerated reject an empty or non-minimal content buffer, build.oid caps each sub-identifier, and build.ia5 rejects non-ASCII bytes.",
+      "String decoding validates each restricted type: IA5String and VisibleString reject bytes outside their permitted range, PrintableString rejects characters outside its restricted set, and UTF8String rejects malformed UTF-8 instead of substituting the Unicode replacement character — closing a parser-differential on certificate name fields.",
+      "BIT STRING decoding enforces DER's requirement that unused trailing bits be zero and rejects an empty BIT STRING that declares unused bits; UniversalString and BMPString decoding reject out-of-range and lone-surrogate code points with a typed Asn1Error instead of a bare RangeError.",
+      "HMAC verify resolves false for a wrong-length signature instead of throwing, per the Web Cryptography API. AES-CTR encrypt/decrypt reject a counter length other than 128 rather than silently ignoring the parameter.",
       "pki.x509.parse raises a typed CertificateError (not a generic TypeError) for a truncated tbsCertificate, rejects a certificate carrying duplicate extensions (RFC 5280 §4.2), and validates the certificate version against the RFC 5280 set.",
-      "pki.oid.fromArcs rejects a negative arc instead of emitting a malformed OID string.",
+      "pki.oid.fromArcs rejects a negative or unsafe-integer arc instead of emitting a malformed OID string; the OID sub-identifier ceiling admits a 128-bit UUID-based arc; and the INTEGER ceiling admits a key at the magnitude cap with its DER sign octet.",
       "pki.version, pki.C.version, and the CLI now report the installed package version — the value is single-sourced from the package manifest and can no longer drift from the published release."
     ],
     "Changed": [
-      "pki.oid gains registerFamily(base, members): register a whole OID arc family in one call by its shared base arc and each member's trailing leaf. The built-in registry is now declared this way, so a new object identifier is a data entry under its family rather than a re-spelled full path."
+      "pki.oid gains registerFamily(base, members): register a whole OID arc family in one call by its shared base arc and each member's trailing leaf. The built-in registry is now declared this way, so a new object identifier is a data entry under its family rather than a re-spelled full path.",
+      "Every primitive now declares the normative reference it is derived from (@spec) and, where it guards a known attack, the class it defends (@defends). The generated reference documentation links each citation to its source — RFC section anchors, NIST FIPS, ITU-T, W3C, CVE and CWE — so the surface is traceable to the standards it implements."
     ]
   }
 }
