@@ -102,6 +102,13 @@ jobs:
         # at the next release commit alongside the version bump.
         run: node scripts/check-api-snapshot.js
 
+      - name: Lockfile / supply-chain pin currency
+        # The committed lockfiles must record the current package.json
+        # version and pinned specs. A release that bumps package.json but
+        # forgets `pin-all --lockfiles` shipped a stale lockfile before;
+        # this gate makes that drift fail closed on every PR.
+        run: node scripts/pin-all.js --check
+
   interop:
     name: Interop (cross-implementation, containerized)
     runs-on: ubuntu-latest

@@ -89,11 +89,88 @@ function testRejects() {
   check("rejects OID first arc > 2", code(function () { pki.asn1.encodeOidContent("3.1.1"); }) === "oid/bad-arc");
 }
 
+function testIntegerAndOidCaps() {
+  var TAGS = pki.asn1.TAGS;
+  // FIX 1 — quadratic-BigInt DoS: an over-cap INTEGER is refused before
+  // the BigInt magnitude is built. DER_MAX_INTEGER_BYTES is 16384; any
+  // longer content (a hostile length prefix) must be rejected up front.
+  var bigIntDer = pki.asn1.encode(0x00, false, TAGS.INTEGER, Buffer.alloc(20000, 0x01));
+  check("over-cap INTEGER throws integer-too-large",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(bigIntDer)); }) === "asn1/integer-too-large");
+  // A single OID sub-identifier whose continuation run blows the cap
+  // (OID_MAX_SUBIDENTIFIER_BYTES is 16); 0x81 keeps the continuation bit
+  // set, so this is one never-terminating sub-identifier.
+  check("over-cap OID sub-identifier throws subidentifier-too-large",
+    code(function () { pki.asn1.decodeOidContent(Buffer.alloc(64, 0x81)); }) === "oid/subidentifier-too-large");
+  // In-cap values still round-trip (defense-in-depth must not reject valid DER).
+  check("in-cap INTEGER round-trips", (function () {
+    var big = 0n;
+    for (var i = 0; i < 100; i++) big = (big << 8n) | 0x7Fn;
+    return pki.asn1.read.integer(pki.asn1.decode(pki.asn1.build.integer(big))) === big;
+  })());
+  check("in-cap OID round-trips", pki.asn1.decodeOidContent(pki.asn1.encodeOidContent("2.16.840.1.101.3.4.2.1")) === "2.16.840.1.101.3.4.2.1");
+}
+
+function testTimeOutOfRange() {
+  var TAGS = pki.asn1.TAGS;
+  function readGen(s) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.GENERALIZED_TIME, Buffer.from(s, "latin1")))); }
+  function readUtc(s) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.UTC_TIME, Buffer.from(s, "latin1")))); }
+  // FIX 2 — Date.UTC silently rolls over; every component must round-trip.
+  ["20250230000000Z", "20251301000000Z", "20250101250000Z", "20250100000000Z"].forEach(function (s) {
+    check("GeneralizedTime " + s + " throws bad-time", code(function () { readGen(s); }) === "asn1/bad-time");
+  });
+  ["250230000000Z", "250101250000Z"].forEach(function (s) {
+    check("UTCTime " + s + " throws bad-time", code(function () { readUtc(s); }) === "asn1/bad-time");
+  });
+  // A valid time still parses.
+  check("valid GeneralizedTime parses", readGen("20260704070027Z").getTime() === Date.UTC(2026, 6, 4, 7, 0, 27));
+  check("valid UTCTime parses", readUtc("260704070027Z").getTime() === Date.UTC(2026, 6, 4, 7, 0, 27));
+}
+
+function testBitStringUnusedBits() {
+  var TAGS = pki.asn1.TAGS;
+  // FIX 3 — DER requires the declared unused low bits to be zero.
+  var der = pki.asn1.encode(0x00, false, TAGS.BIT_STRING, Buffer.from([0x03, 0xFF]));
+  check("BIT STRING with non-zero unused bits throws bad-bit-string",
+    code(function () { pki.asn1.read.bitString(pki.asn1.decode(der)); }) === "asn1/bad-bit-string");
+  // Canonical body still decodes (0xF8 = low 3 bits zero).
+  var ok = pki.asn1.encode(0x00, false, TAGS.BIT_STRING, Buffer.from([0x03, 0xF8]));
+  check("BIT STRING with zero unused bits decodes", pki.asn1.read.bitString(pki.asn1.decode(ok)).unusedBits === 3);
+  // build.bitString rejects a caller tail whose unused bits are non-zero.
+  check("build.bitString rejects non-zero unused tail",
+    code(function () { pki.asn1.build.bitString(Buffer.from([0xFF]), 3); }) === "asn1/bad-bit-string");
+  check("build.bitString accepts a canonical tail",
+    code(function () { pki.asn1.build.bitString(Buffer.from([0xF8]), 3); }) === "NO-THROW");
+}
+
+function testUniversalStringScalarRange() {
+  var TAGS = pki.asn1.TAGS;
+  // FIX 4 — scalar value out of range must be a typed Asn1Error, not a bare RangeError.
+  var der = pki.asn1.encode(0x00, false, TAGS.UNIVERSAL_STRING, Buffer.from([0xFF, 0x00, 0x00, 0x00]));
+  check("UniversalString code point out of range throws bad-universal-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(der)); }) === "asn1/bad-universal-string");
+  // Lone surrogate in UniversalString.
+  var sur = pki.asn1.encode(0x00, false, TAGS.UNIVERSAL_STRING, Buffer.from([0x00, 0x00, 0xD8, 0x00]));
+  check("UniversalString lone surrogate throws bad-universal-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(sur)); }) === "asn1/bad-universal-string");
+  // Lone surrogate in BMPString.
+  var bmp = pki.asn1.encode(0x00, false, TAGS.BMP_STRING, Buffer.from([0xD8, 0x00]));
+  check("BMPString lone surrogate throws bad-bmp-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(bmp)); }) === "asn1/bad-bmp-string");
+  // A valid UniversalString still decodes.
+  var good = pki.asn1.encode(0x00, false, TAGS.UNIVERSAL_STRING, Buffer.from([0x00, 0x00, 0x00, 0x41]));
+  check("valid UniversalString decodes", pki.asn1.read.string(pki.asn1.decode(good)) === "A");
+}
+
 function run() {
   testBuildVectors();
   testRoundTrip();
   testOidContent();
   testRejects();
+  testIntegerAndOidCaps();
+  testTimeOutOfRange();
+  testBitStringUnusedBits();
+  testUniversalStringScalarRange();
 }
 
 module.exports = { run: run };

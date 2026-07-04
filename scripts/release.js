@@ -257,12 +257,16 @@ function _sectionsList(sections) {
 // release-notes mid-flow. Idempotent — running it twice with no edits in
 // between is a no-op.
 function _regenArtifacts() {
+  // Regenerate the committed lockfiles to the just-bumped version FIRST, so
+  // the pin-all --check static gate can never ship a lockfile that records
+  // the previous release (which is how 0.1.1 shipped with a 0.1.0 lockfile).
+  _run("node", ["scripts/pin-all.js", "--lockfiles"]);
   _run("node", ["scripts/gen-changelog.js"]);
   _run("node", ["scripts/gen-migrating.js"]);
   _run("node", ["scripts/refresh-api-snapshot.js"]);
   _run("node", ["scripts/check-api-snapshot.js"]);
   _run("node", ["scripts/check-changelog-extract.js"]);
-  _ok("CHANGELOG + MIGRATING + api-snapshot regenerated");
+  _ok("lockfiles + CHANGELOG + MIGRATING + api-snapshot regenerated");
 }
 
 // Verify HEAD's commit signature via two independent paths:
@@ -351,7 +355,8 @@ function cmdPrepare(opts) {
   _run("npx", ["--yes", "eslint@10.3.0", "--max-warnings", "0", "."]);
   _runScriptIfPresent("test/layer-0-primitives/codebase-patterns.test.js");
   _runScriptIfPresent("scripts/validate-source-comment-blocks.js");
-  _ok("eslint + codebase-patterns + source-comment-blocks clean");
+  _run("node", ["scripts/pin-all.js", "--check"]);
+  _ok("eslint + codebase-patterns + source-comment-blocks + lockfile pin currency clean");
 
   _section("supply-chain currency");
   // A stale vendored bundle becomes a release blocker HERE instead of an
@@ -531,6 +536,66 @@ function cmdPush(opts) {
 // thread id, and the resolve mutation. Bot reviews post ASYNCHRONOUSLY —
 // often a minute or two AFTER the status checks finish — so this is the
 // authoritative check at merge time, not just at watch.
+// The async-review race: Codex (chatgpt-codex-connector) reviews a PR a
+// minute or two AFTER the status checks go green. required_review_thread_
+// resolution can only block threads that EXIST at merge time, so a merge
+// fired the instant CI is green outruns Codex and ships its findings (this
+// is exactly how a P1 and the version-drift P2 reached npm). Closing it:
+// before the thread gate runs, WAIT until Codex has actually reviewed the
+// CURRENT head — then the thread-resolution gate sees its findings.
+var CODEX_LOGIN = "chatgpt-codex-connector";
+
+// Synchronous sleep with no busy-spin (release.js is a synchronous CLI).
+function _sleepSync(ms) {
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// True once Codex has submitted a review whose commit is the PR's current
+// head — i.e. it reviewed THIS revision (a push after the review moves the
+// head and this goes false until Codex re-reviews the new head).
+function _codexReviewedHead(prNum) {
+  var slug = _repoSlug();
+  var head = (_capture("gh", ["pr", "view", prNum, "--json", "headRefOid",
+                              "--jq", ".headRefOid"]).stdout || "").trim();
+  if (!head) return false;
+  var rv = _capture("gh", ["api", "graphql",
+    "-f", "query=query { repository(owner:\"" + slug.owner + "\",name:\"" + slug.name +
+      "\") { pullRequest(number:" + prNum +
+      ") { reviews(first:50) { nodes { author{login} commit{oid} } } } } }",
+    "--jq", ".data.repository.pullRequest.reviews.nodes"]);
+  var nodes;
+  try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
+  return (nodes || []).some(function (r) {
+    return r && r.author && r.author.login === CODEX_LOGIN &&
+           r.commit && r.commit.oid === head;
+  });
+}
+
+// Block until Codex has reviewed the current head (fail-closed on timeout).
+// RELEASE_SKIP_CODEX_WAIT=1 is the documented escape hatch for a confirmed
+// Codex outage/disablement only — not a routine bypass.
+function _waitForCodexReview(prNum) {
+  if (process.env.RELEASE_SKIP_CODEX_WAIT === "1") {
+    _ok("Codex-review wait skipped (RELEASE_SKIP_CODEX_WAIT=1)");
+    return;
+  }
+  var stepMs = 20 * 1000, budgetMs = 10 * 60 * 1000, waitedMs = 0;
+  console.log("waiting for Codex (" + CODEX_LOGIN + ") to review PR #" + prNum +
+              " head before the thread gate (up to 10m; it reviews a bit after CI)...");
+  while (waitedMs <= budgetMs) {
+    if (_codexReviewedHead(prNum)) {
+      _ok("Codex has reviewed the current PR head — thread gate now sees its findings");
+      return;
+    }
+    _sleepSync(stepMs);
+    waitedMs += stepMs;
+  }
+  throw new Error("release: Codex has not reviewed PR #" + prNum + " head after 10m. " +
+    "It reviews asynchronously; a late finding must not be outrun by the merge. Re-run " +
+    "`node scripts/release.js merge` once it posts, or set RELEASE_SKIP_CODEX_WAIT=1 " +
+    "ONLY if Codex is confirmed disabled/down.");
+}
+
 function _unresolvedThreads(prNum) {
   var slug = _repoSlug();
   var rv = _capture("gh", ["api", "graphql",
@@ -591,14 +656,16 @@ function cmdWatch() {
 
   _run("gh", ["pr", "checks", prNum, "--watch"], { allowFail: true });
 
+  // Wait for Codex to review THIS head before reading threads, so a late
+  // finding is caught here instead of being outrun by the merge.
+  _waitForCodexReview(prNum);
+
   var unresolved = _unresolvedThreads(prNum);
   if (unresolved.length > 0) {
     _printUnresolvedThreads(unresolved);
     process.exit(3);
   }
-  // Zero here is NOT conclusive: bot reviews can post a minute or two after
-  // the checks finish. `merge` re-pulls and is the authoritative gate.
-  _ok("zero unresolved threads at watch time (merge re-checks — bot reviews may still be posting)");
+  _ok("Codex has reviewed the head and zero unresolved threads remain (merge re-checks)");
 
   console.log("\nnext: node scripts/release.js merge");
 }
@@ -612,6 +679,10 @@ function cmdMerge() {
   if (!prNum) {
     throw new Error("release: no open PR for " + branch);
   }
+  // Authoritative gate: do not read merge state / threads until Codex has
+  // reviewed the current head, so its asynchronously-posted findings are in
+  // the thread set the checks below enforce.
+  _waitForCodexReview(prNum);
   var state = JSON.parse(_capture("gh", ["pr", "view", prNum,
     "--json", "mergeStateStatus,mergeable"]).stdout || "{}");
   // Pull unresolved review threads FIRST. A BLOCKED state is most often

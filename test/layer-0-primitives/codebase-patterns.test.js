@@ -569,6 +569,35 @@ function testWikiPortAgreesAcrossArtifacts() {
 }
 
 // ---------------------------------------------------------------------------
+// (j) release.js waits for Codex before merge (closes the async-review race)
+// ---------------------------------------------------------------------------
+
+function testReleaseWaitsForCodex() {
+  // class: release-codex-async-race
+  // Codex (chatgpt-codex-connector) reviews a PR a minute or two AFTER the
+  // status checks go green; required_review_thread_resolution can only block
+  // threads that EXIST at merge time, so a merge fired the instant CI is
+  // green outruns Codex and ships its findings (this is how a P1 and a
+  // version-drift P2 reached npm). The authoritative merge step must WAIT
+  // for Codex to review the current head before the thread gate runs.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "scripts/release.js"), "utf8"); }
+  catch (_e) { return; }
+  if (!/function _waitForCodexReview\b/.test(src)) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "missing the _waitForCodexReview gate that closes the async bot-review race" });
+  }
+  var mergeBody = /function cmdMerge\b([\s\S]*?)\r?\nfunction /.exec(src);
+  if (!mergeBody || mergeBody[1].indexOf("_waitForCodexReview(") === -1) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "cmdMerge must call _waitForCodexReview before the merge-state / thread gate" });
+  }
+  bad = _filterMarkers(bad, "release-codex-async-race");
+  _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
+}
+
+// ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
 
@@ -634,6 +663,126 @@ var KNOWN_ANTIPATTERNS = [
       "test/layer-0-primitives/codebase-patterns.test.js",
     ],
     reason: "Every 'passes alone, fails under SMOKE_PARALLEL=64 / macOS' test flake is the same root cause: a fixed-budget setTimeout sleep too short for runner-contention reality. helpers.waitUntil polls the actual condition every 25ms up to a 5000ms cap and exits early when the predicate is truthy — fast platforms finish in milliseconds, contended platforms get the full budget. helpers.passiveObserve(ms, label) is the sibling for verifying the ABSENCE of an event over a window. Convert a hand-tuned sleep to waitUntil rather than bumping N.",
+  },
+
+  // --- DER codec correctness (lib scope) ---
+  {
+    id: "asn1-quadratic-bigint-accumulator",
+    primitive: "one-shot BigInt('0x'+hex) (base-256) or a bounded base-128 fold, with a C.LIMITS byte cap BEFORE the read — never a per-byte `<< n) | BigInt(` shift-accumulate",
+    regex: /<<\s*[78]n\)\s*\|\s*BigInt\(/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A byte-at-a-time BigInt shift-accumulator over attacker-length content is O(n^2) in the content length — the quadratic decoder-DoS class (readInteger + decodeOidContent). The 16 MiB document cap does not bound a single value, so a ~2 MB INTEGER/OID pins a core for minutes. Build the magnitude in one pass and cap the per-value byte length.",
+  },
+  {
+    id: "asn1-time-utc-rollover",
+    primitive: "a getUTC* component round-trip check after Date.UTC (throw asn1/bad-time on any field mismatch) — Date.UTC silently rolls Feb 30 / month 13 / hour 25",
+    regex: /Date\.UTC\((?:(?!getUTCFullYear)[\s\S]){0,600}?return new Date\(t\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Date.UTC normalizes out-of-range calendar fields instead of returning NaN, so isNaN is an inadequate strictness gate — a malformed UTCTime/GeneralizedTime parses to a shifted validity instant (a cert-validity parser differential). Require every component to round-trip.",
+  },
+  {
+    id: "asn1-bitstring-unused-bits",
+    primitive: "a final-octet `(c[c.length-1] & mask)` zero-check (mask = (1<<unusedBits)-1) — X.690 11.2.1 DER requires unused BIT STRING bits to be zero",
+    regex: /if \(unusedBits > 7\)(?:(?!c\[c\.length - 1\] & mask)[\s\S]){0,600}?return \{ unusedBits: unusedBits, bytes: c\.subarray\(1\) \}/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "readBitString reaching its return with no tail-mask check admits non-canonical BIT STRING encodings (encoding malleability on signature/key-usage bits). The zero-unused-bits invariant is easy to drop on refactor.",
+  },
+  {
+    id: "asn1-universalstring-scalar-range",
+    primitive: "a `cp > 0x10FFFF || (cp>=0xD800 && cp<=0xDFFF)` guard before String.fromCodePoint (throw asn1/bad-universal-string) — keeps the Asn1Error-only contract and rejects lone surrogates",
+    regex: /for \(var i = 0; i < buf\.length; i \+= 4\)(?:(?!0x10FFFF)[\s\S]){0,600}?String\.fromCodePoint\(cp\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "_decodeUtf32be calling String.fromCodePoint on an unvalidated 4-byte value throws a bare native RangeError (not Asn1Error) for cp>0x10FFFF and silently admits lone surrogates — a contract break on any code-point-to-string path over attacker bytes.",
+  },
+
+  // --- WebCrypto access-control + conformance (lib scope) ---
+  {
+    id: "webcrypto-unwrapkey-usage-dominance",
+    primitive: "_requireUsage(unwrappingKey, \"unwrapKey\") at the TOP of unwrapKey, before the AES-KW branch fork (mirror wrapKey) — the _cloneWithUsage delegation is only sound below the gate",
+    regex: /unwrapAlgorithm, "unwrapKey"\);(?:(?!_requireUsage\(unwrappingKey, "unwrapKey"\))[\s\S]){0,400}?if \(alg\.name === "AES-KW"\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "unwrapKey enforcing the usage only inside the AES-KW branch leaves the RSA-OAEP/AES-GCM else path fail-open (it injects 'decrypt' via _cloneWithUsage and delegates to this.decrypt). The usage gate must dominate the branch fork.",
+  },
+  {
+    id: "webcrypto-derivekey-wrong-usage",
+    primitive: "deriveKey calls _requireUsage(baseKey, \"deriveKey\") then _deriveBitsRaw — it must NOT delegate to this.deriveBits (which enforces the distinct 'deriveBits' usage)",
+    regex: /this\.deriveBits\(algorithm, baseKey/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "deriveKey delegating to deriveBits inherits the wrong usage check: it false-rejects an idiomatic ['deriveKey'] key AND fail-open allows a ['deriveBits']-only key. An op that fulfils itself via a sibling subtle method must enforce its OWN usage first.",
+  },
+  {
+    id: "webcrypto-hmac-verify-length-gate",
+    primitive: "`var mac = hm.digest(); return mac.length === sig.length && timingSafeEqual(mac, sig)` — timingSafeEqual throws RangeError on an attacker-length mismatch",
+    regex: /timingSafeEqual\(hm\.digest\(\), sig\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Passing a fresh hm.digest() straight to timingSafeEqual against an attacker-length signature throws RangeError instead of resolving false (WebCrypto verify must resolve false for any invalid signature) — an unhandled-rejection DoS surface driven purely by the supplied length.",
+  },
+  {
+    id: "webcrypto-aesctr-length-guard",
+    primitive: "_requireCtrLength128(alg) before the AES-CTR createCipheriv/createDecipheriv — node only honors a full 128-bit counter, so length!=128 must fail closed (webcrypto/not-supported)",
+    regex: /if \(name === "AES-CTR"\) \{(?:(?!_requireCtrLength128)[\s\S]){0,120}?create(?:Cipher|Decipher)iv\("aes-" \+ key\.algorithm\.length \+ "-ctr"/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "The AES-CTR branch building the cipher without reading alg.length silently ignores a security-relevant, spec-required parameter — a length<128 diverges from a conformant WebCrypto past the counter wrap. Read or reject the parameter.",
+  },
+
+  // --- X.509 parser fail-closed (lib scope) ---
+  {
+    id: "x509-tbs-fixed-childcount-guard",
+    primitive: "a version-aware tbs child-count guard (`< idx + 6`) throwing CertificateError — a fixed `< 6` ignores the slot an explicit version [0] consumes and dereferences undefined",
+    regex: /children\.length\s*<\s*6\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A fixed tbs.children.length < 6 guard passes a 6-child tbs whose explicit version [0] leaves SPKI undefined, throwing a raw TypeError instead of the advertised CertificateError. Bounds-check positionally against the version-aware minimum.",
+  },
+  {
+    id: "x509-extensions-no-uniqueness",
+    primitive: "a Set of seen extnID OIDs in _parseExtensions (throw x509/duplicate-extension on a repeat) — RFC 5280 §4.2 forbids duplicate extensions",
+    regex: /function _parseExtensions\b(?:(?!seen)[\s\S])*?out\.push\(/,
+    skipCommentLines: false,
+    allowlist: [],
+    reason: "_parseExtensions pushing each parsed extension with no seen-OID tracking accepts duplicate extensions (extension-shadowing differential: first-hit vs last-hit consumers disagree on a security-critical extension). Reject the second occurrence of any extnID.",
+  },
+  {
+    id: "x509-version-unvalidated-enum",
+    primitive: "read the version as a BigInt and allowlist {0n,1n,2n} (reject explicit 0n as a DER DEFAULT, gate extensions on v3) — never `Number(read.integer(...)) + 1`",
+    regex: /Number\(\s*asn1\.read\.integer\([\s\S]*?\)\s*\)\s*\+\s*1/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "Number(readInteger())+1 as an enum accepts an arbitrary/negative/precision-losing version. Any small-enum INTEGER field (cert version, future CRL/OCSP version) needs a BigInt allowlist, not a coerce-and-offset.",
+  },
+
+  // --- OID + version single-source (lib scope) ---
+  {
+    id: "oid-fromarcs-bigint-sign-guard",
+    primitive: "a `< 0n` sign guard before the bigint branch returns a.toString() — the number branch already enforces >= 0, so both branches must enforce the same non-negative contract",
+    regex: /typeof\s+\w+\s*===\s*"bigint"\s*\)\s*return/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "fromArcs's bigint branch returning a.toString() with no sign check emits a malformed OID like \"2.-5.1\" while the number branch rejects a negative — a self-inconsistent contract that blows up late, away from the bad arc.",
+  },
+  {
+    id: "oid-dotted-decimal-literal",
+    primitive: "declare OIDs by family via pki.oid.registerFamily(base, {name: leaf}) — a dotted-decimal OID literal in source both re-spells the arc hierarchy and reads as an IP to a supply-chain scanner",
+    regex: /"[0-9]+(?:\.[0-9]+){3,}"/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A 4+-arc dotted-decimal string literal in executable lib code is an OID re-spelled as a full path (should be a family base + leaf) and matches a URL/IP heuristic (Socket 'URL strings'). Route OIDs through the family registry; dotted strings belong only in comments/@example and dotted<->arc format code.",
+  },
+  {
+    id: "constants-hardcoded-version-literal",
+    primitive: "derive VERSION from require('../package.json').version — a hand-maintained semver literal drifts from the published package (0.1.1 shipped reporting 0.1.0)",
+    regex: /var\s+VERSION\s*=\s*["'][0-9]+\.[0-9]+\.[0-9]+["']/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A hard-coded VERSION string literal decoupled from package.json makes drift the default outcome on any release that forgets to bump it. Single-source it from the manifest so pki.version can never disagree with the package.",
   },
 ];
 
@@ -1029,6 +1178,7 @@ function run() {
   testNoFailOpenVerify();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
+  testReleaseWaitsForCodex();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();

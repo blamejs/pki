@@ -37,6 +37,7 @@ function testArcs() {
   check("fromArcs", pki.oid.fromArcs([1, 2, 840, 113549]) === "1.2.840.113549");
   check("arc round-trip", pki.oid.fromArcs(pki.oid.toArcs("2.16.840.1.101.3.4.2.1")) === "2.16.840.1.101.3.4.2.1");
   check("fromArcs rejects short", code(function () { pki.oid.fromArcs([1]); }) === "oid/bad-input");
+  check("fromArcs rejects negative bigint arc", code(function () { pki.oid.fromArcs([2n, -5n, 1n]); }) === "oid/bad-arc");
 }
 
 function testDer() {
