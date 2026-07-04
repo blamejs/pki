@@ -1,0 +1,10 @@
+{
+  "version": "0.1.1",
+  "headline": "First published release of the 0.1.x foundation.",
+  "summary": "The initial npm-published release of @blamejs/pki: the strict, fail-closed ASN.1/DER codec, the OID registry, X.509 certificate parsing, and the PQC-first WebCrypto engine — on a zero-runtime-dependency, native-first base, published with SLSA provenance and a signed release.",
+  "sections": {
+    "Changed": [
+      "First release published to npm. The toolkit surface is the 0.1.x foundation — pki.asn1 (strict DER codec), pki.oid (OID ↔ name registry), pki.x509.parse (DER/PEM certificate parsing), and pki.webcrypto (a W3C SubtleCrypto engine over node:crypto with ML-DSA/SLH-DSA signatures alongside the full classical set) — now available on npm with a SLSA provenance attestation, and served as the pkijs.com documentation container."
+    ]
+  }
+}
