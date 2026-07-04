@@ -23,6 +23,20 @@ var _tmpSeq = 0;
 
 function opensslBin() { return process.env.PKIJS_OPENSSL || "openssl"; }
 
+// opensslSupports(pattern) — does the cross-checker's OpenSSL advertise a
+// signature algorithm matching `pattern` (case-insensitive)? Lets a fixture
+// skip a cross-check the oracle can't perform — e.g. ML-DSA / SLH-DSA need
+// OpenSSL 3.5+, while CI runners and Alpine still ship 3.0–3.3. An absent
+// capability is a limit of the oracle, not a defect in the toolkit, so the
+// fixture records a skip rather than failing.
+function opensslSupports(pattern) {
+  try {
+    var rv = spawnSync(opensslBin(), ["list", "-signature-algorithms"], { encoding: "utf8" });
+    if (rv.status !== 0) return false;
+    return new RegExp(pattern, "i").test(rv.stdout || "");
+  } catch (_e) { return false; }
+}
+
 // runOpenssl(args, opts?) -> stdout. Throws on spawn error or non-zero
 // exit, surfacing stderr so a fixture failure is legible. opts.input
 // feeds stdin (DER/PEM bytes); opts.allowNonZero returns { code, stdout,
@@ -66,6 +80,7 @@ module.exports = {
   path:         path,
   FIXTURES_DIR: FIXTURES_DIR,
   opensslBin:   opensslBin,
+  opensslSupports: opensslSupports,
   runOpenssl:   runOpenssl,
   tmpFile:      tmpFile,
   withTmp:      withTmp,
