@@ -240,6 +240,35 @@ function testSequenceSetMustBeConstructed() {
   })());
 }
 
+// The MIRROR of the rule above (X.690 §8.x/§10.2, DER): a universal
+// primitive-only type encoded constructed is not valid DER. Without this a
+// constructed string tag (a constructed UTF8String) decodes to a childless
+// node that an X.509 DN attribute value would hex-render instead of failing
+// closed, bypassing the restricted-string content checks.
+function testConstructedPrimitiveOnlyRejected() {
+  var b = pki.asn1.build, T = pki.asn1.TAGS;
+  // Each primitive-only universal type, re-encoded with the constructed bit.
+  [
+    ["INTEGER",          T.INTEGER,          b.integer(1n)],
+    ["UTF8String",       T.UTF8_STRING,      b.utf8("x")],
+    ["OBJECT IDENTIFIER",T.OBJECT_IDENTIFIER,b.oid("2.5.4.3")],
+    ["BOOLEAN",          T.BOOLEAN,          b.boolean(true)],
+    ["OCTET STRING",     T.OCTET_STRING,     b.octetString(Buffer.from([1, 2]))],
+    ["BIT STRING",       T.BIT_STRING,       b.bitString(Buffer.from([1]), 0)],
+    ["PrintableString",  T.PRINTABLE_STRING, b.printable("x")],
+    ["IA5String",        T.IA5_STRING,       b.ia5("x")],
+  ].forEach(function (c) {
+    var constructedTlv = pki.asn1.encode(0x00, true, c[1], c[2]); // universal class, constructed bit set
+    check("constructed " + c[0] + " is rejected at decode",
+      code(function () { pki.asn1.decode(constructedTlv); }) === "asn1/constructed-primitive-type");
+  });
+  // The constructed-ONLY types stay legal encoded constructed.
+  check("constructed SET still decodes",
+    code(function () { pki.asn1.decode(b.set([b.integer(1n)])); }) === "NO-THROW");
+  check("constructed SEQUENCE still decodes (mirror)",
+    code(function () { pki.asn1.decode(b.sequence([b.integer(1n)])); }) === "NO-THROW");
+}
+
 function testIa5SevenBit() {
   var b = pki.asn1.build;
   // FIX D — IA5String is 7-bit (0..127); a byte > 0x7F is not IA5.
@@ -344,6 +373,7 @@ function run() {
   testUtcTimeYearRange();
   testGeneralizedTimeYearPad();
   testSequenceSetMustBeConstructed();
+  testConstructedPrimitiveOnlyRejected();
   testIa5SevenBit();
   testSetSorted();
   testIntegerBufferMinimal();

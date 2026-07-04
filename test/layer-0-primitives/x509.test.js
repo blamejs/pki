@@ -215,6 +215,13 @@ function testMalformedDnStringRejected() {
   check("x509.parse rejects a malformed UTF8String in a DN (fails closed, not hex)",
     code(function () { pki.x509.parse(badCert); }) === "x509/bad-atv");
 
+  // A CONSTRUCTED encoding of a known string type is DER-illegal and must fail
+  // the certificate closed at decode — it must NOT reach the RFC 4514 hex
+  // fallback (which would bypass the restricted-string content checks). Only a
+  // genuinely non-string constructed value (a SEQUENCE) takes the # fallback.
+  check("x509.parse rejects a constructed string type in a DN (DER-illegal)",
+    code(function () { pki.x509.parse(certWithDnValue(pki.asn1.encode(0x00, true, pki.asn1.TAGS.UTF8_STRING, build.utf8("x")))); }) === "x509/bad-der");
+
   // An ANY-typed non-string value (INTEGER 5 = DER 02 01 05) is rendered as its
   // FULL DER encoding per RFC 4514 §2.4 — tag + length + content, not content-only.
   check("x509.parse hex-renders an ANY-typed DN value as full DER (#020105)",

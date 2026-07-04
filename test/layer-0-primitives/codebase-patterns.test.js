@@ -619,6 +619,31 @@ function testReleaseWaitsForCodex() {
   _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
 }
 
+function testDecoderRejectsConstructedPrimitiveOnly() {
+  // class: der-constructed-primitive-only
+  // X.690 §8.x/§10.2 (DER): a universal primitive-only type (INTEGER, OID, the
+  // restricted strings, times, BIT/OCTET STRING) encoded constructed is not
+  // valid DER — the mirror of the primitive-SEQUENCE/SET rejection. The decoder
+  // must reject BOTH directions, or a constructed string tag decodes to a
+  // childless node an X.509 DN attribute value hex-renders instead of failing
+  // closed, bypassing the restricted-string content checks.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-der.js"), "utf8"); }
+  catch (_e) { return; }
+  var tlvBody = /function _decodeTLV\b([\s\S]*?)\r?\nfunction /.exec(src);
+  var body = tlvBody ? tlvBody[1] : src;
+  if (body.indexOf("asn1/constructed-primitive-type") === -1 ||
+      !/PRIMITIVE_ONLY_UNIVERSAL_TAGS\s*\[/.test(body)) {
+    bad.push({ file: "lib/asn1-der.js", line: 0,
+      content: "_decodeTLV must reject a constructed encoding of a universal primitive-only type " +
+        "(throw asn1/constructed-primitive-type via PRIMITIVE_ONLY_UNIVERSAL_TAGS) — the mirror of the " +
+        "primitive-SEQUENCE/SET rejection; without it a constructed string tag bypasses the restricted-string checks" });
+  }
+  bad = _filterMarkers(bad, "der-constructed-primitive-only");
+  _report("asn1 decoder rejects a constructed encoding of a primitive-only type (DER §10.2)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
@@ -1335,6 +1360,7 @@ function run() {
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
   testReleaseWaitsForCodex();
+  testDecoderRejectsConstructedPrimitiveOnly();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();
