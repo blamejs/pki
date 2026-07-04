@@ -154,6 +154,13 @@ jobs:
         run: |
           set -euo pipefail
           runtime=$(docker buildx imagetools inspect cgr.dev/chainguard/node:latest --format '{{.Manifest.Digest}}')
+          # Fail closed on a missing / malformed digest — an empty or garbage
+          # value would otherwise flow into the build-arg and silently produce an
+          # unpinned base, so the scanned image would not equal the published one.
+          if ! printf '%s' "$runtime" | grep -Eq '^sha256:[0-9a-f]{64}$'; then
+            echo "::error::could not resolve a valid sha256 digest for the runtime base (got '${runtime}')"
+            exit 1
+          fi
           echo "runtime=cgr.dev/chainguard/node:latest@${runtime}" >> "$GITHUB_OUTPUT"
           echo "Resolved runtime=${runtime}"
 

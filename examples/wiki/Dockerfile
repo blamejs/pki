@@ -44,7 +44,7 @@ COPY --chown=65532:65532 examples/wiki ./examples/wiki
 WORKDIR /app/examples/wiki
 EXPOSE 3009
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-  CMD ["node", "-e", "fetch('http://127.0.0.1:3009/healthz').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"]
+  CMD ["node", "-e", "fetch('http://127.0.0.1:' + (process.env.WIKI_PORT || 3009) + '/healthz').then(function(r){process.exit(r.ok?0:1)}).catch(function(){process.exit(1)})"]
 
 # The Chainguard node image's ENTRYPOINT is ["/usr/bin/node"], so CMD is
 # just the script path.
