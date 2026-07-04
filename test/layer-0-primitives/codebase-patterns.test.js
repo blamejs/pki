@@ -648,20 +648,30 @@ function testTbsTrailingFieldsMonotonic() {
   // class: x509-tbs-trailing-fields
   // RFC 5280 §4.1 — the tbs trailing fields issuerUniqueID [1], subjectUniqueID
   // [2], extensions [3] each appear at most once, in strictly increasing tag
-  // order. Without a monotonic guard a second [3] overwrites the first, hiding
-  // its extensions and splitting duplicate extension OIDs across two wrappers
-  // past the per-sequence duplicate-extension check.
+  // order. Post-L2 the x509 CERTIFICATE_TBS schema DECLARES them via
+  // schema.trailing() and the ENGINE's _consumeTrailing enforces the monotonic
+  // guard once. Drop the guard and a second [3] overwrites the first, splitting
+  // duplicate extension OIDs across two wrappers past the per-sequence check.
   var bad = [];
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  var engine;
+  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-schema.js"), "utf8"); }
   catch (_e) { return; }
-  if (/tagNumber === 3/.test(src) && !/lastTrailingTag/.test(src) && !/repeated or out of order/.test(src)) {
+  var fn = /function _consumeTrailing\b([\s\S]*?)\r?\nfunction /.exec(engine);
+  var body = fn ? fn[1] : engine;
+  if (!/<=\s*last\b/.test(body) || body.indexOf("repeated or out of order") === -1) {
+    bad.push({ file: "lib/asn1-schema.js", line: 0,
+      content: "_consumeTrailing must reject a repeated or out-of-order context tag (the `<= last` monotonic guard + orderCode) — " +
+        "a second [3] would overwrite the first and split duplicate extension OIDs across two wrappers" });
+  }
+  var x509;
+  try { x509 = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  catch (_e) { x509 = ""; }
+  if (!/schema\.trailing\(/.test(x509)) {
     bad.push({ file: "lib/x509.js", line: 0,
-      content: "the tbs trailing-field loop must reject a repeated or out-of-order context tag (a monotonic guard) — " +
-        "a second [3] overwrites the first, hides its extensions, and splits duplicate extension OIDs across two wrappers" });
+      content: "the tbsCertificate schema must COMPOSE schema.trailing() for the [1]/[2]/[3] fields, not hand-roll the trailing loop" });
   }
   bad = _filterMarkers(bad, "x509-tbs-trailing-fields");
-  _report("x509 tbs trailing fields [1]/[2]/[3] are at-most-once and in order (RFC 5280 §4.1)", bad);
+  _report("tbs trailing fields [1]/[2]/[3] are at-most-once and in order via the engine (RFC 5280 §4.1)", bad);
 }
 
 function testSignatureAlgorithmAgreement() {
@@ -675,13 +685,45 @@ function testSignatureAlgorithmAgreement() {
   var src;
   try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
   catch (_e) { return; }
-  if (/innerSigAlg/.test(src) && !/bad-signature-algorithm/.test(src)) {
+  // Post-L2 the check lives in the CERTIFICATE build: it compares the outer and
+  // inner AlgorithmIdentifier nodes' DER bytes and throws x509/bad-signature-
+  // algorithm. Fire if the Certificate schema surfaces a signatureAlgorithm
+  // field but the node-bytes agreement check is gone.
+  if (/"signatureAlgorithm"/.test(src) && !(/bad-signature-algorithm/.test(src) && /\.node\.bytes\.equals\(/.test(src))) {
     bad.push({ file: "lib/x509.js", line: 0,
-      content: "parse must reject a certificate whose outer signatureAlgorithm differs from tbsCertificate.signature " +
-        "(RFC 5280 §4.1.1.2) — compare the two AlgorithmIdentifiers and throw x509/bad-signature-algorithm on a mismatch" });
+      content: "the Certificate parse must reject a mismatch between signatureAlgorithm and tbsCertificate.signature " +
+        "(RFC 5280 §4.1.1.2) — compare the two AlgorithmIdentifier nodes' bytes and throw x509/bad-signature-algorithm" });
   }
   bad = _filterMarkers(bad, "x509-sig-alg-agreement");
   _report("x509 parse enforces signatureAlgorithm == tbsCertificate.signature (RFC 5280 §4.1.1.2)", bad);
+}
+
+function testFormatModulesComposeSchema() {
+  // class: format-must-compose-schema
+  // L2 — a format parser (x509, and later crl/cms) DECLARES a structure schema
+  // and calls schema.walk; it must NOT hand-roll a positional-cursor decode
+  // (node.children[idx++]) — the positional-read and duplicate-field bug classes
+  // are the engine's job (lib/asn1-schema.js), not a per-format loop. Reading a
+  // specific field's raw bytes off a match node in a build/decode fn
+  // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
+  var bad = [];
+  var FORMAT_FILES = ["lib/x509.js"]; // + lib/crl.js, lib/cms.js as they land
+  for (var f = 0; f < FORMAT_FILES.length; f++) {
+    var src;
+    try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
+    catch (_e) { continue; }
+    var code = src.split(/\r?\n/).filter(function (l) { return !/^\s*(\/\/|\*)/.test(l); }).join("\n");
+    if (/\.children\[\s*idx\b/.test(code)) {
+      bad.push({ file: FORMAT_FILES[f], line: 0,
+        content: FORMAT_FILES[f] + " hand-rolls a positional-cursor decode (children[idx++]) — declare a schema and schema.walk it; the engine owns positional reads / field ordering / uniqueness" });
+    }
+    if (!/schema\.walk\(/.test(code)) {
+      bad.push({ file: FORMAT_FILES[f], line: 0,
+        content: FORMAT_FILES[f] + " must parse by composing schema.walk(...), not a hand-written decoder" });
+    }
+  }
+  bad = _filterMarkers(bad, "format-must-compose-schema");
+  _report("format parsers compose the schema engine (schema.walk), not a hand-rolled children[idx] loop (L2 must-compose)", bad);
 }
 
 function testEcImportDerivesCurve() {
@@ -894,11 +936,11 @@ var KNOWN_ANTIPATTERNS = [
   },
   {
     id: "x509-extensions-no-uniqueness",
-    primitive: "a Set of seen extnID OIDs in _parseExtensions (throw x509/duplicate-extension on a repeat) — RFC 5280 §4.2 forbids duplicate extensions",
-    regex: /function _parseExtensions\b(?:(?!seen)[\s\S])*?out\.push\(/,
-    skipCommentLines: false,
+    primitive: "the extensions() schema factory must give its seqOf a `unique` keyFn (+ dupCode x509/duplicate-extension) so the engine rejects a repeated extnID — RFC 5280 §4.2 forbids duplicate extensions",
+    regex: /function extensions\b(?:(?!unique:)[\s\S]){0,400}?build:/,
+    skipCommentLines: true,
     allowlist: [],
-    reason: "_parseExtensions pushing each parsed extension with no seen-OID tracking accepts duplicate extensions (extension-shadowing differential: first-hit vs last-hit consumers disagree on a security-critical extension). Reject the second occurrence of any extnID.",
+    reason: "An extensions() factory whose seqOf reaches its build without a `unique` keyFn accepts duplicate extensions (extension-shadowing differential: first-hit vs last-hit consumers disagree on a security-critical extension). Declare `unique` so the engine's walkRepeat rejects the second occurrence of any extnID with duplicate-extension.",
   },
   {
     id: "x509-version-unvalidated-enum",
@@ -1048,8 +1090,8 @@ var KNOWN_ANTIPATTERNS = [
   },
   {
     id: "x509-attrvalue-swallows-bad-string",
-    primitive: "_attrValueToString's hex fallback must be reached only for a non-decodable-primitive-string value (asn1/expected-string non-string tag AND asn1/expected-primitive constructed type); an asn1/bad-* content error must fail the certificate closed",
-    regex: /function _attrValueToString\b(?:(?!expected-primitive)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
+    primitive: "attrValueToString's hex fallback must be reached only for a non-decodable-primitive-string value (asn1/expected-string non-string tag AND asn1/expected-primitive constructed type); an asn1/bad-* content error must fail the certificate closed",
+    regex: /function attrValueToString\b(?:(?!expected-primitive)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
     reason: "The DN hex fallback must discriminate on BOTH structural codes. Catching every read.string error hex-encodes a malformed known string (invalid-UTF8 CN) — a fail-open that bypasses strict string validation. Handling only asn1/expected-string over-rejects a legitimate constructed ANY value (a SEQUENCE throws asn1/expected-primitive) — the certificate is wrongly refused. Hex-render only asn1/expected-string + asn1/expected-primitive (full DER via node.bytes); rethrow every asn1/bad-* content error as x509/bad-atv.",
   },
 ];
@@ -1450,6 +1492,7 @@ function run() {
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
   testSignatureAlgorithmAgreement();
+  testFormatModulesComposeSchema();
   testEcImportDerivesCurve();
   testAsn1TypesFromRegistry();
   testAllowMarkersAreRegistered();

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.5",
+  "packageVersion": "0.1.6",
   "surface": {
     "C": {
       "kind": "object",
@@ -308,6 +308,83 @@
               "arity": 1
             }
           }
+        },
+        "schema": {
+          "kind": "object",
+          "members": {
+            "any": {
+              "kind": "function",
+              "arity": 0
+            },
+            "bitString": {
+              "kind": "function",
+              "arity": 0
+            },
+            "boolean": {
+              "kind": "function",
+              "arity": 0
+            },
+            "choice": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decode": {
+              "kind": "function",
+              "arity": 1
+            },
+            "explicit": {
+              "kind": "function",
+              "arity": 3
+            },
+            "field": {
+              "kind": "function",
+              "arity": 2
+            },
+            "integerLeaf": {
+              "kind": "function",
+              "arity": 0
+            },
+            "octetString": {
+              "kind": "function",
+              "arity": 0
+            },
+            "oidLeaf": {
+              "kind": "function",
+              "arity": 0
+            },
+            "optional": {
+              "kind": "function",
+              "arity": 3
+            },
+            "seq": {
+              "kind": "function",
+              "arity": 2
+            },
+            "seqOf": {
+              "kind": "function",
+              "arity": 2
+            },
+            "setOf": {
+              "kind": "function",
+              "arity": 2
+            },
+            "setOfUnique": {
+              "kind": "function",
+              "arity": 3
+            },
+            "time": {
+              "kind": "function",
+              "arity": 1
+            },
+            "trailing": {
+              "kind": "function",
+              "arity": 2
+            },
+            "walk": {
+              "kind": "function",
+              "arity": 3
+            }
+          }
         }
       }
     },
@@ -502,6 +579,7 @@
     "pki.asn1.readOid": "0.1.0",
     "pki.asn1.encode": "0.1.0",
     "pki.asn1.build": "0.1.0",
+    "pki.asn1.schema.walk": "0.1.6",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.errors.PkiError": "0.1.0",
