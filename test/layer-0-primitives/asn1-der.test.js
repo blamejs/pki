@@ -246,6 +246,10 @@ function testIa5SevenBit() {
   check("build.ia5 rejects a byte > 0x7F",
     code(function () { b.ia5(String.fromCharCode(0xE9)); }) === "asn1/bad-ia5-string");
   check("build.ia5 accepts plain ASCII", code(function () { b.ia5("abc"); }) === "NO-THROW");
+  // A code point > 0xFF that latin1 truncates to a low ASCII byte (U+0141 ->
+  // 0x41) must be rejected on the INPUT, not slip past a post-conversion check.
+  check("build.ia5 rejects a truncation-prone code point (U+0141)",
+    code(function () { b.ia5(String.fromCharCode(0x141)); }) === "asn1/bad-ia5-string");
 }
 
 function testSetSorted() {
@@ -268,6 +272,12 @@ function testIntegerBufferMinimal() {
     code(function () { b.integer(Buffer.from([0xff, 0x80])); }) === "asn1/non-minimal-integer");
   check("build.integer rejects an empty buffer",
     code(function () { b.integer(Buffer.alloc(0)); }) === "asn1/bad-integer");
+  // Symmetric with read.integer's per-value ceiling: a builder must not emit
+  // an over-cap INTEGER (DER_MAX_INTEGER_BYTES + 1 for the sign octet).
+  check("build.integer rejects an over-cap buffer",
+    code(function () { b.integer(Buffer.alloc(20000, 0x01)); }) === "asn1/integer-too-large");
+  check("build.integer rejects an over-cap BigInt",
+    code(function () { b.integer(2n ** (8n * 17000n)); }) === "asn1/integer-too-large");
   check("build.enumerated rejects a non-minimal buffer",
     code(function () { b.enumerated(Buffer.from([0x00, 0x01])); }) === "asn1/non-minimal-integer");
   check("build.integer still accepts a BigInt", code(function () { b.integer(5n); }) === "NO-THROW");

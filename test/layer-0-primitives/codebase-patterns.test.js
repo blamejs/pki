@@ -914,6 +914,18 @@ var KNOWN_ANTIPATTERNS = [
     regex: /case TAGS\.VISIBLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
     reason: "VisibleString is printable ASCII 0x20..0x7E; decoding raw latin1 admits control characters and 8-bit bytes it cannot contain — a fail-closed/conformance gap.",
   },
+  {
+    id: "asn1-ia5-encode-input-validation",
+    primitive: "build.ia5 must validate the INPUT code points (charCodeAt > 0x7F) before latin1 conversion — latin1 truncates a code point > 0xFF to a low byte that slips past a post-conversion byte check",
+    regex: /ia5:\s*function\s*\(s\)\s*\{\s*var\s+\w+\s*=\s*Buffer\.from\(String\(s\), "latin1"\)/, skipCommentLines: true, allowlist: [],
+    reason: "Buffer.from(str, \"latin1\") truncates a code point > 0xFF to its low byte (U+0141 -> 0x41), so checking output bytes admits a non-IA5 character as a different one. Validate charCodeAt on the input string before converting.",
+  },
+  {
+    id: "asn1-integer-build-size-cap",
+    primitive: "_intContent must enforce DER_MAX_INTEGER_BYTES on the built content — symmetric with read.integer, so a builder can't emit an over-cap INTEGER the decoder refuses",
+    regex: /function _intContent\b(?:(?!DER_MAX_INTEGER_BYTES)[\s\S]){0,800}?\r?\nfunction /, skipCommentLines: true, allowlist: [],
+    reason: "The INTEGER builder producing content with no size ceiling is an encode/decode asymmetry — build.integer(hugeBigInt) or a huge Buffer emits an INTEGER read.integer rejects as over-cap. Cap the content length like the reader.",
+  },
 ];
 
 function testKnownAntipatterns() {
