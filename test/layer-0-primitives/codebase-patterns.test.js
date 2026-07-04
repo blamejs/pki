@@ -708,6 +708,29 @@ function testEcImportDerivesCurve() {
   _report("webcrypto EC importKey derives + verifies the curve from the key (not the caller's namedCurve)", bad);
 }
 
+function testAsn1TypesFromRegistry() {
+  // class: asn1-universal-type-registry
+  // L1 — the codec's universal-type metadata (tag + primitive/constructed form)
+  // comes from ONE UNIVERSAL_TYPES descriptor registry; TAGS and the two
+  // structural form-sets derive from it and the decode form checks consult the
+  // derived sets. A flat TAGS literal or a hardcoded `=== TAGS.SEQUENCE` form
+  // check reintroduces the per-type hand-coding the registry exists to remove.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-der.js"), "utf8"); }
+  catch (_e) { return; }
+  if (!/var UNIVERSAL_TYPES\b/.test(src)) {
+    bad.push({ file: "lib/asn1-der.js", line: 0,
+      content: "the universal-type registry UNIVERSAL_TYPES must be the single source of tag + form metadata; TAGS and the primitive-only/constructed-only sets derive from it" });
+  }
+  if (/tagNumber === TAGS\.(?:SEQUENCE|SET)\b/.test(src)) {
+    bad.push({ file: "lib/asn1-der.js", line: 0,
+      content: "the constructed-only decode check must consult CONSTRUCTED_ONLY_UNIVERSAL_TAGS (derived from UNIVERSAL_TYPES), not a hardcoded `=== TAGS.SEQUENCE`" });
+  }
+  bad = _filterMarkers(bad, "asn1-universal-type-registry");
+  _report("asn1 universal-type metadata is driven by the UNIVERSAL_TYPES registry (L1 descriptor engine)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
@@ -1428,6 +1451,7 @@ function run() {
   testTbsTrailingFieldsMonotonic();
   testSignatureAlgorithmAgreement();
   testEcImportDerivesCurve();
+  testAsn1TypesFromRegistry();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();
