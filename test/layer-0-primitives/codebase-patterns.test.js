@@ -120,6 +120,8 @@ var VALID_ALLOW_CLASSES = {
   "fail-open-verify":              1,
   "duplicate-block":               1,
   "test-promise-settimeout-sleep": 1,
+  "comment-block-coverage":        1,
+  "wiki-port-cross-artifact-drift": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -521,6 +523,49 @@ function testPrimitiveCommentBlocks() {
   }
   bad = _filterMarkers(bad, "comment-block-coverage");
   _report("every lib file documents its primitives (@module + a pki.-rooted @primitive block)", bad);
+}
+
+// ---------------------------------------------------------------------------
+// (i) wiki port agrees across the Dockerfile + release-container smoke
+// ---------------------------------------------------------------------------
+
+function testWikiPortAgreesAcrossArtifacts() {
+  // class: wiki-port-cross-artifact-drift
+  // The wiki's HTTP port lives in examples/wiki/Dockerfile (ENV WIKI_PORT +
+  // EXPOSE + HEALTHCHECK) AND in release-container.yml's post-publish smoke
+  // (`-p X:X` + `curl localhost:X/healthz`). A silent mismatch ships a
+  // container whose smoke curls a port nothing listens on — the release
+  // passes CI but the published site is unreachable. Anchor on the
+  // Dockerfile's ENV WIKI_PORT and assert every port token in the smoke
+  // step matches it.
+  var bad = [];
+  var dockerfile;
+  try { dockerfile = fs.readFileSync(path.join(REPO_ROOT, "examples/wiki/Dockerfile"), "utf8"); }
+  catch (_e) { return; }
+  var dfMatch = /WIKI_PORT\s*=\s*(\d+)/.exec(dockerfile);
+  if (!dfMatch) return;
+  var wikiPort = dfMatch[1];
+  var workflowPath = ".github/workflows/release-container.yml";
+  var workflow;
+  try { workflow = fs.readFileSync(path.join(REPO_ROOT, workflowPath), "utf8"); }
+  catch (_e) { return; }
+  var lines = _lines(workflow);
+  for (var i = 0; i < lines.length; i++) {
+    var portMap = /-p\s+(\d+):(\d+)/.exec(lines[i]);
+    if (portMap && (portMap[1] !== wikiPort || portMap[2] !== wikiPort)) {
+      bad.push({ file: workflowPath, line: i + 1,
+        content: "release-container.yml smoke `-p " + portMap[1] + ":" + portMap[2] +
+                 "` doesn't match examples/wiki/Dockerfile WIKI_PORT=" + wikiPort });
+    }
+    var curlMatch = /localhost:(\d+)\/healthz/.exec(lines[i]);
+    if (curlMatch && curlMatch[1] !== wikiPort) {
+      bad.push({ file: workflowPath, line: i + 1,
+        content: "release-container.yml smoke curls localhost:" + curlMatch[1] +
+                 " but examples/wiki/Dockerfile WIKI_PORT=" + wikiPort });
+    }
+  }
+  bad = _filterMarkers(bad, "wiki-port-cross-artifact-drift");
+  _report("wiki port agrees across examples/wiki/Dockerfile + release-container.yml smoke step", bad);
 }
 
 // ---------------------------------------------------------------------------
@@ -983,6 +1028,7 @@ function run() {
   testNoDeferralMarkers();
   testNoFailOpenVerify();
   testPrimitiveCommentBlocks();
+  testWikiPortAgreesAcrossArtifacts();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();

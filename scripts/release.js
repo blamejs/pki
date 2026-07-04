@@ -689,6 +689,18 @@ function cmdPublish() {
     console.log("no npm-publish run found (workflow may not be configured)");
   }
 
+  _section("release-container workflow");
+  var containerRunId = _capture("gh", ["run", "list",
+                                  "--workflow=release-container.yml",
+                                  "--limit", "1",
+                                  "--json", "databaseId",
+                                  "--jq",   ".[0].databaseId"]).stdout;
+  if (containerRunId) {
+    _run("gh", ["run", "watch", containerRunId, "--exit-status"], { allowFail: true });
+  } else {
+    console.log("no release-container run found (the pkijs.com docs image builds on tag)");
+  }
+
   _section("verify");
   var npmVersion = _capture("npm", ["view", pkg.name, "version"]).stdout;
   console.log("npm " + pkg.name + ": " + (npmVersion || "(unable to query)") +

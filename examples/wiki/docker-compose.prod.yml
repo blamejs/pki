@@ -1,0 +1,48 @@
+# Production overlay — runs alongside docker-compose.yml.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.prod.yml up -d
+#
+# Pulls the published GHCR image instead of building from source, and puts
+# Caddy in front for automatic Let's Encrypt TLS on pkijs.com. The site is
+# stateless, so there is no data volume to manage — only Caddy persists its
+# issued certificates.
+#
+# Point pkijs.com + www.pkijs.com A/AAAA records at the host, open 80/443
+# inbound, and Caddy handles TLS on first boot. Override the image tag or
+# WIKI_PORT via an .env file alongside this compose file if needed.
+
+services:
+  wiki:
+    # Pull the published image; pin to a version in production so a
+    # forgotten `docker compose pull` doesn't silently upgrade.
+    image: ghcr.io/blamejs/pki-wiki:0.1.0
+    build: !reset null
+    container_name: pki-wiki
+    # Not exposed on the host — only Caddy reaches it on the internal net.
+    ports: !override []
+    expose:
+      - "3009"
+    environment:
+      WIKI_PORT: "3009"
+
+  caddy:
+    image: caddy:2-alpine
+    container_name: pki-wiki-caddy
+    restart: unless-stopped
+    depends_on:
+      - wiki
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      # Passed through so Caddy's reverse_proxy upstream stays in step with
+      # an operator override of WIKI_PORT.
+      WIKI_PORT: "3009"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  caddy_data:
+  caddy_config:

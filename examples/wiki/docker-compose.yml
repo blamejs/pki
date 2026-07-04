@@ -1,0 +1,27 @@
+# pkijs.com docs site — single-container deploy.
+#
+# Run from this directory:
+#   docker compose up --build
+#
+# The site is stateless: every page is generated at boot from the
+# toolkit's @module / @primitive comment blocks, so there is no database
+# and no volume — a restart or rebuild always reflects the current source.
+# The container runs nonroot with all capabilities dropped.
+
+services:
+  wiki:
+    build:
+      context: ../..
+      dockerfile: examples/wiki/Dockerfile
+    image: blamejs-pki-wiki:0.1.0
+    container_name: pki-wiki
+    restart: unless-stopped
+    ports:
+      - "3009:3009"
+    environment:
+      WIKI_PORT: "3009"
+      WIKI_SITE_URL: ${WIKI_SITE_URL:-https://pkijs.com}
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
