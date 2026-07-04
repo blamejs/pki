@@ -684,6 +684,30 @@ function testSignatureAlgorithmAgreement() {
   _report("x509 parse enforces signatureAlgorithm == tbsCertificate.signature (RFC 5280 §4.1.1.2)", bad);
 }
 
+function testEcImportDerivesCurve() {
+  // class: webcrypto-ec-import-curve
+  // W3C WebCrypto — an imported EC key's curve is a property of the KEY, not
+  // the caller's namedCurve. _algFromImport must derive the curve from the key
+  // material and reject a mismatch (webcrypto/data) or unsupported curve
+  // (webcrypto/not-supported). Trusting `alg.namedCurve || _curveFromKey`
+  // mislabels the CryptoKey (algorithm confusion) and lets a non-approved curve
+  // import as an approved one.
+  var bad = [];
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/webcrypto.js"), "utf8"); }
+  catch (_e) { return; }
+  var fn = /function _algFromImport\b([\s\S]*?)\r?\nfunction /.exec(src);
+  var body = fn ? fn[1] : src;
+  if (/alg\.namedCurve\s*\|\|/.test(body) || body.indexOf("actualCurve") === -1) {
+    bad.push({ file: "lib/webcrypto.js", line: 0,
+      content: "_algFromImport must DERIVE an imported EC key's curve from the key material and reject a mismatch " +
+        "(webcrypto/data) or unsupported curve (webcrypto/not-supported) — trusting `alg.namedCurve || _curveFromKey` " +
+        "mislabels the CryptoKey (algorithm confusion)" });
+  }
+  bad = _filterMarkers(bad, "webcrypto-ec-import-curve");
+  _report("webcrypto EC importKey derives + verifies the curve from the key (not the caller's namedCurve)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Allow-marker audit — every allow:<class> marker names a real detector
 // ---------------------------------------------------------------------------
@@ -1403,6 +1427,7 @@ function run() {
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
   testSignatureAlgorithmAgreement();
+  testEcImportDerivesCurve();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoDuplicateCodeBlocks();
