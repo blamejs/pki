@@ -25,6 +25,7 @@
 var constants = require("./lib/constants");
 var errors    = require("./lib/framework-error");
 var asn1      = require("./lib/asn1-der");
+var asn1Schema = require("./lib/asn1-schema");
 var oid       = require("./lib/oid");
 var webcrypto = require("./lib/webcrypto");
 var x509      = require("./lib/x509");
@@ -35,7 +36,9 @@ module.exports = {
   C:         constants,
   constants: constants,
   errors:    errors,
-  asn1:      asn1,
+  // `asn1.schema` (L2) is the declarative structure-schema engine, exposed on
+  // the asn1 namespace alongside the codec (decode/encode/build/read/TAGS).
+  asn1:      Object.assign({}, asn1, { schema: asn1Schema }),
   oid:       oid,
   x509:      x509,
   // A ready W3C Crypto instance (globalThis.crypto shape) + the classes

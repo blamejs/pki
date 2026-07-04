@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.6 — 2026-07-04
+
+A declarative ASN.1 structure-schema engine; the X.509 parser is rebuilt on it.
+
+### Added
+
+- pki.asn1.schema — a declarative ASN.1 structure-schema engine. A schema is plain data built from combinators (seq / field / optional / explicit / trailing / seqOf / setOf / setOfUnique / choice, plus the value leaves oidLeaf / integerLeaf / boolean / octetString / bitString / any / decode / time); pki.asn1.schema.walk(schema, node, ctx) interprets it against a decoded DER node under an error namespace, enforcing the structural rules — shape assertion, bounds-checked positional reads, optional / context-tagged fields in strictly increasing tag order, SET-OF uniqueness, and fail-closed typed errors — in one place. This is the shared base the certificate parser is built on and the forthcoming CRL / CMS parsers compose, so a new format is declared as data rather than hand-written.
+
+### Changed
+
+- pki.x509.parse is now built on the schema engine: the Certificate, tbsCertificate, and every sub-structure (AlgorithmIdentifier, Name, Validity, SubjectPublicKeyInfo, Extensions) are declared as schemas and walked. Every valid certificate parses to the same result as before, and every malformed certificate is still rejected — the full existing test suite passes unchanged. The certificate's structural rules (positional bounds, the trailing-field grammar, extension uniqueness, the signature-algorithm agreement) now live in one auditable place instead of a hand-written decoder, and the format is structurally incapable of the positional-read and duplicate-field bug classes. The parser now validates the full certificate structure before applying cross-field checks, so a certificate carrying more than one defect at once may be rejected with a different (still fail-closed) error than a prior release reported.
+
 ## v0.1.5 — 2026-07-04
 
 Container healthcheck honors WIKI_PORT; release-tooling supply-chain hardening.
