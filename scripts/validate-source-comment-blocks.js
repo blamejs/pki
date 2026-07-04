@@ -47,6 +47,11 @@ function _report(findings) {
 var findings = engine.validate({
   libDir: LIB_DIR,
   parser: parser,
+  // @spec is required on every primitive once it has been backfilled across
+  // the whole surface; until then this stays opt-in so the gate is green.
+  // Run with PKI_REQUIRE_SPEC=1 to measure the backfill gap, and flip the
+  // default to true in the release that completes the backfill.
+  requireSpec: process.env.PKI_REQUIRE_SPEC === "1",
 });
 
 process.exit(_report(findings));

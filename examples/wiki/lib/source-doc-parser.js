@@ -7,8 +7,8 @@
 // Tag-ordering convention (enforced by source-comment-block-validator):
 //
 //   1. Single-line tags first: @module / @primitive, @signature, @since,
-//      @status, @compliance, @related, @nav, @title, @order, @slug,
-//      @featured, @exampleFile
+//      @status, @compliance, @spec, @defends, @related, @nav, @title,
+//      @order, @slug, @featured, @exampleFile
 //   2. Then the prose body (untagged lines — paragraphs separated by
 //      blank lines).
 //   3. Multi-line tags LAST: @intro, @card, @opts, @example, @section.
@@ -71,6 +71,8 @@ var SINGLE_LINE_TAGS = {
   since:       true,
   status:      true,
   compliance:  true,
+  spec:        true,
+  defends:     true,
   related:     true,
   exampleFile: true,
 };
