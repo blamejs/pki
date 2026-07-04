@@ -593,6 +593,13 @@ function testReleaseWaitsForCodex() {
     bad.push({ file: "scripts/release.js", line: 0,
       content: "cmdMerge must call _waitForCodexReview before the merge-state / thread gate" });
   }
+  // The Codex reviewer login arrives bare in GraphQL but "[bot]"-suffixed in
+  // some REST surfaces; a strict `.login === CODEX_LOGIN` misidentifies Codex
+  // and the gate would silently pass un-reviewed. Require the tolerant match.
+  if (/\.login\s*===\s*CODEX_LOGIN/.test(src) || !/function _isCodexLogin\b/.test(src)) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "match the Codex login via _isCodexLogin (tolerating the [bot] suffix), not a strict `.login === CODEX_LOGIN`" });
+  }
   bad = _filterMarkers(bad, "release-codex-async-race");
   _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
 }

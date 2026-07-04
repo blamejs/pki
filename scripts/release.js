@@ -545,6 +545,13 @@ function cmdPush(opts) {
 // CURRENT head — then the thread-resolution gate sees its findings.
 var CODEX_LOGIN = "chatgpt-codex-connector";
 
+// GitHub renders a GitHub App / bot author's login as the bare handle in
+// GraphQL but suffixed with "[bot]" in some REST surfaces. Tolerate both so
+// the gate recognises Codex regardless of which shape the login arrives in.
+function _isCodexLogin(login) {
+  return String(login || "").replace(/\[bot\]$/, "") === CODEX_LOGIN;
+}
+
 // Synchronous sleep with no busy-spin (release.js is a synchronous CLI).
 function _sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
@@ -566,7 +573,7 @@ function _codexReviewedHead(prNum) {
   var nodes;
   try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
   return (nodes || []).some(function (r) {
-    return r && r.author && r.author.login === CODEX_LOGIN &&
+    return r && r.author && _isCodexLogin(r.author.login) &&
            r.commit && r.commit.oid === head;
   });
 }
