@@ -30,6 +30,15 @@ function testRegister() {
   check("register forward", pki.oid.name("1.3.6.1.4.1.99999.1") === "acmeWidgetPolicy");
   check("register reverse", pki.oid.byName("acmeWidgetPolicy") === "1.3.6.1.4.1.99999.1");
   check("register rejects bad oid", code(function () { pki.oid.register("nope", "x"); }) === "oid/bad-input");
+  // registerFamily registers a whole arc family, deriving each OID from the
+  // shared base + a numeric or multi-level-array leaf.
+  pki.oid.registerFamily([1, 3, 6, 1, 4, 1, 88888], { widget: 1, gadget: [2, 4] });
+  check("registerFamily forward + multi-level leaf", pki.oid.name("1.3.6.1.4.1.88888.2.4") === "gadget");
+  // A large arc must survive as BigInt — a 128-bit UUID-based arc (X.667)
+  // exceeds 2^53, so a Number would lose precision.
+  pki.oid.registerFamily([2, 25], { bigUuidArc: 340282366920938463463374607431768211455n });
+  check("registerFamily preserves a 128-bit BigInt arc",
+    pki.oid.name("2.25.340282366920938463463374607431768211455") === "bigUuidArc");
 }
 
 function testArcs() {

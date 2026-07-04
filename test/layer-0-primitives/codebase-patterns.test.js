@@ -786,10 +786,10 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "oid-fromarcs-bigint-sign-guard",
     primitive: "a `< 0n` sign guard before the bigint branch returns a.toString() — the number branch already enforces >= 0, so both branches must enforce the same non-negative contract",
-    regex: /typeof\s+\w+\s*===\s*"bigint"\s*\)\s*return/,
+    regex: /typeof\s+\w+\s*===\s*"bigint"\s*\)\s*return\s+\w+\.toString\(\)/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "fromArcs's bigint branch returning a.toString() with no sign check emits a malformed OID like \"2.-5.1\" while the number branch rejects a negative — a self-inconsistent contract that blows up late, away from the bad arc.",
+    reason: "fromArcs's bigint branch returning a.toString() with no sign check emits a malformed OID like \"2.-5.1\" while the number branch rejects a negative — a self-inconsistent contract that blows up late, away from the bad arc. (Anchored on `return X.toString()` so a bigint branch that returns a validating expression like `a >= 0n` is not flagged.)",
   },
   {
     id: "oid-dotted-decimal-literal",
@@ -814,6 +814,14 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "A per-value defense-in-depth cap set below the largest value it must legitimately admit turns into a false-reject. A 128-bit UUID OID arc needs 19 base-128 bytes, so a sub-identifier cap under 19 rejects valid DER. Keep the cap above the largest legitimate arc while still bounding a pathologically long one.",
+  },
+  {
+    id: "oid-isarc-rejects-bigint",
+    primitive: "_isArc must accept a non-negative BigInt as well as a safe-integer Number — a 128-bit UUID-based OID arc (X.667) exceeds 2^53 and only survives as BigInt, so arc validation must not be number-only",
+    regex: /function _isArc\b(?:(?!"bigint")[\s\S]){0,200}?===\s*"number"/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "_isArc reaching a `=== \"number\"` type check with no `\"bigint\"` branch before it rejects large arcs — a 128-bit UUID OID arc can only be represented losslessly as a BigInt, so registerFamily would drop it. Accept a non-negative BigInt too.",
   },
 ];
 
