@@ -1,0 +1,74 @@
+{
+  "name": "@blamejs/pki",
+  "version": "0.1.0",
+  "description": "Pure-JavaScript PKI toolkit that owns its stack — X.509, ASN.1/DER, CMS, PQC-first.",
+  "license": "Apache-2.0",
+  "author": "blamejs contributors",
+  "homepage": "https://pkijs.com",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/blamejs/pki.git"
+  },
+  "bugs": {
+    "url": "https://github.com/blamejs/pki/issues"
+  },
+  "main": "index.js",
+  "bin": {
+    "pki": "bin/pki.js"
+  },
+  "keywords": [
+    "pki",
+    "x509",
+    "asn1",
+    "der",
+    "oid",
+    "cms",
+    "pkcs7",
+    "ocsp",
+    "crl",
+    "csr",
+    "pkcs10",
+    "pkcs8",
+    "pkcs12",
+    "tsp",
+    "timestamp",
+    "certificate",
+    "post-quantum",
+    "pqc",
+    "ml-dsa",
+    "ml-kem",
+    "slh-dsa",
+    "composite-signatures",
+    "zero-dependencies",
+    "vendored-dependencies",
+    "pure-javascript",
+    "supply-chain",
+    "security-first",
+    "owns-its-stack"
+  ],
+  "engines": {
+    "node": ">=24.18.0"
+  },
+  "files": [
+    "index.js",
+    "bin/",
+    "lib/",
+    "CHANGELOG.md",
+    "LICENSE",
+    "MIGRATING.md",
+    "NOTICE",
+    "README.md",
+    "sbom.cdx.json"
+  ],
+  "scripts": {
+    "test": "node test/smoke.js",
+    "lint": "eslint --max-warnings 0 .",
+    "fuzz": "npm ci --prefix fuzz && npx --prefix fuzz jazzer fuzz/asn1-der.fuzz.js -- -max_total_time=60",
+    "gates": "node test/layer-0-primitives/codebase-patterns.test.js && node scripts/validate-source-comment-blocks.js && node scripts/check-api-snapshot.js",
+    "prepack": "node scripts/check-pack-against-gitignore.js",
+    "check:vendor-currency": "node scripts/check-vendor-currency.js"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.1"
+  }
+}

@@ -1,0 +1,21 @@
+@blamejs/pki
+Copyright 2026 blamejs contributors
+
+This product includes software developed by the blamejs project
+(https://pkijs.com).
+
+Licensed under the Apache License, Version 2.0. See LICENSE for the full text.
+
+================================================================================
+Third-Party Components
+================================================================================
+
+@blamejs/pki ships with zero npm runtime dependencies and currently vendors no
+third-party code. Its cryptography runs entirely on Node's built-in node:crypto
+(classical and FIPS 203/204/205 post-quantum algorithms via the platform
+OpenSSL that the Node engine floor ships).
+
+Should a third-party library ever be vendored under lib/vendor/ — only when a
+required operation is confirmed missing from the Node engine floor — it will
+retain its original copyright and license, be attributed here, and be tracked
+with a pinned SHA-256 in lib/vendor/MANIFEST.json.

@@ -1,0 +1,23 @@
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "github-actions"
+
+  # devDependencies only (esbuild). The toolkit ships zero npm RUNTIME
+  # deps — everything is vendored under lib/vendor/, which Dependabot
+  # cannot see; vendored-bundle currency is tracked separately by
+  # scripts/check-vendor-currency.js.
+  - package-ecosystem: "npm"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    open-pull-requests-limit: 5
+    labels:
+      - "deps"
+      - "devdeps"

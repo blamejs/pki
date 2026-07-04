@@ -1,0 +1,484 @@
+{
+  "generator": "scripts/refresh-api-snapshot.js",
+  "packageVersion": "0.1.0",
+  "surface": {
+    "C": {
+      "kind": "object",
+      "members": {
+        "BYTES": {
+          "kind": "object",
+          "members": {
+            "b": {
+              "kind": "function",
+              "arity": 1
+            },
+            "gib": {
+              "kind": "function",
+              "arity": 1
+            },
+            "kib": {
+              "kind": "function",
+              "arity": 1
+            },
+            "mib": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "LIMITS": {
+          "kind": "object",
+          "members": {
+            "DER_MAX_BYTES": {
+              "kind": "number"
+            },
+            "DER_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "PEM_MAX_BYTES": {
+              "kind": "number"
+            }
+          }
+        },
+        "TIME": {
+          "kind": "object",
+          "members": {
+            "days": {
+              "kind": "function",
+              "arity": 1
+            },
+            "hours": {
+              "kind": "function",
+              "arity": 1
+            },
+            "minutes": {
+              "kind": "function",
+              "arity": 1
+            },
+            "ms": {
+              "kind": "function",
+              "arity": 1
+            },
+            "seconds": {
+              "kind": "function",
+              "arity": 1
+            },
+            "weeks": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "version": {
+          "kind": "string"
+        }
+      }
+    },
+    "WebCrypto": {
+      "kind": "object",
+      "members": {
+        "Crypto": {
+          "kind": "function",
+          "arity": 0
+        },
+        "CryptoKey": {
+          "kind": "function",
+          "arity": 5
+        },
+        "SubtleCrypto": {
+          "kind": "function",
+          "arity": 0
+        },
+        "WebCryptoError": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
+    "asn1": {
+      "kind": "object",
+      "members": {
+        "TAGS": {
+          "kind": "object",
+          "members": {
+            "BIT_STRING": {
+              "kind": "number"
+            },
+            "BMP_STRING": {
+              "kind": "number"
+            },
+            "BOOLEAN": {
+              "kind": "number"
+            },
+            "ENUMERATED": {
+              "kind": "number"
+            },
+            "GENERALIZED_TIME": {
+              "kind": "number"
+            },
+            "IA5_STRING": {
+              "kind": "number"
+            },
+            "INTEGER": {
+              "kind": "number"
+            },
+            "NULL": {
+              "kind": "number"
+            },
+            "OBJECT_IDENTIFIER": {
+              "kind": "number"
+            },
+            "OCTET_STRING": {
+              "kind": "number"
+            },
+            "PRINTABLE_STRING": {
+              "kind": "number"
+            },
+            "SEQUENCE": {
+              "kind": "number"
+            },
+            "SET": {
+              "kind": "number"
+            },
+            "TELETEX_STRING": {
+              "kind": "number"
+            },
+            "UNIVERSAL_STRING": {
+              "kind": "number"
+            },
+            "UTC_TIME": {
+              "kind": "number"
+            },
+            "UTF8_STRING": {
+              "kind": "number"
+            },
+            "VISIBLE_STRING": {
+              "kind": "number"
+            }
+          }
+        },
+        "build": {
+          "kind": "object",
+          "members": {
+            "bitString": {
+              "kind": "function",
+              "arity": 2
+            },
+            "boolean": {
+              "kind": "function",
+              "arity": 1
+            },
+            "contextConstructed": {
+              "kind": "function",
+              "arity": 2
+            },
+            "contextPrimitive": {
+              "kind": "function",
+              "arity": 2
+            },
+            "enumerated": {
+              "kind": "function",
+              "arity": 1
+            },
+            "explicit": {
+              "kind": "function",
+              "arity": 2
+            },
+            "generalizedTime": {
+              "kind": "function",
+              "arity": 1
+            },
+            "ia5": {
+              "kind": "function",
+              "arity": 1
+            },
+            "integer": {
+              "kind": "function",
+              "arity": 1
+            },
+            "nullValue": {
+              "kind": "function",
+              "arity": 0
+            },
+            "octetString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "oid": {
+              "kind": "function",
+              "arity": 1
+            },
+            "printable": {
+              "kind": "function",
+              "arity": 1
+            },
+            "raw": {
+              "kind": "function",
+              "arity": 1
+            },
+            "sequence": {
+              "kind": "function",
+              "arity": 1
+            },
+            "set": {
+              "kind": "function",
+              "arity": 1
+            },
+            "setOf": {
+              "kind": "function",
+              "arity": 1
+            },
+            "utcTime": {
+              "kind": "function",
+              "arity": 1
+            },
+            "utf8": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "decode": {
+          "kind": "function",
+          "arity": 2
+        },
+        "decodeOidContent": {
+          "kind": "function",
+          "arity": 1
+        },
+        "encode": {
+          "kind": "function",
+          "arity": 4
+        },
+        "encodeIdentifier": {
+          "kind": "function",
+          "arity": 3
+        },
+        "encodeLength": {
+          "kind": "function",
+          "arity": 1
+        },
+        "encodeOidContent": {
+          "kind": "function",
+          "arity": 1
+        },
+        "encodeTLV": {
+          "kind": "function",
+          "arity": 4
+        },
+        "read": {
+          "kind": "object",
+          "members": {
+            "bitString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "boolean": {
+              "kind": "function",
+              "arity": 1
+            },
+            "integer": {
+              "kind": "function",
+              "arity": 1
+            },
+            "nullValue": {
+              "kind": "function",
+              "arity": 1
+            },
+            "octetString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "oid": {
+              "kind": "function",
+              "arity": 1
+            },
+            "string": {
+              "kind": "function",
+              "arity": 1
+            },
+            "time": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        }
+      }
+    },
+    "constants": {
+      "kind": "object",
+      "members": {
+        "BYTES": {
+          "kind": "object",
+          "members": {
+            "b": {
+              "kind": "function",
+              "arity": 1
+            },
+            "gib": {
+              "kind": "function",
+              "arity": 1
+            },
+            "kib": {
+              "kind": "function",
+              "arity": 1
+            },
+            "mib": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "LIMITS": {
+          "kind": "object",
+          "members": {
+            "DER_MAX_BYTES": {
+              "kind": "number"
+            },
+            "DER_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "PEM_MAX_BYTES": {
+              "kind": "number"
+            }
+          }
+        },
+        "TIME": {
+          "kind": "object",
+          "members": {
+            "days": {
+              "kind": "function",
+              "arity": 1
+            },
+            "hours": {
+              "kind": "function",
+              "arity": 1
+            },
+            "minutes": {
+              "kind": "function",
+              "arity": 1
+            },
+            "ms": {
+              "kind": "function",
+              "arity": 1
+            },
+            "seconds": {
+              "kind": "function",
+              "arity": 1
+            },
+            "weeks": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "version": {
+          "kind": "string"
+        }
+      }
+    },
+    "errors": {
+      "kind": "object",
+      "members": {
+        "Asn1Error": {
+          "kind": "function",
+          "arity": 3
+        },
+        "CertificateError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "ConstantsError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "OidError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "PemError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "PkiError": {
+          "kind": "function",
+          "arity": 2
+        },
+        "defineClass": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
+    "oid": {
+      "kind": "object",
+      "members": {
+        "all": {
+          "kind": "function",
+          "arity": 0
+        },
+        "byName": {
+          "kind": "function",
+          "arity": 1
+        },
+        "fromArcs": {
+          "kind": "function",
+          "arity": 1
+        },
+        "fromDER": {
+          "kind": "function",
+          "arity": 1
+        },
+        "has": {
+          "kind": "function",
+          "arity": 1
+        },
+        "name": {
+          "kind": "function",
+          "arity": 1
+        },
+        "register": {
+          "kind": "function",
+          "arity": 2
+        },
+        "toArcs": {
+          "kind": "function",
+          "arity": 1
+        },
+        "toDER": {
+          "kind": "function",
+          "arity": 1
+        }
+      }
+    },
+    "version": {
+      "kind": "string"
+    },
+    "webcrypto": {
+      "kind": "object",
+      "members": {
+        "subtle": {
+          "kind": "object",
+          "members": {}
+        }
+      }
+    },
+    "x509": {
+      "kind": "object",
+      "members": {
+        "parse": {
+          "kind": "function",
+          "arity": 1
+        },
+        "pemDecode": {
+          "kind": "function",
+          "arity": 2
+        },
+        "pemEncode": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    }
+  }
+}

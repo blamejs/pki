@@ -1,0 +1,38 @@
+# Test-only interop toolchain for @blamejs/pki.
+#
+# The toolkit has no network backends. Its integration tests cross-check
+# the structures it parses and emits against an INDEPENDENT PKI
+# implementation — the `openssl` CLI — so conformance is proven against a
+# second reader, not just the toolkit's own decoder.
+#
+# This compose file provides a pinned, known-version cross-checker so CI
+# and a developer laptop verify against the same oracle. The `interop`
+# service is a run-to-completion container that bundles Node + OpenSSL
+# (+ NSS certutil as an optional second oracle) and runs the integration
+# suite inside itself.
+#
+# Run the whole interop suite in the container:
+#   docker compose -f docker-compose.test.yml run --rm interop
+#
+# Run it locally instead (openssl on PATH):
+#   node scripts/test-integration.js
+#
+# Validate the cross-checker is reachable (host or container):
+#   node scripts/check-services.js
+
+services:
+
+  interop:
+    image: node:24-alpine
+    container_name: pkijs-test-interop
+    working_dir: /pki
+    volumes:
+      - .:/pki
+    # Alpine's base image ships the OpenSSL library but not always the CLI
+    # binary; install the `openssl` command plus NSS tools so both oracles
+    # are on PATH, then run the interop suite (which itself re-checks the
+    # toolchain via scripts/check-services.js).
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - "apk add --no-cache openssl nss-tools >/dev/null && node scripts/test-integration.js"
+    restart: "no"

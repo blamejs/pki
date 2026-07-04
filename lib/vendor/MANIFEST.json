@@ -1,0 +1,4 @@
+{
+  "_comment": "Vendored dependencies — none currently. @blamejs/pki's cryptography runs entirely on Node's built-in node:crypto: the classical algorithm set (RSA, ECDSA, EdDSA, ECDH, AES, HMAC, HKDF, PBKDF2, the SHA family) AND the FIPS 203/204/205 post-quantum algorithms (ML-KEM, ML-DSA, SLH-DSA) via the platform OpenSSL 3.5 that the Node engine floor (>=24.18) ships. A built-in ships zero bytes and is OpenSSL-interoperable by construction, so no crypto bundle is vendored. A package is added here ONLY when a specific operation is confirmed missing from the engine floor; see lib/vendor/README.md for the policy.",
+  "packages": {}
+}

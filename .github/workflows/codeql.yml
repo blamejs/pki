@@ -1,0 +1,61 @@
+name: CodeQL SAST
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "31 5 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+jobs:
+  analyze:
+    name: CodeQL analysis (javascript-typescript)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+      actions: read
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      # CodeQL maintains a single combined language ID for JavaScript +
+      # TypeScript. The toolkit ships CommonJS JavaScript only (no
+      # transpilation step — every transpilation hop is a supply-chain
+      # hop); the language ID picks up the .js files under lib/, index.js
+      # and bin/ regardless.
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
+        with:
+          languages: javascript-typescript
+          # Scope (paths) + query suite (security-extended) are inline so
+          # analysis covers only the shipped product (lib/, index.js, bin/)
+          # — the npm package surface — not test/build/example code or the
+          # vendored third-party bundles. security-extended catches
+          # prototype pollution, command injection, ReDoS, unsafe
+          # deserialization, hardcoded credentials; findings surface as
+          # SARIF in the Security tab.
+          config: |
+            queries:
+              - uses: security-extended
+            paths:
+              - lib
+              - index.js
+              - bin
+            paths-ignore:
+              - lib/vendor
+              - "**/node_modules"
+
+      # Auto-build is skipped because CommonJS files don't need a build
+      # step; CodeQL extracts straight from source.
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
+        with:
+          category: "/language:javascript-typescript"

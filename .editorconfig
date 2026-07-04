@@ -1,0 +1,20 @@
+# EditorConfig — https://editorconfig.org
+# Matches the settled conventions: 2-space JS, LF, UTF-8, trimmed.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+[*.md]
+trim_trailing_whitespace = false
+
+# Vendored bundles are pinned by SHA-256 in lib/vendor/MANIFEST.json —
+# never reformat them.
+[lib/vendor/**]
+trim_trailing_whitespace = false
+insert_final_newline = false

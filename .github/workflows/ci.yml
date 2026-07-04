@@ -1,0 +1,177 @@
+# Smoke + static gates + interop on every push/PR.
+#
+# Output posture: every step's full output is shown — no `>/dev/null`,
+# no `--quiet`, no `--silent`. Operators reading a failed run see what
+# actually fired without re-running locally.
+#
+# Every third-party action is SHA-pinned with a trailing version
+# comment (the `.pinact.yaml` policy has no exception for this file, so
+# no tag-shaped `uses:` reference is permitted here).
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags:     ["v*"]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Workflow-level permissions are least-privilege (read-only). No job in
+# this workflow writes back to the repo.
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24.18.0 LTS
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24.18.0'
+
+      - name: Show Node + npm version
+        run: node --version && npm --version
+
+      - name: Install devDependencies
+        # The toolkit ships ZERO npm runtime deps — everything is vendored
+        # under lib/vendor/. devDependencies (esbuild) never reach the npm
+        # tarball per the `files` allowlist in package.json. `npm ci`
+        # installs exactly the committed lockfile with integrity hashes,
+        # so OpenSSF Scorecard's Pinned-Dependencies query sees a pinned
+        # install (it keys on the `ci` verb, not a name@version specifier).
+        run: npm ci --no-audit --no-fund
+
+      - name: Run smoke
+        env:
+          SMOKE_PARALLEL: "4"
+        run: node test/smoke.js
+
+  static-gates:
+    name: Static gates (eslint + patterns + comment blocks + api snapshot)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24.18.0 LTS
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24.18.0'
+
+      - name: Install devDependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint (max-warnings 0)
+        run: npx --yes eslint@10.3.0 --max-warnings 0 .
+
+      - name: Codebase-patterns detectors
+        # In-repo structural-drift + bug-class detectors. Walks the whole
+        # lib/ + test/ corpus; fails on any un-allowlisted match.
+        run: node test/layer-0-primitives/codebase-patterns.test.js
+
+      - name: Wiki @module / @primitive comment-block convention
+        # Source-driven wiki: every lib/ file carries an @module block and
+        # every public function a @primitive block. Fast signal — no app
+        # boot, just walks lib/ for the annotations.
+        run: node scripts/validate-source-comment-blocks.js
+
+      - name: API surface snapshot gate
+        # Fails on breaking changes (removed methods, signature changes).
+        # Additive changes are logged but pass — the baseline is refreshed
+        # at the next release commit alongside the version bump.
+        run: node scripts/check-api-snapshot.js
+
+  interop:
+    name: Interop (cross-implementation, containerized)
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24.18.0 LTS
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24.18.0'
+
+      - name: Install devDependencies
+        run: npm ci --no-audit --no-fund
+
+      - name: Run interop tests (containerized OpenSSL/NSS oracle)
+        # The interop service is a run-to-completion container bundling
+        # Node + OpenSSL (+ NSS certutil); `run --rm` executes the
+        # integration suite inside it and returns its exit code. This
+        # cross-checks the structures the toolkit parses and emits against
+        # an independent PKI implementation, pinned so CI and a developer
+        # laptop verify against the same oracle.
+        run: docker compose -f docker-compose.test.yml run --rm interop
+
+  secret-scan:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+          # gitleaks scans full history on a non-shallow checkout, so an
+          # accidentally-committed secret in any prior commit is caught
+          # even if a later commit reverts it.
+          fetch-depth: 0
+
+      - name: Install gitleaks
+        # Pull the OSS gitleaks binary directly from GitHub releases. The
+        # `gitleaks/gitleaks-action` wrapper requires a commercial license
+        # for organization accounts; the underlying binary is Apache-2.0
+        # with no such requirement. Track the LATEST release rather than
+        # pinning — a secret-scanner is a forward-looking security gate and
+        # pinning would silently miss new detection rules. Authenticate the
+        # API call so the shared-runner-IP unauthenticated rate limit
+        # (60/hour) does not 403 the install mid-run.
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          GITLEAKS_VERSION=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
+            https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
+            | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)
+          if [ -z "$GITLEAKS_VERSION" ]; then
+            echo "::error::Could not resolve latest gitleaks release tag from GitHub API"
+            exit 1
+          fi
+          echo "[gitleaks] resolved latest release: v${GITLEAKS_VERSION}"
+          curl -fsSL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" \
+            | tar -xz -C /tmp gitleaks
+          sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
+          gitleaks version
+
+      - name: Run gitleaks
+        # The vendored crypto bundles under lib/vendor/ are allowlisted in
+        # .gitleaks.toml so they don't trip entropy heuristics. --redact
+        # strips secret values from the report so an accidentally-leaked
+        # one is not re-printed in CI logs.
+        run: gitleaks git --config=.gitleaks.toml --redact --verbose --exit-code=1
