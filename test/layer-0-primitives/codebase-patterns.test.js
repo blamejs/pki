@@ -838,6 +838,14 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "Number.isInteger accepts integers beyond MAX_SAFE_INTEGER that a Number cannot represent precisely — an OID arc validated that way silently loses precision. Use Number.isSafeInteger so a large arc must be a BigInt.",
   },
+  {
+    id: "asn1-integer-cap-ignores-sign-pad",
+    primitive: "the INTEGER length cap must allow the DER sign octet (cap + 1) — a positive INTEGER at the magnitude cap with its top bit set carries a leading 0x00, so a bare `> DER_MAX_INTEGER_BYTES` rejects legitimate key material",
+    regex: /c\.length > constants\.LIMITS\.DER_MAX_INTEGER_BYTES(?!\s*\+\s*1)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A `c.length > DER_MAX_INTEGER_BYTES` cap with no `+ 1` for the DER sign octet rejects a positive INTEGER at the magnitude cap whose top bit is set (an RSA-131072 modulus). The cap bounds the magnitude; DER content may carry one leading 0x00 sign pad.",
+  },
 ];
 
 function testKnownAntipatterns() {

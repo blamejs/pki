@@ -97,6 +97,16 @@ function testIntegerAndOidCaps() {
   var bigIntDer = pki.asn1.encode(0x00, false, TAGS.INTEGER, Buffer.alloc(20000, 0x01));
   check("over-cap INTEGER throws integer-too-large",
     code(function () { pki.asn1.read.integer(pki.asn1.decode(bigIntDer)); }) === "asn1/integer-too-large");
+  // A positive INTEGER at the magnitude cap with its top bit set carries a
+  // leading 0x00 DER sign octet, so its content is cap+1 bytes — that must
+  // parse (an RSA-131072 modulus is exactly this shape), while cap+2 is over.
+  var cap = pki.C.LIMITS.DER_MAX_INTEGER_BYTES;
+  var signPad = Buffer.concat([Buffer.from([0x00, 0x80]), Buffer.alloc(cap - 1, 0xAB)]); // cap+1 content bytes
+  check("INTEGER at magnitude cap + DER sign pad parses",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.INTEGER, signPad))); }) === "NO-THROW");
+  var overPad = Buffer.concat([Buffer.from([0x00, 0x80]), Buffer.alloc(cap, 0xAB)]); // cap+2 content bytes
+  check("INTEGER beyond cap + sign pad is rejected",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.INTEGER, overPad))); }) === "asn1/integer-too-large");
   // A single OID sub-identifier whose continuation run blows the cap
   // (OID_MAX_SUBIDENTIFIER_BYTES is 16); 0x81 keeps the continuation bit
   // set, so this is one never-terminating sub-identifier.
