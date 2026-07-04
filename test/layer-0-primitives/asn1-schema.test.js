@@ -57,6 +57,8 @@ function testOptional() {
   check("optional absent binds the default", (function () { var r = walk(spec, b.sequence([b.integer(9n)])).result; return r.v === 1n && r.present === false && r.n === 9n; })());
   check("optional [0] EXPLICIT with an empty wrapper throws emptyCode",
     code(function () { walk(spec, b.sequence([b.contextConstructed(0, Buffer.alloc(0)), b.integer(9n)])); }) === "t/bad-v");
+  check("optional [0] EXPLICIT rejects a two-value wrapper",
+    code(function () { walk(spec, b.sequence([b.contextConstructed(0, Buffer.concat([b.integer(2n), b.integer(3n)])), b.integer(9n)])); }) === "t/bad-v");
 }
 
 function testTrailing() {
@@ -74,6 +76,8 @@ function testTrailing() {
   check("trailing unknown tag [4] rejected (unexpected code)", code(function () { walk(spec, b.sequence([b.integer(0n), b.contextPrimitive(4, Buffer.from([1]))])); }) === "t/bad-trailing");
   check("trailing explicit [3] value is read", (function () { var m = walk(spec, b.sequence([b.integer(0n), b.explicit(3, b.integer(7n))])).result; return m.three.present === true && m.three.value === 7n; })());
   check("absent trailing member binds present:false", (function () { var m = walk(spec, b.sequence([b.integer(0n)])).result; return m.three.present === false; })());
+  check("trailing explicit [3] rejects a two-value wrapper",
+    code(function () { walk(spec, b.sequence([b.integer(0n), b.contextConstructed(3, Buffer.concat([b.integer(7n), b.integer(8n)]))])); }) === "t/bad-three");
 }
 
 function testTrailingNoMinTag() {
@@ -123,6 +127,35 @@ function testChoiceAndExplicit() {
   var exp = S.explicit(0, S.integerLeaf(), { emptyCode: "t/bad-exp" });
   check("explicit [0] unwraps + reads the inner value", walk(exp, b.explicit(0, b.integer(42n))) === 42n);
   check("explicit [0] on a wrong tag throws", code(function () { walk(exp, b.explicit(1, b.integer(42n))); }) === "t/bad-exp");
+  check("explicit [0] rejects a two-value wrapper (drops-extra fail-open)",
+    code(function () { walk(exp, b.contextConstructed(0, Buffer.concat([b.integer(1n), b.integer(2n)]))); }) === "t/bad-exp");
+}
+
+function testRejectUnconsumedChildren() {
+  // Codex PR #9: a seq without a trailing field silently dropped leftover
+  // children, so a closed sequence of optional fields could not reject a
+  // duplicate/extra element (SEQUENCE { [0] 1, [0] 2 } read the first, dropped
+  // the second). Every child must be consumed by a field or it is an error.
+  var oneOptional = S.seq([S.optional("v", S.integerLeaf(), { tag: 0, explicit: true, emptyCode: "t/bad-v" })],
+    { assert: "sequence", code: "t/bad-seq", build: function (m) { return m.fields.v.value; } });
+  check("seq rejects a second [0] after the optional consumed the first",
+    code(function () { walk(oneOptional, b.sequence([b.explicit(0, b.integer(1n)), b.explicit(0, b.integer(2n))])); }) === "t/bad-seq");
+  check("seq with the single optional present still parses", walk(oneOptional, b.sequence([b.explicit(0, b.integer(1n))])).result === 1n);
+  check("seq with the optional absent still parses", walk(oneOptional, b.sequence([])).result === undefined);
+
+  var oneField = S.seq([S.field("a", S.integerLeaf())], { assert: "sequence", code: "t/bad-one", build: function (m) { return m.fields.a.value; } });
+  check("seq rejects an extra child after its only required field",
+    code(function () { walk(oneField, b.sequence([b.integer(1n), b.integer(2n)])); }) === "t/bad-one");
+
+  // whenAny: an OPTIONAL ANY positional field (AlgorithmIdentifier.parameters) —
+  // matches the next element regardless of tag, so it is consumed, not dropped.
+  var withParams = S.seq([S.field("a", S.oidLeaf()), S.optional("p", S.any(), { whenAny: true })],
+    { assert: "sequence", arity: { min: 1 }, code: "t/bad-alg", build: function (m) { return { a: m.fields.a.value, p: m.fields.p.present ? m.fields.p.node.tagNumber : null }; } });
+  check("whenAny optional absent → present:false", walk(withParams, b.sequence([b.oid("1.2.3")])).result.p === null);
+  check("whenAny optional present → consumes the next element (any tag)",
+    walk(withParams, b.sequence([b.oid("1.2.3"), b.integer(9n)])).result.p === TAGS.INTEGER);
+  check("whenAny optional still rejects a THIRD unconsumed element",
+    code(function () { walk(withParams, b.sequence([b.oid("1.2.3"), b.integer(9n), b.integer(5n)])); }) === "t/bad-alg");
 }
 
 function run() {
@@ -133,6 +166,7 @@ function run() {
   testTrailingNoMinTag();
   testRepeatUniqueness();
   testChoiceAndExplicit();
+  testRejectUnconsumedChildren();
 }
 
 module.exports = { run: run };

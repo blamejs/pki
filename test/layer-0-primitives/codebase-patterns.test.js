@@ -682,6 +682,36 @@ function testTbsTrailingFieldsMonotonic() {
   _report("tbs trailing fields [1]/[2]/[3] are at-most-once and in order via the engine (RFC 5280 §4.1)", bad);
 }
 
+function testWalkSeqRejectsUnconsumedChildren() {
+  // class: asn1-walkseq-unconsumed-children
+  // A seq must consume EVERY child: after the field loop (and when no trailing
+  // field ran), any leftover element is an error. Without the guard a closed
+  // sequence of optional fields silently drops a duplicate/extra element, so
+  // `seq([optional("v", ...)])` accepts SEQUENCE { [0] 1, [0] 2 } — defeating the
+  // engine's optional-field strictness for every CRL/CMS/external schema. The
+  // loop uses `idx < kids.length ?` (ternary); the reject guard is a distinct
+  // `if (idx < kids.length)` statement after the loop. Codex PR #9.
+  var bad = [];
+  var engine;
+  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-schema.js"), "utf8"); }
+  catch (_e) { return; }
+  var fn = /function _walkSeq\b([\s\S]*?)\r?\nfunction /.exec(engine);
+  var body = fn ? fn[1] : engine;
+  if (!/if\s*\(\s*idx\s*<\s*kids\.length\s*\)/.test(body)) {
+    bad.push({ file: "lib/asn1-schema.js", line: 0,
+      content: "_walkSeq must reject unconsumed sequence children — an `if (idx < kids.length)` fail-closed guard after the field loop. Without it a seq silently drops leftover elements, so a closed sequence of optional fields cannot reject a duplicate/extra element" });
+  }
+  // Same drop-extra class in the EXPLICIT unwrap: a wrapper carries exactly one
+  // value, so _explicitInner must assert children.length !== 1 (a non-empty-only
+  // check silently drops a second child).
+  if (!/function _explicitInner\b[\s\S]{0,240}?children\.length !== 1/.test(engine)) {
+    bad.push({ file: "lib/asn1-schema.js", line: 0,
+      content: "_explicitInner must assert children.length !== 1 (an EXPLICIT [tag] wrapper carries exactly one value); a non-empty-only check drops a second child, and every explicit unwrap (_walkExplicit / optional / trailing) must route through it" });
+  }
+  bad = _filterMarkers(bad, "asn1-walkseq-unconsumed-children");
+  _report("_walkSeq rejects unconsumed sequence children (closed-sequence strictness)", bad);
+}
+
 function testSignatureAlgorithmAgreement() {
   // class: x509-sig-alg-agreement
   // RFC 5280 §4.1.1.2 — the outer signatureAlgorithm MUST equal
@@ -1521,6 +1551,7 @@ function run() {
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
+  testWalkSeqRejectsUnconsumedChildren();
   testSignatureAlgorithmAgreement();
   testFormatModulesComposeSchema();
   testEcImportDerivesCurve();
