@@ -600,6 +600,13 @@ function testReleaseWaitsForCodex() {
     bad.push({ file: "scripts/release.js", line: 0,
       content: "match the Codex login via _isCodexLogin (tolerating the [bot] suffix), not a strict `.login === CODEX_LOGIN`" });
   }
+  // The current-head review is the NEWEST one; reviews(first:N) fetches the
+  // OLDEST N, so on a PR with many review iterations the head review falls
+  // outside the window and the gate falsely concludes Codex hasn't reviewed.
+  if (/reviews\(first:/.test(src)) {
+    bad.push({ file: "scripts/release.js", line: 0,
+      content: "fetch the newest reviews (reviews(last:N)) for the Codex-reviewed-head lookup — reviews(first:N) misses the current-head review on a many-iteration PR" });
+  }
   bad = _filterMarkers(bad, "release-codex-async-race");
   _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
 }

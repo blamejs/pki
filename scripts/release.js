@@ -568,7 +568,7 @@ function _codexReviewedHead(prNum) {
   var rv = _capture("gh", ["api", "graphql",
     "-f", "query=query { repository(owner:\"" + slug.owner + "\",name:\"" + slug.name +
       "\") { pullRequest(number:" + prNum +
-      ") { reviews(first:50) { nodes { author{login} commit{oid} } } } } }",
+      ") { reviews(last:100) { nodes { author{login} commit{oid} } } } } }",
     "--jq", ".data.repository.pullRequest.reviews.nodes"]);
   var nodes;
   try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
