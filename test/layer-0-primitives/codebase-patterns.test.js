@@ -815,7 +815,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js"]; // + lib/schema-cms.js etc. as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js"]; // + lib/schema-cms.js etc. as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -825,9 +825,13 @@ function testFormatModulesComposeSchema() {
       bad.push({ file: FORMAT_FILES[f], line: 0,
         content: FORMAT_FILES[f] + " hand-rolls a positional-cursor decode (children[idx++]) — declare a schema and schema.walk it; the engine owns positional reads / field ordering / uniqueness" });
     }
-    if (!/schema\.walk\(|pkix\.runParse\(/.test(code)) {
+    // A format parses by composing the schema engine: schema.walk(...) directly,
+    // the shared pkix.runParse(...), or pkix.makeParser({ topSchema, … }) — the
+    // parser factory that binds runParse to the format's identity (both keep the
+    // coerce -> decode -> walk path in pkix, never a hand-written decoder).
+    if (!/schema\.walk\(|pkix\.runParse\(|pkix\.makeParser\(/.test(code)) {
       bad.push({ file: FORMAT_FILES[f], line: 0,
-        content: FORMAT_FILES[f] + " must parse by composing the schema engine — schema.walk(...) directly or the shared pkix.runParse(...), not a hand-written decoder" });
+        content: FORMAT_FILES[f] + " must parse by composing the schema engine — schema.walk(...), the shared pkix.runParse(...), or pkix.makeParser(...), not a hand-written decoder" });
     }
     // Guard-parity: a format must NOT re-implement input coercion / PEM handling
     // / the size cap. Those live ONCE in pkix (coerceToDer / pemDecode / runParse)
@@ -1360,7 +1364,16 @@ function _isBoilerplate(slice) {
   if (requireCalls >= 2) return true;
   if (requireCalls === 1 && slice.length <= 10) return true;
   if (/module\s+\.\s+exports\s+=\s+\{/.test(joined)) return true;
-  var kvPairs = (joined.match(/_ID\s+:\s+_ID\s+,/g) || []).length;
+  // Object-literal key-value runs are JS convention every builder shares, not
+  // extractable logic. Count a `key: <simple value>,` pair for ANY simple value —
+  // an identifier, a `src.prop[.prop…]` access, a string / number / regexp, or a
+  // boolean/null literal. A format parser's `return { … }` (fields mapped off one
+  // source object) and its `makeParser({ pemLabel: "…", ErrorClass: …, … })`
+  // config object are both this shape, so every format's output-assembly + wiring
+  // matches without being a shared primitive — the parse LOGIC is already factored
+  // into pkix.runParse / signedEnvelope / makeParser. (The prior regex counted
+  // only identifier values, so string-valued config objects escaped the filter.)
+  var kvPairs = (joined.match(/_ID\s+:\s+(?:_ID(?:\s+\.\s+_ID)*|_STR|_NUM|_RE|true|false|null)\s+,/g) || []).length;
   if (kvPairs >= 4) return true;
   if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
   var declTokens = toks.filter(function (t) {

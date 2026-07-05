@@ -177,8 +177,27 @@ function testOptionalWhenUniversal() {
   })());
 }
 
+function testImplicitSetOf() {
+  // [tag] IMPLICIT SET OF: the context tag REPLACES the universal SET tag, so the
+  // node is a context-class CONSTRUCTED [tag] whose DIRECT children are the items
+  // (no inner universal SET, no EXPLICIT unwrap). Needed for the PKCS#10 CSR
+  // attributes field ([0] IMPLICIT SET OF Attribute).
+  var spec = S.implicitSetOf(0, S.integerLeaf(), { min: 0, code: "t/bad-attrs", what: "attributes",
+    build: function (m) { return m.items.map(function (it) { return it.value; }); } });
+  check("implicitSetOf reads a context [0] constructed node's children", (function () {
+    var r = walk(spec, b.contextConstructed(0, Buffer.concat([b.integer(1n), b.integer(2n)])));
+    return r.result.length === 2 && r.result[0] === 1n && r.result[1] === 2n;
+  })());
+  check("implicitSetOf accepts an empty [0] (min:0)", walk(spec, b.contextConstructed(0, Buffer.alloc(0))).result.length === 0);
+  check("implicitSetOf rejects a universal SET (must be the [0] tag)", code(function () { walk(spec, b.set([b.integer(1n)])); }) === "t/bad-attrs");
+  check("implicitSetOf rejects the wrong context tag [1]", code(function () { walk(spec, b.contextConstructed(1, b.integer(1n))); }) === "t/bad-attrs");
+  var min1 = S.implicitSetOf(0, S.integerLeaf(), { min: 1, code: "t/bad-attrs2" });
+  check("implicitSetOf min:1 rejects empty [0]", code(function () { walk(min1, b.contextConstructed(0, Buffer.alloc(0))); }) === "t/bad-attrs2");
+}
+
 function run() {
   testLeaves();
+  testImplicitSetOf();
   testSeqAssertAndArity();
   testOptional();
   testTrailing();

@@ -4,7 +4,30 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.7 — 2026-07-05
+## v0.1.8 — 2026-07-05
+
+A PKCS#10 certification-request parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.csr.parse — a PKCS#10 CertificationRequest parser per RFC 2986. It turns a DER Buffer or a 'CERTIFICATE REQUEST' PEM string into a structured object: version, subject distinguished name, subjectPublicKeyInfo, the requested attributes (each with its type OID, resolved name, and raw-DER values), and the signatureAlgorithm / signatureValue over the CertificationRequestInfo — with the raw certificationRequestInfoBytes returned for signature verification. It composes the shared schema engine and PKIX sub-schemas (AlgorithmIdentifier, Name, SubjectPublicKeyInfo), so a certification request inherits the identical fail-closed structural rules and a malformed request throws a typed CsrError (csr/*); a leaf-level codec fault surfaces as asn1/*. The version must be v1 (INTEGER 0), the [0] IMPLICIT attributes element is mandatory, and each attribute's values SET must be non-empty. pki.schema.parse now detects and routes certification requests, and pki.schema.all() lists it alongside crl and x509. pki.schema.csr.pemDecode / pemEncode handle the PEM envelope.
+- pki.asn1.read.enumerated — reads an ENUMERATED value from a decoded node (the same content rules as an INTEGER), the counterpart to the now-strict pki.asn1.read.integer.
+
+### Changed
+
+- C.TIME.ms is renamed to C.TIME.milliseconds, so every C.TIME duration helper now reads as a full word (milliseconds, seconds, minutes, hours, days, weeks). The behaviour is unchanged — it still returns an integer millisecond count.
+
+### Security
+
+- pki.asn1.read.integer now rejects an ENUMERATED-tagged node. INTEGER and ENUMERATED share DER content encoding, so an INTEGER-pinned field — a certificate or certification-request version, a serial number, or a cRLNumber — mis-encoded as ENUMERATED was previously decoded as though it were the INTEGER, a type confusion that let malformed DER parse where a conformant reader rejects it. read.integer is now strict on the tag, and ENUMERATED values are read with the new pki.asn1.read.enumerated. Certificate, CRL, and certification-request parsing reject these inputs fail-closed.
+- SubjectPublicKeyInfo is now required to be a universal SEQUENCE across the certificate and certification-request parsers — a context-tagged or SET-tagged constructed node carrying a well-formed algorithm and key is no longer accepted as an SPKI.
+- SET OF components are now required to be in ascending DER order (X.690 §11.6) wherever the schema declares a SET OF — a relative distinguished name, and a certification request's attributes and attribute values. A non-canonical, unsorted encoding is rejected fail-closed.
+
+### Migration
+
+- Replace C.TIME.ms(n) with C.TIME.milliseconds(n). The other C.TIME and C.BYTES helpers are unchanged.
+
+## v0.1.7 — 2026-07-04
 
 A unified pki.schema family: the structure-schema engine, the X.509 parser, a new CRL parser, and a detect-and-route orchestrator.
 

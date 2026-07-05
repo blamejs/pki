@@ -26,7 +26,7 @@ function crlDer() {
 }
 
 function run() {
-  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["crl", "x509"]));
+  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["csr", "crl", "x509"]));
 
   var certPem = fs.readFileSync(path.join(__dirname, "..", "fixtures", "pkijs-selfsigned-ec.pem"), "utf8");
   var cert = pki.schema.parse(certPem);
@@ -47,14 +47,30 @@ function run() {
   check("bad input → err.code schema/bad-input", code(function () { pki.schema.parse(42); }) === "schema/bad-input");
   check("undecodable DER → err.code schema/bad-der", code(function () { pki.schema.parse(Buffer.from([0x30, 0x80])); }) === "schema/bad-der");
 
-  // A PKCS#10 CSR shares the outer SEQUENCE-of-3 envelope but has no Validity —
-  // it must NOT be misclassified as a certificate; it is an unknown format.
-  var csr = b.sequence([
+  // A CertificationRequestInfo missing the mandatory [0] attributes element (only
+  // 3 children) is neither a certificate (no Validity) nor a well-formed CSR (no
+  // attributes) — it must NOT be misrouted; it is an unknown format.
+  var incompleteCri = b.sequence([
     b.sequence([b.integer(0n), b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("req")])])]), b.sequence([b.sequence([b.oid("1.2.840.10045.2.1")]), b.bitString(Buffer.from([1, 2, 3]), 0)])]),
     b.sequence([b.oid("1.2.840.10045.4.3.2")]),
     b.bitString(Buffer.from([0x00]), 0),
   ]);
-  check("a CSR-shaped envelope is unknown-format (not misrouted to x509)", code(function () { pki.schema.parse(csr); }) === "schema/unknown-format");
+  check("an incomplete CRI (no [0] attributes) is unknown-format (not misrouted)", code(function () { pki.schema.parse(incompleteCri); }) === "schema/unknown-format");
+
+  // A complete PKCS#10 CSR (a 4-child CRI ending in the IMPLICIT [0] attributes)
+  // routes to csr — never misclassified as a certificate or CRL.
+  var completeCsr = b.sequence([
+    b.sequence([
+      b.integer(0n),
+      b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("req.example")])])]),
+      b.sequence([b.sequence([b.oid("1.2.840.10045.2.1"), b.oid("1.2.840.10045.3.1.7")]), b.bitString(Buffer.from([0x04, 1, 2, 3]), 0)]),
+      b.contextConstructed(0, Buffer.alloc(0)),
+    ]),
+    b.sequence([b.oid("1.2.840.10045.4.3.2")]),
+    b.bitString(Buffer.from([0x00]), 0),
+  ]);
+  var routedCsr = pki.schema.parse(completeCsr);
+  check("parse routes a complete CSR to csr", routedCsr.version === 1 && routedCsr.subject.dn === "CN=req.example" && Array.isArray(routedCsr.attributes));
 }
 
 module.exports = { run: run };

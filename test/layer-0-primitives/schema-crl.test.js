@@ -177,6 +177,10 @@ function testExtensionStrictness() {
   })());
   // cRLNumber is INTEGER (0..MAX) — a negative value is malformed.
   check("negative cRLNumber rejected", parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.20", b.integer(-1n))] })) === "crl/bad-extension-value");
+  // cRLNumber is INTEGER — encoded as ENUMERATED (which shares INTEGER's content
+  // encoding) it is a type mismatch, not a valid cRLNumber (fail-open avoided).
+  check("cRLNumber as ENUMERATED rejected (cRLNumber is INTEGER)",
+    parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.20", b.enumerated(42n))] })) === "crl/bad-extension-value");
   // reasonCode must be a DEFINED CRLReason — 7 is unused, 11 is out of range.
   check("reasonCode 7 (unused) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(7n))])] })) === "crl/bad-extension-value");
   check("reasonCode 11 (out of range) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(11n))])] })) === "crl/bad-extension-value");
@@ -184,6 +188,12 @@ function testExtensionStrictness() {
   check("high-bit revoked serial hex preserves DER sign padding (0x80 -> 0080)", (function () {
     var m = parse(crl({ version: 1n, revoked: [revoked(0x80n, utc("2026-02-01T00:00:00Z"))], crlExtensions: [ext("2.5.29.20", b.integer(1n))] }));
     return m.revokedCertificates[0].serialNumberHex === "0080";
+  })());
+  // The revoked-entry serial is CertificateSerialNumber ::= INTEGER — an ENUMERATED
+  // at that position is a type mismatch, rejected fail-closed (not read as a serial).
+  check("revoked-entry serial as ENUMERATED rejected (serial is INTEGER)", (function () {
+    var c = parseCode(crl({ version: 1n, revoked: [b.sequence([b.enumerated(7n), utc("2026-02-01T00:00:00Z")])] }));
+    return c !== "NO-THROW" && (c.indexOf("crl/") === 0 || c.indexOf("asn1/") === 0);
   })());
   // Extension-value decode keys off the stable dotted OID, not the mutable display name.
   check("extension decode survives an OID display-name override", (function () {

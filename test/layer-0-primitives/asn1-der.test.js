@@ -40,6 +40,7 @@ function testRoundTrip() {
     var big = 123456789012345678901234567890n;
     return pki.asn1.read.integer(pki.asn1.decode(b.integer(big))) === big;
   })());
+  check("read.enumerated round-trips 6", pki.asn1.read.enumerated(pki.asn1.decode(b.enumerated(6n))) === 6n);
   check("read.boolean round-trips", pki.asn1.read.boolean(pki.asn1.decode(b.boolean(true))) === true);
   check("read.null round-trips", pki.asn1.read.nullValue(pki.asn1.decode(b.nullValue())) === null);
   check("read.octetString round-trips", pki.asn1.read.octetString(pki.asn1.decode(b.octetString(Buffer.from("hi")))).toString() === "hi");
@@ -71,6 +72,13 @@ function testRejects() {
   check("rejects non-minimal length", code(function () { pki.asn1.decode(Buffer.from("02810100", "hex")); }) === "asn1/non-minimal-length");
   // Non-minimal INTEGER: 02 02 00 01 (leading zero not needed).
   check("rejects non-minimal integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020001", "hex"))); }) === "asn1/non-minimal-integer");
+  // read.integer is strict on the tag: ENUMERATED shares INTEGER's content
+  // encoding but is a distinct universal type, so an INTEGER-pinned field encoded
+  // as ENUMERATED (and vice-versa) is a tag mismatch, never silently coerced.
+  check("read.integer rejects an ENUMERATED node", code(function () { pki.asn1.read.integer(pki.asn1.decode(pki.asn1.build.enumerated(0n))); }) === "asn1/unexpected-tag");
+  check("read.enumerated rejects an INTEGER node", code(function () { pki.asn1.read.enumerated(pki.asn1.decode(pki.asn1.build.integer(0n))); }) === "asn1/unexpected-tag");
+  // read.enumerated shares INTEGER's content rules (non-minimal encoding refused).
+  check("read.enumerated rejects non-minimal content", code(function () { pki.asn1.read.enumerated(pki.asn1.decode(Buffer.from("0a020001", "hex"))); }) === "asn1/non-minimal-integer");
   // Truncated: declares 5 content octets, buffer has 1.
   check("rejects truncated content", code(function () { pki.asn1.decode(Buffer.from("040501", "hex")); }) === "asn1/truncated");
   // Trailing bytes after the top-level value.

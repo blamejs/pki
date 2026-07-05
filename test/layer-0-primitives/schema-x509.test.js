@@ -167,6 +167,31 @@ function testVersionValidation() {
   check("explicit version -1 rejected", code(function () { pki.schema.x509.parse(withVersion(-1n)); }) === "x509/bad-version");
   check("explicitly-encoded default v1 rejected", code(function () { pki.schema.x509.parse(withVersion(0n)); }) === "x509/bad-version");
 
+  // ENUMERATED shares INTEGER's content encoding but is a distinct universal type.
+  // version and serialNumber are INTEGER-pinned, so an ENUMERATED at either
+  // position is a type mismatch, rejected fail-closed (never coerced).
+  var enumVersion = _cert([
+    build.explicit(0, build.enumerated(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), _spki(),
+  ]);
+  var ev = code(function () { pki.schema.x509.parse(enumVersion); });
+  check("cert version encoded as ENUMERATED rejected", typeof ev === "string" && (ev.indexOf("x509/") === 0 || ev.indexOf("asn1/") === 0));
+  var enumSerial = _cert([
+    build.explicit(0, build.integer(2n)), build.enumerated(5n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), _spki(),
+  ]);
+  var es = code(function () { pki.schema.x509.parse(enumSerial); });
+  check("cert serialNumber encoded as ENUMERATED rejected", typeof es === "string" && (es.indexOf("x509/") === 0 || es.indexOf("asn1/") === 0));
+
+  // SubjectPublicKeyInfo MUST be a universal SEQUENCE — a [0]-constructed node
+  // carrying the right children is not a SEQUENCE and must be rejected.
+  var ctxSpki = build.contextConstructed(0, Buffer.concat([_algId("1.2.840.10045.2.1"), build.bitString(Buffer.from([0x04, 1, 2, 3]), 0)]));
+  var certCtxSpki = _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), ctxSpki,
+  ]);
+  check("cert subjectPublicKeyInfo as [0]-constructed (non-SEQUENCE) rejected", code(function () { pki.schema.x509.parse(certCtxSpki); }) === "x509/bad-spki");
+
   // No version field parses as v1.
   var v1 = _cert([
     build.integer(1n),
