@@ -35,6 +35,12 @@ function run() {
   var crl = pki.schema.parse(crlDer());
   check("parse routes a CRL to crl", crl.thisUpdate instanceof Date && Array.isArray(crl.revokedCertificates));
 
+  // A .pem file read with fs.readFileSync arrives as a Buffer of ASCII armor,
+  // not DER — parse must unwrap it, then route.
+  check("parse unwraps + routes a PEM Buffer (readFileSync path)", pki.schema.parse(Buffer.from(certPem, "utf8")).version === 3);
+  // A raw DER Buffer still routes directly.
+  check("parse routes a raw DER Buffer", pki.schema.parse(pki.schema.x509.pemDecode(certPem, "CERTIFICATE")).version === 3);
+
   // Stable schema/* codes: err.code must be the code, not the message
   // (SchemaError is (code, message); the base PkiError is (message, code)).
   check("unknown format → err.code schema/unknown-format", code(function () { pki.schema.parse(b.integer(5n)); }) === "schema/unknown-format");
