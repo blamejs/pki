@@ -376,6 +376,21 @@ function testRejectExtras() {
   var falseCritical = b.sequence([b.oid(ID_PKIX_OCSP_NONCE), b.boolean(false), b.octetString(b.octetString(Buffer.from([1])))]);
   var badExtReq = ocspRequest({ tbs: tbsRequest({ requestExtensions: extensions([falseCritical]) }) });
   check("34. explicit critical FALSE extension rejected", parseReqCode(badExtReq.der) === "ocsp/bad-extension");
+  // 35b. non-octet-aligned signature BIT STRING (unusedBits > 0) is malformed for a
+  //      byte-string signature -> ocsp/bad-signature, on BOTH the response and request.
+  var unalignedResp = basicResponse({ sig: b.bitString(Buffer.from([0xFE]), 1) });
+  check("35b. non-octet-aligned response signature rejected", parseRespCode(basicOcspResponse(unalignedResp)) === "ocsp/bad-signature");
+  var unalignedReq = ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example") }), optionalSignature: signature({ sig: b.bitString(Buffer.from([0xFE]), 1) }) });
+  check("35c. non-octet-aligned request signature rejected", parseReqCode(unalignedReq.der) === "ocsp/bad-signature");
+  // 4c. requestorName directoryName [4] encoded PRIMITIVE (must be constructed) -> reject.
+  check("4c. primitive directoryName requestorName rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextPrimitive(4, Buffer.from([1, 2, 3])) }) }).der) === "ocsp/bad-requestor-name");
+  // 4d. requestorName rfc822Name [1] with a non-IA5 (high) byte -> reject.
+  check("4d. non-IA5 rfc822Name requestorName rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextPrimitive(1, Buffer.from([0x80])) }) }).der) === "ocsp/bad-requestor-name");
+  // 4e. requestorName iPAddress [7] with an invalid length -> reject.
+  check("4e. bad-length iPAddress requestorName rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextPrimitive(7, Buffer.from([1, 2, 3])) }) }).der) === "ocsp/bad-requestor-name");
 }
 
 function run() {
