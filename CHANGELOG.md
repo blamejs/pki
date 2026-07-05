@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.12 — 2026-07-05
+
+SLH-DSA object identifiers corrected and completed to all twelve FIPS 205 parameter sets.
+
+### Fixed
+
+- SLH-DSA OID resolution — id-slh-dsa-shake-128s and id-slh-dsa-shake-256s were mapped to the arcs of id-slh-dsa-sha2-256s (.24) and id-slh-dsa-shake-128f (.27), so pki.oid.name / pki.oid.byName resolved them incorrectly. All twelve Pure SLH-DSA parameter sets (sha2-128s/128f/192s/192f/256s/256f and shake-128s/128f/192s/192f/256s/256f) are now registered at their correct arcs .20 through .31 per RFC 9909 §3; the previously-absent nine sets now resolve as well. WebCrypto SLH-DSA sign/verify was unaffected — it selects by algorithm name, not through the OID registry.
+
 ## v0.1.11 — 2026-07-05
 
 An OCSP request and response parser joins the pki.schema family.

@@ -63,11 +63,36 @@ function testDer() {
   });
 }
 
+// RFC 9909 §3 — the 12 Pure SLH-DSA parameter-set OIDs under sigAlgs
+// (2.16.840.1.101.3.4.3), assigned sequentially: the SHA-2 sets .20-.25, then the
+// SHAKE sets .26-.31. Every id-slh-dsa-* name must round-trip to its exact arc.
+function testSlhDsa() {
+  var SIG = "2.16.840.1.101.3.4.3.";
+  var expect = {
+    "id-slh-dsa-sha2-128s": 20, "id-slh-dsa-sha2-128f": 21,
+    "id-slh-dsa-sha2-192s": 22, "id-slh-dsa-sha2-192f": 23,
+    "id-slh-dsa-sha2-256s": 24, "id-slh-dsa-sha2-256f": 25,
+    "id-slh-dsa-shake-128s": 26, "id-slh-dsa-shake-128f": 27,
+    "id-slh-dsa-shake-192s": 28, "id-slh-dsa-shake-192f": 29,
+    "id-slh-dsa-shake-256s": 30, "id-slh-dsa-shake-256f": 31,
+  };
+  Object.keys(expect).forEach(function (nm) {
+    var dotted = SIG + expect[nm];
+    check("byName(" + nm + ") -> ." + expect[nm], pki.oid.byName(nm) === dotted);
+    check("name(." + expect[nm] + ") -> " + nm, pki.oid.name(dotted) === nm);
+  });
+  // The two arcs that were historically swapped: .24 is sha2-256s (not shake-128s),
+  // .27 is shake-128f (not shake-256s) — pin them explicitly.
+  check(".24 is sha2-256s", pki.oid.name(SIG + "24") === "id-slh-dsa-sha2-256s");
+  check(".27 is shake-128f", pki.oid.name(SIG + "27") === "id-slh-dsa-shake-128f");
+}
+
 function run() {
   testRegistry();
   testRegister();
   testArcs();
   testDer();
+  testSlhDsa();
 }
 
 module.exports = { run: run };
