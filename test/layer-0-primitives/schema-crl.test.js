@@ -172,11 +172,36 @@ function testExtensionStrictness() {
   // reasonCode must be a DEFINED CRLReason — 7 is unused, 11 is out of range.
   check("reasonCode 7 (unused) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(7n))])] })) === "crl/bad-extension-value");
   check("reasonCode 11 (out of range) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(11n))])] })) === "crl/bad-extension-value");
+  // serialNumberHex uses the raw INTEGER content bytes (matches x509, preserves DER sign padding).
+  check("high-bit revoked serial hex preserves DER sign padding (0x80 -> 0080)", (function () {
+    var m = parse(crl({ version: 1n, revoked: [revoked(0x80n, utc("2026-02-01T00:00:00Z"))], crlExtensions: [ext("2.5.29.20", b.integer(1n))] }));
+    return m.revokedCertificates[0].serialNumberHex === "0080";
+  })());
+  // Extension-value decode keys off the stable dotted OID, not the mutable display name.
+  check("extension decode survives an OID display-name override", (function () {
+    var dotted = pki.oid.byName("cRLNumber");
+    var orig = pki.oid.name(dotted);
+    pki.oid.register(dotted, "cRLNumberRenamed");
+    try {
+      return parse(crl({ version: 1n, crlExtensions: [ext("2.5.29.20", b.integer(5n))] })).crlExtensions[0].value === 5n;
+    } finally { pki.oid.register(dotted, orig); }
+  })());
   // The CRL PEM decoder caps input size before scanning / base64-decoding.
   check("oversized CRL PEM rejected before decode (pem/too-large)", (function () {
     var huge = "-----BEGIN X509 CRL-----\n" + "A".repeat(pki.constants.LIMITS.PEM_MAX_BYTES) + "\n-----END X509 CRL-----";
     return code(function () { pki.schema.crl.parse(huge); }) === "pem/too-large";
   })());
+}
+
+// ---- input coercion (parity with the certificate parser) -------------
+function testInputCoercion() {
+  var der = crl({});
+  var pem = "-----BEGIN X509 CRL-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END X509 CRL-----";
+  check("crl.parse accepts a DER Buffer", parse(der).thisUpdate instanceof Date);
+  check("crl.parse accepts a PEM string", parse(pem).thisUpdate instanceof Date);
+  check("crl.parse accepts a PEM Buffer (readFileSync path)", parse(Buffer.from(pem, "utf8")).thisUpdate instanceof Date);
+  check("crl.parse accepts a Uint8Array DER", parse(new Uint8Array(der)).thisUpdate instanceof Date);
+  check("crl.parse rejects a non-buffer/string input", parseCode(42) === "crl/bad-input");
 }
 
 // ---- multi-defect fail-closed ----------------------------------------
@@ -193,6 +218,7 @@ function run() {
   testOptionalDisambiguation();
   testExtensions();
   testExtensionStrictness();
+  testInputCoercion();
   testMultiDefectFailClosed();
 }
 

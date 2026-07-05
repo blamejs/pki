@@ -825,9 +825,17 @@ function testFormatModulesComposeSchema() {
       bad.push({ file: FORMAT_FILES[f], line: 0,
         content: FORMAT_FILES[f] + " hand-rolls a positional-cursor decode (children[idx++]) — declare a schema and schema.walk it; the engine owns positional reads / field ordering / uniqueness" });
     }
-    if (!/schema\.walk\(/.test(code)) {
+    if (!/schema\.walk\(|pkix\.runParse\(/.test(code)) {
       bad.push({ file: FORMAT_FILES[f], line: 0,
-        content: FORMAT_FILES[f] + " must parse by composing schema.walk(...), not a hand-written decoder" });
+        content: FORMAT_FILES[f] + " must parse by composing the schema engine — schema.walk(...) directly or the shared pkix.runParse(...), not a hand-written decoder" });
+    }
+    // Guard-parity: a format must NOT re-implement input coercion / PEM handling
+    // / the size cap. Those live ONCE in pkix (coerceToDer / pemDecode / runParse)
+    // so a new format cannot diverge on a guard the way the CRL first did (its
+    // own pemDecode missed the size cap; its parse() missed PEM-buffer handling).
+    if (/\bPEM_RE\s*=|input\.length\s*>=\s*5|LIMITS\.PEM_MAX_BYTES/.test(code)) {
+      bad.push({ file: FORMAT_FILES[f], line: 0,
+        content: FORMAT_FILES[f] + " hand-rolls PEM / input-coercion guards (PEM_RE / the '-----' sniff / the size cap) — compose pkix.pemDecode / pkix.runParse so guard parity is structural, not copied per format" });
     }
   }
   bad = _filterMarkers(bad, "format-must-compose-schema");
