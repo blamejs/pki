@@ -145,15 +145,22 @@ function testAcceptTstInfo() {
   var t = pki.schema.tsp.parseTstInfo(tstInfo({ tsa: b.contextPrimitive(2, Buffer.from("tsa@ca.example", "latin1")) }));
   check("7. tsa surfaced raw", t.tsa && Buffer.isBuffer(t.tsa.bytes) && t.tsa.tagNumber === 2);
   check("7b. non-GeneralName tsa rejected", tstCode(tstInfo({ tsa: b.integer(5n) })) === "tsp/bad-tsa");
+  // 7c. a malformed GeneralName ALTERNATIVE (3-octet iPAddress [7]) is now rejected —
+  //     tsa routes through the shared pkix.generalName form/content validator.
+  check("7c. malformed tsa alternative rejected", tstCode(tstInfo({ tsa: b.contextPrimitive(7, Buffer.from([1, 2, 3])) })) === "tsp/bad-tsa");
+  // 7d. a valid rfc822Name [1] tsa -> accept (7-bit IA5, primitive).
+  check("7d. valid rfc822Name tsa accepted", pki.schema.tsp.parseTstInfo(tstInfo({ tsa: b.contextPrimitive(1, Buffer.from("tsa@ca.example", "latin1")) })).tsa.tagNumber === 1);
   var e = pki.schema.tsp.parseTstInfo(tstInfo({ extensions: [extension("1.3.6.1.5.5.7.48.1.2")] }));
   check("8. extensions [1] IMPLICIT decoded", Array.isArray(e.extensions) && e.extensions.length === 1 && typeof e.extensions[0].oid === "string");
   var big = Buffer.from("00ffffffffffffffff", "hex"); // 9-byte positive with sign pad
   var bs = pki.schema.tsp.parseTstInfo(tstInfo({ serial: pki.asn1.encode(0x00, false, TAGS.INTEGER, big) }));
   check("9. big serial lossless hex", bs.serialNumberHex === "00ffffffffffffffff" && typeof bs.serialNumber === "bigint");
   var fr = pki.schema.tsp.parseTstInfo(tstInfo({ genTime: genRaw("20260705120000.5Z") }));
-  check("10. fractional genTime sub-second", fr.genTime.getUTCMilliseconds() === 500);
-  // 10b. a genTime fraction finer than millisecond precision is rejected (no silent truncation).
-  check("10b. sub-millisecond genTime fraction rejected", tstCode(tstInfo({ genTime: genRaw("20260705120000.1234Z") })) === "asn1/bad-generalizedtime");
+  check("10. fractional genTime sub-second", fr.genTime.getUTCMilliseconds() === 500 && fr.genTimeFraction === "5");
+  // 10b. a sub-millisecond genTime (RFC 3161 §2.4.2 permits any fraction length) is
+  //      accepted; genTime is ms-precision and genTimeFraction carries the exact digits.
+  var sub = pki.schema.tsp.parseTstInfo(tstInfo({ genTime: genRaw("20260705120000.34352Z") }));
+  check("10b. sub-millisecond genTime accepted, fraction lossless", sub.genTime.getUTCMilliseconds() === 343 && sub.genTimeFraction === "34352");
 }
 
 // ---- REJECT — TSTInfo ------------------------------------------------
@@ -186,20 +193,24 @@ function testRejectTstInfo() {
 function testResp() {
   var g = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: timeStampToken(tstInfo({})) }));
   check("32. granted response: status 0 + decoded token", g.status === 0 && g.timeStampToken.tstInfo.version === 1);
-  // 32b. a granted response whose token is not a well-formed CMS TimeStampToken -> reject.
-  check("32b. granted response with a malformed token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: b.sequence([b.integer(5n)]) })) !== "NO-THROW");
-  var badRequestBit = b.bitString(Buffer.from([0x20]), 0); // bit 2 set (badRequest)
+  // 32b. a granted response whose token is not a well-formed CMS TimeStampToken -> a
+  //      typed TspError (not a leaked CmsError), so tsp.parse keeps its contract.
+  check("32b. granted response with a malformed token -> tsp/bad-token", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: b.sequence([b.integer(5n)]) })) === "tsp/bad-token");
+  var badRequestBit = b.bitString(Buffer.from([0x20]), 5); // bit 2 set (badRequest), canonical NamedBitList
   var rej = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: badRequestBit }) }));
   check("33. rejection: status 2, failInfo named bits, no token", rej.status === 2 && rej.failInfo.bits.indexOf("badRequest") !== -1 && rej.timeStampToken === null);
+  // 33b. a non-minimal PKIFailureInfo NamedBitList (trailing zero bits not removed) -> reject.
+  check("33b. non-minimal failInfo rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: b.bitString(Buffer.from([0x20]), 0) }) })) === "tsp/bad-failinfo");
   check("34. status ENUMERATED rejected", respCode(timeStampResp({ status: b.sequence([b.enumerated(0n)]) })) === "asn1/unexpected-tag");
   check("35. status 6 (outside 0..5) rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 6 }) })) === "tsp/bad-status");
   check("36. granted without token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0 }) })) === "tsp/missing-token");
   check("37. rejection WITH token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2 }), token: timeStampToken(tstInfo({})) })) === "tsp/unexpected-token");
   check("39. statusString non-UTF8 rejected", respCode(timeStampResp({ status: b.sequence([b.integer(0n), b.sequence([b.printable("hi")])]), token: timeStampToken(tstInfo({})) })) !== "NO-THROW");
-  // 39b. an unsupported PKIFailureInfo bit (bit 1) -> reject (RFC 3161 §2.4.2).
-  check("39b. unsupported failInfo bit rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: b.bitString(Buffer.from([0x40]), 0) }) })) === "tsp/bad-failinfo");
+  // 39b. an unsupported PKIFailureInfo bit (bit 1) -> reject (RFC 3161 §2.4.2). bit 1
+  //      is 0x40 with a canonical unusedBits of 6, so this probes the value check.
+  check("39b. unsupported failInfo bit rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: b.bitString(Buffer.from([0x40]), 6) }) })) === "tsp/bad-failinfo");
   // 39c. a granted response carrying failInfo is contradictory -> reject.
-  check("39c. granted + failInfo rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0, failInfo: b.bitString(Buffer.from([0x20]), 0) }), token: timeStampToken(tstInfo({})) })) === "tsp/unexpected-failinfo");
+  check("39c. granted + failInfo rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0, failInfo: b.bitString(Buffer.from([0x20]), 5) }), token: timeStampToken(tstInfo({})) })) === "tsp/unexpected-failinfo");
   // 39d. an empty PKIFreeText statusString (SIZE 1..MAX) -> reject.
   check("39d. empty statusString rejected", respCode(timeStampResp({ status: b.sequence([b.integer(2n), b.sequence([])]) })) === "tsp/bad-status-info");
 }
@@ -225,6 +236,10 @@ function testToken() {
   var tokDer = timeStampToken(tstInfo({}));
   var pem = "-----BEGIN TIMESTAMP TOKEN-----\n" + tokDer.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END TIMESTAMP TOKEN-----\n";
   check("44b. non-CMS-labeled PEM token accepted", tokenCode(pem) === "NO-THROW");
+  // 44c. a token that is not a well-formed CMS message throws a typed TspError, never a
+  //      leaked CmsError (parseToken wraps the composed cms.parse).
+  var c44c = tokenCode(b.sequence([b.integer(5n)]));
+  check("44c. malformed token -> tsp/bad-token (typed)", c44c === "tsp/bad-token");
 }
 
 // ---- Dispatch + coercion ---------------------------------------------

@@ -168,7 +168,11 @@ function testFractionalTimeAndImplicitInteger() {
   check("allowFractional .5Z -> 500ms", frac("20260705120000.5Z").getUTCMilliseconds() === 500);
   check("allowFractional .34Z -> 340ms", frac("20260705120000.34Z").getUTCMilliseconds() === 340);
   check("allowFractional trailing-zero .500Z rejected", code(function () { frac("20260705120000.500Z"); }) === "asn1/bad-generalizedtime");
-  check("allowFractional >3-digit .1234Z rejected (ms precision)", code(function () { frac("20260705120000.1234Z"); }) === "asn1/bad-generalizedtime");
+  // X.690 §11.7 caps the fraction length at nothing; RFC 3161 §2.4.2's own example is
+  // 5 fraction digits — accept any length (the Date is ms-precision; the raw bytes
+  // carry the exact fraction losslessly).
+  check("allowFractional >3-digit .1234Z accepted (ms Date)", frac("20260705120000.1234Z").getUTCMilliseconds() === 123);
+  check("allowFractional RFC 3161 example .34352Z accepted", frac("19990609001326.34352Z").getUTCMilliseconds() === 343);
   check("allowFractional empty .Z rejected", code(function () { frac("20260705120000.Z"); }) === "asn1/bad-generalizedtime");
   check("allowFractional comma ,5Z rejected", code(function () { frac("20260705120000,5Z"); }) === "asn1/bad-generalizedtime");
   check("allowFractional no seconds rejected", code(function () { frac("202607051200Z"); }) === "asn1/bad-generalizedtime");

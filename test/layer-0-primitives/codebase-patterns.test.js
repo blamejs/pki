@@ -723,6 +723,7 @@ function testTspConformanceGuards() {
     ['"tsp/unexpected-token"',      "a non-granted TimeStampResp carries no token (§2.4.2)"],
     ['"tsp/wrong-econtent-type"',   "a token must encapsulate id-ct-TSTInfo (§2.4.2)"],
     ['"tsp/multi-signer"',          "a token has exactly one (TSA) signerInfo (§2.4.2)"],
+    ['"tsp/bad-token"',             "a malformed token surfaces a typed TspError, not a leaked CmsError (§2.4.2)"],
     ['"tsp/detached-token"',        "a token must carry attached eContent (§2.4.2)"],
   ];
   var bad = [];
