@@ -269,6 +269,12 @@ function testCompleteness() {
   check("25b. duplicate signed-attribute type rejected",
     parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(ST_ATTR, [b.octetString(Buffer.from([1]))]), attribute(ST_ATTR, [b.octetString(Buffer.from([2]))])] })]) })) === "cms/duplicate-signed-attr");
 
+  // 25c. content-type signed-attr value is syntactically valid but differs from
+  //      the eContentType (id-data content carrying an id-ct-TSTInfo content-type
+  //      attribute) -> reject; §5.3 requires the two OIDs to match.
+  check("25c. content-type attr != eContentType rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_CT_TSTINFO), messageDigestAttr([1])] })]) })) === "cms/content-type-mismatch");
+
   // 28. malformed IssuerAndSerialNumber (issuer not a Name) -> reject.
   check("28. malformed IssuerAndSerial rejected",
     parseCode(cms({ signers: b.set([signerInfo({ sid: b.sequence([b.integer(9n), b.integer(1n)]) })]) })) !== "NO-THROW");

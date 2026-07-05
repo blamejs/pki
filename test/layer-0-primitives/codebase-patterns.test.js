@@ -649,6 +649,7 @@ function testCmsSignedDataConformanceGuards() {
     ['"cms/missing-content-type"',   "signedAttrs must contain a content-type attribute (§11.1)"],
     ['"cms/missing-message-digest"', "signedAttrs must contain a message-digest attribute (§11.2)"],
     ['"cms/duplicate-signed-attr"',  "no signed-attribute type repeats (§5.3)"],
+    ['"cms/content-type-mismatch"',  "content-type signed-attr value equals the eContentType (§5.3)"],
     ['asn1.read.oid',                "content-type signed-attr value payload validated, not just its tag (§11.1)"],
     ['asn1.read.octetString',        "message-digest signed-attr value payload validated (§11.2)"],
   ];
