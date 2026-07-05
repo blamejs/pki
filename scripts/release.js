@@ -588,22 +588,22 @@ function cmdPushFix(opts) {
   _run("git", ["commit", "-s", "-m", opts.message]);   // -s DCO; NOT --amend (head must move)
   _ok("signed fix commit");
 
-  // gitleaks (git mode) scans COMMITTED history, so it runs AFTER the commit so
-  // the fix itself is scanned (scanning before would only see prior commits and
-  // miss a secret in the fix). But if it FIRES the secret is already in local
-  // history and every later scan would keep failing — dead-ending the one-step
-  // recovery — so roll the commit back (soft reset keeps the fix staged) and
-  // stop, so the operator removes the secret and re-runs clean. Nothing reached
-  // the remote: the push is still ahead.
+  // Every post-commit / pre-push gate rolls the fix commit back on failure, so a
+  // failed gate never dead-ends at the clean-tree guard — the operator fixes the
+  // cause (a leaked secret, a broken SSH-signing setup) and re-runs push-fix
+  // cleanly. gitleaks runs here, AFTER the commit, so the fix itself is scanned
+  // (scanning before would miss a secret in it); the signature verify catches an
+  // unsigned/badly-signed commit before it reaches the remote. On either failure
+  // a soft reset keeps the fix staged, and nothing reached the remote (the push
+  // is still ahead).
   try {
     _gitleaks();
-  } catch {
+    _verifyCommitSignature("new");
+  } catch (gate) {
     _run("git", ["reset", "--soft", "HEAD~1"]);
-    throw new Error("release: gitleaks found a secret in the fix — the commit was rolled back " +
-      "(your changes are kept staged). Remove the secret, then re-run push-fix.");
+    throw new Error("release: a pre-push gate failed — the fix commit was rolled back " +
+      "(your changes are kept staged). Fix the cause, then re-run push-fix.\n" + (gate.message || String(gate)));
   }
-
-  _verifyCommitSignature("new");
 
   _section("push");
   _run("git", ["push"]);   // branch already tracks origin from the initial push
