@@ -156,6 +156,26 @@ function testTimeOutOfRange() {
   check("GeneralizedTime year 0050 stays year 50", readGen("00500101000000Z").getUTCFullYear() === 50);
 }
 
+function testFractionalTimeAndImplicitInteger() {
+  var b = pki.asn1.build, TAGS = pki.asn1.TAGS;
+  function readGen(s) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.GENERALIZED_TIME, Buffer.from(s, "latin1")))); }
+  // RFC 3161 / X.690 §11.7 fractional-seconds GeneralizedTime, surfaced at ms precision.
+  check("fractional .5Z -> 500ms", readGen("20260705120000.5Z").getUTCMilliseconds() === 500);
+  check("fractional .34Z -> 340ms", readGen("20260705120000.34Z").getUTCMilliseconds() === 340);
+  check("fractional trailing-zero .500Z rejected", code(function () { readGen("20260705120000.500Z"); }) === "asn1/bad-generalizedtime");
+  check("fractional empty .Z rejected", code(function () { readGen("20260705120000.Z"); }) === "asn1/bad-generalizedtime");
+  check("fractional comma ,5Z rejected", code(function () { readGen("20260705120000,5Z"); }) === "asn1/bad-generalizedtime");
+  check("GeneralizedTime no seconds rejected", code(function () { readGen("202607051200Z"); }) === "asn1/bad-generalizedtime");
+  check("GeneralizedTime no Z rejected", code(function () { readGen("20260705120000"); }) === "asn1/bad-generalizedtime");
+  // read.integerImplicit — [tag] IMPLICIT INTEGER (the RFC 3161 Accuracy millis/micros shape).
+  function ii(tag, n) { return pki.asn1.decode(b.contextPrimitive(tag, b.integer(BigInt(n)).slice(2))); }
+  check("read.integerImplicit reads a [0] IMPLICIT INTEGER", pki.asn1.read.integerImplicit(ii(0, 999), 0) === 999n);
+  check("read.integerImplicit rejects a universal INTEGER", code(function () { pki.asn1.read.integerImplicit(pki.asn1.decode(b.integer(5n)), 0); }) === "asn1/unexpected-tag");
+  check("read.integerImplicit rejects the wrong context tag", code(function () { pki.asn1.read.integerImplicit(ii(1, 5), 0); }) === "asn1/unexpected-tag");
+  check("read.integerImplicit rejects a constructed [0]", code(function () { pki.asn1.read.integerImplicit(pki.asn1.decode(b.contextConstructed(0, b.integer(5n))), 0); }) === "asn1/expected-primitive");
+  check("read.integerImplicit enforces minimal INTEGER", code(function () { pki.asn1.read.integerImplicit(pki.asn1.decode(b.contextPrimitive(0, Buffer.from([0x00, 0x05]))), 0); }) === "asn1/non-minimal-integer");
+}
+
 function testBitStringUnusedBits() {
   var TAGS = pki.asn1.TAGS;
   // FIX 3 — DER requires the declared unused low bits to be zero.
@@ -375,6 +395,7 @@ function run() {
   testRejects();
   testIntegerAndOidCaps();
   testTimeOutOfRange();
+  testFractionalTimeAndImplicitInteger();
   testBitStringUnusedBits();
   testUniversalStringScalarRange();
   testUtcTimeYearRange();

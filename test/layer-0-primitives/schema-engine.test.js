@@ -235,11 +235,38 @@ function testImplicitNull() {
   check("assert:constructed rejects a context [1] PRIMITIVE node", code(function () { walk(conSeq, b.contextPrimitive(1, Buffer.from([0x01]))); }) === "t/bad-con-seq");
 }
 
+function testImplicitInteger() {
+  // [tag] IMPLICIT INTEGER: a context-class PRIMITIVE node whose content is an
+  // integer body — the RFC 3161 Accuracy millis [0] / micros [1] fields.
+  function ii(tag, n) { return b.contextPrimitive(tag, b.integer(BigInt(n)).slice(2)); } // strip the 0x02 len header
+  var leaf = S.implicitInteger(0);
+  check("implicitInteger reads a [0] IMPLICIT INTEGER", walk(leaf, ii(0, 500)) === 500n);
+  check("implicitInteger rejects a universal INTEGER", code(function () { walk(leaf, b.integer(5n)); }) === "asn1/unexpected-tag");
+  check("implicitInteger rejects the wrong context tag [1]", code(function () { walk(leaf, ii(1, 5)); }) === "asn1/unexpected-tag");
+  check("implicitInteger rejects a constructed [0]", code(function () { walk(leaf, b.contextConstructed(0, b.integer(5n))); }) === "asn1/expected-primitive");
+  check("implicitInteger enforces minimal INTEGER", code(function () { walk(leaf, b.contextPrimitive(0, Buffer.from([0x00, 0x05]))); }) === "asn1/non-minimal-integer");
+  check("integerLeaf() still rejects a [0] context node", code(function () { walk(S.integerLeaf(), ii(0, 5)); }) === "asn1/unexpected-tag");
+}
+
+function testImplicitSeqOf() {
+  // [tag] IMPLICIT SEQUENCE OF item: order-preserving, so (unlike implicitSetOf) it
+  // accepts DER-descending members — the RFC 3161 extensions [1] IMPLICIT shape.
+  var seqOf = S.implicitSeqOf(1, S.integerLeaf(), { code: "t/bad-seqof" });
+  var descending = b.contextConstructed(1, Buffer.concat([b.integer(9n), b.integer(1n)]));
+  check("implicitSeqOf reads a [1] IMPLICIT SEQUENCE OF (order-preserving)", walk(seqOf, descending).items.length === 2);
+  // Anti-regression: implicitSetOf still imposes the SET ascending-order rule.
+  var setOf = S.implicitSetOf(1, S.integerLeaf(), { code: "t/bad-setof" });
+  check("implicitSetOf still rejects a descending pair (derSetOrder)", code(function () { walk(setOf, descending); }) === "t/bad-setof");
+  check("implicitSeqOf rejects a universal SEQUENCE (wrong tag)", code(function () { walk(seqOf, b.sequence([b.integer(1n)])); }) === "t/bad-seqof");
+}
+
 function run() {
   testLeaves();
   testImplicitSetOf();
   testImplicitBitString();
   testImplicitNull();
+  testImplicitInteger();
+  testImplicitSeqOf();
   testSeqAssertAndArity();
   testOptional();
   testTrailing();

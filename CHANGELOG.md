@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.13 — 2026-07-05
+
+An RFC 3161 timestamp parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.tsp — an RFC 3161 timestamp parser. pki.schema.tsp.parse turns a DER Buffer or PEM into a TimeStampResp ({ status, statusString, failInfo, timeStampToken }) with the granted-carries-token / rejected-carries-none coupling enforced (tsp/missing-token, tsp/unexpected-token) and the PKIFailureInfo named bits decoded. pki.schema.tsp.parseToken parses a TimeStampToken by composing pki.schema.cms.parse and asserting the id-ct-TSTInfo content type (tsp/wrong-econtent-type), attached content (tsp/detached-token), and the single (TSA) signer (tsp/multi-signer), returning the decoded TSTInfo plus the signer material. pki.schema.tsp.parseTstInfo decodes a bare TSTInfo. The TSTInfo mandatory version-1, the GeneralizedTime-only genTime, the accuracy 1..999 range, the ordering DEFAULT FALSE omission, and the PKIStatus 0..5 range are all enforced fail-closed. pki.schema.parse detect-and-routes a TimeStampResp.
+- The codec and schema engine gain three composable primitives that TSP required: pki.asn1.read.integerImplicit / pki.schema.engine.implicitInteger(tag) (a context-tagged IMPLICIT INTEGER, for the Accuracy millis / micros fields); pki.schema.engine.implicitSeqOf(tag, item) (an order-preserving IMPLICIT SEQUENCE OF, the sibling of implicitSetOf without the SET ordering rule, for the extensions field); and RFC 3161 / X.690 §11.7 fractional-seconds GeneralizedTime support in pki.asn1.read.time (a '.'-separated, trailing-zero-free, Z-terminated fraction, surfaced at millisecond precision).
+- The OID registry gains the id-kp extended-key-purpose family (including id-kp-timeStamping) and the id-aa S/MIME authenticated-attribute family (signingCertificate / signingCertificateV2 / timeStampToken), so a parsed TSA certificate's key purpose and a signer's ESS binding attribute resolve by name.
+
 ## v0.1.12 — 2026-07-05
 
 SLH-DSA object identifiers corrected and completed to all twelve FIPS 205 parameter sets.
