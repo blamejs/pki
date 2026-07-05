@@ -27,6 +27,13 @@ function name(cn) { return b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.ut
 function spki() { return b.sequence([b.sequence([b.oid("1.2.840.10045.2.1"), b.oid("1.2.840.10045.3.1.7")]), b.bitString(Buffer.from([0x04, 0x01, 0x02, 0x03]), 0)]); }
 function attribute(t, vals) { return b.sequence([b.oid(t), b.set(vals)]); }
 function attrs(list) { return b.contextConstructed(0, list.length ? Buffer.concat(list) : Buffer.alloc(0)); }
+// A raw universal SET (tag 0x31) over the given element TLVs in the ORDER GIVEN —
+// unlike b.set it does NOT sort, so it can encode a non-canonical (unsorted) SET
+// for the DER §11.6 ordering vectors. Short-form length only (body < 128 bytes).
+function rawSetOf(children) {
+  var body = Buffer.concat(children);
+  return Buffer.concat([Buffer.from([0x31, body.length]), body]);
+}
 function cri(o) {
   o = o || {};
   var c = [];
@@ -89,6 +96,19 @@ function testOuterAndCri() {
   check("CRI not a SEQUENCE (a SET) rejected", parseCode(csr({ criNode: b.set([b.integer(0n), name("x"), spki(), attrs([])]) })) === "csr/bad-cri");
   check("CRI missing the required attributes [0] rejected", parseCode(csr({ cri: { attrNode: null } })) === "csr/bad-cri");
   check("subjectPKInfo malformed rejected", parseCode(csr({ cri: { spki: b.sequence([b.sequence([b.oid("1.2.840.10045.2.1")])]) } })) === "csr/bad-spki");
+  // SubjectPublicKeyInfo MUST be a universal SEQUENCE — a [0]-tagged constructed
+  // node carrying the right children is NOT a SEQUENCE and must be rejected (no
+  // constructed-any leniency).
+  var spkiCtx = b.contextConstructed(0, Buffer.concat([b.sequence([b.oid("1.2.840.10045.2.1"), b.oid("1.2.840.10045.3.1.7")]), b.bitString(Buffer.from([0x04, 1, 2, 3]), 0)]));
+  check("subjectPKInfo as [0]-constructed (non-SEQUENCE) rejected", parseCode(csr({ cri: { spki: spkiCtx } })) === "csr/bad-spki");
+  // DER §11.6 — the RDN SET and the attributes SET OF must be in ascending encoded
+  // order. An unsorted encoding is non-canonical, rejected fail-closed.
+  var rdnUnsorted = b.sequence([rawSetOf([b.sequence([b.oid("2.5.4.3"), b.utf8("b")]), b.sequence([b.oid("2.5.4.3"), b.utf8("a")])])]);
+  check("unsorted RDN SET rejected (DER ascending order)", parseCode(csr({ cri: { subject: rdnUnsorted } })) === "csr/bad-rdn");
+  var attrsUnsorted = attrs([attribute(CHALLENGE, [b.printable("y")]), attribute(CHALLENGE, [b.printable("x")])]);
+  check("unsorted [0] SET OF attributes rejected (DER ascending order)", parseCode(csr({ cri: { attrNode: attrsUnsorted } })) === "csr/bad-attributes");
+  var valuesUnsorted = attrs([b.sequence([b.oid(CHALLENGE), rawSetOf([b.printable("b"), b.printable("a")])])]);
+  check("unsorted Attribute values SET rejected (DER ascending order)", parseCode(csr({ cri: { attrNode: valuesUnsorted } })) === "csr/bad-attribute-values");
 }
 
 function testAttributes() {

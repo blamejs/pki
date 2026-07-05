@@ -8,7 +8,9 @@
       "pki.asn1.read.enumerated — reads an ENUMERATED value from a decoded node (the same content rules as an INTEGER), the counterpart to the now-strict pki.asn1.read.integer."
     ],
     "Security": [
-      "pki.asn1.read.integer now rejects an ENUMERATED-tagged node. INTEGER and ENUMERATED share DER content encoding, so an INTEGER-pinned field — a certificate or certification-request version, a serial number, or a cRLNumber — mis-encoded as ENUMERATED was previously decoded as though it were the INTEGER, a type confusion that let malformed DER parse where a conformant reader rejects it. read.integer is now strict on the tag, and ENUMERATED values are read with the new pki.asn1.read.enumerated. Certificate, CRL, and certification-request parsing reject these inputs fail-closed."
+      "pki.asn1.read.integer now rejects an ENUMERATED-tagged node. INTEGER and ENUMERATED share DER content encoding, so an INTEGER-pinned field — a certificate or certification-request version, a serial number, or a cRLNumber — mis-encoded as ENUMERATED was previously decoded as though it were the INTEGER, a type confusion that let malformed DER parse where a conformant reader rejects it. read.integer is now strict on the tag, and ENUMERATED values are read with the new pki.asn1.read.enumerated. Certificate, CRL, and certification-request parsing reject these inputs fail-closed.",
+      "SubjectPublicKeyInfo is now required to be a universal SEQUENCE across the certificate and certification-request parsers — a context-tagged or SET-tagged constructed node carrying a well-formed algorithm and key is no longer accepted as an SPKI.",
+      "SET OF components are now required to be in ascending DER order (X.690 §11.6) wherever the schema declares a SET OF — a relative distinguished name, and a certification request's attributes and attribute values. A non-canonical, unsorted encoding is rejected fail-closed."
     ]
   }
 }

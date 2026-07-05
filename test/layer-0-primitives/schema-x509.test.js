@@ -183,6 +183,15 @@ function testVersionValidation() {
   var es = code(function () { pki.schema.x509.parse(enumSerial); });
   check("cert serialNumber encoded as ENUMERATED rejected", typeof es === "string" && (es.indexOf("x509/") === 0 || es.indexOf("asn1/") === 0));
 
+  // SubjectPublicKeyInfo MUST be a universal SEQUENCE — a [0]-constructed node
+  // carrying the right children is not a SEQUENCE and must be rejected.
+  var ctxSpki = build.contextConstructed(0, Buffer.concat([_algId("1.2.840.10045.2.1"), build.bitString(Buffer.from([0x04, 1, 2, 3]), 0)]));
+  var certCtxSpki = _cert([
+    build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), ctxSpki,
+  ]);
+  check("cert subjectPublicKeyInfo as [0]-constructed (non-SEQUENCE) rejected", code(function () { pki.schema.x509.parse(certCtxSpki); }) === "x509/bad-spki");
+
   // No version field parses as v1.
   var v1 = _cert([
     build.integer(1n),
