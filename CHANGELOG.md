@@ -4,7 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.8 — 2026-07-05
+## v0.1.9 — 2026-07-05
+
+A PKCS#8 private-key parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.pkcs8.parse — a PKCS#8 PrivateKeyInfo / OneAsymmetricKey parser per RFC 5208 §5 and RFC 5958 §2. It turns a DER Buffer or a 'PRIVATE KEY' PEM string into { version, privateKeyAlgorithm, privateKey, attributes, publicKey }, where privateKey is the raw OCTET STRING content (the inner RSA/EC/curve key, decoded by the caller via privateKeyAlgorithm.oid) and publicKey is present only for a v2 key. The version must be v1 (0) or v2 (1), and a [1] public key is permitted only in a v2 key (both directions enforced). A malformed key throws a typed Pkcs8Error (pkcs8/*); a leaf-level codec fault surfaces as asn1/*. pki.schema.pkcs8.pemDecode / pemEncode handle the PEM envelope.
+- pki.schema.pkcs8.parseEncrypted — recognizes an EncryptedPrivateKeyInfo ('ENCRYPTED PRIVATE KEY') and surfaces its encryptionAlgorithm and raw encryptedData. Decryption (PBES2/PBKDF2 + a passphrase) is a separate concern and is not performed here. This is an explicit call — an EncryptedPrivateKeyInfo shares its SEQUENCE{SEQUENCE, OCTET STRING} shape with a PKCS#1 DigestInfo, so pki.schema.parse does not auto-route it (structure alone cannot classify it without a validated encryption-algorithm discriminator).
+- pki.asn1.read.enumerated's sibling pki.asn1.read.bitStringImplicit and the pki.schema.engine.implicitBitString(tag) leaf — read a context-tagged IMPLICIT BIT STRING (the shape a PKCS#8 OneAsymmetricKey public key [1] takes).
+
+## v0.1.8 — 2026-07-04
 
 A PKCS#10 certification-request parser joins the pki.schema family.
 

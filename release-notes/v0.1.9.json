@@ -1,0 +1,12 @@
+{
+  "version": "0.1.9",
+  "headline": "A PKCS#8 private-key parser joins the pki.schema family.",
+  "summary": "pki.schema.pkcs8 parses PKCS#8 private keys — plaintext PrivateKeyInfo (RFC 5208 §5) / OneAsymmetricKey (RFC 5958 §2), and EncryptedPrivateKeyInfo (RFC 5958 §3) via an explicit parseEncrypted (recognized, not decrypted). It turns DER or PEM into a structured object: version, the private-key algorithm, the raw private-key bytes, the optional attributes, and — for a v2 key — the optional public key. pki.schema.parse detect-and-routes a plaintext key; an encrypted key's SEQUENCE{SEQUENCE, OCTET STRING} shape is ambiguous (a DigestInfo is identical), so it is not auto-routed and is parsed explicitly. The private-key OCTET STRING is kept raw, so the caller decodes the algorithm-specific inner key using the surfaced algorithm OID and an unknown or future key type never fails the parse.",
+  "sections": {
+    "Added": [
+      "pki.schema.pkcs8.parse — a PKCS#8 PrivateKeyInfo / OneAsymmetricKey parser per RFC 5208 §5 and RFC 5958 §2. It turns a DER Buffer or a 'PRIVATE KEY' PEM string into { version, privateKeyAlgorithm, privateKey, attributes, publicKey }, where privateKey is the raw OCTET STRING content (the inner RSA/EC/curve key, decoded by the caller via privateKeyAlgorithm.oid) and publicKey is present only for a v2 key. The version must be v1 (0) or v2 (1), and a [1] public key is permitted only in a v2 key (both directions enforced). A malformed key throws a typed Pkcs8Error (pkcs8/*); a leaf-level codec fault surfaces as asn1/*. pki.schema.pkcs8.pemDecode / pemEncode handle the PEM envelope.",
+      "pki.schema.pkcs8.parseEncrypted — recognizes an EncryptedPrivateKeyInfo ('ENCRYPTED PRIVATE KEY') and surfaces its encryptionAlgorithm and raw encryptedData. Decryption (PBES2/PBKDF2 + a passphrase) is a separate concern and is not performed here. This is an explicit call — an EncryptedPrivateKeyInfo shares its SEQUENCE{SEQUENCE, OCTET STRING} shape with a PKCS#1 DigestInfo, so pki.schema.parse does not auto-route it (structure alone cannot classify it without a validated encryption-algorithm discriminator).",
+      "pki.asn1.read.enumerated's sibling pki.asn1.read.bitStringImplicit and the pki.schema.engine.implicitBitString(tag) leaf — read a context-tagged IMPLICIT BIT STRING (the shape a PKCS#8 OneAsymmetricKey public key [1] takes)."
+    ]
+  }
+}

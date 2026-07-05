@@ -815,7 +815,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js"]; // + lib/schema-cms.js etc. as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js"]; // + lib/schema-cms.js etc. as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -1375,6 +1375,14 @@ function _isBoilerplate(slice) {
   // only identifier values, so string-valued config objects escaped the filter.)
   var kvPairs = (joined.match(/_ID\s+:\s+(?:_ID(?:\s+\.\s+_ID)*|_STR|_NUM|_RE|true|false|null)\s+,/g) || []).length;
   if (kvPairs >= 4) return true;
+  // Module-init declaration runs — `var X = obj.factory(...)` / `var X = fn(...)` —
+  // are the boilerplate every module's header shares: a format module instantiates
+  // its pkix / schema sub-schemas this way (`var NAME = pkix.name(NS)`, `var TIME =
+  // schema.time(NS)`), each under its own namespace, so the run matches in shape
+  // without being an extractable primitive (the factories themselves already live
+  // in pkix). Different factories per format = nothing more to extract.
+  var factoryDecls = (joined.match(/\bvar\s+_ID\s+=\s+_ID(?:\s+\.\s+_ID)*\s+\(/g) || []).length;
+  if (factoryDecls >= 4) return true;
   if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
   var declTokens = toks.filter(function (t) {
     return t === "=" || t === ";" || t === "," || t === ":" ||

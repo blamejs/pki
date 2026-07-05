@@ -194,9 +194,10 @@ is callable today; nothing below is a stub.
 | `pki.schema.x509` | Parse DER / PEM certificates into structured, validated fields — `parse`, `pemDecode`, `pemEncode` |
 | `pki.schema.crl` | Parse DER / PEM X.509 CRLs per RFC 5280 §5 — revoked serials with real-`Date` revocation times, named + partly-decoded extensions, fail-closed — `parse`, `pemDecode` |
 | `pki.schema.csr` | Parse DER / PEM PKCS#10 certification requests per RFC 2986 — subject DN, public key, requested attributes, signature, fail-closed — `parse`, `pemDecode`, `pemEncode` |
+| `pki.schema.pkcs8` | Parse DER / PEM PKCS#8 private keys per RFC 5208 / 5958 — algorithm, raw key bytes, attributes, optional public key, fail-closed; encrypted keys recognized (not decrypted) — `parse`, `parseEncrypted`, `pemDecode`, `pemEncode` |
 | `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
-| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError`, each carrying a stable `code` in `domain/reason` form |
+| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
 
 ### CLI
@@ -212,7 +213,7 @@ pki parse cert.pem                       # structured JSON summary of a certific
 
 Certificate build/sign/verify, certification-path
 validation, CMS (SignedData / EnvelopedData / EncryptedData / AuthenticatedData),
-OCSP, RFC 3161 timestamping, PKCS#8 / SPKI / PBES2 / PKCS#12, and the
+OCSP, RFC 3161 timestamping, PKCS#8 decryption (PBES2) / SPKI / PKCS#12, and the
 post-quantum certificate and CMS surface (ML-DSA / ML-KEM / SLH-DSA and hybrid
 composites) are on the roadmap and ride this same core. See
 [ROADMAP.md](ROADMAP.md) for the full plan and current status of each area, and
