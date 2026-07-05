@@ -122,10 +122,19 @@ function testDispatch() {
   var routed = pki.schema.parse(pk({ version: b.integer(1n), pubNode: pub(Buffer.from([1, 2, 3])) }));
   check("a PKCS#8 routes to pkcs8", routed.privateKey && routed.version === 2 && routed.validity === undefined);
   check("all() lists pkcs8", pki.schema.all().indexOf("pkcs8") !== -1);
-  // An EncryptedPrivateKeyInfo routes to pkcs8-encrypted (never mis-read as plaintext).
+  // An EncryptedPrivateKeyInfo is NOT auto-routed by pki.schema.parse — its
+  // SEQUENCE{SEQUENCE, OCTET STRING} shape is ambiguous (a PKCS#1 DigestInfo has
+  // the same shape), so structural detection alone cannot classify it. It is
+  // parsed explicitly via pkcs8.parseEncrypted (the operator knows the key is
+  // encrypted, e.g. from an 'ENCRYPTED PRIVATE KEY' PEM label).
   var enc = b.sequence([b.sequence([b.oid("1.2.840.113549.1.5.13")]), b.octetString(Buffer.from([0xDE, 0xAD]))]);
-  var em = pki.schema.parse(enc);
-  check("an EncryptedPrivateKeyInfo routes to pkcs8-encrypted", em.encryptionAlgorithm && Buffer.isBuffer(em.encryptedData) && em.privateKey === undefined);
+  check("an EncryptedPrivateKeyInfo is NOT auto-routed (ambiguous shape)", code(function () { pki.schema.parse(enc); }) === "schema/unknown-format");
+  var em = pki.schema.pkcs8.parseEncrypted(enc);
+  check("parseEncrypted parses it explicitly", em.encryptionAlgorithm.oid === "1.2.840.113549.1.5.13" && Buffer.isBuffer(em.encryptedData));
+  // A PKCS#1 DigestInfo (SEQUENCE{AlgorithmIdentifier, OCTET STRING}) must NOT be
+  // mis-classified as an encrypted key by the orchestrator.
+  var digestInfo = b.sequence([b.sequence([b.oid("2.16.840.1.101.3.4.2.1")]), b.octetString(Buffer.from([0xAB, 0xCD]))]);
+  check("a DigestInfo is not mis-classified as an encrypted key", code(function () { pki.schema.parse(digestInfo); }) === "schema/unknown-format");
 }
 
 function testInputCoercion() {
