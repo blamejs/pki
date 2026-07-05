@@ -12,7 +12,7 @@ var check = helpers.check;
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
 function testTime() {
-  check("ms(1500) === 1500", pki.C.TIME.ms(1500) === 1500);
+  check("milliseconds(1500) === 1500", pki.C.TIME.milliseconds(1500) === 1500);
   check("seconds(1) === 1000", pki.C.TIME.seconds(1) === 1000);
   check("minutes(1) === 60000", pki.C.TIME.minutes(1) === 60000);
   check("hours(1) === 3600000", pki.C.TIME.hours(1) === 3600000);

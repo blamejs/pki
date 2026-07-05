@@ -57,11 +57,11 @@
               "kind": "function",
               "arity": 1
             },
-            "minutes": {
+            "milliseconds": {
               "kind": "function",
               "arity": 1
             },
-            "ms": {
+            "minutes": {
               "kind": "function",
               "arity": 1
             },
@@ -370,11 +370,11 @@
               "kind": "function",
               "arity": 1
             },
-            "minutes": {
+            "milliseconds": {
               "kind": "function",
               "arity": 1
             },
-            "ms": {
+            "minutes": {
               "kind": "function",
               "arity": 1
             },
