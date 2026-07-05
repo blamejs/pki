@@ -136,9 +136,9 @@ function testAcceptTstInfo() {
   check("2. minimal: tsa null", m.tsa === null);
 
   var s = pki.schema.tsp.parseTstInfo(tstInfo({ accuracy: accuracy({ seconds: 1 }) }));
-  check("3. accuracy seconds only", s.accuracy.seconds === 1 && s.accuracy.millis === 0 && s.accuracy.micros === 0);
+  check("3. accuracy seconds only (lossless BigInt)", s.accuracy.seconds === 1n && s.accuracy.millis === 0 && s.accuracy.micros === 0);
   var mm = pki.schema.tsp.parseTstInfo(tstInfo({ accuracy: accuracy({ millis: 500, micros: 250 }) }));
-  check("4. accuracy millis/micros [0]/[1] IMPLICIT", mm.accuracy.millis === 500 && mm.accuracy.micros === 250 && mm.accuracy.seconds === 0);
+  check("4. accuracy millis/micros [0]/[1] IMPLICIT", mm.accuracy.millis === 500 && mm.accuracy.micros === 250 && mm.accuracy.seconds === 0n);
   check("5. ordering TRUE present", pki.schema.tsp.parseTstInfo(tstInfo({ ordering: true })).ordering === true);
   var n = pki.schema.tsp.parseTstInfo(tstInfo({ nonce: 123456789 }));
   check("6. nonce BigInt + hex", typeof n.nonce === "bigint" && n.nonce === 123456789n && typeof n.nonceHex === "string");
@@ -152,6 +152,8 @@ function testAcceptTstInfo() {
   check("9. big serial lossless hex", bs.serialNumberHex === "00ffffffffffffffff" && typeof bs.serialNumber === "bigint");
   var fr = pki.schema.tsp.parseTstInfo(tstInfo({ genTime: genRaw("20260705120000.5Z") }));
   check("10. fractional genTime sub-second", fr.genTime.getUTCMilliseconds() === 500);
+  // 10b. a genTime fraction finer than millisecond precision is rejected (no silent truncation).
+  check("10b. sub-millisecond genTime fraction rejected", tstCode(tstInfo({ genTime: genRaw("20260705120000.1234Z") })) === "asn1/bad-generalizedtime");
 }
 
 // ---- REJECT — TSTInfo ------------------------------------------------
