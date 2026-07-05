@@ -397,6 +397,13 @@ function testRejectExtras() {
   // 4g. empty otherName [0] (a constructed GeneralName with no body) -> reject.
   check("4g. empty otherName requestorName rejected",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextConstructed(0, Buffer.alloc(0)) }) }).der) === "ocsp/bad-requestor-name");
+  // 4h. incomplete otherName [0] with only type-id (missing the value [0]) -> reject.
+  check("4h. incomplete otherName requestorName rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextConstructed(0, b.oid("1.2.3.4")) }) }).der) === "ocsp/bad-requestor-name");
+  // 4i. complete otherName [0] { type-id, value [0] EXPLICIT } -> accept (signed request).
+  var otherName = b.contextConstructed(0, Buffer.concat([b.oid("1.2.3.4"), b.explicit(0, b.utf8("upn@ca.example"))]));
+  check("4i. complete otherName requestorName accepted",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: otherName }), optionalSignature: signature({}) }).der) === "NO-THROW");
   // 5d. empty ResponseData.responses -> reject; responses is one-or-more (RFC 6960 §4.2.1).
   check("5d. empty responses rejected",
     parseRespCode(basicOcspResponse(basicResponse({ tbs: responseData({ responses: [] }) }))) === "ocsp/bad-responses");
