@@ -196,6 +196,10 @@ function testResp() {
   check("39. statusString non-UTF8 rejected", respCode(timeStampResp({ status: b.sequence([b.integer(0n), b.sequence([b.printable("hi")])]), token: timeStampToken(tstInfo({})) })) !== "NO-THROW");
   // 39b. an unsupported PKIFailureInfo bit (bit 1) -> reject (RFC 3161 §2.4.2).
   check("39b. unsupported failInfo bit rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: b.bitString(Buffer.from([0x40]), 0) }) })) === "tsp/bad-failinfo");
+  // 39c. a granted response carrying failInfo is contradictory -> reject.
+  check("39c. granted + failInfo rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0, failInfo: b.bitString(Buffer.from([0x20]), 0) }), token: timeStampToken(tstInfo({})) })) === "tsp/unexpected-failinfo");
+  // 39d. an empty PKIFreeText statusString (SIZE 1..MAX) -> reject.
+  check("39d. empty statusString rejected", respCode(timeStampResp({ status: b.sequence([b.integer(2n), b.sequence([])]) })) === "tsp/bad-status-info");
 }
 
 // ---- Strict-DER (inherited asn1/*) -----------------------------------
