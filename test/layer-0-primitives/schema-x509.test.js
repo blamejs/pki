@@ -167,6 +167,22 @@ function testVersionValidation() {
   check("explicit version -1 rejected", code(function () { pki.schema.x509.parse(withVersion(-1n)); }) === "x509/bad-version");
   check("explicitly-encoded default v1 rejected", code(function () { pki.schema.x509.parse(withVersion(0n)); }) === "x509/bad-version");
 
+  // ENUMERATED shares INTEGER's content encoding but is a distinct universal type.
+  // version and serialNumber are INTEGER-pinned, so an ENUMERATED at either
+  // position is a type mismatch, rejected fail-closed (never coerced).
+  var enumVersion = _cert([
+    build.explicit(0, build.enumerated(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), _spki(),
+  ]);
+  var ev = code(function () { pki.schema.x509.parse(enumVersion); });
+  check("cert version encoded as ENUMERATED rejected", typeof ev === "string" && (ev.indexOf("x509/") === 0 || ev.indexOf("asn1/") === 0));
+  var enumSerial = _cert([
+    build.explicit(0, build.integer(2n)), build.enumerated(5n), _algId("1.2.840.10045.4.3.2"),
+    _name("issuer"), _validity(), _name("subject"), _spki(),
+  ]);
+  var es = code(function () { pki.schema.x509.parse(enumSerial); });
+  check("cert serialNumber encoded as ENUMERATED rejected", typeof es === "string" && (es.indexOf("x509/") === 0 || es.indexOf("asn1/") === 0));
+
   // No version field parses as v1.
   var v1 = _cert([
     build.integer(1n),

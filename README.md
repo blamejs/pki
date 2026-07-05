@@ -193,9 +193,10 @@ is callable today; nothing below is a stub.
 | `pki.schema` | The schema family — `parse` detects which PKI format DER / PEM encodes and routes to the right parser, `all` enumerates the registered formats, and the engine + per-format members are grouped here |
 | `pki.schema.x509` | Parse DER / PEM certificates into structured, validated fields — `parse`, `pemDecode`, `pemEncode` |
 | `pki.schema.crl` | Parse DER / PEM X.509 CRLs per RFC 5280 §5 — revoked serials with real-`Date` revocation times, named + partly-decoded extensions, fail-closed — `parse`, `pemDecode` |
+| `pki.schema.csr` | Parse DER / PEM PKCS#10 certification requests per RFC 2986 — subject DN, public key, requested attributes, signature, fail-closed — `parse`, `pemDecode`, `pemEncode` |
 | `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
-| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError`, each carrying a stable `code` in `domain/reason` form |
+| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
 
 ### CLI
@@ -209,7 +210,7 @@ pki parse cert.pem                       # structured JSON summary of a certific
 
 ### What's coming
 
-Certificate build/sign/verify, CRLs, CSRs (PKCS#10), certification-path
+Certificate build/sign/verify, certification-path
 validation, CMS (SignedData / EnvelopedData / EncryptedData / AuthenticatedData),
 OCSP, RFC 3161 timestamping, PKCS#8 / SPKI / PBES2 / PKCS#12, and the
 post-quantum certificate and CMS surface (ML-DSA / ML-KEM / SLH-DSA and hybrid

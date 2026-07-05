@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.7",
+  "packageVersion": "0.1.8",
   "surface": {
     "C": {
       "kind": "object",
@@ -283,6 +283,10 @@
               "kind": "function",
               "arity": 1
             },
+            "enumerated": {
+              "kind": "function",
+              "arity": 1
+            },
             "integer": {
               "kind": "function",
               "arity": 1
@@ -408,6 +412,10 @@
           "kind": "function",
           "arity": 3
         },
+        "CsrError": {
+          "kind": "function",
+          "arity": 3
+        },
         "OidError": {
           "kind": "function",
           "arity": 3
@@ -495,6 +503,23 @@
             }
           }
         },
+        "csr": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
         "engine": {
           "kind": "object",
           "members": {
@@ -525,6 +550,10 @@
             "field": {
               "kind": "function",
               "arity": 2
+            },
+            "implicitSetOf": {
+              "kind": "function",
+              "arity": 3
             },
             "integerLeaf": {
               "kind": "function",
@@ -624,6 +653,9 @@
     "pki.schema.parse": "0.1.7",
     "pki.schema.crl.parse": "0.1.7",
     "pki.schema.crl.pemDecode": "0.1.7",
+    "pki.schema.csr.parse": "0.1.8",
+    "pki.schema.csr.pemDecode": "0.1.8",
+    "pki.schema.csr.pemEncode": "0.1.8",
     "pki.schema.engine.walk": "0.1.7",
     "pki.schema.x509.pemDecode": "0.1.7",
     "pki.schema.x509.pemEncode": "0.1.7",
