@@ -174,6 +174,8 @@ function testRejectTstInfo() {
   check("28. accuracy after nonce (out of order) rejected", tstCode(tstInfo({ nonce: 5, tail: [accuracy({ seconds: 1 })] })) !== "NO-THROW");
   check("30. extensions [1] before tsa [0] rejected", tstCode(tstInfo({ tail: [tstExtensions([extension("1.2.3")]), b.explicit(0, b.contextPrimitive(2, Buffer.from("x")))] })) === "tsp/bad-tst-info");
   check("31. unknown [2] trailing field rejected", tstCode(tstInfo({ tail: [b.contextPrimitive(2, Buffer.from("x"))] })) === "tsp/bad-tst-info");
+  // 31b. extensions [1] IMPLICIT is SEQUENCE SIZE(1..MAX) — an empty [1] is rejected.
+  check("31b. empty extensions rejected", tstCode(tstInfo({ extensions: [] })) === "tsp/bad-extensions");
 }
 
 // ---- PKIStatusInfo / TimeStampResp -----------------------------------
@@ -208,6 +210,11 @@ function testToken() {
   check("45. wrong eContentType rejected", tokenCode(timeStampToken(tstInfo({}), { eContentType: ID_DATA })) === "tsp/wrong-econtent-type");
   check("46. detached token rejected", tokenCode(timeStampToken(tstInfo({}), { detached: true })) === "tsp/detached-token");
   check("47. multi-signer token rejected", tokenCode(timeStampToken(tstInfo({}), { signerCount: 2 })) === "tsp/multi-signer");
+  // 44b. parseToken accepts a PEM-armored token regardless of label (RFC 3161 has no
+  //      standard label), de-armoring with the TSP rules before the CMS parse.
+  var tokDer = timeStampToken(tstInfo({}));
+  var pem = "-----BEGIN TIMESTAMP TOKEN-----\n" + tokDer.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END TIMESTAMP TOKEN-----\n";
+  check("44b. non-CMS-labeled PEM token accepted", tokenCode(pem) === "NO-THROW");
 }
 
 // ---- Dispatch + coercion ---------------------------------------------
