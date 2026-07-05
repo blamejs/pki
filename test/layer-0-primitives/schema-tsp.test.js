@@ -224,10 +224,13 @@ function testStrictDer() {
 
 // ---- Token composition (over CMS) ------------------------------------
 function testToken() {
-  var tk = timeStampToken(tstInfo({ nonce: 99 }));
+  var tstDer = tstInfo({ nonce: 99 });
+  var tk = timeStampToken(tstDer);
   var parsed = pki.schema.tsp.parseToken(tk);
   check("44. token accept: TSTInfo decoded", parsed.tstInfo.version === 1 && parsed.tstInfo.nonce === 99n);
   check("44. token accept: single signerInfo surfaced", parsed.signerInfo && Array.isArray(parsed.certificates));
+  // 44a. the raw eContent (verification feed for the CMS message-digest) is byte-exact.
+  check("44a. raw eContent surfaced byte-exact", Buffer.isBuffer(parsed.eContent) && parsed.eContent.equals(tstDer));
   check("45. wrong eContentType rejected", tokenCode(timeStampToken(tstInfo({}), { eContentType: ID_DATA })) === "tsp/wrong-econtent-type");
   check("46. detached token rejected", tokenCode(timeStampToken(tstInfo({}), { detached: true })) === "tsp/detached-token");
   check("47. multi-signer token rejected", tokenCode(timeStampToken(tstInfo({}), { signerCount: 2 })) === "tsp/multi-signer");
