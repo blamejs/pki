@@ -165,6 +165,9 @@ function testExtensionStrictness() {
   // SEQUENCE — reject it even though the child count looks right.
   var bogusItem = b.contextConstructed(5, Buffer.concat([b.oid("2.5.29.20"), b.octetString(Buffer.from([1]))]));
   check("context-tagged extension item ([5]) rejected", parseCode(crl({ version: 1n, crlExtensions: [bogusItem] })) === "crl/bad-extension");
+  // critical is BOOLEAN DEFAULT FALSE — an explicitly-encoded FALSE is non-canonical.
+  var explicitFalse = b.sequence([b.oid("2.5.29.20"), b.boolean(false), b.octetString(b.integer(1n))]);
+  check("explicit critical FALSE rejected (must be omitted)", parseCode(crl({ version: 1n, crlExtensions: [explicitFalse] })) === "crl/bad-extension");
   // reasonCode is ENUMERATED — a bare INTEGER value is rejected (strict RFC 5280).
   check("reasonCode as INTEGER rejected (must be ENUMERATED)",
     parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.integer(1n))])] })) === "crl/bad-extension-value");
