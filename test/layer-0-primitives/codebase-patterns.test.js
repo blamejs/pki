@@ -747,6 +747,41 @@ function testNoUnusedUnderscoreFunctions() {
   _report("no unused `_`-prefixed functions (they hide from eslint no-unused-vars)", bad);
 }
 
+function testNoRemovedNamespaceRefs() {
+  // class: removed-namespace-ref
+  // The v0.1.7 rename removed pki.x509 (-> pki.schema.x509) and pki.asn1.schema
+  // (-> pki.schema.engine) with no compat shim. A consumer left calling a
+  // removed export crashes at runtime — the CLI (bin/pki.js) and the fuzz target
+  // both did, because the rename sweep covered lib/test/examples but not bin/ or
+  // fuzz/. No shipped source (lib + the consumer entry points) may reference the
+  // removed names; the sweep must be whole-repo.
+  var bad = [];
+  var files = _libFiles().slice();
+  ["bin", "fuzz", "scripts"].forEach(function (dir) {
+    try {
+      fs.readdirSync(path.join(REPO_ROOT, dir)).forEach(function (f) {
+        if (f.endsWith(".js")) files.push(path.join(REPO_ROOT, dir, f));
+      });
+    } catch (_e) { /* dir may be absent in some packagings */ }
+  });
+  var re = /pki\.x509\b|pki\.asn1\.schema\b/;
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    var src;
+    try { src = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = src.split(/\r?\n/);
+    for (var j = 0; j < lines.length; j++) {
+      if (re.test(lines[j])) {
+        bad.push({ file: rel, line: j + 1,
+          content: "references a removed namespace (pki.x509 -> pki.schema.x509, pki.asn1.schema -> pki.schema.engine) — the v0.1.7 rename left no compat shim; a whole-repo sweep must catch bin/ and fuzz/, not only lib/test" });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "removed-namespace-ref");
+  _report("no shipped source references the removed pki.x509 / pki.asn1.schema namespaces", bad);
+}
+
 function testSignatureAlgorithmAgreement() {
   // class: x509-sig-alg-agreement
   // RFC 5280 §4.1.1.2 — the outer signatureAlgorithm MUST equal
@@ -1588,6 +1623,7 @@ function run() {
   testTbsTrailingFieldsMonotonic();
   testWalkSeqRejectsUnconsumedChildren();
   testNoUnusedUnderscoreFunctions();
+  testNoRemovedNamespaceRefs();
   testSignatureAlgorithmAgreement();
   testFormatModulesComposeSchema();
   testEcImportDerivesCurve();
