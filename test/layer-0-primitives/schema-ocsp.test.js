@@ -385,6 +385,12 @@ function testRejectExtras() {
   check("35b. non-octet-aligned response signature rejected", parseRespCode(basicOcspResponse(unalignedResp)) === "ocsp/bad-signature");
   var unalignedReq = ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example") }), optionalSignature: signature({ sig: b.bitString(Buffer.from([0xFE]), 1) }) });
   check("35c. non-octet-aligned request signature rejected", parseReqCode(unalignedReq.der) === "ocsp/bad-signature");
+  // 35d/35e. a certs element that is not a Certificate (a SEQUENCE) -> ocsp/bad-certs,
+  //          on both the response BasicOCSPResponse and the request Signature.
+  check("35d. non-SEQUENCE response certs element rejected",
+    parseRespCode(basicOcspResponse(basicResponse({ certs: [b.integer(1n)] }))) === "ocsp/bad-certs");
+  var badCertsReq = ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example") }), optionalSignature: signature({ certs: [b.integer(1n)] }) });
+  check("35e. non-SEQUENCE request certs element rejected", parseReqCode(badCertsReq.der) === "ocsp/bad-certs");
   // 4c. requestorName directoryName [4] encoded PRIMITIVE (must be constructed) -> reject.
   check("4c. primitive directoryName requestorName rejected",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextPrimitive(4, Buffer.from([1, 2, 3])) }) }).der) === "ocsp/bad-requestor-name");

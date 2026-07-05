@@ -687,6 +687,7 @@ function testOcspConformanceGuards() {
     ['"ocsp/missing-requestor-name"',   "a signed OCSPRequest must carry requestorName (RFC 6960 §4.1.2)"],
     ['"ocsp/bad-requestor-name"',       "requestorName inner value must be a well-formed GeneralName (§4.1.1, RFC 5280 §4.2.1.6)"],
     ['"ocsp/bad-responses"',            "ResponseData.responses is one-or-more SingleResponse (RFC 6960 §4.2.1)"],
+    ['"ocsp/bad-certs"',                "each certs SEQUENCE OF Certificate element is a Certificate (a SEQUENCE)"],
     ['asn1.read.enumerated',            "responseStatus / revocationReason value payloads validated, not just tag-checked"],
   ];
   var bad = [];
