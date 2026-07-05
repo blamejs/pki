@@ -603,6 +603,33 @@ function testFuzzSeedCorpusZipNaming() {
   _report("fuzz seed-corpus zip named after the compiled wrapper (<base>.fuzz_seed_corpus.zip)", bad);
 }
 
+function testFuzzBuildInstallsJazzer() {
+  // class: fuzz-build-missing-jazzer-install
+  // compile_javascript_fuzzer generates each wrapper to resolve @jazzer.js/core
+  // from the project's node_modules ($OUT/<project>/node_modules, copied from the
+  // build root). If build.sh compiles without first installing jazzer, the
+  // wrappers reference a module that isn't present and the fuzz targets can't run.
+  // Assert an `npm install`/`npm ci` of jazzer precedes the first compile.
+  var bad = [];
+  var p = ".clusterfuzzlite/build.sh";
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, p), "utf8"); }
+  catch (_e) { return; }
+  var lines = _lines(src);
+  var jazzerBeforeCompile = false, sawCompile = false, firstCompileLine = -1;
+  for (var i = 0; i < lines.length; i++) {
+    if (/^\s*#/.test(lines[i])) continue; // comments describe the rule, they don't install
+    if (/compile_javascript_fuzzer/.test(lines[i]) && firstCompileLine === -1) { firstCompileLine = i; sawCompile = true; }
+    if (/\bnpm\s+(install|ci)\b/.test(lines[i]) && /jazzer/.test(lines[i]) && !sawCompile) jazzerBeforeCompile = true;
+  }
+  if (sawCompile && !jazzerBeforeCompile) {
+    bad.push({ file: p, line: firstCompileLine + 1,
+      content: "compile_javascript_fuzzer runs without a prior `npm install`/`npm ci` of @jazzer.js/core — the generated wrappers resolve jazzer from the (empty) project node_modules and cannot run" });
+  }
+  bad = _filterMarkers(bad, "fuzz-build-missing-jazzer-install");
+  _report("fuzz build installs @jazzer.js/core before compile_javascript_fuzzer", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -1769,6 +1796,7 @@ function run() {
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
   testFuzzSeedCorpusZipNaming();
+  testFuzzBuildInstallsJazzer();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
