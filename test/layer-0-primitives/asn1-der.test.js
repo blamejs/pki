@@ -158,15 +158,20 @@ function testTimeOutOfRange() {
 
 function testFractionalTimeAndImplicitInteger() {
   var b = pki.asn1.build, TAGS = pki.asn1.TAGS;
-  function readGen(s) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.GENERALIZED_TIME, Buffer.from(s, "latin1")))); }
-  // RFC 3161 / X.690 §11.7 fractional-seconds GeneralizedTime, surfaced at ms precision.
-  check("fractional .5Z -> 500ms", readGen("20260705120000.5Z").getUTCMilliseconds() === 500);
-  check("fractional .34Z -> 340ms", readGen("20260705120000.34Z").getUTCMilliseconds() === 340);
-  check("fractional trailing-zero .500Z rejected", code(function () { readGen("20260705120000.500Z"); }) === "asn1/bad-generalizedtime");
-  check("fractional empty .Z rejected", code(function () { readGen("20260705120000.Z"); }) === "asn1/bad-generalizedtime");
-  check("fractional comma ,5Z rejected", code(function () { readGen("20260705120000,5Z"); }) === "asn1/bad-generalizedtime");
-  check("GeneralizedTime no seconds rejected", code(function () { readGen("202607051200Z"); }) === "asn1/bad-generalizedtime");
-  check("GeneralizedTime no Z rejected", code(function () { readGen("20260705120000"); }) === "asn1/bad-generalizedtime");
+  function readGen(s, opts) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.GENERALIZED_TIME, Buffer.from(s, "latin1"))), opts); }
+  function frac(s) { return readGen(s, { allowFractional: true }); }
+  // Default (strict) read.time rejects a fractional GeneralizedTime — the RFC 5280
+  // certificate/CRL Validity profile (§4.1.2.5.2) forbids fractional seconds.
+  check("default read.time rejects fractional", code(function () { readGen("20260705120000.5Z"); }) === "asn1/bad-generalizedtime");
+  // With allowFractional (RFC 3161 / X.690 §11.7) the fractional profile is accepted,
+  // surfaced at ms precision.
+  check("allowFractional .5Z -> 500ms", frac("20260705120000.5Z").getUTCMilliseconds() === 500);
+  check("allowFractional .34Z -> 340ms", frac("20260705120000.34Z").getUTCMilliseconds() === 340);
+  check("allowFractional trailing-zero .500Z rejected", code(function () { frac("20260705120000.500Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional empty .Z rejected", code(function () { frac("20260705120000.Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional comma ,5Z rejected", code(function () { frac("20260705120000,5Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional no seconds rejected", code(function () { frac("202607051200Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional no Z rejected", code(function () { frac("20260705120000"); }) === "asn1/bad-generalizedtime");
   // read.integerImplicit — [tag] IMPLICIT INTEGER (the RFC 3161 Accuracy millis/micros shape).
   function ii(tag, n) { return pki.asn1.decode(b.contextPrimitive(tag, b.integer(BigInt(n)).slice(2))); }
   check("read.integerImplicit reads a [0] IMPLICIT INTEGER", pki.asn1.read.integerImplicit(ii(0, 999), 0) === 999n);

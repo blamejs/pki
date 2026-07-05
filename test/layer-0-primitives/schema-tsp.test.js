@@ -179,7 +179,9 @@ function testRejectTstInfo() {
 // ---- PKIStatusInfo / TimeStampResp -----------------------------------
 function testResp() {
   var g = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: timeStampToken(tstInfo({})) }));
-  check("32. granted response: status 0 + token", g.status === 0 && Buffer.isBuffer(g.timeStampToken));
+  check("32. granted response: status 0 + decoded token", g.status === 0 && g.timeStampToken.tstInfo.version === 1);
+  // 32b. a granted response whose token is not a well-formed CMS TimeStampToken -> reject.
+  check("32b. granted response with a malformed token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: b.sequence([b.integer(5n)]) })) !== "NO-THROW");
   var badRequestBit = b.bitString(Buffer.from([0x20]), 0); // bit 2 set (badRequest)
   var rej = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: badRequestBit }) }));
   check("33. rejection: status 2, failInfo named bits, no token", rej.status === 2 && rej.failInfo.bits.indexOf("badRequest") !== -1 && rej.timeStampToken === null);
