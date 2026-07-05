@@ -170,13 +170,20 @@ function testAcceptRequest() {
   check("2. minimal request: no optionalSignature", m.optionalSignature === null);
   check("2. minimal request: no requestorName", m.requestorName === null);
 
-  // 3. signed request: optionalSignature [0] { sigAlg, BIT STRING sig, certs [0] one raw cert }.
+  // 3. signed request: optionalSignature [0] { sigAlg, BIT STRING sig, certs [0] one
+  //    raw cert }. A signed request SHALL carry requestorName (RFC 6960 §4.1.2).
   var sigBytes = Buffer.from([0x51, 0x67]);
-  var sreq = ocspRequest({ optionalSignature: signature({ sig: b.bitString(sigBytes), certs: [rawCert()] }) });
+  var sreq = ocspRequest({ tbs: tbsRequest({ requestorName: name("Requestor") }), optionalSignature: signature({ sig: b.bitString(sigBytes), certs: [rawCert()] }) });
   var ms = parseReq(sreq.der);
   check("3. signed request: signatureAlgorithm surfaced", ms.optionalSignature && ms.optionalSignature.signatureAlgorithm.oid === SIG_ALG);
   check("3. signed request: raw signature bytes", Buffer.isBuffer(ms.optionalSignature.signature) && ms.optionalSignature.signature.equals(sigBytes));
   check("3. signed request: one raw cert", Array.isArray(ms.optionalSignature.certs) && ms.optionalSignature.certs.length === 1 && Buffer.isBuffer(ms.optionalSignature.certs[0]));
+  // 3b. signed request WITHOUT requestorName -> reject (RFC 6960 §4.1.2 SHALL).
+  check("3b. signed request without requestorName rejected",
+    parseReqCode(ocspRequest({ optionalSignature: signature({}) }).der) === "ocsp/missing-requestor-name");
+  // 3c. empty requestList -> reject; requestList is one-or-more (RFC 6960 §4.1.1).
+  check("3c. empty requestList rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [] }) }).der) === "ocsp/bad-request-list");
 
   // 4. request with requestorName [1] EXPLICIT + requestExtensions [2] (a nonce).
   var nreq = ocspRequest({ tbs: tbsRequest({ requestorName: name("Requestor"), requestExtensions: extensions([nonceExt([1, 2, 3, 4, 5])]) }) });

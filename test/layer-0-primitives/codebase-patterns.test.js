@@ -684,6 +684,7 @@ function testOcspConformanceGuards() {
     ['"ocsp/bad-revocation-reason"',    "CRLReason ENUMERATED value whitelisted — 7 rejected (RFC 5280 §5.3.1)"],
     ['"ocsp/bad-time"',                 "OCSP times are GeneralizedTime, never UTCTime (§4.2.1)"],
     ['"ocsp/unsupported-response-type"', "a non-basic responseType is recognized-and-deferred, not silently accepted (§4.2.1)"],
+    ['"ocsp/missing-requestor-name"',   "a signed OCSPRequest must carry requestorName (RFC 6960 §4.1.2)"],
     ['asn1.read.enumerated',            "responseStatus / revocationReason value payloads validated, not just tag-checked"],
   ];
   var bad = [];
