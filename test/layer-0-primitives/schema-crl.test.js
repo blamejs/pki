@@ -119,6 +119,7 @@ function testTbsFields() {
   check("tbs not a SEQUENCE rejected", parseCode(crl({ tbsChildren: null, outerChildren: [b.integer(1n), algId(SIGALG), b.bitString(Buffer.from([0]), 0)] })) === "crl/bad-tbs");
   check("tbs missing thisUpdate rejected", parseCode(crl({ tbsChildren: [algId(SIGALG), name("CA")] })) === "crl/bad-tbs");
   check("empty issuer rejected", parseCode(crl({ issuer: b.sequence([]) })) === "crl/bad-issuer");
+  check("empty RDN (SET {}) in issuer rejected", parseCode(crl({ issuer: b.sequence([b.set([])]) })) === "crl/bad-rdn");
   check("thisUpdate wrong tag (INTEGER) rejected", parseCode(crl({ thisUpdate: b.integer(5n) })) === "crl/bad-time");
   check("thisUpdate impossible date (Feb 30) rejected", parseCode(crl({ thisUpdate: utcRaw("260230000000Z") })) !== "NO-THROW");
 }
@@ -204,6 +205,8 @@ function testInputCoercion() {
   check("crl.parse accepts a DER Buffer", parse(der).thisUpdate instanceof Date);
   check("crl.parse accepts a PEM string", parse(pem).thisUpdate instanceof Date);
   check("crl.parse accepts a PEM Buffer (readFileSync path)", parse(Buffer.from(pem, "utf8")).thisUpdate instanceof Date);
+  check("crl.parse accepts a PEM Buffer with a leading newline", parse(Buffer.from("\n" + pem, "utf8")).thisUpdate instanceof Date);
+  check("crl.parse accepts a PEM Buffer with a UTF-8 BOM", parse(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(pem, "utf8")])).thisUpdate instanceof Date);
   check("crl.parse accepts a Uint8Array DER", parse(new Uint8Array(der)).thisUpdate instanceof Date);
   check("crl.parse rejects a non-buffer/string input", parseCode(42) === "crl/bad-input");
 }
