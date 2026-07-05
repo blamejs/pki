@@ -13,7 +13,8 @@
  *                  (PkiError taxonomy), asn1 (strict DER codec), oid
  *                  (OID ↔ name registry), webcrypto (W3C SubtleCrypto
  *                  engine over node:crypto — PQC-first, classical-capable)
- *   Certificates:  x509 (parse DER / PEM certificates)
+ *   Schema:        schema (the structure-schema engine + per-format parsers:
+ *                  schema.engine, schema.x509, schema.parse detect-and-route)
  *
  * The surface grows per ROADMAP.md — CMS, OCSP, CRL, CSR, PKCS#8/#12,
  * timestamping, path validation, and the post-quantum algorithm set are
@@ -25,10 +26,9 @@
 var constants = require("./lib/constants");
 var errors    = require("./lib/framework-error");
 var asn1      = require("./lib/asn1-der");
-var asn1Schema = require("./lib/asn1-schema");
 var oid       = require("./lib/oid");
 var webcrypto = require("./lib/webcrypto");
-var x509      = require("./lib/x509");
+var schema    = require("./lib/schema-all");
 
 module.exports = {
   version:   constants.version,
@@ -36,11 +36,12 @@ module.exports = {
   C:         constants,
   constants: constants,
   errors:    errors,
-  // `asn1.schema` (L2) is the declarative structure-schema engine, exposed on
-  // the asn1 namespace alongside the codec (decode/encode/build/read/TAGS).
-  asn1:      Object.assign({}, asn1, { schema: asn1Schema }),
+  // `asn1` is the strict DER codec (decode/encode/build/read/TAGS).
+  asn1:      asn1,
   oid:       oid,
-  x509:      x509,
+  // `schema` is the family: the L2 structure-schema engine (schema.engine) and
+  // the per-format parsers (schema.x509, …) with detect-and-route schema.parse.
+  schema:    schema,
   // A ready W3C Crypto instance (globalThis.crypto shape) + the classes
   // for constructing more. PQC-first, classical-capable, zero-dep.
   webcrypto: webcrypto.webcrypto,

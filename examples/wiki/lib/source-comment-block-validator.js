@@ -224,7 +224,7 @@ function _knownPrimitiveSet(docs, source_by_file) {
 }
 
 // Count parameters in a signature's FIRST argument list, e.g.
-// `pki.x509.parse(input) -> cert` -> 1, `new PkiError(msg, code)` -> 2.
+// `pki.schema.x509.parse(input) -> cert` -> 1, `new PkiError(msg, code)` -> 2.
 // The `?` optional marker is dropped before counting.
 function _signatureArity(signature) {
   var m = String(signature).match(/\(([^)]*)\)/);

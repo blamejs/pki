@@ -1,0 +1,18 @@
+{
+  "version": "0.1.7",
+  "headline": "A unified pki.schema family: the structure-schema engine, the X.509 parser, a new CRL parser, and a detect-and-route orchestrator.",
+  "summary": "The schema engine and the per-format parsers are reorganized under one pki.schema namespace, and a new X.509 CRL parser (pki.schema.crl) joins the certificate parser as a member composed on the shared engine and PKIX sub-schemas. pki.schema.parse detects which PKI format DER (or PEM) encodes and routes to the right parser. This is a breaking rename — pki.x509 becomes pki.schema.x509 and pki.asn1.schema becomes pki.schema.engine — with no compatibility shim (pre-1.0).",
+  "sections": {
+    "Added": [
+      "pki.schema.crl.parse — an X.509 CRL (CertificateList) parser per RFC 5280 §5. It turns a DER Buffer or an 'X509 CRL' PEM string into a structured object: version, issuer distinguished name, thisUpdate / nextUpdate as real Dates, the ordered list of revoked certificates (serial number + hex + revocation date + entry extensions), and the CRL extensions — with the cRLNumber, reasonCode, and invalidityDate values decoded and the raw tbsCertList bytes returned for signature verification. It composes the same schema engine and shared PKIX sub-schemas (AlgorithmIdentifier, Name, Extension) as the certificate parser, so the CertificateList inherits the identical fail-closed structural rules (bounds-checked positional reads, the signature-algorithm agreement, non-empty issuer, extension uniqueness, the v2-only version rule).",
+      "pki.schema.parse — a detect-and-route entry point: hand it DER or PEM and it identifies which registered PKI format the bytes encode (certificate vs CRL) and routes to that member's parser. pki.schema.all() enumerates the registered formats."
+    ],
+    "Changed": [
+      "The schema engine and the per-format parsers are reorganized under one pki.schema namespace. pki.x509.parse is now pki.schema.x509.parse (and .pemDecode / .pemEncode likewise), and the structure-schema engine pki.asn1.schema is now pki.schema.engine. pki.asn1 remains the strict DER codec (decode / encode / build / read / TAGS). This is a breaking rename with no compatibility shim; see MIGRATING. The schema engine also gained a universal-tag optional-field recognizer, which the CRL's bare version / nextUpdate / revokedCertificates fields require."
+    ],
+    "Migration": [
+      "Replace pki.x509.parse(...) with pki.schema.x509.parse(...); pki.x509.pemDecode / pemEncode become pki.schema.x509.pemDecode / pemEncode.",
+      "Replace pki.asn1.schema (the structure-schema engine) with pki.schema.engine. pki.asn1 is unchanged for the DER codec (pki.asn1.decode / encode / build / read / TAGS)."
+    ]
+  }
+}

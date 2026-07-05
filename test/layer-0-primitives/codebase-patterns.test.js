@@ -507,6 +507,12 @@ function testPrimitiveCommentBlocks() {
     var src;
     try { src = fs.readFileSync(files[i], "utf8"); }
     catch (_e) { continue; }
+    // A lib module that exposes NO operator-facing namespace — shared factories
+    // or helpers COMPOSED by the documented parsers (e.g. schema-pkix.js) —
+    // declares `@internal` in its header and is exempt: its documented surface
+    // is the modules that consume it, not itself. The declaration must be
+    // explicit so the exemption is a conscious choice, never a silent omission.
+    if (/@internal\b/.test(src)) continue;
     var parsed = parser.parseFile(src, files[i]);
     if (!parsed.module) {
       bad.push({ file: rel, line: 1, content: "lib source file has no @module block" });
@@ -654,12 +660,12 @@ function testTbsTrailingFieldsMonotonic() {
   // duplicate extension OIDs across two wrappers past the per-sequence check.
   var bad = [];
   var engine;
-  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-schema.js"), "utf8"); }
+  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
   catch (_e) { return; }
   var fn = /function _consumeTrailing\b([\s\S]*?)\r?\nfunction /.exec(engine);
   var body = fn ? fn[1] : engine;
   if (!/<=\s*last\b/.test(body) || body.indexOf("repeated or out of order") === -1) {
-    bad.push({ file: "lib/asn1-schema.js", line: 0,
+    bad.push({ file: "lib/schema-engine.js", line: 0,
       content: "_consumeTrailing must reject a repeated or out-of-order context tag (the `<= last` monotonic guard + orderCode) — " +
         "a second [3] would overwrite the first and split duplicate extension OIDs across two wrappers" });
   }
@@ -668,14 +674,14 @@ function testTbsTrailingFieldsMonotonic() {
   // non-negative literal, or a trailing block whose first member is [0] rejects
   // that first field as out-of-order (0 <= last==0). Codex PR #9.
   if (/\blast\s*=\s*[^;]*\bminTag\b[^;]*:\s*[0-9]/.test(body)) {
-    bad.push({ file: "lib/asn1-schema.js", line: 0,
+    bad.push({ file: "lib/schema-engine.js", line: 0,
       content: "_consumeTrailing's monotonic sentinel `last` must initialize below the lowest accepted tag — the minTag-absent fallback must be negative (`: -1`), not a non-negative literal, or a trailing block starting at [0] rejects its first field as out-of-order" });
   }
   var x509;
-  try { x509 = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  try { x509 = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-x509.js"), "utf8"); }
   catch (_e) { x509 = ""; }
   if (!/schema\.trailing\(/.test(x509)) {
-    bad.push({ file: "lib/x509.js", line: 0,
+    bad.push({ file: "lib/schema-x509.js", line: 0,
       content: "the tbsCertificate schema must COMPOSE schema.trailing() for the [1]/[2]/[3] fields, not hand-roll the trailing loop" });
   }
   bad = _filterMarkers(bad, "x509-tbs-trailing-fields");
@@ -693,23 +699,52 @@ function testWalkSeqRejectsUnconsumedChildren() {
   // `if (idx < kids.length)` statement after the loop. Codex PR #9.
   var bad = [];
   var engine;
-  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-schema.js"), "utf8"); }
+  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
   catch (_e) { return; }
   var fn = /function _walkSeq\b([\s\S]*?)\r?\nfunction /.exec(engine);
   var body = fn ? fn[1] : engine;
   if (!/if\s*\(\s*idx\s*<\s*kids\.length\s*\)/.test(body)) {
-    bad.push({ file: "lib/asn1-schema.js", line: 0,
+    bad.push({ file: "lib/schema-engine.js", line: 0,
       content: "_walkSeq must reject unconsumed sequence children — an `if (idx < kids.length)` fail-closed guard after the field loop. Without it a seq silently drops leftover elements, so a closed sequence of optional fields cannot reject a duplicate/extra element" });
   }
   // Same drop-extra class in the EXPLICIT unwrap: a wrapper carries exactly one
   // value, so _explicitInner must assert children.length !== 1 (a non-empty-only
   // check silently drops a second child).
   if (!/function _explicitInner\b[\s\S]{0,240}?children\.length !== 1/.test(engine)) {
-    bad.push({ file: "lib/asn1-schema.js", line: 0,
+    bad.push({ file: "lib/schema-engine.js", line: 0,
       content: "_explicitInner must assert children.length !== 1 (an EXPLICIT [tag] wrapper carries exactly one value); a non-empty-only check drops a second child, and every explicit unwrap (_walkExplicit / optional / trailing) must route through it" });
   }
   bad = _filterMarkers(bad, "asn1-walkseq-unconsumed-children");
   _report("_walkSeq rejects unconsumed sequence children (closed-sequence strictness)", bad);
+}
+
+function testNoUnusedUnderscoreFunctions() {
+  // class: dead-underscore-function
+  // eslint no-unused-vars ALLOWS unused `_`-prefixed identifiers (the varsIgnore
+  // pattern /^_/), so a `function _foo()` that is never called hides as dead
+  // code the linter can't see — exactly how the _algId / _parseName /
+  // _parseExtensions wrappers survived the L2 migration until the dup detector
+  // caught them. A `_`-prefixed function must be intentional: referenced
+  // (called, exported, or passed) at least once in its file, never an orphan.
+  var bad = [];
+  var files = _libFiles();
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    var src;
+    try { src = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var re = /function (_\w+)\s*\(/g, m;
+    while ((m = re.exec(src)) !== null) {
+      var nm = m[1];
+      var refs = (src.match(new RegExp("\\b" + nm + "\\b", "g")) || []).length;
+      if (refs <= 1) { // the declaration is the only occurrence — never used
+        bad.push({ file: rel, line: src.slice(0, m.index).split("\n").length,
+          content: "unused `_`-prefixed function " + nm + "() — dead code the eslint no-unused-vars `_` exemption hides; call it or remove it (functions must be intentional)" });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "dead-underscore-function");
+  _report("no unused `_`-prefixed functions (they hide from eslint no-unused-vars)", bad);
 }
 
 function testSignatureAlgorithmAgreement() {
@@ -721,14 +756,14 @@ function testSignatureAlgorithmAgreement() {
   // algorithm-substitution vector.
   var bad = [];
   var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/x509.js"), "utf8"); }
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-x509.js"), "utf8"); }
   catch (_e) { return; }
   // Post-L2 the check lives in the CERTIFICATE build: it compares the outer and
   // inner AlgorithmIdentifier nodes' DER bytes and throws x509/bad-signature-
   // algorithm. Fire if the Certificate schema surfaces a signatureAlgorithm
   // field but the node-bytes agreement check is gone.
   if (/"signatureAlgorithm"/.test(src) && !(/bad-signature-algorithm/.test(src) && /\.node\.bytes\.equals\(/.test(src))) {
-    bad.push({ file: "lib/x509.js", line: 0,
+    bad.push({ file: "lib/schema-x509.js", line: 0,
       content: "the Certificate parse must reject a mismatch between signatureAlgorithm and tbsCertificate.signature " +
         "(RFC 5280 §4.1.1.2) — compare the two AlgorithmIdentifier nodes' bytes and throw x509/bad-signature-algorithm" });
   }
@@ -741,11 +776,11 @@ function testFormatModulesComposeSchema() {
   // L2 — a format parser (x509, and later crl/cms) DECLARES a structure schema
   // and calls schema.walk; it must NOT hand-roll a positional-cursor decode
   // (node.children[idx++]) — the positional-read and duplicate-field bug classes
-  // are the engine's job (lib/asn1-schema.js), not a per-format loop. Reading a
+  // are the engine's job (lib/schema-engine.js), not a per-format loop. Reading a
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/x509.js"]; // + lib/crl.js, lib/cms.js as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js"]; // + lib/schema-cms.js etc. as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -1552,6 +1587,7 @@ function run() {
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
   testWalkSeqRejectsUnconsumedChildren();
+  testNoUnusedUnderscoreFunctions();
   testSignatureAlgorithmAgreement();
   testFormatModulesComposeSchema();
   testEcImportDerivesCurve();

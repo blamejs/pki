@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Layer 0 — pki.asn1.schema (the L2 structure-schema engine).
+ * Layer 0 — pki.schema.engine (the L2 structure-schema engine).
  * Oracle: hand-built canonical DER walked against declarative schemas; each
  * combinator's shape assertion, arity, optional / trailing ordering, SET-OF
  * uniqueness, and error mapping is exercised directly (the x509 parser is the
@@ -12,7 +12,7 @@
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
-var S = pki.asn1.schema;
+var S = pki.schema.engine;
 var b = pki.asn1.build;
 var TAGS = pki.asn1.TAGS;
 
@@ -158,6 +158,25 @@ function testRejectUnconsumedChildren() {
     code(function () { walk(withParams, b.sequence([b.oid("1.2.3"), b.integer(9n), b.integer(5n)])); }) === "t/bad-alg");
 }
 
+function testOptionalWhenUniversal() {
+  // The CRL TBSCertList disambiguates three OPTIONAL fields by their UNIVERSAL
+  // tag (bare INTEGER version, Time nextUpdate, SEQUENCE revokedCertificates) —
+  // matched by tag, not a context [n]. whenUniversal consumes the next element
+  // only when its universal tag is in the set, else the field is absent.
+  var spec = S.seq([
+    S.optional("version", S.integerLeaf(), { whenUniversal: [TAGS.INTEGER], default: 1n }),
+    S.field("alg", S.oidLeaf()),
+  ], { assert: "sequence", code: "t/bad", build: function (m) { return { version: m.fields.version.value, present: m.fields.version.present, alg: m.fields.alg.value }; } });
+  check("whenUniversal present (bare INTEGER) is read", (function () {
+    var r = walk(spec, b.sequence([b.integer(2n), b.oid("1.2.3")])).result;
+    return r.version === 2n && r.present === true && r.alg === "1.2.3";
+  })());
+  check("whenUniversal absent (next universal tag not in the set) binds default", (function () {
+    var r = walk(spec, b.sequence([b.oid("1.2.3")])).result;
+    return r.version === 1n && r.present === false && r.alg === "1.2.3";
+  })());
+}
+
 function run() {
   testLeaves();
   testSeqAssertAndArity();
@@ -167,6 +186,7 @@ function run() {
   testRepeatUniqueness();
   testChoiceAndExplicit();
   testRejectUnconsumedChildren();
+  testOptionalWhenUniversal();
 }
 
 module.exports = { run: run };
