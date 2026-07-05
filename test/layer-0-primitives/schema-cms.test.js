@@ -131,8 +131,8 @@ function testAccept() {
   check("attached: no signedAttrs", a.signerInfos[0].signedAttrs === null);
   check("attached: raw signature bytes", Buffer.isBuffer(a.signerInfos[0].signature) && a.signerInfos[0].signature.length === 4);
 
-  // 4. SignerInfo w/ subjectKeyIdentifier [0] -> version 3.
-  var s3 = parse(cms({ signers: b.set([signerInfo({ version: b.integer(3n), sid: skid([1, 2, 3, 4]) })]) }));
+  // 4. SignerInfo w/ subjectKeyIdentifier [0] -> version 3 (SignedData v3 too, §5.1).
+  var s3 = parse(cms({ version: b.integer(3n), signers: b.set([signerInfo({ version: b.integer(3n), sid: skid([1, 2, 3, 4]) })]) }));
   check("skid signer: version 3", s3.signerInfos[0].version === 3);
   check("skid signer: raw key id", Buffer.isBuffer(s3.signerInfos[0].sid.subjectKeyIdentifier));
 
@@ -206,9 +206,26 @@ function testDispatch() {
 
 // ---- SIGNED-ATTRS content (§11) + raw exactness + more rejects ------
 function testCompleteness() {
-  // 6. a non-id-data eContentType is surfaced raw (feeds the §5.1 version rule).
-  var m6 = parse(cms({ encap: encap(ID_CT_TSTINFO, Buffer.from("tst")), signers: b.set([signerInfo({})]) }));
+  // 6. a non-id-data eContentType is surfaced raw; it forces SignedData v3 (§5.1)
+  //    and requires signedAttrs on each signer (§5.3).
+  var m6 = parse(cms({ version: b.integer(3n), encap: encap(ID_CT_TSTINFO, Buffer.from("tst")),
+    signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_CT_TSTINFO), messageDigestAttr([1])] })]) }));
   check("6. non-id-data eContentType surfaced", m6.encapContentInfo.eContentType === ID_CT_TSTINFO);
+  check("6b. non-id-data forces SignedData v3", m6.version === 3);
+
+  // 6c. non-id-data eContentType but a signer WITHOUT signedAttrs -> reject (§5.3).
+  check("6c. non-id-data without signedAttrs rejected",
+    parseCode(cms({ version: b.integer(3n), encap: encap(ID_CT_TSTINFO, Buffer.from("t")), signers: b.set([signerInfo({})]) })) === "cms/missing-signed-attrs");
+
+  // 5b/5c. signedAttrs present but missing a mandatory attribute -> reject (§11).
+  check("5b. signedAttrs missing content-type rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [messageDigestAttr([1])] })]) })) === "cms/missing-content-type");
+  check("5c. signedAttrs missing message-digest rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA)] })]) })) === "cms/missing-message-digest");
+
+  // 16b. SignedData version inconsistent with contents (v1 but a v3 signer) -> reject (§5.1).
+  check("16b. SignedData version vs contents rejected",
+    parseCode(cms({ version: b.integer(1n), signers: b.set([signerInfo({ version: b.integer(3n), sid: skid([1]) })]) })) === "cms/bad-version");
 
   // 20. signerInfos out of ascending DER order -> reject.
   var siA = signerInfo({ sid: iasn("Alice", 1) }), siB = signerInfo({ sid: iasn("Bob", 2) });
