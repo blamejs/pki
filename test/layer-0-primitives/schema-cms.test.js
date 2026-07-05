@@ -31,6 +31,7 @@ var ID_CT_AUTHDATA    = "1.2.840.113549.1.9.16.1.2";
 var ID_CT_TSTINFO     = "1.2.840.113549.1.9.16.1.4"; // a non-id-data eContentType
 var CT_ATTR           = "1.2.840.113549.1.9.3";      // id-contentType
 var MD_ATTR           = "1.2.840.113549.1.9.4";      // id-messageDigest
+var ST_ATTR           = "1.2.840.113549.1.9.5";      // id-signingTime (non-mandatory)
 var SHA256            = "2.16.840.1.101.3.4.2.1";
 var CN                = "2.5.4.3";
 
@@ -262,6 +263,11 @@ function testCompleteness() {
   //      OID content does not; must reject at parse, not verify (§11.1).
   check("26d. content-type malformed OID payload rejected",
     parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [attribute(CT_ATTR, [Buffer.from([0x06, 0x01, 0x80])]), messageDigestAttr([1])] })]) })) === "cms/bad-content-type-attr");
+
+  // 25b. two instances of the SAME non-mandatory attribute type (signingTime) ->
+  //      reject; §5.3 forbids any repeated signed-attribute type.
+  check("25b. duplicate signed-attribute type rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(ST_ATTR, [b.octetString(Buffer.from([1]))]), attribute(ST_ATTR, [b.octetString(Buffer.from([2]))])] })]) })) === "cms/duplicate-signed-attr");
 
   // 28. malformed IssuerAndSerialNumber (issuer not a Name) -> reject.
   check("28. malformed IssuerAndSerial rejected",

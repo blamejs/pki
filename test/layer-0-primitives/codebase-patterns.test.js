@@ -1085,6 +1085,13 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "signedAttrs present but missing the mandatory content-type or message-digest attribute parses if the check only rejects duplicates / multi-values. RFC 5652 §11 requires both present, so the signature commits to the content type and digest. _checkSignedAttrs reaching its close without a cms/missing-content-type throw is the bug.",
   },
+  {
+    id: "cms-signedattr-duplicate-type-unenforced",
+    primitive: "_checkSignedAttrs MUST track seen attribute types over ALL attributes and reject any repeat (throw cms/duplicate-signed-attr, RFC 5652 §5.3) — counting only content-type/message-digest lets a duplicate signingTime (or any other type) through",
+    regex: /function _checkSignedAttrs\b(?:(?!cms\/duplicate-signed-attr)[\s\S]){0,4000}?\n\}/,
+    allowlist: [],
+    reason: "RFC 5652 §5.3 forbids multiple instances of any signed-attribute type; checking only the two mandatory types lets a duplicate signingTime (or any other attribute type) parse, leaving downstream verification to reason over ambiguous attributes. _checkSignedAttrs must track a seen-set over every a.type and reject a repeat. Reaching its close without a cms/duplicate-signed-attr throw is the bug.",
+  },
 
   // --- DER codec correctness (lib scope) ---
   {

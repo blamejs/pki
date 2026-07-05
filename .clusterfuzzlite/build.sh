@@ -24,11 +24,14 @@ cd "$SRC/pkijs"
 jazzer_version=$(node -p "require('./fuzz/package.json').dependencies['@jazzer.js/core']")
 npm install --no-save --omit=dev --no-audit --no-fund --engine-strict=false "@jazzer.js/core@${jazzer_version}"
 
-# NOTE: the compiled targets RUN only when the base image's Node satisfies
-# jazzer.js + the toolkit's `engines` (>=24.18). The pinned base-builder-javascript
-# currently ships Node 20, so a canonical OSS-Fuzz run needs a newer base image
-# (re-open condition). The fuzzing that actually gates PRs runs jazzer.js directly
-# on Node 24 (.github/workflows/cflite_*.yml); this script is the OSS-Fuzz mirror.
+# NOTE: jazzer.js 4's prebuilt fuzzer addon (@jazzer.js/fuzzer) requires GLIBC
+# 2.32, but the oss-fuzz base-builder-javascript image (even :latest) is Ubuntu
+# 20.04 / GLIBC 2.31 and ships no jazzer of its own, so the targets install and
+# compile here but the addon fails to dlopen at RUN time. A canonical OSS-Fuzz run
+# needs the base image's glibc >= 2.32 (an upstream re-open condition — OSS-Fuzz
+# has not yet advanced its JS base to match jazzer.js 4). The fuzzing that actually
+# gates PRs runs jazzer.js directly on ubuntu-latest (glibc 2.35+), where it works
+# (.github/workflows/cflite_*.yml); this script is the OSS-Fuzz submission mirror.
 
 # Stage every harness into $OUT/<base>. compile_javascript_fuzzer
 # resolves the module via Node's normal resolution from the repo root,
