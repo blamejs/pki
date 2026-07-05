@@ -577,25 +577,39 @@ function cmdPushFix(opts) {
   }
   var branch = _releaseBranchFor(_readPackageVersion());
 
+  // Resolve the open PR FIRST and fail closed if there is none. push-fix is only
+  // valid for an already-open release PR, so this must precede any commit/push —
+  // otherwise a stale branch whose PR already merged/closed would get a new
+  // commit and a recreated remote branch before the lookup failed.
+  var prNum = _openPrNumber(branch);
+
   _section("commit");
   _run("git", ["add", "-A"]);
   _run("git", ["commit", "-s", "-m", opts.message]);   // -s DCO; NOT --amend (head must move)
   _ok("signed fix commit");
-  _verifyCommitSignature("new");
 
-  // gitleaks (git mode) scans COMMITTED history, so it must run AFTER the fix is
-  // committed — scanning before the commit would only see prior commits and miss
-  // a secret in the fix itself. Still before the push, so nothing reaches the
-  // remote if it fires. (In `push` the release commit already exists from the
-  // separate `commit` step, so its gitleaks runs post-commit too.)
-  _gitleaks();
+  // gitleaks (git mode) scans COMMITTED history, so it runs AFTER the commit so
+  // the fix itself is scanned (scanning before would only see prior commits and
+  // miss a secret in the fix). But if it FIRES the secret is already in local
+  // history and every later scan would keep failing — dead-ending the one-step
+  // recovery — so roll the commit back (soft reset keeps the fix staged) and
+  // stop, so the operator removes the secret and re-runs clean. Nothing reached
+  // the remote: the push is still ahead.
+  try {
+    _gitleaks();
+  } catch {
+    _run("git", ["reset", "--soft", "HEAD~1"]);
+    throw new Error("release: gitleaks found a secret in the fix — the commit was rolled back " +
+      "(your changes are kept staged). Remove the secret, then re-run push-fix.");
+  }
+
+  _verifyCommitSignature("new");
 
   _section("push");
   _run("git", ["push"]);   // branch already tracks origin from the initial push
   _ok("pushed fix to " + branch);
 
   _section("re-request Codex review");
-  var prNum = _openPrNumber(branch);
   _run("gh", ["pr", "comment", prNum, "--body", "@codex review"]);
   _ok("posted @codex review on PR #" + prNum + " — Codex will review the new head (~5-6m)");
 
