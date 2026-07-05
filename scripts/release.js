@@ -577,14 +577,18 @@ function cmdPushFix(opts) {
   }
   var branch = _releaseBranchFor(_readPackageVersion());
 
-  // gitleaks BEFORE the fix reaches the remote (the same secret gate as push).
-  _gitleaks();
-
   _section("commit");
   _run("git", ["add", "-A"]);
   _run("git", ["commit", "-s", "-m", opts.message]);   // -s DCO; NOT --amend (head must move)
   _ok("signed fix commit");
   _verifyCommitSignature("new");
+
+  // gitleaks (git mode) scans COMMITTED history, so it must run AFTER the fix is
+  // committed — scanning before the commit would only see prior commits and miss
+  // a secret in the fix itself. Still before the push, so nothing reaches the
+  // remote if it fires. (In `push` the release commit already exists from the
+  // separate `commit` step, so its gitleaks runs post-commit too.)
+  _gitleaks();
 
   _section("push");
   _run("git", ["push"]);   // branch already tracks origin from the initial push
