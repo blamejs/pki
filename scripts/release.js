@@ -288,6 +288,41 @@ function _verifyCommitSignature(label) {
   _ok(label + " commit signature verified");
 }
 
+// Docker gitleaks scan over full history — the same gate CI runs. Shared by
+// `push` (before the PR opens) and `push-fix` (before a fix reaches the remote),
+// so no secret is pushed even briefly. Windows host paths (`C:\Users\...`) must
+// be rewritten to Docker Desktop's `//c/Users/...` form — the colon in `C:`
+// confuses the `-v src:dst` splitter.
+function _gitleaks() {
+  _section("gitleaks");
+  var mount;
+  if (process.platform === "win32") {
+    var posixified = ROOT.replace(/\\/g, "/");
+    mount = "//" + posixified.charAt(0).toLowerCase() + posixified.slice(2);   // C:/x -> //c/x
+  } else {
+    mount = ROOT;
+  }
+  _run("docker", [
+    "run", "--rm",
+    "-v", mount + ":/repo",
+    "-w", "//repo",
+    "zricethezav/gitleaks:latest",
+    "git", "--config=.gitleaks.toml", "--redact", "--exit-code=1",
+  ]);
+  _ok("gitleaks clean");
+}
+
+// The open PR number for a release branch — the branch -> PR lookup shared by
+// watch / merge / push-fix. Throws if the branch has no open PR.
+function _openPrNumber(branch) {
+  var prNum = _capture("gh", ["pr", "list", "--head", branch, "--state", "open",
+                              "--json", "number", "--jq", ".[0].number"]).stdout;
+  if (!prNum) {
+    throw new Error("release: no open PR for branch " + branch);
+  }
+  return prNum;
+}
+
 // ---- Interop gate --------------------------------------------------------
 //
 // A pure-JavaScript PKI toolkit proves itself against real-world artifacts:
@@ -487,26 +522,7 @@ function cmdPush(opts) {
   // except via an explicit, audited override (see cmdInterop).
   cmdInterop({ skip: opts.skipInterop, skipReason: opts.interopSkipReason });
 
-  _section("gitleaks");
-  // Docker bind-mount path: Windows host paths look like
-  // `C:\Users\...`; Docker Desktop accepts them as `//c/Users/...`
-  // (double leading slash + lowercased drive letter without colon). The
-  // colon in `C:` confuses Docker's `-v src:dst` splitter, so transform.
-  var mount;
-  if (process.platform === "win32") {
-    var posixified = ROOT.replace(/\\/g, "/");
-    mount = "//" + posixified.charAt(0).toLowerCase() + posixified.slice(2);   // C:/x -> //c/x
-  } else {
-    mount = ROOT;
-  }
-  _run("docker", [
-    "run", "--rm",
-    "-v", mount + ":/repo",
-    "-w", "//repo",
-    "zricethezav/gitleaks:latest",
-    "git", "--config=.gitleaks.toml", "--redact", "--exit-code=1",
-  ]);
-  _ok("gitleaks clean");
+  _gitleaks();
 
   _section("push branch");
   _run("git", ["push", "-u", "origin", _releaseBranchFor(next)]);
@@ -529,6 +545,90 @@ function cmdPush(opts) {
   _ok("PR opened");
 
   console.log("\nnext: node scripts/release.js watch");
+}
+
+// Land a review/CI fix on the ALREADY-OPEN release PR. Encapsulates the
+// multi-step flow that a Codex/Codex-P1/CI finding otherwise makes by hand:
+// gitleaks -> a NEW signed commit -> push -> re-request a Codex review.
+//
+// Two non-obvious invariants it enforces:
+//   - The fix is a NEW commit, never `--amend`. The pushed head must MOVE so
+//     the review-thread + Codex gates re-check the new revision
+//     (feedback_fix_codex_flags: fix in a new commit, never dismiss).
+//   - Codex reviews a PR ONCE on open and does NOT auto-review a pushed fix,
+//     so `watch`/`merge` would wait out their 10m budget on a review that
+//     never comes. A `@codex review` comment re-triggers it on the current
+//     head; the verdict (clean issue comment / finding thread) lands ~5-6m
+//     later and the gate then sees it. This is NOT RELEASE_SKIP_CODEX_WAIT —
+//     the gate still runs, we just make Codex actually review.
+function cmdPushFix(opts) {
+  opts = opts || {};
+  _section("push-fix");
+  if (!_gitOnRelease()) {
+    throw new Error("release: push-fix must run on a release/vX.Y.Z branch (it lands a fix on the open PR)");
+  }
+  if (!opts.message) {
+    throw new Error("release: push-fix needs a commit message — " +
+      "node scripts/release.js push-fix -m \"<what the fix changes>\"");
+  }
+  if (_gitClean()) {
+    throw new Error("release: nothing to commit — stage the fix first " +
+      "(push-fix captures the whole working tree with git add -A)");
+  }
+  var branch = _releaseBranchFor(_readPackageVersion());
+
+  // Resolve the open PR FIRST and fail closed if there is none. push-fix is only
+  // valid for an already-open release PR, so this must precede any commit/push —
+  // otherwise a stale branch whose PR already merged/closed would get a new
+  // commit and a recreated remote branch before the lookup failed.
+  var prNum = _openPrNumber(branch);
+
+  _section("commit");
+  _run("git", ["add", "-A"]);
+  _run("git", ["commit", "-s", "-m", opts.message]);   // -s DCO; NOT --amend (head must move)
+  _ok("signed fix commit");
+
+  // Every post-commit / pre-push gate rolls the fix commit back on failure, so a
+  // failed gate never dead-ends at the clean-tree guard — the operator fixes the
+  // cause (a leaked secret, a broken SSH-signing setup) and re-runs push-fix
+  // cleanly. gitleaks runs here, AFTER the commit, so the fix itself is scanned
+  // (scanning before would miss a secret in it); the signature verify catches an
+  // unsigned/badly-signed commit before it reaches the remote. On either failure
+  // a soft reset keeps the fix staged, and nothing reached the remote (the push
+  // is still ahead).
+  try {
+    _gitleaks();
+    _verifyCommitSignature("new");
+  } catch (gate) {
+    _run("git", ["reset", "--soft", "HEAD~1"]);
+    throw new Error("release: a pre-push gate failed — the fix commit was rolled back " +
+      "(your changes are kept staged). Fix the cause, then re-run push-fix.\n" + (gate.message || String(gate)));
+  }
+
+  _section("push");
+  _run("git", ["push"]);   // branch already tracks origin from the initial push
+  _ok("pushed fix to " + branch);
+
+  // The push is the critical, already-completed work; re-requesting the review is
+  // a best-effort follow-up. If the comment fails (transient API / rate-limit),
+  // do NOT throw — that would leave the fix pushed but the review un-requested,
+  // and a rerun would stop at the clean-tree guard. Print the exact manual
+  // re-trigger instead so the operator can post it without another commit.
+  _section("re-request Codex review");
+  var commentRv = _run("gh", ["pr", "comment", prNum, "--body", "@codex review"], { allowFail: true });
+  if (commentRv.status === 0) {
+    _ok("posted @codex review on PR #" + prNum + " — Codex will review the new head (~5-6m)");
+  } else {
+    console.log("\nwarn: the fix IS pushed, but posting `@codex review` failed (transient?).");
+    console.log("      Re-trigger it manually (push-fix would refuse to rerun — the tree is now clean):");
+    console.log("        gh pr comment " + prNum + " --body \"@codex review\"");
+  }
+
+  console.log("\nNext:");
+  console.log("  - Resolve any Codex thread THIS fix addresses (fix it, never dismiss):");
+  console.log("      gh api graphql -f query='mutation { resolveReviewThread(" +
+              "input:{threadId:\"<PRRT_...>\"}){ thread { isResolved } } }'");
+  console.log("  - Then: node scripts/release.js watch   (awaits the re-review + flags remaining threads)");
 }
 
 // Fetch every UNRESOLVED review thread on the PR with enough context to act
@@ -668,15 +768,7 @@ function _printUnresolvedThreads(unresolved) {
 
 function cmdWatch() {
   _section("watch");
-  var prNum = _capture("gh", ["pr", "list",
-                              "--author", "@me",
-                              "--state",  "open",
-                              "--head",   _releaseBranchFor(_readPackageVersion()),
-                              "--json",   "number",
-                              "--jq",     ".[0].number"]).stdout;
-  if (!prNum) {
-    throw new Error("release: no open PR for branch " + _releaseBranchFor(_readPackageVersion()));
-  }
+  var prNum = _openPrNumber(_releaseBranchFor(_readPackageVersion()));
   console.log("PR #" + prNum);
 
   _run("gh", ["pr", "checks", prNum, "--watch"], { allowFail: true });
@@ -699,11 +791,7 @@ function cmdMerge() {
   _section("merge");
   var next = _readPackageVersion();
   var branch = _releaseBranchFor(next);
-  var prNum = _capture("gh", ["pr", "list", "--head", branch, "--state", "open",
-                              "--json", "number", "--jq", ".[0].number"]).stdout;
-  if (!prNum) {
-    throw new Error("release: no open PR for " + branch);
-  }
+  var prNum = _openPrNumber(branch);
   // Authoritative gate: do not read merge state / threads until Codex has
   // reviewed the current head, so its asynchronously-posted findings are in
   // the thread set the checks below enforce.
@@ -844,6 +932,8 @@ function cmdHelp() {
   console.log("  node scripts/release.js commit              # release branch + signed commit");
   console.log("  node scripts/release.js interop             # cross-implementation interop tests");
   console.log("  node scripts/release.js push                # interop + gitleaks + push + open PR");
+  console.log("  node scripts/release.js push-fix -m \"...\"    # land a review/CI fix on the open PR:");
+  console.log("                                              #   gitleaks + signed commit + push + re-request Codex");
   console.log("  node scripts/release.js watch               # CI watch + flag review threads");
   console.log("  node scripts/release.js merge               # squash-merge if CLEAN");
   console.log("  node scripts/release.js tag                 # signed tag + push tag");
@@ -874,6 +964,17 @@ function _flagValue(name) {
   return undefined;
 }
 
+// The push-fix commit message: `-m "…"` / `--message "…"` (value in the next
+// token) or `--message="…"` (attached). Returns undefined if absent.
+function _messageValue() {
+  var attached = _flagValue("--message");
+  if (attached !== undefined) return attached;
+  for (var i = 0; i < args.length; i++) {
+    if (args[i] === "-m" || args[i] === "--message") return args[i + 1];
+  }
+  return undefined;
+}
+
 var opts = {
   minor: args.indexOf("--minor") !== -1,
   // The interop gate is on by default. `--skip-interop` opts out, but ONLY
@@ -881,6 +982,7 @@ var opts = {
   // loudly and recorded in the release-flow transcript.
   skipInterop:       args.indexOf("--skip-interop") !== -1,
   interopSkipReason: _flagValue("--interop-skip-reason"),
+  message:           _messageValue(),
 };
 
 try {
@@ -894,6 +996,7 @@ try {
                       skipReason: opts.interopSkipReason,
                     });            break;
     case "push":    cmdPush(opts);    break;
+    case "push-fix": cmdPushFix(opts); break;
     case "watch":   cmdWatch();       break;
     case "merge":   cmdMerge();       break;
     case "tag":     cmdTag();         break;
