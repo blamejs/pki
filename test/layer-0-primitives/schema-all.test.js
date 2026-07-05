@@ -1,0 +1,52 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * Layer 0 — pki.schema (the family orchestrator). Detect-and-route dispatch +
+ * the stable schema/* error codes. SchemaError is (code, message), so a caller
+ * reading err.code must see the schema/* code, not the human message.
+ */
+
+var helpers = require("../helpers");
+var pki = helpers.pki;
+var check = helpers.check;
+var b = pki.asn1.build;
+var fs = require("fs");
+var path = require("path");
+
+function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
+
+function crlDer() {
+  var tbs = b.sequence([
+    b.sequence([b.oid("1.2.840.10045.4.3.2")]),
+    b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("CA")])])]),
+    b.utcTime(new Date("2026-01-01T00:00:00Z")),
+  ]);
+  return b.sequence([tbs, b.sequence([b.oid("1.2.840.10045.4.3.2")]), b.bitString(Buffer.from([0x00]), 0)]);
+}
+
+function run() {
+  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["crl", "x509"]));
+
+  var certPem = fs.readFileSync(path.join(__dirname, "..", "fixtures", "pkijs-selfsigned-ec.pem"), "utf8");
+  var cert = pki.schema.parse(certPem);
+  check("parse routes a certificate to x509", cert.version === 3 && cert.validity && cert.validity.notBefore instanceof Date);
+
+  var crl = pki.schema.parse(crlDer());
+  check("parse routes a CRL to crl", crl.thisUpdate instanceof Date && Array.isArray(crl.revokedCertificates));
+
+  // Stable schema/* codes: err.code must be the code, not the message
+  // (SchemaError is (code, message); the base PkiError is (message, code)).
+  check("unknown format → err.code schema/unknown-format", code(function () { pki.schema.parse(b.integer(5n)); }) === "schema/unknown-format");
+  check("bad input → err.code schema/bad-input", code(function () { pki.schema.parse(42); }) === "schema/bad-input");
+  check("undecodable DER → err.code schema/bad-der", code(function () { pki.schema.parse(Buffer.from([0x30, 0x80])); }) === "schema/bad-der");
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  Promise.resolve().then(run).then(
+    function () { console.log("CHECKS " + helpers.getChecks()); },
+    function (e) { console.error(helpers.formatErr(e)); process.exit(1); }
+  );
+}

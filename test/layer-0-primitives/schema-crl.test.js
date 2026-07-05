@@ -155,6 +155,25 @@ function testExtensions() {
   check("IDP (GeneralNames-based) left raw with bytes reachable", Buffer.isBuffer(crit.crlExtensions[0].value));
 }
 
+// ---- extension strictness (fail-closed value decoding) ---------------
+function testExtensionStrictness() {
+  // An Extension with 4+ children is malformed — the 4th element is NOT silently ignored.
+  var fourChild = b.sequence([b.oid("2.5.29.20"), b.octetString(b.integer(1n)), b.boolean(true), b.octetString(Buffer.from([1]))]);
+  check("extension with 4 children rejected", parseCode(crl({ version: 1n, crlExtensions: [fourChild] })) === "crl/bad-extension");
+  // reasonCode is ENUMERATED — a bare INTEGER value is rejected (strict RFC 5280).
+  check("reasonCode as INTEGER rejected (must be ENUMERATED)",
+    parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.integer(1n))])] })) === "crl/bad-extension-value");
+  check("reasonCode as ENUMERATED decodes to the int", (function () {
+    var m = parse(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(1n))])] }));
+    return m.revokedCertificates[0].crlEntryExtensions[0].value === 1;
+  })());
+  // The CRL PEM decoder caps input size before scanning / base64-decoding.
+  check("oversized CRL PEM rejected before decode (pem/too-large)", (function () {
+    var huge = "-----BEGIN X509 CRL-----\n" + "A".repeat(pki.constants.LIMITS.PEM_MAX_BYTES) + "\n-----END X509 CRL-----";
+    return code(function () { pki.schema.crl.parse(huge); }) === "pem/too-large";
+  })());
+}
+
 // ---- multi-defect fail-closed ----------------------------------------
 function testMultiDefectFailClosed() {
   var c = parseCode(crl({ signature: algId(SIGALG), outerSig: algId("1.2.840.10045.4.3.3"), issuer: b.sequence([]), thisUpdate: b.integer(9n) }));
@@ -168,6 +187,7 @@ function run() {
   testVersion();
   testOptionalDisambiguation();
   testExtensions();
+  testExtensionStrictness();
   testMultiDefectFailClosed();
 }
 
