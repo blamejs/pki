@@ -22,11 +22,15 @@ for fuzzer in fuzz/*.fuzz.js; do
   echo "[pkijs build] compiling $base"
   compile_javascript_fuzzer pkijs "$fuzzer" --sync
 
-  # Zip the seed corpus if it exists.
+  # Zip the seed corpus if it exists, named after the COMPILED WRAPPER so
+  # OSS-Fuzz / ClusterFuzzLite attaches it. compile_javascript_fuzzer derives
+  # the wrapper name with `basename -s .js` (strips only `.js`), so
+  # fuzz/<base>.fuzz.js -> $OUT/<base>.fuzz, and the corpus must be
+  # $OUT/<base>.fuzz_seed_corpus.zip (NOT <base>_seed_corpus.zip).
   seed_dir="fuzz/${base}_seed_corpus"
   if [ -d "$seed_dir" ]; then
-    echo "[pkijs build] packaging seed corpus for $base"
-    ( cd "$seed_dir" && zip -q -r "$OUT/${base}_seed_corpus.zip" . )
+    echo "[pkijs build] packaging seed corpus for ${base}.fuzz"
+    ( cd "$seed_dir" && zip -q -r "$OUT/${base}.fuzz_seed_corpus.zip" . )
   fi
 done
 

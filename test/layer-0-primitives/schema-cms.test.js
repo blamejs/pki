@@ -249,6 +249,14 @@ function testCompleteness() {
   check("26. content-type multi-valued rejected",
     parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [attribute(CT_ATTR, [b.oid(ID_DATA), b.oid(ID_CT_TSTINFO)]), messageDigestAttr([1])] })]) })) === "cms/bad-content-type-attr");
 
+  // 26b. content-type value is not an OBJECT IDENTIFIER (§11.1 syntax) -> reject.
+  check("26b. content-type value not an OID rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [attribute(CT_ATTR, [b.integer(5n)]), messageDigestAttr([1])] })]) })) === "cms/bad-content-type-attr");
+
+  // 26c. message-digest value is not an OCTET STRING (§11.2 syntax) -> reject.
+  check("26c. message-digest value not an OCTET STRING rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), attribute(MD_ATTR, [b.oid(ID_DATA)])] })]) })) === "cms/bad-message-digest-attr");
+
   // 28. malformed IssuerAndSerialNumber (issuer not a Name) -> reject.
   check("28. malformed IssuerAndSerial rejected",
     parseCode(cms({ signers: b.set([signerInfo({ sid: b.sequence([b.integer(9n), b.integer(1n)]) })]) })) !== "NO-THROW");
