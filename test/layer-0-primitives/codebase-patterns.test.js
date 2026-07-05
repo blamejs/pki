@@ -630,6 +630,39 @@ function testFuzzBuildInstallsJazzer() {
   _report("fuzz build installs @jazzer.js/core before compile_javascript_fuzzer", bad);
 }
 
+function testCmsSignedDataConformanceGuards() {
+  // class: cms-signeddata-conformance-guard-dropped
+  // Each token below is the STABLE, frozen contract of an RFC 5652 validation the
+  // CMS SignedData parser MUST perform — the error code it throws, or the ASN.1
+  // reader that validates a value payload. Removing a validation drops its token.
+  // Anchoring on these (the public error-code contract) rather than on the helper
+  // FUNCTION NAME makes the guard rename-proof: renaming _checkSignedAttrs /
+  // SIGNED_DATA keeps the tokens (silent, correct), while deleting the check drops
+  // them (fires). A `function <name>` regex would instead go silently green on the
+  // rename — the same brittleness as anchoring on a specific `var`.
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"cms/bad-version"',            "SignedData version validated against its contents (RFC 5652 §5.1)"],
+    ['"cms/missing-signed-attrs"',   "signedAttrs required when eContentType is not id-data (§5.3)"],
+    ['"cms/missing-content-type"',   "signedAttrs must contain a content-type attribute (§11.1)"],
+    ['"cms/missing-message-digest"', "signedAttrs must contain a message-digest attribute (§11.2)"],
+    ['"cms/duplicate-signed-attr"',  "no signed-attribute type repeats (§5.3)"],
+    ['asn1.read.oid',                "content-type signed-attr value payload validated, not just its tag (§11.1)"],
+    ['asn1.read.octetString',        "message-digest signed-attr value payload validated (§11.2)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-cms.js", line: 0,
+        content: "the CMS SignedData parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  bad = _filterMarkers(bad, "cms-signeddata-conformance-guard-dropped");
+  _report("CMS SignedData RFC-conformance guards present (version-vs-contents / signedAttrs presence + payload syntax + no-duplicate-type)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -1053,45 +1086,10 @@ var KNOWN_ANTIPATTERNS = [
     reason: "check(<reason>, true) as a skip is the skip-counted-as-pass bug: a run that skipped a cross-check (e.g. the OpenSSL interop oracle predates ML-DSA) reports the SAME 'N checks passed' as a run that actually performed it, so a coverage gap reads as coverage. helpers.skip / ctx.skip increments a separate skip counter (never `_checks`) and the interop runner + test-integration report skips distinctly.",
   },
 
-  // --- CMS SignedData RFC-conformance guards (lib scope; each guards the
-  //     structural shape of an RFC 5652 validation — the build/check must REACH
-  //     its guard before returning, detected by a negative lookahead on the guard
-  //     token, §2/§3) ---
-  {
-    id: "cms-signeddata-version-unenforced",
-    primitive: "the SignedData build MUST recompute the CMSVersion from its contents (cert/CRL outer tags + SignerInfo versions + eContentType) and throw cms/bad-version on mismatch (RFC 5652 §5.1) — surfacing the raw version without validating it accepts an inconsistent SignedData",
-    regex: /SIGNED_DATA\s*=\s*schema\.seq\((?:(?!cms\/bad-version)[\s\S]){0,4000}?return\s*\{/,
-    allowlist: [],
-    reason: "Surfacing the SignedData version without validating it against the contents accepts an inconsistent SignedData — a v1 SignedData carrying a v3 SignerInfo, or a non-id-data eContentType. RFC 5652 §5.1 fixes the version deterministically (v5 on an `other` cert/CRL, v4 on a v2AttrCert, v3 on a v1AttrCert / a v3 signer / non-id-data content, else v1); _expectedSignedDataVersion computes it. The build reaching its return without a cms/bad-version throw is the bug.",
-  },
-  {
-    id: "cms-signeddata-nondata-signedattrs-unenforced",
-    primitive: "the SignedData build MUST require signedAttrs on every SignerInfo when eContentType is not id-data (throw cms/missing-signed-attrs, RFC 5652 §5.3) before returning",
-    regex: /SIGNED_DATA\s*=\s*schema\.seq\((?:(?!cms\/missing-signed-attrs)[\s\S]){0,4000}?return\s*\{/,
-    allowlist: [],
-    reason: "signedAttrs MAY be omitted only for id-data content; any other eContentType requires them so the content-type + message-digest attributes bind the signature (RFC 5652 §5.3). Accepting a non-id-data SignedData whose signers omit signedAttrs leaves the signature bound to nothing. The build reaching its return without the cms/missing-signed-attrs throw is the bug.",
-  },
-  {
-    id: "cms-signedattr-value-syntax-unvalidated",
-    primitive: "_checkSignedAttrs MUST decode AND read (asn1.read.oid / asn1.read.octetString) the content-type / message-digest attribute value — validating the OID payload / OCTET STRING, not merely the TLV tag — so a malformed value is rejected at parse, not verify",
-    regex: /function _checkSignedAttrs\b(?:(?!asn1\.read\.oid)[\s\S]){0,4000}?\n\}/,
-    allowlist: [],
-    reason: "A signed attribute whose value is the wrong type, OR a structurally-valid TLV with a malformed payload (a truncated base-128 subidentifier in a content-type OID), parses if only the value count or the TLV tag is checked — asn1.decode validates tag/length, not the OID payload. cms.parse is fail-closed structural validation before verification, so the value must go through a read.* reader (asn1.read.oid for ContentType, asn1.read.octetString for MessageDigest) that validates its full content. _checkSignedAttrs reaching its close without an asn1.read.oid is the bug.",
-  },
-  {
-    id: "cms-signedattr-presence-unenforced",
-    primitive: "_checkSignedAttrs MUST require, when signedAttrs is present, exactly one content-type AND one message-digest attribute (throw cms/missing-content-type / cms/missing-message-digest, RFC 5652 §11) — rejecting duplicates is not enough",
-    regex: /function _checkSignedAttrs\b(?:(?!cms\/missing-content-type)[\s\S]){0,4000}?\n\}/,
-    allowlist: [],
-    reason: "signedAttrs present but missing the mandatory content-type or message-digest attribute parses if the check only rejects duplicates / multi-values. RFC 5652 §11 requires both present, so the signature commits to the content type and digest. _checkSignedAttrs reaching its close without a cms/missing-content-type throw is the bug.",
-  },
-  {
-    id: "cms-signedattr-duplicate-type-unenforced",
-    primitive: "_checkSignedAttrs MUST track seen attribute types over ALL attributes and reject any repeat (throw cms/duplicate-signed-attr, RFC 5652 §5.3) — counting only content-type/message-digest lets a duplicate signingTime (or any other type) through",
-    regex: /function _checkSignedAttrs\b(?:(?!cms\/duplicate-signed-attr)[\s\S]){0,4000}?\n\}/,
-    allowlist: [],
-    reason: "RFC 5652 §5.3 forbids multiple instances of any signed-attribute type; checking only the two mandatory types lets a duplicate signingTime (or any other attribute type) parse, leaving downstream verification to reason over ambiguous attributes. _checkSignedAttrs must track a seen-set over every a.type and reject a repeat. Reaching its close without a cms/duplicate-signed-attr throw is the bug.",
-  },
+  // (CMS SignedData RFC-conformance guards are enforced by
+  //  testCmsSignedDataConformanceGuards — a file-level check anchored on the
+  //  frozen error-code contract, NOT on the helper function name, so a rename
+  //  can't silently green it.)
 
   // --- DER codec correctness (lib scope) ---
   {
@@ -1804,6 +1802,7 @@ function run() {
   testWikiPortAgreesAcrossArtifacts();
   testFuzzSeedCorpusZipNaming();
   testFuzzBuildInstallsJazzer();
+  testCmsSignedDataConformanceGuards();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
