@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: pki.x509.parse
+ * Fuzz target: pki.schema.x509.parse
  *
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (local PRs) and
  * OSS-Fuzz (continuous, Google-hosted) both consume this shape:
@@ -23,7 +23,7 @@ var pki = require("..");
 
 module.exports.fuzz = function (data) {
   try {
-    pki.x509.parse(data);
+    pki.schema.x509.parse(data);
   } catch (e) {
     if (e instanceof pki.errors.PkiError) return;
     throw e;

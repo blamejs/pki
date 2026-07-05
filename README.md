@@ -63,7 +63,7 @@ var pki = require("@blamejs/pki");
 
 ### Parse an X.509 certificate
 
-`pki.x509.parse` accepts a DER `Buffer` or a PEM string/Buffer and returns a
+`pki.schema.x509.parse` accepts a DER `Buffer` or a PEM string/Buffer and returns a
 fully-decoded, validated certificate — distinguished names rendered and
 structured, the validity window as real `Date`s, algorithms and extensions
 named through the OID registry, and the exact signed `tbsBytes` for a downstream
@@ -74,7 +74,7 @@ var pki = require("@blamejs/pki");
 var fs  = require("node:fs");
 
 var pem  = fs.readFileSync("cert.pem", "utf8");
-var cert = pki.x509.parse(pem);
+var cert = pki.schema.x509.parse(pem);
 
 cert.subject.dn;                    // "CN=example.com, O=Example Org, C=US"
 cert.issuer.dn;                     // "CN=example.com, O=Example Org, C=US"
@@ -94,7 +94,7 @@ Malformed bytes throw a typed error rather than returning a half-parsed object:
 
 ```js
 try {
-  pki.x509.parse(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]));
+  pki.schema.x509.parse(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]));
 } catch (e) {
   e.constructor.name;  // "CertificateError"
   e.code;              // e.g. "x509/not-a-certificate" — stable domain/reason string
@@ -104,8 +104,8 @@ try {
 ### Convert PEM ↔ DER
 
 ```js
-var der = pki.x509.pemDecode(pem, "CERTIFICATE");   // Buffer of DER bytes
-var out = pki.x509.pemEncode(der, "CERTIFICATE");   // 64-column PEM string
+var der = pki.schema.x509.pemDecode(pem, "CERTIFICATE");   // Buffer of DER bytes
+var out = pki.schema.x509.pemEncode(der, "CERTIFICATE");   // 64-column PEM string
 ```
 
 ### Decode and build ASN.1 / DER directly
@@ -180,7 +180,7 @@ var ok  = await subtle.verify({ name: "ML-DSA-65" }, kp.publicKey, sig, data); /
 // same call shape, and every key it exports is OpenSSL/NSS-interoperable.
 ```
 
-## What ships today (v0.1.0)
+## What ships today
 
 The core codec and certificate-reading surface are here and stable. Everything
 is callable today; nothing below is a stub.
@@ -190,9 +190,12 @@ is callable today; nothing below is a stub.
 | `pki.asn1` | Strict, bounded DER codec — `decode` (zero-copy node tree), `encode`, `build.*` canonical-DER value builders, `read.*` typed readers, `TAGS`, OID-content encode/decode |
 | `pki.oid` | Two-way OID ↔ name registry — `name`, `byName`, `register`, `toArcs`/`fromArcs`, `toDER`/`fromDER`; seeded with RFC 5280 + NIST PQC arcs |
 | `pki.webcrypto` | A W3C WebCrypto (`SubtleCrypto`) engine over `node:crypto` — `sign`/`verify`/`encrypt`/`decrypt`/`deriveBits`/`digest`/`generateKey`/`importKey`/`exportKey` across RSA, ECDSA, ECDH, Ed25519/Ed448, AES, HMAC, HKDF, PBKDF2, SHA — **and** post-quantum ML-DSA-44/65/87 and SLH-DSA signatures, plus ML-KEM-512/768/1024 key generation (KEM encapsulation on the roadmap). Zero-dependency, OpenSSL-interoperable |
-| `pki.x509` | Parse DER / PEM certificates into structured, validated fields — `parse`, `pemDecode`, `pemEncode` |
+| `pki.schema` | The schema family — `parse` detects which PKI format DER / PEM encodes and routes to the right parser, `all` enumerates the registered formats, and the engine + per-format members are grouped here |
+| `pki.schema.x509` | Parse DER / PEM certificates into structured, validated fields — `parse`, `pemDecode`, `pemEncode` |
+| `pki.schema.crl` | Parse DER / PEM X.509 CRLs per RFC 5280 §5 — revoked serials with real-`Date` revocation times, named + partly-decoded extensions, fail-closed — `parse`, `pemDecode` |
+| `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
-| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError`, each carrying a stable `code` in `domain/reason` form |
+| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
 
 ### CLI

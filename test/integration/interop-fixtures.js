@@ -45,13 +45,13 @@ function _opensslDate(s) {
 }
 
 module.exports = {
-  // ---- pki.x509.parse : agree with the `openssl x509` reading ----------
-  "pki.x509.parse": [
+  // ---- pki.schema.x509.parse : agree with the `openssl x509` reading ----------
+  "pki.schema.x509.parse": [
     {
       desc: "parse agrees with `openssl x509` on subject/issuer/serial/validity",
       run: function (ctx) {
         var fixture = path.join(ctx.FIXTURES_DIR, "pkijs-selfsigned-ec.pem");
-        var cert = ctx.pki.x509.parse(ctx.fs.readFileSync(fixture));
+        var cert = ctx.pki.schema.x509.parse(ctx.fs.readFileSync(fixture));
         var o = _parseOpensslFields(ctx.runOpenssl([
           "x509", "-noout", "-subject", "-issuer", "-serial", "-startdate", "-enddate", "-in", fixture,
         ]));
@@ -67,12 +67,12 @@ module.exports = {
       run: function (ctx) {
         var fixture = path.join(ctx.FIXTURES_DIR, "pkijs-selfsigned-ec.pem");
         var pem = ctx.fs.readFileSync(fixture);
-        var der = ctx.pki.x509.pemDecode(pem, "CERTIFICATE");
-        var reencoded = ctx.pki.x509.pemEncode(der, "CERTIFICATE");
-        ctx.check("pem round-trip reproduces the DER", ctx.pki.x509.pemDecode(reencoded, "CERTIFICATE").equals(der));
+        var der = ctx.pki.schema.x509.pemDecode(pem, "CERTIFICATE");
+        var reencoded = ctx.pki.schema.x509.pemEncode(der, "CERTIFICATE");
+        ctx.check("pem round-trip reproduces the DER", ctx.pki.schema.x509.pemDecode(reencoded, "CERTIFICATE").equals(der));
         ctx.withTmp(reencoded, "roundtrip.pem", function (p) {
           var o = _parseOpensslFields(ctx.runOpenssl(["x509", "-noout", "-serial", "-in", p]));
-          ctx.check("openssl accepts the re-encoded PEM", ctx.pki.x509.parse(pem).serialNumberHex.toLowerCase() === o.serial.toLowerCase());
+          ctx.check("openssl accepts the re-encoded PEM", ctx.pki.schema.x509.parse(pem).serialNumberHex.toLowerCase() === o.serial.toLowerCase());
         });
       },
     },

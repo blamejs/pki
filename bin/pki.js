@@ -44,7 +44,7 @@ function cmdParse(file) {
   var bytes;
   try { bytes = fs.readFileSync(file); } catch (e) { return fail("cannot read " + file + ": " + e.message); }
   var cert;
-  try { cert = pki.x509.parse(bytes); } catch (e) { return fail(e.code + ": " + e.message); }
+  try { cert = pki.schema.x509.parse(bytes); } catch (e) { return fail(e.code + ": " + e.message); }
   var view = {
     version:            cert.version,
     serialNumber:       cert.serialNumberHex,
@@ -74,3 +74,4 @@ function main(argv) {
 }
 
 main(process.argv.slice(2));
+

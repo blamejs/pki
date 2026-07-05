@@ -79,7 +79,7 @@ security-only patches after the next major releases.
 - **Silent verification failure.** Every verify and parse path throws on failure.
   No path returns zero, a default, or partial output in place of a real result, so
   a caller cannot mistake an error for a pass.
-- **Round-trip drift on signed bytes.** `pki.x509.parse` returns the exact
+- **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the bytes
   that were actually signed rather than re-encoding and hoping for round-trip
   fidelity.

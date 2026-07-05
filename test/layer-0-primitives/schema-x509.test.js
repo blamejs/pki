@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Layer 0 — pki.x509 (certificate parsing).
+ * Layer 0 — pki.schema.x509 (certificate parsing).
  * Oracle: a real OpenSSL-generated self-signed P-256 certificate whose
  * fields were read out independently with `openssl x509 -noout -text`.
  */
@@ -16,7 +16,7 @@ function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; 
 var EXPECT = vectors.CERT_EC_EXPECT;
 
 function testParseFields() {
-  var cert = pki.x509.parse(vectors.CERT_EC_PEM);
+  var cert = pki.schema.x509.parse(vectors.CERT_EC_PEM);
   check("version is 3", cert.version === EXPECT.version);
   check("serial hex matches", cert.serialNumberHex.toLowerCase() === EXPECT.serialHex);
   check("serial is a BigInt", typeof cert.serialNumber === "bigint");
@@ -35,7 +35,7 @@ function testParseFields() {
 }
 
 function testExtensions() {
-  var cert = pki.x509.parse(vectors.CERT_EC_PEM);
+  var cert = pki.schema.x509.parse(vectors.CERT_EC_PEM);
   var oids = cert.extensions.map(function (e) { return e.oid; });
   EXPECT.extnOids.forEach(function (o) {
     check("has extension " + o, oids.indexOf(o) !== -1);
@@ -47,22 +47,22 @@ function testExtensions() {
 }
 
 function testPem() {
-  var der = pki.x509.pemDecode(vectors.CERT_EC_PEM, "CERTIFICATE");
+  var der = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "CERTIFICATE");
   check("pemDecode yields DER", Buffer.isBuffer(der) && der[0] === 0x30);
-  var reencoded = pki.x509.pemEncode(der, "CERTIFICATE");
-  check("PEM round-trips to same DER", pki.x509.pemDecode(reencoded, "CERTIFICATE").equals(der));
+  var reencoded = pki.schema.x509.pemEncode(der, "CERTIFICATE");
+  check("PEM round-trips to same DER", pki.schema.x509.pemDecode(reencoded, "CERTIFICATE").equals(der));
   check("parse(DER) === parse(PEM)", (function () {
-    var a = pki.x509.parse(der);
-    var b = pki.x509.parse(vectors.CERT_EC_PEM);
+    var a = pki.schema.x509.parse(der);
+    var b = pki.schema.x509.parse(vectors.CERT_EC_PEM);
     return a.subject.dn === b.subject.dn && a.serialNumberHex === b.serialNumberHex;
   })());
-  check("pemDecode rejects wrong label", code(function () { pki.x509.pemDecode(vectors.CERT_EC_PEM, "PRIVATE KEY"); }) === "pem/label-mismatch");
+  check("pemDecode rejects wrong label", code(function () { pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "PRIVATE KEY"); }) === "pem/label-mismatch");
 }
 
 function testRejects() {
-  check("rejects empty SEQUENCE", code(function () { pki.x509.parse(Buffer.from("3000", "hex")); }) === "x509/not-a-certificate");
-  check("rejects non-buffer input", code(function () { pki.x509.parse(42); }) === "x509/bad-input");
-  check("rejects garbage DER", code(function () { pki.x509.parse(Buffer.from("ffffffff", "hex")); }) !== "NO-THROW");
+  check("rejects empty SEQUENCE", code(function () { pki.schema.x509.parse(Buffer.from("3000", "hex")); }) === "x509/not-a-certificate");
+  check("rejects non-buffer input", code(function () { pki.schema.x509.parse(42); }) === "x509/bad-input");
+  check("rejects garbage DER", code(function () { pki.schema.x509.parse(Buffer.from("ffffffff", "hex")); }) !== "NO-THROW");
 }
 
 // ---- synthetic-certificate builders (hand-built canonical DER) --------
@@ -117,7 +117,7 @@ function testShortTbsWithVersion() {
     _validity(),                          // validity
     _name("subject"),                     // subject — SPKI intentionally omitted
   ]);
-  var c = code(function () { pki.x509.parse(cert); });
+  var c = code(function () { pki.schema.x509.parse(cert); });
   check("short tbs (version + 6 children) throws a CertificateError, not a raw TypeError",
     typeof c === "string" && c.indexOf("x509/") === 0);
 }
@@ -134,7 +134,7 @@ function testDuplicateExtension() {
     _spki(),
     build.explicit(3, build.sequence([_ext("2.5.29.14"), _ext("2.5.29.14")])),
   ]);
-  check("duplicate extension rejected", code(function () { pki.x509.parse(cert); }) === "x509/duplicate-extension");
+  check("duplicate extension rejected", code(function () { pki.schema.x509.parse(cert); }) === "x509/duplicate-extension");
 
   // Guard the anti-regression: repeated RDN attribute types are LEGAL.
   var multiOu = _cert([
@@ -147,7 +147,7 @@ function testDuplicateExtension() {
     _spki(),
   ]);
   check("repeated RDN attribute types (multiple OU) still parse",
-    code(function () { pki.x509.parse(multiOu); }) === "NO-THROW");
+    code(function () { pki.schema.x509.parse(multiOu); }) === "NO-THROW");
 }
 
 // FIX 11 — the certificate version is validated against the RFC 5280 set.
@@ -163,9 +163,9 @@ function testVersionValidation() {
       _spki(),
     ]);
   }
-  check("explicit version 41 rejected", code(function () { pki.x509.parse(withVersion(41n)); }) === "x509/bad-version");
-  check("explicit version -1 rejected", code(function () { pki.x509.parse(withVersion(-1n)); }) === "x509/bad-version");
-  check("explicitly-encoded default v1 rejected", code(function () { pki.x509.parse(withVersion(0n)); }) === "x509/bad-version");
+  check("explicit version 41 rejected", code(function () { pki.schema.x509.parse(withVersion(41n)); }) === "x509/bad-version");
+  check("explicit version -1 rejected", code(function () { pki.schema.x509.parse(withVersion(-1n)); }) === "x509/bad-version");
+  check("explicitly-encoded default v1 rejected", code(function () { pki.schema.x509.parse(withVersion(0n)); }) === "x509/bad-version");
 
   // No version field parses as v1.
   var v1 = _cert([
@@ -177,7 +177,7 @@ function testVersionValidation() {
     _spki(),
   ]);
   check("no version field parses as v1", (function () {
-    var cert = pki.x509.parse(v1);
+    var cert = pki.schema.x509.parse(v1);
     return cert.version === 1;
   })());
 
@@ -191,7 +191,7 @@ function testVersionValidation() {
     _spki(),
     build.explicit(3, build.sequence([_ext("2.5.29.14")])),
   ]);
-  check("extensions on a v1 cert rejected", code(function () { pki.x509.parse(v1WithExts); }) === "x509/bad-version");
+  check("extensions on a v1 cert rejected", code(function () { pki.schema.x509.parse(v1WithExts); }) === "x509/bad-version");
 }
 
 // A malformed KNOWN string type in a DN (invalid UTF-8 CN) must fail the
@@ -209,20 +209,20 @@ function testMalformedDnStringRejected() {
   }
   // No try/catch: these certs are built to parse; a regression that made one
   // throw should surface the real parse error, not be hidden behind a null.
-  function dnOf(cert) { return pki.x509.parse(cert).subject.dn; }
+  function dnOf(cert) { return pki.schema.x509.parse(cert).subject.dn; }
 
   // A malformed KNOWN string type (invalid UTF-8 UTF8String) must fail the
   // certificate closed — not hex-encode the invalid bytes away.
   var badCert = certWithDnValue(pki.asn1.encode(0x00, false, pki.asn1.TAGS.UTF8_STRING, Buffer.from([0xFF, 0xFE])));
   check("x509.parse rejects a malformed UTF8String in a DN (fails closed, not hex)",
-    code(function () { pki.x509.parse(badCert); }) === "x509/bad-atv");
+    code(function () { pki.schema.x509.parse(badCert); }) === "x509/bad-atv");
 
   // A CONSTRUCTED encoding of a known string type is DER-illegal and must fail
   // the certificate closed at decode — it must NOT reach the RFC 4514 hex
   // fallback (which would bypass the restricted-string content checks). Only a
   // genuinely non-string constructed value (a SEQUENCE) takes the # fallback.
   check("x509.parse rejects a constructed string type in a DN (DER-illegal)",
-    code(function () { pki.x509.parse(certWithDnValue(pki.asn1.encode(0x00, true, pki.asn1.TAGS.UTF8_STRING, build.utf8("x")))); }) === "x509/bad-der");
+    code(function () { pki.schema.x509.parse(certWithDnValue(pki.asn1.encode(0x00, true, pki.asn1.TAGS.UTF8_STRING, build.utf8("x")))); }) === "x509/bad-der");
 
   // An ANY-typed non-string value (INTEGER 5 = DER 02 01 05) is rendered as its
   // FULL DER encoding per RFC 4514 §2.4 — tag + length + content, not content-only.
@@ -251,15 +251,15 @@ function testTbsTrailingFieldGrammar() {
   var exts = build.explicit(3, build.sequence([_ext("2.5.29.14")]));
   var uid1 = build.explicit(1, build.bitString(Buffer.from([0x01]), 0));
   check("two [3] extension wrappers rejected",
-    code(function () { pki.x509.parse(tbs([exts, build.explicit(3, build.sequence([_ext("2.5.29.15")]))])); }) === "x509/bad-tbs");
+    code(function () { pki.schema.x509.parse(tbs([exts, build.explicit(3, build.sequence([_ext("2.5.29.15")]))])); }) === "x509/bad-tbs");
   check("out-of-order trailing fields ([3] before [1]) rejected",
-    code(function () { pki.x509.parse(tbs([exts, uid1])); }) === "x509/bad-tbs");
+    code(function () { pki.schema.x509.parse(tbs([exts, uid1])); }) === "x509/bad-tbs");
   check("unknown trailing context tag [4] rejected",
-    code(function () { pki.x509.parse(tbs([build.explicit(4, build.integer(1n))])); }) === "x509/bad-tbs");
+    code(function () { pki.schema.x509.parse(tbs([build.explicit(4, build.integer(1n))])); }) === "x509/bad-tbs");
   check("a single extensions [3] still parses",
-    code(function () { pki.x509.parse(tbs([exts])); }) === "NO-THROW");
+    code(function () { pki.schema.x509.parse(tbs([exts])); }) === "NO-THROW");
   check("ordered issuerUniqueID [1] then extensions [3] still parses",
-    code(function () { pki.x509.parse(tbs([uid1, exts])); }) === "NO-THROW");
+    code(function () { pki.schema.x509.parse(tbs([uid1, exts])); }) === "NO-THROW");
 }
 
 // Additional RFC 5280 tbsCertificate conformance MUSTs.
@@ -273,9 +273,9 @@ function testRfc5280Conformance() {
     return build.sequence([tbs, _algId(outerOid), build.bitString(Buffer.from([0x30, 0x03]), 0)]);
   }
   check("mismatched outer/inner signatureAlgorithm rejected (algorithm substitution)",
-    code(function () { pki.x509.parse(certSig("1.2.840.10045.4.3.2", "1.2.840.10045.4.3.4")); }) === "x509/bad-signature-algorithm");
+    code(function () { pki.schema.x509.parse(certSig("1.2.840.10045.4.3.2", "1.2.840.10045.4.3.4")); }) === "x509/bad-signature-algorithm");
   check("matching signatureAlgorithm parses",
-    code(function () { pki.x509.parse(certSig("1.2.840.10045.4.3.2", "1.2.840.10045.4.3.2")); }) === "NO-THROW");
+    code(function () { pki.schema.x509.parse(certSig("1.2.840.10045.4.3.2", "1.2.840.10045.4.3.2")); }) === "NO-THROW");
 
   // §4.1.2.9 — Extensions ::= SEQUENCE SIZE (1..MAX) OF Extension.
   function certExt(extNode) {
@@ -285,9 +285,9 @@ function testRfc5280Conformance() {
     ]);
   }
   check("empty extensions SEQUENCE rejected",
-    code(function () { pki.x509.parse(certExt(build.sequence([]))); }) === "x509/bad-extensions");
+    code(function () { pki.schema.x509.parse(certExt(build.sequence([]))); }) === "x509/bad-extensions");
   check("non-SEQUENCE extensions wrapper rejected (CertificateError, not a raw TypeError)",
-    code(function () { pki.x509.parse(certExt(build.integer(5n))); }) === "x509/bad-extensions");
+    code(function () { pki.schema.x509.parse(certExt(build.integer(5n))); }) === "x509/bad-extensions");
 
   // §4.1.2.4 — issuer MUST be non-empty; §4.1.2.6 — empty subject is permitted.
   function certNames(issuerNode, subjectNode) {
@@ -297,9 +297,9 @@ function testRfc5280Conformance() {
     ]);
   }
   check("empty issuer distinguished name rejected",
-    code(function () { pki.x509.parse(certNames(build.sequence([]), _name("subject"))); }) === "x509/bad-issuer");
+    code(function () { pki.schema.x509.parse(certNames(build.sequence([]), _name("subject"))); }) === "x509/bad-issuer");
   check("empty subject distinguished name permitted (subjectAltName case)",
-    code(function () { pki.x509.parse(certNames(_name("issuer"), build.sequence([]))); }) === "NO-THROW");
+    code(function () { pki.schema.x509.parse(certNames(_name("issuer"), build.sequence([]))); }) === "NO-THROW");
 }
 
 // A certificate is validated as a whole structure before the cross-field
@@ -311,7 +311,7 @@ function testRfc5280Conformance() {
 // accepted and never a raw crash.
 function testMultiDefectFailClosed() {
   function rejected(label, cert) {
-    var c = code(function () { pki.x509.parse(cert); });
+    var c = code(function () { pki.schema.x509.parse(cert); });
     check(label, c !== "NO-THROW" && c.indexOf("RAW:") !== 0);
   }
   var badValidity = build.sequence([build.utcTime(new Date("2026-01-01T00:00:00Z"))]); // 1 child, not 2

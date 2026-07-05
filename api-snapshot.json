@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.6",
+  "packageVersion": "0.1.7",
   "surface": {
     "C": {
       "kind": "object",
@@ -308,83 +308,6 @@
               "arity": 1
             }
           }
-        },
-        "schema": {
-          "kind": "object",
-          "members": {
-            "any": {
-              "kind": "function",
-              "arity": 0
-            },
-            "bitString": {
-              "kind": "function",
-              "arity": 0
-            },
-            "boolean": {
-              "kind": "function",
-              "arity": 0
-            },
-            "choice": {
-              "kind": "function",
-              "arity": 2
-            },
-            "decode": {
-              "kind": "function",
-              "arity": 1
-            },
-            "explicit": {
-              "kind": "function",
-              "arity": 3
-            },
-            "field": {
-              "kind": "function",
-              "arity": 2
-            },
-            "integerLeaf": {
-              "kind": "function",
-              "arity": 0
-            },
-            "octetString": {
-              "kind": "function",
-              "arity": 0
-            },
-            "oidLeaf": {
-              "kind": "function",
-              "arity": 0
-            },
-            "optional": {
-              "kind": "function",
-              "arity": 3
-            },
-            "seq": {
-              "kind": "function",
-              "arity": 2
-            },
-            "seqOf": {
-              "kind": "function",
-              "arity": 2
-            },
-            "setOf": {
-              "kind": "function",
-              "arity": 2
-            },
-            "setOfUnique": {
-              "kind": "function",
-              "arity": 3
-            },
-            "time": {
-              "kind": "function",
-              "arity": 1
-            },
-            "trailing": {
-              "kind": "function",
-              "arity": 2
-            },
-            "walk": {
-              "kind": "function",
-              "arity": 3
-            }
-          }
         }
       }
     },
@@ -481,6 +404,10 @@
           "kind": "function",
           "arity": 3
         },
+        "CrlError": {
+          "kind": "function",
+          "arity": 3
+        },
         "OidError": {
           "kind": "function",
           "arity": 3
@@ -492,6 +419,10 @@
         "PkiError": {
           "kind": "function",
           "arity": 2
+        },
+        "SchemaError": {
+          "kind": "function",
+          "arity": 3
         },
         "defineClass": {
           "kind": "function",
@@ -544,6 +475,126 @@
         }
       }
     },
+    "schema": {
+      "kind": "object",
+      "members": {
+        "all": {
+          "kind": "function",
+          "arity": 0
+        },
+        "crl": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
+        "engine": {
+          "kind": "object",
+          "members": {
+            "any": {
+              "kind": "function",
+              "arity": 0
+            },
+            "bitString": {
+              "kind": "function",
+              "arity": 0
+            },
+            "boolean": {
+              "kind": "function",
+              "arity": 0
+            },
+            "choice": {
+              "kind": "function",
+              "arity": 2
+            },
+            "decode": {
+              "kind": "function",
+              "arity": 1
+            },
+            "explicit": {
+              "kind": "function",
+              "arity": 3
+            },
+            "field": {
+              "kind": "function",
+              "arity": 2
+            },
+            "integerLeaf": {
+              "kind": "function",
+              "arity": 0
+            },
+            "octetString": {
+              "kind": "function",
+              "arity": 0
+            },
+            "oidLeaf": {
+              "kind": "function",
+              "arity": 0
+            },
+            "optional": {
+              "kind": "function",
+              "arity": 3
+            },
+            "seq": {
+              "kind": "function",
+              "arity": 2
+            },
+            "seqOf": {
+              "kind": "function",
+              "arity": 2
+            },
+            "setOf": {
+              "kind": "function",
+              "arity": 2
+            },
+            "setOfUnique": {
+              "kind": "function",
+              "arity": 3
+            },
+            "time": {
+              "kind": "function",
+              "arity": 1
+            },
+            "trailing": {
+              "kind": "function",
+              "arity": 2
+            },
+            "walk": {
+              "kind": "function",
+              "arity": 3
+            }
+          }
+        },
+        "parse": {
+          "kind": "function",
+          "arity": 1
+        },
+        "x509": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        }
+      }
+    },
     "version": {
       "kind": "string"
     },
@@ -555,23 +606,6 @@
           "members": {}
         }
       }
-    },
-    "x509": {
-      "kind": "object",
-      "members": {
-        "parse": {
-          "kind": "function",
-          "arity": 1
-        },
-        "pemDecode": {
-          "kind": "function",
-          "arity": 2
-        },
-        "pemEncode": {
-          "kind": "function",
-          "arity": 2
-        }
-      }
     }
   },
   "sinceByPrimitive": {
@@ -579,7 +613,6 @@
     "pki.asn1.readOid": "0.1.0",
     "pki.asn1.encode": "0.1.0",
     "pki.asn1.build": "0.1.0",
-    "pki.asn1.schema.walk": "0.1.6",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.errors.PkiError": "0.1.0",
@@ -587,11 +620,16 @@
     "pki.oid.name": "0.1.0",
     "pki.oid.register": "0.1.0",
     "pki.oid.registerFamily": "0.1.2",
+    "pki.schema.all": "0.1.7",
+    "pki.schema.parse": "0.1.7",
+    "pki.schema.crl.parse": "0.1.7",
+    "pki.schema.crl.pemDecode": "0.1.7",
+    "pki.schema.engine.walk": "0.1.7",
+    "pki.schema.x509.pemDecode": "0.1.7",
+    "pki.schema.x509.pemEncode": "0.1.7",
+    "pki.schema.x509.parse": "0.1.7",
     "pki.webcrypto.CryptoKey": "0.1.0",
     "pki.webcrypto.subtle": "0.1.0",
-    "pki.webcrypto": "0.1.0",
-    "pki.x509.pemDecode": "0.1.0",
-    "pki.x509.pemEncode": "0.1.0",
-    "pki.x509.parse": "0.1.0"
+    "pki.webcrypto": "0.1.0"
   }
 }
