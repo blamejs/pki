@@ -715,6 +715,8 @@ function testTspConformanceGuards() {
     ['"tsp/bad-ordering"',          "ordering is BOOLEAN DEFAULT FALSE — explicit FALSE omitted (§2.4.2)"],
     ['"tsp/bad-tsa"',               "tsa is a GeneralName (context tag [0]..[8]) (§2.4.2, RFC 5280 §4.2.1.6)"],
     ['"tsp/bad-extensions"',        "TSTInfo extensions is SEQUENCE SIZE(1..MAX) — empty rejected (RFC 5280 §4.1.2.9)"],
+    ['"tsp/duplicate-extension"',   "extension OIDs are unique (RFC 5280 §4.1.2.9)"],
+    ['"tsp/bad-failinfo"',          "an unsupported PKIFailureInfo bit is rejected (RFC 3161 §2.4.2)"],
     ['"tsp/bad-status"',            "PKIStatus is in 0..5 (§2.4.2)"],
     ['"tsp/missing-token"',         "a granted TimeStampResp carries a token (§2.4.2)"],
     ['"tsp/unexpected-token"',      "a non-granted TimeStampResp carries no token (§2.4.2)"],

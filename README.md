@@ -234,26 +234,31 @@ reintroduce the bug class it prevents. Adding a format is a schema declaration
 plus a documentation comment block, not new parse logic.
 
 ```
-  Detect + route     pki.schema.parse ── detects the format, routes to a sibling
-                              │
-  Format parsers     x509  crl  csr  pkcs8  cms  ocsp  tsp   (siblings)
-  (one schema each)    └─────┴────┴─────┴─────┴────┴─────┘
-                              │  every sibling COMPOSES ↓
-  Shared structure   pki.schema.engine        PKIX sub-schemas
-                     walk + combinators   ·   AlgorithmIdentifier · Name ·
-                     (positional reads,       Extension · version reader ·
-                      tag ordering, SET-OF     the one coerce → decode → walk
-                      uniqueness, arity,       parse-entry (PEM cap + DER
-                      fail-closed errors)      wrapping shared, never copied)
-                              │  built on ↓
-  Foundation         pki.asn1       pki.oid          pki.errors       pki.C
-                     DER codec  ·   OID registry  ·  PkiError     ·   constants
-                     (strict,       (two-way,        taxonomy         (LIMITS,
-                      bounded)       PQC-seeded)      (domain/reason)   scale)
+┌─ Detect + route ────────────────────────────────────────────────────────┐
+│  pki.schema.parse — inspect the DER root, route to the matching sibling │
+└─────────────────────────────────────────────────────────────────────────┘
+                                     │
+ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐   Format
+ │ x509 │ │ crl  │ │ csr  │ │pkcs8 │ │ cms  │ │ ocsp │ │ tsp  │   parsers
+ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘   (siblings)
+                                     │  every sibling composes ↓
+┌─ Shared structure ──────────────────────────────────────────────────────┐
+│  pki.schema.engine — walk + combinators (positional reads, tag order,   │
+│  SET-OF uniqueness, arity, typed errors) · the PKIX sub-schemas —       │
+│  AlgorithmIdentifier · Name · Extension · a bounded version reader —    │
+│  and the one coerce → decode → walk parse-entry (PEM cap + DER wrap).   │
+└─────────────────────────────────────────────────────────────────────────┘
+                                     │  built on ↓
+┌─ Foundation ────────────────────────────────────────────────────────────┐
+│  pki.asn1 — strict, bounded DER codec · pki.oid — two-way, PQC-seeded   │
+│  OID registry · pki.errors — the PkiError domain/reason taxonomy ·      │
+│  pki.C — version-stable LIMITS + scale constants.                       │
+└─────────────────────────────────────────────────────────────────────────┘
 
-  Crypto             pki.webcrypto ──▶ node:crypto
-                     W3C SubtleCrypto over the platform: the classical set +
-                     post-quantum ML-DSA / SLH-DSA signatures + ML-KEM keygen
+┌─ Crypto ────────────────────────────────────────────────────────────────┐
+│  pki.webcrypto ──▶ node:crypto — a W3C SubtleCrypto engine: the         │
+│  classical set + post-quantum ML-DSA / SLH-DSA + ML-KEM key generation. │
+└─────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Foundation.** The strict, bounded DER codec (`pki.asn1`), the two-way OID
@@ -267,7 +272,7 @@ bounded version reader, and the single coerce → decode → walk parse-entry th
 every format's `parse` is bound to. Because input coercion, the PEM size cap, and
 the DER-decode wrapping live here once, a format cannot diverge on a guard.
 
-**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, and `ocsp` are siblings:
+**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, and `tsp` are siblings:
 each is a schema declaration composed from the shared pieces, emitting its own
 typed `domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
 detect-and-routes to the matching sibling; the detectors are mutually exclusive by

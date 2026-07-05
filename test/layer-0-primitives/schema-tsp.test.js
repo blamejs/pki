@@ -176,6 +176,8 @@ function testRejectTstInfo() {
   check("31. unknown [2] trailing field rejected", tstCode(tstInfo({ tail: [b.contextPrimitive(2, Buffer.from("x"))] })) === "tsp/bad-tst-info");
   // 31b. extensions [1] IMPLICIT is SEQUENCE SIZE(1..MAX) — an empty [1] is rejected.
   check("31b. empty extensions rejected", tstCode(tstInfo({ extensions: [] })) === "tsp/bad-extensions");
+  // 31c. duplicate extension OID -> reject (RFC 5280 §4.1.2.9 uniqueness).
+  check("31c. duplicate extension rejected", tstCode(tstInfo({ extensions: [extension("1.2.3"), extension("1.2.3")] })) === "tsp/duplicate-extension");
 }
 
 // ---- PKIStatusInfo / TimeStampResp -----------------------------------
@@ -192,6 +194,8 @@ function testResp() {
   check("36. granted without token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0 }) })) === "tsp/missing-token");
   check("37. rejection WITH token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2 }), token: timeStampToken(tstInfo({})) })) === "tsp/unexpected-token");
   check("39. statusString non-UTF8 rejected", respCode(timeStampResp({ status: b.sequence([b.integer(0n), b.sequence([b.printable("hi")])]), token: timeStampToken(tstInfo({})) })) !== "NO-THROW");
+  // 39b. an unsupported PKIFailureInfo bit (bit 1) -> reject (RFC 3161 §2.4.2).
+  check("39b. unsupported failInfo bit rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: b.bitString(Buffer.from([0x40]), 0) }) })) === "tsp/bad-failinfo");
 }
 
 // ---- Strict-DER (inherited asn1/*) -----------------------------------
