@@ -213,6 +213,9 @@ function testResp() {
   check("39c. granted + failInfo rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0, failInfo: b.bitString(Buffer.from([0x20]), 5) }), token: timeStampToken(tstInfo({})) })) === "tsp/unexpected-failinfo");
   // 39d. an empty PKIFreeText statusString (SIZE 1..MAX) -> reject.
   check("39d. empty statusString rejected", respCode(timeStampResp({ status: b.sequence([b.integer(2n), b.sequence([])]) })) === "tsp/bad-status-info");
+  // 39e. failInfo on a non-rejection status (waiting=3) is inconsistent -> reject;
+  //      failInfo is present only when status is rejection(2).
+  check("39e. failInfo on waiting status rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 3, failInfo: b.bitString(Buffer.from([0x20]), 5) }) })) === "tsp/unexpected-failinfo");
 }
 
 // ---- Strict-DER (inherited asn1/*) -----------------------------------
