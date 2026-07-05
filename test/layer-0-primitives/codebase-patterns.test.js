@@ -815,7 +815,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js"]; // + lib/schema-cms.js etc. as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -981,6 +981,20 @@ var KNOWN_ANTIPATTERNS = [
       "test/layer-0-primitives/codebase-patterns.test.js",
     ],
     reason: "Renaming catch(e)->catch(_e) to clear no-unused-vars is a silence, not a fix: the `_`-prefix tells the linter the error is intentionally discarded, but a `catch (_e) { return <sentinel> }` around the code under test turns a real throw into a bare false/null, so a reintroduced bug fails the check with no underlying error. The no-unused signal means the binding (and usually the try/catch that introduced it) is dead — remove the catch and assert directly (the throw is the most diagnostic failure), or capture the error if you actually expect it. See feedback_rewrite_over_silence.",
+  },
+  {
+    // A cross-check that could not run (an absent oracle capability) must be
+    // recorded with ctx.skip / helpers.skip, NEVER faked as check(<skip msg>, true).
+    id: "interop-skip-counted-as-pass",
+    primitive: "record an un-runnable cross-check with ctx.skip(reason) / helpers.skip(reason) — never check(<skip message>, true), which tallies the skip as a pass and hides that the cross-check did not run",
+    scanScope: "test",
+    regex: /\.check\(\s*["'][^"']*(?:skip|Skip)[^"']*["']\s*,\s*true\s*\)/,
+    skipCommentLines: true,
+    allowlist: [
+      // This file carries the pattern literal in its own reason/detector text.
+      "test/layer-0-primitives/codebase-patterns.test.js",
+    ],
+    reason: "check(<reason>, true) as a skip is the skip-counted-as-pass bug (Codex P2): a run that skipped a cross-check (e.g. the OpenSSL interop oracle predates ML-DSA) reports the SAME 'N checks passed' as a run that actually performed it, so a coverage gap reads as coverage. helpers.skip / ctx.skip increments a separate skip counter (never `_checks`) and the interop runner + test-integration report skips distinctly.",
   },
 
   // --- DER codec correctness (lib scope) ---
@@ -1382,7 +1396,33 @@ function _isBoilerplate(slice) {
   // without being an extractable primitive (the factories themselves already live
   // in pkix). Different factories per format = nothing more to extract.
   var factoryDecls = (joined.match(/\bvar\s+_ID\s+=\s+_ID(?:\s+\.\s+_ID)*\s+\(/g) || []).length;
-  if (factoryDecls >= 4) return true;
+  // A run of 3+ `var X = obj.method(...)` instantiations is a format module's
+  // sub-schema glue (`var NS = pkix.makeNS(...)` + `var ALGORITHM_IDENTIFIER =
+  // pkix.algorithmIdentifier(NS)` + `var ATTRIBUTE = pkix.attribute(NS)`, each
+  // under its own namespace). The factories already live in pkix, so the run
+  // repeats in shape without being extractable. (The shared cms/csr/pkcs8 header
+  // prefix is exactly this 3-instantiation window; a format with more sub-schemas
+  // has 4+.)
+  if (factoryDecls >= 3) return true;
+  // The module-header TRANSITION: a slice that mixes a top-of-file require with a
+  // factory-instantiation run is the header every format module shares (the 5
+  // requires flow into `var NS = pkix.makeNS(...)` + `var X = pkix.factory(NS)`).
+  // require tokens only appear at the top of a file (the top-of-file-require rule),
+  // so any window carrying a require plus >=2 factory decls is that header region,
+  // not extractable logic — the factories already live in pkix. This catches the
+  // csr/pkcs8/cms (and future ocsp/tsp) header cluster that lands between the
+  // require-run and factory-run thresholds above (a format with 2-3 sub-schemas).
+  if (requireCalls >= 1 && factoryDecls >= 2) return true;
+  // Format-module FOOTER glue — the parse / PEM wiring block. `pemDecode` /
+  // `pemEncode` are thin one-liners delegating to the shared pkix helpers, and the
+  // `var parse = pkix.makeParser({ pemLabel, ... })` config object precedes them.
+  // A window of 2+ such delegations, or the config-object tail (kv pairs) meeting
+  // the first delegation, is that block — the parse LOGIC already lives in pkix, so
+  // it repeats in shape without being extractable (the wrappers must stay
+  // per-module for their @primitive wiki blocks; see KNOWN_CLUSTERS).
+  var delegationReturns = (joined.match(/\breturn\s+_ID\s+\.\s+_ID\s+\(/g) || []).length;
+  if (delegationReturns >= 2) return true;
+  if (kvPairs >= 2 && delegationReturns >= 1) return true;
   if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
   var declTokens = toks.filter(function (t) {
     return t === "=" || t === ";" || t === "," || t === ":" ||
@@ -1450,7 +1490,26 @@ function testNoDuplicateCodeBlocks() {
   //   { files: ["lib/a.js:fnA", "lib/b.js:fnB", ...],
   //     mode?: "family-subset",   // default: exact set match
   //     reason: "why these are not extractable" }
-  var KNOWN_CLUSTERS = [];
+  var KNOWN_CLUSTERS = [
+    {
+      // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
+      // delegations to the shared pkix.pemDecode / pkix.pemEncode, differing only
+      // in the default PEM label + error class. The parse LOGIC is already factored
+      // into pkix; these wrappers must stay per-module (each carries its own
+      // @primitive wiki block the doc generator reads), so the shape repeats across
+      // every format without being further extractable. family-subset so any 3+ of
+      // the format modules (incl. future ocsp / tsp) match.
+      files: [
+        "lib/schema-x509.js:pemDecode", "lib/schema-x509.js:pemEncode",
+        "lib/schema-crl.js:pemDecode", "lib/schema-crl.js:pemEncode",
+        "lib/schema-csr.js:pemDecode", "lib/schema-csr.js:pemEncode",
+        "lib/schema-pkcs8.js:pemDecode", "lib/schema-pkcs8.js:pemEncode",
+        "lib/schema-cms.js:pemDecode", "lib/schema-cms.js:pemEncode",
+      ],
+      mode: "family-subset",
+      reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
+    },
+  ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;
   function _parseEntryMatchers(entry, idx) {

@@ -12,14 +12,29 @@
  */
 
 var _checks = 0;
+var _skips = [];
 
 function check(label, condition) {
   if (!condition) throw new Error("FAIL: " + label);
   _checks += 1;
 }
 
+// skip(reason) — record a check that COULD NOT run because a precondition the
+// test does not control was absent (e.g. the OpenSSL interop oracle predates a
+// signature algorithm). A skip is NOT a pass: it increments a separate counter,
+// never `_checks`, so a run that skipped a cross-check does not report the same
+// "N passed" as one that actually ran it. Never fake a skip with
+// `check(<reason>, true)` — that is exactly the skip-counted-as-pass that hides
+// missing coverage.
+function skip(reason) {
+  _skips.push(String(reason));
+  console.log("  SKIP: " + reason);
+}
+
 function getChecks()         { return _checks; }
-function resetChecksForTest() { _checks = 0; }
+function getSkips()          { return _skips.length; }
+function getSkipReasons()    { return _skips.slice(); }
+function resetChecksForTest() { _checks = 0; _skips = []; }
 
 // addExternalChecks — the parallel smoke runner forks per-file
 // children; each child runs its own _checks counter in its process
@@ -49,7 +64,10 @@ function formatErr(e) {
 
 module.exports = {
   check:              check,
+  skip:               skip,
   getChecks:          getChecks,
+  getSkips:           getSkips,
+  getSkipReasons:     getSkipReasons,
   resetChecksForTest: resetChecksForTest,
   addExternalChecks:  addExternalChecks,
   formatErr:          formatErr,

@@ -105,7 +105,7 @@ module.exports = {
         // gap is the oracle's, not ours (our own tests already prove the
         // sign/verify round-trip natively).
         if (!ctx.opensslSupports("ML-DSA")) {
-          ctx.check("ML-DSA SPKI interop skipped — this OpenSSL predates 3.5 (no ML-DSA)", true);
+          ctx.skip("ML-DSA SPKI interop — this OpenSSL predates 3.5 (no ML-DSA); the toolkit's own sign/verify round-trip is proven natively");
           return;
         }
         var subtle = ctx.pki.webcrypto.subtle;

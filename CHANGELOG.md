@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.10 — 2026-07-05
+
+A CMS SignedData parser joins the pki.schema family; coverage-guided fuzzing now runs in CI.
+
+### Added
+
+- pki.schema.cms.parse — a CMS SignedData parser per RFC 5652 (§3 ContentInfo + §5 SignedData). It turns a DER Buffer or a 'CMS' PEM string into { version, digestAlgorithms, encapContentInfo, certificates, crls, signerInfos }. encapContentInfo.eContent is the raw content (or null when the signature is detached); each SignerInfo carries its raw signature and, when signed attributes are present, the on-wire signedAttrsBytes for external verification. The signer identifier is an issuerAndSerialNumber or a subjectKeyIdentifier, with the version-to-identifier rule (RFC 5652 §5.3) enforced, and a degenerate certificates-only SignedData (empty digest algorithms and signer infos) is accepted. A ContentInfo whose content type is not id-signedData throws cms/unsupported-content-type (a recognized PKCS#7 type) or cms/unknown-content-type; a malformed structure throws a typed CmsError (cms/*) and a leaf-level codec fault surfaces as asn1/*. pki.schema.cms.pemDecode / pemEncode handle the PEM envelope, and pki.schema.parse detect-and-routes a CMS message.
+- pki.asn1.read.octetStringImplicit and the pki.schema.engine.implicitOctetString(tag) leaf — read a context-tagged IMPLICIT OCTET STRING (the shape the CMS SignerIdentifier subjectKeyIdentifier [0] takes), the primitive-leaf sibling of implicitBitString.
+- Coverage-guided fuzzing in CI — a ClusterFuzzLite integration (.clusterfuzzlite/) plus pull-request and nightly-batch workflows run jazzer.js + libFuzzer against the pki.asn1.decode, pki.schema.x509.parse and pki.schema.cms.parse harnesses. A finding fails the run with the reproducer inline and uploads the crash input as an artifact. The integration is detectable by OpenSSF Scorecard's Fuzzing check.
+
+### Fixed
+
+- The OpenSSL interop runner counted a cross-check the oracle could not perform (for example, an OpenSSL predating ML-DSA) as a pass. Such a cross-check is now recorded as a skip and reported separately, so the interop pass count is not inflated by checks that never executed.
+
 ## v0.1.9 — 2026-07-05
 
 A PKCS#8 private-key parser joins the pki.schema family.

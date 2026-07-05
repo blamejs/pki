@@ -76,6 +76,11 @@ function withTmp(bytes, ext, fn) {
 module.exports = {
   pki:          helpers.pki,
   check:        helpers.check,
+  // skip(reason) — record a cross-check the OpenSSL oracle CANNOT perform (an
+  // absent capability, not a toolkit defect) as a SKIP, not a pass. A skip must
+  // never be faked with check(<reason>, true) — that inflates the pass count and
+  // hides that the cross-check did not actually run.
+  skip:         helpers.skip,
   fs:           fs,
   path:         path,
   FIXTURES_DIR: FIXTURES_DIR,

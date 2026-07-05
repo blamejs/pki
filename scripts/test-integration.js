@@ -108,6 +108,7 @@ function _spawnCapturing(cmd, args, env) {
   var suiteStart = Date.now();
   var failed = 0;
   var totalChecks = 0;
+  var totalSkips = 0;
   for (var i = 0; i < files.length; i++) {
     var fullPath = path.join(INTEGRATION_DIR, files[i]);
     var fileStart = Date.now();
@@ -123,9 +124,15 @@ function _spawnCapturing(cmd, args, env) {
     var ms = Date.now() - fileStart;
     var m = /CHECKS\s+(\d+)/.exec(rv.stdout || "");
     var checks = m ? parseInt(m[1], 10) : 0;
+    // A cross-check the oracle can't perform is reported as a SKIP, never folded
+    // into the pass count, so "N checks passed" is not inflated by skips.
+    var sm = /SKIPS\s+(\d+)/.exec(rv.stdout || "");
+    var skips = sm ? parseInt(sm[1], 10) : 0;
     if (rv.code === 0) {
       totalChecks += checks;
-      console.log("  " + _padRight(files[i], 40) + " (" + ms + "ms, " + checks + " checks)");
+      totalSkips += skips;
+      console.log("  " + _padRight(files[i], 40) + " (" + ms + "ms, " + checks + " checks" +
+        (skips > 0 ? ", " + skips + " skipped" : "") + ")");
     } else {
       failed += 1;
       console.error("  " + _padRight(files[i], 40) + " FAILED (exit " + rv.code + ")");
@@ -135,8 +142,9 @@ function _spawnCapturing(cmd, args, env) {
   }
   console.log("");
   if (failed === 0) {
-    console.log("[test-integration] OK — " + totalChecks + " checks passed across " +
-      files.length + " file(s) in " + (Date.now() - suiteStart) + "ms");
+    console.log("[test-integration] OK — " + totalChecks + " checks passed" +
+      (totalSkips > 0 ? " (" + totalSkips + " cross-check(s) skipped — oracle capability absent)" : "") +
+      " across " + files.length + " file(s) in " + (Date.now() - suiteStart) + "ms");
     process.exit(0);
   }
   console.error("[test-integration] " + failed + " of " + files.length + " file(s) failed");

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.9",
+  "packageVersion": "0.1.10",
   "surface": {
     "C": {
       "kind": "object",
@@ -303,6 +303,10 @@
               "kind": "function",
               "arity": 1
             },
+            "octetStringImplicit": {
+              "kind": "function",
+              "arity": 2
+            },
             "oid": {
               "kind": "function",
               "arity": 1
@@ -408,6 +412,10 @@
           "kind": "function",
           "arity": 3
         },
+        "CmsError": {
+          "kind": "function",
+          "arity": 3
+        },
         "ConstantsError": {
           "kind": "function",
           "arity": 3
@@ -498,6 +506,23 @@
           "kind": "function",
           "arity": 0
         },
+        "cms": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
         "crl": {
           "kind": "object",
           "members": {
@@ -560,6 +585,10 @@
               "arity": 2
             },
             "implicitBitString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "implicitOctetString": {
               "kind": "function",
               "arity": 1
             },
@@ -684,6 +713,9 @@
     "pki.oid.registerFamily": "0.1.2",
     "pki.schema.all": "0.1.7",
     "pki.schema.parse": "0.1.7",
+    "pki.schema.cms.parse": "0.1.10",
+    "pki.schema.cms.pemDecode": "0.1.10",
+    "pki.schema.cms.pemEncode": "0.1.10",
     "pki.schema.crl.parse": "0.1.7",
     "pki.schema.crl.pemDecode": "0.1.7",
     "pki.schema.csr.parse": "0.1.8",
