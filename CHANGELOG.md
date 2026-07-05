@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.11 — 2026-07-05
+
+An OCSP request and response parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.ocsp.parseRequest and pki.schema.ocsp.parseResponse — an OCSP request / response parser per RFC 6960 (§4.1 OCSPRequest, §4.2 OCSPResponse). parseRequest turns a DER Buffer or an 'OCSP REQUEST' PEM string into { tbsRequestBytes, version, requestorName, requestList, requestExtensions, optionalSignature }, each requestList entry carrying its CertID with the two issuer hashes raw. parseResponse turns a DER Buffer or an 'OCSP RESPONSE' PEM string into { responseStatus, responseBytes, basicResponse }; for a successful basic response, basicResponse carries { tbsResponseDataBytes, responderID, producedAt, responses, signatureAlgorithm, signature, certs } and each responses[i].certStatus is { type: 'good' | 'revoked' | 'unknown' } (a revoked entry adds its revocationTime and revocationReason). A malformed structure throws a typed OcspError (ocsp/*), an unsupported responseType throws ocsp/unsupported-response-type, and a leaf-level codec fault surfaces as asn1/*. pki.schema.ocsp.pemDecode handles the PEM envelope, and pki.schema.parse detect-and-routes both OCSP shapes.
+- pki.asn1.read.nullImplicit and the pki.schema.engine.implicitNull(tag) leaf — read a context-tagged IMPLICIT NULL (the shape the OCSP CertStatus good [0] and unknown [2] arms take), the primitive-leaf sibling of implicitBitString and implicitOctetString. It rejects a constructed or non-empty context node fail-closed.
+- An ocsp-parse coverage-guided fuzz harness joins the CI fuzzing matrix (jazzer.js + libFuzzer, per pull request and nightly), driving both OCSP entry points on mutated input.
+
 ## v0.1.10 — 2026-07-05
 
 A CMS SignedData parser joins the pki.schema family; coverage-guided fuzzing now runs in CI.

@@ -196,9 +196,10 @@ is callable today; nothing below is a stub.
 | `pki.schema.csr` | Parse DER / PEM PKCS#10 certification requests per RFC 2986 — subject DN, public key, requested attributes, signature, fail-closed — `parse`, `pemDecode`, `pemEncode` |
 | `pki.schema.pkcs8` | Parse DER / PEM PKCS#8 private keys per RFC 5208 / 5958 — algorithm, raw key bytes, attributes, optional public key, fail-closed; encrypted keys recognized (not decrypted) — `parse`, `parseEncrypted`, `pemDecode`, `pemEncode` |
 | `pki.schema.cms` | Parse DER / PEM CMS SignedData per RFC 5652 — encapsulated content, signer infos, raw signed-attribute bytes for external verification, certificates / CRLs kept raw, fail-closed; non-SignedData content types recognized (not decoded) — `parse`, `pemDecode`, `pemEncode` |
+| `pki.schema.ocsp` | Parse DER / PEM OCSP requests and responses per RFC 6960 — per-certificate status (good / revoked / unknown), responder identity, raw tbs bytes for external verification, certificates kept raw, fail-closed; non-basic response types recognized (not decoded) — `parseRequest`, `parseResponse`, `pemDecode` |
 | `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
-| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError`, each carrying a stable `code` in `domain/reason` form |
+| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
 
 ### CLI
@@ -219,6 +220,63 @@ post-quantum certificate and CMS surface (ML-DSA / ML-KEM / SLH-DSA and hybrid
 composites) are on the roadmap and ride this same core. See
 [ROADMAP.md](ROADMAP.md) for the full plan and current status of each area, and
 [CHANGELOG.md](CHANGELOG.md) for what has landed.
+
+## Architecture
+
+Every PKI format is a thin, declarative schema over one shared engine. A parser
+declares the ASN.1 structure as data and hands it to `walk`; it never advances a
+child cursor, re-checks a tag, or re-rolls PEM handling by hand. So each
+structural rule — bounds-checked positional reads, optional / context-tagged
+field ordering, SET-OF ascending-order and uniqueness, arity, and fail-closed
+typed errors — is written **once** in the engine, and no new format can
+reintroduce the bug class it prevents. Adding a format is a schema declaration
+plus a documentation comment block, not new parse logic.
+
+```
+  Detect + route     pki.schema.parse ── detects the format, routes to a sibling
+                              │
+  Format parsers     x509   crl   csr   pkcs8   cms   ocsp      (siblings)
+  (one schema each)    └──────┴─────┴──────┴──────┴─────┘
+                              │  every sibling COMPOSES ↓
+  Shared structure   pki.schema.engine        PKIX sub-schemas
+                     walk + combinators   ·   AlgorithmIdentifier · Name ·
+                     (positional reads,       Extension · version reader ·
+                      tag ordering, SET-OF     the one coerce → decode → walk
+                      uniqueness, arity,       parse-entry (PEM cap + DER
+                      fail-closed errors)      wrapping shared, never copied)
+                              │  built on ↓
+  Foundation         pki.asn1       pki.oid          pki.errors       pki.C
+                     DER codec  ·   OID registry  ·  PkiError     ·   constants
+                     (strict,       (two-way,        taxonomy         (LIMITS,
+                      bounded)       PQC-seeded)      (domain/reason)   scale)
+
+  Crypto             pki.webcrypto ──▶ node:crypto
+                     W3C SubtleCrypto over the platform: the classical set +
+                     post-quantum ML-DSA / SLH-DSA signatures + ML-KEM keygen
+```
+
+**Foundation.** The strict, bounded DER codec (`pki.asn1`), the two-way OID
+registry (`pki.oid`), the `PkiError` taxonomy (`pki.errors`), and the
+version-stable constants (`pki.C`). These have no PKI knowledge; they are the
+bytes-and-names layer everything else stands on.
+
+**Shared structure.** The declarative schema engine (`pki.schema.engine`) and the
+PKIX sub-schemas it is fed — `AlgorithmIdentifier`, `Name`, `Extension`, the
+bounded version reader, and the single coerce → decode → walk parse-entry that
+every format's `parse` is bound to. Because input coercion, the PEM size cap, and
+the DER-decode wrapping live here once, a format cannot diverge on a guard.
+
+**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, and `ocsp` are siblings:
+each is a schema declaration composed from the shared pieces, emitting its own
+typed `domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
+detect-and-routes to the matching sibling; the detectors are mutually exclusive by
+construction, so routing is unambiguous regardless of registration order.
+
+**Crypto.** `pki.webcrypto` is a W3C `SubtleCrypto` engine over `node:crypto`,
+carrying the classical suite plus post-quantum ML-DSA / SLH-DSA signatures and
+ML-KEM key generation. Sign/verify resolves algorithms through the same OID
+registry the parsers read, so the signing surface and the parsing surface share
+one algorithm vocabulary.
 
 ## Security posture
 

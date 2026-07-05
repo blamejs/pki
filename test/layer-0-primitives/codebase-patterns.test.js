@@ -664,6 +664,43 @@ function testCmsSignedDataConformanceGuards() {
   _report("CMS SignedData RFC-conformance guards present (version-vs-contents / signedAttrs presence + payload syntax + no-duplicate-type)", bad);
 }
 
+function testOcspConformanceGuards() {
+  // class: ocsp-conformance-guard-dropped
+  // Each token is the STABLE, frozen contract of an RFC 6960 validation the OCSP
+  // parser MUST perform — the error code it throws, or the ASN.1 reader that
+  // validates a value payload. Anchoring on these (the public error-code contract)
+  // rather than a helper FUNCTION NAME makes the guard rename-proof: renaming a
+  // schema var / leaf keeps the tokens (silent, correct), while deleting the check
+  // drops them (fires).
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-ocsp.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"ocsp/bad-response-status"',      "OCSPResponseStatus ENUMERATED value whitelisted — 4/>=7 rejected (RFC 6960 §4.2.1)"],
+    ['"ocsp/bad-response-bytes"',       "status <-> responseBytes biconditional: successful iff responseBytes present (§4.2.1)"],
+    ['"ocsp/bad-version"',              "any explicitly-encoded version rejected (empty accept map — v1 is the DEFAULT)"],
+    ['"ocsp/bad-responder-id"',         "ResponderID arms are EXPLICIT-wrapped (byKey is not an IMPLICIT primitive) (§4.2.1)"],
+    ['"ocsp/bad-cert-status"',          "CertStatus is a good/revoked/unknown CHOICE — no other arm (§4.2.1)"],
+    ['"ocsp/bad-revocation-reason"',    "CRLReason ENUMERATED value whitelisted — 7 rejected (RFC 5280 §5.3.1)"],
+    ['"ocsp/bad-time"',                 "OCSP times are GeneralizedTime, never UTCTime (§4.2.1)"],
+    ['"ocsp/unsupported-response-type"', "a non-basic responseType is recognized-and-deferred, not silently accepted (§4.2.1)"],
+    ['"ocsp/missing-requestor-name"',   "a signed OCSPRequest must carry requestorName (RFC 6960 §4.1.2)"],
+    ['"ocsp/bad-requestor-name"',       "requestorName inner value must be a well-formed GeneralName (§4.1.1, RFC 5280 §4.2.1.6)"],
+    ['"ocsp/bad-responses"',            "ResponseData.responses is one-or-more SingleResponse (RFC 6960 §4.2.1)"],
+    ['"ocsp/bad-certs"',                "each certs SEQUENCE OF Certificate element is a Certificate (a SEQUENCE)"],
+    ['asn1.read.enumerated',            "responseStatus / revocationReason value payloads validated, not just tag-checked"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-ocsp.js", line: 0,
+        content: "the OCSP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  bad = _filterMarkers(bad, "ocsp-conformance-guard-dropped");
+  _report("OCSP RFC-conformance guards present (status whitelist / status<->responseBytes / EXPLICIT ResponderID / CertStatus CHOICE / GeneralizedTime-only / defer unknown responseType)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -905,7 +942,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js"]; // + future format modules as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -1600,6 +1637,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-csr.js:pemDecode", "lib/schema-csr.js:pemEncode",
         "lib/schema-pkcs8.js:pemDecode", "lib/schema-pkcs8.js:pemEncode",
         "lib/schema-cms.js:pemDecode", "lib/schema-cms.js:pemEncode",
+        "lib/schema-ocsp.js:pemDecode",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
@@ -1804,6 +1842,7 @@ function run() {
   testFuzzSeedCorpusZipNaming();
   testFuzzBuildInstallsJazzer();
   testCmsSignedDataConformanceGuards();
+  testOcspConformanceGuards();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
