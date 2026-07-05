@@ -26,7 +26,7 @@ function crlDer() {
 }
 
 function run() {
-  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "ocsp-request", "ocsp-response", "tsp", "pkcs8", "csr", "crl", "x509"]));
+  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "ocsp-request", "ocsp-response", "pkcs8", "csr", "crl", "x509"]));
 
   var certPem = fs.readFileSync(path.join(__dirname, "..", "fixtures", "pkijs-selfsigned-ec.pem"), "utf8");
   var cert = pki.schema.parse(certPem);

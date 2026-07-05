@@ -254,6 +254,11 @@ function testDispatch() {
   var r = pki.schema.parse(resp);
   check("48. response routes to tsp", r && r.status !== undefined && r.validity === undefined);
   check("48. all() lists tsp", pki.schema.all().indexOf("tsp") !== -1);
+  // 48b. a TOKENLESS TimeStampResp (a bare PKIStatusInfo) shares the SEQUENCE-of-1
+  //      shape with an OCSPRequest; it must route to tsp (whose detector is the strict
+  //      refinement), not be shadowed by ocsp-request.
+  var tokenless = pki.schema.parse(timeStampResp({ status: pkiStatusInfo({ status: 2, statusString: ["rejected"] }) }));
+  check("48b. tokenless response routes to tsp, not ocsp-request", tokenless && tokenless.status === 2 && tokenless.requestList === undefined);
   // 49. a CMS SignedData (OID-first) still routes to cms, not tsp.
   var cmsMsg = b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([b.integer(1n), b.set([]), b.sequence([b.oid(ID_DATA)]), b.set([])]))]);
   check("49. cms routes to cms, not tsp", pki.schema.parse(cmsMsg).signerInfos !== undefined);
