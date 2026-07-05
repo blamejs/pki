@@ -195,9 +195,30 @@ function testImplicitSetOf() {
   check("implicitSetOf min:1 rejects empty [0]", code(function () { walk(min1, b.contextConstructed(0, Buffer.alloc(0))); }) === "t/bad-attrs2");
 }
 
+function testImplicitBitString() {
+  // [tag] IMPLICIT BIT STRING: a context-class PRIMITIVE node whose content is a
+  // bit-string body (leading unused-bits octet + bytes). The IMPLICIT tag replaces
+  // the universal one, so there is no inner universal node. Needed for the PKCS#8
+  // OneAsymmetricKey publicKey [1] (RFC 5958 §2).
+  function implicitBS(tag, unusedBits, body) { // raw [tag] context-primitive TLV, short-form length
+    var content = Buffer.concat([Buffer.from([unusedBits]), body]);
+    return Buffer.concat([Buffer.from([0x80 | tag, content.length]), content]); // 0x80|tag = context primitive
+  }
+  var leaf = S.implicitBitString(1);
+  check("implicitBitString reads a [1] IMPLICIT BIT STRING", (function () {
+    var r = walk(leaf, implicitBS(1, 0, Buffer.from([0x04, 0x01, 0x02])));
+    return r.unusedBits === 0 && r.bytes.equals(Buffer.from([0x04, 0x01, 0x02]));
+  })());
+  check("implicitBitString rejects a universal BIT STRING", code(function () { walk(leaf, b.bitString(Buffer.from([1, 2, 3]), 0)); }) === "asn1/unexpected-tag");
+  check("implicitBitString rejects the wrong context tag [0]", code(function () { walk(leaf, implicitBS(0, 0, Buffer.from([1, 2, 3]))); }) === "asn1/unexpected-tag");
+  check("implicitBitString enforces the DER unused-bits-zero rule", code(function () { walk(leaf, implicitBS(1, 1, Buffer.from([0xff]))); }) === "asn1/bad-bit-string");
+  check("bitString() still rejects a [1] context node", code(function () { walk(S.bitString(), implicitBS(1, 0, Buffer.from([1, 2, 3]))); }) === "asn1/unexpected-tag");
+}
+
 function run() {
   testLeaves();
   testImplicitSetOf();
+  testImplicitBitString();
   testSeqAssertAndArity();
   testOptional();
   testTrailing();
