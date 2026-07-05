@@ -62,6 +62,10 @@ function statusRevoked(iso, reason) {
 function responderByName(cn) { return b.explicit(1, name(cn)); }
 function responderByKey(buf) { return b.explicit(2, b.octetString(buf)); }
 
+// GeneralName rfc822Name [2] IA5String — a valid GeneralName CHOICE alternative
+// (context tags [0]..[8]); requestorName [1] EXPLICIT wraps one of these.
+function rfc822(s) { return b.contextPrimitive(2, Buffer.from(s, "latin1")); }
+
 // Extension { extnID, critical DEFAULT FALSE, extnValue OCTET STRING } — nonce
 // extnValue wraps a DER OCTET STRING carrying the nonce bytes (RFC 6960 §4.4.1).
 function nonceExt(nonceBytes) { return b.sequence([b.oid(ID_PKIX_OCSP_NONCE), b.octetString(b.octetString(Buffer.from(nonceBytes)))]); }
@@ -173,7 +177,7 @@ function testAcceptRequest() {
   // 3. signed request: optionalSignature [0] { sigAlg, BIT STRING sig, certs [0] one
   //    raw cert }. A signed request SHALL carry requestorName (RFC 6960 §4.1.2).
   var sigBytes = Buffer.from([0x51, 0x67]);
-  var sreq = ocspRequest({ tbs: tbsRequest({ requestorName: name("Requestor") }), optionalSignature: signature({ sig: b.bitString(sigBytes), certs: [rawCert()] }) });
+  var sreq = ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example") }), optionalSignature: signature({ sig: b.bitString(sigBytes), certs: [rawCert()] }) });
   var ms = parseReq(sreq.der);
   check("3. signed request: signatureAlgorithm surfaced", ms.optionalSignature && ms.optionalSignature.signatureAlgorithm.oid === SIG_ALG);
   check("3. signed request: raw signature bytes", Buffer.isBuffer(ms.optionalSignature.signature) && ms.optionalSignature.signature.equals(sigBytes));
@@ -185,12 +189,15 @@ function testAcceptRequest() {
   check("3c. empty requestList rejected",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [] }) }).der) === "ocsp/bad-request-list");
 
-  // 4. request with requestorName [1] EXPLICIT + requestExtensions [2] (a nonce).
-  var nreq = ocspRequest({ tbs: tbsRequest({ requestorName: name("Requestor"), requestExtensions: extensions([nonceExt([1, 2, 3, 4, 5])]) }) });
+  // 4. request with requestorName [1] EXPLICIT GeneralName + requestExtensions [2] (a nonce).
+  var nreq = ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example"), requestExtensions: extensions([nonceExt([1, 2, 3, 4, 5])]) }) });
   var mn = parseReq(nreq.der);
-  check("4. requestorName surfaced raw", mn.requestorName && Buffer.isBuffer(mn.requestorName.bytes));
+  check("4. requestorName surfaced raw", mn.requestorName && Buffer.isBuffer(mn.requestorName.bytes) && mn.requestorName.tagNumber === 2);
   check("4. requestExtensions nonce named", Array.isArray(mn.requestExtensions) && mn.requestExtensions[0].name === "ocspNonce");
   check("4. requestExtensions nonce value raw", Buffer.isBuffer(mn.requestExtensions[0].value));
+  // 4b. requestorName whose inner value is not a GeneralName ([1] EXPLICIT INTEGER) -> reject.
+  check("4b. non-GeneralName requestorName rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.integer(5n) }) }).der) === "ocsp/bad-requestor-name");
 }
 
 // ---- ACCEPT — response -----------------------------------------------
@@ -268,6 +275,9 @@ function testRejectResponderCertStatus() {
   var implicitByKey = b.contextPrimitive(2, Buffer.alloc(20, 0xCC));
   var badRid = basicResponse({ tbs: responseData({ responderID: implicitByKey }) });
   check("22. byKey IMPLICIT instead of EXPLICIT rejected", parseRespCode(basicOcspResponse(badRid)) !== "NO-THROW");
+  // 22b. byKey KeyHash not 20 bytes (not a SHA-1 hash) -> ocsp/bad-responder-id.
+  var shortKeyHash = basicResponse({ tbs: responseData({ responderID: responderByKey(Buffer.alloc(10, 0xAB)) }) });
+  check("22b. byKey KeyHash wrong length rejected", parseRespCode(basicOcspResponse(shortKeyHash)) === "ocsp/bad-responder-id");
   // 23. ResponderID as a bare universal type / unknown context tag -> no CHOICE arm.
   var badRid2 = basicResponse({ tbs: responseData({ responderID: b.contextConstructed(3, name("X")) }) });
   check("23. responderID unknown arm rejected", parseRespCode(basicOcspResponse(badRid2)) === "ocsp/bad-responder-id");
