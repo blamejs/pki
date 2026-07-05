@@ -420,6 +420,10 @@
           "kind": "function",
           "arity": 2
         },
+        "SchemaError": {
+          "kind": "function",
+          "arity": 3
+        },
         "defineClass": {
           "kind": "function",
           "arity": 2

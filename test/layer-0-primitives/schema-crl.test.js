@@ -167,6 +167,11 @@ function testExtensionStrictness() {
     var m = parse(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(1n))])] }));
     return m.revokedCertificates[0].crlEntryExtensions[0].value === 1;
   })());
+  // cRLNumber is INTEGER (0..MAX) — a negative value is malformed.
+  check("negative cRLNumber rejected", parseCode(crl({ version: 1n, crlExtensions: [ext("2.5.29.20", b.integer(-1n))] })) === "crl/bad-extension-value");
+  // reasonCode must be a DEFINED CRLReason — 7 is unused, 11 is out of range.
+  check("reasonCode 7 (unused) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(7n))])] })) === "crl/bad-extension-value");
+  check("reasonCode 11 (out of range) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(11n))])] })) === "crl/bad-extension-value");
   // The CRL PEM decoder caps input size before scanning / base64-decoding.
   check("oversized CRL PEM rejected before decode (pem/too-large)", (function () {
     var huge = "-----BEGIN X509 CRL-----\n" + "A".repeat(pki.constants.LIMITS.PEM_MAX_BYTES) + "\n-----END X509 CRL-----";
