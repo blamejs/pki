@@ -1,0 +1,79 @@
+name: ClusterFuzzLite batch fuzzing
+
+# Deep continuous fuzzing on a daily schedule. Each target runs for
+# 30 minutes — long enough to explore paths the PR-time 60-second
+# budget can't reach. Findings upload as crash artifacts.
+#
+# See cflite_pr.yml for why we invoke jazzer.js directly instead of
+# routing through the broken-for-JS CFLite v1 action wrapper.
+
+on:
+  schedule:
+    - cron: '17 5 * * *'   # daily 05:17 UTC
+  workflow_dispatch:
+    inputs:
+      fuzz_seconds:
+        description: 'Per-target fuzz budget (seconds)'
+        required: false
+        default: '1800'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cflite-batch-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    name: ClusterFuzzLite batch ${{ matrix.target }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        target:
+          - asn1-der
+          - x509-parse
+          - cms-parse
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24'
+
+      - name: Install jazzer.js
+        run: npm ci --prefix fuzz
+
+      - name: Fuzz ${{ matrix.target }}
+        env:
+          FUZZ_TIME: ${{ inputs.fuzz_seconds || '1800' }}
+        run: |
+          set -e
+          harness="fuzz/${{ matrix.target }}.fuzz.js"
+          corpus="fuzz/${{ matrix.target }}_seed_corpus"
+          echo "::group::jazzer fuzz $harness ($FUZZ_TIME s)"
+          if [ -d "$corpus" ]; then
+            npx --prefix fuzz jazzer "$harness" "$corpus" -- \
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+          else
+            npx --prefix fuzz jazzer "$harness" -- \
+              -max_total_time="$FUZZ_TIME" -error_exitcode=1 -timeout=30
+          fi
+          echo "::endgroup::"
+
+      - name: Upload crash artifact
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: fuzz-batch-crash-${{ matrix.target }}
+          path: |
+            crash-*
+            leak-*
+            timeout-*
+          if-no-files-found: ignore

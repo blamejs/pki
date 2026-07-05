@@ -58,7 +58,8 @@ async function run() {
   }
 
   console.log("[auto-interop] " + primitives.length + " primitive(s) discovered from comment blocks; " +
-    covered + " with interop fixtures; " + fixturesRun + " fixture(s) run against openssl");
+    covered + " with interop fixtures; " + fixturesRun + " fixture(s) run against openssl; " +
+    helpers.getSkips() + " skipped (oracle capability absent)");
 
   // Every fixture registered for a discovered primitive must have run —
   // guards against a fixture keyed to a primitive that no longer exists.
@@ -71,7 +72,7 @@ module.exports = { run: run };
 
 if (require.main === module) {
   Promise.resolve().then(run).then(
-    function () { console.log("CHECKS " + helpers.getChecks()); },
+    function () { console.log("CHECKS " + helpers.getChecks()); console.log("SKIPS " + helpers.getSkips()); },
     function (e) { console.error(helpers.formatErr(e)); process.exit(1); }
   );
 }

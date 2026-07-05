@@ -33,7 +33,10 @@ module.exports = {
 
   // Assertion + counter
   check:              _check.check,
+  skip:               _check.skip,
   getChecks:          _check.getChecks,
+  getSkips:           _check.getSkips,
+  getSkipReasons:     _check.getSkipReasons,
   resetChecksForTest: _check.resetChecksForTest,
   addExternalChecks:  _check.addExternalChecks,
   formatErr:          _check.formatErr,

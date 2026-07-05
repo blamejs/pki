@@ -3,20 +3,25 @@
 Coverage-guided fuzz targets against the parser surface most likely to
 crash on adversarial input — the strict DER codec and the X.509
 certificate parser. Each `<name>.fuzz.js` file is a libFuzzer-compatible
-harness (jazzer.js format) consumed by:
+harness (jazzer.js format), run two ways:
 
-- **ClusterFuzzLite** locally on every PR + nightly batch.
-- **OSS-Fuzz** upstream once the submission lands.
+- **CI** — jazzer.js drives every harness on each PR (60s per target)
+  and on a nightly batch schedule (30 min per target). See
+  `.github/workflows/cflite_*.yml`.
+- **OSS-Fuzz** — continuous upstream fuzzing once the submission lands.
 
-Both pipelines feed the same harnesses with the same seed corpora;
-findings reproduce identically.
+`.clusterfuzzlite/` is the canonical ClusterFuzzLite / OSS-Fuzz build
+integration (the Dockerfile + `build.sh` an upstream submission mirrors);
+the CI workflows invoke jazzer.js directly rather than through the CFLite
+action wrapper, which does not support JavaScript targets.
 
 ## Targets
 
-| File                   | Target             |
-| ---------------------- | ------------------ |
-| `asn1-der.fuzz.js`     | `pki.asn1.decode`  |
-| `x509-parse.fuzz.js`   | `pki.x509.parse`   |
+| File                   | Target                   |
+| ---------------------- | ------------------------ |
+| `asn1-der.fuzz.js`     | `pki.asn1.decode`        |
+| `x509-parse.fuzz.js`   | `pki.schema.x509.parse`  |
+| `cms-parse.fuzz.js`    | `pki.schema.cms.parse`   |
 
 Each harness exports a `fuzz(data)` function the engine drives with
 mutated bytes. The contract for both targets is the same: decoding or
@@ -29,11 +34,16 @@ reproducer and persists it in the corpus so future runs catch the
 regression.
 
 Per-target seed corpora live in `fuzz/<name>_seed_corpus/`. Each file
-is a single seed input; the build script zips them at compile time.
-`x509-parse.fuzz.js` reuses the ASN.1 corpus — a certificate is a DER
-SEQUENCE, so those seeds exercise the parser's front door. Add new
-seeds whenever a real-world input class isn't covered (raw attack
-payloads, regression inputs from past bug fixes, etc.).
+is a single seed input; the build script zips them at compile time, and
+the CI workflow passes the directory to jazzer as the starting corpus.
+Both targets seed from the same DER samples — a certificate is a DER
+SEQUENCE, so those inputs exercise the X.509 parser's front door too.
+Add new seeds whenever a real-world input class isn't covered (raw
+attack payloads, regression inputs from past bug fixes, etc.).
+
+Only these curated seeds are committed. libFuzzer writes the inputs it
+discovers back into the corpus directory during a local run; those
+generated entries are not tracked — drop new seeds in by hand.
 
 ## Run locally
 

@@ -8,6 +8,7 @@
 !.gitignore
 !.gitattributes
 !.github/
+!.clusterfuzzlite/
 !.editorconfig
 !.dockerignore
 !.hadolint.yaml

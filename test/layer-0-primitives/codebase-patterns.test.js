@@ -574,6 +574,96 @@ function testWikiPortAgreesAcrossArtifacts() {
   _report("wiki port agrees across examples/wiki/Dockerfile + release-container.yml smoke step", bad);
 }
 
+function testFuzzSeedCorpusZipNaming() {
+  // class: fuzz-seed-corpus-wrapper-name-drift
+  // OSS-Fuzz's compile_javascript_fuzzer names each compiled wrapper with
+  // `basename -s .js` (fuzz/<base>.fuzz.js -> $OUT/<base>.fuzz), and attaches a
+  // seed corpus only when the archive is $OUT/<wrapper>_seed_corpus.zip — i.e.
+  // <base>.fuzz_seed_corpus.zip. A zip written as <base>_seed_corpus.zip (the
+  // `.fuzz` dropped) silently detaches the committed seeds when the canonical
+  // .clusterfuzzlite build runs. Assert every seed-corpus zip target in build.sh
+  // is named after the wrapper (ends in `.fuzz_seed_corpus.zip`).
+  var bad = [];
+  var p = ".clusterfuzzlite/build.sh";
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, p), "utf8"); }
+  catch (_e) { return; }
+  var lines = _lines(src);
+  for (var i = 0; i < lines.length; i++) {
+    if (/^\s*#/.test(lines[i])) continue; // a comment explaining the rule is not a violation
+    var re = /(\S*?)_seed_corpus\.zip/g, m;
+    while ((m = re.exec(lines[i])) !== null) {
+      if (!/\.fuzz$/.test(m[1])) {
+        bad.push({ file: p, line: i + 1,
+          content: "seed-corpus zip '" + m[0] + "' is not named after the compiled wrapper (<base>.fuzz_seed_corpus.zip) — OSS-Fuzz / ClusterFuzzLite won't attach the seeds" });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "fuzz-seed-corpus-wrapper-name-drift");
+  _report("fuzz seed-corpus zip named after the compiled wrapper (<base>.fuzz_seed_corpus.zip)", bad);
+}
+
+function testFuzzBuildInstallsJazzer() {
+  // class: fuzz-build-missing-jazzer-install
+  // compile_javascript_fuzzer generates each wrapper to resolve @jazzer.js/core
+  // from the project's node_modules ($OUT/<project>/node_modules, copied from the
+  // build root). If build.sh compiles without first installing jazzer, the
+  // wrappers reference a module that isn't present and the fuzz targets can't run.
+  // Assert an `npm install`/`npm ci` of jazzer precedes the first compile.
+  var bad = [];
+  var p = ".clusterfuzzlite/build.sh";
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, p), "utf8"); }
+  catch (_e) { return; }
+  var lines = _lines(src);
+  var jazzerBeforeCompile = false, sawCompile = false, firstCompileLine = -1;
+  for (var i = 0; i < lines.length; i++) {
+    if (/^\s*#/.test(lines[i])) continue; // comments describe the rule, they don't install
+    if (/compile_javascript_fuzzer/.test(lines[i]) && firstCompileLine === -1) { firstCompileLine = i; sawCompile = true; }
+    if (/\bnpm\s+(install|ci)\b/.test(lines[i]) && /jazzer/.test(lines[i]) && !sawCompile) jazzerBeforeCompile = true;
+  }
+  if (sawCompile && !jazzerBeforeCompile) {
+    bad.push({ file: p, line: firstCompileLine + 1,
+      content: "compile_javascript_fuzzer runs without a prior `npm install`/`npm ci` of @jazzer.js/core — the generated wrappers resolve jazzer from the (empty) project node_modules and cannot run" });
+  }
+  bad = _filterMarkers(bad, "fuzz-build-missing-jazzer-install");
+  _report("fuzz build installs @jazzer.js/core before compile_javascript_fuzzer", bad);
+}
+
+function testCmsSignedDataConformanceGuards() {
+  // class: cms-signeddata-conformance-guard-dropped
+  // Each token below is the STABLE, frozen contract of an RFC 5652 validation the
+  // CMS SignedData parser MUST perform — the error code it throws, or the ASN.1
+  // reader that validates a value payload. Removing a validation drops its token.
+  // Anchoring on these (the public error-code contract) rather than on the helper
+  // FUNCTION NAME makes the guard rename-proof: renaming _checkSignedAttrs /
+  // SIGNED_DATA keeps the tokens (silent, correct), while deleting the check drops
+  // them (fires). A `function <name>` regex would instead go silently green on the
+  // rename — the same brittleness as anchoring on a specific `var`.
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"cms/bad-version"',            "SignedData version validated against its contents (RFC 5652 §5.1)"],
+    ['"cms/missing-signed-attrs"',   "signedAttrs required when eContentType is not id-data (§5.3)"],
+    ['"cms/missing-content-type"',   "signedAttrs must contain a content-type attribute (§11.1)"],
+    ['"cms/missing-message-digest"', "signedAttrs must contain a message-digest attribute (§11.2)"],
+    ['"cms/duplicate-signed-attr"',  "no signed-attribute type repeats (§5.3)"],
+    ['"cms/content-type-mismatch"',  "content-type signed-attr value equals the eContentType (§5.3)"],
+    ['asn1.read.oid',                "content-type signed-attr value payload validated, not just its tag (§11.1)"],
+    ['asn1.read.octetString',        "message-digest signed-attr value payload validated (§11.2)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-cms.js", line: 0,
+        content: "the CMS SignedData parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  bad = _filterMarkers(bad, "cms-signeddata-conformance-guard-dropped");
+  _report("CMS SignedData RFC-conformance guards present (version-vs-contents / signedAttrs presence + payload syntax + no-duplicate-type)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -815,7 +905,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js"]; // + lib/schema-cms.js etc. as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -982,6 +1072,25 @@ var KNOWN_ANTIPATTERNS = [
     ],
     reason: "Renaming catch(e)->catch(_e) to clear no-unused-vars is a silence, not a fix: the `_`-prefix tells the linter the error is intentionally discarded, but a `catch (_e) { return <sentinel> }` around the code under test turns a real throw into a bare false/null, so a reintroduced bug fails the check with no underlying error. The no-unused signal means the binding (and usually the try/catch that introduced it) is dead — remove the catch and assert directly (the throw is the most diagnostic failure), or capture the error if you actually expect it. See feedback_rewrite_over_silence.",
   },
+  {
+    // A cross-check that could not run (an absent oracle capability) must be
+    // recorded with ctx.skip / helpers.skip, NEVER faked as check(<skip msg>, true).
+    id: "interop-skip-counted-as-pass",
+    primitive: "record an un-runnable cross-check with ctx.skip(reason) / helpers.skip(reason) — never check(<skip message>, true), which tallies the skip as a pass and hides that the cross-check did not run",
+    scanScope: "test",
+    regex: /\.check\(\s*["'][^"']*(?:skip|Skip)[^"']*["']\s*,\s*true\s*\)/,
+    skipCommentLines: true,
+    allowlist: [
+      // This file carries the pattern literal in its own reason/detector text.
+      "test/layer-0-primitives/codebase-patterns.test.js",
+    ],
+    reason: "check(<reason>, true) as a skip is the skip-counted-as-pass bug: a run that skipped a cross-check (e.g. the OpenSSL interop oracle predates ML-DSA) reports the SAME 'N checks passed' as a run that actually performed it, so a coverage gap reads as coverage. helpers.skip / ctx.skip increments a separate skip counter (never `_checks`) and the interop runner + test-integration report skips distinctly.",
+  },
+
+  // (CMS SignedData RFC-conformance guards are enforced by
+  //  testCmsSignedDataConformanceGuards — a file-level check anchored on the
+  //  frozen error-code contract, NOT on the helper function name, so a rename
+  //  can't silently green it.)
 
   // --- DER codec correctness (lib scope) ---
   {
@@ -1382,7 +1491,33 @@ function _isBoilerplate(slice) {
   // without being an extractable primitive (the factories themselves already live
   // in pkix). Different factories per format = nothing more to extract.
   var factoryDecls = (joined.match(/\bvar\s+_ID\s+=\s+_ID(?:\s+\.\s+_ID)*\s+\(/g) || []).length;
-  if (factoryDecls >= 4) return true;
+  // A run of 3+ `var X = obj.method(...)` instantiations is a format module's
+  // sub-schema glue (`var NS = pkix.makeNS(...)` + `var ALGORITHM_IDENTIFIER =
+  // pkix.algorithmIdentifier(NS)` + `var ATTRIBUTE = pkix.attribute(NS)`, each
+  // under its own namespace). The factories already live in pkix, so the run
+  // repeats in shape without being extractable. (The shared cms/csr/pkcs8 header
+  // prefix is exactly this 3-instantiation window; a format with more sub-schemas
+  // has 4+.)
+  if (factoryDecls >= 3) return true;
+  // The module-header TRANSITION: a slice that mixes a top-of-file require with a
+  // factory-instantiation run is the header every format module shares (the 5
+  // requires flow into `var NS = pkix.makeNS(...)` + `var X = pkix.factory(NS)`).
+  // require tokens only appear at the top of a file (the top-of-file-require rule),
+  // so any window carrying a require plus >=2 factory decls is that header region,
+  // not extractable logic — the factories already live in pkix. This catches the
+  // csr/pkcs8/cms (and future ocsp/tsp) header cluster that lands between the
+  // require-run and factory-run thresholds above (a format with 2-3 sub-schemas).
+  if (requireCalls >= 1 && factoryDecls >= 2) return true;
+  // Format-module FOOTER glue — the parse / PEM wiring block. `pemDecode` /
+  // `pemEncode` are thin one-liners delegating to the shared pkix helpers, and the
+  // `var parse = pkix.makeParser({ pemLabel, ... })` config object precedes them.
+  // A window of 2+ such delegations, or the config-object tail (kv pairs) meeting
+  // the first delegation, is that block — the parse LOGIC already lives in pkix, so
+  // it repeats in shape without being extractable (the wrappers must stay
+  // per-module for their @primitive wiki blocks; see KNOWN_CLUSTERS).
+  var delegationReturns = (joined.match(/\breturn\s+_ID\s+\.\s+_ID\s+\(/g) || []).length;
+  if (delegationReturns >= 2) return true;
+  if (kvPairs >= 2 && delegationReturns >= 1) return true;
   if (/\bclass\s+_ID\s+extends\s+_ID/.test(joined)) return true;
   var declTokens = toks.filter(function (t) {
     return t === "=" || t === ";" || t === "," || t === ":" ||
@@ -1450,7 +1585,26 @@ function testNoDuplicateCodeBlocks() {
   //   { files: ["lib/a.js:fnA", "lib/b.js:fnB", ...],
   //     mode?: "family-subset",   // default: exact set match
   //     reason: "why these are not extractable" }
-  var KNOWN_CLUSTERS = [];
+  var KNOWN_CLUSTERS = [
+    {
+      // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
+      // delegations to the shared pkix.pemDecode / pkix.pemEncode, differing only
+      // in the default PEM label + error class. The parse LOGIC is already factored
+      // into pkix; these wrappers must stay per-module (each carries its own
+      // @primitive wiki block the doc generator reads), so the shape repeats across
+      // every format without being further extractable. family-subset so any 3+ of
+      // the format modules (incl. future ocsp / tsp) match.
+      files: [
+        "lib/schema-x509.js:pemDecode", "lib/schema-x509.js:pemEncode",
+        "lib/schema-crl.js:pemDecode", "lib/schema-crl.js:pemEncode",
+        "lib/schema-csr.js:pemDecode", "lib/schema-csr.js:pemEncode",
+        "lib/schema-pkcs8.js:pemDecode", "lib/schema-pkcs8.js:pemEncode",
+        "lib/schema-cms.js:pemDecode", "lib/schema-cms.js:pemEncode",
+      ],
+      mode: "family-subset",
+      reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
+    },
+  ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;
   function _parseEntryMatchers(entry, idx) {
@@ -1647,6 +1801,9 @@ function run() {
   testNoFailOpenVerify();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
+  testFuzzSeedCorpusZipNaming();
+  testFuzzBuildInstallsJazzer();
+  testCmsSignedDataConformanceGuards();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
