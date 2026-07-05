@@ -485,10 +485,6 @@
         "crl": {
           "kind": "object",
           "members": {
-            "matches": {
-              "kind": "function",
-              "arity": 1
-            },
             "parse": {
               "kind": "function",
               "arity": 1
