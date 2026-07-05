@@ -685,7 +685,8 @@ function testOcspConformanceGuards() {
     ['"ocsp/bad-time"',                 "OCSP times are GeneralizedTime, never UTCTime (§4.2.1)"],
     ['"ocsp/unsupported-response-type"', "a non-basic responseType is recognized-and-deferred, not silently accepted (§4.2.1)"],
     ['"ocsp/missing-requestor-name"',   "a signed OCSPRequest must carry requestorName (RFC 6960 §4.1.2)"],
-    ['"ocsp/bad-requestor-name"',       "requestorName inner value must be a GeneralName (context tag [0]..[8]) (§4.1.1)"],
+    ['"ocsp/bad-requestor-name"',       "requestorName inner value must be a well-formed GeneralName (§4.1.1, RFC 5280 §4.2.1.6)"],
+    ['"ocsp/bad-responses"',            "ResponseData.responses is one-or-more SingleResponse (RFC 6960 §4.2.1)"],
     ['asn1.read.enumerated',            "responseStatus / revocationReason value payloads validated, not just tag-checked"],
   ];
   var bad = [];

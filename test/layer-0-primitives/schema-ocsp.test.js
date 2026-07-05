@@ -198,6 +198,9 @@ function testAcceptRequest() {
   // 4b. requestorName whose inner value is not a GeneralName ([1] EXPLICIT INTEGER) -> reject.
   check("4b. non-GeneralName requestorName rejected",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.integer(5n) }) }).der) === "ocsp/bad-requestor-name");
+  // 4f. requestorName as directoryName [4] EXPLICIT Name (a valid constructed GeneralName) -> accept.
+  check("4f. directoryName requestorName accepted",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.explicit(4, name("Requestor CA")) }), optionalSignature: signature({}) }).der) === "NO-THROW");
 }
 
 // ---- ACCEPT — response -----------------------------------------------
@@ -391,6 +394,12 @@ function testRejectExtras() {
   // 4e. requestorName iPAddress [7] with an invalid length -> reject.
   check("4e. bad-length iPAddress requestorName rejected",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextPrimitive(7, Buffer.from([1, 2, 3])) }) }).der) === "ocsp/bad-requestor-name");
+  // 4g. empty otherName [0] (a constructed GeneralName with no body) -> reject.
+  check("4g. empty otherName requestorName rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.contextConstructed(0, Buffer.alloc(0)) }) }).der) === "ocsp/bad-requestor-name");
+  // 5d. empty ResponseData.responses -> reject; responses is one-or-more (RFC 6960 §4.2.1).
+  check("5d. empty responses rejected",
+    parseRespCode(basicOcspResponse(basicResponse({ tbs: responseData({ responses: [] }) }))) === "ocsp/bad-responses");
 }
 
 function run() {
