@@ -609,9 +609,20 @@ function cmdPushFix(opts) {
   _run("git", ["push"]);   // branch already tracks origin from the initial push
   _ok("pushed fix to " + branch);
 
+  // The push is the critical, already-completed work; re-requesting the review is
+  // a best-effort follow-up. If the comment fails (transient API / rate-limit),
+  // do NOT throw — that would leave the fix pushed but the review un-requested,
+  // and a rerun would stop at the clean-tree guard. Print the exact manual
+  // re-trigger instead so the operator can post it without another commit.
   _section("re-request Codex review");
-  _run("gh", ["pr", "comment", prNum, "--body", "@codex review"]);
-  _ok("posted @codex review on PR #" + prNum + " — Codex will review the new head (~5-6m)");
+  var commentRv = _run("gh", ["pr", "comment", prNum, "--body", "@codex review"], { allowFail: true });
+  if (commentRv.status === 0) {
+    _ok("posted @codex review on PR #" + prNum + " — Codex will review the new head (~5-6m)");
+  } else {
+    console.log("\nwarn: the fix IS pushed, but posting `@codex review` failed (transient?).");
+    console.log("      Re-trigger it manually (push-fix would refuse to rerun — the tree is now clean):");
+    console.log("        gh pr comment " + prNum + " --body \"@codex review\"");
+  }
 
   console.log("\nNext:");
   console.log("  - Resolve any Codex thread THIS fix addresses (fix it, never dismiss):");
