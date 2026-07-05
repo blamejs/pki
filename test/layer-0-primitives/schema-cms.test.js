@@ -257,6 +257,12 @@ function testCompleteness() {
   check("26c. message-digest value not an OCTET STRING rejected",
     parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), attribute(MD_ATTR, [b.oid(ID_DATA)])] })]) })) === "cms/bad-message-digest-attr");
 
+  // 26d. content-type value is OID-TAGGED but its payload is malformed (a
+  //      truncated base-128 subidentifier: 0x06 0x01 0x80) — the tag passes, the
+  //      OID content does not; must reject at parse, not verify (§11.1).
+  check("26d. content-type malformed OID payload rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [attribute(CT_ATTR, [Buffer.from([0x06, 0x01, 0x80])]), messageDigestAttr([1])] })]) })) === "cms/bad-content-type-attr");
+
   // 28. malformed IssuerAndSerialNumber (issuer not a Name) -> reject.
   check("28. malformed IssuerAndSerial rejected",
     parseCode(cms({ signers: b.set([signerInfo({ sid: b.sequence([b.integer(9n), b.integer(1n)]) })]) })) !== "NO-THROW");
