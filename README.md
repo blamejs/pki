@@ -196,9 +196,10 @@ is callable today; nothing below is a stub.
 | `pki.schema.csr` | Parse DER / PEM PKCS#10 certification requests per RFC 2986 — subject DN, public key, requested attributes, signature, fail-closed — `parse`, `pemDecode`, `pemEncode` |
 | `pki.schema.pkcs8` | Parse DER / PEM PKCS#8 private keys per RFC 5208 / 5958 — algorithm, raw key bytes, attributes, optional public key, fail-closed; encrypted keys recognized (not decrypted) — `parse`, `parseEncrypted`, `pemDecode`, `pemEncode` |
 | `pki.schema.cms` | Parse DER / PEM CMS SignedData per RFC 5652 — encapsulated content, signer infos, raw signed-attribute bytes for external verification, certificates / CRLs kept raw, fail-closed; non-SignedData content types recognized (not decoded) — `parse`, `pemDecode`, `pemEncode` |
+| `pki.schema.ocsp` | Parse DER / PEM OCSP requests and responses per RFC 6960 — per-certificate status (good / revoked / unknown), responder identity, raw tbs bytes for external verification, certificates kept raw, fail-closed; non-basic response types recognized (not decoded) — `parseRequest`, `parseResponse`, `pemDecode` |
 | `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
-| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError`, each carrying a stable `code` in `domain/reason` form |
+| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
 
 ### CLI

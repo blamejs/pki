@@ -215,10 +215,31 @@ function testImplicitBitString() {
   check("bitString() still rejects a [1] context node", code(function () { walk(S.bitString(), implicitBS(1, 0, Buffer.from([1, 2, 3]))); }) === "asn1/unexpected-tag");
 }
 
+function testImplicitNull() {
+  // [tag] IMPLICIT NULL: a context-class PRIMITIVE node with empty content — the
+  // OCSP CertStatus good [0] / unknown [2] arms (RFC 6960 §4.2.1). The empty-content
+  // and primitive-form rules of a universal NULL still hold.
+  var leaf = S.implicitNull(0);
+  check("implicitNull reads an empty [0] as null", walk(leaf, b.contextPrimitive(0, Buffer.alloc(0))) === null);
+  check("implicitNull rejects a universal NULL", code(function () { walk(leaf, b.nullValue()); }) === "asn1/unexpected-tag");
+  check("implicitNull rejects the wrong context tag [1]", code(function () { walk(leaf, b.contextPrimitive(1, Buffer.alloc(0))); }) === "asn1/unexpected-tag");
+  check("implicitNull rejects a constructed [0]", code(function () { walk(leaf, b.contextConstructed(0, Buffer.alloc(0))); }) === "asn1/expected-primitive");
+  check("implicitNull rejects a non-empty [0]", code(function () { walk(leaf, b.contextPrimitive(0, Buffer.from([0x00]))); }) === "asn1/bad-null");
+
+  // gap-3 characterization: seq(fields, { assert:"constructed" }) swallows the
+  // context tag (the OCSP revoked [1] IMPLICIT RevokedInfo body), but still fails
+  // closed on a PRIMITIVE node — the choice pins the tag; constructed-mode's
+  // !node.children check is what rejects a primitive [1].
+  var conSeq = S.seq([S.field("t", S.time(NS))], { assert: "constructed", code: "t/bad-con-seq" });
+  check("assert:constructed reads a context [1] constructed body", walk(conSeq, b.contextConstructed(1, b.generalizedTime(new Date("2026-01-01T00:00:00Z")))).fields.t.value instanceof Date);
+  check("assert:constructed rejects a context [1] PRIMITIVE node", code(function () { walk(conSeq, b.contextPrimitive(1, Buffer.from([0x01]))); }) === "t/bad-con-seq");
+}
+
 function run() {
   testLeaves();
   testImplicitSetOf();
   testImplicitBitString();
+  testImplicitNull();
   testSeqAssertAndArity();
   testOptional();
   testTrailing();
