@@ -574,6 +574,35 @@ function testWikiPortAgreesAcrossArtifacts() {
   _report("wiki port agrees across examples/wiki/Dockerfile + release-container.yml smoke step", bad);
 }
 
+function testFuzzSeedCorpusZipNaming() {
+  // class: fuzz-seed-corpus-wrapper-name-drift
+  // OSS-Fuzz's compile_javascript_fuzzer names each compiled wrapper with
+  // `basename -s .js` (fuzz/<base>.fuzz.js -> $OUT/<base>.fuzz), and attaches a
+  // seed corpus only when the archive is $OUT/<wrapper>_seed_corpus.zip — i.e.
+  // <base>.fuzz_seed_corpus.zip. A zip written as <base>_seed_corpus.zip (the
+  // `.fuzz` dropped) silently detaches the committed seeds when the canonical
+  // .clusterfuzzlite build runs. Assert every seed-corpus zip target in build.sh
+  // is named after the wrapper (ends in `.fuzz_seed_corpus.zip`).
+  var bad = [];
+  var p = ".clusterfuzzlite/build.sh";
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, p), "utf8"); }
+  catch (_e) { return; }
+  var lines = _lines(src);
+  for (var i = 0; i < lines.length; i++) {
+    if (/^\s*#/.test(lines[i])) continue; // a comment explaining the rule is not a violation
+    var re = /(\S*?)_seed_corpus\.zip/g, m;
+    while ((m = re.exec(lines[i])) !== null) {
+      if (!/\.fuzz$/.test(m[1])) {
+        bad.push({ file: p, line: i + 1,
+          content: "seed-corpus zip '" + m[0] + "' is not named after the compiled wrapper (<base>.fuzz_seed_corpus.zip) — OSS-Fuzz / ClusterFuzzLite won't attach the seeds" });
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "fuzz-seed-corpus-wrapper-name-drift");
+  _report("fuzz seed-corpus zip named after the compiled wrapper (<base>.fuzz_seed_corpus.zip)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -1739,6 +1768,7 @@ function run() {
   testNoFailOpenVerify();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
+  testFuzzSeedCorpusZipNaming();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();
