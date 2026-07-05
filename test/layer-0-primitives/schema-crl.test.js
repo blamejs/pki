@@ -160,6 +160,10 @@ function testExtensionStrictness() {
   // An Extension with 4+ children is malformed — the 4th element is NOT silently ignored.
   var fourChild = b.sequence([b.oid("2.5.29.20"), b.octetString(b.integer(1n)), b.boolean(true), b.octetString(Buffer.from([1]))]);
   check("extension with 4 children rejected", parseCode(crl({ version: 1n, crlExtensions: [fourChild] })) === "crl/bad-extension");
+  // A context-tagged constructed item ([5]{OID, OCTET STRING}) is not a universal
+  // SEQUENCE — reject it even though the child count looks right.
+  var bogusItem = b.contextConstructed(5, Buffer.concat([b.oid("2.5.29.20"), b.octetString(Buffer.from([1]))]));
+  check("context-tagged extension item ([5]) rejected", parseCode(crl({ version: 1n, crlExtensions: [bogusItem] })) === "crl/bad-extension");
   // reasonCode is ENUMERATED — a bare INTEGER value is rejected (strict RFC 5280).
   check("reasonCode as INTEGER rejected (must be ENUMERATED)",
     parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.integer(1n))])] })) === "crl/bad-extension-value");

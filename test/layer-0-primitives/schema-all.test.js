@@ -46,6 +46,15 @@ function run() {
   check("unknown format → err.code schema/unknown-format", code(function () { pki.schema.parse(b.integer(5n)); }) === "schema/unknown-format");
   check("bad input → err.code schema/bad-input", code(function () { pki.schema.parse(42); }) === "schema/bad-input");
   check("undecodable DER → err.code schema/bad-der", code(function () { pki.schema.parse(Buffer.from([0x30, 0x80])); }) === "schema/bad-der");
+
+  // A PKCS#10 CSR shares the outer SEQUENCE-of-3 envelope but has no Validity —
+  // it must NOT be misclassified as a certificate; it is an unknown format.
+  var csr = b.sequence([
+    b.sequence([b.integer(0n), b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("req")])])]), b.sequence([b.sequence([b.oid("1.2.840.10045.2.1")]), b.bitString(Buffer.from([1, 2, 3]), 0)])]),
+    b.sequence([b.oid("1.2.840.10045.4.3.2")]),
+    b.bitString(Buffer.from([0x00]), 0),
+  ]);
+  check("a CSR-shaped envelope is unknown-format (not misrouted to x509)", code(function () { pki.schema.parse(csr); }) === "schema/unknown-format");
 }
 
 module.exports = { run: run };
