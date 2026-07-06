@@ -24,14 +24,23 @@ function run() {
   var due = lifecycle.evaluate([prim("pki.x.old", "experimental", "0.1.10")], {}, CUR);
   check("overdue experimental with no ledger fails", due.failures.length === 1 && /graduation review/.test(due.failures[0]));
 
-  // 2. A dated keep-experimental decision with a FUTURE reviewBy acknowledges it.
-  var ack = lifecycle.evaluate([prim("pki.x.old", "experimental", "0.1.10")],
+  // 2. A FULL dated keep-experimental decision (reason + reviewedAt + future
+  //    reviewBy) acknowledges it.
+  var full = { decision: "keep-experimental", reason: "interop harness pending", reviewedAt: "0.1.11", reviewBy: "9.9.9" };
+  var ack = lifecycle.evaluate([prim("pki.x.old", "experimental", "0.1.10")], { "pki.x.old": full }, CUR);
+  check("overdue experimental with a full dated keep-decision passes", ack.failures.length === 0);
+
+  // 2b. A bare { decision, reviewBy } — no reason, no reviewedAt — is NOT a review.
+  var bare = lifecycle.evaluate([prim("pki.x.old", "experimental", "0.1.10")],
     { "pki.x.old": { decision: "keep-experimental", reviewBy: "9.9.9" } }, CUR);
-  check("overdue experimental with a dated keep-decision passes", ack.failures.length === 0);
+  check("keep-decision without a reason/date is not accepted", bare.failures.length === 1);
+  var noReason = lifecycle.evaluate([prim("pki.x.old", "experimental", "0.1.10")],
+    { "pki.x.old": { decision: "keep-experimental", reviewedAt: "0.1.11", reviewBy: "9.9.9" } }, CUR);
+  check("keep-decision missing a reason is not accepted", noReason.failures.length === 1);
 
   // 3. A keep-decision whose reviewBy has been REACHED is due again.
   var stale = lifecycle.evaluate([prim("pki.x.old", "experimental", "0.1.10")],
-    { "pki.x.old": { decision: "keep-experimental", reviewBy: "0.1.11" } }, CUR);
+    { "pki.x.old": { decision: "keep-experimental", reason: "x", reviewedAt: "0.1.10", reviewBy: "0.1.11" } }, CUR);
   check("keep-decision past its reviewBy is due again", stale.failures.length === 1);
 
   // 4. An experimental primitive YOUNGER than the threshold is not evaluated.

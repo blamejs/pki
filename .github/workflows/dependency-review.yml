@@ -1,9 +1,12 @@
 name: Dependency review
 
-# Blocks a PR that introduces a dependency with a known vulnerability or a
-# disallowed license. The toolkit ships zero runtime dependencies (Hard Rule #1),
-# so this guards the dev-dependency + any vendored bundle surface and enforces
-# that `dependencies` stays empty by catching a newly-added runtime dep.
+# Two guards on a PR:
+#  1. dependency-review-action blocks a dependency change that adds a KNOWN
+#     vulnerability (>= high) or a disallowed license.
+#  2. an explicit check that package.json `dependencies` stays empty — Hard
+#     Rule #1 (zero runtime deps). dependency-review only fails on advisories/
+#     licenses, so a clean-but-new permissive runtime dep would slip it; this
+#     step is the actual zero-runtime-dependency gate.
 on:
   pull_request:
     branches: [main]
@@ -23,11 +26,19 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Enforce zero runtime dependencies (Hard Rule #1)
+        run: |
+          deps=$(node -e "process.stdout.write(JSON.stringify(require('./package.json').dependencies || {}))")
+          if [ "$deps" != "{}" ]; then
+            echo "::error::package.json declares runtime dependencies: $deps — Hard Rule #1 forbids any runtime dependency (vendor under lib/vendor/ instead)."
+            exit 1
+          fi
+          echo "package.json dependencies is empty ({}) — Hard Rule #1 holds."
+
       - name: Review dependency changes
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
         with:
           fail-on-severity: high
-          # Copyleft / non-permissive licenses are disallowed for an Apache-2.0
-          # toolkit; a new runtime dep would also trip Hard Rule #1 review.
+          # Copyleft / non-permissive licenses are disallowed for an Apache-2.0 toolkit.
           deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-3.0
           comment-summary-in-pr: on-failure

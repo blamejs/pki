@@ -97,7 +97,14 @@ function evaluate(primitives, ledger, current) {
       if (isNaN(age)) { failures.push(p.primitive + " has an unparseable @since (" + p.since + ")."); return; }
       if (age < REVIEW_AFTER) return;
       var entry = ledger[p.primitive];
-      var acknowledged = entry && entry.decision === "keep-experimental" && entry.reviewBy && cmpSemver(current, entry.reviewBy) < 0;
+      // A conscious documented decision requires ALL of: keep-experimental, a
+      // non-empty reason, the version it was reviewedAt, and a future reviewBy.
+      // A bare { decision, reviewBy } is not a review — it must not pass the gate.
+      var acknowledged = entry
+        && entry.decision === "keep-experimental"
+        && typeof entry.reason === "string" && entry.reason.trim().length > 0
+        && entry.reviewedAt && parseSemver(entry.reviewedAt)
+        && entry.reviewBy && parseSemver(entry.reviewBy) && cmpSemver(current, entry.reviewBy) < 0;
       if (!acknowledged) {
         failures.push(p.primitive + " has been experimental since " + p.since + " (" + age + " releases) and is due for a graduation review. Graduate it to `stable` (drop @status experimental) if its standard is settled and it is interop-proven, OR record a dated keep-experimental decision in lifecycle-reviews.json with a future reviewBy.");
       } else {
