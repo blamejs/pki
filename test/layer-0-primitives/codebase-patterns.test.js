@@ -782,6 +782,71 @@ function testAttrCertConformanceGuards() {
   _report("attribute-certificate RFC-conformance guards present (GeneralizedTime validity / positive-<=20 serial / sig-alg agreement / non-empty unique attributes / ENUMERATED digestedObjectType / validated GeneralNames / v1 recognize-and-defer)", bad);
 }
 
+function testCmsEnvelopedDataConformanceGuards() {
+  // class: cms-enveloped-guard-dropped
+  // Frozen contract of the RFC 5652 §6/§8 EnvelopedData / EncryptedData decode
+  // (promoted out of the recognize-and-defer set). Anchored on the public error
+  // codes, not helper names (rename-proof).
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"cms/bad-enveloped-data"',        "EnvelopedData is structurally decoded (§6.1)"],
+    ['"cms/bad-encrypted-data"',        "EncryptedData is structurally decoded (§8)"],
+    ['"cms/bad-encrypted-content-info"', "EncryptedContentInfo decoded — encryptedContent [0] IMPLICIT (§6.1)"],
+    ['"cms/bad-recipient-infos"',       "recipientInfos is a SET SIZE(1..MAX) — empty rejected (§6.1)"],
+    ['"cms/bad-recipient-info"',        "RecipientInfo CHOICE — an unknown arm is rejected (§6.2)"],
+    ['"cms/bad-ktri"',                  "KeyTransRecipientInfo decoded (§6.2.1)"],
+    ['"cms/bad-recipient-version"',     "the ktri rid<->version coupling is enforced (§6.2.1)"],
+    ['"cms/bad-kari"',                  "KeyAgreeRecipientInfo decoded (§6.2.2, RFC 5753)"],
+    ['"cms/bad-kekri"',                 "KEKRecipientInfo decoded (§6.2.3)"],
+    ['"cms/bad-pwri"',                  "PasswordRecipientInfo decoded (§6.2.4)"],
+    ['"cms/bad-ori"',                   "OtherRecipientInfo decoded (§6.2.5)"],
+    ['"cms/bad-recipient-identifier"',  "RecipientIdentifier CHOICE decoded (§6.2.1)"],
+    ['"cms/bad-originator-info"',       "OriginatorInfo decoded (§6.1)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-cms.js", line: 0,
+        content: "the CMS parser no longer references `" + r[0] + "` — a dropped EnvelopedData/EncryptedData decode guard: " + r[1] });
+    }
+  });
+  // Structural: the two content types must be walked (not deferred) inside CONTENT_INFO.build.
+  if (!/OID_ENVELOPED_DATA[\s\S]{0,120}?schema\.walk\(ENVELOPED_DATA/.test(src)) {
+    bad.push({ file: "lib/schema-cms.js", line: 0,
+      content: "CONTENT_INFO.build no longer walks ENVELOPED_DATA on id-envelopedData — the content type would fall back to recognize-and-defer" });
+  }
+  bad = _filterMarkers(bad, "cms-enveloped-guard-dropped");
+  _report("CMS EnvelopedData/EncryptedData decode guards present (all five RecipientInfo kinds / ktri version coupling / non-empty recipientInfos / dispatch walks the two content types)", bad);
+}
+
+function testNoRemovedWebCryptoNamespace() {
+  // class: removed-namespace-reference
+  // pki.WebCrypto was removed in favour of pki.webcrypto.* — its classes now hang off
+  // the ready Crypto instance. A lingering `pki.WebCrypto` reference in operator-facing
+  // PROSE (a docstring, README, ARCHITECTURE) is a documented path that no longer
+  // resolves — exactly the bug class the doc-example gate cannot see (it only runs
+  // @example CODE, not prose). Anchored on the exact removed token (case-sensitive, so
+  // pki.webcrypto is not matched).
+  var files = ["lib/webcrypto.js", "index.js", "README.md", "ARCHITECTURE.md", "SECURITY.md"];
+  var bad = [];
+  files.forEach(function (rel) {
+    var src;
+    try { src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8"); }
+    catch (_e) { return; }
+    var lines = src.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      if (/pki\.WebCrypto\b/.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "references the removed `pki.WebCrypto` namespace — the classes are now under `pki.webcrypto.*`; a stale reference is a documented path that does not resolve" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "removed-namespace-reference");
+  _report("no operator-facing file references the removed pki.WebCrypto namespace (classes moved under pki.webcrypto.*)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -1961,6 +2026,8 @@ function run() {
   testOcspConformanceGuards();
   testTspConformanceGuards();
   testAttrCertConformanceGuards();
+  testCmsEnvelopedDataConformanceGuards();
+  testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();

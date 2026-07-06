@@ -261,9 +261,10 @@ async function testAesCtrLength() {
 }
 
 async function testSurface() {
-  check("pki.webcrypto is a Crypto instance", pki.webcrypto instanceof pki.WebCrypto.Crypto);
-  check("pki.webcrypto.subtle is a SubtleCrypto", pki.webcrypto.subtle instanceof pki.WebCrypto.SubtleCrypto);
-  check("WebCryptoError is a PkiError", new pki.WebCrypto.WebCryptoError("x", "y") instanceof pki.errors.PkiError);
+  check("pki.webcrypto is a Crypto instance", pki.webcrypto instanceof pki.webcrypto.Crypto);
+  check("pki.webcrypto.subtle is a SubtleCrypto", pki.webcrypto.subtle instanceof pki.webcrypto.SubtleCrypto);
+  check("WebCryptoError is a PkiError", new pki.webcrypto.WebCryptoError("x", "y") instanceof pki.errors.PkiError);
+  check("the WebCrypto classes are reachable under pki.webcrypto", typeof pki.webcrypto.CryptoKey === "function" && pki.WebCrypto === undefined);
   var k = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
   check("unsupported algorithm throws not-supported", (await code(async function () { await subtle.sign({ name: "NOPE" }, k.privateKey, Buffer.from("x")); })) === "webcrypto/not-supported");
 }

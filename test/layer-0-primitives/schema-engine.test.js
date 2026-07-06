@@ -260,6 +260,25 @@ function testImplicitSeqOf() {
   check("implicitSeqOf rejects a universal SEQUENCE (wrong tag)", code(function () { walk(seqOf, b.sequence([b.integer(1n)])); }) === "t/bad-seqof");
 }
 
+function testSeqImplicitTag() {
+  // seq({ assert:"implicit", implicitTag }) — a standalone [tag] IMPLICIT SEQUENCE
+  // body (the fixed-field peer of implicitSetOf), for an EnvelopedData OriginatorInfo
+  // [0] / an IMPLICIT-tagged AlgorithmIdentifier. The context tag replaces the
+  // universal SEQUENCE tag; the direct children are the positional fields.
+  var spec = S.seq([S.field("a", S.integerLeaf()), S.field("b", S.integerLeaf())],
+    { assert: "implicit", implicitTag: 0, code: "t/bad-implseq", what: "ImplSeq",
+      build: function (m) { return { a: m.fields.a.value, b: m.fields.b.value }; } });
+  var body = Buffer.concat([b.integer(7n), b.integer(9n)]);
+  check("seq implicit reads a context [0] constructed body", walk(spec, b.contextConstructed(0, body)).result.a === 7n);
+  check("seq implicit rejects a universal SEQUENCE (must be the [0] tag)", code(function () { walk(spec, b.sequence([b.integer(7n), b.integer(9n)])); }) === "t/bad-implseq");
+  check("seq implicit rejects the wrong context tag [1]", code(function () { walk(spec, b.contextConstructed(1, body)); }) === "t/bad-implseq");
+  // Behaviour preservation: a default assert:"sequence" seq still requires a universal
+  // SEQUENCE and rejects a context [0] — the plumb does not touch the default path.
+  var plain = S.seq([S.field("a", S.integerLeaf())], { assert: "sequence", code: "t/bad-seq" });
+  check("default seq still rejects a context [0]", code(function () { walk(plain, b.contextConstructed(0, b.integer(7n))); }) === "t/bad-seq");
+  check("default seq still accepts a universal SEQUENCE", walk(plain, b.sequence([b.integer(7n)])).fields.a.value === 7n);
+}
+
 function run() {
   testLeaves();
   testImplicitSetOf();
@@ -267,6 +286,7 @@ function run() {
   testImplicitNull();
   testImplicitInteger();
   testImplicitSeqOf();
+  testSeqImplicitTag();
   testSeqAssertAndArity();
   testOptional();
   testTrailing();

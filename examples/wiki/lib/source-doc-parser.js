@@ -69,6 +69,11 @@ var SINGLE_LINE_TAGS = {
   featured:    true,
   signature:   true,
   since:       true,
+  // The version a primitive's documented API path was CORRECTED / stabilized to,
+  // when it differs from where the underlying export first shipped. Pairs with
+  // @since (the corrected-path introduction) — @originated records the earlier
+  // version the callable was already reachable, so the history is not lost.
+  originated:  true,
   status:      true,
   compliance:  true,
   spec:        true,

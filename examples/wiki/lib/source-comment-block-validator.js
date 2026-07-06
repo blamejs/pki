@@ -54,6 +54,17 @@ var KNOWN_POSTURES = {
 
 var SEMVER_RE = /^\d+\.\d+\.\d+(-[a-zA-Z0-9.-]+)?$/;
 
+// Compare two X.Y.Z versions numerically (ignores any pre-release suffix):
+// -1 if a < b, 0 if equal, 1 if a > b.
+function _cmpSemver(a, b) {
+  var pa = String(a).split("-")[0].split(".").map(Number);
+  var pb = String(b).split("-")[0].split(".").map(Number);
+  for (var i = 0; i < 3; i++) {
+    if ((pa[i] || 0) !== (pb[i] || 0)) return (pa[i] || 0) < (pb[i] || 0) ? -1 : 1;
+  }
+  return 0;
+}
+
 // @spec — the normative reference(s) a primitive is DERIVED FROM. For a
 // standards-implementation library, every primitive traces to a standard;
 // a citation is validated (not free text) so it can be linked in the wiki
@@ -349,6 +360,22 @@ function validate(config) {
         });
       }
 
+      // 6a. @originated (the earlier version the callable was already reachable, when
+      // the documented path was later corrected) — semver, and not later than @since.
+      if (tags.originated) {
+        if (tags.originated.length > 32 || !SEMVER_RE.test(tags.originated)) {
+          findings.push({
+            kind: "catalog", file: rel, primitive: primTag,
+            msg: "@originated does not look like semver (got `" + tags.originated + "`)",
+          });
+        } else if (tags.since && SEMVER_RE.test(tags.since) && _cmpSemver(tags.originated, tags.since) > 0) {
+          findings.push({
+            kind: "catalog", file: rel, primitive: primTag,
+            msg: "@originated `" + tags.originated + "` is later than @since `" + tags.since + "` (the origin cannot post-date the corrected path)",
+          });
+        }
+      }
+
       // 7. @compliance catalog.
       if (tags.compliance) {
         String(tags.compliance).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (p2) {
@@ -411,7 +438,8 @@ function validate(config) {
         });
       }
 
-      // 9. @primitive namespace must sit under the file's @module.
+      // 9. @primitive namespace must sit under the file's @module (case-sensitive —
+      // a primitive is used at its exact, case-correct export path).
       if (modNs) {
         var primBare = _bare(primTag);
         if (primBare !== modNs && primBare.indexOf(modNs + ".") !== 0) {
