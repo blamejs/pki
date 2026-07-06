@@ -206,6 +206,27 @@ function algIdDer(a) {
       b.explicit(2, b.integer(32n)),
     ]));
   }
+  else if (a.sigParams === "pss-multichild-salt") {
+    // MALFORMED: the EXPLICIT [2] saltLength wrapper carries TWO values; an
+    // EXPLICIT wrapper holds exactly one, and reading children[0] would ignore
+    // the rest, accepting non-DER PSS parameters.
+    var hMs = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, hMs),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), hMs])),
+      b.explicit(2, Buffer.concat([b.integer(32n), b.integer(1n)])),
+    ]));
+  }
+  else if (a.sigParams === "pss-multichild-mgf") {
+    // MALFORMED: the EXPLICIT [1] maskGenAlgorithm wrapper carries TWO values.
+    var hMm = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    var mgfSeq = b.sequence([b.oid(OID_MGF1), hMm]);
+    children.push(b.sequence([
+      b.explicit(0, hMm),
+      b.explicit(1, Buffer.concat([mgfSeq, mgfSeq])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
   else if (a.sigParams === "pss-mgfhash-extra") {
     // MALFORMED: the MGF1 inner hash AlgorithmIdentifier has a spurious third element.
     var hAlg2 = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
@@ -1300,6 +1321,16 @@ async function testAuditRegressions() {
   var leafPmOk = await mkCert({ subject: "PmLeaf", issuer: "PmInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
   var resC37d = await run([interPm, leafPmOk], { time: T2027, trustAnchor: anchor });
   check("C37 control: critical policyMappings on an intermediate still validates", resC37d.valid === true);
+
+  // C38 — each RSASSA-PSS-params field is an EXPLICIT [n] wrapper around EXACTLY
+  // ONE value. A wrapper carrying more than one child is malformed: reading
+  // children[0] and ignoring the rest would accept non-DER parameters.
+  var pssMultiSalt = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-multichild-salt" });
+  var resC38a = await run([await mkCert({ subject: "C38a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMultiSalt })], { time: T2027, trustAnchor: anchor });
+  check("C38 multi-child EXPLICIT [2] saltLength wrapper rejected", resC38a.valid === false && failCodes(resC38a).indexOf("path/unsupported-algorithm") !== -1);
+  var pssMultiMgf = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-multichild-mgf" });
+  var resC38b = await run([await mkCert({ subject: "C38b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMultiMgf })], { time: T2027, trustAnchor: anchor });
+  check("C38 multi-child EXPLICIT [1] maskGenAlgorithm wrapper rejected", resC38b.valid === false && failCodes(resC38b).indexOf("path/unsupported-algorithm") !== -1);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
