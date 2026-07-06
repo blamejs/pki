@@ -1538,6 +1538,22 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A context-class node carrying an IMPLICIT primitive value (a keyIdentifier [0] OCTET STRING, a serial [2] INTEGER) is only guaranteed primitive if a reader enforces it. A constructed context node has children and a NULL content, so Buffer.from(node.content) throws a raw TypeError on hostile input (fuzz-found in the AKI extension decoder) instead of a typed fail-closed reject. Route every context-primitive read through the asn1.read.*Implicit reader, which asserts the primitive form and rejects the constructed shape with asn1/expected-primitive.",
   },
   {
+    id: "algid-childless-node-fallback",
+    primitive: "an AlgorithmIdentifier's OID is read from a node PROVEN to be a SEQUENCE (tag-checked) then `.children[0]` — never via a childless-fallback ternary that reuses the wrapper node when the inner has no children",
+    regex: /children\.length\s*\)\s*\?/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A `node.children.length) ? inner : node` fallback accepts a malformed AlgorithmIdentifier by degrading to a broader node when the expected SEQUENCE is absent: a bare `[0] EXPLICIT OBJECT IDENTIFIER sha256` (no AlgorithmIdentifier SEQUENCE) is then read as a valid SHA-256 hashAlgorithm, so RSASSA-PSS parameters stop being fail-closed and a weaker hash can be smuggled in (forgery surface). Read the OID only from a node whose tag is asserted to be a universal SEQUENCE; do not fall back to the wrapper on a childless inner.",
+  },
+  {
+    id: "policy-tree-parent-in-public-verdict",
+    primitive: "the validate() verdict's validPolicyTree must be a copy with the internal `parent` back-pointer stripped (acyclic) — never the raw state.validPolicyTree, whose nodes point back at their parents",
+    regex: /validPolicyTree:\s*state\.validPolicyTree\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "The 6.1.3 policy-processing nodes carry an enumerable `parent` back-pointer for upward pruning. Returning state.validPolicyTree directly exposes that cycle in the public structured verdict, so a caller that JSON.stringify()s the result (logging, persisting, an audit hook) throws on any policy-bearing chain. Return an acyclic deep copy without `parent`.",
+  },
+  {
     id: "x509-extensions-no-uniqueness",
     primitive: "the extensions() schema factory must give its seqOf a `unique` keyFn (+ dupCode x509/duplicate-extension) so the engine rejects a repeated extnID — RFC 5280 §4.2 forbids duplicate extensions",
     regex: /function extensions\b(?:(?!unique:)[\s\S]){0,400}?build:/,

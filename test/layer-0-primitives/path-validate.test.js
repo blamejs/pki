@@ -167,6 +167,26 @@ function algIdDer(a) {
   else if (a.sigParams === "pss-nomgf") {
     children.push(b.sequence([b.explicit(0, b.sequence([b.oid(OID_SHA256), b.nullValue()]))]));   // hash only, no MGF
   }
+  else if (a.sigParams === "pss-bare-hash") {
+    // MALFORMED: hashAlgorithm [0] EXPLICIT wraps a bare OID, not an
+    // AlgorithmIdentifier SEQUENCE { algorithm, parameters }. A lenient reader
+    // that falls back to the OID accepts it as SHA-256 (forgery surface).
+    var mgfHb = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, b.oid(OID_SHA256)),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), mgfHb])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
+  else if (a.sigParams === "pss-bare-mgfhash") {
+    // MALFORMED: the MGF1 hash parameter is a bare OID, not an AlgorithmIdentifier.
+    var hAlg = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, hAlg),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), b.oid(OID_SHA256)])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
   else if (a.sigParams === "pss-extrafield") {
     var shaX = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
     children.push(b.sequence([
@@ -1152,6 +1172,31 @@ async function testAuditRegressions() {
   // ...and softFail opts the SAME unexpected status into a pass.
   var resC31s = await run([leafC31], { time: T2027, trustAnchor: anchor, revocationChecker: oddChecker, softFail: true });
   check("C31 softFail opts unexpected status into a pass", resC31s.valid === true);
+
+  // C32 (Codex :124) — an RSASSA-PSS hashAlgorithm [0] EXPLICIT wrapping a BARE
+  // OID (not an AlgorithmIdentifier SEQUENCE) is malformed and must fail closed,
+  // never be read leniently as SHA-256. Same for the MGF1 hash parameter.
+  var pssBareHash = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-bare-hash" });
+  var leafC32a = await mkCert({ subject: "C32a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssBareHash });
+  var resC32a = await run([leafC32a], { time: T2027, trustAnchor: anchor });
+  check("C32 PSS hashAlgorithm as a bare OID (no AlgorithmIdentifier SEQUENCE) rejected", resC32a.valid === false && failCodes(resC32a).indexOf("path/unsupported-algorithm") !== -1);
+  var pssBareMgf = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-bare-mgfhash" });
+  var leafC32b = await mkCert({ subject: "C32b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssBareMgf });
+  var resC32b = await run([leafC32b], { time: T2027, trustAnchor: anchor });
+  check("C32 PSS MGF1 hash as a bare OID rejected", resC32b.valid === false && failCodes(resC32b).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C33 (Codex :593) — the returned validPolicyTree must be acyclic: no internal
+  // `parent` back-pointer, so a caller can JSON.stringify(result) on a
+  // policy-bearing chain without throwing on a circular reference.
+  var P33 = "1.3.6.1.4.1.99999.33";
+  var interC33 = await mkCert({ subject: "C33i", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P33])]) });
+  var leafC33 = await mkCert({ subject: "C33l", issuer: "C33i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P33])] });
+  var resC33 = await run([interC33, leafC33], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P33] });
+  var c33Serialized = true;
+  try { JSON.stringify(resC33.validPolicyTree); } catch (_e) { c33Serialized = false; }
+  check("C33 policy tree is JSON-serializable (acyclic, no circular parent)", resC33.valid === true && resC33.validPolicyTree !== null && c33Serialized);
+  var c33NoParent = (function noParent(node) { if (!node) return true; if ("parent" in node) return false; return node.children.every(noParent); });
+  check("C33 returned policy tree carries no parent back-pointer", c33NoParent(resC33.validPolicyTree));
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
