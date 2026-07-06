@@ -85,6 +85,13 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-primfield",
   },
+  // PSS params declaring a NEGATIVE saltLength (-1) — the OpenSSL shim would
+  // read it as a salt-length constant; must be rejected.
+  pssnegsalt: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-negsalt",
+  },
 };
 
 // Aliases: distinct keypairs of the same algorithm (KEYS is keyed by the
@@ -124,6 +131,14 @@ function algIdDer(a) {
   else if (a.sigParams === "pss-primfield") {
     // a malformed primitive [0] where an EXPLICIT constructed field is required
     children.push(b.sequence([b.contextPrimitive(0, Buffer.from([0x01]))]));
+  }
+  else if (a.sigParams === "pss-negsalt") {
+    var sha = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, sha),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), sha])),
+      b.explicit(2, b.integer(-1n)),   // negative saltLength
+    ]));
   }
   else if (a.sigParams === "pss" || a.sigParams === "pss-badhash" || a.sigParams === "pss-badmgf") {
     // RSASSA-PSS-params { hashAlgorithm [0], maskGenAlgorithm [1], saltLength [2] } (RFC 4055 §3.1, EXPLICIT tags).
@@ -715,6 +730,8 @@ function idpVal(o) {
 }
 function idpExt(o) { return ext("2.5.29.28", true, idpVal(o)); }
 function crlNumberExt(n) { return ext("2.5.29.20", false, b.integer(BigInt(n))); }
+// reasonCode CRL-entry extension (§5.3.1) — value is an ENUMERATED.
+function reasonCodeExt(n) { return ext("2.5.29.21", false, b.enumerated(BigInt(n))); }
 // A CRL extension with an OID the checker does not understand, marked critical.
 function unknownCriticalCrlExt() { return ext("1.3.6.1.4.1.99999.42", true, b.octetString(Buffer.from([1]))); }
 
@@ -852,6 +869,8 @@ async function testLeafRulesAndParams() {
 async function testAuditRegressions() {
   var anchor = await mkAnchor("ed25519", "Root");
   var P1m = "1.3.6.1.4.1.99999.1", P2m = "1.3.6.1.4.1.99999.2", P3m = "1.3.6.1.4.1.99999.3";
+  var SER = 9911n;
+  var leafCrl = await mkCert({ subject: "CrlL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER });
 
   // A1 — permitted subtrees INTERSECT, not union (§6.1.4(g)): a subordinate CA
   // that permits a broader name cannot re-admit what its parent excluded from
@@ -952,6 +971,46 @@ async function testAuditRegressions() {
   var resC13 = await run([leafPssPrim], { time: T2027, trustAnchor: anchorPssPrim });
   check("C13 malformed PSS parameter field rejected", resC13.valid === false && failCodes(resC13).indexOf("path/unsupported-algorithm") !== -1);
 
+  // C14 (Codex :1010) — an indirect CRL (IDP indirectCRL) attributes entries by
+  // the per-entry certificateIssuer (not tracked here), so it is unusable.
+  var crlIndirect = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(6), idpExt({ indirect: true })] });
+  var resC14 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlIndirect]) });
+  check("C14 indirect CRL is unusable (undetermined)", resC14.valid === false && failCodes(resC14).indexOf("path/revocation-undetermined") !== -1);
+
+  // C15 (preempt P1) — a CRL with NO nextUpdate has no bounded validity: its
+  // currency cannot be confirmed, so it is unusable (a replayed old CRL must
+  // not read good).
+  var crlNoNext = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: null });
+  var resC15 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlNoNext]) });
+  check("C15 CRL without nextUpdate is unusable (undetermined)", resC15.valid === false && failCodes(resC15).indexOf("path/revocation-undetermined") !== -1);
+
+  // C16 (preempt P3) — a revoked entry marked removeFromCRL (reasonCode 8) is
+  // NOT a revocation; the cert is good (covered, un-revoked).
+  var crlRemove = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n, exts: [reasonCodeExt(8)] }] });
+  var resC16 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRemove]) });
+  check("C16 removeFromCRL entry is not a revocation (good)", resC16.valid === true);
+
+  // C17 (preempt P2) — a negative RSASSA-PSS saltLength must be rejected (the
+  // OpenSSL shim would treat it as RSA_PSS_SALTLEN_AUTO, accepting any salt).
+  var anchorNegSalt = await mkAnchor("pssnegsalt", "NegSaltRoot");
+  var leafNegSalt = await mkCert({ subject: "NegSalt", issuer: "NegSaltRoot", signWith: "pssnegsalt", subjectKeys: "ed25519leaf" });
+  var resC17 = await run([leafNegSalt], { time: T2027, trustAnchor: anchorNegSalt });
+  check("C17 negative PSS saltLength rejected", resC17.valid === false && failCodes(resC17).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C18 (preempt P2) — a trailing-dot dNSName SAN must not escape an excluded
+  // dNSName constraint (FQDN root-label normalization).
+  var interTd = await mkCert({ subject: "TdInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnDns("evil.com")])]) });
+  var leafTd = await mkCert({ subject: "TdLeaf", issuer: "TdInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.evil.com.")])] });
+  var resC18 = await run([interTd, leafTd], { time: T2027, trustAnchor: anchor });
+  check("C18 trailing-dot dNSName does not escape the exclusion", resC18.valid === false && failCodes(resC18).indexOf("path/name-constraint-excluded") !== -1);
+
+  // C19 (preempt P3) — a URI SAN with no authority component under a URI
+  // constraint cannot be evaluated -> fail closed, not escape.
+  var interUriC = await mkCert({ subject: "UriCInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.example")])]) });
+  var leafUriC = await mkCert({ subject: "UriCLeaf", issuer: "UriCInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("urn:example:resource")])] });
+  var resC19 = await run([interUriC, leafUriC], { time: T2027, trustAnchor: anchor });
+  check("C19 hostless URI under a URI constraint fails closed", resC19.valid === false && failCodes(resC19).indexOf("path/name-constraint-unsupported") !== -1);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
@@ -1010,8 +1069,6 @@ async function testAuditRegressions() {
 
   // A3-CRL (audit finding 3) — a clean CRL must not shadow a revoking one: with
   // both a clean and a revoking CRL for the issuer, the cert is REVOKED.
-  var SER = 9911n;
-  var leafCrl = await mkCert({ subject: "CrlL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER });
   var cleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1n }] });
   var revokingCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
   var resCleanFirst = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([cleanCrl, revokingCrl]) });

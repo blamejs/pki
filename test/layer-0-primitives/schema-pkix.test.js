@@ -149,6 +149,8 @@ function testPolicyDecoders() {
     code(function () { pc(b.sequence([])); }) === "path/bad-policy");
   check("pc negative value rejected",
     code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0xff]))])); }) === "path/bad-policy");
+  check("pc duplicate requireExplicitPolicy field rejected",
+    code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0x00])), b.contextPrimitive(0, Buffer.from([0x0a]))])); }) === "path/bad-policy");
 
   var iap = DEC.byOid[OID_IAP];
   check("iap SkipCerts decodes", iap(b.integer(4n)) === 4);
