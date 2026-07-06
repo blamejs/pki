@@ -1413,6 +1413,16 @@ async function testAuditRegressions() {
   var staleDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: new Date("2026-06-01T00:00:00Z"), extensions: [ext("2.5.29.27", true, b.integer(1n))] });
   var resStaleDelta = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, staleDelta]) });
   check("a stale delta does not block a good result from a valid base", resStaleDelta.valid === true);
+  // A delta that RELEASES the serial from hold (removeFromCRL) must prevent a
+  // definitive revoked from a base CRL that still lists it — without base/delta
+  // merging the status is undetermined, so a released cert is not stuck rejected.
+  var baseRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
+  var deltaRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [ext("2.5.29.27", true, b.integer(1n))] });
+  var resDeltaRel = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseRevoking, deltaRelease]) });
+  check("delta removeFromCRL prevents a definitive revoked from the base (undetermined)", resDeltaRel.valid === false && failCodes(resDeltaRel).indexOf("path/revocation-undetermined") !== -1);
+  // control: the same base revocation WITHOUT a delta removal is still revoked.
+  var resBaseOnlyRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseRevoking]) });
+  check("control: base revocation with no delta removal is revoked", resBaseOnlyRev.valid === false && failCodes(resBaseOnlyRev).indexOf("path/revoked") !== -1);
 
   // A malformed signatureAlgorithm.parameters makes resolveDescriptor throw an
   // internal asn1/* error; the public verdict documents path/* codes, so it must
