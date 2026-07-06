@@ -1006,28 +1006,28 @@ async function testAuditRegressions() {
   var resA4 = await run([leafPss], { time: T2027, trustAnchor: anchorPss });
   check("A4 RSA-PSS-signed chain validates", resA4.valid === true);
 
-  // C6 (Codex :129) — a PSS cert declaring an UNSUPPORTED hash OID must be
+  // C6 — a PSS cert declaring an UNSUPPORTED hash OID must be
   // rejected, never silently verified under the SHA-1 default.
   var anchorPssBad = await mkAnchor("pssbad", "PssBadRoot");
   var leafBadPss = await mkCert({ subject: "BadPss", issuer: "PssBadRoot", signWith: "pssbad", subjectKeys: "ed25519leaf" });
   var resC6 = await run([leafBadPss], { time: T2027, trustAnchor: anchorPssBad });
   check("C6 PSS cert with unsupported hash rejected (no SHA-1 fallback)", resC6.valid === false && failCodes(resC6).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C7 (Codex :140) — PSS params whose MGF1 hash mismatches the signature hash
+  // C7 — PSS params whose MGF1 hash mismatches the signature hash
   // cannot be honored by WebCrypto and must be rejected, not verified anyway.
   var anchorBadMgf = await mkAnchor("pssbadmgf", "PssMgfRoot");
   var leafBadMgf = await mkCert({ subject: "BadMgf", issuer: "PssMgfRoot", signWith: "pssbadmgf", subjectKeys: "ed25519leaf" });
   var resC7 = await run([leafBadMgf], { time: T2027, trustAnchor: anchorBadMgf });
   check("C7 PSS MGF1-hash mismatch rejected", resC7.valid === false && failCodes(resC7).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C10 (Codex :132) — a PSS AlgorithmIdentifier with a present-but-non-SEQUENCE
+  // C10 — a PSS AlgorithmIdentifier with a present-but-non-SEQUENCE
   // parameters field (a DER NULL) must be rejected, not defaulted to SHA-1.
   var anchorPssNull = await mkAnchor("pssnull", "PssNullRoot");
   var leafPssNull = await mkCert({ subject: "PssNull", issuer: "PssNullRoot", signWith: "pssnull", subjectKeys: "ed25519leaf" });
   var resC10 = await run([leafPssNull], { time: T2027, trustAnchor: anchorPssNull });
   check("C10 PSS non-SEQUENCE params rejected", resC10.valid === false && failCodes(resC10).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C9 (Codex :337) — a critical excluded nameConstraints of a form the
+  // C9 — a critical excluded nameConstraints of a form the
   // validator cannot compare (registeredID) plus a cert presenting that form
   // must fail closed, not be treated as "not excluded".
   var interRegId = await mkCert({ subject: "RegIdInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnRegisteredID("1.3.6.1.4.1.99999.5")])]) });
@@ -1035,14 +1035,14 @@ async function testAuditRegressions() {
   var resC9 = await run([interRegId, leafRegId], { time: T2027, trustAnchor: anchor });
   check("C9 unsupported excluded name form fails closed", resC9.valid === false && failCodes(resC9).indexOf("path/name-constraint-unsupported") !== -1);
 
-  // C11 (Codex :368) — an UNDECODED SAN form (x400Address [3]) must still be
+  // C11 — an UNDECODED SAN form (x400Address [3]) must still be
   // preserved so a critical excluded constraint of that form fails closed.
   var interX400 = await mkCert({ subject: "X400Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnX400()])]) });
   var leafX400 = await mkCert({ subject: "X400Leaf", issuer: "X400Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnX400()])] });
   var resC11 = await run([interX400, leafX400], { time: T2027, trustAnchor: anchor });
   check("C11 undecoded SAN form preserved for constraints (fails closed)", resC11.valid === false && failCodes(resC11).indexOf("path/name-constraint-unsupported") !== -1);
 
-  // C12 (Codex :645) — a CA asserting only anyPolicy plus a policyMappings
+  // C12 — a CA asserting only anyPolicy plus a policyMappings
   // P1->P2 generates the P1 node from the anyPolicy node; a leaf asserting the
   // mapped-TO policy P2 validates under explicit policy.
   var interAnyMap = await mkCert({ subject: "AnyMap", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), pmExt([[P1m, P2m]])]) });
@@ -1050,54 +1050,54 @@ async function testAuditRegressions() {
   var resC12 = await run([interAnyMap, leafAnyMap], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
   check("C12 policy mapping generates the ID-P node from anyPolicy", resC12.valid === true);
 
-  // C13 (Codex :140) — a PSS params SEQUENCE with a malformed primitive [0]
+  // C13 — a PSS params SEQUENCE with a malformed primitive [0]
   // field must be rejected, not skipped-and-defaulted.
   var anchorPssPrim = await mkAnchor("pssprim", "PssPrimRoot");
   var leafPssPrim = await mkCert({ subject: "PssPrim", issuer: "PssPrimRoot", signWith: "pssprim", subjectKeys: "ed25519leaf" });
   var resC13 = await run([leafPssPrim], { time: T2027, trustAnchor: anchorPssPrim });
   check("C13 malformed PSS parameter field rejected", resC13.valid === false && failCodes(resC13).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C14 (Codex :1010) — an indirect CRL (IDP indirectCRL) attributes entries by
+  // C14 — an indirect CRL (IDP indirectCRL) attributes entries by
   // the per-entry certificateIssuer (not tracked here), so it is unusable.
   var crlIndirect = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(6), idpExt({ indirect: true })] });
   var resC14 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlIndirect]) });
   check("C14 indirect CRL is unusable (undetermined)", resC14.valid === false && failCodes(resC14).indexOf("path/revocation-undetermined") !== -1);
 
-  // C15 (preempt P1) — a CRL with NO nextUpdate has no bounded validity: its
+  // C15 — a CRL with NO nextUpdate has no bounded validity: its
   // currency cannot be confirmed, so it is unusable (a replayed old CRL must
   // not read good).
   var crlNoNext = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: null });
   var resC15 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlNoNext]) });
   check("C15 CRL without nextUpdate is unusable (undetermined)", resC15.valid === false && failCodes(resC15).indexOf("path/revocation-undetermined") !== -1);
 
-  // C16 (preempt P3) — a revoked entry marked removeFromCRL (reasonCode 8) is
+  // C16 — a revoked entry marked removeFromCRL (reasonCode 8) is
   // NOT a revocation; the cert is good (covered, un-revoked).
   var crlRemove = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n, exts: [reasonCodeExt(8)] }] });
   var resC16 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRemove]) });
   check("C16 removeFromCRL entry is not a revocation (good)", resC16.valid === true);
 
-  // C17 (preempt P2) — a negative RSASSA-PSS saltLength must be rejected (the
+  // C17 — a negative RSASSA-PSS saltLength must be rejected (the
   // OpenSSL shim would treat it as RSA_PSS_SALTLEN_AUTO, accepting any salt).
   var anchorNegSalt = await mkAnchor("pssnegsalt", "NegSaltRoot");
   var leafNegSalt = await mkCert({ subject: "NegSalt", issuer: "NegSaltRoot", signWith: "pssnegsalt", subjectKeys: "ed25519leaf" });
   var resC17 = await run([leafNegSalt], { time: T2027, trustAnchor: anchorNegSalt });
   check("C17 negative PSS saltLength rejected", resC17.valid === false && failCodes(resC17).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C18 (preempt P2) — a trailing-dot dNSName SAN must not escape an excluded
+  // C18 — a trailing-dot dNSName SAN must not escape an excluded
   // dNSName constraint (FQDN root-label normalization).
   var interTd = await mkCert({ subject: "TdInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnDns("evil.com")])]) });
   var leafTd = await mkCert({ subject: "TdLeaf", issuer: "TdInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.evil.com.")])] });
   var resC18 = await run([interTd, leafTd], { time: T2027, trustAnchor: anchor });
   check("C18 trailing-dot dNSName does not escape the exclusion", resC18.valid === false && failCodes(resC18).indexOf("path/name-constraint-excluded") !== -1);
 
-  // C19 (preempt P3) — a URI SAN with no authority component under a URI
+  // C19 — a URI SAN with no authority component under a URI
   // constraint cannot be evaluated -> fail closed, not escape.
   var interUriC = await mkCert({ subject: "UriCInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.example")])]) });
   var leafUriC = await mkCert({ subject: "UriCLeaf", issuer: "UriCInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("urn:example:resource")])] });
   var resC19 = await run([interUriC, leafUriC], { time: T2027, trustAnchor: anchor });
   check("C19 hostless URI under a URI constraint fails closed", resC19.valid === false && failCodes(resC19).indexOf("path/name-constraint-unsupported") !== -1);
 
-  // C20 (Codex :949) — a CRL whose IDP carries a malformed IMPLICIT BOOLEAN
+  // C20 — a CRL whose IDP carries a malformed IMPLICIT BOOLEAN
   // (onlyContainsCACerts [2] encoded CONSTRUCTED) has an unknown scope -> the
   // CRL is unusable, not treated as unrestricted-authoritative.
   var idpBadBool = ext("2.5.29.28", true, b.sequence([b.contextConstructed(2, b.octetString(Buffer.from([0xff])))]));
@@ -1105,7 +1105,7 @@ async function testAuditRegressions() {
   var resC20 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadBool]) });
   check("C20 malformed IDP BOOLEAN makes the CRL unusable", resC20.valid === false && failCodes(resC20).indexOf("path/revocation-undetermined") !== -1);
 
-  // C21 (Codex :219) — the validator's own octet-alignment guard fails a
+  // C21 — the validator's own octet-alignment guard fails a
   // signature with a non-zero unused-bit count (defense in depth: the strict
   // DER codec already rejects it at parse, so this drives a pre-parsed object).
   var leafC21 = pki.schema.x509.parse(await mkCert({ subject: "Aligned", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" }));
@@ -1113,21 +1113,21 @@ async function testAuditRegressions() {
   var resC21 = await pki.path.validate([leafC21], { time: T2027, trustAnchor: anchor });
   check("C21 non-octet-aligned signature rejected by the validator guard", resC21.valid === false && failCodes(resC21).indexOf("path/bad-signature") !== -1);
 
-  // C22 (Codex :179) — a fixed-parameter algorithm with the WRONG parameter
+  // C22 — a fixed-parameter algorithm with the WRONG parameter
   // shape (ECDSA with a DER NULL where params must be absent) must be rejected.
   var ecNullParams = b.sequence([b.oid("1.3.101.112"), b.nullValue()]);   // Ed25519 OID + a stray NULL
   var leafWrongParams = await mkCert({ subject: "WrongP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: ecNullParams });
   var resC22 = await run([leafWrongParams], { time: T2027, trustAnchor: anchor });
   check("C22 EdDSA with a stray NULL parameter rejected", resC22.valid === false && failCodes(resC22).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C23 (preempt A) — a SHA-1 PSS signature is rejected (SHA-1 is dropped from
+  // C23 — a SHA-1 PSS signature is rejected (SHA-1 is dropped from
   // the supported set, matching the no-sha1WithRSAEncryption posture).
   var anchorSha1 = await mkAnchor("psssha1", "Sha1Root");
   var leafSha1 = await mkCert({ subject: "Sha1Pss", issuer: "Sha1Root", signWith: "psssha1", subjectKeys: "ed25519leaf" });
   var resC23 = await run([leafSha1], { time: T2027, trustAnchor: anchorSha1 });
   check("C23 SHA-1 PSS signature rejected", resC23.valid === false && failCodes(resC23).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C24 (Codex :173) — a PSS AlgorithmIdentifier declaring an explicit SHA-256
+  // C24 — a PSS AlgorithmIdentifier declaring an explicit SHA-256
   // hash but OMITTING maskGenAlgorithm (RFC 4055 default mgf1SHA1) must be
   // rejected, not verified as SHA-256/MGF1-SHA256.
   var anchorNoMgf = await mkAnchor("pssnomgf", "NoMgfRoot");
@@ -1135,7 +1135,7 @@ async function testAuditRegressions() {
   var resC24 = await run([leafNoMgf], { time: T2027, trustAnchor: anchorNoMgf });
   check("C24 PSS with absent maskGenAlgorithm rejected (SHA-1 default)", resC24.valid === false && failCodes(resC24).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C25 (preempt B) - a NUL byte in the leaf SUBJECT DN must not crash the
+  // C25 - a NUL byte in the leaf SUBJECT DN must not crash the
   // validate() promise (selfIssued's dnEqual throws on a NUL; the throw must
   // be swallowed to a structured verdict). A directoryName name constraint
   // over such a subject additionally fails the path closed.
@@ -1150,14 +1150,14 @@ async function testAuditRegressions() {
   var res25b = await run([interDirNul, nulLeaf2], { time: T2027, trustAnchor: anchor });
   check("C25 NUL subject under a directoryName constraint fails closed", res25b.valid === false);
 
-  // C26 (preempt C) — a CRL with a revoked entry carrying an UNKNOWN CRITICAL
+  // C26 — a CRL with a revoked entry carrying an UNKNOWN CRITICAL
   // CRL-entry extension is unusable for any cert (§5.3) -> undetermined.
   var critEntryExt = ext("1.3.6.1.4.1.99999.43", true, b.octetString(Buffer.from([1])));
   var crlCritEntry = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [critEntryExt] }] });
   var resC26 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
   check("C26 unknown critical CRL-entry extension makes the CRL unusable", resC26.valid === false && failCodes(resC26).indexOf("path/revocation-undetermined") !== -1);
 
-  // C27 (Codex :550) — the (d)(1)(ii) anyPolicy-fallback must be gated on the
+  // C27 — the (d)(1)(ii) anyPolicy-fallback must be gated on the
   // inhibit counter: an intermediate asserting anyPolicy with inhibitAnyPolicy:0
   // then a leaf asserting P1 must NOT satisfy explicit policy (P1 is pruned).
   var interIapC = await mkCert({ subject: "IapC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), iapExt(0)]) });
@@ -1165,21 +1165,21 @@ async function testAuditRegressions() {
   var resC27 = await run([interIapC, leafIapC], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
   check("C27 anyPolicy fallback gated on inhibit counter", resC27.valid === false && failCodes(resC27).indexOf("path/policy-required") !== -1);
 
-  // C28 (Codex :351) — a URI SAN with an empty authority cannot be evaluated
+  // C28 — a URI SAN with an empty authority cannot be evaluated
   // against a URI constraint -> fail closed, not escape.
   var interUriE = await mkCert({ subject: "UriEInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.example")])]) });
   var leafUriE = await mkCert({ subject: "UriELeaf", issuer: "UriEInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https:///path")])] });
   var resC28 = await run([interUriE, leafUriE], { time: T2027, trustAnchor: anchor });
   check("C28 empty-authority URI fails closed under a URI constraint", resC28.valid === false && failCodes(resC28).indexOf("path/name-constraint-unsupported") !== -1);
 
-  // C29 (Codex :164) — a PSS params SEQUENCE with an unexpected [4] field is a
+  // C29 — a PSS params SEQUENCE with an unexpected [4] field is a
   // structural fault and must be rejected.
   var anchorPssX = await mkAnchor("pssextra", "PssXRoot");
   var leafPssX = await mkCert({ subject: "PssX", issuer: "PssXRoot", signWith: "pssextra", subjectKeys: "ed25519leaf" });
   var resC29 = await run([leafPssX], { time: T2027, trustAnchor: anchorPssX });
   check("C29 unexpected PSS parameter field rejected", resC29.valid === false && failCodes(resC29).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C30 (Codex :1058) — the unhandled-critical-entry check keys on the STABLE
+  // C30 — the unhandled-critical-entry check keys on the STABLE
   // OID, not the display name: a custom OID aliased to the name "reasonCode"
   // must still be treated as unhandled (the CRL is unusable). Registered last so
   // it cannot perturb earlier OID resolutions in this file.
@@ -1190,7 +1190,7 @@ async function testAuditRegressions() {
   var resC30 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFakeReason]) });
   check("C30 critical entry ext keyed by OID not display name (unusable)", resC30.valid === false && failCodes(resC30).indexOf("path/revocation-undetermined") !== -1);
 
-  // C31 (Codex :862) — a revocationChecker returning a status OUTSIDE
+  // C31 — a revocationChecker returning a status OUTSIDE
   // good/revoked/unknown (an OCSP tryLater/unauthorized, a typo) must be treated
   // as undetermined and fail closed, never as a pass.
   var oddChecker = { check: function () { return Promise.resolve({ status: "tryLater" }); } };
@@ -1201,7 +1201,7 @@ async function testAuditRegressions() {
   var resC31s = await run([leafC31], { time: T2027, trustAnchor: anchor, revocationChecker: oddChecker, softFail: true });
   check("C31 softFail opts unexpected status into a pass", resC31s.valid === true);
 
-  // C32 (Codex :124) — an RSASSA-PSS hashAlgorithm [0] EXPLICIT wrapping a BARE
+  // C32 — an RSASSA-PSS hashAlgorithm [0] EXPLICIT wrapping a BARE
   // OID (not an AlgorithmIdentifier SEQUENCE) is malformed and must fail closed,
   // never be read leniently as SHA-256. Same for the MGF1 hash parameter.
   var pssBareHash = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-bare-hash" });
@@ -1213,7 +1213,7 @@ async function testAuditRegressions() {
   var resC32b = await run([leafC32b], { time: T2027, trustAnchor: anchor });
   check("C32 PSS MGF1 hash as a bare OID rejected", resC32b.valid === false && failCodes(resC32b).indexOf("path/unsupported-algorithm") !== -1);
 
-  // C33 (Codex :593) — the returned validPolicyTree must be acyclic: no internal
+  // C33 — the returned validPolicyTree must be acyclic: no internal
   // `parent` back-pointer, so a caller can JSON.stringify(result) on a
   // policy-bearing chain without throwing on a circular reference.
   var P33 = "1.3.6.1.4.1.99999.33";
@@ -1226,7 +1226,7 @@ async function testAuditRegressions() {
   var c33NoParent = (function noParent(node) { if (!node) return true; if ("parent" in node) return false; return node.children.every(noParent); });
   check("C33 returned policy tree carries no parent back-pointer", c33NoParent(resC33.validPolicyTree));
 
-  // C34 (Codex :689) — RFC 5280 requires basicConstraints (4.2.1.9),
+  // C34 — RFC 5280 requires basicConstraints (4.2.1.9),
   // nameConstraints (4.2.1.10), policyConstraints (4.2.1.11) and
   // inhibitAnyPolicy (4.2.1.14) on a CA certificate to be marked CRITICAL. A
   // non-critical form is non-conforming: a relying party that skips
@@ -1252,7 +1252,7 @@ async function testAuditRegressions() {
   var resC34d = await run([interNCiap, leafNCBC], { time: T2027, trustAnchor: anchor });
   check("C34 non-critical inhibitAnyPolicy rejected", resC34d.valid === false && failCodes(resC34d).indexOf("path/extension-not-critical") !== -1);
 
-  // C35 (Codex :1151) — a CRL entry takes effect as of its revocationDate
+  // C35 — a CRL entry takes effect as of its revocationDate
   // (RFC 5280 §5.3). At a validation instant BEFORE that date the certificate
   // was not yet revoked, so a current CRL listing a future revocation must not
   // read as revoked. thisUpdate(2027-01-01) <= T2027 <= nextUpdate(2028-06-01).
@@ -1264,7 +1264,7 @@ async function testAuditRegressions() {
   var resC35b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPastRev]) });
   check("C35 control: revocationDate at/before the instant is revoked", resC35b.valid === false && failCodes(resC35b).indexOf("path/revoked") !== -1);
 
-  // C36 (Codex :126) — an AlgorithmIdentifier is { OID, parameters? }: at most
+  // C36 — an AlgorithmIdentifier is { OID, parameters? }: at most
   // one optional parameters element, and a PSS hash's parameters must be NULL.
   // A spurious third element or non-NULL hash parameters is malformed and must
   // fail closed rather than be read leniently as its named hash.
@@ -1277,6 +1277,29 @@ async function testAuditRegressions() {
   var pssMgfExtra = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-mgfhash-extra" });
   var resC36c = await run([await mkCert({ subject: "C36c", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMgfExtra })], { time: T2027, trustAnchor: anchor });
   check("C36 PSS MGF1 hash with a spurious third element rejected", resC36c.valid === false && failCodes(resC36c).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C37 — policyMappings is semantically processed ONLY in prepare-
+  // for-next (§6.1.4(a),(b)), which is skipped for the target cert. A critical
+  // policyMappings on the leaf is therefore unprocessed and must fail closed —
+  // otherwise a critical mapping to/from anyPolicy bypasses the §6.1.4(a)
+  // rejection. policyMappings is SHOULD-be-non-critical (§4.2.1.5), so this does
+  // not over-reject a conforming certificate.
+  var leafPmCrit = await mkCert({ subject: "PmCrit", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [pmExt([[P1m, P2m]])] });
+  var resC37a = await run([leafPmCrit], { time: T2027, trustAnchor: anchor });
+  check("C37 critical policyMappings on the target rejected as unprocessed", resC37a.valid === false && failCodes(resC37a).indexOf("path/unrecognized-critical-extension") !== -1);
+  // the anyPolicy-mapping bypass specifically (critical):
+  var leafPmAny = await mkCert({ subject: "PmAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [pmExt([[ANY_POLICY, P2m]])] });
+  var resC37b = await run([leafPmAny], { time: T2027, trustAnchor: anchor });
+  check("C37 critical anyPolicy mapping on the target rejected", resC37b.valid === false && failCodes(resC37b).indexOf("path/unrecognized-critical-extension") !== -1);
+  // a NON-critical anyPolicy mapping on the target is caught by the structural rule.
+  var leafPmAnyNC = await mkCert({ subject: "PmAnyNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.33", false, b.sequence([b.sequence([b.oid(ANY_POLICY), b.oid(P2m)])]))] });
+  var resC37c = await run([leafPmAnyNC], { time: T2027, trustAnchor: anchor });
+  check("C37 non-critical anyPolicy mapping on the target rejected (structural)", resC37c.valid === false && failCodes(resC37c).indexOf("path/bad-policy") !== -1);
+  // control: a critical policyMappings on an INTERMEDIATE still processes normally.
+  var interPm = await mkCert({ subject: "PmInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m]), pmExt([[P1m, P2m]])]) });
+  var leafPmOk = await mkCert({ subject: "PmLeaf", issuer: "PmInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
+  var resC37d = await run([interPm, leafPmOk], { time: T2027, trustAnchor: anchor });
+  check("C37 control: critical policyMappings on an intermediate still validates", resC37d.valid === true);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
@@ -1334,7 +1357,7 @@ async function testAuditRegressions() {
   var resA14 = await run([interAny14, leafAny14], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
   check("A14 anyPolicy leaf under restrictive user set expands the policy set", resA14.valid === true && resA14.userConstrainedPolicySet.indexOf(P1m) !== -1);
 
-  // A3-CRL (audit finding 3) — a clean CRL must not shadow a revoking one: with
+  // A3-CRL — a clean CRL must not shadow a revoking one: with
   // both a clean and a revoking CRL for the issuer, the cert is REVOKED.
   var cleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1n }] });
   var revokingCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
@@ -1343,7 +1366,7 @@ async function testAuditRegressions() {
   var resRevFirst = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([revokingCrl, cleanCrl]) });
   check("A3-CRL revoked regardless of CRL order (order B)", resRevFirst.valid === false && failCodes(resRevFirst).indexOf("path/revoked") !== -1);
 
-  // C4 (Codex :807) — §6.1.5(g): with explicit policy required and a restrictive
+  // C4 — §6.1.5(g): with explicit policy required and a restrictive
   // userInitialPolicySet, a path whose surviving policies are OUTSIDE the user
   // set must FAIL (the tree is pruned against the user set before success). The
   // chain asserts P1m throughout; the user set is [P3m], disjoint.
@@ -1355,7 +1378,7 @@ async function testAuditRegressions() {
   var resC4ok = await run([interC4, leafC4], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
   check("C4 control: matching user set validates", resC4ok.valid === true && resC4ok.userConstrainedPolicySet.indexOf(P1m) !== -1);
 
-  // C1 (Codex :65) — a LEAF with a critical MALFORMED keyUsage must fail
+  // C1 — a LEAF with a critical MALFORMED keyUsage must fail
   // closed: the semantic gate is skipped on the leaf, but the structure is
   // still validated. keyUsage value here is an INTEGER, not a BIT STRING.
   var badKuLeaf = await mkCert({ subject: "BadKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.15", true, b.integer(1n))] });
@@ -1366,26 +1389,26 @@ async function testAuditRegressions() {
   var resC1ok = await run([okKuLeaf], { time: T2027, trustAnchor: anchor });
   check("C1 control: well-formed critical keyUsage on the leaf accepted", resC1ok.valid === true);
 
-  // C2 (Codex :845) — a CRL scoped to a specific distributionPoint cannot be
+  // C2 — a CRL scoped to a specific distributionPoint cannot be
   // confirmed in-scope for this cert -> not authoritative -> undetermined.
   var dpName = b.contextConstructed(0, b.contextConstructed(0, gnUri("http://crl.example/partition/1")));
   var crlDp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1), idpExt({ distributionPoint: dpName })] });
   var resC2 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDp]) });
   check("C2 partitioned CRL (distributionPoint IDP) yields undetermined", resC2.valid === false && failCodes(resC2).indexOf("path/revocation-undetermined") !== -1);
 
-  // C3 (Codex :898) — a validly-signed CRL carrying an UNHANDLED critical
+  // C3 — a validly-signed CRL carrying an UNHANDLED critical
   // extension is unusable -> undetermined, never authoritative "good".
   var crlUnkCrit = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2), unknownCriticalCrlExt()] });
   var resC3 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlUnkCrit]) });
   check("C3 CRL with unhandled critical extension yields undetermined", resC3.valid === false && failCodes(resC3).indexOf("path/revocation-undetermined") !== -1);
 
-  // C5 (Codex :875) — a CRL scoped onlyContainsAttributeCerts is out of scope
+  // C5 — a CRL scoped onlyContainsAttributeCerts is out of scope
   // for a public-key certificate -> undetermined, never authoritative "good".
   var crlAttrOnly = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(4), idpExt({ onlyAttr: true })] });
   var resC5 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlAttrOnly]) });
   check("C5 attribute-cert-only CRL out of scope for a public-key cert", resC5.valid === false && failCodes(resC5).indexOf("path/revocation-undetermined") !== -1);
 
-  // C8 (Codex :872) — a critical IDP whose value is not a SEQUENCE leaves the
+  // C8 — a critical IDP whose value is not a SEQUENCE leaves the
   // scope unknown: the CRL is unusable, not treated as unrestricted.
   var crlBadIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(5), ext("2.5.29.28", true, b.integer(1n))] });
   var resC8 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadIdp]) });
