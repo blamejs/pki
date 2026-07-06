@@ -929,6 +929,18 @@ async function testAuditRegressions() {
   var resRevFirst = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([revokingCrl, cleanCrl]) });
   check("A3-CRL revoked regardless of CRL order (order B)", resRevFirst.valid === false && failCodes(resRevFirst).indexOf("path/revoked") !== -1);
 
+  // C4 (Codex :807) — §6.1.5(g): with explicit policy required and a restrictive
+  // userInitialPolicySet, a path whose surviving policies are OUTSIDE the user
+  // set must FAIL (the tree is pruned against the user set before success). The
+  // chain asserts P1m throughout; the user set is [P3m], disjoint.
+  var interC4 = await mkCert({ subject: "C4i", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m])]) });
+  var leafC4 = await mkCert({ subject: "C4l", issuer: "C4i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
+  var resC4 = await run([interC4, leafC4], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P3m] });
+  check("C4 required policy with empty user-set intersection rejected", resC4.valid === false && failCodes(resC4).indexOf("path/policy-required") !== -1);
+  // control: the SAME chain with the matching user set validates.
+  var resC4ok = await run([interC4, leafC4], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
+  check("C4 control: matching user set validates", resC4ok.valid === true && resC4ok.userConstrainedPolicySet.indexOf(P1m) !== -1);
+
   // C1 (Codex :65) — a LEAF with a critical MALFORMED keyUsage must fail
   // closed: the semantic gate is skipped on the leaf, but the structure is
   // still validated. keyUsage value here is an INTEGER, not a BIT STRING.

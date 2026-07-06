@@ -74,6 +74,8 @@ function testKeyUsage() {
 
   check("ku empty BIT STRING rejected (at least one bit MUST be set, RFC 5280 4.2.1.3)",
     code(function () { d(b.bitString(Buffer.alloc(0), 0)); }) === "path/bad-key-usage");
+  check("ku all-zero BIT STRING rejected (non-empty bytes, no bit set)",
+    code(function () { d(b.bitString(Buffer.from([0x00]), 7)); }) === "path/bad-key-usage");
   check("ku non-BIT-STRING rejected",
     code(function () { d(b.integer(1n)); }) === "path/bad-key-usage");
 }
@@ -106,6 +108,8 @@ function testNameConstraints() {
     code(function () { d(ncBuf([gnIp([192, 168, 0, 0])], null)); }) === "path/bad-name-constraints");
   check("nc empty SEQUENCE rejected (one of permitted/excluded MUST be present)",
     code(function () { d(b.sequence([])); }) === "path/bad-name-constraints");
+  check("nc explicitly-empty permittedSubtrees rejected (GeneralSubtrees SIZE 1..MAX)",
+    code(function () { d(b.sequence([b.contextConstructed(0, Buffer.alloc(0))])); }) === "path/bad-name-constraints");
   check("nc present minimum rejected (MUST be zero => DEFAULT omitted)",
     code(function () { d(b.sequence([b.contextConstructed(0, b.sequence([gnDns("a.example"), b.contextPrimitive(0, Buffer.from([0x00]))]))])); }) === "path/bad-name-constraints");
   check("nc present maximum rejected (MUST be absent, RFC 5280 4.2.1.10)",
