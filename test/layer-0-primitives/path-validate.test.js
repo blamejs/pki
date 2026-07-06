@@ -187,6 +187,34 @@ function algIdDer(a) {
       b.explicit(2, b.integer(32n)),
     ]));
   }
+  else if (a.sigParams === "pss-hash-extra") {
+    // MALFORMED: hashAlgorithm SEQUENCE carries a spurious third element beyond
+    // { OID, parameters } — an AlgorithmIdentifier has at most two.
+    var mgfHx = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, b.sequence([b.oid(OID_SHA256), b.nullValue(), b.integer(1n)])),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), mgfHx])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
+  else if (a.sigParams === "pss-hash-badparams") {
+    // MALFORMED: hashAlgorithm parameters is a SEQUENCE, not the required NULL.
+    var mgfHb2 = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, b.sequence([b.oid(OID_SHA256), b.sequence([])])),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), mgfHb2])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
+  else if (a.sigParams === "pss-mgfhash-extra") {
+    // MALFORMED: the MGF1 inner hash AlgorithmIdentifier has a spurious third element.
+    var hAlg2 = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, hAlg2),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), b.sequence([b.oid(OID_SHA256), b.nullValue(), b.integer(1n)])])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
   else if (a.sigParams === "pss-extrafield") {
     var shaX = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
     children.push(b.sequence([
@@ -1223,6 +1251,32 @@ async function testAuditRegressions() {
   var interNCiap = await mkCert({ subject: "NCiapi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.54", false, b.integer(0n))]) });
   var resC34d = await run([interNCiap, leafNCBC], { time: T2027, trustAnchor: anchor });
   check("C34 non-critical inhibitAnyPolicy rejected", resC34d.valid === false && failCodes(resC34d).indexOf("path/extension-not-critical") !== -1);
+
+  // C35 (Codex :1151) — a CRL entry takes effect as of its revocationDate
+  // (RFC 5280 §5.3). At a validation instant BEFORE that date the certificate
+  // was not yet revoked, so a current CRL listing a future revocation must not
+  // read as revoked. thisUpdate(2027-01-01) <= T2027 <= nextUpdate(2028-06-01).
+  var crlFutureRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, date: new Date("2027-12-01T00:00:00Z") }] });
+  var resC35 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
+  check("C35 revocation not yet effective at the validation instant is not revoked", resC35.valid === true);
+  // control: a revocationDate at/before the instant IS a revocation.
+  var crlPastRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, date: new Date("2027-03-01T00:00:00Z") }] });
+  var resC35b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPastRev]) });
+  check("C35 control: revocationDate at/before the instant is revoked", resC35b.valid === false && failCodes(resC35b).indexOf("path/revoked") !== -1);
+
+  // C36 (Codex :126) — an AlgorithmIdentifier is { OID, parameters? }: at most
+  // one optional parameters element, and a PSS hash's parameters must be NULL.
+  // A spurious third element or non-NULL hash parameters is malformed and must
+  // fail closed rather than be read leniently as its named hash.
+  var pssHashExtra = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-hash-extra" });
+  var resC36a = await run([await mkCert({ subject: "C36a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashExtra })], { time: T2027, trustAnchor: anchor });
+  check("C36 PSS hashAlgorithm with a spurious third element rejected", resC36a.valid === false && failCodes(resC36a).indexOf("path/unsupported-algorithm") !== -1);
+  var pssHashBad = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-hash-badparams" });
+  var resC36b = await run([await mkCert({ subject: "C36b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashBad })], { time: T2027, trustAnchor: anchor });
+  check("C36 PSS hashAlgorithm with non-NULL parameters rejected", resC36b.valid === false && failCodes(resC36b).indexOf("path/unsupported-algorithm") !== -1);
+  var pssMgfExtra = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-mgfhash-extra" });
+  var resC36c = await run([await mkCert({ subject: "C36c", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMgfExtra })], { time: T2027, trustAnchor: anchor });
+  check("C36 PSS MGF1 hash with a spurious third element rejected", resC36c.valid === false && failCodes(resC36c).indexOf("path/unsupported-algorithm") !== -1);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).

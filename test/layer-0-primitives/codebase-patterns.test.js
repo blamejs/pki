@@ -1004,6 +1004,7 @@ function testPathValidateConformanceGuards() {
     ['"path/policy-required"',                "explicit-policy with an empty valid-policy tree is rejected (§6.1.5(g))"],
     ['"path/name-constraint-excluded"',       "a name in an excluded subtree is rejected (§6.1.4(g))"],
     ['"path/name-constraint-not-permitted"',  "a name outside every permitted subtree is rejected (§6.1.4(g))"],
+    ['.revocationDate',                        "a CRL entry is honored only as of the date it carries; a revocation dated after the validation instant does not apply (§5.3)"],
   ];
   var bad = [];
   required.forEach(function (r) {
