@@ -1391,6 +1391,35 @@ async function testAuditRegressions() {
   var badCodes = failCodes(resBadParam);
   check("malformed descriptor params surface a path/* code, not asn1/*", resBadParam.valid === false && badCodes.indexOf("path/unsupported-algorithm") !== -1 && !badCodes.some(function (cc) { return cc.indexOf("asn1/") === 0; }));
 
+  // RFC 5280 4.2.1.10: a legacy emailAddress in the subject DN is treated as an
+  // rfc822Name for constraint checking ONLY when the cert has no SAN. A cert
+  // with an allowed SAN plus an unrelated legacy emailAddress must not be failed
+  // by an rfc822Name constraint the SAN never triggers.
+  var interEmSan = await mkCert({ subject: "EmSanInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("banned.example")])]) });
+  var emSanRdn = [b.set([atv("2.5.4.3", "EmSanLeaf")]), b.set([b.sequence([b.oid("1.2.840.113549.1.9.1"), b.ia5("user@banned.example")])])];
+  var leafEmSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("good.example")])] });
+  var resEmSan = await run([interEmSan, leafEmSan], { time: T2027, trustAnchor: anchor });
+  check("legacy subject emailAddress is not constrained when a SAN is present", resEmSan.valid === true);
+  // control: with NO SAN, the same legacy emailAddress IS constrained (excluded).
+  var leafEmNoSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  var resEmNoSan = await run([interEmSan, leafEmNoSan], { time: T2027, trustAnchor: anchor });
+  check("control: legacy subject emailAddress IS constrained without a SAN", resEmNoSan.valid === false && failCodes(resEmNoSan).indexOf("path/name-constraint-excluded") !== -1);
+
+  // RFC 5280 4.2.1.10: a URI SAN whose authority host is not a FQDN (an IP
+  // literal or a dotless label such as localhost) cannot be matched against a
+  // URI constraint — fail closed rather than pass it as an ordinary non-match.
+  var interUriFqdn = await mkCert({ subject: "UriFqdnInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.com")])]) });
+  var leafUriIp = await mkCert({ subject: "UriIpLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://127.0.0.1/")])] });
+  var resUriIp = await run([interUriFqdn, leafUriIp], { time: T2027, trustAnchor: anchor });
+  check("URI SAN with an IP-literal host fails closed under a URI constraint", resUriIp.valid === false && failCodes(resUriIp).indexOf("path/name-constraint-unsupported") !== -1);
+  var leafUriLocal = await mkCert({ subject: "UriLocalLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://localhost/")])] });
+  var resUriLocal = await run([interUriFqdn, leafUriLocal], { time: T2027, trustAnchor: anchor });
+  check("URI SAN with a dotless host fails closed under a URI constraint", resUriLocal.valid === false && failCodes(resUriLocal).indexOf("path/name-constraint-unsupported") !== -1);
+  // control: a FQDN URI host outside the excluded set validates.
+  var leafUriOk = await mkCert({ subject: "UriOkLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://good.example/")])] });
+  var resUriOk = await run([interUriFqdn, leafUriOk], { time: T2027, trustAnchor: anchor });
+  check("control: FQDN URI host outside the excluded set validates", resUriOk.valid === true);
+
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
