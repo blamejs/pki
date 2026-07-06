@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.14 — 2026-07-06
+
+An RFC 5755 attribute-certificate parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.attrcert — an RFC 5755 attribute-certificate parser. pki.schema.attrcert.parse turns a DER Buffer or PEM into a structured v2 attribute certificate ({ version, holder, issuer, signatureAlgorithm, serialNumber, serialNumberHex, validity, attributes, issuerUniqueID, extensions, tbsBytes, signatureValue }). The holder (baseCertificateID / entityName / objectDigestInfo) and issuer (v1Form / v2Form) identities come back as validated GeneralNames; the validity window is real Dates; the privilege attributes (id-at-role, id-aca-group, id-at-clearance, and any others) resolve by name where the registry knows them. The outer-equals-inner signatureAlgorithm agreement (RFC 5755 4.2.4), the positive-and-at-most-20-octet serialNumber (4.2.5), the GeneralizedTime-only validity (4.2.6), the non-empty unique-typed attribute list (4.2.7), and the digestedObjectType enumeration are all enforced fail-closed. pki.schema.parse detect-and-routes an attribute certificate; the obsolete v1 form is recognized and deferred with a precise attrcert/legacy-v1-not-supported.
+- pki.schema.pkix gains a shared GeneralNames validator that the attribute-certificate parser composes for its four GeneralNames-bearing fields — validating every element as a well-formed GeneralName (rejecting a bad tag, a wrong primitive/constructed form, a non-IA5 string, or a mis-sized iPAddress) rather than surfacing the sequence as opaque bytes. It handles both a bare universal SEQUENCE OF GeneralName and a context-tagged IMPLICIT GeneralNames.
+- The OID registry gains the RFC 5755 attribute-certificate object identifiers: the id-aca attribute-type family (authenticationInfo / accessIdentity / chargingIdentity / group), id-at-role and id-at-clearance, the id-ce-targetInformation and id-ce-noRevAvail extensions, and the id-pe-ac-auditIdentity / id-pe-aaControls / id-pe-ac-proxying private extensions — so a parsed attribute certificate's attributes and extensions resolve by name.
+
 ## v0.1.13 — 2026-07-05
 
 An RFC 3161 timestamp parser joins the pki.schema family.

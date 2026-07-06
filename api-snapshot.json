@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.13",
+  "packageVersion": "0.1.14",
   "surface": {
     "C": {
       "kind": "object",
@@ -416,6 +416,10 @@
           "kind": "function",
           "arity": 3
         },
+        "AttrCertError": {
+          "kind": "function",
+          "arity": 3
+        },
         "CertificateError": {
           "kind": "function",
           "arity": 3
@@ -521,6 +525,19 @@
         "all": {
           "kind": "function",
           "arity": 0
+        },
+        "attrcert": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
         },
         "cms": {
           "kind": "object",
@@ -779,6 +796,8 @@
     "pki.oid.registerFamily": "0.1.2",
     "pki.schema.all": "0.1.7",
     "pki.schema.parse": "0.1.7",
+    "pki.schema.attrcert.parse": "0.1.14",
+    "pki.schema.attrcert.pemDecode": "0.1.14",
     "pki.schema.cms.parse": "0.1.10",
     "pki.schema.cms.pemDecode": "0.1.10",
     "pki.schema.cms.pemEncode": "0.1.10",
