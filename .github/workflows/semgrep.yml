@@ -50,6 +50,9 @@ jobs:
             lib index.js bin || true
 
       - name: Upload SARIF to the Security tab
+        # Only when the scan produced a SARIF — a Semgrep failure leaves no file
+        # and upload-sarif errors on an absent path (reddens a non-blocking job).
+        if: ${{ hashFiles('semgrep.sarif') != '' }}
         uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
         with:
           sarif_file: semgrep.sarif
