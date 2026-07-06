@@ -1530,6 +1530,14 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A fixed tbs.children.length < 6 guard passes a 6-child tbs whose explicit version [0] leaves SPKI undefined, throwing a raw TypeError instead of the advertised CertificateError. Bounds-check positionally against the version-aware minimum.",
   },
   {
+    id: "context-node-content-deref-no-primitive-reader",
+    primitive: "read a context-tagged IMPLICIT primitive leaf through asn1.read.{octetStringImplicit,integerImplicit,nullImplicit,bitStringImplicit}(node, tag) — never Buffer.from(node.content) on a context node, whose content is null when the node is constructed",
+    regex: /Buffer\.from\(\s*\w+\.content\s*\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A context-class node carrying an IMPLICIT primitive value (a keyIdentifier [0] OCTET STRING, a serial [2] INTEGER) is only guaranteed primitive if a reader enforces it. A constructed context node has children and a NULL content, so Buffer.from(node.content) throws a raw TypeError on hostile input (fuzz-found in the AKI extension decoder) instead of a typed fail-closed reject. Route every context-primitive read through the asn1.read.*Implicit reader, which asserts the primitive form and rejects the constructed shape with asn1/expected-primitive.",
+  },
+  {
     id: "x509-extensions-no-uniqueness",
     primitive: "the extensions() schema factory must give its seqOf a `unique` keyFn (+ dupCode x509/duplicate-extension) so the engine rejects a repeated extnID — RFC 5280 §4.2 forbids duplicate extensions",
     regex: /function extensions\b(?:(?!unique:)[\s\S]){0,400}?build:/,

@@ -29,6 +29,7 @@ var asn1      = require("./lib/asn1-der");
 var oid       = require("./lib/oid");
 var webcrypto = require("./lib/webcrypto");
 var schema    = require("./lib/schema-all");
+var path      = require("./lib/path-validate");
 
 module.exports = {
   version:   constants.version,
@@ -42,6 +43,9 @@ module.exports = {
   // `schema` is the family: the L2 structure-schema engine (schema.engine) and
   // the per-format parsers (schema.x509, …) with detect-and-route schema.parse.
   schema:    schema,
+  // `path` is RFC 5280 §6 certification-path validation — pki.path.validate
+  // runs the §6.1 state machine over an already-parsed path + a trust anchor.
+  path:      path,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.
