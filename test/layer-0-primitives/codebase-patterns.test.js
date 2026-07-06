@@ -147,6 +147,7 @@ var VALID_ALLOW_CLASSES = {
   "test-promise-settimeout-sleep": 1,
   "comment-block-coverage":        1,
   "wiki-port-cross-artifact-drift": 1,
+  "schema-build-drops-parsed-field": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -715,6 +716,79 @@ function testNoUnpinnedNpmInShell() {
   }
   bad = _filterMarkers(bad, "shell-npm-unpinned-download");
   _report("shell tooling installs npm packages only via lockfile-driven `npm ci`", bad);
+}
+
+function testSchemaBuildSurfacesEveryField() {
+  // class: schema-build-drops-parsed-field
+  // A schema.seq's build() is the ONLY surface a parsed field reaches the
+  // operator through. A field declared in the seq (schema.field /
+  // schema.optional / a trailing member's name:) whose name never appears
+  // in the build body was parsed, validated, and thrown away — the
+  // operator cannot see data the parser proved well-formed (the CMS
+  // KeyTransRecipientInfo keyEncryptionAlgorithm shape: without it a
+  // caller cannot select the unwrap algorithm for the encryptedKey it CAN
+  // see). Every declared field must be referenced in the build — surfaced,
+  // transformed, or consumed by a cross-field check. A seq with no build
+  // hands its raw fields to the parent and is skipped. A DELIBERATE
+  // non-surface takes an inline `// allow:schema-build-drops-parsed-field`
+  // marker with the reason beside the seq.
+  var bad = [];
+  var files = _libFiles().filter(function (f) { return /schema-[^/\\]+\.js$/.test(f); });
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var src;
+    try { src = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var starts = [];
+    var re = /schema\.seq\(/g, sm;
+    while ((sm = re.exec(src)) !== null) starts.push(sm.index + sm[0].length - 1);
+    for (var s = 0; s < starts.length; s++) {
+      // Bracket-walk from the opening paren to its match.
+      var depth = 0, i = starts[s], end = -1;
+      for (; i < src.length; i++) {
+        var ch = src.charAt(i);
+        if (ch === "(") depth++;
+        else if (ch === ")") { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) continue;
+      var span = src.slice(starts[s], end);
+      // Blank nested schema.seq(...) spans so an inner seq's fields and
+      // build are judged in their OWN iteration, not leaked into this one.
+      var nested = /schema\.seq\(/g, nm;
+      var blanked = span;
+      while ((nm = nested.exec(span)) !== null) {
+        if (nm.index === 0) continue;
+        var nd = 0, j = nm.index + nm[0].length - 1, nEnd = -1;
+        for (; j < span.length; j++) {
+          var nch = span.charAt(j);
+          if (nch === "(") nd++;
+          else if (nch === ")") { nd--; if (nd === 0) { nEnd = j; break; } }
+        }
+        if (nEnd === -1) continue;
+        blanked = blanked.slice(0, nm.index) + new Array(nEnd - nm.index + 1).join(" ") + blanked.slice(nEnd);
+      }
+      var names = [];
+      var fre = /schema\.(?:field|optional)\(\s*"([A-Za-z0-9_]+)"/g, fm;
+      while ((fm = fre.exec(blanked)) !== null) names.push(fm[1]);
+      var tre = /schema\.trailing\(\s*\[([\s\S]*?)\]\s*,/g, tm;
+      while ((tm = tre.exec(blanked)) !== null) {
+        var nre = /name:\s*"([A-Za-z0-9_]+)"/g, nnm;
+        while ((nnm = nre.exec(tm[1])) !== null) names.push(nnm[1]);
+      }
+      var buildAt = blanked.search(/\bbuild:\s*function/);
+      if (buildAt === -1 || names.length === 0) continue;
+      var buildBody = blanked.slice(buildAt);
+      var line = src.slice(0, starts[s]).split(/\r?\n/).length;
+      for (var n = 0; n < names.length; n++) {
+        if (buildBody.indexOf(names[n]) === -1) {
+          bad.push({ file: rel, line: line,
+            content: "schema.seq declares field '" + names[n] + "' but its build() never references it — the field is parsed and dropped, invisible to the operator" });
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "schema-build-drops-parsed-field");
+  _report("every schema.seq field is referenced by its build() (parsed data reaches the operator)", bad);
 }
 
 function testCmsSignedDataConformanceGuards() {
@@ -2131,6 +2205,7 @@ function run() {
   testFuzzSeedCorpusZipNaming();
   testFuzzBuildInstallsJazzer();
   testNoUnpinnedNpmInShell();
+  testSchemaBuildSurfacesEveryField();
   testCmsSignedDataConformanceGuards();
   testOcspConformanceGuards();
   testTspConformanceGuards();

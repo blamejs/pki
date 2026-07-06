@@ -343,8 +343,11 @@ function recipKeyId(o) {
   o = o || {};
   var c = [b.octetString(Buffer.from(o.skid || [0x01, 0x02]))];
   if (o.date) c.push(b.generalizedTime(new Date(o.date)));
+  if (o.other) c.push(o.other);
   return b.contextConstructed(0, Buffer.concat(c));
 }
+// OtherKeyAttribute ::= SEQUENCE { keyAttrId OID, keyAttr ANY OPTIONAL } (RFC 5652 §10.2.7)
+function otherKeyAttr() { return b.sequence([b.oid("1.2.3.4.5"), b.utf8("attr")]); }
 function recipEncKey(o) { o = o || {}; return b.sequence([o.rid || recipKeyId({}), o.ekey || b.octetString(EKEY)]); }
 // KeyAgreeRecipientInfo [1] IMPLICIT
 function kari(o) {
@@ -361,6 +364,7 @@ function kekri(o) {
   o = o || {};
   var kekid = [b.octetString(Buffer.from(o.keyId || [0x0A, 0x0B]))];
   if (o.date) kekid.push(b.generalizedTime(new Date(o.date)));
+  if (o.other) kekid.push(o.other);
   return b.contextConstructed(2, Buffer.concat([
     o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(4n),
     b.sequence(kekid), o.keyAlg || algId(ID_AES256_WRAP), o.ekey || b.octetString(EKEY),
@@ -427,6 +431,10 @@ function testEnvelopedKtri() {
   check("EnvelopedData ktri IAS v0", m.version === 0 && m.recipientInfos.length === 1 && m.recipientInfos[0].type === "ktri");
   check("EnvelopedData ktri rid issuer dn", !!m.recipientInfos[0].rid.issuer.dn);
   check("EnvelopedData ktri encryptedKey raw exact", m.recipientInfos[0].encryptedKey.equals(EKEY));
+  // RFC 5652 §6.2.1 — the key-encryption algorithm the encryptedKey must be
+  // unwrapped with is part of the recipient surface (rsaEncryption vs RSA-OAEP
+  // is invisible without it).
+  check("EnvelopedData ktri keyEncryptionAlgorithm surfaced", m.recipientInfos[0].keyEncryptionAlgorithm.oid === RSA_OID);
   var ms = parse(envCI({ version: 2, recips: [ktri({ version: 2, rid: skid([0x33, 0x44]) })] }));
   check("EnvelopedData ktri skid -> ktri v2 + envelope v2", ms.version === 2 && ms.recipientInfos[0].rid.subjectKeyIdentifier.equals(Buffer.from([0x33, 0x44])));
   check("EnvelopedData detached content with recipients", parse(envCI({ version: 0, eci: eci(ID_DATA, ID_AES256_CBC, null) })).encryptedContentInfo.encryptedContent === null);
@@ -441,8 +449,17 @@ function testEnvelopedOtherArms() {
   check("EnvelopedData kari ukm raw exact", mk.recipientInfos[0].ukm.equals(UKM));
   check("EnvelopedData kari recipientEncryptedKeys", mk.recipientInfos[0].recipientEncryptedKeys.length === 1);
   check("EnvelopedData kari ukm absent -> null", parse(envCI({ version: 2, recips: [kari({ version: 3, originator: iasn("Orig", 3) })] })).recipientInfos[0].ukm === null);
+  // RFC 5652 §6.2.2 / §10.2.7 — an rKeyId's OtherKeyAttribute is recipient-matching
+  // data; surfaced raw when present, null when absent.
+  var mko = parse(envCI({ version: 2, recips: [kari({ version: 3, reks: [recipEncKey({ rid: recipKeyId({ other: otherKeyAttr() }) })] })] }));
+  check("EnvelopedData kari rKeyId other surfaced raw", mko.recipientInfos[0].recipientEncryptedKeys[0].rid.other.equals(otherKeyAttr()));
+  check("EnvelopedData kari rKeyId other absent -> null", mk.recipientInfos[0].recipientEncryptedKeys[0].rid.other === null);
   var mkek = parse(envCI({ version: 2, recips: [kekri({ version: 4, date: "2026-01-01T00:00:00Z" })] }));
   check("EnvelopedData kekri v4, envelope v2", mkek.version === 2 && mkek.recipientInfos[0].type === "kekri");
+  // Same rule for a KEKIdentifier's OtherKeyAttribute (§6.2.3 / §10.2.7).
+  var mkeko = parse(envCI({ version: 2, recips: [kekri({ version: 4, other: otherKeyAttr() })] }));
+  check("EnvelopedData kekri kekid other surfaced raw", mkeko.recipientInfos[0].kekid.other.equals(otherKeyAttr()));
+  check("EnvelopedData kekri kekid other absent -> null", mkek.recipientInfos[0].kekid.other === null);
   var mp = parse(envCI({ version: 3, recips: [pwri({ version: 0, kdf: "1.2.840.113549.1.5.12" })] }));
   check("EnvelopedData pwri -> envelope v3", mp.version === 3 && mp.recipientInfos[0].type === "pwri" && mp.recipientInfos[0].keyDerivationAlgorithm.oid === "1.2.840.113549.1.5.12");
   check("EnvelopedData pwri kdf omitted -> null", parse(envCI({ version: 3, recips: [pwri({ version: 0 })] })).recipientInfos[0].keyDerivationAlgorithm === null);
