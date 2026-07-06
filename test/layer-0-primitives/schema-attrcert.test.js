@@ -214,6 +214,14 @@ function testOptionalTail() {
 function testTwoAttributes() {
   var m = parse(attrCert({ attributesNode: b.sequence([roleAttr(), attribute(GROUP, [b.utf8("eng")]), attribute(CLEARANCE, [b.utf8("secret")])]) }));
   check("three distinct attributes parse", m.attributes.length === 3 && m.attributes[1].name === "group" && m.attributes[2].name === "clearance");
+
+  // clearance resolves by name on BOTH the RFC 5755 (2.5.4.55) and the legacy
+  // RFC 3281 (2.5.1.5.55) arcs — RFC 5755 §4.4.6 says accept the legacy form for
+  // decoding; the canonical name->OID reverse stays the RFC 5755 arc.
+  var mc = parse(attrCert({ attributesNode: b.sequence([attribute("2.5.1.5.55", [b.utf8("topsecret")])]) }));
+  check("legacy clearance arc names via the consumer path", mc.attributes[0].name === "clearance");
+  check("both clearance arcs resolve to name", pki.oid.name("2.5.4.55") === "clearance" && pki.oid.name("2.5.1.5.55") === "clearance");
+  check("clearance canonical reverse is the RFC 5755 arc", pki.oid.byName("clearance") === "2.5.4.55");
 }
 
 // ---- REJECT — version / envelope / DER -------------------------------
@@ -256,6 +264,7 @@ function testRejectStructuralTraps() {
   check("AttCertIssuer wrong tag [3]", parseCode(attrCert({ issuerNode: b.contextConstructed(3, Buffer.from([])) })) === "attrcert/bad-issuer");
   check("V2Form stray [2]", parseCode(attrCert({ issuerNode: issuerV2({ issuerName: [gnDirName("CA")], stray2: true }) })) === "attrcert/bad-v2form");
   check("ObjectDigestInfo digestedObjectType 3", parseCode(attrCert({ holderNode: holder({ objectDigestInfo: { type: 3 } }) })) === "attrcert/bad-digested-object-type");
+  check("ObjectDigestInfo otherObjectTypes(2) forbidden (§7.3)", parseCode(attrCert({ holderNode: holder({ objectDigestInfo: { type: 2 } }) })) === "attrcert/bad-digested-object-type");
   // digestedObjectType encoded as INTEGER (0x02) not ENUMERATED (0x0a) → leaf asn1/*.
   var odiIntType = b.contextConstructed(2, Buffer.concat([b.integer(0), algId(DIGALG), b.bitString(Buffer.from([0xab]), 0)]));
   check("ObjectDigestInfo digestedObjectType as INTEGER", parseCode(attrCert({ holderNode: holder({ odiNode: odiIntType }) })).indexOf("asn1/") === 0);
