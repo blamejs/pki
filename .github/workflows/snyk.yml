@@ -40,7 +40,10 @@ jobs:
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: npx --yes snyk@latest test --all-projects --severity-threshold=high --sarif-file-output=snyk-oss.sarif || true
+        # --dev is required: this repo ships zero runtime dependencies (Hard Rule
+        # #1), so the entire npm dependency surface is devDependencies, which Snyk
+        # skips by default. Without it the SCA scan would cover nothing.
+        run: npx --yes snyk@latest test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-oss.sarif || true
 
       - name: Upload Snyk Open Source SARIF
         # Only upload when the scan actually produced a SARIF — a Snyk CLI failure
