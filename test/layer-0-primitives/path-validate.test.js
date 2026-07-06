@@ -667,6 +667,7 @@ async function mkCrl(o) {
 // IssuingDistributionPoint value (§5.2.5) — the scope fields the checker honors.
 function idpVal(o) {
   var children = [];
+  if (o.distributionPoint) children.push(b.contextConstructed(0, o.distributionPoint));
   if (o.onlyUser) children.push(b.contextPrimitive(1, Buffer.from([0xff])));
   if (o.onlyCa) children.push(b.contextPrimitive(2, Buffer.from([0xff])));
   if (o.onlySomeReasons) children.push(b.contextPrimitive(3, o.onlySomeReasons));
@@ -675,6 +676,8 @@ function idpVal(o) {
 }
 function idpExt(o) { return ext("2.5.29.28", true, idpVal(o)); }
 function crlNumberExt(n) { return ext("2.5.29.20", false, b.integer(BigInt(n))); }
+// A CRL extension with an OID the checker does not understand, marked critical.
+function unknownCriticalCrlExt() { return ext("1.3.6.1.4.1.99999.42", true, b.octetString(Buffer.from([1]))); }
 
 async function testRevocation() {
   var anchor = await mkAnchor("ed25519", "Root");
@@ -925,6 +928,35 @@ async function testAuditRegressions() {
   check("A3-CRL clean CRL does not shadow the revoking one (order A)", resCleanFirst.valid === false && failCodes(resCleanFirst).indexOf("path/revoked") !== -1);
   var resRevFirst = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([revokingCrl, cleanCrl]) });
   check("A3-CRL revoked regardless of CRL order (order B)", resRevFirst.valid === false && failCodes(resRevFirst).indexOf("path/revoked") !== -1);
+
+  // C1 (Codex :65) — a LEAF with a critical MALFORMED keyUsage must fail
+  // closed: the semantic gate is skipped on the leaf, but the structure is
+  // still validated. keyUsage value here is an INTEGER, not a BIT STRING.
+  var badKuLeaf = await mkCert({ subject: "BadKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.15", true, b.integer(1n))] });
+  var resC1 = await run([badKuLeaf], { time: T2027, trustAnchor: anchor });
+  check("C1 leaf critical malformed keyUsage rejected", resC1.valid === false && failCodes(resC1).indexOf("path/bad-key-usage") !== -1);
+  // control: a well-formed critical keyUsage on the leaf is accepted.
+  var okKuLeaf = await mkCert({ subject: "OkKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [kuExt([KU_DIGITAL_SIGNATURE])] });
+  var resC1ok = await run([okKuLeaf], { time: T2027, trustAnchor: anchor });
+  check("C1 control: well-formed critical keyUsage on the leaf accepted", resC1ok.valid === true);
+
+  // C2 (Codex :845) — a CRL scoped to a specific distributionPoint cannot be
+  // confirmed in-scope for this cert -> not authoritative -> undetermined.
+  var dpName = b.contextConstructed(0, b.contextConstructed(0, gnUri("http://crl.example/partition/1")));
+  var crlDp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1), idpExt({ distributionPoint: dpName })] });
+  var resC2 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDp]) });
+  check("C2 partitioned CRL (distributionPoint IDP) yields undetermined", resC2.valid === false && failCodes(resC2).indexOf("path/revocation-undetermined") !== -1);
+
+  // C3 (Codex :898) — a validly-signed CRL carrying an UNHANDLED critical
+  // extension is unusable -> undetermined, never authoritative "good".
+  var crlUnkCrit = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2), unknownCriticalCrlExt()] });
+  var resC3 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlUnkCrit]) });
+  check("C3 CRL with unhandled critical extension yields undetermined", resC3.valid === false && failCodes(resC3).indexOf("path/revocation-undetermined") !== -1);
+  // ...and it must not let a revoked serial read good either — a revoking CRL
+  // with an unhandled critical extension is unusable, so the cert is undetermined.
+  var crlRevUnk = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(3), unknownCriticalCrlExt()] });
+  var resC3b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRevUnk]) });
+  check("C3 unusable revoking CRL does not read as revoked either (undetermined)", resC3b.valid === false && failCodes(resC3b).indexOf("path/revocation-undetermined") !== -1);
 }
 
 // ---------------------------------------------------------------------------
