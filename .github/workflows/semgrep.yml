@@ -41,13 +41,24 @@ jobs:
 
       - name: Scan (registry packs + PKI crypto rules)
         run: |
+          set +e
           semgrep scan \
             --config p/security-audit \
             --config p/secrets \
             --config .semgrep/pki-crypto.yml \
             --sarif --output semgrep.sarif \
             --metrics off \
-            lib index.js bin || true
+            lib index.js bin
+          code=$?
+          set -e
+          # Exit 0 (clean) and 1 (findings) are fine — findings are non-blocking and
+          # go to the Security tab. Exit >= 2 is a fatal/config error (unfetchable
+          # registry pack, invalid rule, unparseable .semgrep/*.yml, missing config):
+          # fail loudly instead of silently disabling the scan.
+          if [ "$code" -ge 2 ]; then
+            echo "::error::Semgrep exited $code (config/infrastructure error, not findings) — the scan did not run."
+            exit "$code"
+          fi
 
       - name: Upload SARIF to the Security tab
         # Only when the scan produced a SARIF — a Semgrep failure leaves no file
