@@ -27,9 +27,9 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 
 ## Certification path validation — RFC 5280
 
-- **Full path-building and validation engine** — *Targeted.* Trust-anchor path construction and validation covering signature chaining, validity windows, key usage, basic constraints, name constraints, and certificate policies. Trust anchors may be roots or intermediates, and signer certificates may be supplied out of band.
-- **Structured results** — *Targeted.* Validation returns the complete leaf-to-anchor path plus per-check reason codes. Validity-window enforcement is always on, with the check date as an explicit input. Validation is pure and re-entrant — input certificate state is never mutated, so a chain can be validated repeatedly.
-- **Revocation checking** — *Targeted.* CRL and OCSP consultation integrated into the path result.
+- **Path validation engine** — *Shipped.* `pki.path.validate` runs the RFC 5280 §6.1 validation algorithm over an ordered path and a trust anchor: signature chaining, validity windows, name chaining, key usage, basic constraints and path length, name constraints, and the certificate-policy tree. Trust anchors may be roots or intermediates. **Path building** — constructing the ordered path from a certificate pool and trust store — is *Targeted*; the validator takes the ordered path as input, so signer certificates supplied out of band are validated today.
+- **Structured results** — *Shipped.* Validation returns the complete path plus a per-check reason code for every step. Validity-window enforcement is always on, with the check date an explicit input. Validation is pure and re-entrant — input certificate state is never mutated, so a chain can be validated repeatedly.
+- **Revocation checking** — *Shipped (CRL); OCSP Targeted.* A pluggable revocation hook is integrated into the path result; `pki.path.crlChecker` ships CRL consultation (signature, issuer authorization, distribution-point scope, currency). An OCSP checker satisfies the same interface and lands next.
 - **Adversarial conformance corpus** — *Targeted.* Name-constraint and path-validation behavior is gated against a public adversarial corpus.
 
 ## Cryptographic Message Syntax — RFC 5652

@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.16 — 2026-07-06
+
+Certification path validation joins the toolkit — RFC 5280 section 6, as a pure re-entrant algorithm.
+
+### Added
+
+- pki.path.validate(path, opts) — RFC 5280 section 6 certification-path validation. It validates an ordered array of pki.schema.x509.parse certificates (or DER/PEM it parses) against a trust anchor, running the section 6.1 state machine: section 6.1.3(a)(1) signature chaining, the always-on section 6.1.3(a)(2) validity window with the check date an explicit input, section 6.1.3(a)(4) name chaining, section 6.1.3(b,c)/6.1.4(g) name constraints (directoryName, dNSName, rfc822Name including an emailAddress carried in the subject DN, uniformResourceIdentifier, and iPAddress with the address-and-mask subtree form), section 6.1.4(k) basic constraints as the single authoritative CA gate, section 6.1.4(l,m) path length, section 6.1.4(n) keyUsage keyCertSign, and the section 6.1.3(d)/6.1.4(a,b,i,j)/6.1.5 certificate-policy tree with its explicit-policy, policy-mapping, and inhibit-any-policy counters. It returns { valid, path, results, workingPublicKey, workingPublicKeyAlgorithm, workingPublicKeyParameters, validPolicyTree } where results[i].checks carries a stable path/* reason code per check. Validation is pure and re-entrant. An unrecognized critical extension, an undetermined revocation status, or a structural fault fails the path with a typed code.
+- pki.path.crlChecker(crls) — a CRL-backed revocation checker for the validate revocationChecker option, composing pki.schema.crl.parse. For each certificate it consults every CRL issued by the certificate's issuer (so a clean CRL cannot shadow a revoking one), verifies each CRL signature over its tbsBytes, honors the issuing-distribution-point scope and reason coverage, checks thisUpdate/nextUpdate currency, and requires the CRL signer to assert keyUsage cRLSign; a certificate listed in any authoritative in-scope CRL is revoked, and an issuer with no authoritative in-scope CRL yields an undetermined status, which the validator fails closed unless softFail is set. An OCSP checker satisfies the same interface.
+- pki.schema.pkix gains the ns-parameterized RFC 5280 section 4.2.1 extension-value decoders (pkix.certExtensionDecoders) — basicConstraints, keyUsage, nameConstraints, certificatePolicies, policyMappings, policyConstraints, inhibitAnyPolicy, subjectAltName / issuerAltName, extKeyUsage, and authorityKeyIdentifier / subjectKeyIdentifier — each turning a raw extension value into a validated structure or a typed error, fail-closed. The shared GeneralName validator gains a decoded-value mode (surfacing the IA5 text, the IP octets, or the directoryName as a structured name alongside the raw bytes) and an address-and-mask subtree-base mode for name-constraint bases; both are opt-in, so the existing callers are byte-identical.
+- The OID registry gains the RFC 5280 policy and wildcard extension identifiers used by path validation: policyMappings, policyConstraints, and inhibitAnyPolicy, plus the anyPolicy and anyExtendedKeyUsage special-OID leaves.
+- The error taxonomy gains PathError, carrying the per-check reason in its stable path/* code.
+
 ## v0.1.15 — 2026-07-06
 
 CMS EnvelopedData and EncryptedData join the parser, and every documentation example is now executed as a test.

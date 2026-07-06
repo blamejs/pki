@@ -982,6 +982,42 @@ function testCmsEnvelopedDataConformanceGuards() {
   _report("CMS EnvelopedData/EncryptedData decode guards present (all five RecipientInfo kinds / ktri version coupling / non-empty recipientInfos / dispatch walks the two content types)", bad);
 }
 
+function testPathValidateConformanceGuards() {
+  // class: path-validate-conformance-guard-dropped
+  // Each token is the STABLE, frozen error code of an RFC 5280 §6.1 path-
+  // validation MUST that the validator throws. Anchoring on these public codes
+  // (not the helper FUNCTION NAMES like requireCriticalExt / basicProcessing)
+  // makes the guard rename-proof: renaming a helper keeps the codes (silent,
+  // correct), while deleting a fail-closed check drops its code (fires). The RED
+  // conformance vectors remain the per-check behavioural guards; this catches
+  // wholesale removal of a MUST during a refactor.
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/path-validate.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"path/extension-not-critical"',        "basicConstraints/nameConstraints/policyConstraints/inhibitAnyPolicy on a CA must be critical (RFC 5280 §4.2.1.9/.10/.11/.14)"],
+    ['"path/not-a-ca"',                       "an intermediate must assert basicConstraints cA:TRUE (§6.1.4(k); CVE-2021-3450 class)"],
+    ['"path/missing-key-cert-sign"',          "a CA's keyUsage must assert keyCertSign (§6.1.4(n))"],
+    ['"path/unrecognized-critical-extension"', "an unrecognized critical extension fails the path closed (§6.1.4(o)/6.1.5(e))"],
+    ['"path/revocation-undetermined"',        "only an authoritative good status passes; any other revocation outcome fails closed"],
+    ['"path/path-length-exceeded"',           "the CA basicConstraints pathLenConstraint is enforced (§6.1.4(l),(m))"],
+    ['"path/policy-required"',                "explicit-policy with an empty valid-policy tree is rejected (§6.1.5(g))"],
+    ['"path/name-constraint-excluded"',       "a name in an excluded subtree is rejected (§6.1.4(g))"],
+    ['"path/name-constraint-not-permitted"',  "a name outside every permitted subtree is rejected (§6.1.4(g))"],
+    ['.revocationDate',                        "a CRL entry is honored only as of the date it carries; a revocation dated after the validation instant does not apply (§5.3)"],
+    ['"deltaCRLIndicator"',                    "a delta CRL (deltaCRLIndicator) is unusable on its own without base/delta processing — a serial absent from it is not good (§5.2.4)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/path-validate.js", line: 0,
+        content: "the path validator no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  bad = _filterMarkers(bad, "path-validate-conformance-guard-dropped");
+  _report("Path-validation RFC 5280 §6.1 guards present (MUST-critical CA extensions / CA gate / keyCertSign / unknown-critical / revocation fail-closed / pathLen / policy-required / name constraints)", bad);
+}
+
 function testNoRemovedWebCryptoNamespace() {
   // class: removed-namespace-reference
   // pki.WebCrypto was removed in favour of pki.webcrypto.* — its classes now hang off
@@ -1528,6 +1564,30 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "A fixed tbs.children.length < 6 guard passes a 6-child tbs whose explicit version [0] leaves SPKI undefined, throwing a raw TypeError instead of the advertised CertificateError. Bounds-check positionally against the version-aware minimum.",
+  },
+  {
+    id: "context-node-content-deref-no-primitive-reader",
+    primitive: "read a context-tagged IMPLICIT primitive leaf through asn1.read.{octetStringImplicit,integerImplicit,nullImplicit,bitStringImplicit}(node, tag) — never Buffer.from(node.content) on a context node, whose content is null when the node is constructed",
+    regex: /Buffer\.from\(\s*\w+\.content\s*\)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A context-class node carrying an IMPLICIT primitive value (a keyIdentifier [0] OCTET STRING, a serial [2] INTEGER) is only guaranteed primitive if a reader enforces it. A constructed context node has children and a NULL content, so Buffer.from(node.content) throws a raw TypeError on hostile input (fuzz-found in the AKI extension decoder) instead of a typed fail-closed reject. Route every context-primitive read through the asn1.read.*Implicit reader, which asserts the primitive form and rejects the constructed shape with asn1/expected-primitive.",
+  },
+  {
+    id: "algid-childless-node-fallback",
+    primitive: "an AlgorithmIdentifier's OID is read from a node PROVEN to be a SEQUENCE (tag-checked) then `.children[0]` — never via a childless-fallback ternary that reuses the wrapper node when the inner has no children",
+    regex: /children\.length\s*\)\s*\?/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "A `node.children.length) ? inner : node` fallback accepts a malformed AlgorithmIdentifier by degrading to a broader node when the expected SEQUENCE is absent: a bare `[0] EXPLICIT OBJECT IDENTIFIER sha256` (no AlgorithmIdentifier SEQUENCE) is then read as a valid SHA-256 hashAlgorithm, so RSASSA-PSS parameters stop being fail-closed and a weaker hash can be smuggled in (forgery surface). Read the OID only from a node whose tag is asserted to be a universal SEQUENCE; do not fall back to the wrapper on a childless inner.",
+  },
+  {
+    id: "policy-tree-parent-in-public-verdict",
+    primitive: "the validate() verdict's validPolicyTree must be a copy with the internal `parent` back-pointer stripped (acyclic) — never the raw state.validPolicyTree, whose nodes point back at their parents",
+    regex: /validPolicyTree:\s*state\.validPolicyTree\b/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "The 6.1.3 policy-processing nodes carry an enumerable `parent` back-pointer for upward pruning. Returning state.validPolicyTree directly exposes that cycle in the public structured verdict, so a caller that JSON.stringify()s the result (logging, persisting, an audit hook) throws on any policy-bearing chain. Return an acyclic deep copy without `parent`.",
   },
   {
     id: "x509-extensions-no-uniqueness",
@@ -2211,6 +2271,7 @@ function run() {
   testTspConformanceGuards();
   testAttrCertConformanceGuards();
   testCmsEnvelopedDataConformanceGuards();
+  testPathValidateConformanceGuards();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();

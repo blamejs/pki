@@ -79,6 +79,18 @@ security-only patches after the next major releases.
 - **Silent verification failure.** Every verify and parse path throws on failure.
   No path returns zero, a default, or partial output in place of a real result, so
   a caller cannot mistake an error for a pass.
+- **Certification-path validation bypass.** `pki.path.validate` enforces the
+  RFC 5280 §6 algorithm fail-closed: the basic-constraints CA check is the single
+  authoritative gate that no later check can overwrite (CVE-2021-3450); the
+  signature algorithm is derived from the certificate and the issuer key, never a
+  message-selected field (CVE-2015-9235); ECDSA signatures with a component
+  outside `[1, n−1]` — including the all-zero forgery — are rejected
+  (CVE-2022-21449); the certificate-policy tree carries a hard node cap and fails
+  closed at it (CVE-2023-0464), and an invalid policy OID is surfaced, never
+  silently dropped (CVE-2023-0465); name comparison rejects embedded NUL and
+  control bytes so a truncated name cannot compare equal (CVE-2009-2408); and an
+  unknown critical extension or an undetermined revocation status terminates the
+  path with a typed reason code rather than passing.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the bytes
   that were actually signed rather than re-encoding and hoping for round-trip
