@@ -105,6 +105,12 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-nomgf",
   },
+  // PSS params carrying an unexpected [4] field -> structural fault, rejected.
+  pssextra: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-extrafield",
+  },
 };
 var OID_SHA1 = "1.3.14.3.2.26";
 
@@ -160,6 +166,14 @@ function algIdDer(a) {
   }
   else if (a.sigParams === "pss-nomgf") {
     children.push(b.sequence([b.explicit(0, b.sequence([b.oid(OID_SHA256), b.nullValue()]))]));   // hash only, no MGF
+  }
+  else if (a.sigParams === "pss-extrafield") {
+    var shaX = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, shaX),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), shaX])),
+      b.explicit(4, b.integer(1n)),   // unexpected [4] field
+    ]));
   }
   else if (a.sigParams === "pss" || a.sigParams === "pss-badhash" || a.sigParams === "pss-badmgf") {
     // RSASSA-PSS-params { hashAlgorithm [0], maskGenAlgorithm [1], saltLength [2] } (RFC 4055 §3.1, EXPLICIT tags).
@@ -1094,6 +1108,28 @@ async function testAuditRegressions() {
   var crlCritEntry = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [critEntryExt] }] });
   var resC26 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
   check("C26 unknown critical CRL-entry extension makes the CRL unusable", resC26.valid === false && failCodes(resC26).indexOf("path/revocation-undetermined") !== -1);
+
+  // C27 (Codex :550) — the (d)(1)(ii) anyPolicy-fallback must be gated on the
+  // inhibit counter: an intermediate asserting anyPolicy with inhibitAnyPolicy:0
+  // then a leaf asserting P1 must NOT satisfy explicit policy (P1 is pruned).
+  var interIapC = await mkCert({ subject: "IapC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), iapExt(0)]) });
+  var leafIapC = await mkCert({ subject: "IapCLeaf", issuer: "IapC", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
+  var resC27 = await run([interIapC, leafIapC], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  check("C27 anyPolicy fallback gated on inhibit counter", resC27.valid === false && failCodes(resC27).indexOf("path/policy-required") !== -1);
+
+  // C28 (Codex :351) — a URI SAN with an empty authority cannot be evaluated
+  // against a URI constraint -> fail closed, not escape.
+  var interUriE = await mkCert({ subject: "UriEInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.example")])]) });
+  var leafUriE = await mkCert({ subject: "UriELeaf", issuer: "UriEInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https:///path")])] });
+  var resC28 = await run([interUriE, leafUriE], { time: T2027, trustAnchor: anchor });
+  check("C28 empty-authority URI fails closed under a URI constraint", resC28.valid === false && failCodes(resC28).indexOf("path/name-constraint-unsupported") !== -1);
+
+  // C29 (Codex :164) — a PSS params SEQUENCE with an unexpected [4] field is a
+  // structural fault and must be rejected.
+  var anchorPssX = await mkAnchor("pssextra", "PssXRoot");
+  var leafPssX = await mkCert({ subject: "PssX", issuer: "PssXRoot", signWith: "pssextra", subjectKeys: "ed25519leaf" });
+  var resC29 = await run([leafPssX], { time: T2027, trustAnchor: anchorPssX });
+  check("C29 unexpected PSS parameter field rejected", resC29.valid === false && failCodes(resC29).indexOf("path/unsupported-algorithm") !== -1);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
