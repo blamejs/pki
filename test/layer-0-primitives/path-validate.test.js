@@ -271,7 +271,7 @@ async function mkCert(o) {
   var tbsChildren = [
     b.explicit(0, b.integer(BigInt(o.version !== undefined ? o.version : 2))),
     b.integer(o.serial !== undefined ? o.serial : (SERIAL += 1n)),
-    algIdDer(a),
+    o.sigAlgOverride || algIdDer(a),   // tbs signatureAlgorithm (must equal the outer, §4.1.1.2)
     nameDer(o.issuer),
     validityDer(o.notBefore || new Date("2026-01-01T00:00:00Z"), o.notAfter || new Date("2030-01-01T00:00:00Z")),
     nameDer(o.subject),
@@ -286,7 +286,10 @@ async function mkCert(o) {
   if (a.p1363) sig = p1363ToDer(sig, a.p1363);
   if (o.mutateSig) sig = o.mutateSig(sig);
 
-  return b.sequence([tbs, algIdDer(a), b.bitString(sig, 0)]);
+  // o.sigAlgOverride replaces the signatureAlgorithm (both tbs + outer, to test
+  // parameter-shape mismatches).
+  var outerAlg = o.sigAlgOverride || algIdDer(a);
+  return b.sequence([tbs, outerAlg, b.bitString(sig, 0)]);
 }
 
 // Anchor tuple from generated key material (§6.1.1(d-g)).
@@ -1018,6 +1021,21 @@ async function testAuditRegressions() {
   var crlBadBool = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpBadBool] });
   var resC20 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadBool]) });
   check("C20 malformed IDP BOOLEAN makes the CRL unusable", resC20.valid === false && failCodes(resC20).indexOf("path/revocation-undetermined") !== -1);
+
+  // C21 (Codex :219) — the validator's own octet-alignment guard fails a
+  // signature with a non-zero unused-bit count (defense in depth: the strict
+  // DER codec already rejects it at parse, so this drives a pre-parsed object).
+  var leafC21 = pki.schema.x509.parse(await mkCert({ subject: "Aligned", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" }));
+  leafC21.signatureValue = { unusedBits: 3, bytes: leafC21.signatureValue.bytes };
+  var resC21 = await pki.path.validate([leafC21], { time: T2027, trustAnchor: anchor });
+  check("C21 non-octet-aligned signature rejected by the validator guard", resC21.valid === false && failCodes(resC21).indexOf("path/bad-signature") !== -1);
+
+  // C22 (Codex :179) — a fixed-parameter algorithm with the WRONG parameter
+  // shape (ECDSA with a DER NULL where params must be absent) must be rejected.
+  var ecNullParams = b.sequence([b.oid("1.3.101.112"), b.nullValue()]);   // Ed25519 OID + a stray NULL
+  var leafWrongParams = await mkCert({ subject: "WrongP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: ecNullParams });
+  var resC22 = await run([leafWrongParams], { time: T2027, trustAnchor: anchor });
+  check("C22 EdDSA with a stray NULL parameter rejected", resC22.valid === false && failCodes(resC22).indexOf("path/unsupported-algorithm") !== -1);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
