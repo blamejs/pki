@@ -130,7 +130,7 @@ function testPolicyDecoders() {
   var P1 = "1.3.6.1.4.1.99999.1", P2 = "1.3.6.1.4.1.99999.2";
 
   var cp = DEC.byOid[OID_CP];
-  var v = cp(b.sequence([b.sequence([b.oid(P1)]), b.sequence([b.oid(P2), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1")])])])]));
+  var v = cp(b.sequence([b.sequence([b.oid(P1)]), b.sequence([b.oid(P2), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.nullValue()])])])]));
   check("cp two policies decode", v.length === 2 && v[0].policyIdentifier === P1 && v[1].policyIdentifier === P2);
   check("cp qualifiers surfaced raw", Buffer.isBuffer(v[1].qualifiersBytes) && v[0].qualifiersBytes === null);
   check("cp empty SEQUENCE rejected (SIZE 1..MAX)",
@@ -145,6 +145,12 @@ function testPolicyDecoders() {
     code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.integer(1n)])])); }) === "path/bad-policy");
   check("cp policyQualifiers element that is not a PolicyQualifierInfo SEQUENCE rejected",
     code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.nullValue()])])])); }) === "path/bad-policy");
+  // PolicyQualifierInfo is SEQUENCE { policyQualifierId, qualifier } — EXACTLY two
+  // members. A missing qualifier (OID only) or a trailing extra field is malformed.
+  check("cp PolicyQualifierInfo missing its qualifier rejected",
+    code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1")])])])])); }) === "path/bad-policy");
+  check("cp PolicyQualifierInfo with a trailing extra field rejected",
+    code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.nullValue(), b.integer(1n)])])])])); }) === "path/bad-policy");
 
   var pm = DEC.byOid[OID_PM];
   var m = pm(b.sequence([b.sequence([b.oid(P1), b.oid(P2)])]));
