@@ -1369,15 +1369,21 @@ async function testAuditRegressions() {
   var resUriAmb = await run([interUriAmb, leafUriAmb], { time: T2027, trustAnchor: anchor });
   check("multi-@ URI authority fails closed under a name constraint", resUriAmb.valid === false && failCodes(resUriAmb).indexOf("path/name-constraint-unsupported") !== -1);
 
-  // A path CRL signer that OMITS keyUsage cannot be confirmed authorized to
-  // sign CRLs (RFC 5280 6.3.3) — its CRL is not authoritative, so revocation is
-  // undetermined and the path fails closed (same as a signer lacking cRLSign).
+  // RFC 5280 §6.3.3(f): cRLSign is required only when keyUsage is PRESENT. An
+  // issuer that omits keyUsage is unconstrained — the same rule §6.1.4(n) applies
+  // to certificate signing — so its current, verified CRL is authoritative.
   var rootCrlCov = await mkCrl({ issuer: "Root", signWith: "ed25519" });   // covers the intermediate
   var interNoKu = await mkCert({ subject: "NoKuInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true)] });
   var leafNoKu = await mkCert({ subject: "NoKuLeaf", issuer: "NoKuInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 5151n });
   var crlNoKu = await mkCrl({ issuer: "NoKuInter", signWith: "ed25519i" });
   var resNoKu = await run([interNoKu, leafNoKu], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlNoKu]) });
-  check("CRL signer without keyUsage yields undetermined", resNoKu.valid === false && failCodes(resNoKu).indexOf("path/revocation-undetermined") !== -1);
+  check("CRL signer that omits keyUsage is authoritative (cRLSign required only when keyUsage present)", resNoKu.valid === true);
+  // a signer WITH keyUsage but WITHOUT cRLSign is not authorized -> undetermined.
+  var interKuNoCrl = await mkCert({ subject: "KuNoCrlInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var leafKuNoCrl = await mkCert({ subject: "KuNoCrlLeaf", issuer: "KuNoCrlInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 5153n });
+  var crlKuNoCrl = await mkCrl({ issuer: "KuNoCrlInter", signWith: "ed25519i" });
+  var resKuNoCrl = await run([interKuNoCrl, leafKuNoCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlKuNoCrl]) });
+  check("CRL signer with keyUsage but no cRLSign yields undetermined", resKuNoCrl.valid === false && failCodes(resKuNoCrl).indexOf("path/revocation-undetermined") !== -1);
   // control: the same intermediate WITH keyUsage cRLSign produces an authoritative CRL.
   var interKu = await mkCert({ subject: "KuInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519j", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN])] });
   var leafKu = await mkCert({ subject: "KuLeaf", issuer: "KuInter", signWith: "ed25519j", subjectKeys: "ed25519leaf", serial: 5152n });
