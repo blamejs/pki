@@ -222,6 +222,11 @@ function testTwoAttributes() {
   check("legacy clearance arc names via the consumer path", mc.attributes[0].name === "clearance");
   check("both clearance arcs resolve to name", pki.oid.name("2.5.4.55") === "clearance" && pki.oid.name("2.5.1.5.55") === "clearance");
   check("clearance canonical reverse is the RFC 5755 arc", pki.oid.byName("clearance") === "2.5.4.55");
+
+  // the id-aca family is registered COMPLETE per RFC 5755 (incl. §7.1 encAttrs; 5 reserved).
+  var mg = parse(attrCert({ attributesNode: b.sequence([attribute("1.3.6.1.5.5.7.10.6", [b.octetString(Buffer.from([0x01]))])]) }));
+  check("id-aca-encAttrs resolves by name via the consumer path", mg.attributes[0].name === "encAttrs");
+  check("id-aca family complete", ["1.3.6.1.5.5.7.10.1", "1.3.6.1.5.5.7.10.2", "1.3.6.1.5.5.7.10.3", "1.3.6.1.5.5.7.10.4", "1.3.6.1.5.5.7.10.6"].every(function (o) { return typeof pki.oid.name(o) === "string"; }));
 }
 
 // ---- REJECT — version / envelope / DER -------------------------------
