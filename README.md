@@ -198,6 +198,7 @@ is callable today; nothing below is a stub.
 | `pki.schema.cms` | Parse DER / PEM CMS SignedData per RFC 5652 — encapsulated content, signer infos, raw signed-attribute bytes for external verification, certificates / CRLs kept raw, fail-closed; non-SignedData content types recognized (not decoded) — `parse`, `pemDecode`, `pemEncode` |
 | `pki.schema.ocsp` | Parse DER / PEM OCSP requests and responses per RFC 6960 — per-certificate status (good / revoked / unknown), responder identity, raw tbs bytes for external verification, certificates kept raw, fail-closed; non-basic response types recognized (not decoded) — `parseRequest`, `parseResponse`, `pemDecode` |
 | `pki.schema.tsp` | Parse DER / PEM RFC 3161 timestamp responses and tokens — the TSTInfo payload (imprint, genTime with sub-second precision, serial, nonce, accuracy), the status-to-token coupling, and the token wrapper composed over CMS with the single-signer rule, fail-closed — `parse`, `parseTstInfo`, `parseToken`, `pemDecode` |
+| `pki.schema.attrcert` | Parse DER / PEM RFC 5755 attribute certificates — the holder and issuer identities (validated GeneralNames), the validity window (real `Date`s), the privilege attributes (role / group / clearance) and extensions, with the raw signed region for a verifier; the obsolete v1 form is recognized and deferred, fail-closed — `parse`, `pemDecode` |
 | `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
 | `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError` / `TspError`, each carrying a stable `code` in `domain/reason` form |
@@ -238,9 +239,12 @@ plus a documentation comment block, not new parse logic.
 │  pki.schema.parse — inspect the DER root, route to the matching sibling │
 └─────────────────────────────────────────────────────────────────────────┘
                                      │
- ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐ ┌──────┐   Format
- │ x509 │ │ crl  │ │ csr  │ │pkcs8 │ │ cms  │ │ ocsp │ │ tsp  │   parsers
- └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘ └──────┘   (siblings)
+ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   Format
+ │  x509  │ │  crl   │ │  csr   │ │ pkcs8  │   parsers
+ └────────┘ └────────┘ └────────┘ └────────┘   (siblings)
+ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+ │  cms   │ │  ocsp  │ │  tsp   │ │attrcert│
+ └────────┘ └────────┘ └────────┘ └────────┘
                                      │  every sibling composes ↓
 ┌─ Shared structure ──────────────────────────────────────────────────────┐
 │  pki.schema.engine — walk + combinators (positional reads, tag order,   │
@@ -272,7 +276,7 @@ bounded version reader, and the single coerce → decode → walk parse-entry th
 every format's `parse` is bound to. Because input coercion, the PEM size cap, and
 the DER-decode wrapping live here once, a format cannot diverge on a guard.
 
-**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, and `tsp` are siblings:
+**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, `tsp`, and `attrcert` are siblings:
 each is a schema declaration composed from the shared pieces, emitting its own
 typed `domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
 detect-and-routes to the matching sibling; the detectors are mutually exclusive by
