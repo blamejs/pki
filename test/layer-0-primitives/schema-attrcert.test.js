@@ -228,7 +228,11 @@ function testTwoAttributes() {
 function testRejectVersionEnvelope() {
   check("version 0 (v1 value in v2 shape)", parseCode(attrCert({ version: 0 })) === "attrcert/bad-version");
   check("version 2 (undefined)", parseCode(attrCert({ version: 2 })) === "attrcert/bad-version");
-  check("version [0] EXPLICIT wrapper (cert-shaped)", parseCode(attrCert({ versionNode: b.explicit(0, b.integer(1)) })).indexOf("asn1/") === 0 || parseCode(attrCert({ versionNode: b.explicit(0, b.integer(1)) })) === "attrcert/bad-version");
+  // A [0] EXPLICIT version makes the acinfo context-first — structurally a v1 AC (not
+  // a bare-INTEGER v2), so it is rejected fail-closed (as the legacy diagnostic via the
+  // v1 detector, or a leaf/bad-version if it reaches the v2 walk); never parsed as v2.
+  var certShaped = parseCode(attrCert({ versionNode: b.explicit(0, b.integer(1)) }));
+  check("version [0] EXPLICIT wrapper (cert-shaped) rejected fail-closed", certShaped === "attrcert/legacy-v1-not-supported" || certShaped.indexOf("asn1/") === 0 || certShaped === "attrcert/bad-version");
   check("signature-algorithm disagreement", parseCode(attrCert({ sigOid: SIGALG, outerSigOid: SIGALG2 })) === "attrcert/bad-signature-algorithm");
 
   var good = attrCert({});
@@ -298,9 +302,10 @@ function testRejectExtensions() {
 function testLegacyV1AndDispatch() {
   var v1 = attrCertV1({});
   var v1base = attrCertV1({ subjectBase: { issuer: [gnDirName("S")], serial: 1 } });
-  // The v2 parser fails closed on a v1 AC (it is not the legacy-defer entry — that
-  // is the orchestrator's job, routed by matchesV1 → parseV1).
-  check("v2 parser rejects a v1 AC (fail-closed)", parseCode(v1) !== "NO-THROW");
+  // The direct parse entry gives the advertised stable legacy diagnostic on a v1 AC —
+  // the same error family as the orchestrator, not a low-level asn1/* tag leak.
+  check("direct parse on a v1 AC (subjectName [1]) gives the stable legacy code", parseCode(v1) === "attrcert/legacy-v1-not-supported");
+  check("direct parse on a v1 AC (baseCertificateID [0]) too", parseCode(v1base) === "attrcert/legacy-v1-not-supported");
   check("parseV1 defers subjectName [1]", code(function () { attrcertMod.parseV1(v1); }) === "attrcert/legacy-v1-not-supported");
   check("parseV1 defers baseCertificateID [0]", code(function () { attrcertMod.parseV1(v1base); }) === "attrcert/legacy-v1-not-supported");
 

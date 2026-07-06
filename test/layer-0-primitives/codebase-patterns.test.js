@@ -770,6 +770,14 @@ function testAttrCertConformanceGuards() {
         content: "the attribute-certificate parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
     }
   });
+  // Structural: the direct `parse` MUST recognize a legacy v1 AC (via matchesV1)
+  // before the v2 walk, so a direct caller gets the advertised stable
+  // attrcert/legacy-v1-not-supported and not a low-level asn1/* tag leak. Anchored on
+  // the parse-fn body up to its column-0 closing brace (tempered token, rename-proof).
+  if (!/function parse\s*\((?:(?!\n\})[\s\S]){0,4000}?matchesV1\s*\(/.test(src)) {
+    bad.push({ file: "lib/schema-attrcert.js", line: 0,
+      content: "the direct attrcert.parse no longer recognizes a legacy v1 AC before the v2 walk — a well-formed AttributeCertificateV1 would leak a low-level asn1/* tag error instead of attrcert/legacy-v1-not-supported" });
+  }
   bad = _filterMarkers(bad, "attrcert-conformance-guard-dropped");
   _report("attribute-certificate RFC-conformance guards present (GeneralizedTime validity / positive-<=20 serial / sig-alg agreement / non-empty unique attributes / ENUMERATED digestedObjectType / validated GeneralNames / v1 recognize-and-defer)", bad);
 }
