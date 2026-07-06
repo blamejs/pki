@@ -600,6 +600,44 @@ function testWikiPortAgreesAcrossArtifacts() {
   _report("wiki port agrees across examples/wiki/Dockerfile + release-container.yml smoke step", bad);
 }
 
+function testPublishPathRunsCiStaticGates() {
+  // class: publish-path-missing-static-gate
+  // The npm-publish workflow triggers on a `v*` tag push, INDEPENDENTLY of the
+  // pull_request CI that runs the static-gate battery. A gate wired only into
+  // ci.yml therefore does not guard the tarball the publish path packs: a tree
+  // that fails a static gate can still be packed and published from a tag push.
+  // Every static correctness gate runs in BOTH the CI test job and the publish
+  // `validate` job before `npm pack`. This list is the frozen contract — adding
+  // a gate means adding it here and to both workflows, so the two paths can
+  // never silently diverge.
+  var GATES = [
+    "--max-warnings 0",
+    "node test/layer-0-primitives/codebase-patterns.test.js",
+    "node scripts/validate-source-comment-blocks.js",
+    "node scripts/check-api-snapshot.js",
+    "node scripts/check-status-lifecycle.js",
+    "node scripts/pin-all.js --check",
+  ];
+  var ciPath = ".github/workflows/ci.yml";
+  var pubPath = ".github/workflows/npm-publish.yml";
+  var ci, pub;
+  try { ci = fs.readFileSync(path.join(REPO_ROOT, ciPath), "utf8"); } catch (_e) { return; }
+  try { pub = fs.readFileSync(path.join(REPO_ROOT, pubPath), "utf8"); } catch (_e) { return; }
+  var bad = [];
+  GATES.forEach(function (g) {
+    if (ci.indexOf(g) === -1) {
+      bad.push({ file: ciPath, line: 1,
+        content: "static gate `" + g + "` is in the frozen contract but missing from the CI test job" });
+    }
+    if (pub.indexOf(g) === -1) {
+      bad.push({ file: pubPath, line: 1,
+        content: "static gate `" + g + "` runs in ci.yml but NOT in the publish validate job — a tag-push publish would pack an ungated tree" });
+    }
+  });
+  bad = _filterMarkers(bad, "publish-path-missing-static-gate");
+  _report("publish validate job runs the full CI static-gate battery", bad);
+}
+
 function testFuzzSeedCorpusZipNaming() {
   // class: fuzz-seed-corpus-wrapper-name-drift
   // OSS-Fuzz's compile_javascript_fuzzer names each compiled wrapper with
@@ -2262,6 +2300,7 @@ function run() {
   testNoFailOpenVerify();
   testPrimitiveCommentBlocks();
   testWikiPortAgreesAcrossArtifacts();
+  testPublishPathRunsCiStaticGates();
   testFuzzSeedCorpusZipNaming();
   testFuzzBuildInstallsJazzer();
   testNoUnpinnedNpmInShell();
