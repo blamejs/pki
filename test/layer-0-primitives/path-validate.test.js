@@ -65,6 +65,13 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-badhash",
   },
+  // PSS params declaring a MGF1 hash (SHA-384) that mismatches the signature
+  // hash (SHA-256) — WebCrypto cannot honor it, so resolution must reject.
+  pssbadmgf: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-badmgf",
+  },
 };
 
 // Aliases: distinct keypairs of the same algorithm (KEYS is keyed by the
@@ -97,15 +104,16 @@ function p1363ToDer(sig, width) {
 // DER fixture builders (canonical shapes, mirroring the schema-x509 suite)
 // ---------------------------------------------------------------------------
 
-var OID_SHA256 = "2.16.840.1.101.3.4.2.1", OID_MGF1 = "1.2.840.113549.1.1.8";
+var OID_SHA256 = "2.16.840.1.101.3.4.2.1", OID_SHA384 = "2.16.840.1.101.3.4.2.2", OID_MGF1 = "1.2.840.113549.1.1.8";
 function algIdDer(a) {
   var children = [b.oid(a.sigOid)];
   if (a.sigParams === "null") children.push(b.nullValue());
-  else if (a.sigParams === "pss" || a.sigParams === "pss-badhash") {
+  else if (a.sigParams === "pss" || a.sigParams === "pss-badhash" || a.sigParams === "pss-badmgf") {
     // RSASSA-PSS-params { hashAlgorithm [0], maskGenAlgorithm [1], saltLength [2] } (RFC 4055 §3.1, EXPLICIT tags).
     var hashOid = a.sigParams === "pss-badhash" ? "1.3.6.1.4.1.99999.7" : OID_SHA256;
+    var mgfHashOid = a.sigParams === "pss-badmgf" ? OID_SHA384 : OID_SHA256;
     var hashAlg = b.sequence([b.oid(hashOid), b.nullValue()]);
-    var mgfHash = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    var mgfHash = b.sequence([b.oid(mgfHashOid), b.nullValue()]);
     children.push(b.sequence([
       b.explicit(0, hashAlg),
       b.explicit(1, b.sequence([b.oid(OID_MGF1), mgfHash])),
@@ -878,6 +886,13 @@ async function testAuditRegressions() {
   var resC6 = await run([leafBadPss], { time: T2027, trustAnchor: anchorPssBad });
   check("C6 PSS cert with unsupported hash rejected (no SHA-1 fallback)", resC6.valid === false && failCodes(resC6).indexOf("path/unsupported-algorithm") !== -1);
 
+  // C7 (Codex :140) — PSS params whose MGF1 hash mismatches the signature hash
+  // cannot be honored by WebCrypto and must be rejected, not verified anyway.
+  var anchorBadMgf = await mkAnchor("pssbadmgf", "PssMgfRoot");
+  var leafBadMgf = await mkCert({ subject: "BadMgf", issuer: "PssMgfRoot", signWith: "pssbadmgf", subjectKeys: "ed25519leaf" });
+  var resC7 = await run([leafBadMgf], { time: T2027, trustAnchor: anchorBadMgf });
+  check("C7 PSS MGF1-hash mismatch rejected", resC7.valid === false && failCodes(resC7).indexOf("path/unsupported-algorithm") !== -1);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
@@ -987,6 +1002,12 @@ async function testAuditRegressions() {
   var crlAttrOnly = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(4), idpExt({ onlyAttr: true })] });
   var resC5 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlAttrOnly]) });
   check("C5 attribute-cert-only CRL out of scope for a public-key cert", resC5.valid === false && failCodes(resC5).indexOf("path/revocation-undetermined") !== -1);
+
+  // C8 (Codex :872) — a critical IDP whose value is not a SEQUENCE leaves the
+  // scope unknown: the CRL is unusable, not treated as unrestricted.
+  var crlBadIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(5), ext("2.5.29.28", true, b.integer(1n))] });
+  var resC8 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadIdp]) });
+  check("C8 malformed IDP CRL is unusable (undetermined)", resC8.valid === false && failCodes(resC8).indexOf("path/revocation-undetermined") !== -1);
   // ...and it must not let a revoked serial read good either — a revoking CRL
   // with an unhandled critical extension is unusable, so the cert is undetermined.
   var crlRevUnk = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(3), unknownCriticalCrlExt()] });
