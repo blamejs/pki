@@ -41,6 +41,9 @@
             "OID_MAX_SUBIDENTIFIER_BYTES": {
               "kind": "number"
             },
+            "PATH_MAX_CERTS": {
+              "kind": "number"
+            },
             "PEM_MAX_BYTES": {
               "kind": "number"
             }
@@ -347,6 +350,9 @@
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
+              "kind": "number"
+            },
+            "PATH_MAX_CERTS": {
               "kind": "number"
             },
             "PEM_MAX_BYTES": {

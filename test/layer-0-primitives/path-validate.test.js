@@ -119,6 +119,17 @@ var OID_SHA1 = "1.3.14.3.2.26";
 ALG.ed25519i = ALG.ed25519;
 ALG.ed25519j = ALG.ed25519;
 ALG.ed25519leaf = ALG.ed25519;
+ALG.p256i = ALG.p256;
+
+// Rebuild an EC SubjectPublicKeyInfo with its namedCurve parameters removed
+// (a key that inherits its curve from the issuer), and extract those params.
+function stripEcParams(spkiBuf) {
+  var n = pki.asn1.decode(spkiBuf);
+  return b.sequence([b.sequence([b.raw(n.children[0].children[0].bytes)]), b.raw(n.children[1].bytes)]);
+}
+function ecCurveParams(spkiBuf) {
+  return pki.asn1.decode(spkiBuf).children[0].children[1].bytes;
+}
 
 var KEYS = {}; // algKey -> { privateKey, publicKey, spki: Buffer }
 
@@ -1273,16 +1284,21 @@ async function testAuditRegressions() {
   var resC34d = await run([interNCiap, leafNCBC], { time: T2027, trustAnchor: anchor });
   check("non-critical inhibitAnyPolicy rejected", resC34d.valid === false && failCodes(resC34d).indexOf("path/extension-not-critical") !== -1);
 
-  // a CRL entry takes effect as of its revocationDate
-  // (RFC 5280 §5.3). At a validation instant BEFORE that date the certificate
-  // was not yet revoked, so a current CRL listing a future revocation must not
-  // read as revoked. thisUpdate(2027-01-01) <= T2027 <= nextUpdate(2028-06-01).
+  // A revocation is effective as of its revocationDate (RFC 5280 §5.3).
+  // thisUpdate(2027-01-01) <= T2027 <= nextUpdate(2028-06-01).
   var crlFutureRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, date: new Date("2027-12-01T00:00:00Z") }] });
-  var resC35 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
-  check("revocation not yet effective at the validation instant is not revoked", resC35.valid === true);
-  // control: a revocationDate at/before the instant IS a revocation.
+  // DEFAULT (present-time) validation is STRICT per §6.3.3: a listed serial is
+  // revoked regardless of a future revocationDate (post-dating / clock skew must
+  // not read good).
+  var resFutStrict = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
+  check("future revocationDate is revoked by default (strict §6.3.3)", resFutStrict.valid === false && failCodes(resFutStrict).indexOf("path/revoked") !== -1);
+  // Under an EXPLICIT historical validation, a revocation dated AFTER the
+  // validation instant is not yet effective (validating a timestamped signature).
+  var resFutHist = await run([leafCrl], { time: T2027, trustAnchor: anchor, historicalMode: true, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
+  check("historicalMode: future revocationDate is not yet effective", resFutHist.valid === true);
+  // control: a revocationDate at/before the instant IS a revocation in either mode.
   var crlPastRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, date: new Date("2027-03-01T00:00:00Z") }] });
-  var resC35b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPastRev]) });
+  var resC35b = await run([leafCrl], { time: T2027, trustAnchor: anchor, historicalMode: true, revocationChecker: pki.path.crlChecker([crlPastRev]) });
   check("control: revocationDate at/before the instant is revoked", resC35b.valid === false && failCodes(resC35b).indexOf("path/revoked") !== -1);
 
   // an AlgorithmIdentifier is { OID, parameters? }: at most
@@ -1438,6 +1454,71 @@ async function testAuditRegressions() {
   var leafEmCaseOk = await mkCert({ subject: "EmCaseOk", issuer: "EmCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("Admin@EXAMPLE.com")])] });
   var resEmCaseOk = await run([interEmCase, leafEmCaseOk], { time: T2027, trustAnchor: anchor });
   check("control: exact local part with a case-folded host is permitted", resEmCaseOk.valid === true);
+
+  // RFC 5280 4.2.1.10: an rfc822Name host is canonicalized like dNSName/URI, so a
+  // trailing-dot mailbox host must not escape an excluded rfc822 constraint.
+  var interEmDot = await mkCert({ subject: "EmDotInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("evil.example.com")])]) });
+  var leafEmDot = await mkCert({ subject: "EmDotLeaf", issuer: "EmDotInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@evil.example.com.")])] });
+  var resEmDot = await run([interEmDot, leafEmDot], { time: T2027, trustAnchor: anchor });
+  check("trailing-dot rfc822 host does not escape an excluded host constraint", resEmDot.valid === false && failCodes(resEmDot).indexOf("path/name-constraint-excluded") !== -1);
+  // a trailing-dot full mailbox likewise cannot escape a full-mailbox exclusion.
+  var interEmDot2 = await mkCert({ subject: "EmDot2Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("user@evil.example.com")])]) });
+  var leafEmDot2 = await mkCert({ subject: "EmDot2Leaf", issuer: "EmDot2Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@evil.example.com.")])] });
+  var resEmDot2 = await run([interEmDot2, leafEmDot2], { time: T2027, trustAnchor: anchor });
+  check("trailing-dot full mailbox does not escape a full-mailbox exclusion", resEmDot2.valid === false && failCodes(resEmDot2).indexOf("path/name-constraint-excluded") !== -1);
+
+  // A certification path longer than the maxPathCerts ceiling is rejected BEFORE
+  // any per-cert asymmetric verify runs (bounds crypto amplification on an
+  // untrusted bundle). A small opt-in cap makes the guard observable.
+  var overLong = [];
+  for (var oi = 0; oi < 4; oi++) overLong.push(await mkCert({ subject: "OL" + oi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" }));
+  check("path exceeding maxPathCerts throws path/bad-input", (await codeOf(run(overLong, { time: T2027, trustAnchor: anchor, maxPathCerts: 3 }))) === "path/bad-input");
+  // control: a path at the limit is not rejected by the cap (fails later on chain, not on the cap).
+  var atLimit = await run([leafCrl], { time: T2027, trustAnchor: anchor, maxPathCerts: 1 });
+  check("control: a path within maxPathCerts is not rejected by the cap", failCodes(atLimit).indexOf("path/bad-input") === -1);
+
+  // opts.requireRevocation makes the 6.1.3(a)(3) determination mandatory: with no
+  // revocationChecker the step cannot run, so the path fails closed rather than
+  // silently skipping revocation.
+  var leafReq = await mkCert({ subject: "ReqRev", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  var resReqNoChecker = await run([leafReq], { time: T2027, trustAnchor: anchor, requireRevocation: true });
+  check("requireRevocation with no checker fails closed", resReqNoChecker.valid === false && failCodes(resReqNoChecker).indexOf("path/revocation-undetermined") !== -1);
+  // control: without requireRevocation the same no-checker path validates (revocation opt-in).
+  var resNoReq = await run([leafReq], { time: T2027, trustAnchor: anchor });
+  check("control: no checker + no requireRevocation validates", resNoReq.valid === true);
+  // control: requireRevocation with a checker returning good validates.
+  var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
+  var resReqGood = await run([leafReq], { time: T2027, trustAnchor: anchor, requireRevocation: true, revocationChecker: goodChecker });
+  check("control: requireRevocation + good status validates", resReqGood.valid === true);
+
+  // A partition-scoped CRL (onlySomeReasons or a specific distributionPoint)
+  // covers only a shard, so it cannot establish "good" — but a serial it LISTS
+  // is a genuine revocation and must be honored even under softFail (which opts
+  // into accepting an undetermined status, not a revoked one).
+  var someReasonsB = Buffer.from([0x06, 0x40]); // BIT STRING: keyCompromise only
+  var crlPartRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(9), idpExt({ onlySomeReasons: someReasonsB })] });
+  var resPartRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlPartRev]) });
+  check("reason-partitioned CRL listing the serial revokes even under softFail", resPartRev.valid === false && failCodes(resPartRev).indexOf("path/revoked") !== -1);
+  var dpNameScope = b.contextConstructed(0, b.contextConstructed(0, gnUri("http://crl.example/partition/1")));
+  var crlDpRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(10), idpExt({ distributionPoint: dpNameScope })] });
+  var resDpRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlDpRev]) });
+  check("distributionPoint-scoped CRL listing the serial revokes even under softFail", resDpRev.valid === false && failCodes(resDpRev).indexOf("path/revoked") !== -1);
+  // control: a clean partition-scoped CRL still cannot establish good.
+  var crlPartClean = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(11), idpExt({ onlySomeReasons: someReasonsB })] });
+  var resPartClean = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPartClean]) });
+  check("control: a clean partition-scoped CRL cannot establish good (undetermined)", resPartClean.valid === false && failCodes(resPartClean).indexOf("path/revocation-undetermined") !== -1);
+
+  // An EC certificate whose SPKI OMITS the curve parameters inherits them from
+  // its issuer (RFC 5280 6.1.4(f)); the inherited parameters are spliced back so
+  // importKey can consume the key, rather than rejecting a valid cert.
+  var p256iKeys = await ensureKeys("p256i");
+  var p256spki = (await ensureKeys("p256")).spki;
+  var ecKeyAlgOid = pki.asn1.read.oid(pki.asn1.decode(p256spki).children[0].children[0]);  // id-ecPublicKey (the KEY alg, §6.1.1(e))
+  var ecAnchorParams = { name: (await mkAnchor("p256", "EcParamRoot")).name, publicKey: p256spki, algorithm: ecKeyAlgOid, parameters: ecCurveParams(p256spki) };
+  var interNoParams = await mkCert({ subject: "NoParamsInter", issuer: "EcParamRoot", signWith: "p256", subjectKeys: "p256i", spki: stripEcParams(p256iKeys.spki), extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var leafNoParams = await mkCert({ subject: "NoParamsLeaf", issuer: "NoParamsInter", signWith: "p256i", subjectKeys: "ed25519leaf" });
+  var resNoParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorParams });
+  check("EC cert inheriting its curve parameters verifies (params spliced)", resNoParams.valid === true);
 
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
