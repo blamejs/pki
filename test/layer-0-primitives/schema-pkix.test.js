@@ -133,6 +133,10 @@ function testPolicyDecoders() {
     code(function () { cp(b.sequence([b.sequence([b.oid(P1)]), b.sequence([b.oid(P1)])])); }) === "path/bad-policy");
   check("cp malformed OID content rejected, never dropped (CVE-2023-0465 class)",
     code(function () { cp(b.sequence([b.sequence([b.raw(Buffer.from([0x06, 0x01, 0x80]))])])); }) === "path/bad-policy");
+  check("cp PolicyInformation with a third field rejected",
+    code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1")])]), b.integer(1n)])])); }) === "path/bad-policy");
+  check("cp policyQualifiers that is not a SEQUENCE rejected",
+    code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.integer(1n)])])); }) === "path/bad-policy");
 
   var pm = DEC.byOid[OID_PM];
   var m = pm(b.sequence([b.sequence([b.oid(P1), b.oid(P2)])]));

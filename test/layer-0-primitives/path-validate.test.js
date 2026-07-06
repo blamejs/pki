@@ -1011,6 +1011,14 @@ async function testAuditRegressions() {
   var resC19 = await run([interUriC, leafUriC], { time: T2027, trustAnchor: anchor });
   check("C19 hostless URI under a URI constraint fails closed", resC19.valid === false && failCodes(resC19).indexOf("path/name-constraint-unsupported") !== -1);
 
+  // C20 (Codex :949) — a CRL whose IDP carries a malformed IMPLICIT BOOLEAN
+  // (onlyContainsCACerts [2] encoded CONSTRUCTED) has an unknown scope -> the
+  // CRL is unusable, not treated as unrestricted-authoritative.
+  var idpBadBool = ext("2.5.29.28", true, b.sequence([b.contextConstructed(2, b.octetString(Buffer.from([0xff])))]));
+  var crlBadBool = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpBadBool] });
+  var resC20 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadBool]) });
+  check("C20 malformed IDP BOOLEAN makes the CRL unusable", resC20.valid === false && failCodes(resC20).indexOf("path/revocation-undetermined") !== -1);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
