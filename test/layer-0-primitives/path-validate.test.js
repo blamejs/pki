@@ -72,6 +72,13 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-badmgf",
   },
+  // PSS AlgorithmIdentifier whose parameters field is a DER NULL (not a
+  // RSASSA-PSS-params SEQUENCE) — must fail closed, not default to SHA-1.
+  pssnull: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "null",
+  },
 };
 
 // Aliases: distinct keypairs of the same algorithm (KEYS is keyed by the
@@ -172,6 +179,8 @@ function gnEmail(text) { return b.contextPrimitive(1, Buffer.from(text, "ascii")
 function gnUri(text) { return b.contextPrimitive(6, Buffer.from(text, "ascii")); }
 function gnIp(octets) { return b.contextPrimitive(7, Buffer.from(octets)); }
 function gnDirectoryName(nDer) { return b.contextConstructed(4, nDer); }
+// registeredID [8] IMPLICIT OBJECT IDENTIFIER — the context tag carries the raw OID content.
+function gnRegisteredID(oidStr) { return b.contextPrimitive(8, pki.asn1.decode(b.oid(oidStr)).content); }
 
 function sanExt(generalNames, critical) {
   return ext("2.5.29.17", critical === true, b.sequence(generalNames));
@@ -892,6 +901,21 @@ async function testAuditRegressions() {
   var leafBadMgf = await mkCert({ subject: "BadMgf", issuer: "PssMgfRoot", signWith: "pssbadmgf", subjectKeys: "ed25519leaf" });
   var resC7 = await run([leafBadMgf], { time: T2027, trustAnchor: anchorBadMgf });
   check("C7 PSS MGF1-hash mismatch rejected", resC7.valid === false && failCodes(resC7).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C10 (Codex :132) — a PSS AlgorithmIdentifier with a present-but-non-SEQUENCE
+  // parameters field (a DER NULL) must be rejected, not defaulted to SHA-1.
+  var anchorPssNull = await mkAnchor("pssnull", "PssNullRoot");
+  var leafPssNull = await mkCert({ subject: "PssNull", issuer: "PssNullRoot", signWith: "pssnull", subjectKeys: "ed25519leaf" });
+  var resC10 = await run([leafPssNull], { time: T2027, trustAnchor: anchorPssNull });
+  check("C10 PSS non-SEQUENCE params rejected", resC10.valid === false && failCodes(resC10).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C9 (Codex :337) — a critical excluded nameConstraints of a form the
+  // validator cannot compare (registeredID) plus a cert presenting that form
+  // must fail closed, not be treated as "not excluded".
+  var interRegId = await mkCert({ subject: "RegIdInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnRegisteredID("1.3.6.1.4.1.99999.5")])]) });
+  var leafRegId = await mkCert({ subject: "RegIdLeaf", issuer: "RegIdInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnRegisteredID("1.3.6.1.4.1.99999.5")])] });
+  var resC9 = await run([interRegId, leafRegId], { time: T2027, trustAnchor: anchor });
+  check("C9 unsupported excluded name form fails closed", resC9.valid === false && failCodes(resC9).indexOf("path/name-constraint-unsupported") !== -1);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
