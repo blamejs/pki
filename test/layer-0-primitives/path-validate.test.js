@@ -92,7 +92,21 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-negsalt",
   },
+  // PSS declaring SHA-1 (explicitly rejected — SHAttered) hash + mgf1SHA1.
+  psssha1: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-sha1",
+  },
+  // PSS with an explicit SHA-256 hash but NO maskGenAlgorithm (defaults to
+  // mgf1SHA1, which mismatches -> must be rejected).
+  pssnomgf: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-nomgf",
+  },
 };
+var OID_SHA1 = "1.3.14.3.2.26";
 
 // Aliases: distinct keypairs of the same algorithm (KEYS is keyed by the
 // alias), so an intermediate / rollover / leaf each get their own key.
@@ -139,6 +153,13 @@ function algIdDer(a) {
       b.explicit(1, b.sequence([b.oid(OID_MGF1), sha])),
       b.explicit(2, b.integer(-1n)),   // negative saltLength
     ]));
+  }
+  else if (a.sigParams === "pss-sha1") {
+    var sha1 = b.sequence([b.oid(OID_SHA1), b.nullValue()]);
+    children.push(b.sequence([b.explicit(0, sha1), b.explicit(1, b.sequence([b.oid(OID_MGF1), sha1]))]));
+  }
+  else if (a.sigParams === "pss-nomgf") {
+    children.push(b.sequence([b.explicit(0, b.sequence([b.oid(OID_SHA256), b.nullValue()]))]));   // hash only, no MGF
   }
   else if (a.sigParams === "pss" || a.sigParams === "pss-badhash" || a.sigParams === "pss-badmgf") {
     // RSASSA-PSS-params { hashAlgorithm [0], maskGenAlgorithm [1], saltLength [2] } (RFC 4055 §3.1, EXPLICIT tags).
@@ -1036,6 +1057,43 @@ async function testAuditRegressions() {
   var leafWrongParams = await mkCert({ subject: "WrongP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: ecNullParams });
   var resC22 = await run([leafWrongParams], { time: T2027, trustAnchor: anchor });
   check("C22 EdDSA with a stray NULL parameter rejected", resC22.valid === false && failCodes(resC22).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C23 (preempt A) — a SHA-1 PSS signature is rejected (SHA-1 is dropped from
+  // the supported set, matching the no-sha1WithRSAEncryption posture).
+  var anchorSha1 = await mkAnchor("psssha1", "Sha1Root");
+  var leafSha1 = await mkCert({ subject: "Sha1Pss", issuer: "Sha1Root", signWith: "psssha1", subjectKeys: "ed25519leaf" });
+  var resC23 = await run([leafSha1], { time: T2027, trustAnchor: anchorSha1 });
+  check("C23 SHA-1 PSS signature rejected", resC23.valid === false && failCodes(resC23).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C24 (Codex :173) — a PSS AlgorithmIdentifier declaring an explicit SHA-256
+  // hash but OMITTING maskGenAlgorithm (RFC 4055 default mgf1SHA1) must be
+  // rejected, not verified as SHA-256/MGF1-SHA256.
+  var anchorNoMgf = await mkAnchor("pssnomgf", "NoMgfRoot");
+  var leafNoMgf = await mkCert({ subject: "NoMgf", issuer: "NoMgfRoot", signWith: "pssnomgf", subjectKeys: "ed25519leaf" });
+  var resC24 = await run([leafNoMgf], { time: T2027, trustAnchor: anchorNoMgf });
+  check("C24 PSS with absent maskGenAlgorithm rejected (SHA-1 default)", resC24.valid === false && failCodes(resC24).indexOf("path/unsupported-algorithm") !== -1);
+
+  // C25 (preempt B) - a NUL byte in the leaf SUBJECT DN must not crash the
+  // validate() promise (selfIssued's dnEqual throws on a NUL; the throw must
+  // be swallowed to a structured verdict). A directoryName name constraint
+  // over such a subject additionally fails the path closed.
+  var nulRdn = [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("a" + String.fromCharCode(0) + "b")])])];
+  var nulLeaf = await mkCert({ subject: nulRdn, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  var res25threw = false;
+  try { await run([nulLeaf], { time: T2027, trustAnchor: anchor }); }
+  catch (_e) { res25threw = true; }
+  check("C25 NUL in subject DN yields a verdict, not an uncaught throw", res25threw === false);
+  var interDirNul = await mkCert({ subject: "DirNulInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnDirectoryName(nameDer("X"))], null)]) });
+  var nulLeaf2 = await mkCert({ subject: nulRdn, issuer: "DirNulInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  var res25b = await run([interDirNul, nulLeaf2], { time: T2027, trustAnchor: anchor });
+  check("C25 NUL subject under a directoryName constraint fails closed", res25b.valid === false);
+
+  // C26 (preempt C) — a CRL with a revoked entry carrying an UNKNOWN CRITICAL
+  // CRL-entry extension is unusable for any cert (§5.3) -> undetermined.
+  var critEntryExt = ext("1.3.6.1.4.1.99999.43", true, b.octetString(Buffer.from([1])));
+  var crlCritEntry = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [critEntryExt] }] });
+  var resC26 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
+  check("C26 unknown critical CRL-entry extension makes the CRL unusable", resC26.valid === false && failCodes(resC26).indexOf("path/revocation-undetermined") !== -1);
 
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).

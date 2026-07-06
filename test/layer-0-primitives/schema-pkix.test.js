@@ -183,6 +183,8 @@ function testNameAndKeyDecoders() {
   check("san dNSName decoded value", s.names[0].value === "host.example");
   check("san rfc822Name decoded value", s.names[1].value === "a@b.example");
   check("san empty rejected (SIZE 1..MAX)", code(function () { san(b.sequence([])); }) !== "NO-THROW");
+  check("san dNSName with an embedded control byte (NUL) rejected (CVE-2009-2408 class)",
+    code(function () { san(b.sequence([b.contextPrimitive(2, Buffer.from([0x61, 0x00, 0x62]))])); }) === "path/bad-extension-value");
   check("ian registered", typeof DEC.byOid[OID_IAN] === "function");
 
   var eku = DEC.byOid[OID_EKU];
