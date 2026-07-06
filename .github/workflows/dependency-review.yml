@@ -1,0 +1,33 @@
+name: Dependency review
+
+# Blocks a PR that introduces a dependency with a known vulnerability or a
+# disallowed license. The toolkit ships zero runtime dependencies (Hard Rule #1),
+# so this guards the dev-dependency + any vendored bundle surface and enforces
+# that `dependencies` stays empty by catching a newly-added runtime dep.
+on:
+  pull_request:
+    branches: [main]
+
+permissions: read-all
+
+jobs:
+  dependency-review:
+    name: Dependency review
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Review dependency changes
+        uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
+        with:
+          fail-on-severity: high
+          # Copyleft / non-permissive licenses are disallowed for an Apache-2.0
+          # toolkit; a new runtime dep would also trip Hard Rule #1 review.
+          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-3.0
+          comment-summary-in-pr: on-failure

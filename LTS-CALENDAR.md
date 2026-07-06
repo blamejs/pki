@@ -29,3 +29,13 @@ The "Node minimum" column is the lowest Node major the toolkit supports for that
 ## Experimental primitives are exempt
 
 Primitives documented `@status experimental` (shown as "experimental" on each wiki page) are **not** covered by the stability contract or the LTS window. They may change signature, behavior, or wire format — or be removed — in any minor, without the deprecation cycle that stable primitives get. This applies on the LTS line too. The exemption exists so the toolkit can ship primitives that track in-flight standards (draft RFCs, pre-IANA codepoints, newly published algorithm identifiers) without freezing an unsettled format for a major's full support window. A primitive graduates to stable by dropping the `@status experimental` marker in a release whose notes call out the graduation.
+
+## The status lifecycle is driven, not left to drift
+
+`experimental → stable → deprecated → removed` is enforced by a release gate so a primitive can't sit `experimental` forever by inertia:
+
+- **Graduation criterion.** A primitive becomes `stable` once its governing standard is settled **and** it is interop-proven through the integration harness — not on a timer.
+- **The timer forces the decision.** After a primitive has shipped `experimental` for several releases, the gate requires an explicit call: either graduate it to `stable`, or record a dated `keep-experimental` decision (with a reason and a future re-review version) in `lifecycle-reviews.json`. Silence fails the release. This is the driver — a conscious decision is recorded every cycle.
+- **Deprecation is bounded.** A `deprecated` primitive must declare `@deprecated <remove-by-version>`; the gate fails once that version ships, so a deprecation is actually removed rather than lingering (Hard Rule #6: deprecation warnings ship ≥1 minor before removal).
+
+The gate is `node scripts/check-status-lifecycle.js`, run in the static-gate set on every release.
