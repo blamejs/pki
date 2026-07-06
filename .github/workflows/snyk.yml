@@ -43,7 +43,18 @@ jobs:
         # --dev is required: this repo ships zero runtime dependencies (Hard Rule
         # #1), so the entire npm dependency surface is devDependencies, which Snyk
         # skips by default. Without it the SCA scan would cover nothing.
-        run: npx --yes snyk@latest test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-oss.sarif || true
+        # Exit 1 = scan completed WITH issues (findings) -> success. Any other
+        # non-zero (2/3/auth/no-project/network) is an EXECUTION failure: let it
+        # fail the step so it is visible (continue-on-error keeps the job green),
+        # instead of || true painting a broken scan as a passing one.
+        run: |
+          set +e
+          npx --yes snyk@latest test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-oss.sarif
+          code=$?
+          set -e
+          if [ "$code" = "0" ] || [ "$code" = "1" ]; then exit 0; fi
+          echo "::error::Snyk Open Source scan failed with exit $code (execution error, not findings)."
+          exit "$code"
 
       - name: Upload Snyk Open Source SARIF
         # Only upload when the scan actually produced a SARIF — a Snyk CLI failure
@@ -59,7 +70,16 @@ jobs:
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        run: npx --yes snyk@latest code test --severity-threshold=high --sarif-file-output=snyk-code.sarif || true
+        # Same exit-code handling: findings (1) succeed; an execution failure
+        # (e.g. Snyk Code not enabled for the org) surfaces as a red step.
+        run: |
+          set +e
+          npx --yes snyk@latest code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
+          code=$?
+          set -e
+          if [ "$code" = "0" ] || [ "$code" = "1" ]; then exit 0; fi
+          echo "::error::Snyk Code scan failed with exit $code (execution error, not findings)."
+          exit "$code"
 
       - name: Upload Snyk Code SARIF
         if: ${{ hashFiles('snyk-code.sarif') != '' }}
