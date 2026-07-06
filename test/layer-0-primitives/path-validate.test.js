@@ -1425,19 +1425,24 @@ async function testAuditRegressions() {
   var badCodes = failCodes(resBadParam);
   check("malformed descriptor params surface a path/* code, not asn1/*", resBadParam.valid === false && badCodes.indexOf("path/unsupported-algorithm") !== -1 && !badCodes.some(function (cc) { return cc.indexOf("asn1/") === 0; }));
 
-  // RFC 5280 4.2.1.10: a legacy emailAddress in the subject DN is treated as an
-  // rfc822Name for constraint checking ONLY when the cert has no SAN. A cert
-  // with an allowed SAN plus an unrelated legacy emailAddress must not be failed
-  // by an rfc822Name constraint the SAN never triggers.
+  // RFC 5280 4.2.1.10: the legacy emailAddress in the subject DN is checked as an
+  // rfc822Name UNLESS the SAN carries the email identity as an rfc822Name entry.
+  // A SAN of a DIFFERENT form (dNSName only) does NOT cover the email, so an
+  // excluded DN email must still be rejected — not bypassed.
   var interEmSan = await mkCert({ subject: "EmSanInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("banned.example")])]) });
   var emSanRdn = [b.set([atv("2.5.4.3", "EmSanLeaf")]), b.set([b.sequence([b.oid("1.2.840.113549.1.9.1"), b.ia5("user@banned.example")])])];
   var leafEmSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("good.example")])] });
   var resEmSan = await run([interEmSan, leafEmSan], { time: T2027, trustAnchor: anchor });
-  check("legacy subject emailAddress is not constrained when a SAN is present", resEmSan.valid === true);
-  // control: with NO SAN, the same legacy emailAddress IS constrained (excluded).
+  check("excluded subject-DN email is constrained when the SAN has no rfc822Name entry", resEmSan.valid === false && failCodes(resEmSan).indexOf("path/name-constraint-excluded") !== -1);
+  // control: with NO SAN, the legacy emailAddress IS constrained (excluded).
   var leafEmNoSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   var resEmNoSan = await run([interEmSan, leafEmNoSan], { time: T2027, trustAnchor: anchor });
   check("control: legacy subject emailAddress IS constrained without a SAN", resEmNoSan.valid === false && failCodes(resEmNoSan).indexOf("path/name-constraint-excluded") !== -1);
+  // control: when the SAN DOES carry an rfc822Name (the authoritative email), the
+  // legacy DN email is NOT additionally constrained — the SAN email is checked.
+  var leafEmRfcSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@ok.example")])] });
+  var resEmRfcSan = await run([interEmSan, leafEmRfcSan], { time: T2027, trustAnchor: anchor });
+  check("control: an rfc822Name SAN suppresses the legacy DN-email check", resEmRfcSan.valid === true);
 
   // RFC 5280 4.2.1.10: a URI SAN whose authority host is not a FQDN (an IP
   // literal or a dotless label such as localhost) cannot be matched against a
