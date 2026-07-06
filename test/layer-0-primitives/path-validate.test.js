@@ -1198,6 +1198,32 @@ async function testAuditRegressions() {
   var c33NoParent = (function noParent(node) { if (!node) return true; if ("parent" in node) return false; return node.children.every(noParent); });
   check("C33 returned policy tree carries no parent back-pointer", c33NoParent(resC33.validPolicyTree));
 
+  // C34 (Codex :689) — RFC 5280 requires basicConstraints (4.2.1.9),
+  // nameConstraints (4.2.1.10), policyConstraints (4.2.1.11) and
+  // inhibitAnyPolicy (4.2.1.14) on a CA certificate to be marked CRITICAL. A
+  // non-critical form is non-conforming: a relying party that skips
+  // non-critical extensions would not see the constraint. Fail closed on each.
+  var interNCBC = await mkCert({ subject: "NCBCi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [ext("2.5.29.19", false, bcVal(true)), kuExt([KU_KEY_CERT_SIGN])] });
+  var leafNCBC = await mkCert({ subject: "NCBCl", issuer: "NCBCi", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  var resC34a = await run([interNCBC, leafNCBC], { time: T2027, trustAnchor: anchor });
+  check("C34 non-critical CA basicConstraints rejected", resC34a.valid === false && failCodes(resC34a).indexOf("path/extension-not-critical") !== -1);
+  // control: the critical form of the SAME chain validates.
+  var interCBC = await mkCert({ subject: "NCBCi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([]) });
+  var resC34ctl = await run([interCBC, leafNCBC], { time: T2027, trustAnchor: anchor });
+  check("C34 control: critical basicConstraints validates", resC34ctl.valid === true);
+
+  var interNCnc = await mkCert({ subject: "NCnci", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.30", false, ncVal([gnDns("example.com")], null))]) });
+  var resC34b = await run([interNCnc, leafNCBC], { time: T2027, trustAnchor: anchor });
+  check("C34 non-critical nameConstraints rejected", resC34b.valid === false && failCodes(resC34b).indexOf("path/extension-not-critical") !== -1);
+
+  var interNCpc = await mkCert({ subject: "NCpci", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.36", false, b.sequence([b.contextPrimitive(0, intContent(0))]))]) });
+  var resC34c = await run([interNCpc, leafNCBC], { time: T2027, trustAnchor: anchor });
+  check("C34 non-critical policyConstraints rejected", resC34c.valid === false && failCodes(resC34c).indexOf("path/extension-not-critical") !== -1);
+
+  var interNCiap = await mkCert({ subject: "NCiapi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.54", false, b.integer(0n))]) });
+  var resC34d = await run([interNCiap, leafNCBC], { time: T2027, trustAnchor: anchor });
+  check("C34 non-critical inhibitAnyPolicy rejected", resC34d.valid === false && failCodes(resC34d).indexOf("path/extension-not-critical") !== -1);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });

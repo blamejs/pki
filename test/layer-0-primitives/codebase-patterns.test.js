@@ -982,6 +982,40 @@ function testCmsEnvelopedDataConformanceGuards() {
   _report("CMS EnvelopedData/EncryptedData decode guards present (all five RecipientInfo kinds / ktri version coupling / non-empty recipientInfos / dispatch walks the two content types)", bad);
 }
 
+function testPathValidateConformanceGuards() {
+  // class: path-validate-conformance-guard-dropped
+  // Each token is the STABLE, frozen error code of an RFC 5280 §6.1 path-
+  // validation MUST that the validator throws. Anchoring on these public codes
+  // (not the helper FUNCTION NAMES like requireCriticalExt / basicProcessing)
+  // makes the guard rename-proof: renaming a helper keeps the codes (silent,
+  // correct), while deleting a fail-closed check drops its code (fires). The RED
+  // conformance vectors remain the per-check behavioural guards; this catches
+  // wholesale removal of a MUST during a refactor.
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/path-validate.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"path/extension-not-critical"',        "basicConstraints/nameConstraints/policyConstraints/inhibitAnyPolicy on a CA must be critical (RFC 5280 §4.2.1.9/.10/.11/.14)"],
+    ['"path/not-a-ca"',                       "an intermediate must assert basicConstraints cA:TRUE (§6.1.4(k); CVE-2021-3450 class)"],
+    ['"path/missing-key-cert-sign"',          "a CA's keyUsage must assert keyCertSign (§6.1.4(n))"],
+    ['"path/unrecognized-critical-extension"', "an unrecognized critical extension fails the path closed (§6.1.4(o)/6.1.5(e))"],
+    ['"path/revocation-undetermined"',        "only an authoritative good status passes; any other revocation outcome fails closed"],
+    ['"path/path-length-exceeded"',           "the CA basicConstraints pathLenConstraint is enforced (§6.1.4(l),(m))"],
+    ['"path/policy-required"',                "explicit-policy with an empty valid-policy tree is rejected (§6.1.5(g))"],
+    ['"path/name-constraint-excluded"',       "a name in an excluded subtree is rejected (§6.1.4(g))"],
+    ['"path/name-constraint-not-permitted"',  "a name outside every permitted subtree is rejected (§6.1.4(g))"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/path-validate.js", line: 0,
+        content: "the path validator no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  bad = _filterMarkers(bad, "path-validate-conformance-guard-dropped");
+  _report("Path-validation RFC 5280 §6.1 guards present (MUST-critical CA extensions / CA gate / keyCertSign / unknown-critical / revocation fail-closed / pathLen / policy-required / name constraints)", bad);
+}
+
 function testNoRemovedWebCryptoNamespace() {
   // class: removed-namespace-reference
   // pki.WebCrypto was removed in favour of pki.webcrypto.* — its classes now hang off
@@ -2235,6 +2269,7 @@ function run() {
   testTspConformanceGuards();
   testAttrCertConformanceGuards();
   testCmsEnvelopedDataConformanceGuards();
+  testPathValidateConformanceGuards();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
