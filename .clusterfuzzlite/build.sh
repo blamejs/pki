@@ -18,11 +18,16 @@ cd "$SRC/pkijs"
 # compiling. compile_javascript_fuzzer generates each wrapper to resolve
 # @jazzer.js/core from the project's node_modules ($OUT/pkijs/node_modules, copied
 # from here), so without this the compiled targets reference a jazzer that isn't
-# present and cannot run. The version is the single source of the pin in
-# fuzz/package.json; --engine-strict=false lets it install under the base image's
-# older Node without the toolkit's own `engines` field aborting the install.
-jazzer_version=$(node -p "require('./fuzz/package.json').dependencies['@jazzer.js/core']")
-npm install --no-save --omit=dev --no-audit --no-fund --engine-strict=false "@jazzer.js/core@${jazzer_version}"
+# present and cannot run. The install is lockfile-driven — `npm ci` against
+# fuzz/package-lock.json, the single source of the jazzer pin, verifying every
+# package against its recorded integrity hash — never a bare `npm install <pkg>`,
+# which would fetch an unverified tree. --engine-strict=false lets it install
+# under the base image's older Node without the toolkit's own `engines` field
+# aborting the install; the verified tree is then moved to the repo root where
+# the wrappers (and the $OUT copy) resolve it.
+npm ci --prefix fuzz --omit=dev --no-audit --no-fund --engine-strict=false
+rm -rf node_modules
+mv fuzz/node_modules node_modules
 
 # NOTE: jazzer.js 4's prebuilt fuzzer addon (@jazzer.js/fuzzer) requires GLIBC
 # 2.32, but the oss-fuzz base-builder-javascript image (even :latest) is Ubuntu

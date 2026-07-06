@@ -21,10 +21,15 @@
 #   ./scripts/vendor-update.sh <package> [version]    # bundle/update a vendored package
 #
 # What the update path does:
-#   1. installs the package temporarily via npm (no save, ignore scripts)
+#   1. resolves the requested spec to an integrity-pinned lockfile in an
+#      isolated staging workspace (scripts/vendor-stage.js, metadata-only),
+#      then installs it there via `npm ci --ignore-scripts` — every package
+#      verified against its lockfile integrity hash, no script executed,
+#      the repo's own node_modules untouched
 #   2. bundles a CommonJS rollup with esbuild (--format=cjs --platform=node)
+#      from the verified staged tree
 #   3. updates lib/vendor/MANIFEST.json (version + bundledAt)
-#   4. removes the temporarily-installed npm package
+#   4. removes the staging workspace
 #   5. require()s the bundle to verify it has no unresolved imports
 #   6. refreshes the MANIFEST sha256 hashes (scripts/refresh-vendor-manifest.js)
 #
@@ -135,20 +140,30 @@ echo "OpenSSL 3.5). Record the reason + re-open condition beside the MANIFEST en
 echo "add attribution to NOTICE. Ctrl-C now if node:crypto already provides this."
 echo ""
 
-npm install "${PKG}@${VER}" --no-save --ignore-scripts 2>/dev/null
-INSTALLED_VER=$(node -e "console.log(require('./node_modules/${PKG}/package.json').version)")
-echo "Installed: $PKG@$INSTALLED_VER"
+# Stage the package in an isolated throwaway workspace, integrity-verified:
+# vendor-stage.js resolves the requested spec to a package-lock.json
+# (metadata-only — no tarball fetched, no script run), then `npm ci`
+# installs the tree with every package checked against its recorded
+# integrity hash. Nothing touches the repo's own node_modules, and no
+# install script ever runs.
+STAGE=$(mktemp -d)
+trap 'rm -rf "$STAGE"' EXIT
+node scripts/vendor-stage.js "$PKG" "$VER" "$STAGE"
+npm ci --prefix "$STAGE" --ignore-scripts --no-audit --no-fund
+INSTALLED_VER=$(node -p "require(process.argv[1] + '/node_modules/' + process.argv[2] + '/package.json').version" "$STAGE" "$PKG")
+echo "Staged: $PKG@$INSTALLED_VER"
 
 # Generic CommonJS rollup. A package with a bespoke export surface should
 # replace this entry with an explicit named-export entry (see the esbuild
-# invocation documented in lib/vendor/README.md).
+# invocation documented in lib/vendor/README.md). The entry lives inside
+# the staging workspace so esbuild resolves the package from the verified
+# staged tree, never from the repo's node_modules.
 BUNDLE_BASENAME=$(echo "$PKG" | sed 's#^@##; s#/#-#g')
 OUTFILE="lib/vendor/${BUNDLE_BASENAME}.cjs"
-echo "module.exports = require(\"${PKG}\");" > _entry.cjs
-npx esbuild _entry.cjs --bundle --format=cjs --minify --platform=node \
+echo "module.exports = require(\"${PKG}\");" > "$STAGE/_entry.cjs"
+npx esbuild "$STAGE/_entry.cjs" --bundle --format=cjs --minify --platform=node \
   --external:node:crypto --external:crypto \
   --outfile="$OUTFILE"
-rm -f _entry.cjs
 sed -i "1s|^|// ${PKG} v${INSTALLED_VER} — vendored. Bundled with esbuild (cjs, node platform).\n// See lib/vendor/README.md for the native-first policy + re-open condition.\n|" "$OUTFILE"
 
 # Update (or create) the MANIFEST.json entry.
@@ -170,9 +185,6 @@ fs.writeFileSync(manifestPath, JSON.stringify(m, null, 2) + '\n');
 console.log('Updated MANIFEST.json: ' + pkg + ' -> ' + process.env.INSTALLED_VER);
 console.log('NOTE: fill in source + license (SPDX) + reason + re-open condition for ' + pkg + ' by hand.');
 "
-
-# Clean up the temporarily-installed package.
-npm uninstall "$PKG" --no-save 2>/dev/null || true
 
 echo ""
 echo "=== Verifying bundle integrity ==="
