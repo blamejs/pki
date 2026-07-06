@@ -76,6 +76,10 @@ function testKeyUsage() {
     code(function () { d(b.bitString(Buffer.alloc(0), 0)); }) === "path/bad-key-usage");
   check("ku all-zero BIT STRING rejected (non-empty bytes, no bit set)",
     code(function () { d(b.bitString(Buffer.from([0x00]), 7)); }) === "path/bad-key-usage");
+  check("ku non-minimal trailing-zero octet rejected (NamedBitList DER, X.690 11.2.2)",
+    code(function () { d(b.bitString(Buffer.from([0x80, 0x00]), 0)); }) === "path/bad-key-usage");
+  check("ku non-minimal unused-bits (declared 6, minimal 7) rejected",
+    code(function () { d(b.bitString(Buffer.from([0x80]), 6)); }) === "path/bad-key-usage");
   check("ku non-BIT-STRING rejected",
     code(function () { d(b.integer(1n)); }) === "path/bad-key-usage");
 }
@@ -110,6 +114,8 @@ function testNameConstraints() {
     code(function () { d(b.sequence([])); }) === "path/bad-name-constraints");
   check("nc explicitly-empty permittedSubtrees rejected (GeneralSubtrees SIZE 1..MAX)",
     code(function () { d(b.sequence([b.contextConstructed(0, Buffer.alloc(0))])); }) === "path/bad-name-constraints");
+  check("nc out-of-order fields rejected ([1] before [0])",
+    code(function () { d(b.sequence([b.contextConstructed(1, subtree(gnDns("x.example"))), b.contextConstructed(0, subtree(gnDns("y.example")))])); }) === "path/bad-name-constraints");
   check("nc present minimum rejected (MUST be zero => DEFAULT omitted)",
     code(function () { d(b.sequence([b.contextConstructed(0, b.sequence([gnDns("a.example"), b.contextPrimitive(0, Buffer.from([0x00]))]))])); }) === "path/bad-name-constraints");
   check("nc present maximum rejected (MUST be absent, RFC 5280 4.2.1.10)",
@@ -137,6 +143,8 @@ function testPolicyDecoders() {
     code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1")])]), b.integer(1n)])])); }) === "path/bad-policy");
   check("cp policyQualifiers that is not a SEQUENCE rejected",
     code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.integer(1n)])])); }) === "path/bad-policy");
+  check("cp policyQualifiers element that is not a PolicyQualifierInfo SEQUENCE rejected",
+    code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.nullValue()])])])); }) === "path/bad-policy");
 
   var pm = DEC.byOid[OID_PM];
   var m = pm(b.sequence([b.sequence([b.oid(P1), b.oid(P2)])]));
@@ -155,6 +163,8 @@ function testPolicyDecoders() {
     code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0xff]))])); }) === "path/bad-policy");
   check("pc duplicate requireExplicitPolicy field rejected",
     code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0x00])), b.contextPrimitive(0, Buffer.from([0x0a]))])); }) === "path/bad-policy");
+  check("pc out-of-order fields rejected ([1] before [0])",
+    code(function () { pc(b.sequence([b.contextPrimitive(1, Buffer.from([0x01])), b.contextPrimitive(0, Buffer.from([0x00]))])); }) === "path/bad-policy");
 
   var iap = DEC.byOid[OID_IAP];
   check("iap SkipCerts decodes", iap(b.integer(4n)) === 4);
@@ -195,6 +205,10 @@ function testNameAndKeyDecoders() {
   // must be rejected, never dereferenced for its absent content (fuzz-found).
   check("aki constructed keyIdentifier [0] rejected fail-closed",
     code(function () { aki(b.sequence([b.contextConstructed(0, b.octetString(Buffer.from([1])))])); }) === "path/bad-extension-value");
+  check("aki duplicate keyIdentifier [0] rejected",
+    code(function () { aki(b.sequence([b.contextPrimitive(0, Buffer.from([0xaa])), b.contextPrimitive(0, Buffer.from([0xbb]))])); }) === "path/bad-extension-value");
+  check("aki out-of-order fields rejected ([2] before [0])",
+    code(function () { aki(b.sequence([b.contextConstructed(1, gnDns("i.example")), b.contextPrimitive(2, Buffer.from([0x07])), b.contextPrimitive(0, Buffer.from([0x01]))])); }) === "path/bad-extension-value");
 
   var skid = DEC.byOid[OID_SKID];
   check("skid decodes", skid(b.octetString(Buffer.from([0xaa]))).equals(Buffer.from([0xaa])));
