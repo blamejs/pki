@@ -1424,6 +1424,16 @@ async function testAuditRegressions() {
   var resBaseOnlyRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseRevoking]) });
   check("control: base revocation with no delta removal is revoked", resBaseOnlyRev.valid === false && failCodes(resBaseOnlyRev).indexOf("path/revoked") !== -1);
 
+  // A CRL whose issuer DN carries an embedded NUL (CVE-2009-2408) makes dnEqual
+  // throw; it must be treated as unusable and SKIPPED, not abort the whole
+  // revocation check — a valid revoking CRL later in the bundle must still be
+  // consulted (else the malformed CRL masks it and passes under softFail).
+  var nulIssuerRdn = [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R" + String.fromCharCode(0) + "oot")])])];
+  var crlNulIssuer = await mkCrl({ issuer: nulIssuerRdn, signWith: "ed25519" });
+  var crlRealRevoke = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
+  var resNulMask = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlNulIssuer, crlRealRevoke]) });
+  check("a malformed-issuer CRL is skipped, not masking a valid revoking CRL", resNulMask.valid === false && failCodes(resNulMask).indexOf("path/revoked") !== -1);
+
   // A malformed signatureAlgorithm.parameters makes resolveDescriptor throw an
   // internal asn1/* error; the public verdict documents path/* codes, so it must
   // surface path/unsupported-algorithm and never leak the asn1/* code.
