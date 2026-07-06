@@ -1142,6 +1142,17 @@ async function testAuditRegressions() {
   var resC30 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFakeReason]) });
   check("C30 critical entry ext keyed by OID not display name (unusable)", resC30.valid === false && failCodes(resC30).indexOf("path/revocation-undetermined") !== -1);
 
+  // C31 (Codex :862) — a revocationChecker returning a status OUTSIDE
+  // good/revoked/unknown (an OCSP tryLater/unauthorized, a typo) must be treated
+  // as undetermined and fail closed, never as a pass.
+  var oddChecker = { check: function () { return Promise.resolve({ status: "tryLater" }); } };
+  var leafC31 = await mkCert({ subject: "C31", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  var resC31 = await run([leafC31], { time: T2027, trustAnchor: anchor, revocationChecker: oddChecker });
+  check("C31 unexpected revocation status fails closed", resC31.valid === false && failCodes(resC31).indexOf("path/revocation-undetermined") !== -1);
+  // ...and softFail opts the SAME unexpected status into a pass.
+  var resC31s = await run([leafC31], { time: T2027, trustAnchor: anchor, revocationChecker: oddChecker, softFail: true });
+  check("C31 softFail opts unexpected status into a pass", resC31s.valid === true);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
