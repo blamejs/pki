@@ -79,6 +79,12 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "null",
   },
+  // PSS params SEQUENCE carrying a malformed primitive [0] hashAlgorithm field.
+  pssprim: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-primfield",
+  },
 };
 
 // Aliases: distinct keypairs of the same algorithm (KEYS is keyed by the
@@ -115,6 +121,10 @@ var OID_SHA256 = "2.16.840.1.101.3.4.2.1", OID_SHA384 = "2.16.840.1.101.3.4.2.2"
 function algIdDer(a) {
   var children = [b.oid(a.sigOid)];
   if (a.sigParams === "null") children.push(b.nullValue());
+  else if (a.sigParams === "pss-primfield") {
+    // a malformed primitive [0] where an EXPLICIT constructed field is required
+    children.push(b.sequence([b.contextPrimitive(0, Buffer.from([0x01]))]));
+  }
   else if (a.sigParams === "pss" || a.sigParams === "pss-badhash" || a.sigParams === "pss-badmgf") {
     // RSASSA-PSS-params { hashAlgorithm [0], maskGenAlgorithm [1], saltLength [2] } (RFC 4055 §3.1, EXPLICIT tags).
     var hashOid = a.sigParams === "pss-badhash" ? "1.3.6.1.4.1.99999.7" : OID_SHA256;
@@ -181,6 +191,8 @@ function gnIp(octets) { return b.contextPrimitive(7, Buffer.from(octets)); }
 function gnDirectoryName(nDer) { return b.contextConstructed(4, nDer); }
 // registeredID [8] IMPLICIT OBJECT IDENTIFIER — the context tag carries the raw OID content.
 function gnRegisteredID(oidStr) { return b.contextPrimitive(8, pki.asn1.decode(b.oid(oidStr)).content); }
+// x400Address [3] — a non-empty constructed form the validator does not decode.
+function gnX400() { return b.contextConstructed(3, b.sequence([b.integer(1n)])); }
 
 function sanExt(generalNames, critical) {
   return ext("2.5.29.17", critical === true, b.sequence(generalNames));
@@ -839,6 +851,7 @@ async function testLeafRulesAndParams() {
 
 async function testAuditRegressions() {
   var anchor = await mkAnchor("ed25519", "Root");
+  var P1m = "1.3.6.1.4.1.99999.1", P2m = "1.3.6.1.4.1.99999.2", P3m = "1.3.6.1.4.1.99999.3";
 
   // A1 — permitted subtrees INTERSECT, not union (§6.1.4(g)): a subordinate CA
   // that permits a broader name cannot re-admit what its parent excluded from
@@ -917,6 +930,28 @@ async function testAuditRegressions() {
   var resC9 = await run([interRegId, leafRegId], { time: T2027, trustAnchor: anchor });
   check("C9 unsupported excluded name form fails closed", resC9.valid === false && failCodes(resC9).indexOf("path/name-constraint-unsupported") !== -1);
 
+  // C11 (Codex :368) — an UNDECODED SAN form (x400Address [3]) must still be
+  // preserved so a critical excluded constraint of that form fails closed.
+  var interX400 = await mkCert({ subject: "X400Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnX400()])]) });
+  var leafX400 = await mkCert({ subject: "X400Leaf", issuer: "X400Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnX400()])] });
+  var resC11 = await run([interX400, leafX400], { time: T2027, trustAnchor: anchor });
+  check("C11 undecoded SAN form preserved for constraints (fails closed)", resC11.valid === false && failCodes(resC11).indexOf("path/name-constraint-unsupported") !== -1);
+
+  // C12 (Codex :645) — a CA asserting only anyPolicy plus a policyMappings
+  // P1->P2 generates the P1 node from the anyPolicy node; a leaf asserting the
+  // mapped-TO policy P2 validates under explicit policy.
+  var interAnyMap = await mkCert({ subject: "AnyMap", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), pmExt([[P1m, P2m]])]) });
+  var leafAnyMap = await mkCert({ subject: "AnyMapLeaf", issuer: "AnyMap", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
+  var resC12 = await run([interAnyMap, leafAnyMap], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  check("C12 policy mapping generates the ID-P node from anyPolicy", resC12.valid === true);
+
+  // C13 (Codex :140) — a PSS params SEQUENCE with a malformed primitive [0]
+  // field must be rejected, not skipped-and-defaulted.
+  var anchorPssPrim = await mkAnchor("pssprim", "PssPrimRoot");
+  var leafPssPrim = await mkCert({ subject: "PssPrim", issuer: "PssPrimRoot", signWith: "pssprim", subjectKeys: "ed25519leaf" });
+  var resC13 = await run([leafPssPrim], { time: T2027, trustAnchor: anchorPssPrim });
+  check("C13 malformed PSS parameter field rejected", resC13.valid === false && failCodes(resC13).indexOf("path/unsupported-algorithm") !== -1);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
@@ -938,7 +973,6 @@ async function testAuditRegressions() {
   // A12 — policy-mapping REPLACES the expected-policy set (§6.1.4(b)(1)): after
   // mapping P1->P2, a leaf asserting the mapped-FROM policy P1 must NOT satisfy
   // the chain (the pre-mapping policy is gone). Second-pass P1.
-  var P1m = "1.3.6.1.4.1.99999.1", P2m = "1.3.6.1.4.1.99999.2", P3m = "1.3.6.1.4.1.99999.3";
   var interMap = await mkCert({ subject: "MapFrom", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m]), pmExt([[P1m, P2m]])]) });
   var leafFrom = await mkCert({ subject: "LeafFrom", issuer: "MapFrom", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
   var resA12 = await run([interMap, leafFrom], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
