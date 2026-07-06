@@ -1420,6 +1420,18 @@ async function testAuditRegressions() {
   var resUriOk = await run([interUriFqdn, leafUriOk], { time: T2027, trustAnchor: anchor });
   check("control: FQDN URI host outside the excluded set validates", resUriOk.valid === true);
 
+  // RFC 5321: an rfc822Name local part is case-SENSITIVE; only the host folds
+  // case-insensitively. A permitted full-mailbox constraint must not admit a
+  // different-case local part.
+  var interEmCase = await mkCert({ subject: "EmCaseInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnEmail("Admin@example.com")], null)]) });
+  var leafEmCaseBad = await mkCert({ subject: "EmCaseBad", issuer: "EmCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("admin@example.com")])] });
+  var resEmCaseBad = await run([interEmCase, leafEmCaseBad], { time: T2027, trustAnchor: anchor });
+  check("different-case local part is not admitted by a full-mailbox permit", resEmCaseBad.valid === false && failCodes(resEmCaseBad).indexOf("path/name-constraint-not-permitted") !== -1);
+  // control: the exact-case local part with a case-folded host is permitted.
+  var leafEmCaseOk = await mkCert({ subject: "EmCaseOk", issuer: "EmCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("Admin@EXAMPLE.com")])] });
+  var resEmCaseOk = await run([interEmCase, leafEmCaseOk], { time: T2027, trustAnchor: anchor });
+  check("control: exact local part with a case-folded host is permitted", resEmCaseOk.valid === true);
+
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
