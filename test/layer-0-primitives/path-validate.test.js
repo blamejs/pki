@@ -1131,6 +1131,17 @@ async function testAuditRegressions() {
   var resC29 = await run([leafPssX], { time: T2027, trustAnchor: anchorPssX });
   check("C29 unexpected PSS parameter field rejected", resC29.valid === false && failCodes(resC29).indexOf("path/unsupported-algorithm") !== -1);
 
+  // C30 (Codex :1058) — the unhandled-critical-entry check keys on the STABLE
+  // OID, not the display name: a custom OID aliased to the name "reasonCode"
+  // must still be treated as unhandled (the CRL is unusable). Registered last so
+  // it cannot perturb earlier OID resolutions in this file.
+  var FAKE_REASON = "1.3.6.1.4.1.99999.77";
+  pki.oid.register(FAKE_REASON, "reasonCode");
+  var fakeReasonEntryExt = ext(FAKE_REASON, true, b.octetString(Buffer.from([1])));
+  var crlFakeReason = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [fakeReasonEntryExt] }] });
+  var resC30 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFakeReason]) });
+  check("C30 critical entry ext keyed by OID not display name (unusable)", resC30.valid === false && failCodes(resC30).indexOf("path/revocation-undetermined") !== -1);
+
   // A7 — a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
