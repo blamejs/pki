@@ -1395,13 +1395,18 @@ async function testAuditRegressions() {
   var crlDeltaC = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [ext("2.5.29.27", true, b.integer(3n))] });
   var resDeltaC = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDeltaC]) });
   check("critical delta CRL is unusable (undetermined)", resDeltaC.valid === false && failCodes(resDeltaC).indexOf("path/revocation-undetermined") !== -1);
-  // a clean base CRL must NOT override a delta that lists the serial: without
-  // base/delta merging the delta's presence forces an undetermined result,
-  // never "good" (else a certificate the delta revokes would be accepted).
+  // a clean base CRL must NOT override an AUTHORITATIVE delta that lists the
+  // serial: the delta (current + verified) reveals the revocation, so the cert
+  // is revoked — never "good" (else a certificate the delta revokes is accepted).
   var baseCleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519" });
   var deltaRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [ext("2.5.29.27", true, b.integer(1n))] });
   var resBaseDelta = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, deltaRevoking]) });
-  check("a delta listing the serial blocks a good result from a clean base", resBaseDelta.valid === false && failCodes(resBaseDelta).indexOf("path/revocation-undetermined") !== -1);
+  check("an authoritative delta listing the serial revokes despite a clean base", resBaseDelta.valid === false && failCodes(resBaseDelta).indexOf("path/revoked") !== -1);
+  // a STALE or unverifiable delta must NOT block a good result from a valid base
+  // (the delta is acted on only after its own currency/signature checks pass).
+  var staleDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: new Date("2026-06-01T00:00:00Z"), extensions: [ext("2.5.29.27", true, b.integer(1n))] });
+  var resStaleDelta = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, staleDelta]) });
+  check("a stale delta does not block a good result from a valid base", resStaleDelta.valid === true);
 
   // A malformed signatureAlgorithm.parameters makes resolveDescriptor throw an
   // internal asn1/* error; the public verdict documents path/* codes, so it must
@@ -1442,6 +1447,13 @@ async function testAuditRegressions() {
   var leafUriOk = await mkCert({ subject: "UriOkLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://good.example/")])] });
   var resUriOk = await run([interUriFqdn, leafUriOk], { time: T2027, trustAnchor: anchor });
   check("control: FQDN URI host outside the excluded set validates", resUriOk.valid === true);
+  // RFC 5280 4.2.1.10: a URI CONSTRAINT must itself be an FQDN (a host or a
+  // .domain), not a full URI. A malformed constraint cannot be matched and must
+  // fail closed rather than silently never-match (ignoring a critical exclusion).
+  var interUriBadC = await mkCert({ subject: "UriBadCInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("http://blocked.example")])]) });
+  var leafUriBadC = await mkCert({ subject: "UriBadCLeaf", issuer: "UriBadCInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://blocked.example/")])] });
+  var resUriBadC = await run([interUriBadC, leafUriBadC], { time: T2027, trustAnchor: anchor });
+  check("malformed (non-FQDN) URI constraint fails closed", resUriBadC.valid === false && failCodes(resUriBadC).indexOf("path/name-constraint-unsupported") !== -1);
 
   // RFC 5321: an rfc822Name local part is case-SENSITIVE; only the host folds
   // case-insensitively. A permitted full-mailbox constraint must not admit a
