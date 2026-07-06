@@ -156,6 +156,36 @@ function testTimeOutOfRange() {
   check("GeneralizedTime year 0050 stays year 50", readGen("00500101000000Z").getUTCFullYear() === 50);
 }
 
+function testFractionalTimeAndImplicitInteger() {
+  var b = pki.asn1.build, TAGS = pki.asn1.TAGS;
+  function readGen(s, opts) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.GENERALIZED_TIME, Buffer.from(s, "latin1"))), opts); }
+  function frac(s) { return readGen(s, { allowFractional: true }); }
+  // Default (strict) read.time rejects a fractional GeneralizedTime — the RFC 5280
+  // certificate/CRL Validity profile (§4.1.2.5.2) forbids fractional seconds.
+  check("default read.time rejects fractional", code(function () { readGen("20260705120000.5Z"); }) === "asn1/bad-generalizedtime");
+  // With allowFractional (RFC 3161 / X.690 §11.7) the fractional profile is accepted,
+  // surfaced at ms precision.
+  check("allowFractional .5Z -> 500ms", frac("20260705120000.5Z").getUTCMilliseconds() === 500);
+  check("allowFractional .34Z -> 340ms", frac("20260705120000.34Z").getUTCMilliseconds() === 340);
+  check("allowFractional trailing-zero .500Z rejected", code(function () { frac("20260705120000.500Z"); }) === "asn1/bad-generalizedtime");
+  // X.690 §11.7 caps the fraction length at nothing; RFC 3161 §2.4.2's own example is
+  // 5 fraction digits — accept any length (the Date is ms-precision; the raw bytes
+  // carry the exact fraction losslessly).
+  check("allowFractional >3-digit .1234Z accepted (ms Date)", frac("20260705120000.1234Z").getUTCMilliseconds() === 123);
+  check("allowFractional RFC 3161 example .34352Z accepted", frac("19990609001326.34352Z").getUTCMilliseconds() === 343);
+  check("allowFractional empty .Z rejected", code(function () { frac("20260705120000.Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional comma ,5Z rejected", code(function () { frac("20260705120000,5Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional no seconds rejected", code(function () { frac("202607051200Z"); }) === "asn1/bad-generalizedtime");
+  check("allowFractional no Z rejected", code(function () { frac("20260705120000"); }) === "asn1/bad-generalizedtime");
+  // read.integerImplicit — [tag] IMPLICIT INTEGER (the RFC 3161 Accuracy millis/micros shape).
+  function ii(tag, n) { return pki.asn1.decode(b.contextPrimitive(tag, b.integer(BigInt(n)).slice(2))); }
+  check("read.integerImplicit reads a [0] IMPLICIT INTEGER", pki.asn1.read.integerImplicit(ii(0, 999), 0) === 999n);
+  check("read.integerImplicit rejects a universal INTEGER", code(function () { pki.asn1.read.integerImplicit(pki.asn1.decode(b.integer(5n)), 0); }) === "asn1/unexpected-tag");
+  check("read.integerImplicit rejects the wrong context tag", code(function () { pki.asn1.read.integerImplicit(ii(1, 5), 0); }) === "asn1/unexpected-tag");
+  check("read.integerImplicit rejects a constructed [0]", code(function () { pki.asn1.read.integerImplicit(pki.asn1.decode(b.contextConstructed(0, b.integer(5n))), 0); }) === "asn1/expected-primitive");
+  check("read.integerImplicit enforces minimal INTEGER", code(function () { pki.asn1.read.integerImplicit(pki.asn1.decode(b.contextPrimitive(0, Buffer.from([0x00, 0x05]))), 0); }) === "asn1/non-minimal-integer");
+}
+
 function testBitStringUnusedBits() {
   var TAGS = pki.asn1.TAGS;
   // FIX 3 — DER requires the declared unused low bits to be zero.
@@ -375,6 +405,7 @@ function run() {
   testRejects();
   testIntegerAndOidCaps();
   testTimeOutOfRange();
+  testFractionalTimeAndImplicitInteger();
   testBitStringUnusedBits();
   testUniversalStringScalarRange();
   testUtcTimeYearRange();

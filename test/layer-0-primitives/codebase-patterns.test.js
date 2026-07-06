@@ -701,6 +701,42 @@ function testOcspConformanceGuards() {
   _report("OCSP RFC-conformance guards present (status whitelist / status<->responseBytes / EXPLICIT ResponderID / CertStatus CHOICE / GeneralizedTime-only / defer unknown responseType)", bad);
 }
 
+function testTspConformanceGuards() {
+  // class: tsp-conformance-guard-dropped
+  // Each token is the STABLE, frozen contract of an RFC 3161 validation the TSP
+  // parser MUST perform — the error code it throws, or the reader that validates a
+  // value. Anchored on the public contract, not a helper name (rename-proof).
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-tsp.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"tsp/bad-gentime"',           "genTime is GeneralizedTime, never UTCTime (§2.4.2)"],
+    ['"tsp/bad-accuracy"',          "Accuracy millis/micros constrained to 1..999 (§2.4.2)"],
+    ['"tsp/bad-ordering"',          "ordering is BOOLEAN DEFAULT FALSE — explicit FALSE omitted (§2.4.2)"],
+    ['"tsp/bad-tsa"',               "tsa is a GeneralName (context tag [0]..[8]) (§2.4.2, RFC 5280 §4.2.1.6)"],
+    ['"tsp/bad-extensions"',        "TSTInfo extensions is SEQUENCE SIZE(1..MAX) — empty rejected (RFC 5280 §4.1.2.9)"],
+    ['"tsp/duplicate-extension"',   "extension OIDs are unique (RFC 5280 §4.1.2.9)"],
+    ['"tsp/bad-failinfo"',          "an unsupported PKIFailureInfo bit is rejected (RFC 3161 §2.4.2)"],
+    ['"tsp/unexpected-failinfo"',   "a granted TimeStampResp must not carry failInfo (RFC 3161 §2.4.2)"],
+    ['"tsp/bad-status"',            "PKIStatus is in 0..5 (§2.4.2)"],
+    ['"tsp/missing-token"',         "a granted TimeStampResp carries a token (§2.4.2)"],
+    ['"tsp/unexpected-token"',      "a non-granted TimeStampResp carries no token (§2.4.2)"],
+    ['"tsp/wrong-econtent-type"',   "a token must encapsulate id-ct-TSTInfo (§2.4.2)"],
+    ['"tsp/multi-signer"',          "a token has exactly one (TSA) signerInfo (§2.4.2)"],
+    ['"tsp/bad-token"',             "a malformed token surfaces a typed TspError, not a leaked CmsError (§2.4.2)"],
+    ['"tsp/detached-token"',        "a token must carry attached eContent (§2.4.2)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-tsp.js", line: 0,
+        content: "the TSP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  bad = _filterMarkers(bad, "tsp-conformance-guard-dropped");
+  _report("TSP RFC-conformance guards present (v1 version / GeneralizedTime genTime / accuracy 1..999 / ordering-default-false / status 0..5 / status<->token coupling / id-ct-TSTInfo + single-signer + attached token)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // (j) release.js waits for Codex before merge (closes the async-review race)
 // ---------------------------------------------------------------------------
@@ -942,7 +978,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js"]; // + future format modules as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -1637,10 +1673,27 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-csr.js:pemDecode", "lib/schema-csr.js:pemEncode",
         "lib/schema-pkcs8.js:pemDecode", "lib/schema-pkcs8.js:pemEncode",
         "lib/schema-cms.js:pemDecode", "lib/schema-cms.js:pemEncode",
-        "lib/schema-ocsp.js:pemDecode",
+        "lib/schema-ocsp.js:pemDecode", "lib/schema-tsp.js:pemDecode",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
+    },
+    {
+      // Format-module schema-declaration / build glue: each module declares its
+      // sub-schemas with the same combinator idiom (`var X = schema.seq([field(...),
+      // optional(...)], { assert, arity, code, what, build })`) and shapes its output
+      // in a build fn (`return { field: m.fields.field.value, serialNumberHex:
+      // node.content.toString("hex"), ... }`). The combinators + the shared idioms
+      // (serialNumberHex, whenUniversal optionals, the raw-signature octet-alignment
+      // guard) already live in the engine / pkix / a per-module helper; each
+      // declaration binds DIFFERENT fields + codes, so the shape recurs without being
+      // further extractable. family-subset so any 3+ of the format modules match.
+      files: [
+        "lib/schema-cms.js:ctx", "lib/schema-ocsp.js:_rawSignature",
+        "lib/schema-pkcs8.js:<top>", "lib/schema-tsp.js:<top>",
+      ],
+      mode: "family-subset",
+      reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
     },
   ];
 
@@ -1843,6 +1896,7 @@ function run() {
   testFuzzBuildInstallsJazzer();
   testCmsSignedDataConformanceGuards();
   testOcspConformanceGuards();
+  testTspConformanceGuards();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();

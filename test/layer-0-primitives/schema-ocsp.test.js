@@ -368,7 +368,9 @@ function testRejectExtras() {
   var c28 = parseRespCode(basicOcspResponse(badSR));
   check("28. certStatus/nextUpdate position confusion rejected", c28 !== "NO-THROW" && c28.indexOf("RAW:") !== 0);
   // 30. producedAt GeneralizedTime with fractional seconds -> leaf asn1/* fault.
-  var badTime = Buffer.concat([Buffer.from([0x18, 0x11]), Buffer.from("20260101000000.5Z", "latin1")]);
+  // A comma decimal separator is non-canonical (X.690 §11.7.4 requires '.'); a
+  // fractional GeneralizedTime with '.' IS valid, so this probes the profile fault.
+  var badTime = Buffer.concat([Buffer.from([0x18, 0x11]), Buffer.from("20260101000000,5Z", "latin1")]);
   var badTimeResp = basicResponse({ tbs: responseData({ producedAt: badTime }) });
   check("30. malformed GeneralizedTime -> leaf asn1 fault", parseRespCode(basicOcspResponse(badTimeResp)).indexOf("asn1/") === 0);
   // 33. Signature.signature BIT STRING with unused low bits set -> leaf asn1/bad-bit-string.

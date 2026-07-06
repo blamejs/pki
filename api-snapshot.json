@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.12",
+  "packageVersion": "0.1.13",
   "surface": {
     "C": {
       "kind": "object",
@@ -295,6 +295,10 @@
               "kind": "function",
               "arity": 1
             },
+            "integerImplicit": {
+              "kind": "function",
+              "arity": 2
+            },
             "nullImplicit": {
               "kind": "function",
               "arity": 2
@@ -321,7 +325,7 @@
             },
             "time": {
               "kind": "function",
-              "arity": 1
+              "arity": 2
             }
           }
         }
@@ -453,6 +457,10 @@
           "arity": 2
         },
         "SchemaError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "TspError": {
           "kind": "function",
           "arity": 3
         },
@@ -596,6 +604,10 @@
               "kind": "function",
               "arity": 1
             },
+            "implicitInteger": {
+              "kind": "function",
+              "arity": 1
+            },
             "implicitNull": {
               "kind": "function",
               "arity": 1
@@ -603,6 +615,10 @@
             "implicitOctetString": {
               "kind": "function",
               "arity": 1
+            },
+            "implicitSeqOf": {
+              "kind": "function",
+              "arity": 3
             },
             "implicitSetOf": {
               "kind": "function",
@@ -696,6 +712,27 @@
             }
           }
         },
+        "tsp": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parseToken": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parseTstInfo": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
         "x509": {
           "kind": "object",
           "members": {
@@ -758,6 +795,10 @@
     "pki.schema.pkcs8.parseEncrypted": "0.1.9",
     "pki.schema.pkcs8.pemDecode": "0.1.9",
     "pki.schema.pkcs8.pemEncode": "0.1.9",
+    "pki.schema.tsp.parseTstInfo": "0.1.13",
+    "pki.schema.tsp.parse": "0.1.13",
+    "pki.schema.tsp.parseToken": "0.1.13",
+    "pki.schema.tsp.pemDecode": "0.1.13",
     "pki.schema.x509.pemDecode": "0.1.7",
     "pki.schema.x509.pemEncode": "0.1.7",
     "pki.schema.x509.parse": "0.1.7",
