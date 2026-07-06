@@ -1380,6 +1380,17 @@ async function testAuditRegressions() {
   var resDeltaC = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDeltaC]) });
   check("critical delta CRL is unusable (undetermined)", resDeltaC.valid === false && failCodes(resDeltaC).indexOf("path/revocation-undetermined") !== -1);
 
+  // A malformed signatureAlgorithm.parameters makes resolveDescriptor throw an
+  // internal asn1/* error; the public verdict documents path/* codes, so it must
+  // surface path/unsupported-algorithm and never leak the asn1/* code.
+  var anchorPssParam = await mkAnchor("rsapss", "PssRoot");
+  var pssParsed = pki.schema.x509.parse(await mkCert({ subject: "PssBadParam", issuer: "PssRoot", signWith: "rsapss", subjectKeys: "ed25519leaf" }));
+  pssParsed.signatureAlgorithm = { oid: pssParsed.signatureAlgorithm.oid, name: pssParsed.signatureAlgorithm.name, parameters: Buffer.from([0x30, 0x03, 0x02, 0x81, 0x01]) };
+  pssParsed.tbsSignatureAlgorithm = pssParsed.signatureAlgorithm;
+  var resBadParam = await run([pssParsed], { time: T2027, trustAnchor: anchorPssParam });
+  var badCodes = failCodes(resBadParam);
+  check("malformed descriptor params surface a path/* code, not asn1/*", resBadParam.valid === false && badCodes.indexOf("path/unsupported-algorithm") !== -1 && !badCodes.some(function (cc) { return cc.indexOf("asn1/") === 0; }));
+
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
