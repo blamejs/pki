@@ -1379,6 +1379,13 @@ async function testAuditRegressions() {
   var crlDeltaC = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [ext("2.5.29.27", true, b.integer(3n))] });
   var resDeltaC = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDeltaC]) });
   check("critical delta CRL is unusable (undetermined)", resDeltaC.valid === false && failCodes(resDeltaC).indexOf("path/revocation-undetermined") !== -1);
+  // a clean base CRL must NOT override a delta that lists the serial: without
+  // base/delta merging the delta's presence forces an undetermined result,
+  // never "good" (else a certificate the delta revokes would be accepted).
+  var baseCleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519" });
+  var deltaRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [ext("2.5.29.27", true, b.integer(1n))] });
+  var resBaseDelta = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, deltaRevoking]) });
+  check("a delta listing the serial blocks a good result from a clean base", resBaseDelta.valid === false && failCodes(resBaseDelta).indexOf("path/revocation-undetermined") !== -1);
 
   // A malformed signatureAlgorithm.parameters makes resolveDescriptor throw an
   // internal asn1/* error; the public verdict documents path/* codes, so it must
