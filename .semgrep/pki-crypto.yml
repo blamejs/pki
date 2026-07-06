@@ -48,11 +48,15 @@ rules:
     languages: [javascript]
     severity: WARNING
     message: >
-      Comparing a MAC / tag / digest / signature with === or Buffer.equals is
-      timing-variable. Use crypto.timingSafeEqual for secret-dependent equality.
+      Comparing a MAC / tag / digest / signature with ===, !==, or Buffer.equals
+      is timing-variable. Use crypto.timingSafeEqual for secret-dependent equality.
     patterns:
       - pattern-either:
           - pattern: $A.equals($MAC)
+          - pattern: $A === $MAC
+          - pattern: $MAC === $A
+          - pattern: $A !== $MAC
+          - pattern: $MAC !== $A
       - metavariable-regex:
           metavariable: $MAC
           regex: (?i).*(mac|tag|digest|hmac|signature|secret).*

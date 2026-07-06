@@ -28,12 +28,19 @@ jobs:
 
       - name: Enforce zero runtime dependencies (Hard Rule #1)
         run: |
-          deps=$(node -e "process.stdout.write(JSON.stringify(require('./package.json').dependencies || {}))")
+          deps=$(node -e "
+            var p = require('./package.json');
+            var fields = ['dependencies', 'optionalDependencies', 'peerDependencies'];
+            var found = {};
+            fields.forEach(function (f) { Object.keys(p[f] || {}).forEach(function (k) { found[f + ':' + k] = (p[f])[k]; }); });
+            (p.bundledDependencies || p.bundleDependencies || []).forEach(function (k) { found['bundledDependencies:' + k] = true; });
+            process.stdout.write(JSON.stringify(found));
+          ")
           if [ "$deps" != "{}" ]; then
-            echo "::error::package.json declares runtime dependencies: $deps — Hard Rule #1 forbids any runtime dependency (vendor under lib/vendor/ instead)."
+            echo "::error::package.json declares runtime dependencies: $deps — Hard Rule #1 forbids any runtime dependency (dependencies / optionalDependencies / peerDependencies / bundledDependencies). Vendor under lib/vendor/ instead."
             exit 1
           fi
-          echo "package.json dependencies is empty ({}) — Hard Rule #1 holds."
+          echo "no runtime dependencies in any field — Hard Rule #1 holds."
 
       - name: Review dependency changes
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0

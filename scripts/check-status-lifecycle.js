@@ -88,9 +88,18 @@ function loadLedger() {
 }
 
 // Pure evaluation (exported for the test): returns { failures, reminders }.
+var KNOWN_STATUSES = { experimental: 1, stable: 1, deprecated: 1 };
+
 function evaluate(primitives, ledger, current) {
   var failures = [], reminders = [];
   primitives.forEach(function (p) {
+    // Every @primitive MUST declare a recognized @status. A missing or
+    // misspelled one is not silently skipped — otherwise deleting @status on an
+    // overdue experimental primitive would make it vanish from this gate.
+    if (!p.status || !KNOWN_STATUSES[p.status]) {
+      failures.push(p.primitive + " has a missing or unrecognized @status (" + (p.status || "none") + ") — declare @status experimental|stable|deprecated.");
+      return;
+    }
     if (p.status === "experimental") {
       if (!p.since) { failures.push(p.primitive + " is @status experimental but has no @since to age from."); return; }
       var age = releaseAge(p.since, current);

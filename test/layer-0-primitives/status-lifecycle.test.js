@@ -51,6 +51,12 @@ function run() {
   var stable = lifecycle.evaluate([prim("pki.x.done", "stable", "0.1.7")], {}, CUR);
   check("stable primitive is not flagged", stable.failures.length === 0);
 
+  // 5b. A missing or misspelled @status FAILS — it cannot silently evade the gate.
+  var noStatus = lifecycle.evaluate([prim("pki.x.q", null, "0.1.7")], {}, CUR);
+  check("primitive with no @status fails", noStatus.failures.length === 1 && /unrecognized @status/.test(noStatus.failures[0]));
+  var badStatus = lifecycle.evaluate([prim("pki.x.q", "experimntal", "0.1.7")], {}, CUR);
+  check("primitive with a misspelled @status fails", badStatus.failures.length === 1);
+
   // 6. A deprecated primitive with NO remove-by fails.
   var depNoTarget = lifecycle.evaluate([prim("pki.x.gone", "deprecated", "0.1.7")], {}, CUR);
   check("deprecated with no remove-by fails", depNoTarget.failures.length === 1 && /remove-by/.test(depNoTarget.failures[0]));
