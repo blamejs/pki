@@ -161,6 +161,50 @@ function checkSince(oldMap, newMap, packageVersion) {
   return violations;
 }
 
+// Scan the shipped source for every `@primitive <token>` … `@originated <ver>`
+// pair (mirrors extractSince). @originated records the earlier version the
+// callable was already reachable when its documented @primitive PATH was later
+// corrected. Returns { "<token>": "<ver>" } for the primitives that declare it.
+function extractOriginated(libDir) {
+  libDir = libDir || path.join(__dirname, "..", "lib");
+  var out = {};
+  fs.readdirSync(libDir).filter(function (f) { return /\.js$/.test(f); }).sort()
+    .forEach(function (f) {
+      var src = fs.readFileSync(path.join(libDir, f), "utf8");
+      var cur = null;
+      src.split(/\r?\n/).forEach(function (line) {
+        var mp = line.match(/@primitive\s+(\S+)/);
+        if (mp) { cur = mp[1]; return; }
+        var mo = line.match(/@originated\s+(\S+)/);
+        if (mo && cur) { out[cur] = mo[1]; }
+      });
+    });
+  return out;
+}
+
+// Enforce the @originated contract: when a documented @primitive path is REMOVED
+// from the since-map while the exported SURFACE is unchanged, the removal is a
+// documentation-path CORRECTION (the callable still ships), not a deletion — so
+// the origin version must not be lost. Some source primitive MUST declare
+// `@originated <removed>.since`. `surfaceUnchanged` is compare(old,new) reporting
+// zero breaking + zero additive (a pure doc-path release). A real surface change
+// (a genuine add/remove) is governed by the breaking-change flow, not this gate.
+// Returns human-readable violation strings (empty = clean).
+function checkOriginated(oldSince, newSince, originatedMap, surfaceUnchanged) {
+  if (!oldSince || !surfaceUnchanged) return [];
+  var declared = Object.keys(originatedMap || {}).map(function (k) { return originatedMap[k]; });
+  var violations = [];
+  Object.keys(oldSince).forEach(function (tok) {
+    if (Object.prototype.hasOwnProperty.call(newSince, tok)) return;   // still documented
+    if (declared.indexOf(oldSince[tok]) === -1) {
+      violations.push(tok + ": documented path removed while the exported surface is unchanged " +
+        "(a path correction) — the replacement primitive must declare `@originated " + oldSince[tok] +
+        "` so the origin version is preserved");
+    }
+  });
+  return violations;
+}
+
 // Compare two captured snapshots. Only the `surface` tree is compared —
 // packageVersion drift is ignored on purpose. Returns:
 //   { breaking: [ "<path>: <reason>" ], additive: [ "<path>: added" ] }
@@ -237,6 +281,8 @@ module.exports = {
   formatDiff:   formatDiff,
   extractSince: extractSince,
   checkSince:   checkSince,
+  extractOriginated: extractOriginated,
+  checkOriginated:   checkOriginated,
   read:         read,
   write:        write,
 };
@@ -261,6 +307,21 @@ if (require.main === module) {
   }
 
   var snapshot = capture(pki, { packageVersion: pkg.version, sinceByPrimitive: sinceByPrimitive });
+
+  // @originated gate: when this refresh removes a documented @primitive path while
+  // the exported surface is unchanged, the path was CORRECTED (not deleted) — the
+  // origin version must be preserved via an @originated tag somewhere in source.
+  if (prior) {
+    var diff = compare(prior, snapshot);
+    var surfaceUnchanged = diff.breaking.length === 0 && diff.additive.length === 0;
+    var origViolations = checkOriginated(prior.sinceByPrimitive, sinceByPrimitive, extractOriginated(), surfaceUnchanged);
+    if (origViolations.length > 0) {
+      process.stderr.write("[refresh-api-snapshot] @originated violations (a corrected path must preserve its origin):\n");
+      origViolations.forEach(function (m) { process.stderr.write("  - " + m + "\n"); });
+      process.exit(2);
+    }
+  }
+
   write(snapshot, outPath);
   process.stdout.write("[refresh-api-snapshot] wrote " + outPath +
     " (packageVersion=" + snapshot.packageVersion + ")\n");

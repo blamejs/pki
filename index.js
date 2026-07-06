@@ -42,13 +42,17 @@ module.exports = {
   // `schema` is the family: the L2 structure-schema engine (schema.engine) and
   // the per-format parsers (schema.x509, …) with detect-and-route schema.parse.
   schema:    schema,
-  // A ready W3C Crypto instance (globalThis.crypto shape) + the classes
-  // for constructing more. PQC-first, classical-capable, zero-dep.
-  webcrypto: webcrypto.webcrypto,
-  WebCrypto: {
-    Crypto:         webcrypto.Crypto,
-    SubtleCrypto:   webcrypto.SubtleCrypto,
-    CryptoKey:      webcrypto.CryptoKey,
-    WebCryptoError: webcrypto.WebCryptoError,
-  },
+  // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
+  // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
+  // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.
+  webcrypto: _webcryptoNamespace(),
 };
+
+function _webcryptoNamespace() {
+  var wc = webcrypto.webcrypto;                 // the ready Crypto instance
+  wc.Crypto = webcrypto.Crypto;
+  wc.SubtleCrypto = webcrypto.SubtleCrypto;
+  wc.CryptoKey = webcrypto.CryptoKey;
+  wc.WebCryptoError = webcrypto.WebCryptoError;
+  return wc;
+}

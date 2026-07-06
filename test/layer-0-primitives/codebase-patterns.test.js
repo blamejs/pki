@@ -101,6 +101,31 @@ function _testFiles() {
   });
 }
 
+// Every Node script under scripts/ — the release / pinning / vendoring
+// tooling. Detectors that guard tooling disciplines (child-process shell
+// hygiene) declare `scanScope: "scripts"`.
+function _scriptFiles() { return _walk(path.resolve(REPO_ROOT, "scripts")); }
+
+// Every shell script the repo's tooling executes (scripts/, .clusterfuzzlite/).
+// Same exclusions as the .js walk, plus the gitignored research dirs.
+function _shellFiles() {
+  var files = [];
+  (function walkSh(dir) {
+    var base = path.basename(dir);
+    if (base === "vendor" || base === "node_modules" || base === ".test-output" ||
+        base === ".git" || base === ".references" || base === ".scratch") return;
+    var entries;
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }); }
+    catch (_e) { return; }
+    for (var i = 0; i < entries.length; i++) {
+      var full = path.join(dir, entries[i].name);
+      if (entries[i].isDirectory()) walkSh(full);
+      else if (/\.sh$/.test(entries[i].name)) files.push(full);
+    }
+  })(REPO_ROOT);
+  return files;
+}
+
 // ---------------------------------------------------------------------------
 // Allow-marker filtering
 // ---------------------------------------------------------------------------
@@ -122,6 +147,7 @@ var VALID_ALLOW_CLASSES = {
   "test-promise-settimeout-sleep": 1,
   "comment-block-coverage":        1,
   "wiki-port-cross-artifact-drift": 1,
+  "schema-build-drops-parsed-field": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -609,7 +635,13 @@ function testFuzzBuildInstallsJazzer() {
   // from the project's node_modules ($OUT/<project>/node_modules, copied from the
   // build root). If build.sh compiles without first installing jazzer, the
   // wrappers reference a module that isn't present and the fuzz targets can't run.
-  // Assert an `npm install`/`npm ci` of jazzer precedes the first compile.
+  // Two shapes satisfy the invariant before the first compile: an
+  // `npm install`/`npm ci` line that names jazzer directly, or the
+  // lockfile-driven form — `npm ci` against the fuzz workspace (whose
+  // committed package-lock.json pins the engine with integrity hashes)
+  // PLUS a step that places the verified tree at the repo root where the
+  // wrappers resolve it. An `npm ci --prefix fuzz` with no root placement
+  // still leaves the wrappers unresolvable, so both halves are required.
   var bad = [];
   var p = ".clusterfuzzlite/build.sh";
   var src;
@@ -617,17 +649,146 @@ function testFuzzBuildInstallsJazzer() {
   catch (_e) { return; }
   var lines = _lines(src);
   var jazzerBeforeCompile = false, sawCompile = false, firstCompileLine = -1;
+  var sawFuzzCi = false, fuzzTreeAtRoot = false;
   for (var i = 0; i < lines.length; i++) {
     if (/^\s*#/.test(lines[i])) continue; // comments describe the rule, they don't install
     if (/compile_javascript_fuzzer/.test(lines[i]) && firstCompileLine === -1) { firstCompileLine = i; sawCompile = true; }
-    if (/\bnpm\s+(install|ci)\b/.test(lines[i]) && /jazzer/.test(lines[i]) && !sawCompile) jazzerBeforeCompile = true;
+    if (sawCompile) continue;
+    if (/\bnpm\s+(install|ci)\b/.test(lines[i]) && /jazzer/.test(lines[i])) jazzerBeforeCompile = true;
+    if (/\bnpm\s+ci\b/.test(lines[i]) && /--prefix[=\s]+["']?fuzz\b/.test(lines[i])) sawFuzzCi = true;
+    if (sawFuzzCi && /\b(mv|cp)\b/.test(lines[i]) && /fuzz\/node_modules/.test(lines[i])) fuzzTreeAtRoot = true;
   }
+  if (sawFuzzCi && fuzzTreeAtRoot) jazzerBeforeCompile = true;
   if (sawCompile && !jazzerBeforeCompile) {
     bad.push({ file: p, line: firstCompileLine + 1,
       content: "compile_javascript_fuzzer runs without a prior `npm install`/`npm ci` of @jazzer.js/core — the generated wrappers resolve jazzer from the (empty) project node_modules and cannot run" });
   }
   bad = _filterMarkers(bad, "fuzz-build-missing-jazzer-install");
   _report("fuzz build installs @jazzer.js/core before compile_javascript_fuzzer", bad);
+}
+
+function testNoUnpinnedNpmInShell() {
+  // class: shell-npm-unpinned-download
+  // Every npm download in repo shell tooling must be lockfile-driven
+  // (`npm ci`) so the fetched tree is verified against the integrity
+  // hashes a committed (or staged) package-lock.json records. A bare
+  // `npm install <pkg>` / `npm update` fetches whatever the registry
+  // serves at that moment — no integrity pin, and install scripts run by
+  // default. The lockfile-RESOLUTION step (`npm install
+  // --package-lock-only`) lives in Node scripts (scripts/pin-all.js,
+  // scripts/vendor-stage.js) where it is metadata-only — no tarball is
+  // fetched, no script runs — and feeds an integrity-verified `npm ci`;
+  // shell files get no such exception. Comments and heredoc bodies are
+  // skipped: text ADVISING an operator to `npm install @blamejs/pki` is
+  // not a download. The verb is the first non-flag token after `npm`
+  // so `npm --prefix x install` is caught and `npm uninstall` is not.
+  var bad = [];
+  var files = _shellFiles();
+  for (var f = 0; f < files.length; f++) {
+    var rel = _relPath(files[f]);
+    var src;
+    try { src = fs.readFileSync(files[f], "utf8"); }
+    catch (_e) { continue; }
+    var lines = _lines(src);
+    var heredoc = null; // active terminator word, e.g. "EOF"
+    for (var i = 0; i < lines.length; i++) {
+      var line = lines[i];
+      if (heredoc !== null) {
+        if (line.replace(/^\t+/, "").trim() === heredoc) heredoc = null;
+        continue;
+      }
+      if (/^\s*#/.test(line)) continue;
+      var hd = /<<-?\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\1/.exec(line);
+      if (hd) heredoc = hd[2];
+      var toks = line.split(/\s+/);
+      for (var t = 0; t < toks.length; t++) {
+        if (toks[t] !== "npm") continue;
+        var v = t + 1;
+        while (v < toks.length && toks[v].charAt(0) === "-") v++;
+        var verb = toks[v] || "";
+        if (verb === "install" || verb === "i" || verb === "install-test" ||
+            verb === "update" || verb === "add") {
+          bad.push({ file: rel, line: i + 1,
+            content: "`npm " + verb + "` in shell tooling downloads an unverified tree — drive the install from a package-lock.json via `npm ci` (resolve the lockfile in a Node script when one does not exist yet)" });
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "shell-npm-unpinned-download");
+  _report("shell tooling installs npm packages only via lockfile-driven `npm ci`", bad);
+}
+
+function testSchemaBuildSurfacesEveryField() {
+  // class: schema-build-drops-parsed-field
+  // A schema.seq's build() is the ONLY surface a parsed field reaches the
+  // operator through. A field declared in the seq (schema.field /
+  // schema.optional / a trailing member's name:) whose name never appears
+  // in the build body was parsed, validated, and thrown away — the
+  // operator cannot see data the parser proved well-formed (the CMS
+  // KeyTransRecipientInfo keyEncryptionAlgorithm shape: without it a
+  // caller cannot select the unwrap algorithm for the encryptedKey it CAN
+  // see). Every declared field must be referenced in the build — surfaced,
+  // transformed, or consumed by a cross-field check. A seq with no build
+  // hands its raw fields to the parent and is skipped. A DELIBERATE
+  // non-surface takes an inline `// allow:schema-build-drops-parsed-field`
+  // marker with the reason beside the seq.
+  var bad = [];
+  var files = _libFiles().filter(function (f) { return /schema-[^/\\]+\.js$/.test(f); });
+  for (var fi = 0; fi < files.length; fi++) {
+    var rel = _relPath(files[fi]);
+    var src;
+    try { src = fs.readFileSync(files[fi], "utf8"); }
+    catch (_e) { continue; }
+    var starts = [];
+    var re = /schema\.seq\(/g, sm;
+    while ((sm = re.exec(src)) !== null) starts.push(sm.index + sm[0].length - 1);
+    for (var s = 0; s < starts.length; s++) {
+      // Bracket-walk from the opening paren to its match.
+      var depth = 0, i = starts[s], end = -1;
+      for (; i < src.length; i++) {
+        var ch = src.charAt(i);
+        if (ch === "(") depth++;
+        else if (ch === ")") { depth--; if (depth === 0) { end = i; break; } }
+      }
+      if (end === -1) continue;
+      var span = src.slice(starts[s], end);
+      // Blank nested schema.seq(...) spans so an inner seq's fields and
+      // build are judged in their OWN iteration, not leaked into this one.
+      var nested = /schema\.seq\(/g, nm;
+      var blanked = span;
+      while ((nm = nested.exec(span)) !== null) {
+        if (nm.index === 0) continue;
+        var nd = 0, j = nm.index + nm[0].length - 1, nEnd = -1;
+        for (; j < span.length; j++) {
+          var nch = span.charAt(j);
+          if (nch === "(") nd++;
+          else if (nch === ")") { nd--; if (nd === 0) { nEnd = j; break; } }
+        }
+        if (nEnd === -1) continue;
+        blanked = blanked.slice(0, nm.index) + new Array(nEnd - nm.index + 1).join(" ") + blanked.slice(nEnd);
+      }
+      var names = [];
+      var fre = /schema\.(?:field|optional)\(\s*"([A-Za-z0-9_]+)"/g, fm;
+      while ((fm = fre.exec(blanked)) !== null) names.push(fm[1]);
+      var tre = /schema\.trailing\(\s*\[([\s\S]*?)\]\s*,/g, tm;
+      while ((tm = tre.exec(blanked)) !== null) {
+        var nre = /name:\s*"([A-Za-z0-9_]+)"/g, nnm;
+        while ((nnm = nre.exec(tm[1])) !== null) names.push(nnm[1]);
+      }
+      var buildAt = blanked.search(/\bbuild:\s*function/);
+      if (buildAt === -1 || names.length === 0) continue;
+      var buildBody = blanked.slice(buildAt);
+      var line = src.slice(0, starts[s]).split(/\r?\n/).length;
+      for (var n = 0; n < names.length; n++) {
+        if (buildBody.indexOf(names[n]) === -1) {
+          bad.push({ file: rel, line: line,
+            content: "schema.seq declares field '" + names[n] + "' but its build() never references it — the field is parsed and dropped, invisible to the operator" });
+        }
+      }
+    }
+  }
+  bad = _filterMarkers(bad, "schema-build-drops-parsed-field");
+  _report("every schema.seq field is referenced by its build() (parsed data reaches the operator)", bad);
 }
 
 function testCmsSignedDataConformanceGuards() {
@@ -780,6 +941,71 @@ function testAttrCertConformanceGuards() {
   }
   bad = _filterMarkers(bad, "attrcert-conformance-guard-dropped");
   _report("attribute-certificate RFC-conformance guards present (GeneralizedTime validity / positive-<=20 serial / sig-alg agreement / non-empty unique attributes / ENUMERATED digestedObjectType / validated GeneralNames / v1 recognize-and-defer)", bad);
+}
+
+function testCmsEnvelopedDataConformanceGuards() {
+  // class: cms-enveloped-guard-dropped
+  // Frozen contract of the RFC 5652 §6/§8 EnvelopedData / EncryptedData decode
+  // (promoted out of the recognize-and-defer set). Anchored on the public error
+  // codes, not helper names (rename-proof).
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"cms/bad-enveloped-data"',        "EnvelopedData is structurally decoded (§6.1)"],
+    ['"cms/bad-encrypted-data"',        "EncryptedData is structurally decoded (§8)"],
+    ['"cms/bad-encrypted-content-info"', "EncryptedContentInfo decoded — encryptedContent [0] IMPLICIT (§6.1)"],
+    ['"cms/bad-recipient-infos"',       "recipientInfos is a SET SIZE(1..MAX) — empty rejected (§6.1)"],
+    ['"cms/bad-recipient-info"',        "RecipientInfo CHOICE — an unknown arm is rejected (§6.2)"],
+    ['"cms/bad-ktri"',                  "KeyTransRecipientInfo decoded (§6.2.1)"],
+    ['"cms/bad-recipient-version"',     "the ktri rid<->version coupling is enforced (§6.2.1)"],
+    ['"cms/bad-kari"',                  "KeyAgreeRecipientInfo decoded (§6.2.2, RFC 5753)"],
+    ['"cms/bad-kekri"',                 "KEKRecipientInfo decoded (§6.2.3)"],
+    ['"cms/bad-pwri"',                  "PasswordRecipientInfo decoded (§6.2.4)"],
+    ['"cms/bad-ori"',                   "OtherRecipientInfo decoded (§6.2.5)"],
+    ['"cms/bad-recipient-identifier"',  "RecipientIdentifier CHOICE decoded (§6.2.1)"],
+    ['"cms/bad-originator-info"',       "OriginatorInfo decoded (§6.1)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-cms.js", line: 0,
+        content: "the CMS parser no longer references `" + r[0] + "` — a dropped EnvelopedData/EncryptedData decode guard: " + r[1] });
+    }
+  });
+  // Structural: the two content types must be walked (not deferred) inside CONTENT_INFO.build.
+  if (!/OID_ENVELOPED_DATA[\s\S]{0,120}?schema\.walk\(ENVELOPED_DATA/.test(src)) {
+    bad.push({ file: "lib/schema-cms.js", line: 0,
+      content: "CONTENT_INFO.build no longer walks ENVELOPED_DATA on id-envelopedData — the content type would fall back to recognize-and-defer" });
+  }
+  bad = _filterMarkers(bad, "cms-enveloped-guard-dropped");
+  _report("CMS EnvelopedData/EncryptedData decode guards present (all five RecipientInfo kinds / ktri version coupling / non-empty recipientInfos / dispatch walks the two content types)", bad);
+}
+
+function testNoRemovedWebCryptoNamespace() {
+  // class: removed-namespace-reference
+  // pki.WebCrypto was removed in favour of pki.webcrypto.* — its classes now hang off
+  // the ready Crypto instance. A lingering `pki.WebCrypto` reference in operator-facing
+  // PROSE (a docstring, README, ARCHITECTURE) is a documented path that no longer
+  // resolves — exactly the bug class the doc-example gate cannot see (it only runs
+  // @example CODE, not prose). Anchored on the exact removed token (case-sensitive, so
+  // pki.webcrypto is not matched).
+  var files = ["lib/webcrypto.js", "index.js", "README.md", "ARCHITECTURE.md", "SECURITY.md"];
+  var bad = [];
+  files.forEach(function (rel) {
+    var src;
+    try { src = fs.readFileSync(path.join(REPO_ROOT, rel), "utf8"); }
+    catch (_e) { return; }
+    var lines = src.split(/\r?\n/);
+    for (var i = 0; i < lines.length; i++) {
+      if (/pki\.WebCrypto\b/.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "references the removed `pki.WebCrypto` namespace — the classes are now under `pki.webcrypto.*`; a stale reference is a documented path that does not resolve" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "removed-namespace-reference");
+  _report("no operator-facing file references the removed pki.WebCrypto namespace (classes moved under pki.webcrypto.*)", bad);
 }
 
 // ---------------------------------------------------------------------------
@@ -1463,11 +1689,29 @@ var KNOWN_ANTIPATTERNS = [
     regex: /function attrValueToString\b(?:(?!expected-primitive)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
     reason: "The DN hex fallback must discriminate on BOTH structural codes. Catching every read.string error hex-encodes a malformed known string (invalid-UTF8 CN) — a fail-open that bypasses strict string validation. Handling only asn1/expected-string over-rejects a legitimate constructed ANY value (a SEQUENCE throws asn1/expected-primitive) — the certificate is wrongly refused. Hex-render only asn1/expected-string + asn1/expected-primitive (full DER via node.bytes); rethrow every asn1/bad-* content error as x509/bad-atv.",
   },
+
+  {
+    // A child-process spawn that pairs an args ARRAY with a shell — the
+    // shell form concatenates the arguments onto the command line WITHOUT
+    // escaping (Node's DEP0190; the CVE-2024-27980 .cmd-shim mitigation is
+    // why a shell is needed for npm/npx on Windows at all), so an argument
+    // containing a space or shell metacharacter is reinterpreted by
+    // cmd.exe / sh. The scan stops at the call's own `);` terminator so a
+    // benign neighboring call can never satisfy the shell-token match.
+    id: "spawn-args-array-with-shell",
+    primitive: "one explicitly-quoted command STRING + shell:true with NO args array (scripts/release.js builds it via _quoteWinArg), or keep the args array and drop shell: entirely for direct-executable spawns",
+    scanScope: "scripts",
+    regex: /\b(?:spawnSync|spawn|execFileSync|execFile)\s*\(\s*[^,()]+,\s*(?:\[|[A-Za-z_$][\w$]*\s*,)(?:(?!\)\s*;)[\s\S]){0,600}?\bshell:\s*(?:true\b|process\.platform)/,
+    skipCommentLines: true,
+    allowlist: [],
+    reason: "spawnSync(cmd, argsArray, { shell: true }) does not escape the array — Node concatenates it onto the shell command line (DEP0190), so an argument with a space, quote, &, | or %VAR% is reinterpreted by the shell instead of arriving as one argv entry. Where a shell is unavoidable (Windows resolves npm/npx through .cmd shims that refuse to spawn shell-less since the CVE-2024-27980 hardening), build a single command string with each argument explicitly quoted and pass no args array; where the target is a real executable, drop shell: and keep the array.",
+  },
 ];
 
 function testKnownAntipatterns() {
   var libFiles  = null;
   var testFiles = null;
+  var scriptFiles = null;
   var allBad = [];
   for (var ai = 0; ai < KNOWN_ANTIPATTERNS.length; ai++) {
     var ap = KNOWN_ANTIPATTERNS[ai];
@@ -1477,6 +1721,9 @@ function testKnownAntipatterns() {
     if (ap.scanScope === "test") {
       if (testFiles === null) testFiles = _testFiles();
       files = testFiles;
+    } else if (ap.scanScope === "scripts") {
+      if (scriptFiles === null) scriptFiles = _scriptFiles();
+      files = scriptFiles;
     } else {
       if (libFiles === null) libFiles = _libFiles();
       files = libFiles;
@@ -1957,10 +2204,14 @@ function run() {
   testWikiPortAgreesAcrossArtifacts();
   testFuzzSeedCorpusZipNaming();
   testFuzzBuildInstallsJazzer();
+  testNoUnpinnedNpmInShell();
+  testSchemaBuildSurfacesEveryField();
   testCmsSignedDataConformanceGuards();
   testOcspConformanceGuards();
   testTspConformanceGuards();
   testAttrCertConformanceGuards();
+  testCmsEnvelopedDataConformanceGuards();
+  testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();
   testTbsTrailingFieldsMonotonic();

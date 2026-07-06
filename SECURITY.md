@@ -89,7 +89,11 @@ security-only patches after the next major releases.
   to compromise. If a library is ever vendored under `lib/vendor/` (only when a
   required operation is confirmed missing from the Node floor), it is pinned by
   SHA-256 in `MANIFEST.json` and a tampered artifact is detectable by
-  re-verifying the manifest.
+  re-verifying the manifest. The acquisition path is verified too: repository
+  tooling (the fuzz build, the vendoring flow) installs npm packages only
+  through integrity-pinned lockfiles (`npm ci`, install scripts disabled), so
+  a registry-served substitute fails the integrity check before a byte of it
+  runs.
 
 ## Operator hardening checklist
 

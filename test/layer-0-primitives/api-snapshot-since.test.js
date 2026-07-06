@@ -60,6 +60,24 @@ function testBootstrapSeedAllowsMixed() {
     snap.checkSince(null, { "pki.a": "0.1.0", "pki.b": "0.1.2" }, "0.1.2").length === 0);
 }
 
+// When a documented @primitive PATH is corrected (removed from the since-map while
+// the exported SURFACE is unchanged — e.g. pki.asn1.readOid -> pki.asn1.read.oid),
+// the origin version MUST be preserved via an @originated tag; otherwise the gate fires.
+function testOriginatedRequiredOnPathCorrection() {
+  var oldSince = { "pki.asn1.readOid": "0.1.0", "pki.oid.name": "0.1.0" };
+  var newSince = { "pki.asn1.read.oid": "0.1.14", "pki.oid.name": "0.1.0" };
+  // surface unchanged (the callable still ships) + no @originated -> flagged.
+  var missing = snap.checkOriginated(oldSince, newSince, {}, true);
+  check("a corrected path with no @originated is flagged", missing.length === 1 && /readOid/.test(missing[0]) && /@originated 0\.1\.0/.test(missing[0]));
+  // the replacement declares @originated 0.1.0 -> clean.
+  var ok = snap.checkOriginated(oldSince, newSince, { "pki.asn1.read.oid": "0.1.0" }, true);
+  check("a corrected path that declares @originated is clean", ok.length === 0);
+  // a genuine surface change (a real deletion) is NOT governed by this gate.
+  check("a real surface change is not flagged by the @originated gate", snap.checkOriginated(oldSince, newSince, {}, false).length === 0);
+  // the live tree already reconciles read.oid -> read.oid, so no removal remains.
+  check("read.oid carries @originated 0.1.0 in source", snap.extractOriginated()["pki.asn1.read.oid"] === "0.1.0");
+}
+
 // The committed baseline must agree with the shipped source, and the live
 // surface must satisfy the contract end to end.
 function testLiveSnapshotConsistent() {
@@ -77,6 +95,7 @@ function run() {
   testSinceImmutable();
   testSinceNotFutureDated();
   testBootstrapSeedAllowsMixed();
+  testOriginatedRequiredOnPathCorrection();
   testLiveSnapshotConsistent();
 }
 

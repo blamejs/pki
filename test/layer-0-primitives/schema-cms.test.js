@@ -161,8 +161,10 @@ function testEnvelope() {
 
 // ---- CONTENT-TYPE dispatch -------------------------------------------
 function testContentType() {
-  check("13. id-envelopedData -> unsupported", parseCode(contentInfo(ID_ENVELOPED_DATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
-  check("14a. id-encryptedData -> unsupported", parseCode(contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
+  // id-envelopedData / id-encryptedData are now structurally decoded (promoted out of
+  // the deferred set) — a malformed body fails with a structural cms/* code, not unsupported.
+  check("13. id-envelopedData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_ENVELOPED_DATA, b.sequence([b.integer(0n)]))) === "cms/bad-enveloped-data");
+  check("14a. id-encryptedData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0n)]))) === "cms/bad-encrypted-data");
   check("14b. id-digestedData -> unsupported", parseCode(contentInfo(ID_DIGESTED_DATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
   check("14c. id-signedAndEnvelopedData -> unsupported", parseCode(contentInfo(ID_SIGNED_ENV, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
   check("14d. id-ct-authData -> unsupported", parseCode(contentInfo(ID_CT_AUTHDATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
@@ -307,6 +309,211 @@ function testCompleteness() {
   check("37. multi-defect fail-closed (typed reject)", c37 !== "NO-THROW" && c37.indexOf("RAW:") !== 0);
 }
 
+// ---- EnvelopedData / EncryptedData (RFC 5652 §6/§8, RFC 5753) ---------
+var ID_AES256_CBC = "2.16.840.1.101.3.4.1.42";
+var ID_AES256_WRAP = "2.16.840.1.101.3.4.1.45";
+var RSA_OID = "1.2.840.113549.1.1.1";
+var ID_ECDH = "1.3.132.1.11.1";
+var KEM_ORI_OID = "1.2.840.113549.1.9.16.13.3";
+var CT = Buffer.from([0x11, 0x22, 0x33, 0x44]);
+var EKEY = Buffer.from([0xAA, 0xBB, 0xCC]);
+var UKM = Buffer.from([0x5A, 0x5B]);
+
+// EncryptedContentInfo { contentType, contentEncryptionAlgorithm, encryptedContent [0] IMPLICIT OPT }
+function eci(ctType, algOid, ciphertext) {
+  var c = [b.oid(ctType), algId(algOid)];
+  if (ciphertext !== null && ciphertext !== undefined) c.push(b.contextPrimitive(0, ciphertext));
+  return b.sequence(c);
+}
+// KeyTransRecipientInfo (the untagged SEQUENCE arm)
+function ktri(o) {
+  o = o || {};
+  if (o.children) return b.sequence(o.children);
+  return b.sequence([
+    o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n),
+    o.rid || iasn("Recipient", 9),
+    o.keyAlg || algId(RSA_OID),
+    o.ekey || b.octetString(EKEY),
+  ]);
+}
+// OriginatorPublicKey [1] IMPLICIT { algorithm, publicKey BIT STRING }
+function originatorPublicKey(algOid, pub) { return b.contextConstructed(1, Buffer.concat([algId(algOid), b.bitString(Buffer.from(pub), 0)])); }
+// rKeyId [0] IMPLICIT RecipientKeyIdentifier { subjectKeyIdentifier OCTET STRING, date? }
+function recipKeyId(o) {
+  o = o || {};
+  var c = [b.octetString(Buffer.from(o.skid || [0x01, 0x02]))];
+  if (o.date) c.push(b.generalizedTime(new Date(o.date)));
+  if (o.other) c.push(o.other);
+  return b.contextConstructed(0, Buffer.concat(c));
+}
+// OtherKeyAttribute ::= SEQUENCE { keyAttrId OID, keyAttr ANY OPTIONAL } (RFC 5652 §10.2.7)
+function otherKeyAttr() { return b.sequence([b.oid("1.2.3.4.5"), b.utf8("attr")]); }
+function recipEncKey(o) { o = o || {}; return b.sequence([o.rid || recipKeyId({}), o.ekey || b.octetString(EKEY)]); }
+// KeyAgreeRecipientInfo [1] IMPLICIT
+function kari(o) {
+  o = o || {};
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(3n)];
+  c.push(b.explicit(0, o.originator || originatorPublicKey(ID_ECDH, [0x04, 0x01, 0x02]))); // originator [0] EXPLICIT
+  if (o.ukm !== undefined && o.ukm !== null) c.push(b.explicit(1, b.octetString(o.ukm)));   // ukm [1] EXPLICIT
+  c.push(o.keyAlg || algId(ID_ECDH));
+  c.push(b.sequence(o.reks || [recipEncKey({})]));  // recipientEncryptedKeys SEQUENCE OF
+  return b.contextConstructed(1, Buffer.concat(c));
+}
+// KEKRecipientInfo [2] IMPLICIT
+function kekri(o) {
+  o = o || {};
+  var kekid = [b.octetString(Buffer.from(o.keyId || [0x0A, 0x0B]))];
+  if (o.date) kekid.push(b.generalizedTime(new Date(o.date)));
+  if (o.other) kekid.push(o.other);
+  return b.contextConstructed(2, Buffer.concat([
+    o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(4n),
+    b.sequence(kekid), o.keyAlg || algId(ID_AES256_WRAP), o.ekey || b.octetString(EKEY),
+  ]));
+}
+// PasswordRecipientInfo [3] IMPLICIT
+function pwri(o) {
+  o = o || {};
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n)];
+  if (o.kdf) c.push(b.contextConstructed(0, b.oid(o.kdf)));  // keyDerivationAlgorithm [0] IMPLICIT AlgId
+  c.push(o.keyAlg || algId(ID_AES256_WRAP));
+  c.push(o.ekey || b.octetString(EKEY));
+  return b.contextConstructed(3, Buffer.concat(c));
+}
+// OtherRecipientInfo [4] IMPLICIT { oriType, oriValue }
+function ori(o) { o = o || {}; return b.contextConstructed(4, Buffer.concat([b.oid(o.oriType || KEM_ORI_OID), o.oriValue || b.sequence([b.integer(1n)])])); }
+// OriginatorInfo [0] IMPLICIT { certs [0]?, crls [1]? }
+function originatorInfo(o) {
+  o = o || {};
+  var c = [];
+  if (o.certs) c.push(implicitSetOf(0, o.certs));
+  if (o.crls) c.push(implicitSetOf(1, o.crls));
+  return b.contextConstructed(0, Buffer.concat(c));
+}
+// EnvelopedData { version, originatorInfo [0]?, recipientInfos SET, eci, unprotectedAttrs [1]? }
+function envelopedData(o) {
+  o = o || {};
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n)];
+  if (o.originatorInfo) c.push(o.originatorInfo);
+  c.push(o.recipsRaw || b.set(o.recips || [ktri({})]));
+  c.push(o.eci || eci(ID_DATA, ID_AES256_CBC, CT));
+  if (o.unprotectedAttrs) c.push(implicitSetOf(1, o.unprotectedAttrs));
+  if (o.children) return b.sequence(o.children);
+  return b.sequence(c);
+}
+function encryptedData(o) {
+  o = o || {};
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n)];
+  c.push(o.eci || eci(ID_DATA, ID_AES256_CBC, CT));
+  if (o.unprotectedAttrs) c.push(implicitSetOf(1, o.unprotectedAttrs));
+  if (o.children) return b.sequence(o.children);
+  return b.sequence(c);
+}
+function envCI(o) { return contentInfo(ID_ENVELOPED_DATA, envelopedData(o)); }
+function encCI(o) { return contentInfo(ID_ENCRYPTED_DATA, encryptedData(o)); }
+
+function testEncryptedData() {
+  var m = parse(encCI({ version: 0 }));
+  check("EncryptedData minimal v0", m.version === 0 && m.recipientInfos === undefined);
+  check("EncryptedData eci contentType", m.encryptedContentInfo.contentType === ID_DATA);
+  check("EncryptedData encryptedContent raw exact", m.encryptedContentInfo.encryptedContent.equals(CT));
+  check("EncryptedData contentEncryptionAlgorithm", m.encryptedContentInfo.contentEncryptionAlgorithm.oid === ID_AES256_CBC);
+  check("EncryptedData detached (null ct)", parse(encCI({ version: 0, eci: eci(ID_DATA, ID_AES256_CBC, null) })).encryptedContentInfo.encryptedContent === null);
+  var mu = parse(encCI({ version: 2, unprotectedAttrs: [attribute(ST_ATTR, [b.utf8("x")])] }));
+  check("EncryptedData v2 with unprotectedAttrs", mu.version === 2 && mu.unprotectedAttrs.length === 1);
+  // version cross-field
+  check("EncryptedData v0 WITH unprotectedAttrs rejected", parseCode(encCI({ version: 0, unprotectedAttrs: [attribute(ST_ATTR, [b.utf8("x")])] })) === "cms/bad-version");
+  check("EncryptedData v2 WITHOUT unprotectedAttrs rejected", parseCode(encCI({ version: 2 })) === "cms/bad-version");
+  check("EncryptedData unprotectedAttrs empty SET rejected", parseCode(encCI({ version: 2, children: [b.integer(2n), eci(ID_DATA, ID_AES256_CBC, CT), b.contextConstructed(1, Buffer.alloc(0))] })) === "cms/bad-unprotected-attrs");
+}
+
+function testEnvelopedKtri() {
+  var m = parse(envCI({ version: 0, recips: [ktri({ version: 0 })] }));
+  check("EnvelopedData ktri IAS v0", m.version === 0 && m.recipientInfos.length === 1 && m.recipientInfos[0].type === "ktri");
+  check("EnvelopedData ktri rid issuer dn", !!m.recipientInfos[0].rid.issuer.dn);
+  check("EnvelopedData ktri encryptedKey raw exact", m.recipientInfos[0].encryptedKey.equals(EKEY));
+  // RFC 5652 §6.2.1 — the key-encryption algorithm the encryptedKey must be
+  // unwrapped with is part of the recipient surface (rsaEncryption vs RSA-OAEP
+  // is invisible without it).
+  check("EnvelopedData ktri keyEncryptionAlgorithm surfaced", m.recipientInfos[0].keyEncryptionAlgorithm.oid === RSA_OID);
+  var ms = parse(envCI({ version: 2, recips: [ktri({ version: 2, rid: skid([0x33, 0x44]) })] }));
+  check("EnvelopedData ktri skid -> ktri v2 + envelope v2", ms.version === 2 && ms.recipientInfos[0].rid.subjectKeyIdentifier.equals(Buffer.from([0x33, 0x44])));
+  check("EnvelopedData detached content with recipients", parse(envCI({ version: 0, eci: eci(ID_DATA, ID_AES256_CBC, null) })).encryptedContentInfo.encryptedContent === null);
+  // ktri version cross-field
+  check("ktri IAS but version 2 rejected", parseCode(envCI({ version: 2, recips: [ktri({ version: 2, rid: iasn("R", 9) })] })) === "cms/bad-recipient-version");
+  check("ktri skid but version 0 rejected", parseCode(envCI({ version: 0, recips: [ktri({ version: 0, rid: skid([0x33]) })] })) === "cms/bad-recipient-version");
+}
+
+function testEnvelopedOtherArms() {
+  var mk = parse(envCI({ version: 2, recips: [kari({ version: 3, ukm: UKM })] }));
+  check("EnvelopedData kari v3, envelope v2", mk.version === 2 && mk.recipientInfos[0].type === "kari" && mk.recipientInfos[0].version === 3);
+  check("EnvelopedData kari ukm raw exact", mk.recipientInfos[0].ukm.equals(UKM));
+  check("EnvelopedData kari recipientEncryptedKeys", mk.recipientInfos[0].recipientEncryptedKeys.length === 1);
+  check("EnvelopedData kari ukm absent -> null", parse(envCI({ version: 2, recips: [kari({ version: 3, originator: iasn("Orig", 3) })] })).recipientInfos[0].ukm === null);
+  // RFC 5652 §6.2.2 / §10.2.7 — an rKeyId's OtherKeyAttribute is recipient-matching
+  // data; surfaced raw when present, null when absent.
+  var mko = parse(envCI({ version: 2, recips: [kari({ version: 3, reks: [recipEncKey({ rid: recipKeyId({ other: otherKeyAttr() }) })] })] }));
+  check("EnvelopedData kari rKeyId other surfaced raw", mko.recipientInfos[0].recipientEncryptedKeys[0].rid.other.equals(otherKeyAttr()));
+  check("EnvelopedData kari rKeyId other absent -> null", mk.recipientInfos[0].recipientEncryptedKeys[0].rid.other === null);
+  var mkek = parse(envCI({ version: 2, recips: [kekri({ version: 4, date: "2026-01-01T00:00:00Z" })] }));
+  check("EnvelopedData kekri v4, envelope v2", mkek.version === 2 && mkek.recipientInfos[0].type === "kekri");
+  // Same rule for a KEKIdentifier's OtherKeyAttribute (§6.2.3 / §10.2.7).
+  var mkeko = parse(envCI({ version: 2, recips: [kekri({ version: 4, other: otherKeyAttr() })] }));
+  check("EnvelopedData kekri kekid other surfaced raw", mkeko.recipientInfos[0].kekid.other.equals(otherKeyAttr()));
+  check("EnvelopedData kekri kekid other absent -> null", mkek.recipientInfos[0].kekid.other === null);
+  var mp = parse(envCI({ version: 3, recips: [pwri({ version: 0, kdf: "1.2.840.113549.1.5.12" })] }));
+  check("EnvelopedData pwri -> envelope v3", mp.version === 3 && mp.recipientInfos[0].type === "pwri" && mp.recipientInfos[0].keyDerivationAlgorithm.oid === "1.2.840.113549.1.5.12");
+  check("EnvelopedData pwri kdf omitted -> null", parse(envCI({ version: 3, recips: [pwri({ version: 0 })] })).recipientInfos[0].keyDerivationAlgorithm === null);
+  var mo = parse(envCI({ version: 3, recips: [ori({})] }));
+  check("EnvelopedData ori -> envelope v3", mo.version === 3 && mo.recipientInfos[0].type === "ori" && Buffer.isBuffer(mo.recipientInfos[0].oriValue));
+  // originatorInfo present forces the version up from 0 to 2 (an extendedCertificate [0]
+  // element is neither the v2AttrCert [2] nor the other [3] that would force v3/v4).
+  var moi = parse(envCI({ version: 2, originatorInfo: originatorInfo({ certs: [b.contextConstructed(0, name("EmbeddedCert"))] }), recips: [ktri({ version: 0 })] }));
+  check("EnvelopedData originatorInfo certs surfaced", moi.originatorInfo.certs.length === 1);
+  var mix = parse(envCI({ version: 2, recips: [ktri({ version: 0 }), kari({ version: 3 })] }));
+  check("EnvelopedData mixed ktri+kari SET, envelope v2", mix.recipientInfos.length === 2);
+}
+
+function testEnvelopedVersionAndStructure() {
+  check("Enveloped v0 but kari present rejected", parseCode(envCI({ version: 0, recips: [kari({ version: 3 })] })) === "cms/bad-version");
+  check("Enveloped v2 but pwri present rejected", parseCode(envCI({ version: 2, recips: [pwri({ version: 0 })] })) === "cms/bad-version");
+  check("kari version 2 (not 3) rejected", parseCode(envCI({ version: 2, recips: [kari({ version: 2 })] })) === "cms/bad-version");
+  check("kekri version 3 (not 4) rejected", parseCode(envCI({ version: 2, recips: [kekri({ version: 3 })] })) === "cms/bad-version");
+  check("recipientInfos empty SET rejected", parseCode(envCI({ version: 0, recipsRaw: b.set([]) })) === "cms/bad-recipient-infos");
+  check("RecipientInfo unknown tag [5] rejected", parseCode(envCI({ version: 0, recipsRaw: b.set([b.contextConstructed(5, Buffer.alloc(0))]) })) === "cms/bad-recipient-info");
+  check("RecipientInfo primitive [1] rejected", parseCode(envCI({ version: 0, recipsRaw: b.set([b.contextPrimitive(1, Buffer.from([1]))]) })) === "cms/bad-kari");
+  check("ktri missing keyEncryptionAlgorithm rejected", parseCode(envCI({ version: 0, recips: [ktri({ children: [b.integer(0n), iasn("R", 9), b.octetString(EKEY)] })] })).indexOf("cms/") === 0);
+  // encryptedContent is [0] IMPLICIT (primitive) — a constructed [0] (BER streamed) is
+  // rejected at the codec, proving the implicitOctetString primitive assert (not the
+  // EXPLICIT ENCAP_CONTENT_INFO shape, which would double-strip the ciphertext).
+  check("encryptedContent constructed [0] rejected", parseCode(encCI({ version: 0, eci: b.sequence([b.oid(ID_DATA), algId(ID_AES256_CBC), b.contextConstructed(0, b.octetString(CT))]) })).indexOf("asn1/") === 0);
+  // RAW EXACTNESS: the [0] IMPLICIT content octets ARE the ciphertext, not an inner TLV.
+  var raw = parse(encCI({ version: 0, eci: eci(ID_DATA, ID_AES256_CBC, CT) }));
+  check("encryptedContent decodes the [0] IMPLICIT content directly (raw exact)", raw.encryptedContentInfo.encryptedContent.equals(CT));
+
+  // empty SET rejects on the three min:1 sites the shared primitive alone doesn't pin.
+  check("OriginatorInfo empty certs [0] SET rejected", parseCode(envCI({ version: 2, originatorInfo: originatorInfo({ certs: [] }), recips: [ktri({ version: 0 })] })) === "cms/bad-originator-certs");
+  check("OriginatorInfo empty crls [1] SET rejected", parseCode(envCI({ version: 2, originatorInfo: originatorInfo({ crls: [] }), recips: [ktri({ version: 0 })] })) === "cms/bad-originator-crls");
+  check("EnvelopedData empty unprotectedAttrs [1] SET rejected", parseCode(envCI({ version: 2, recips: [ktri({ version: 0 })], unprotectedAttrs: [] })) === "cms/bad-unprotected-attrs");
+
+  // the v4 (cert other[3] / crl other[1]) and v3 (v2AttrCert[2]) version branches.
+  var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
+  var otherCrl = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  var v2AttrCert = b.contextConstructed(2, b.sequence([b.integer(1n)]));
+  check("originatorInfo cert other[3] -> envelope v4", parse(envCI({ version: 4, originatorInfo: originatorInfo({ certs: [otherCert] }), recips: [ktri({ version: 0 })] })).version === 4);
+  check("cert other[3] but stated version 2 rejected", parseCode(envCI({ version: 2, originatorInfo: originatorInfo({ certs: [otherCert] }), recips: [ktri({ version: 0 })] })) === "cms/bad-version");
+  check("originatorInfo crl other[1] -> envelope v4", parse(envCI({ version: 4, originatorInfo: originatorInfo({ crls: [otherCrl] }), recips: [ktri({ version: 0 })] })).version === 4);
+  check("originatorInfo cert v2AttrCert[2] -> envelope v3", parse(envCI({ version: 3, originatorInfo: originatorInfo({ certs: [v2AttrCert] }), recips: [ktri({ version: 0 })] })).version === 3);
+}
+
+function testEnvelopedDispatch() {
+  var routed = pki.schema.parse(envCI({ version: 0 }));
+  check("orchestrator routes EnvelopedData to cms", !!routed.recipientInfos && !!routed.encryptedContentInfo && routed.signerInfos === undefined);
+  var routedEnc = pki.schema.parse(encCI({ version: 0 }));
+  check("orchestrator routes EncryptedData to cms", routedEnc.recipientInfos === undefined && !!routedEnc.encryptedContentInfo);
+  check("authEnvelopedData not walked as EnvelopedData", parseCode(contentInfo("1.2.840.113549.1.9.16.1.23", b.sequence([b.integer(0n)]))).indexOf("cms/un") === 0);
+  check("EnvelopedData + trailing byte rejected", parseCode(Buffer.concat([envCI({ version: 0 }), Buffer.from([0x00])])) === "cms/bad-der");
+}
+
 function run() {
   testAccept();
   testEnvelope();
@@ -315,6 +522,11 @@ function run() {
   testSetOrder();
   testDispatch();
   testCompleteness();
+  testEncryptedData();
+  testEnvelopedKtri();
+  testEnvelopedOtherArms();
+  testEnvelopedVersionAndStructure();
+  testEnvelopedDispatch();
 }
 
 module.exports = { run: run };

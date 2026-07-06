@@ -114,28 +114,31 @@ function _quoteWinArg(a) {
   return '"' + a.replace(/"/g, '""') + '"';
 }
 
+// Windows resolves npm / npx through .cmd shims that can only be launched
+// via a shell (the CVE-2024-27980 mitigation refuses to spawn .cmd files
+// without one). Node 26's DEP0190 deprecates pairing an args ARRAY with
+// shell:true because the args would be concatenated onto the command line
+// without escaping — a quoting / injection hazard. Build a single,
+// explicitly-quoted command string and pass NO args array. Every spawn in
+// this file (run and capture alike) routes through this one form.
+function _shellForm(cmd, args) {
+  if (!_needsShell(cmd)) return { cmd: cmd, args: args, shell: false };
+  return {
+    cmd: [cmd].concat(args.map(_quoteWinArg)).join(" "),
+    args: undefined,
+    shell: true,
+  };
+}
+
 function _run(cmd, args, opts) {
   opts = opts || {};
   args = args || [];
-  var spawnCmd = cmd;
-  var spawnArgs = args;
-  var useShell = false;
-  if (_needsShell(cmd)) {
-    // Windows resolves npm / npx through .cmd shims that can only be
-    // launched via a shell (the CVE-2024-27980 mitigation refuses to spawn
-    // .cmd files without one). Node 26's DEP0190 deprecates pairing an args
-    // ARRAY with shell:true because the args would be concatenated onto the
-    // command line without escaping — a quoting / injection hazard. Build a
-    // single, explicitly-quoted command string and pass NO args array.
-    spawnCmd = [cmd].concat(args.map(_quoteWinArg)).join(" ");
-    spawnArgs = undefined;
-    useShell = true;
-  }
-  var rv = childProcess.spawnSync(spawnCmd, spawnArgs, {
+  var form = _shellForm(cmd, args);
+  var rv = childProcess.spawnSync(form.cmd, form.args, {
     cwd:   opts.cwd   || ROOT,
     stdio: opts.stdio || "inherit",
     env:   Object.assign({}, process.env, opts.env || {}),
-    shell: useShell,
+    shell: form.shell,
   });
   if (rv.status !== 0 && !opts.allowFail) {
     throw new Error("release: " + cmd + " " + args.join(" ") +
@@ -161,11 +164,12 @@ function _runScriptIfPresent(relScriptPath, args, opts) {
 
 function _capture(cmd, args, opts) {
   opts = opts || {};
-  var rv = childProcess.spawnSync(cmd, args, {
+  var form = _shellForm(cmd, args || []);
+  var rv = childProcess.spawnSync(form.cmd, form.args, {
     cwd:   opts.cwd || ROOT,
     stdio: ["ignore", "pipe", "pipe"],
     env:   Object.assign({}, process.env, opts.env || {}),
-    shell: process.platform === "win32" && _needsShell(cmd),
+    shell: form.shell,
   });
   return {
     status: rv.status,

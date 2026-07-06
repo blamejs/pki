@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.14",
+  "packageVersion": "0.1.15",
   "surface": {
     "C": {
       "kind": "object",
@@ -77,27 +77,6 @@
         },
         "version": {
           "kind": "string"
-        }
-      }
-    },
-    "WebCrypto": {
-      "kind": "object",
-      "members": {
-        "Crypto": {
-          "kind": "function",
-          "arity": 0
-        },
-        "CryptoKey": {
-          "kind": "function",
-          "arity": 5
-        },
-        "SubtleCrypto": {
-          "kind": "function",
-          "arity": 0
-        },
-        "WebCryptoError": {
-          "kind": "function",
-          "arity": 3
         }
       }
     },
@@ -775,6 +754,22 @@
     "webcrypto": {
       "kind": "object",
       "members": {
+        "Crypto": {
+          "kind": "function",
+          "arity": 0
+        },
+        "CryptoKey": {
+          "kind": "function",
+          "arity": 5
+        },
+        "SubtleCrypto": {
+          "kind": "function",
+          "arity": 0
+        },
+        "WebCryptoError": {
+          "kind": "function",
+          "arity": 3
+        },
         "subtle": {
           "kind": "object",
           "members": {}
@@ -784,7 +779,7 @@
   },
   "sinceByPrimitive": {
     "pki.asn1.decode": "0.1.0",
-    "pki.asn1.readOid": "0.1.0",
+    "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",
     "pki.asn1.build": "0.1.0",
     "pki.C.TIME": "0.1.0",

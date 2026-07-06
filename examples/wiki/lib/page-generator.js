@@ -58,6 +58,17 @@ function _renderPre(text) {
   return '<pre class="code"><code>' + esc(String(text).replace(/\r/g, "")) + "</code></pre>";
 }
 
+// A concise @example may use top-level `await`. Wrap such a body in an async
+// function for display, so the rendered snippet is copy-paste runnable in a plain
+// script (not only in a REPL / ESM top-level-await context). An example that is
+// already async (declares its own `async`) is left untouched.
+function _wrapAsyncExample(text) {
+  var body = String(text).replace(/\r/g, "");
+  if (!/\bawait\b/.test(body) || /\basync\b/.test(body)) return body;
+  var indented = body.split("\n").map(function (l) { return l ? "  " + l : l; }).join("\n");
+  return "async function example() {\n" + indented + "\n}\nexample();";
+}
+
 function _badge(label, value, cls) {
   return '<span class="badge ' + cls + '">' + esc(label) + " " + esc(value) + "</span>";
 }
@@ -148,6 +159,7 @@ function _renderPrimitive(p, index) {
 
   var badges = [];
   if (tags.since)  badges.push(_badge("since", tags.since, "badge-since"));
+  if (tags.originated) badges.push(_badge("originated", tags.originated, "badge-since"));
   if (tags.status) badges.push(_badge("", tags.status, "badge-status badge-" + esc(tags.status)));
   if (tags.compliance) {
     String(tags.compliance).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (c) {
@@ -165,7 +177,7 @@ function _renderPrimitive(p, index) {
   }
   if (Array.isArray(tags.examples) && tags.examples.length) {
     out.push('<h3 class="sub">Example</h3>');
-    tags.examples.forEach(function (ex) { out.push(_renderPre(ex)); });
+    tags.examples.forEach(function (ex) { out.push(_renderPre(_wrapAsyncExample(ex))); });
   }
   if (tags.related) {
     out.push('<p class="related"><strong>See also:</strong> ' + _renderRelated(tags.related, index) + "</p>");

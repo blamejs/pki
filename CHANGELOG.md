@@ -4,7 +4,27 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.14 — 2026-07-06
+## v0.1.15 — 2026-07-06
+
+CMS EnvelopedData and EncryptedData join the parser, and every documentation example is now executed as a test.
+
+### Added
+
+- pki.schema.cms.parse now decodes CMS EnvelopedData (RFC 5652 §6) and EncryptedData (§8). An EnvelopedData returns { version, originatorInfo, recipientInfos, encryptedContentInfo, unprotectedAttrs } with all five RecipientInfo kinds decoded — KeyTransRecipientInfo (§6.2.1, with the issuerAndSerialNumber/subjectKeyIdentifier version coupling enforced), KeyAgreeRecipientInfo (§6.2.2 + RFC 5753 §3.1), KEKRecipientInfo (§6.2.3), PasswordRecipientInfo (§6.2.4), and OtherRecipientInfo (§6.2.5). An EncryptedData returns { version, encryptedContentInfo, unprotectedAttrs }. The wrapped keys, the ciphertext, and all AlgorithmIdentifier parameters are surfaced raw — every recipient carries the keyEncryptionAlgorithm its encryptedKey must be unwrapped with, and a kekid / rKeyId OtherKeyAttribute is surfaced as raw DER — decryption and key-unwrap are a separate layer. The CMSVersion is recomputed and enforced per structure and per recipient, recipientInfos is required non-empty, and the encryptedContent [0] IMPLICIT OCTET STRING is read as the ciphertext directly.
+- The schema engine gains an implicitTag option on pki.schema.engine.seq() and on pki.schema.pkix.algorithmIdentifier(ns, { implicitTag }) — a [tag] IMPLICIT SEQUENCE / AlgorithmIdentifier reader (used by the PasswordRecipientInfo keyDerivationAlgorithm [0]). A call with no option is byte-identical to before.
+- Every @example in the documentation comment blocks is now executed end-to-end as a test (test/layer-0-primitives/doc-examples.test.js, in the smoke gate), not merely parse-checked: an example must run to completion or throw a typed PkiError, and every documented @primitive path must resolve to a real export — so a documented example can no longer drift from the shipped API. A new @originated comment tag records a callable's original availability version when its documented path is later corrected, enforced alongside the @since version gate.
+
+### Changed
+
+- The W3C WebCrypto constructor classes (CryptoKey, Crypto, SubtleCrypto, WebCryptoError) are now reachable under pki.webcrypto (e.g. pki.webcrypto.CryptoKey) alongside the ready Crypto instance, matching their documented path; the previously-separate pki.WebCrypto holder is removed.
+- Repository tooling now installs npm packages exclusively through integrity-verified lockfiles: the fuzz build installs the jazzer.js engine via npm ci against the committed fuzz/package-lock.json, and the vendoring script resolves a package to an integrity-pinned lockfile in an isolated staging workspace — no install script runs and the repo's own node_modules is never touched — before bundling. Tooling child processes that need a shell (the Windows npm shim) now receive one explicitly-quoted command string instead of an unescaped argument array.
+
+### Fixed
+
+- Two documented API paths that did not resolve at runtime are corrected: pki.webcrypto.CryptoKey (previously reachable only via pki.WebCrypto.CryptoKey) and pki.asn1.read.oid (its comment block labeled the path pki.asn1.readOid, which never existed). Both are now reachable at the documented path.
+- A documentation example for pki.webcrypto.subtle.exportKey referenced an undefined variable; it now generates the key pair it exports.
+
+## v0.1.14 — 2026-07-05
 
 An RFC 5755 attribute-certificate parser joins the pki.schema family.
 

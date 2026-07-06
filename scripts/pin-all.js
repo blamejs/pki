@@ -116,9 +116,15 @@ function fixLockfile(entry) {
   // Skip a zero-dependency manifest — no lockfile is needed.
   try { if (Object.keys(topSpecs(readJson(pkgPath))).length === 0) return; }
   catch (e) { problems.push(entry.dir + ": unreadable package.json: " + (e && e.message)); return; }
-  var args = ["install", "--package-lock-only", "--no-audit", "--no-fund"].concat(entry.args);
-  var r = cp.spawnSync("npm", args, {
-    cwd: dirAbs, encoding: "utf8", shell: process.platform === "win32",
+  // One command STRING (not an args array + shell) — Windows needs a shell
+  // for the npm .cmd shim, and a shell concatenates an args array without
+  // escaping (Node's DEP0190). Every token comes from the static
+  // LOCKFILE_DIRS table above and must stay shell-safe (no spaces or
+  // metacharacters).
+  var cmd = ["npm", "install", "--package-lock-only", "--no-audit", "--no-fund"]
+    .concat(entry.args).join(" ");
+  var r = cp.spawnSync(cmd, {
+    cwd: dirAbs, encoding: "utf8", shell: true,
   });
   if (r.status !== 0) {
     problems.push(entry.dir + ": `npm install --package-lock-only` failed: " + ((r.stderr || r.stdout || "").trim().slice(-300)));

@@ -37,7 +37,7 @@ var der  = pki.asn1.build.oid("2.5.4.3");    // build canonical DER
 var name = pki.oid.name("2.5.4.3");          // OID → "commonName"
 ```
 
-Every namespace hangs off `pki.X`. `index.js` is the canonical export list; a new namespace registers there. The current surface is `pki.version`, `pki.C` (a.k.a. `pki.constants`), `pki.errors`, `pki.asn1`, `pki.oid`, `pki.webcrypto` (a ready `Crypto` instance) with the `pki.WebCrypto` classes, and `pki.x509`. Future namespaces — `pki.cms`, `pki.ocsp`, `pki.crl`, `pki.csr`, `pki.tsp`, `pki.pkcs12`, and the path-validation engine — join in the same shape as they land (see [ROADMAP.md](ROADMAP.md)).
+Every namespace hangs off `pki.X`. `index.js` is the canonical export list; a new namespace registers there. The current surface is `pki.version`, `pki.C` (a.k.a. `pki.constants`), `pki.errors`, `pki.asn1`, `pki.oid`, `pki.webcrypto` (a ready `Crypto` instance carrying the `Crypto` / `SubtleCrypto` / `CryptoKey` / `WebCryptoError` classes), and `pki.x509`. Future namespaces — `pki.cms`, `pki.ocsp`, `pki.crl`, `pki.csr`, `pki.tsp`, `pki.pkcs12`, and the path-validation engine — join in the same shape as they land (see [ROADMAP.md](ROADMAP.md)).
 
 ## The layered design
 
