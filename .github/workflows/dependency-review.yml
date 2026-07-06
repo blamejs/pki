@@ -46,6 +46,9 @@ jobs:
         uses: actions/dependency-review-action@a1d282b36b6f3519aa1f3fc636f609c47dddb294  # v5.0.0
         with:
           fail-on-severity: high
-          # Copyleft / non-permissive licenses are disallowed for an Apache-2.0 toolkit.
-          deny-licenses: GPL-2.0, GPL-3.0, AGPL-3.0, LGPL-3.0
+          # Default-DENY licenses: only these permissive SPDX identifiers are
+          # allowed, so any copyleft variant (GPL-2.0-only / -or-later, LGPL, AGPL,
+          # and forms not enumerated) is rejected without relying on a denylist of
+          # deprecated IDs.
+          allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Unlicense, CC0-1.0, BlueOak-1.0.0, Python-2.0
           comment-summary-in-pr: on-failure
