@@ -1461,6 +1461,17 @@ async function testAuditRegressions() {
   var resUriBadC = await run([interUriBadC, leafUriBadC], { time: T2027, trustAnchor: anchor });
   check("malformed (non-FQDN) URI constraint fails closed", resUriBadC.valid === false && failCodes(resUriBadC).indexOf("path/name-constraint-unsupported") !== -1);
 
+  // RFC 5280 4.2.1.11: policyConstraints MUST be critical — on the TARGET cert
+  // too. The wrap-up applies it, so a non-critical policyConstraints on the leaf
+  // must fail closed consistently with the intermediate path.
+  var leafPcNC = await mkCert({ subject: "PcTargetNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", false, b.sequence([b.contextPrimitive(1, intContent(0))]))] });
+  var resPcNC = await run([leafPcNC], { time: T2027, trustAnchor: anchor });
+  check("non-critical policyConstraints on the target cert rejected", resPcNC.valid === false && failCodes(resPcNC).indexOf("path/extension-not-critical") !== -1);
+  // control: a critical policyConstraints on the target is accepted.
+  var leafPcC = await mkCert({ subject: "PcTargetC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", true, b.sequence([b.contextPrimitive(1, intContent(0))]))] });
+  var resPcC = await run([leafPcC], { time: T2027, trustAnchor: anchor });
+  check("control: critical policyConstraints on the target is accepted", resPcC.valid === true);
+
   // RFC 5321: an rfc822Name local part is case-SENSITIVE; only the host folds
   // case-insensitively. A permitted full-mailbox constraint must not admit a
   // different-case local part.
