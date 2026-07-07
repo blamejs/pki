@@ -141,6 +141,9 @@ function testAcceptMinimal() {
   check("minimal: subject dn", msg.certReq.certTemplate.subject.dn === "CN=req.example");
   check("minimal: publicKey algorithm", msg.certReq.certTemplate.publicKey.algorithm.oid === RSA_ENC);
   check("minimal: publicKey raw bits", Buffer.isBuffer(msg.certReq.certTemplate.publicKey.publicKey.bytes));
+  // publicKey [6] is IMPLICIT on the wire, but .bytes is the importable SPKI
+  // SEQUENCE DER (0x30), not the [6] TLV — matching the x509/csr contract.
+  (function () { var pkb = msg.certReq.certTemplate.publicKey.bytes; check("minimal: publicKey.bytes is importable SPKI SEQUENCE", pkb[0] === 0x30 && pki.asn1.decode(pkb).tagNumber === 16 && pki.asn1.decode(pkb).children.length === 2); })();
   check("minimal: version absent -> null", msg.certReq.certTemplate.version === null);
   check("minimal: popo null", msg.popo === null);
   check("minimal: regInfo null", msg.regInfo === null);

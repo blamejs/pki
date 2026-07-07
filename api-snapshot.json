@@ -310,6 +310,10 @@
               "arity": 2
             }
           }
+        },
+        "sequenceTlv": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
