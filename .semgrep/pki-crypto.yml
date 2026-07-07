@@ -48,8 +48,9 @@ rules:
     languages: [javascript]
     severity: WARNING
     message: >
-      Comparing a MAC / tag / digest / signature with ===, !==, or Buffer.equals
-      is timing-variable. Use crypto.timingSafeEqual for secret-dependent equality.
+      Comparing an authentication MAC / HMAC / auth-tag / secret with ===, !==, or
+      Buffer.equals is timing-variable. Use crypto.timingSafeEqual for
+      secret-dependent equality.
     patterns:
       - pattern-either:
           - pattern: $A.equals($MAC)
@@ -57,6 +58,11 @@ rules:
           - pattern: $MAC === $A
           - pattern: $A !== $MAC
           - pattern: $MAC !== $A
+      # Word-bounded secret-MAC identifiers only. The bare tokens tag / signature /
+      # digest are deliberately excluded: in an ASN.1 toolkit they name public
+      # structural values (tagNumber, signatureAlgorithm, objectDigest), and
+      # comparing those is not a timing oracle. A genuine tag/digest comparison
+      # names it expectedTag / computedDigest / authTag.
       - metavariable-regex:
           metavariable: $MAC
-          regex: (?i).*(mac|tag|digest|hmac|signature|secret).*
+          regex: (?i)(hmac|\bmac\b|auth[_-]?tag|gcm[_-]?tag|secret|expected(mac|tag|digest|hmac)|computed(mac|tag|digest|hmac))

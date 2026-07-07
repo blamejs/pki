@@ -150,30 +150,30 @@ function testAcceptMinimal() {
 }
 
 function testAcceptFullTemplate() {
+  // Every field a conforming request MAY set (RFC 4211 §5): version 2, issuer,
+  // validity, subject, publicKey, and extensions (one critical, one with critical
+  // omitted — the DEFAULT FALSE path).
   var tpl = certTemplate({
-    version: 2, serialNumber: 4919, signingAlg: SHA256_RSA, issuer: "Issuing CA",
+    version: 2, issuer: "Issuing CA",
     validity: { nb: "2026-01-01T00:00:00Z", na: "2027-01-01T00:00:00Z" },
     subject: "end.entity", publicKey: { alg: RSA_ENC },
-    issuerUID: Buffer.from([0xde, 0xad]), subjectUID: Buffer.from([0xbe, 0xef]),
-    extensions: [extn(BASIC_CONSTRAINTS, b.sequence([b.boolean(true)]), true)],
+    extensions: [extn(BASIC_CONSTRAINTS, b.sequence([b.boolean(true)]), true), extn("2.5.29.15", b.bitString(Buffer.from([0x05, 0xa0]), 5))],
   });
   var t = parse(one({ certReq: { templateNode: tpl } })).messages[0].certReq.certTemplate;
   check("full: version 2n", t.version === 2n);
-  check("full: serialNumber", t.serialNumber === 4919n && t.serialNumberHex === "1337");
-  check("full: signingAlg named", t.signingAlg.oid === SHA256_RSA);
   check("full: issuer dn", t.issuer.dn === "CN=Issuing CA");
   check("full: validity Dates", t.validity.notBefore instanceof Date && t.validity.notAfter instanceof Date);
   check("full: subject dn", t.subject.dn === "CN=end.entity");
-  check("full: issuerUID raw bits", t.issuerUID.bytes.equals(Buffer.from([0xde, 0xad])));
-  check("full: subjectUID raw bits", t.subjectUID.bytes.equals(Buffer.from([0xbe, 0xef])));
-  check("full: extensions[0] named", t.extensions.length === 1 && t.extensions[0].name === "basicConstraints" && t.extensions[0].critical === true);
+  check("full: publicKey algorithm", t.publicKey.algorithm.oid === RSA_ENC);
+  check("full: extensions named", t.extensions.length === 2 && t.extensions[0].name === "basicConstraints" && t.extensions[0].critical === true);
+  check("full: extension with critical omitted (DEFAULT FALSE)", t.extensions[1].name === "keyUsage" && t.extensions[1].critical === false);
 }
 
 function testAcceptEmptyTemplate() {
   var t = parse(one({ certReq: { templateNode: b.sequence([]) } })).messages[0].certReq.certTemplate;
-  check("empty template: all fields null", t.version === null && t.serialNumber === null && t.signingAlg === null &&
-    t.issuer === null && t.validity === null && t.subject === null && t.publicKey === null &&
-    t.issuerUID === null && t.subjectUID === null && t.extensions === null);
+  check("empty template: all requestable fields null", t.version === null && t.issuer === null &&
+    t.validity === null && t.subject === null && t.publicKey === null && t.extensions === null);
+  check("empty template: CA-assigned fields not surfaced", !("serialNumber" in t) && !("signingAlg" in t) && !("issuerUID" in t) && !("subjectUID" in t));
 }
 
 function testAcceptExplicitName() {
@@ -186,8 +186,10 @@ function testAcceptPop() {
   check("popo raVerified", parse(one({ popo: popoRaVerified() })).messages[0].popo.type === "raVerified");
   var sig = parse(one({ popo: popoSignature({}) })).messages[0].popo;
   check("popo signature: type + fields", sig.type === "signature" && sig.algorithmIdentifier.oid === SHA256_RSA && Buffer.isBuffer(sig.signature.bytes) && sig.poposkInput === null);
-  var sigIn = parse(one({ popo: popoSignature({ poposkInput: b.sequence([b.integer(1)]) }) })).messages[0].popo;
-  check("popo signature with poposkInput: raw deferred", Buffer.isBuffer(sigIn.poposkInput));
+  // poposkInput is only permitted when the template is incomplete (§4.1) — a
+  // subject-only template.
+  var sigIn = parse(certReqMessages([certReqMsg({ certReq: { templateNode: certTemplate({ subject: "s" }) }, popo: popoSignature({ poposkInput: b.sequence([b.integer(1)]) }) })])).messages[0].popo;
+  check("popo signature with poposkInput (incomplete template): raw deferred", Buffer.isBuffer(sigIn.poposkInput));
   var ke = parse(one({ popo: popoKeyEnc() })).messages[0].popo;
   check("popo keyEncipherment: raw, never decoded", ke.type === "keyEncipherment" && Buffer.isBuffer(ke.bytes));
 }
@@ -228,6 +230,28 @@ function testRejectTemplateTraps() {
   check("template duplicate tag (two [6])", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [implicitSpki(6, RSA_ENC), implicitSpki(6, RSA_ENC)] }) } })) === "crmf/bad-cert-template");
   check("template unexpected [10]", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [b.contextConstructed(10, Buffer.alloc(0))] }) } })) === "crmf/bad-cert-template");
   check("serialNumber [1] non-minimal INTEGER", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [b.contextPrimitive(1, Buffer.from([0x00, 0x02]))] }) } })) === "asn1/non-minimal-integer");
+}
+
+// ---- REJECT — CA-assigned / deprecated CertTemplate fields (§5) -------
+function testRejectCaAssignedFields() {
+  // RFC 4211 §5 — serialNumber / signingAlg (CA-assigned) and issuerUID /
+  // subjectUID (deprecated) MUST be omitted from a CertTemplate.
+  function tpl(extra) { var o = { subject: "s", publicKey: { alg: RSA_ENC } }; Object.keys(extra).forEach(function (k) { o[k] = extra[k]; }); return certTemplate(o); }
+  check("serialNumber present rejected", parseCode(one({ certReq: { templateNode: tpl({ serialNumber: 7 }) } })) === "crmf/bad-cert-template");
+  check("signingAlg present rejected", parseCode(one({ certReq: { templateNode: tpl({ signingAlg: SHA256_RSA }) } })) === "crmf/bad-cert-template");
+  check("issuerUID present rejected", parseCode(one({ certReq: { templateNode: tpl({ issuerUID: Buffer.from([0xde]) }) } })) === "crmf/bad-cert-template");
+  check("subjectUID present rejected", parseCode(one({ certReq: { templateNode: tpl({ subjectUID: Buffer.from([0xad]) }) } })) === "crmf/bad-cert-template");
+}
+
+// ---- REJECT — poposkInput <-> template presence (§4.1) ---------------
+function testRejectPoposkInput() {
+  var complete = certTemplate({ subject: "s", publicKey: { alg: RSA_ENC } });
+  var subjectOnly = certTemplate({ subject: "s" });
+  function msg(tplNode, popo) { return certReqMessages([certReqMsg({ certReq: { templateNode: tplNode }, popo: popo })]); }
+  check("poposkInput present + complete template rejected", parseCode(msg(complete, popoSignature({ poposkInput: b.sequence([b.integer(1)]) }))) === "crmf/bad-popo");
+  check("poposkInput absent + incomplete template rejected", parseCode(msg(subjectOnly, popoSignature({}))) === "crmf/bad-popo");
+  check("complete template + no poposkInput accepted", parseCode(msg(complete, popoSignature({}))) === "NO-THROW");
+  check("incomplete template + poposkInput accepted", parseCode(msg(subjectOnly, popoSignature({ poposkInput: b.sequence([b.integer(1)]) }))) === "NO-THROW");
 }
 
 // ---- REJECT — version value (RFC 4211 §5: MUST be 2 if supplied) ------
@@ -295,6 +319,8 @@ testAcceptMultiMessage();
 testAcceptCertReqIdSentinel();
 testRejectEnvelope();
 testRejectTemplateTraps();
+testRejectCaAssignedFields();
+testRejectPoposkInput();
 testRejectVersionValue();
 testRejectNameValidityPop();
 testRejectPositionSize();

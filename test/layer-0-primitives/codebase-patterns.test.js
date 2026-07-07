@@ -999,6 +999,8 @@ function testCrmfConformanceGuards() {
     ['"crmf/bad-cert-req-messages"', "CertReqMessages is SEQUENCE SIZE(1..MAX) — empty rejected (§3)"],
     ['"crmf/bad-control"',           "an AttributeTypeAndValue is a SEQUENCE { type, value } (§5, §6, §7)"],
     ['"crmf/bad-cert-template"',     "CertTemplate is one ascending [0..9] IMPLICIT run, each field at-most-once (§5)"],
+    ['MUST be omitted',              "serialNumber/signingAlg (CA-assigned) + issuerUID/subjectUID (deprecated) are rejected, not surfaced (§5)"],
+    ['poposkInput MUST be',          "a signature POP's poposkInput presence is fixed by the CertTemplate subject+publicKey (§4.1)"],
   ];
   var bad = [];
   required.forEach(function (r) {
