@@ -191,7 +191,11 @@ function testAcceptPop() {
   // poposkInput is only permitted when the template is incomplete (§4.1) — a
   // subject-only template.
   var sigIn = parse(certReqMessages([certReqMsg({ certReq: { templateNode: certTemplate({ subject: "s" }) }, popo: popoSignature({ poposkInput: b.sequence([b.integer(1)]) }) })])).messages[0].popo;
-  check("popo signature with poposkInput (incomplete template): raw deferred", Buffer.isBuffer(sigIn.poposkInput));
+  // poposkInput surfaces the raw wire [0] TLV AND the SEQUENCE-tagged signed region
+  // (RFC 4211 §4.1) — the two differ only in the identifier octet.
+  check("poposkInput.bytes is the wire [0] TLV", sigIn.poposkInput.bytes[0] === 0xa0);
+  check("poposkInput.signedBytes is the SEQUENCE DER the signature covers", sigIn.poposkInput.signedBytes[0] === 0x30 &&
+    sigIn.poposkInput.signedBytes.slice(1).equals(sigIn.poposkInput.bytes.slice(1)));
   var ke = parse(one({ popo: popoKeyEnc() })).messages[0].popo;
   check("popo keyEncipherment: raw, never decoded", ke.type === "keyEncipherment" && Buffer.isBuffer(ke.bytes));
 }
