@@ -128,11 +128,12 @@ function popoKeyEnc(inner) { return b.contextConstructed(2, inner || b.contextPr
 // The fields of a minimal valid v0 EnvelopedData (version, recipientInfos {ktri v0},
 // encryptedContentInfo) — the content of an IMPLICIT encryptedKey [4]. The content
 // type defaults to id-ct-encKeyWithID (RFC 4211 §4.2); override to test the reject.
-function envDataFields(ct) {
+function envDataFields(ct, detached) {
   var rid = b.sequence([rdnSeq("CA"), b.integer(1)]);
   var ktri = b.sequence([b.integer(0), rid, algId(RSA_ENC), b.octetString(Buffer.from([0xde, 0xad]))]);
-  var eci = b.sequence([b.oid(ct || "1.2.840.113549.1.9.16.1.21"), algId("2.16.840.1.101.3.4.1.2")]);
-  return Buffer.concat([b.integer(0), b.set([ktri]), eci]);
+  var eciFields = [b.oid(ct || "1.2.840.113549.1.9.16.1.21"), algId("2.16.840.1.101.3.4.1.2")];
+  if (!detached) eciFields.push(b.contextPrimitive(0, Buffer.from([0xde, 0xad, 0xbe, 0xef])));  // encryptedContent [0]
+  return Buffer.concat([b.integer(0), b.set([ktri]), b.sequence(eciFields)]);
 }
 
 // certReqMsg(o): CertReqMsg ::= SEQUENCE { certReq, popo?, regInfo? }.
@@ -318,6 +319,11 @@ function testPopoPrivKeyMethods() {
   check("encryptedKey [4] malformed EnvelopedData rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, b.integer(9))) })) === "crmf/bad-popo");
   // RFC 4211 §4.2 — the enveloped content type MUST be id-ct-encKeyWithID.
   check("encryptedKey [4] wrong content type (id-data) rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, envDataFields("1.2.840.113549.1.7.1"))) })) === "crmf/bad-popo");
+  // The encrypted key material MUST be present (a detached EnvelopedData is rejected).
+  check("encryptedKey [4] detached (no encryptedContent) rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, envDataFields(null, true))) })) === "crmf/bad-popo");
+  // The MAC arms are key-agreement only — rejected under keyEncipherment [2].
+  check("keyEncipherment [2] + dhMAC inner rejected", parseCode(one({ popo: keyEnc(b.contextPrimitive(2, Buffer.from([0x00, 0xaa]))) })) === "crmf/bad-popo");
+  check("keyEncipherment [2] + agreeMAC inner rejected", parseCode(one({ popo: keyEnc(agreeMac()) })) === "crmf/bad-popo");
 }
 
 // ---- REJECT — poposkInput publicKey must match the template (§4.1) ----
