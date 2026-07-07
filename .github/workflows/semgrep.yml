@@ -1,0 +1,82 @@
+name: Semgrep SAST
+
+# Semgrep complements CodeQL: the registry packs (security-audit, secrets) plus
+# a custom PKI/crypto ruleset (.semgrep/pki-crypto.yml). Scoped to the shipped
+# product (lib/, index.js, bin/); findings upload to the Security tab like CodeQL
+# (non-blocking, so a registry-rule false positive never wedges the merge gate).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "37 5 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: semgrep-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  semgrep:
+    name: Semgrep (registry + PKI crypto rules)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+      contents: read
+      actions: read          # required for SARIF upload on private/GHAS repos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1  # v6.3.0
+        with:
+          python-version: "3.12"
+
+      - name: Install Semgrep
+        # A scanner wants current rules; the run step is not an action, so pinact
+        # does not gate it. Pinned to a known-good line.
+        run: python -m pip install "semgrep>=1.100.0,<2"
+
+      - name: Scan (registry packs + PKI crypto rules)
+        run: |
+          set +e
+          semgrep scan \
+            --config p/security-audit \
+            --config p/secrets \
+            --config .semgrep/pki-crypto.yml \
+            --sarif --output semgrep.sarif \
+            --metrics off \
+            --exclude lib/vendor \
+            lib index.js bin
+          code=$?
+          set -e
+          # Exit 0 (clean) and 1 (findings) are fine — findings are non-blocking and
+          # go to the Security tab. Exit >= 2 is a fatal/config error (unfetchable
+          # registry pack, invalid rule, unparseable .semgrep/*.yml, missing config):
+          # fail loudly instead of silently disabling the scan.
+          if [ "$code" -ge 2 ]; then
+            echo "::error::Semgrep exited $code (config/infrastructure error, not findings) — the scan did not run."
+            exit "$code"
+          fi
+
+      - name: Upload SARIF to the Security tab
+        # Only when the scan produced a SARIF — a Semgrep failure leaves no file
+        # and upload-sarif errors on an absent path (reddens a non-blocking job).
+        # Non-blocking: a fork PR or a Dependabot PR runs with a read-only
+        # GITHUB_TOKEN (GitHub downgrades the requested security-events: write), so
+        # the upload fails a permission check even though the scan succeeded —
+        # continue-on-error keeps the check green and tied to real findings, not to
+        # who opened the PR. The scan itself still gates on a config error above.
+        if: ${{ hashFiles('semgrep.sarif') != '' }}
+        continue-on-error: true
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
+        with:
+          sarif_file: semgrep.sarif
+          category: semgrep

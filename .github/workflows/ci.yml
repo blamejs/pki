@@ -102,6 +102,12 @@ jobs:
         # at the next release commit alongside the version bump.
         run: node scripts/check-api-snapshot.js
 
+      - name: '@status lifecycle gate'
+        # Drives experimental -> stable -> deprecated: fails when a primitive is
+        # overdue for a graduation review (no dated keep-experimental decision in
+        # lifecycle-reviews.json) or a deprecation has reached its remove-by.
+        run: node scripts/check-status-lifecycle.js
+
       - name: Lockfile / supply-chain pin currency
         # The committed lockfiles must record the current package.json
         # version and pinned specs. A release that bumps package.json but

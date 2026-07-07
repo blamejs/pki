@@ -1,0 +1,68 @@
+# Custom Semgrep rules for a PKI / crypto toolkit — preventative checks the
+# generic registry packs (p/security-audit, p/secrets) do not cover. Scoped to
+# lib/ (the shipped code). Findings upload to the Security tab; they complement
+# the in-repo codebase-patterns detectors, they do not replace them.
+rules:
+  - id: pki-math-random-not-csprng
+    languages: [javascript]
+    severity: ERROR
+    message: >
+      Math.random() is not a CSPRNG. Any security-relevant value (key, nonce,
+      salt, serial, challenge) must come from node:crypto randomBytes or the
+      WebCrypto getRandomValues surface.
+    pattern: Math.random(...)
+
+  - id: pki-weak-hash-md5-sha1
+    languages: [javascript]
+    severity: WARNING
+    message: >
+      MD5 / SHA-1 are broken for signatures and collision resistance (SHAttered).
+      Use SHA-256+ unless decoding a legacy structure that names the algorithm,
+      and never as a default.
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createHash("md5")
+          - pattern: crypto.createHash("sha1")
+          - pattern: crypto.createHash("md5-sha1")
+
+  - id: pki-legacy-cipher-no-iv
+    languages: [javascript]
+    severity: ERROR
+    message: >
+      crypto.createCipher/createDecipher derive a key+IV from a password with no
+      salt and are deprecated. Use createCipheriv/createDecipheriv with an
+      explicit random IV.
+    patterns:
+      - pattern-either:
+          - pattern: crypto.createCipher(...)
+          - pattern: crypto.createDecipher(...)
+
+  - id: pki-ecb-mode
+    languages: [javascript]
+    severity: ERROR
+    message: ECB mode leaks plaintext structure. Use an authenticated mode (GCM) or CBC with a random IV.
+    patterns:
+      - pattern-regex: '["''][a-z0-9-]+-ecb["'']'
+
+  - id: pki-non-constant-time-secret-compare
+    languages: [javascript]
+    severity: WARNING
+    message: >
+      Comparing an authentication MAC / HMAC / auth-tag / secret with ===, !==, or
+      Buffer.equals is timing-variable. Use crypto.timingSafeEqual for
+      secret-dependent equality.
+    patterns:
+      - pattern-either:
+          - pattern: $A.equals($MAC)
+          - pattern: $A === $MAC
+          - pattern: $MAC === $A
+          - pattern: $A !== $MAC
+          - pattern: $MAC !== $A
+      # Word-bounded secret-MAC identifiers only. The bare tokens tag / signature /
+      # digest are deliberately excluded: in an ASN.1 toolkit they name public
+      # structural values (tagNumber, signatureAlgorithm, objectDigest), and
+      # comparing those is not a timing oracle. A genuine tag/digest comparison
+      # names it expectedTag / computedDigest / authTag.
+      - metavariable-regex:
+          metavariable: $MAC
+          regex: (?i)(hmac|\bmac\b|auth[_-]?tag|gcm[_-]?tag|secret|expected(mac|tag|digest|hmac)|computed(mac|tag|digest|hmac))

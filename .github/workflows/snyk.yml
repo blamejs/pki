@@ -1,0 +1,94 @@
+name: Snyk
+
+# Snyk Open Source (SCA) + Code (SAST) as a third independent scanner alongside
+# CodeQL and Semgrep. Requires the SNYK_TOKEN repository secret. Findings upload
+# to the Security tab as SARIF (non-blocking) so a Snyk-only finding does not
+# wedge the merge gate; CodeQL/Semgrep remain the SAST signal in review.
+#
+# Deliberately NOT run on pull_request: the job needs the SNYK_TOKEN secret, and
+# a fork PR must never be able to reach it. Push-to-main + the weekly schedule
+# give continuous coverage; the CodeQL/Semgrep/dependency-review gates run on PRs.
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "43 5 * * 1"
+  workflow_dispatch:
+
+permissions: read-all
+
+concurrency:
+  group: snyk-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  snyk:
+    name: Snyk (SCA + Code)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      security-events: write
+      contents: read
+      actions: read          # required for SARIF upload on private/GHAS repos
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: 24
+
+      - name: Snyk Open Source (SCA — dependency + license issues)
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        # --dev is required: this repo ships zero runtime dependencies (Hard Rule
+        # #1), so the entire npm dependency surface is devDependencies, which Snyk
+        # skips by default. Without it the SCA scan would cover nothing.
+        # Exit 1 = scan completed WITH issues (findings) -> success. Any other
+        # non-zero (2/3/auth/no-project/network) is an EXECUTION failure: let it
+        # fail the step so it is visible (continue-on-error keeps the job green),
+        # instead of || true painting a broken scan as a passing one.
+        run: |
+          set +e
+          npx --yes snyk@latest test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-oss.sarif
+          code=$?
+          set -e
+          if [ "$code" = "0" ] || [ "$code" = "1" ]; then exit 0; fi
+          echo "::error::Snyk Open Source scan failed with exit $code (execution error, not findings)."
+          exit "$code"
+
+      - name: Upload Snyk Open Source SARIF
+        # Only upload when the scan actually produced a SARIF — a Snyk CLI failure
+        # (missing/invalid token, network, no supported project) leaves no file,
+        # and upload-sarif errors on an absent path, reddening a non-blocking job.
+        if: ${{ hashFiles('snyk-oss.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
+        with:
+          sarif_file: snyk-oss.sarif
+          category: snyk-oss
+
+      - name: Snyk Code (SAST — static analysis of the source)
+        continue-on-error: true
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        # Same exit-code handling: findings (1) succeed; an execution failure
+        # (e.g. Snyk Code not enabled for the org) surfaces as a red step.
+        run: |
+          set +e
+          npx --yes snyk@latest code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
+          code=$?
+          set -e
+          if [ "$code" = "0" ] || [ "$code" = "1" ]; then exit 0; fi
+          echo "::error::Snyk Code scan failed with exit $code (execution error, not findings)."
+          exit "$code"
+
+      - name: Upload Snyk Code SARIF
+        if: ${{ hashFiles('snyk-code.sarif') != '' }}
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a  # v4.36.3
+        with:
+          sarif_file: snyk-code.sarif
+          category: snyk-code

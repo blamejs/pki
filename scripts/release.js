@@ -394,8 +394,9 @@ function cmdPrepare(opts) {
   _run("npx", ["--yes", "eslint@10.3.0", "--max-warnings", "0", "."]);
   _runScriptIfPresent("test/layer-0-primitives/codebase-patterns.test.js");
   _runScriptIfPresent("scripts/validate-source-comment-blocks.js");
+  _runScriptIfPresent("scripts/check-status-lifecycle.js");
   _run("node", ["scripts/pin-all.js", "--check"]);
-  _ok("eslint + codebase-patterns + source-comment-blocks + lockfile pin currency clean");
+  _ok("eslint + codebase-patterns + source-comment-blocks + status-lifecycle + lockfile pin currency clean");
 
   _section("supply-chain currency");
   // A stale vendored bundle becomes a release blocker HERE instead of an

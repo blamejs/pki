@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.16",
+  "packageVersion": "0.1.17",
   "surface": {
     "C": {
       "kind": "object",
@@ -310,6 +310,10 @@
               "arity": 2
             }
           }
+        },
+        "sequenceTlv": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -418,6 +422,10 @@
           "arity": 3
         },
         "CrlError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "CrmfError": {
           "kind": "function",
           "arity": 3
         },
@@ -571,6 +579,19 @@
             }
           }
         },
+        "crmf": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
         "csr": {
           "kind": "object",
           "members": {
@@ -609,7 +630,11 @@
             },
             "decode": {
               "kind": "function",
-              "arity": 1
+              "arity": 2
+            },
+            "encode": {
+              "kind": "function",
+              "arity": 3
             },
             "explicit": {
               "kind": "function",
@@ -823,10 +848,13 @@
     "pki.schema.cms.pemEncode": "0.1.10",
     "pki.schema.crl.parse": "0.1.7",
     "pki.schema.crl.pemDecode": "0.1.7",
+    "pki.schema.crmf.parse": "0.1.17",
+    "pki.schema.crmf.pemDecode": "0.1.17",
     "pki.schema.csr.parse": "0.1.8",
     "pki.schema.csr.pemDecode": "0.1.8",
     "pki.schema.csr.pemEncode": "0.1.8",
     "pki.schema.engine.walk": "0.1.7",
+    "pki.schema.engine.encode": "0.1.17",
     "pki.schema.ocsp.parseRequest": "0.1.11",
     "pki.schema.ocsp.parseResponse": "0.1.11",
     "pki.schema.ocsp.pemDecode": "0.1.11",

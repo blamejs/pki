@@ -16,6 +16,7 @@
 !.npmrc
 !.gitleaks.toml
 !.pinact.yaml
+!.semgrep/
 # Vendor-data integrity surface — pubkey ships in tarball so operators
 # verify .data.js signatures against the maintainer's pinned key.
 !lib/vendor/.vendor-data-pubkey

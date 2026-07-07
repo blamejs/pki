@@ -107,6 +107,24 @@ jobs:
       - name: ESLint (max-warnings 0)
         run: npx --yes eslint@10.3.0 --max-warnings 0 .
 
+      # The tag-push publish path is independent of the pull_request CI, so the
+      # full static-gate battery re-runs here before `npm pack` — a tree that
+      # fails any of these must never be packed into the published tarball.
+      - name: Codebase-patterns detectors
+        run: node test/layer-0-primitives/codebase-patterns.test.js
+
+      - name: Wiki @module / @primitive comment-block convention
+        run: node scripts/validate-source-comment-blocks.js
+
+      - name: API surface snapshot gate
+        run: node scripts/check-api-snapshot.js
+
+      - name: '@status lifecycle gate'
+        run: node scripts/check-status-lifecycle.js
+
+      - name: Lockfile / supply-chain pin currency
+        run: node scripts/pin-all.js --check
+
       - name: Show Node + npm version
         run: |
           node --version
