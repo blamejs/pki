@@ -1,8 +1,8 @@
 # Fuzz harnesses
 
 Coverage-guided fuzz targets against the parser surface most likely to
-crash on adversarial input — the strict DER codec and the X.509
-certificate parser. Each `<name>.fuzz.js` file is a libFuzzer-compatible
+crash on adversarial input — the strict DER codec and every format
+parser. Each `<name>.fuzz.js` file is a libFuzzer-compatible
 harness (jazzer.js format), run two ways:
 
 - **CI** — jazzer.js drives every harness on each PR (60s per target)
@@ -17,14 +17,20 @@ action wrapper, which does not support JavaScript targets.
 
 ## Targets
 
-| File                   | Target                   |
-| ---------------------- | ------------------------ |
-| `asn1-der.fuzz.js`     | `pki.asn1.decode`        |
-| `x509-parse.fuzz.js`   | `pki.schema.x509.parse`  |
-| `cms-parse.fuzz.js`    | `pki.schema.cms.parse`   |
+| File                     | Target                                                |
+| ------------------------ | ----------------------------------------------------- |
+| `asn1-der.fuzz.js`       | `pki.asn1.decode`                                     |
+| `x509-parse.fuzz.js`     | `pki.schema.x509.parse`                               |
+| `cms-parse.fuzz.js`      | `pki.schema.cms.parse`                                |
+| `ocsp-parse.fuzz.js`     | `pki.schema.ocsp.parseRequest` / `parseResponse`      |
+| `tsp-parse.fuzz.js`      | `pki.schema.tsp.parse`                                |
+| `attrcert-parse.fuzz.js` | `pki.schema.attrcert.parse`                           |
+| `crmf-parse.fuzz.js`     | `pki.schema.crmf.parse`                               |
+| `pkcs12-parse.fuzz.js`   | `pki.schema.pkcs12.parse`                             |
+| `pkix-ext-parse.fuzz.js` | the shared PKIX extension decoders                    |
 
 Each harness exports a `fuzz(data)` function the engine drives with
-mutated bytes. The contract for both targets is the same: decoding or
+mutated bytes. The contract for every target is the same: decoding or
 parsing attacker-controlled bytes may only ever succeed or throw a
 `pki.errors.PkiError` (`Asn1Error` / `OidError` / `CertificateError`).
 The harness catches that class and returns normally. Any other throw —
@@ -36,8 +42,8 @@ regression.
 Per-target seed corpora live in `fuzz/<name>_seed_corpus/`. Each file
 is a single seed input; the build script zips them at compile time, and
 the CI workflow passes the directory to jazzer as the starting corpus.
-Both targets seed from the same DER samples — a certificate is a DER
-SEQUENCE, so those inputs exercise the X.509 parser's front door too.
+Every format seed is also a DER SEQUENCE, so the codec target benefits
+from the same samples.
 Add new seeds whenever a real-world input class isn't covered (raw
 attack payloads, regression inputs from past bug fixes, etc.).
 

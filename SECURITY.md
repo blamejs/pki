@@ -69,6 +69,15 @@ security-only patches after the next major releases.
   where DER forbids them, and trailing bytes after the top-level value — with a
   typed `Asn1Error`. Malformed input is bounded work with a permanent verdict, not
   a stack overflow or a half-parsed object.
+- **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
+  blobs inside octet strings, where every re-decode would restart the depth cap
+  from zero; the PKCS#12 parser carries one cross-decode budget over all of them
+  and caps element counts at each list, so a crafted store fails typed
+  (`pkcs12/too-deep`, `pkcs12/too-many-elements`) instead of exhausting the
+  stack or memory. Its BER acceptance is scoped to exactly the two shapes
+  RFC 7292 §4.1 requires (indefinite lengths, constructed octet strings) and
+  only for that format — every other format and every other DER strictness
+  verdict is unchanged.
 - **Algorithm-substitution.** Every algorithm, attribute, and extension is named
   in an OID registry (`pki.oid`), so a structure's algorithm identifiers resolve
   to a known name rather than being trusted blindly. OID-driven sign/verify

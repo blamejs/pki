@@ -158,14 +158,38 @@ jobs:
             exit 1
           fi
 
+      - name: Detect vendored bundles
+        # lib/vendor/ holds only its manifest and README until a vendored
+        # bundle lands, and OSV-Scanner warns (rather than no-ops) when a
+        # directory target contains nothing scannable. Gate the directory
+        # scan on real vendored content so the scan is exact in both
+        # states — never silenced with --allow-no-lockfiles, which would
+        # also mute a future misconfigured scan.
+        id: vendor
+        run: |
+          set -euo pipefail
+          COUNT=$(find lib/vendor -type f ! -name 'MANIFEST.json' ! -name 'README.md' | wc -l)
+          if [ "$COUNT" -gt 0 ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
       - name: Vulnerability scan (OSV-Scanner)
-        # Scans the SBOM (published surface) plus lib/vendor/ (the
-        # bundled-but-not-in-SBOM surface — vendored deps don't appear in
-        # `npm sbom` because they're CommonJS bundles, not npm deps).
+        # Scans the SBOM — the published npm surface.
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
         with:
           scan-args: |-
             --sbom=sbom.cdx.json
+
+      - name: Vulnerability scan (OSV-Scanner, vendored bundles)
+        # lib/vendor/ is the bundled-but-not-in-SBOM surface — vendored
+        # deps don't appear in `npm sbom` because they're CommonJS
+        # bundles, not npm deps.
+        if: steps.vendor.outputs.present == 'true'
+        uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
+        with:
+          scan-args: |-
             -r lib/vendor/
 
       - name: Pack tarball (the exact bytes that will be published)

@@ -200,10 +200,11 @@ is callable today; nothing below is a stub.
 | `pki.schema.tsp` | Parse DER / PEM RFC 3161 timestamp responses and tokens — the TSTInfo payload (imprint, genTime with sub-second precision, serial, nonce, accuracy), the status-to-token coupling, and the token wrapper composed over CMS with the single-signer rule, fail-closed — `parse`, `parseTstInfo`, `parseToken`, `pemDecode` |
 | `pki.schema.attrcert` | Parse DER / PEM RFC 5755 attribute certificates — the holder and issuer identities (validated GeneralNames), the validity window (real `Date`s), the privilege attributes (role / group / clearance) and extensions, with the raw signed region for a verifier; the obsolete v1 form is recognized and deferred, fail-closed — `parse`, `pemDecode` |
 | `pki.schema.crmf` | Parse DER / PEM RFC 4211 certificate request messages (CertReqMessages — the CMP / EST enrollment body) — the requested-certificate template (subject, public key, validity, extensions), proof-of-possession, and registration controls, with the raw `CertRequest` region a POP verifier hashes; names dual-accepted (IMPLICIT and EXPLICIT), fail-closed — `parse`, `pemDecode` |
-| `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` plus the schema combinators |
+| `pki.schema.pkcs12` | Parse DER / BER / PEM RFC 7292 PKCS#12 (PFX) stores — key bags via the PKCS#8 parser, shrouded keys (algorithm surfaced, ciphertext opaque), cert / CRL / secret bags raw and byte-exact, encrypted and enveloped safes structurally via CMS, `friendlyName` / `localKeyId` decoded, and the exact MAC byte range (`macedBytes`) plus RFC 9579 PBMAC1 recognition for external verification; BER accepted exactly where §4.1 requires it, fail-closed — `parse`, `pemDecode`, `pemEncode` |
+| `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` / `encode` / `embeddedDer` plus the schema combinators |
 | `pki.path` | RFC 5280 §6 certification-path validation — `validate` runs the §6.1 state machine (signature chaining, validity windows, name chaining, basic constraints and path length, key usage, name constraints, the certificate-policy tree) over an ordered path and a trust anchor, returning a structured verdict with per-check reason codes; `crlChecker` supplies CRL-based revocation. Pure and re-entrant, fail-closed — `validate`, `crlChecker` |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
-| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError` / `TspError` / `AttrCertError` / `CrmfError` / `PathError`, each carrying a stable `code` in `domain/reason` form |
+| `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError` / `TspError` / `AttrCertError` / `CrmfError` / `Pkcs12Error` / `PathError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
 
 ### CLI
@@ -217,11 +218,11 @@ pki parse cert.pem                       # structured JSON summary of a certific
 
 ### What's coming
 
-Certificate build/sign/verify, certification-path
-validation, CMS (SignedData / EnvelopedData / EncryptedData / AuthenticatedData),
-OCSP, RFC 3161 timestamping, PKCS#8 decryption (PBES2) / SPKI / PKCS#12, and the
-post-quantum certificate and CMS surface (ML-DSA / ML-KEM / SLH-DSA and hybrid
-composites) are on the roadmap and ride this same core. See
+Certificate build/sign/verify, CMS AuthenticatedData /
+AuthEnvelopedData, PKCS#8 decryption (PBES2) / SPKI, PKCS#12 MAC verification
+and bag decryption, and the post-quantum certificate and CMS surface (ML-DSA /
+ML-KEM / SLH-DSA and hybrid composites) are on the roadmap and ride this same
+core. See
 [ROADMAP.md](ROADMAP.md) for the full plan and current status of each area, and
 [CHANGELOG.md](CHANGELOG.md) for what has landed.
 

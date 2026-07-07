@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.17",
+  "packageVersion": "0.1.18",
   "surface": {
     "C": {
       "kind": "object",
@@ -29,6 +29,12 @@
         "LIMITS": {
           "kind": "object",
           "members": {
+            "ATTRIBUTE_MAX_VALUES": {
+              "kind": "number"
+            },
+            "BER_MAX_STRING_NESTING": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -45,6 +51,15 @@
               "kind": "number"
             },
             "PEM_MAX_BYTES": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_BAG_DEPTH": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_ELEMENTS": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_REDECODES": {
               "kind": "number"
             }
           }
@@ -344,6 +359,12 @@
         "LIMITS": {
           "kind": "object",
           "members": {
+            "ATTRIBUTE_MAX_VALUES": {
+              "kind": "number"
+            },
+            "BER_MAX_STRING_NESTING": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -360,6 +381,15 @@
               "kind": "number"
             },
             "PEM_MAX_BYTES": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_BAG_DEPTH": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_ELEMENTS": {
+              "kind": "number"
+            },
+            "PKCS12_MAX_REDECODES": {
               "kind": "number"
             }
           }
@@ -446,6 +476,10 @@
           "arity": 3
         },
         "PemError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "Pkcs12Error": {
           "kind": "function",
           "arity": 3
         },
@@ -632,6 +666,10 @@
               "kind": "function",
               "arity": 2
             },
+            "embeddedDer": {
+              "kind": "function",
+              "arity": 4
+            },
             "encode": {
               "kind": "function",
               "arity": 3
@@ -734,6 +772,23 @@
         "parse": {
           "kind": "function",
           "arity": 1
+        },
+        "pkcs12": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
         },
         "pkcs8": {
           "kind": "object",
@@ -855,9 +910,13 @@
     "pki.schema.csr.pemEncode": "0.1.8",
     "pki.schema.engine.walk": "0.1.7",
     "pki.schema.engine.encode": "0.1.17",
+    "pki.schema.engine.embeddedDer": "0.1.18",
     "pki.schema.ocsp.parseRequest": "0.1.11",
     "pki.schema.ocsp.parseResponse": "0.1.11",
     "pki.schema.ocsp.pemDecode": "0.1.11",
+    "pki.schema.pkcs12.parse": "0.1.18",
+    "pki.schema.pkcs12.pemDecode": "0.1.18",
+    "pki.schema.pkcs12.pemEncode": "0.1.18",
     "pki.schema.pkcs8.parse": "0.1.9",
     "pki.schema.pkcs8.parseEncrypted": "0.1.9",
     "pki.schema.pkcs8.pemDecode": "0.1.9",

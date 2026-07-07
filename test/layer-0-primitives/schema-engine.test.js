@@ -312,8 +312,59 @@ function testSeqImplicitTag() {
   check("default seq still accepts a universal SEQUENCE", walk(plain, b.sequence([b.integer(7n)])).fields.a.value === 7n);
 }
 
+// embeddedDer is the NAMED form of the OCTET-STRING re-decode idiom the format
+// modules hand-roll (decode fresh bytes, walk a schema, wrap the codec error in
+// a typed code) — plus the cross-decode budget the hand-rolled sites lack: each
+// re-decode through the SAME budget object decrements it, so a container that
+// chains DER blobs across OCTET-STRING boundaries cannot restart the depth/count
+// caps from zero on every hop.
+function testEmbeddedDer() {
+  var inner = S.seq([S.field("v", S.integerLeaf())],
+    { code: "t/bad-inner", what: "Inner", build: function (m) { return m.fields.v.value; } });
+  var der = b.sequence([b.integer(7n)]);
+
+  check("embeddedDer decodes and walks the inner schema",
+    S.embeddedDer(inner, der, NS, { code: "t/bad-embed" }).result === 7n);
+  check("embeddedDer wraps a malformed blob in the caller's code",
+    code(function () { S.embeddedDer(inner, Buffer.from([0x30, 0x05, 0x02]), NS, { code: "t/bad-embed" }); }) === "t/bad-embed");
+  check("embeddedDer keeps an inner-schema reject's own code (no re-wrap)",
+    code(function () { S.embeddedDer(inner, b.octetString(Buffer.from([1])), NS, { code: "t/bad-embed" }); }) === "t/bad-inner");
+
+  // The budget: {remaining:N} decrements per re-decode and fails typed at zero.
+  var budget = { remaining: 2 };
+  S.embeddedDer(inner, der, NS, { code: "t/bad-embed", budget: budget });
+  check("embeddedDer decrements the shared budget", budget.remaining === 1);
+  S.embeddedDer(inner, der, NS, { code: "t/bad-embed", budget: budget });
+  check("embeddedDer exhausted budget fails typed", code(function () {
+    S.embeddedDer(inner, der, NS, { code: "t/bad-embed", budget: budget, budgetCode: "t/too-deep" });
+  }) === "t/too-deep");
+
+  // The ber opt reaches the underlying decode (indefinite-length content).
+  var berBlob = Buffer.concat([Buffer.from([0x30, 0x80]), b.integer(7n), Buffer.from([0x00, 0x00])]);
+  check("embeddedDer strict by default rejects BER", code(function () {
+    S.embeddedDer(inner, berBlob, NS, { code: "t/bad-embed" });
+  }) === "t/bad-embed");
+  check("embeddedDer {ber:true} accepts BER content",
+    S.embeddedDer(inner, berBlob, NS, { code: "t/bad-embed", ber: true }).result === 7n);
+}
+
+// repeat max: a SEQUENCE OF / SET OF can declare an element-count ceiling so a
+// container of millions of tiny elements fails typed instead of amplifying
+// memory through per-element walk products.
+function testRepeatMax() {
+  var spec = S.seqOf(S.integerLeaf(), { code: "t/bad-list", what: "List", max: 3, maxCode: "t/too-many" });
+  var ok = b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)]);
+  check("repeat max: at the cap accepts", code(function () { walk(spec, ok); }) === "NO-THROW");
+  var over = b.sequence([b.integer(1n), b.integer(2n), b.integer(3n), b.integer(4n)]);
+  check("repeat max: over the cap fails typed", code(function () { walk(spec, over); }) === "t/too-many");
+  var noMax = S.seqOf(S.integerLeaf(), { code: "t/bad-list", what: "List" });
+  check("repeat without max is unchanged", code(function () { walk(noMax, over); }) === "NO-THROW");
+}
+
 function run() {
   testLeaves();
+  testEmbeddedDer();
+  testRepeatMax();
   testImplicitSetOf();
   testImplicitBitString();
   testImplicitNull();

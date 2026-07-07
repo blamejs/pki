@@ -1363,7 +1363,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js"]; // + future format modules as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -2104,7 +2104,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-pkcs8.js:pemDecode", "lib/schema-pkcs8.js:pemEncode",
         "lib/schema-cms.js:pemDecode", "lib/schema-cms.js:pemEncode",
         "lib/schema-ocsp.js:pemDecode", "lib/schema-tsp.js:pemDecode",
-        "lib/schema-attrcert.js:pemDecode",
+        "lib/schema-attrcert.js:pemDecode", "lib/schema-crmf.js:pemDecode",
+        "lib/schema-pkcs12.js:pemDecode", "lib/schema-pkcs12.js:pemEncode",
+        "lib/schema-attrcert.js:<top>", "lib/schema-pkcs12.js:<top>",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
@@ -2122,6 +2124,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-csr.js:matches", "lib/schema-tsp.js:matches",
         "lib/schema-ocsp.js:matchesRequest", "lib/schema-ocsp.js:matchesResponse",
         "lib/schema-attrcert.js:matches", "lib/schema-attrcert.js:matchesV1",
+        "lib/schema-crmf.js:matches", "lib/schema-pkcs12.js:matches",
       ],
       mode: "family-subset",
       reason: "per-format matches()/matchesV1() detectors share the signedEnvelopeTbs + children-tag-probe idiom (the preamble lives in pkix); each probes different positions/tags to stay mutually exclusive, nothing further to extract.",
@@ -2139,6 +2142,9 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/schema-cms.js:ctx", "lib/schema-ocsp.js:_rawSignature",
         "lib/schema-pkcs8.js:<top>", "lib/schema-tsp.js:<top>",
+        "lib/schema-pkcs12.js:<top>", "lib/schema-crmf.js:popoPrivKey",
+        "lib/schema-pkix.js:algorithmIdentifier", "lib/schema-pkix.js:attribute",
+        "lib/schema-pkix.js:attributeTypeAndValue",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",

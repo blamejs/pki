@@ -26,7 +26,7 @@ function crlDer() {
 }
 
 function run() {
-  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "crmf", "ocsp-request", "ocsp-response", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
+  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "crmf", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
 
   // A CertReqMessages (RFC 4211) routes to crmf, not to the ocsp-request it sits ahead of.
   var crmfSubject = b.contextConstructed(5, b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("req")])]));
