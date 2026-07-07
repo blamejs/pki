@@ -33,6 +33,34 @@ function testLeaves() {
   check("time rejects a non-time tag (t/bad-time)", code(function () { walk(S.time(NS), b.integer(5n)); }) === "t/bad-time");
 }
 
+// encode is the inverse of walk over the SAME schema: encode(s, v) must equal the
+// hand-built canonical DER AND walk(decode(encode(s, v))) must round-trip — proving
+// EXPLICIT/IMPLICIT tag handling cannot diverge between the two directions.
+function testEncodeRoundTrip() {
+  function rt(label, schema, value, hand) {
+    var der = S.encode(schema, value);
+    check(label + ": encode == hand-built canonical DER", der.equals(hand));
+    check(label + ": walk(decode(encode)) round-trips", code(function () { S.walk(schema, pki.asn1.decode(der), NS); }) === "NO-THROW");
+  }
+  rt("universal seq", S.seq([S.field("a", S.oidLeaf()), S.field("b", S.integerLeaf())]),
+    { a: "1.2.840.113549.1.1.1", b: 42n }, b.sequence([b.oid("1.2.840.113549.1.1.1"), b.integer(42n)]));
+  rt("IMPLICIT [5] seq", S.seq([S.field("a", S.oidLeaf())], { assert: "implicit", implicitTag: 5 }),
+    { a: "1.2.3" }, b.contextConstructed(5, b.oid("1.2.3")));
+  rt("implicitInteger [0]", S.implicitInteger(0), 2n, b.contextPrimitive(0, pki.asn1.decode(b.integer(2n)).content));
+  rt("trailing (only [1] present, ascending)", S.seq([S.trailing([{ tag: 0, name: "v0", schema: S.implicitInteger(0) }, { tag: 1, name: "v1", schema: S.implicitInteger(1) }], { minTag: 0, maxTag: 1, unexpectedCode: "t/x", orderCode: "t/x" })]),
+    { v1: 7n }, b.sequence([b.contextPrimitive(1, pki.asn1.decode(b.integer(7n)).content)]));
+  rt("seqOf INTEGER", S.seqOf(S.integerLeaf()), [1n, 2n, 3n], b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)]));
+  rt("EXPLICIT [0] INTEGER", S.explicit(0, S.integerLeaf()), 9n, b.explicit(0, b.integer(9n)));
+  rt("EXPLICIT trailing member", S.seq([S.trailing([{ tag: 0, name: "t0", schema: S.time(NS), explicit: true }], { minTag: 0, maxTag: 0, unexpectedCode: "t/x", orderCode: "t/x" })]),
+    { t0: new Date("2026-01-01T00:00:00Z") }, b.sequence([b.explicit(0, b.utcTime(new Date("2026-01-01T00:00:00Z")))]));
+  rt("setOf (DER ascending order from unsorted input)", S.setOf(S.integerLeaf()), [3n, 1n, 2n], b.set([b.integer(1n), b.integer(2n), b.integer(3n)]));
+  // choice: { arm, value }
+  var CH = S.choice([{ when: { tagClass: "context", tagNumber: 0 }, schema: S.explicit(0, S.integerLeaf()) }, { when: { tagClass: "universal", tagNumber: TAGS.SEQUENCE }, schema: S.seq([S.field("x", S.integerLeaf())]) }]);
+  rt("choice arm 1 (universal seq)", CH, { arm: 1, value: { x: 5n } }, b.sequence([b.integer(5n)]));
+  // time encodes UTCTime for < 2050, GeneralizedTime otherwise.
+  check("time write: 2050+ is GeneralizedTime", S.encode(S.time(NS), new Date("2060-01-01T00:00:00Z")).equals(b.generalizedTime(new Date("2060-01-01T00:00:00Z"))));
+}
+
 function testSeqAssertAndArity() {
   var seqExact2 = S.seq([S.field("a", S.integerLeaf()), S.field("b", S.integerLeaf())],
     { assert: "sequence", arity: { exact: 2 }, code: "t/bad-seq", build: function (m) { return [m.fields.a.value, m.fields.b.value]; } });
@@ -291,6 +319,7 @@ function run() {
   testOptional();
   testTrailing();
   testTrailingNoMinTag();
+  testEncodeRoundTrip();
   testRepeatUniqueness();
   testChoiceAndExplicit();
   testRejectUnconsumedChildren();

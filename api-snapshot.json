@@ -630,7 +630,11 @@
             },
             "decode": {
               "kind": "function",
-              "arity": 1
+              "arity": 2
+            },
+            "encode": {
+              "kind": "function",
+              "arity": 3
             },
             "explicit": {
               "kind": "function",
@@ -850,6 +854,7 @@
     "pki.schema.csr.pemDecode": "0.1.8",
     "pki.schema.csr.pemEncode": "0.1.8",
     "pki.schema.engine.walk": "0.1.7",
+    "pki.schema.engine.encode": "0.1.17",
     "pki.schema.ocsp.parseRequest": "0.1.11",
     "pki.schema.ocsp.parseResponse": "0.1.11",
     "pki.schema.ocsp.pemDecode": "0.1.11",
