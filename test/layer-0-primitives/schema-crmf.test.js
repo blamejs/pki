@@ -1,0 +1,305 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * Layer 0 — pki.schema.crmf (RFC 4211 CertReqMessages parser).
+ * Spec-first conformance vectors: a valid CertReqMessages parses to the
+ * documented shape; every malformed CertReqMsg / CertRequest / CertTemplate is
+ * rejected fail-closed with a typed crmf/* (or leaf-level asn1/*) error. The
+ * module is IMPLICIT TAGS (RFC 4211 Appendix B), so the CertTemplate body is one
+ * ascending [0..9] run of IMPLICIT context tags — issuer [3] / subject [5] Name
+ * break IMPLICIT (a CHOICE, dual-accepted here) and the OptionalValidity times
+ * are EXPLICIT. certReqId is an unbounded signed INTEGER (accepts the RFC 9483
+ * -1 sentinel); version [0] MUST be 2 when supplied (RFC 4211 §5).
+ */
+
+var helpers = require("../helpers");
+var pki = helpers.pki;
+var check = helpers.check;
+var b = pki.asn1.build;
+// The matches detector is internal dispatch infrastructure (not on the curated
+// pki.schema.crmf surface), so reach it via the module directly.
+var crmfMod = require("../../lib/schema-crmf");
+
+function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
+function parseCode(der) { return code(function () { pki.schema.crmf.parse(der); }); }
+function parse(der) { return pki.schema.crmf.parse(der); }
+
+// ---- OIDs used in fixtures -------------------------------------------
+var SHA256_RSA = "1.2.840.113549.1.1.11";   // sha256WithRSAEncryption (signingAlg)
+var RSA_ENC = "1.2.840.113549.1.1.1";       // rsaEncryption (SPKI algorithm)
+var OLD_CERT_ID = "1.3.6.1.5.5.7.5.1.5";    // id-regCtrl-oldCertID
+var UTF8_PAIRS = "1.3.6.1.5.5.7.5.2.1";     // id-regInfo-utf8Pairs
+var BASIC_CONSTRAINTS = "2.5.29.19";
+
+// ---- primitive fixture builders --------------------------------------
+function algId(o) { return b.sequence([b.oid(o)]); }
+// RDNSequence ::= SEQUENCE OF RDN — a bare universal SEQUENCE (the EXPLICIT arm).
+function rdnSeq(cn) { return b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8(cn)])])]); }
+// The RDN SETs alone (the IMPLICIT arm's children — the [tag] replaces the 0x30).
+function rdnSets(cn) { return [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8(cn)])])]; }
+
+// implicitInt(tag, n): [tag] IMPLICIT INTEGER — a context-primitive carrying the
+// INTEGER content octets (the [tag] replaces the universal 0x02).
+function implicitInt(tag, n) { return b.contextPrimitive(tag, pki.asn1.decode(b.integer(n)).content); }
+// implicitBits(tag, body, unused): [tag] IMPLICIT BIT STRING (context-primitive).
+function implicitBits(tag, body, unused) { return b.contextPrimitive(tag, Buffer.concat([Buffer.from([unused || 0]), body])); }
+// implicitName(tag, cn): IMPLICIT Name — [tag] constructed whose children ARE the RDN SETs.
+function implicitName(tag, cn) { return b.contextConstructed(tag, Buffer.concat(rdnSets(cn))); }
+// explicitName(tag, cn): EXPLICIT Name — [tag] wraps a universal SEQUENCE (RDNSequence).
+function explicitName(tag, cn) { return b.explicit(tag, rdnSeq(cn)); }
+// implicitAlg(tag, o): [tag] IMPLICIT AlgorithmIdentifier { algorithm }.
+function implicitAlg(tag, o) { return b.contextConstructed(tag, b.oid(o)); }
+// implicitSpki(tag, algOid, keyBits): [tag] IMPLICIT SubjectPublicKeyInfo { alg, BIT STRING }.
+function spkiContent(algOid, keyBits) { return Buffer.concat([algId(algOid), b.bitString(keyBits || Buffer.from([0x04, 0x05, 0x06]), 0)]); }
+function implicitSpki(tag, algOid, keyBits) { return b.contextConstructed(tag, spkiContent(algOid, keyBits)); }
+// optValidity(nb, na): validity [4] IMPLICIT OptionalValidity { notBefore [0] EXPLICIT
+// Time, notAfter [1] EXPLICIT Time } — the [0]/[1] wrap a universal GeneralizedTime.
+function optValidity(nb, na) {
+  var kids = [];
+  if (nb) kids.push(b.explicit(0, b.generalizedTime(new Date(nb))));
+  if (na) kids.push(b.explicit(1, b.generalizedTime(new Date(na))));
+  return b.contextConstructed(4, Buffer.concat(kids));
+}
+function extn(oidStr, valueBytes, critical) {
+  var children = [b.oid(oidStr)];
+  if (critical !== undefined) children.push(b.boolean(critical));
+  children.push(b.octetString(valueBytes));
+  return b.sequence(children);
+}
+
+// certTemplate(o): assemble a CertTemplate (all fields OPTIONAL, ascending tags).
+function certTemplate(o) {
+  o = o || {};
+  if (o.rawKids) return b.sequence(o.rawKids);
+  var k = [];
+  if (o.versionNode) k.push(o.versionNode);
+  else if (o.version !== undefined) k.push(implicitInt(0, o.version));
+  if (o.serialNumber !== undefined) k.push(implicitInt(1, o.serialNumber));
+  if (o.signingAlg) k.push(implicitAlg(2, o.signingAlg));
+  if (o.issuerNode) k.push(o.issuerNode);
+  else if (o.issuer) k.push(implicitName(3, o.issuer));
+  if (o.validityNode) k.push(o.validityNode);
+  else if (o.validity) k.push(optValidity(o.validity.nb, o.validity.na));
+  if (o.subjectNode) k.push(o.subjectNode);
+  else if (o.subject) k.push(implicitName(5, o.subject));
+  if (o.publicKey) k.push(implicitSpki(6, o.publicKey.alg, o.publicKey.keyBits));
+  if (o.issuerUID) k.push(implicitBits(7, o.issuerUID, 0));
+  if (o.subjectUID) k.push(implicitBits(8, o.subjectUID, 0));
+  if (o.extensions) k.push(b.contextConstructed(9, Buffer.concat(o.extensions)));
+  return b.sequence(k);
+}
+function templateDefault() { return certTemplate({ subject: "req.example", publicKey: { alg: RSA_ENC } }); }
+
+// control(typeOid, valueNode): CRMF AttributeTypeAndValue ::= SEQUENCE { type, value }.
+function control(typeOid, valueNode) { return b.sequence([b.oid(typeOid), valueNode]); }
+
+// certRequest(o): CertRequest ::= SEQUENCE { certReqId, certTemplate, controls? }.
+function certRequest(o) {
+  o = o || {};
+  if (o.rawKids) return b.sequence(o.rawKids);
+  var k = [b.integer(o.id === undefined ? 0 : o.id), o.templateNode || templateDefault()];
+  if (o.controls) k.push(b.sequence(o.controls));
+  return b.sequence(k);
+}
+
+// POP arms.
+function popoRaVerified() { return b.contextPrimitive(0, Buffer.alloc(0)); }        // raVerified [0] NULL
+function popoSignature(o) {
+  o = o || {};
+  var kids = [];
+  if (o.poposkInput) kids.push(b.contextConstructed(0, o.poposkInput));            // poposkInput [0] (raw, deferred)
+  kids.push(algId(o.alg || SHA256_RSA));
+  kids.push(b.bitString(o.sig || Buffer.from([0xaa, 0xbb]), o.sigUnused || 0));
+  return b.contextConstructed(1, Buffer.concat(kids));                             // signature [1] POPOSigningKey
+}
+function popoKeyEnc(bytes) { return b.contextConstructed(2, bytes || b.sequence([b.integer(1)])); } // keyEncipherment [2] (raw)
+
+// certReqMsg(o): CertReqMsg ::= SEQUENCE { certReq, popo?, regInfo? }.
+function certReqMsg(o) {
+  o = o || {};
+  if (o.rawKids) return b.sequence(o.rawKids);
+  var k = [o.certReqNode || certRequest(o.certReq || {})];
+  if (o.popo) k.push(o.popo);
+  if (o.regInfo) k.push(b.sequence(o.regInfo));
+  return b.sequence(k);
+}
+// certReqMessages(list): CertReqMessages ::= SEQUENCE SIZE(1..MAX) OF CertReqMsg.
+function certReqMessages(list) { return b.sequence(list); }
+function one(o) { return certReqMessages([certReqMsg(o || {})]); }
+
+// ---- ACCEPT ----------------------------------------------------------
+function testAcceptMinimal() {
+  var der = one({});
+  var m = parse(der);
+  check("minimal: one message", m.messages.length === 1);
+  var msg = m.messages[0];
+  check("minimal: certReqId 0n", msg.certReq.certReqId === 0n);
+  check("minimal: certReqIdHex", msg.certReq.certReqIdHex === "00");
+  check("minimal: subject dn", msg.certReq.certTemplate.subject.dn === "CN=req.example");
+  check("minimal: publicKey algorithm", msg.certReq.certTemplate.publicKey.algorithm.oid === RSA_ENC);
+  check("minimal: publicKey raw bits", Buffer.isBuffer(msg.certReq.certTemplate.publicKey.publicKey.bytes));
+  check("minimal: version absent -> null", msg.certReq.certTemplate.version === null);
+  check("minimal: popo null", msg.popo === null);
+  check("minimal: regInfo null", msg.regInfo === null);
+  check("minimal: controls null", msg.certReq.controls === null);
+  // RAW EXACTNESS: certReqBytes equals the CertRequest TLV on the wire.
+  var cr = certRequest({});
+  var m2 = parse(certReqMessages([certReqMsg({ certReqNode: cr })]));
+  check("minimal: certReqBytes equals the CertRequest TLV", m2.messages[0].certReq.certReqBytes.equals(cr));
+}
+
+function testAcceptFullTemplate() {
+  var tpl = certTemplate({
+    version: 2, serialNumber: 4919, signingAlg: SHA256_RSA, issuer: "Issuing CA",
+    validity: { nb: "2026-01-01T00:00:00Z", na: "2027-01-01T00:00:00Z" },
+    subject: "end.entity", publicKey: { alg: RSA_ENC },
+    issuerUID: Buffer.from([0xde, 0xad]), subjectUID: Buffer.from([0xbe, 0xef]),
+    extensions: [extn(BASIC_CONSTRAINTS, b.sequence([b.boolean(true)]), true)],
+  });
+  var t = parse(one({ certReq: { templateNode: tpl } })).messages[0].certReq.certTemplate;
+  check("full: version 2n", t.version === 2n);
+  check("full: serialNumber", t.serialNumber === 4919n && t.serialNumberHex === "1337");
+  check("full: signingAlg named", t.signingAlg.oid === SHA256_RSA);
+  check("full: issuer dn", t.issuer.dn === "CN=Issuing CA");
+  check("full: validity Dates", t.validity.notBefore instanceof Date && t.validity.notAfter instanceof Date);
+  check("full: subject dn", t.subject.dn === "CN=end.entity");
+  check("full: issuerUID raw bits", t.issuerUID.bytes.equals(Buffer.from([0xde, 0xad])));
+  check("full: subjectUID raw bits", t.subjectUID.bytes.equals(Buffer.from([0xbe, 0xef])));
+  check("full: extensions[0] named", t.extensions.length === 1 && t.extensions[0].name === "basicConstraints" && t.extensions[0].critical === true);
+}
+
+function testAcceptEmptyTemplate() {
+  var t = parse(one({ certReq: { templateNode: b.sequence([]) } })).messages[0].certReq.certTemplate;
+  check("empty template: all fields null", t.version === null && t.serialNumber === null && t.signingAlg === null &&
+    t.issuer === null && t.validity === null && t.subject === null && t.publicKey === null &&
+    t.issuerUID === null && t.subjectUID === null && t.extensions === null);
+}
+
+function testAcceptExplicitName() {
+  // issuer [3] EXPLICIT reading (the standards-compliant CHOICE encoding, OQ1).
+  var t = parse(one({ certReq: { templateNode: certTemplate({ issuerNode: explicitName(3, "Explicit CA"), subject: "s", publicKey: { alg: RSA_ENC } }) } })).messages[0].certReq.certTemplate;
+  check("explicit name: issuer dn rendered", t.issuer.dn === "CN=Explicit CA");
+}
+
+function testAcceptPop() {
+  check("popo raVerified", parse(one({ popo: popoRaVerified() })).messages[0].popo.type === "raVerified");
+  var sig = parse(one({ popo: popoSignature({}) })).messages[0].popo;
+  check("popo signature: type + fields", sig.type === "signature" && sig.algorithmIdentifier.oid === SHA256_RSA && Buffer.isBuffer(sig.signature.bytes) && sig.poposkInput === null);
+  var sigIn = parse(one({ popo: popoSignature({ poposkInput: b.sequence([b.integer(1)]) }) })).messages[0].popo;
+  check("popo signature with poposkInput: raw deferred", Buffer.isBuffer(sigIn.poposkInput));
+  var ke = parse(one({ popo: popoKeyEnc() })).messages[0].popo;
+  check("popo keyEncipherment: raw, never decoded", ke.type === "keyEncipherment" && Buffer.isBuffer(ke.bytes));
+}
+
+function testAcceptRegInfoControls() {
+  var m = parse(one({ certReq: { controls: [control(OLD_CERT_ID, b.octetString(Buffer.from([0x01])))] }, regInfo: [control(UTF8_PAIRS, b.utf8("k?v"))] }));
+  check("controls[0] named oldCertID + raw value", m.messages[0].certReq.controls[0].name === "oldCertID" && Buffer.isBuffer(m.messages[0].certReq.controls[0].value));
+  check("regInfo[0] named utf8Pairs + raw value", m.messages[0].regInfo[0].name === "utf8Pairs" && Buffer.isBuffer(m.messages[0].regInfo[0].value));
+}
+
+function testAcceptMultiMessage() {
+  var m = parse(certReqMessages([certReqMsg({ certReq: { id: 0 } }), certReqMsg({ certReq: { id: 1 } }), certReqMsg({ certReq: { id: 2 } })]));
+  check("three messages, order preserved", m.messages.length === 3 && m.messages[0].certReq.certReqId === 0n && m.messages[2].certReq.certReqId === 2n);
+}
+
+function testAcceptCertReqIdSentinel() {
+  var m = parse(one({ certReq: { id: -1 } }));
+  check("certReqId -1 accepted (RFC 9483 sentinel)", m.messages[0].certReq.certReqId === -1n && m.messages[0].certReq.certReqIdHex === "ff");
+}
+
+// ---- REJECT — envelope / DER -----------------------------------------
+function testRejectEnvelope() {
+  check("empty CertReqMessages", parseCode(certReqMessages([])) === "crmf/bad-cert-req-messages");
+  var good = one({});
+  check("trailing garbage", parseCode(Buffer.concat([good, Buffer.from([0x00])])) === "crmf/bad-der");
+  check("indefinite-length outer", parseCode(Buffer.concat([Buffer.from([0x30, 0x80]), good.slice(2), Buffer.from([0x00, 0x00])])) === "crmf/bad-der");
+  var idSeq = parseCode(one({ certReq: { rawKids: [b.sequence([]), templateDefault()] } }));
+  check("certReqId a SEQUENCE not INTEGER", idSeq.indexOf("asn1/") === 0 || idSeq === "crmf/bad-cert-request");
+  check("CertReqMsg unexpected 4th child", parseCode(certReqMessages([certReqMsg({ rawKids: [certRequest({}), popoRaVerified(), b.sequence([control(UTF8_PAIRS, b.utf8("x"))]), b.integer(9)] })])) === "crmf/bad-cert-req-msg");
+}
+
+// ---- REJECT — CertTemplate IMPLICIT-tag traps ------------------------
+function testRejectTemplateTraps() {
+  check("version [0] as universal INTEGER", parseCode(one({ certReq: { templateNode: certTemplate({ versionNode: b.integer(2), subject: "s", publicKey: { alg: RSA_ENC } }) } })) === "crmf/bad-cert-template");
+  check("version [0] constructed", parseCode(one({ certReq: { templateNode: certTemplate({ versionNode: b.contextConstructed(0, b.integer(2)) }) } })).indexOf("asn1/") === 0);
+  check("signingAlg [2] primitive not constructed", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [b.contextPrimitive(2, Buffer.from([0x06, 0x01, 0x2a]))] }) } })) === "crmf/bad-algorithm-identifier");
+  check("template fields out of order ([5] before [3])", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [implicitName(5, "s"), implicitName(3, "i")] }) } })) === "crmf/bad-cert-template");
+  check("template duplicate tag (two [6])", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [implicitSpki(6, RSA_ENC), implicitSpki(6, RSA_ENC)] }) } })) === "crmf/bad-cert-template");
+  check("template unexpected [10]", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [b.contextConstructed(10, Buffer.alloc(0))] }) } })) === "crmf/bad-cert-template");
+  check("serialNumber [1] non-minimal INTEGER", parseCode(one({ certReq: { templateNode: certTemplate({ rawKids: [b.contextPrimitive(1, Buffer.from([0x00, 0x02]))] }) } })) === "asn1/non-minimal-integer");
+}
+
+// ---- REJECT — version value (RFC 4211 §5: MUST be 2 if supplied) ------
+function testRejectVersionValue() {
+  check("version 0 rejected", parseCode(one({ certReq: { templateNode: certTemplate({ version: 0, subject: "s", publicKey: { alg: RSA_ENC } }) } })) === "crmf/bad-version");
+  check("version 1 rejected", parseCode(one({ certReq: { templateNode: certTemplate({ version: 1, subject: "s", publicKey: { alg: RSA_ENC } }) } })) === "crmf/bad-version");
+  check("version 3 rejected", parseCode(one({ certReq: { templateNode: certTemplate({ version: 3, subject: "s", publicKey: { alg: RSA_ENC } }) } })) === "crmf/bad-version");
+  check("version 2 accepted", parseCode(one({ certReq: { templateNode: certTemplate({ version: 2, subject: "s", publicKey: { alg: RSA_ENC } }) } })) === "NO-THROW");
+}
+
+// ---- REJECT — Name / Validity / POP ----------------------------------
+function testRejectNameValidityPop() {
+  check("issuer [3] neither IMPLICIT nor EXPLICIT Name", parseCode(one({ certReq: { templateNode: certTemplate({ issuerNode: b.contextPrimitive(3, Buffer.from([1])) }) } })) === "crmf/bad-name");
+  check("notBefore [0] IMPLICIT not EXPLICIT", parseCode(one({ certReq: { templateNode: certTemplate({ validityNode: b.contextConstructed(4, b.contextPrimitive(0, Buffer.from("20260101000000Z", "latin1"))) }) } })) === "crmf/bad-validity");
+  check("validity [4] present but EMPTY (§5 at-least-one)", parseCode(one({ certReq: { templateNode: certTemplate({ validityNode: b.contextConstructed(4, Buffer.alloc(0)) }) } })) === "crmf/bad-validity");
+  // A context [4] is neither a ProofOfPossession arm ([0..3]) nor the universal-
+  // SEQUENCE regInfo, so it is rejected as an unexpected CertReqMsg element.
+  check("stray context [4] after certReq", parseCode(one({ rawKids: [certRequest({}), b.contextConstructed(4, Buffer.alloc(0))] })) === "crmf/bad-cert-req-msg");
+  check("popo raVerified constructed/non-empty", parseCode(one({ popo: b.contextConstructed(0, Buffer.alloc(0)) })) === "crmf/bad-popo");
+}
+
+// ---- REJECT — popo / regInfo position + SIZE -------------------------
+function testRejectPositionSize() {
+  // A regInfo (universal SEQUENCE) present with NO popo, first control malformed:
+  // proves the popo tags:[0..3] recognizer did NOT mis-consume the SEQUENCE as popo.
+  check("regInfo with malformed control (no popo)", parseCode(one({ regInfo: [b.sequence([b.integer(1)])] })) === "crmf/bad-control");
+  check("regInfo empty SEQUENCE", parseCode(certReqMessages([certReqMsg({ rawKids: [certRequest({}), b.sequence([])] })])) === "crmf/bad-reg-info");
+  check("controls empty SEQUENCE", parseCode(one({ certReq: { rawKids: [b.integer(0), templateDefault(), b.sequence([])] } })) === "crmf/bad-controls");
+}
+
+// ---- DISPATCH + coercion ---------------------------------------------
+function testDispatch() {
+  var der = one({});
+  var routed = pki.schema.parse(der);
+  check("orchestrator routes CRMF to crmf", Array.isArray(routed.messages) && routed.messages.length === 1);
+  check("all() includes crmf between tsp and ocsp-request", (function () {
+    var a = pki.schema.all();
+    return a.indexOf("crmf") !== -1 && a.indexOf("crmf") > a.indexOf("tsp") && a.indexOf("crmf") < a.indexOf("ocsp-request");
+  })());
+  // A 2-message CRMF routes to crmf regardless of the ocsp-request overlap.
+  check("2-message CRMF routes to crmf", Array.isArray(pki.schema.parse(certReqMessages([certReqMsg({}), certReqMsg({})])).messages));
+  // detector predicate
+  check("crmf.matches on a CRMF true", crmfMod.matches(pki.asn1.decode(der)) === true);
+}
+
+function testInputCoercion() {
+  var der = one({});
+  check("parse(Buffer) ok", parse(der).messages.length === 1);
+  check("parse(Uint8Array) ok", parse(new Uint8Array(der)).messages.length === 1);
+  check("parse(42) bad-input", parseCode(42) === "crmf/bad-input");
+  // multi-defect fail-closed: never NO-THROW.
+  var multi = one({ certReq: { templateNode: certTemplate({ version: 0, rawKids: [implicitInt(0, 0), implicitName(5, "s"), implicitName(3, "i")] }) } });
+  var mc = parseCode(multi);
+  check("multi-defect rejected (typed)", mc !== "NO-THROW" && (mc.indexOf("crmf/") === 0 || mc.indexOf("asn1/") === 0));
+}
+
+// ---- runner ----------------------------------------------------------
+testAcceptMinimal();
+testAcceptFullTemplate();
+testAcceptEmptyTemplate();
+testAcceptExplicitName();
+testAcceptPop();
+testAcceptRegInfoControls();
+testAcceptMultiMessage();
+testAcceptCertReqIdSentinel();
+testRejectEnvelope();
+testRejectTemplateTraps();
+testRejectVersionValue();
+testRejectNameValidityPop();
+testRejectPositionSize();
+testDispatch();
+testInputCoercion();
+
+if (require.main === module) console.log("CHECKS " + helpers.getChecks());
+module.exports = {};

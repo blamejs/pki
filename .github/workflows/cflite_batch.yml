@@ -39,6 +39,7 @@ jobs:
           - ocsp-parse
           - tsp-parse
           - attrcert-parse
+          - crmf-parse
           - pkix-ext-parse
     steps:
       - name: Checkout

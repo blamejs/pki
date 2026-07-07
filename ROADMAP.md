@@ -80,7 +80,8 @@ Certificate lifecycle management is absent from the toolkit this library replace
 
 - **ACME** — *Planned.* Account, order, authorization, challenge, and JWS flow for automated Web PKI issuance. RFC 8555.
 - **EST** — *Planned.* Enrollment over Secure Transport for device and IoT enrollment. RFC 7030.
-- **CMP** — *Planned.* Certificate Management Protocol including HTTP transfer and the lightweight profile. RFC 4210 / RFC 9480 / RFC 9483.
+- **Certificate request messages (CRMF)** — *Shipped (parse).* `pki.schema.crmf.parse` decodes an RFC 4211 CertReqMessages — the request body CMP and EST enrollment carry — into the requested-certificate template, proof-of-possession, and registration controls, surfacing the raw CertRequest bytes a proof-of-possession verifier hashes. Building CertReqMessages, and the CMP message envelope around them, are *Planned*.
+- **CMP** — *Planned.* Certificate Management Protocol including HTTP transfer and the lightweight profile, composing the CRMF request messages above. RFC 4210 / RFC 9480 / RFC 9483.
 - **SCEP** — *Under design.* Simple Certificate Enrollment Protocol for MDM and network-device enrollment. RFC 8894.
 - **CMC** — *Under design.* Certificate Management over CMS, for federal/PIV ecosystems. RFC 5272 / 5273 / 5274.
 

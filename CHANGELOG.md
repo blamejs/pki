@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.17 — 2026-07-06
+
+An RFC 4211 certificate-request-message parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.crmf.parse(input) — RFC 4211 CertReqMessages parsing. It decodes a DER Buffer or PEM into { messages: [ { certReq, popo, regInfo } ] }, where each certReq is { certReqId, certReqIdHex, certTemplate, controls, certReqBytes } and certTemplate carries the requested version, serialNumber, signingAlg, issuer, validity, subject, publicKey, issuerUID, subjectUID, and extensions (each null when absent). issuer and subject Names are accepted in both the EXPLICIT and the IMPLICIT wire encodings; the OptionalValidity times are EXPLICIT UTCTime or GeneralizedTime; a supplied CertTemplate version must be 2; certReqId is an unbounded signed integer. popo is null, a raVerified marker, a decoded signature proof (with its poposkInput and signature surfaced raw), or a raw key-encipherment / key-agreement arm. certReqBytes is the exact CertRequest byte range a proof-of-possession verifier hashes. Malformed input fails closed with a typed crmf/* or asn1/* code.
+- pki.schema.crmf.pemDecode(text, label?) — extract the DER bytes from a PEM block (the first block unless a label is given).
+- The OID registry gains the RFC 4211 registration-control (id-regCtrl) and registration-info (id-regInfo) identifiers on the id-pkip arc, so a parsed control or info entry resolves to its name (oldCertID, pkiArchiveOptions, utf8Pairs, and the rest).
+- The error taxonomy gains CrmfError, carrying a stable crmf/* code.
+
+### Changed
+
+- pki.schema.ocsp request and response parsing (parseRequest, parseResponse, pemDecode) is now stable.
+- An experimental primitive is surfaced for a graduation review once it has been experimental for a fixed number of releases; the review is recorded as a graduation to stable or a dated keep-experimental decision, so the experimental-to-stable-to-deprecated transition is driven on a schedule (see LTS-CALENDAR.md).
+
 ## v0.1.16 — 2026-07-06
 
 Certification path validation joins the toolkit — RFC 5280 section 6, as a pure re-entrant algorithm.
