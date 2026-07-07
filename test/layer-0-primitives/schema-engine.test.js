@@ -59,6 +59,11 @@ function testEncodeRoundTrip() {
   rt("choice arm 1 (universal seq)", CH, { arm: 1, value: { x: 5n } }, b.sequence([b.integer(5n)]));
   // time encodes UTCTime for < 2050, GeneralizedTime otherwise.
   check("time write: 2050+ is GeneralizedTime", S.encode(S.time(NS), new Date("2060-01-01T00:00:00Z")).equals(b.generalizedTime(new Date("2060-01-01T00:00:00Z"))));
+  // encode enforces the same repeat constraints walk does (so it can't emit DER its
+  // own decoder rejects).
+  check("encode enforces repeat min (empty rejected)", code(function () { S.encode(S.seqOf(S.integerLeaf(), { min: 1 }), []); }) !== "NO-THROW");
+  check("encode enforces repeat uniqueness (duplicate rejected)", code(function () { S.encode(S.setOfUnique(S.integerLeaf(), function (it) { return it.value.toString(); }), [1n, 1n], NS); }) !== "NO-THROW");
+  check("encode allows a compliant min/unique repeat", S.encode(S.setOfUnique(S.integerLeaf(), function (it) { return it.value.toString(); }, { min: 1 }), [1n, 2n], NS).equals(b.set([b.integer(1n), b.integer(2n)])));
 }
 
 function testSeqAssertAndArity() {
