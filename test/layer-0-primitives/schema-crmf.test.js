@@ -113,7 +113,9 @@ function popoSignature(o) {
   kids.push(b.bitString(o.sig || Buffer.from([0xaa, 0xbb]), o.sigUnused || 0));
   return b.contextConstructed(1, Buffer.concat(kids));                             // signature [1] POPOSigningKey
 }
-function popoKeyEnc(bytes) { return b.contextConstructed(2, bytes || b.sequence([b.integer(1)])); } // keyEncipherment [2] (raw)
+// keyEncipherment [2] POPOPrivKey — EXPLICIT wrapper (POPOPrivKey is a CHOICE)
+// around one inner alternative; default thisMessage [0] BIT STRING.
+function popoKeyEnc(inner) { return b.contextConstructed(2, inner || b.contextPrimitive(0, Buffer.from([0x00, 0xab]))); }
 
 // certReqMsg(o): CertReqMsg ::= SEQUENCE { certReq, popo?, regInfo? }.
 function certReqMsg(o) {
@@ -252,6 +254,9 @@ function testRejectPoposkInput() {
   check("poposkInput absent + incomplete template rejected", parseCode(msg(subjectOnly, popoSignature({}))) === "crmf/bad-popo");
   check("complete template + no poposkInput accepted", parseCode(msg(complete, popoSignature({}))) === "NO-THROW");
   check("incomplete template + poposkInput accepted", parseCode(msg(subjectOnly, popoSignature({ poposkInput: b.sequence([b.integer(1)]) }))) === "NO-THROW");
+  // poposkInput [0] must be constructed (POPOSigningKeyInput is a SEQUENCE).
+  var primInput = b.contextConstructed(1, Buffer.concat([b.contextPrimitive(0, Buffer.from([0x01])), algId(SHA256_RSA), b.bitString(Buffer.from([0xaa]), 0)]));
+  check("poposkInput [0] primitive rejected", parseCode(msg(subjectOnly, primInput)) === "crmf/bad-popo");
 }
 
 // ---- REJECT — version value (RFC 4211 §5: MUST be 2 if supplied) ------
@@ -271,6 +276,11 @@ function testRejectNameValidityPop() {
   // SEQUENCE regInfo, so it is rejected as an unexpected CertReqMsg element.
   check("stray context [4] after certReq", parseCode(one({ rawKids: [certRequest({}), b.contextConstructed(4, Buffer.alloc(0))] })) === "crmf/bad-cert-req-msg");
   check("popo raVerified constructed/non-empty", parseCode(one({ popo: b.contextConstructed(0, Buffer.alloc(0)) })) === "crmf/bad-popo");
+  // POPOPrivKey ([2]/[3]) is EXPLICIT (a CHOICE): a primitive [2], or a [2]
+  // wrapping a non-context / out-of-range inner, is not a valid POP shell.
+  check("keyEncipherment [2] primitive (not EXPLICIT-constructed)", parseCode(one({ popo: b.contextPrimitive(2, Buffer.from([0x01])) })) === "crmf/bad-popo");
+  check("keyEncipherment [2] wrapping a universal SEQUENCE", parseCode(one({ popo: b.contextConstructed(2, b.sequence([b.integer(1)])) })) === "crmf/bad-popo");
+  check("keyEncipherment [2] wrapping an out-of-range [5]", parseCode(one({ popo: b.contextConstructed(2, b.contextPrimitive(5, Buffer.from([0x01]))) })) === "crmf/bad-popo");
 }
 
 // ---- REJECT — popo / regInfo position + SIZE -------------------------
