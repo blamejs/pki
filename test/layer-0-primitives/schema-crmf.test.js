@@ -200,6 +200,8 @@ function testAcceptRegInfoControls() {
   var m = parse(one({ certReq: { controls: [control(OLD_CERT_ID, b.octetString(Buffer.from([0x01])))] }, regInfo: [control(UTF8_PAIRS, b.utf8("k?v"))] }));
   check("controls[0] named oldCertID + raw value", m.messages[0].certReq.controls[0].name === "oldCertID" && Buffer.isBuffer(m.messages[0].certReq.controls[0].value));
   check("regInfo[0] named utf8Pairs + raw value", m.messages[0].regInfo[0].name === "utf8Pairs" && Buffer.isBuffer(m.messages[0].regInfo[0].value));
+  // id-regInfo-certReq (§7.2) resolves to the RFC name, not a local alias.
+  check("id-regInfo-certReq resolves to the RFC name", pki.oid.name("1.3.6.1.5.5.7.5.2.2") === "certReq" && pki.oid.byName("certReq") === "1.3.6.1.5.5.7.5.2.2");
 }
 
 function testAcceptMultiMessage() {
