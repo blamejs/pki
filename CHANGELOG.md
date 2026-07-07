@@ -14,6 +14,7 @@ An RFC 4211 certificate-request-message parser joins the pki.schema family.
 - pki.schema.crmf.pemDecode(text, label?) — extract the DER bytes from a PEM block (the first block unless a label is given).
 - The OID registry gains the RFC 4211 registration-control (id-regCtrl) and registration-info (id-regInfo) identifiers on the id-pkip arc, so a parsed control or info entry resolves to its name (oldCertID, pkiArchiveOptions, utf8Pairs, and the rest).
 - The error taxonomy gains CrmfError, carrying a stable crmf/* code.
+- pki.schema.engine.encode(schema, value) — the constructor direction of the schema engine. A single declarative schema now drives both decode (walk, bytes to value) and encode (canonical DER, value to bytes): every leaf carries a read and a write, and EXPLICIT wrapping and IMPLICIT context-tag retagging are applied in one place, so an encoder can no longer emit a different tag than the decoder reads. A round-trip test proves walk(decode(encode(value))) recovers the value across universal, IMPLICIT, EXPLICIT, and SET-OF-ordered shapes, and the CRMF request format is proven to round-trip end to end.
 
 ### Changed
 

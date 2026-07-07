@@ -379,6 +379,27 @@ function testInputCoercion() {
   check("multi-defect rejected (typed)", mc !== "NO-THROW" && (mc.indexOf("crmf/") === 0 || mc.indexOf("asn1/") === 0));
 }
 
+// ---- schema.encode round-trip (proves crmf's IMPLICIT/EXPLICIT tag handling) ----
+function testEncodeRoundTrip() {
+  var S = pki.schema.engine;
+  function rdn(cn) { return { rdns: [[{ type: "2.5.4.3", value: cn }]] }; }
+  var value = [{ certReq: { certReqId: 0n, certTemplate: {
+    version: 2n, issuer: rdn("Issuing CA"),
+    validity: { notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z") },
+    subject: rdn("end.entity"),
+    publicKey: { algorithm: { algorithm: RSA_ENC }, subjectPublicKey: { unusedBits: 0, bytes: Buffer.from([0x04, 0x05, 0x06]) } },
+  } } }];
+  // One schema definition drives both directions: encode -> decode -> parse recovers
+  // the value, so the IMPLICIT/EXPLICIT tags cannot diverge between the two.
+  var t = parse(S.encode(crmfMod.certReqMessagesSchema, value)).messages[0].certReq.certTemplate;
+  check("encode round-trip: version [0] IMPLICIT INTEGER", t.version === 2n);
+  check("encode round-trip: issuer [3] IMPLICIT Name", t.issuer.dn === "CN=Issuing CA");
+  check("encode round-trip: subject [5] IMPLICIT Name", t.subject.dn === "CN=end.entity");
+  check("encode round-trip: validity [4] EXPLICIT times", t.validity.notBefore.toISOString() === "2026-01-01T00:00:00.000Z" && t.validity.notAfter instanceof Date);
+  check("encode round-trip: publicKey [6] IMPLICIT SPKI is importable (0x30)", t.publicKey.algorithm.oid === RSA_ENC && t.publicKey.bytes[0] === 0x30);
+  check("encode round-trip: encoded bytes route as crmf", crmfMod.matches(pki.asn1.decode(S.encode(crmfMod.certReqMessagesSchema, value))));
+}
+
 // ---- runner ----------------------------------------------------------
 testAcceptMinimal();
 testAcceptFullTemplate();
@@ -397,6 +418,7 @@ testRejectVersionValue();
 testRejectNameValidityPop();
 testRejectPositionSize();
 testDispatch();
+testEncodeRoundTrip();
 testInputCoercion();
 
 if (require.main === module) console.log("CHECKS " + helpers.getChecks());
