@@ -108,10 +108,19 @@ function popoRaVerified() { return b.contextPrimitive(0, Buffer.alloc(0)); }    
 function popoSignature(o) {
   o = o || {};
   var kids = [];
-  if (o.poposkInput) kids.push(b.contextConstructed(0, o.poposkInput));            // poposkInput [0] (raw, deferred)
+  if (o.poposkInput) kids.push(o.poposkInput);                                     // a pre-built poposkInput [0] node
   kids.push(algId(o.alg || SHA256_RSA));
   kids.push(b.bitString(o.sig || Buffer.from([0xaa, 0xbb]), o.sigUnused || 0));
   return b.contextConstructed(1, Buffer.concat(kids));                             // signature [1] POPOSigningKey
+}
+// poposkInput(o): a valid POPOSigningKeyInput [0] — authInfo (publicKeyMAC PKMACValue)
+// + publicKey SPKI. Overridable to build malformed variants.
+function poposkInput(o) {
+  o = o || {};
+  var authInfo = o.authInfo || b.sequence([algId(SHA256_RSA), b.bitString(Buffer.from([0xaa]), 0)]);        // PKMACValue
+  var publicKey = o.publicKey || b.sequence([algId(RSA_ENC), b.bitString(Buffer.from([0x04, 0x05, 0x06]), 0)]); // SPKI
+  var fields = o.fields || [authInfo, publicKey];
+  return b.contextConstructed(0, Buffer.concat(fields));
 }
 // keyEncipherment [2] POPOPrivKey — EXPLICIT wrapper (POPOPrivKey is a CHOICE)
 // around one inner alternative; default thisMessage [0] BIT STRING.
@@ -193,7 +202,7 @@ function testAcceptPop() {
   check("popo signature: type + fields", sig.type === "signature" && sig.algorithmIdentifier.oid === SHA256_RSA && Buffer.isBuffer(sig.signature.bytes) && sig.poposkInput === null);
   // poposkInput is only permitted when the template is incomplete (§4.1) — a
   // subject-only template.
-  var sigIn = parse(certReqMessages([certReqMsg({ certReq: { templateNode: certTemplate({ subject: "s" }) }, popo: popoSignature({ poposkInput: b.sequence([b.integer(1)]) }) })])).messages[0].popo;
+  var sigIn = parse(certReqMessages([certReqMsg({ certReq: { templateNode: certTemplate({ subject: "s" }) }, popo: popoSignature({ poposkInput: poposkInput() }) })])).messages[0].popo;
   // poposkInput surfaces the raw wire [0] TLV AND the SEQUENCE-tagged signed region
   // (RFC 4211 §4.1) — the two differ only in the identifier octet.
   check("poposkInput.bytes is the wire [0] TLV", sigIn.poposkInput.bytes[0] === 0xa0);
@@ -259,13 +268,19 @@ function testRejectPoposkInput() {
   var complete = certTemplate({ subject: "s", publicKey: { alg: RSA_ENC } });
   var subjectOnly = certTemplate({ subject: "s" });
   function msg(tplNode, popo) { return certReqMessages([certReqMsg({ certReq: { templateNode: tplNode }, popo: popo })]); }
-  check("poposkInput present + complete template rejected", parseCode(msg(complete, popoSignature({ poposkInput: b.sequence([b.integer(1)]) }))) === "crmf/bad-popo");
+  check("poposkInput present + complete template rejected", parseCode(msg(complete, popoSignature({ poposkInput: poposkInput() }))) === "crmf/bad-popo");
   check("poposkInput absent + incomplete template rejected", parseCode(msg(subjectOnly, popoSignature({}))) === "crmf/bad-popo");
   check("complete template + no poposkInput accepted", parseCode(msg(complete, popoSignature({}))) === "NO-THROW");
-  check("incomplete template + poposkInput accepted", parseCode(msg(subjectOnly, popoSignature({ poposkInput: b.sequence([b.integer(1)]) }))) === "NO-THROW");
+  check("incomplete template + poposkInput accepted", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput() }))) === "NO-THROW");
   // poposkInput [0] must be constructed (POPOSigningKeyInput is a SEQUENCE).
   var primInput = b.contextConstructed(1, Buffer.concat([b.contextPrimitive(0, Buffer.from([0x01])), algId(SHA256_RSA), b.bitString(Buffer.from([0xaa]), 0)]));
   check("poposkInput [0] primitive rejected", parseCode(msg(subjectOnly, primInput)) === "crmf/bad-popo");
+  // POPOSigningKeyInput is fully validated: empty / arity / malformed-field all fail closed.
+  check("poposkInput empty [0] rejected", parseCode(msg(subjectOnly, popoSignature({ poposkInput: b.contextConstructed(0, Buffer.alloc(0)) }))) === "crmf/bad-popo");
+  check("poposkInput missing publicKey (arity 1) rejected", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput({ fields: [b.sequence([algId(SHA256_RSA), b.bitString(Buffer.from([0xaa]), 0)])] }) }))) === "crmf/bad-popo");
+  check("poposkInput bad publicKey (not SPKI) rejected", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput({ publicKey: b.integer(1) }) }))) === "crmf/bad-spki");
+  // authInfo sender [0] EXPLICIT GeneralName is accepted.
+  check("poposkInput authInfo sender [0] GeneralName accepted", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput({ authInfo: b.explicit(0, b.contextPrimitive(2, Buffer.from("dns.example", "latin1"))) }) }))) === "NO-THROW");
 }
 
 // ---- REJECT — version value (RFC 4211 §5: MUST be 2 if supplied) ------
@@ -290,6 +305,9 @@ function testRejectNameValidityPop() {
   check("keyEncipherment [2] primitive (not EXPLICIT-constructed)", parseCode(one({ popo: b.contextPrimitive(2, Buffer.from([0x01])) })) === "crmf/bad-popo");
   check("keyEncipherment [2] wrapping a universal SEQUENCE", parseCode(one({ popo: b.contextConstructed(2, b.sequence([b.integer(1)])) })) === "crmf/bad-popo");
   check("keyEncipherment [2] wrapping an out-of-range [5]", parseCode(one({ popo: b.contextConstructed(2, b.contextPrimitive(5, Buffer.from([0x01]))) })) === "crmf/bad-popo");
+  // Per-arm form: [3] agreeMAC / [4] encryptedKey are constructed; [0]/[1]/[2] primitive.
+  check("keyEncipherment [2] wrapping [3] as primitive (wrong form)", parseCode(one({ popo: b.contextConstructed(2, b.contextPrimitive(3, Buffer.from([0x01]))) })) === "crmf/bad-popo");
+  check("keyEncipherment [2] wrapping [0] as constructed (wrong form)", parseCode(one({ popo: b.contextConstructed(2, b.contextConstructed(0, b.sequence([]))) })) === "crmf/bad-popo");
 }
 
 // ---- REJECT — popo / regInfo position + SIZE -------------------------
