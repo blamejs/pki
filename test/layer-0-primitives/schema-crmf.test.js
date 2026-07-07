@@ -125,8 +125,6 @@ function poposkInput(o) {
 // keyEncipherment [2] POPOPrivKey — EXPLICIT wrapper (POPOPrivKey is a CHOICE)
 // around one inner alternative; default thisMessage [0] BIT STRING.
 function popoKeyEnc(inner) { return b.contextConstructed(2, inner || b.contextPrimitive(0, Buffer.from([0x00, 0xab]))); }
-// agreeMAC [3] PKMACValue ::= SEQUENCE { algId, value BIT STRING }.
-function pkmacValue() { return b.sequence([algId(SHA256_RSA), b.bitString(Buffer.from([0xaa]), 0)]); }
 // The fields of a minimal valid v0 EnvelopedData (version, recipientInfos {ktri v0},
 // encryptedContentInfo) — the content of an IMPLICIT encryptedKey [4].
 function envDataFields() {
@@ -304,10 +302,16 @@ function testPopoPrivKeyMethods() {
   check("subsequentMessage encrCert(0) accepted + method surfaced", parse(one({ popo: keyEnc(implicitInt(1, 0)) })).messages[0].popo.method === "subsequentMessage");
   check("subsequentMessage challengeResp(1) accepted", parseCode(one({ popo: keyEnc(implicitInt(1, 1)) })) === "NO-THROW");
   check("subsequentMessage out-of-range value rejected", parseCode(one({ popo: keyEnc(implicitInt(1, 5)) })) === "crmf/bad-popo");
+  // agreeMAC [3] IMPLICIT PKMACValue (the [3] replaces the PKMACValue SEQUENCE tag).
+  function agreeMac() { return b.contextConstructed(3, Buffer.concat([algId(SHA256_RSA), b.bitString(Buffer.from([0xaa]), 0)])); }
   // agreeMAC [3] / dhMAC [2] MAC the certReq, which MUST contain subject + publicKey.
-  check("agreeMAC [3] + complete template accepted", parse(m2(complete, keyAgree(b.contextConstructed(3, pkmacValue())))).messages[0].popo.method === "agreeMAC");
-  check("agreeMAC [3] + incomplete template rejected", parseCode(m2(subjectOnly, keyAgree(b.contextConstructed(3, pkmacValue())))) === "crmf/bad-popo");
+  check("agreeMAC [3] + complete template accepted", parse(m2(complete, keyAgree(agreeMac()))).messages[0].popo.method === "agreeMAC");
+  check("agreeMAC [3] + incomplete template rejected", parseCode(m2(subjectOnly, keyAgree(agreeMac()))) === "crmf/bad-popo");
   check("dhMAC [2] + incomplete template rejected", parseCode(m2(subjectOnly, keyAgree(b.contextPrimitive(2, Buffer.from([0x00, 0xaa]))))) === "crmf/bad-popo");
+  // Each alternative's PAYLOAD is decoded, not just form-checked.
+  check("agreeMAC [3] non-PKMACValue payload rejected", parseCode(m2(complete, keyAgree(b.contextConstructed(3, b.integer(1))))) === "crmf/bad-popo");
+  check("dhMAC [2] malformed BIT STRING rejected", parseCode(m2(complete, keyAgree(b.contextPrimitive(2, Buffer.from([0x08]))))) === "crmf/bad-popo");
+  check("thisMessage [0] malformed BIT STRING rejected", parseCode(one({ popo: keyEnc(b.contextPrimitive(0, Buffer.from([0x08]))) })) === "crmf/bad-popo");
   // encryptedKey [4] EnvelopedData is structurally validated, not deferred raw.
   check("encryptedKey [4] valid EnvelopedData accepted + method surfaced", parse(one({ popo: keyEnc(b.contextConstructed(4, envDataFields())) })).messages[0].popo.method === "encryptedKey");
   check("encryptedKey [4] malformed EnvelopedData rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, b.integer(9))) })) === "crmf/bad-popo");
