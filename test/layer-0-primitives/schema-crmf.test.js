@@ -126,11 +126,12 @@ function poposkInput(o) {
 // around one inner alternative; default thisMessage [0] BIT STRING.
 function popoKeyEnc(inner) { return b.contextConstructed(2, inner || b.contextPrimitive(0, Buffer.from([0x00, 0xab]))); }
 // The fields of a minimal valid v0 EnvelopedData (version, recipientInfos {ktri v0},
-// encryptedContentInfo) — the content of an IMPLICIT encryptedKey [4].
-function envDataFields() {
+// encryptedContentInfo) — the content of an IMPLICIT encryptedKey [4]. The content
+// type defaults to id-ct-encKeyWithID (RFC 4211 §4.2); override to test the reject.
+function envDataFields(ct) {
   var rid = b.sequence([rdnSeq("CA"), b.integer(1)]);
   var ktri = b.sequence([b.integer(0), rid, algId(RSA_ENC), b.octetString(Buffer.from([0xde, 0xad]))]);
-  var eci = b.sequence([b.oid("1.2.840.113549.1.7.1"), algId("2.16.840.1.101.3.4.1.2")]);
+  var eci = b.sequence([b.oid(ct || "1.2.840.113549.1.9.16.1.21"), algId("2.16.840.1.101.3.4.1.2")]);
   return Buffer.concat([b.integer(0), b.set([ktri]), eci]);
 }
 
@@ -315,6 +316,21 @@ function testPopoPrivKeyMethods() {
   // encryptedKey [4] EnvelopedData is structurally validated, not deferred raw.
   check("encryptedKey [4] valid EnvelopedData accepted + method surfaced", parse(one({ popo: keyEnc(b.contextConstructed(4, envDataFields())) })).messages[0].popo.method === "encryptedKey");
   check("encryptedKey [4] malformed EnvelopedData rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, b.integer(9))) })) === "crmf/bad-popo");
+  // RFC 4211 §4.2 — the enveloped content type MUST be id-ct-encKeyWithID.
+  check("encryptedKey [4] wrong content type (id-data) rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, envDataFields("1.2.840.113549.1.7.1"))) })) === "crmf/bad-popo");
+}
+
+// ---- REJECT — poposkInput publicKey must match the template (§4.1) ----
+function testRejectPoposkInputKeyMismatch() {
+  // template with publicKey but no subject -> poposkInput required, and its publicKey
+  // MUST equal the template publicKey (RFC 4211 §4.1).
+  var RSA_KEY = Buffer.from([0x04, 0x05, 0x06]);
+  var OTHER_KEY = Buffer.from([0x07, 0x08, 0x09]);
+  function tpl(keyBits) { return certTemplate({ publicKey: { alg: RSA_ENC, keyBits: keyBits } }); }  // no subject
+  function pin(keyBits) { return poposkInput({ publicKey: b.sequence([algId(RSA_ENC), b.bitString(keyBits, 0)]) }); }
+  function msg(tplNode, pk) { return certReqMessages([certReqMsg({ certReq: { templateNode: tplNode }, popo: popoSignature({ poposkInput: pk }) })]); }
+  check("poposkInput publicKey matches template -> accepted", parseCode(msg(tpl(RSA_KEY), pin(RSA_KEY))) === "NO-THROW");
+  check("poposkInput publicKey differs from template -> rejected", parseCode(msg(tpl(RSA_KEY), pin(OTHER_KEY))) === "crmf/bad-popo");
 }
 
 // ---- REJECT — version value (RFC 4211 §5: MUST be 2 if supplied) ------
@@ -414,6 +430,7 @@ testRejectTemplateTraps();
 testRejectCaAssignedFields();
 testRejectPoposkInput();
 testPopoPrivKeyMethods();
+testRejectPoposkInputKeyMismatch();
 testRejectVersionValue();
 testRejectNameValidityPop();
 testRejectPositionSize();
