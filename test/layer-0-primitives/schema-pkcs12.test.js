@@ -341,8 +341,16 @@ function testRejectAuthSafeAndIntegrity() {
 
   var signedWithMac = pfx({ authSafe: signedDataAuthSafe(as), macData: macData({ iterations: 2048 }) });
   check("id-signedData + macData present rejected", parseCode(signedWithMac) === "pkcs12/bad-integrity-mode");
+
+  // MacData is OPTIONAL in the PFX syntax: a MAC-less id-data store (the
+  // OpenSSL -nomac shape) parses with integrityMode "none" — no integrity is
+  // a caller policy concern, not a structural fault.
   var dataNoMac = pfx({ authSafe: contentInfo(ID_DATA, b.octetString(as)) });
-  check("id-data + macData absent rejected", parseCode(dataNoMac) === "pkcs12/bad-integrity-mode");
+  check("id-data without macData parses", parseCode(dataNoMac) === "NO-THROW");
+  var nm = parse(dataNoMac);
+  check("MAC-less store surfaces integrityMode none", nm.integrityMode === "none" && nm.mac === null);
+  check("MAC-less store still decodes its bags", nm.safeBags.length === 1 && nm.safeBags[0].type === "certBag");
+  check("MAC-less store still surfaces macedBytes", Buffer.isBuffer(nm.macedBytes));
 }
 
 // ---- REJECT: iterations DEFAULT canonicalization -----------
@@ -430,9 +438,8 @@ function testRejectSetOrder() {
   var a2 = localKeyIdAttr(Buffer.alloc(4, 1));
   var members = Buffer.compare(a1, a2) > 0 ? [a1, a2] : [a2, a1];
   var rawSet = pki.asn1.encode(0x00, true, pki.asn1.TAGS.SET, Buffer.concat(members));
-  var bag = Buffer.concat([]);
   var kids = [b.oid(CERT_BAG), b.explicit(0, certBagInner(X509_CERT_TYPE, b.octetString(CERT_DER))), rawSet];
-  bag = b.sequence(kids);
+  var bag = b.sequence(kids);
   var c = parseCode(minimalPfx({ bags: [bag] }));
   check("bagAttributes in descending order rejected", /^pkcs12\//.test(c));
 }

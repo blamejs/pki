@@ -158,11 +158,11 @@ module.exports = {
       },
     },
     {
-      desc: "parses an `openssl pkcs12 -export -nomac` public/plain variant fail-closed",
+      desc: "parses an `openssl pkcs12 -export -nomac` store as integrity-less",
       run: function (ctx) {
-        // -nomac drops MacData while keeping the id-data authSafe — RFC 7292 §4
-        // integrity coherence says that store is malformed; proving the reject
-        // against real openssl output keeps the guard honest, not theoretical.
+        // -nomac drops MacData while keeping the id-data authSafe — MacData is
+        // OPTIONAL in the PFX syntax, so the store parses with
+        // integrityMode "none" and no-integrity is the caller's policy call.
         var keyPath = ctx.tmpFile(Buffer.alloc(0), "key2.pem");
         var certPath = ctx.tmpFile(Buffer.alloc(0), "cert2.pem");
         var p12Path = ctx.tmpFile(Buffer.alloc(0), "store2.p12");
@@ -172,11 +172,10 @@ module.exports = {
                           "-subj", "/CN=p12-nomac"]);
           ctx.runOpenssl(["pkcs12", "-export", "-nomac", "-in", certPath, "-inkey", keyPath,
                           "-out", p12Path, "-passout", "pass:interop"]);
-          var codeThrown = null;
-          try { ctx.pki.schema.pkcs12.parse(ctx.fs.readFileSync(p12Path)); }
-          catch (e) { codeThrown = e.code; }
-          ctx.check("a MAC-less id-data store rejects with the integrity-mode verdict",
-                    codeThrown === "pkcs12/bad-integrity-mode");
+          var store = ctx.pki.schema.pkcs12.parse(ctx.fs.readFileSync(p12Path));
+          ctx.check("a -nomac store surfaces integrityMode none", store.integrityMode === "none" && store.mac === null);
+          ctx.check("a -nomac store still carries its shrouded key bag",
+                    store.safeBags.filter(function (b) { return b.type === "pkcs8ShroudedKeyBag"; }).length === 1);
         } finally {
           [keyPath, certPath, p12Path].forEach(function (p) {
             try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ }

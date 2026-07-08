@@ -105,6 +105,9 @@ const COMMON_RULES = {
   "no-loss-of-precision":      "error",
 
   // Hygiene rules — code clarity, dead-code removal.
+  // A value assigned and then overwritten before any read is dead code that
+  // usually marks a refactor leftover or a wrong-variable slip.
+  "no-useless-assignment":     "error",
   "no-unused-vars":            ["error", {
     args:                      "none",
     varsIgnorePattern:         "^_",
