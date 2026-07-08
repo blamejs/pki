@@ -226,6 +226,22 @@ function testAcceptKeyBags() {
   check("shroudedKeyBag: type", m.safeBags[0].type === "pkcs8ShroudedKeyBag");
   check("shroudedKeyBag: PBE algorithm surfaced", m.safeBags[0].encrypted.encryptionAlgorithm.oid === PBE_SHA_3DES);
   check("shroudedKeyBag: ciphertext raw, never decrypted", Buffer.isBuffer(m.safeBags[0].encrypted.encryptedData));
+
+  // A BER producer may encode the bag value itself with an indefinite-length
+  // SEQUENCE — the key bags must be walked from the decoded node, not
+  // re-parsed strictly from their preserved BER wire bytes.
+  var berPki = Buffer.concat([Buffer.from([0x30, 0x80]),
+    b.integer(0), b.sequence([b.oid(ED25519)]), b.octetString(b.octetString(Buffer.alloc(32, 7))),
+    Buffer.from([0x00, 0x00])]);
+  m = parse(minimalPfx({ bags: [safeBag(KEY_BAG, berPki)] }));
+  check("keyBag: BER-encoded PrivateKeyInfo parses", m.safeBags[0].key.privateKeyAlgorithm.oid === ED25519);
+  var berEpki = Buffer.concat([Buffer.from([0x30, 0x80]),
+    b.sequence([b.oid(PBE_SHA_3DES), b.sequence([b.octetString(Buffer.alloc(8, 1)), b.integer(2048)])]),
+    b.octetString(Buffer.alloc(40, 9)),
+    Buffer.from([0x00, 0x00])]);
+  m = parse(minimalPfx({ bags: [safeBag(SHROUDED_KEY_BAG, berEpki)] }));
+  check("shroudedKeyBag: BER-encoded EncryptedPrivateKeyInfo parses",
+        m.safeBags[0].encrypted.encryptionAlgorithm.oid === PBE_SHA_3DES);
 }
 
 // ---- ACCEPT: public-key integrity via cms.parse ------------
