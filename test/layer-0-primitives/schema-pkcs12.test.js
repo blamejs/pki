@@ -159,8 +159,8 @@ function signedDataAuthSafe(authenticatedSafeDer, opts) {
 // PBKDF2 { salt, iterationCount, keyLength }, messageAuthScheme hmacWithSHA256 }.
 function pbmac1MacData(o) {
   o = o || {};
-  var kdfParams = [b.octetString(Buffer.alloc(16, 8)), b.integer(2048)];
-  if (o.omitKeyLength !== true) kdfParams.push(b.integer(32));
+  var kdfParams = [b.octetString(Buffer.alloc(16, 8)), b.integer(o.kdfIterations !== undefined ? o.kdfIterations : 2048)];
+  if (o.omitKeyLength !== true) kdfParams.push(b.integer(o.keyLength !== undefined ? o.keyLength : 32));
   var params = b.sequence([
     b.sequence([b.oid("1.2.840.113549.1.5.12"), b.sequence(kdfParams)]),
     b.sequence([b.oid("1.2.840.113549.2.9")]),
@@ -260,6 +260,14 @@ function testAcceptBagAttributes() {
   check("attrs: friendlyName decoded UTF-16BE", m.safeBags[0].friendlyName === "My Cert");
   check("attrs: localKeyId raw bytes", m.safeBags[0].localKeyId.equals(lk));
   check("attrs: all attributes surfaced", m.safeBags[0].attributes.length === 2);
+
+  // A BER store may segment a localKeyId value as a constructed OCTET STRING;
+  // the attribute-value re-decode follows the same BER rules as the container.
+  var lk1 = Buffer.alloc(10, 0xaa);
+  var lk2 = Buffer.alloc(10, 0xbb);
+  var berLk = Buffer.concat([Buffer.from([0x24, 0x80]), b.octetString(lk1), b.octetString(lk2), Buffer.from([0x00, 0x00])]);
+  m = parse(minimalPfx({ bags: [certBag([attribute(LOCAL_KEY_ID, [berLk])])] }));
+  check("attrs: BER segmented localKeyId reassembles", m.safeBags[0].localKeyId.equals(Buffer.concat([lk1, lk2])));
 }
 
 // ---- ACCEPT: encrypted / enveloped safes via cms.parse -
@@ -275,6 +283,17 @@ function testAcceptEncryptedSafes() {
         m.encryptedSafes[0].content.recipientInfos.length === 1);
   check("envelopedData safe: recipient keyEncryptionAlgorithm surfaced",
         m.encryptedSafes[0].content.recipientInfos[0].keyEncryptionAlgorithm.oid === "1.2.840.113549.1.1.1");
+
+  // BER streamed ciphertext: encryptedContent as a constructed
+  // [0] IMPLICIT OCTET STRING (indefinite, segmented) reassembles.
+  var ct1 = Buffer.alloc(24, 5);
+  var ct2 = Buffer.alloc(24, 6);
+  var berCt = Buffer.concat([Buffer.from([0xa0, 0x80]), b.octetString(ct1), b.octetString(ct2), Buffer.from([0x00, 0x00])]);
+  var berEci = b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))]), berCt]);
+  var berEncSafe = contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0), berEci]));
+  m = parse(minimalPfx({ elements: [berEncSafe] }));
+  check("BER streamed encryptedContent reassembles byte-exact",
+        m.encryptedSafes[0].content.encryptedContentInfo.encryptedContent.equals(Buffer.concat([ct1, ct2])));
 
   // §4.1 — a privacy safe wraps SafeContents, so the encrypted content's
   // declared type must be id-data.
@@ -311,6 +330,14 @@ function testAcceptMacVariants() {
   // RFC 9579 §5 — PBKDF2-params must carry keyLength.
   check("mac: PBMAC1 missing keyLength rejected",
         parseCode(minimalPfx({ macData: pbmac1MacData({ omitKeyLength: true }) })) === "pkcs12/bad-mac-data");
+  // Numeric fields surface as exact numbers or not at all — a value past the
+  // safe-integer range would round silently on conversion.
+  check("mac: PBMAC1 oversized iterationCount rejected",
+        parseCode(minimalPfx({ macData: pbmac1MacData({ kdfIterations: (1n << 60n) }) })) === "pkcs12/bad-mac-data");
+  check("mac: PBMAC1 zero keyLength rejected",
+        parseCode(minimalPfx({ macData: pbmac1MacData({ keyLength: 0n }) })) === "pkcs12/bad-mac-data");
+  check("mac: PBMAC1 oversized keyLength rejected",
+        parseCode(minimalPfx({ macData: pbmac1MacData({ keyLength: (1n << 60n) }) })) === "pkcs12/bad-mac-data");
 }
 
 // ---- REJECT: version ---------------------------------------

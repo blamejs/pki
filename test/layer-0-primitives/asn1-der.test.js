@@ -446,6 +446,24 @@ function testBerScopedDecode() {
   check("ber constructed-string nesting inside the cap reassembles",
     pki.asn1.decode(okChain, { ber: true }).content.equals(Buffer.from([1, 2, 3])));
 
+  // IMPLICIT context-tagged constructed OCTET STRING — the form CMS streams
+  // ciphertext as ([0] IMPLICIT OCTET STRING). The context tag hides the
+  // underlying type from the decoder, so reassembly happens in the typed
+  // reader — and ONLY for a node that came through a ber decode; the strict
+  // path's verdict is unchanged.
+  var ctxConstructed = Buffer.concat([Buffer.from([0xa0, 0x80]), seg1, seg2, Buffer.from([0x00, 0x00])]);
+  var berWrap = Buffer.concat([Buffer.from([0x30, 0x80]), ctxConstructed, Buffer.from([0x00, 0x00])]);
+  var berCtxNode = pki.asn1.decode(berWrap, { ber: true }).children[0];
+  check("ber implicit constructed OCTET STRING reassembles via the reader",
+    pki.asn1.read.octetStringImplicit(berCtxNode, 0).equals(Buffer.from([1, 2, 3, 4, 5])));
+  var strictCtxNode = pki.asn1.decode(b.sequence([b.contextConstructed(0, Buffer.concat([seg1, seg2]))])).children[0];
+  check("strict implicit constructed OCTET STRING still rejects",
+    code(function () { pki.asn1.read.octetStringImplicit(strictCtxNode, 0); }) === "asn1/expected-primitive");
+  var berBadSeg = Buffer.concat([Buffer.from([0x30, 0x80, 0xa0, 0x80]), b.integer(1n), Buffer.from([0x00, 0x00, 0x00, 0x00])]);
+  var berBadNode = pki.asn1.decode(berBadSeg, { ber: true }).children[0];
+  check("ber implicit constructed OCTET STRING rejects a foreign segment",
+    code(function () { pki.asn1.read.octetStringImplicit(berBadNode, 0); }) === "asn1/bad-constructed-string");
+
   // What the relaxation does NOT license:
   var indefPrimitive = Buffer.concat([Buffer.from([0x04, 0x80]), Buffer.from([0x00, 0x00])]);
   check("ber rejects indefinite length on a primitive node", code(function () { pki.asn1.decode(indefPrimitive, { ber: true }); }) !== "NO-THROW");
