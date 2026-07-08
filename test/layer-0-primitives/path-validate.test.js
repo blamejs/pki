@@ -92,6 +92,14 @@ var ALG = {
     sign: { name: "RSA-PSS", saltLength: 32 },
     sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-negsalt",
   },
+  // PSS params declaring an OVERSIZED saltLength (past the safe-integer
+  // range) — the value must stay exact through conversion; a length that
+  // would round is not verifiable material.
+  pssbigsalt: {
+    gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
+    sign: { name: "RSA-PSS", saltLength: 32 },
+    sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-bigsalt",
+  },
   // PSS declaring SHA-1 (explicitly rejected — SHAttered) hash + mgf1SHA1.
   psssha1: {
     gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
@@ -162,6 +170,14 @@ function algIdDer(a) {
   else if (a.sigParams === "pss-primfield") {
     // a malformed primitive [0] where an EXPLICIT constructed field is required
     children.push(b.sequence([b.contextPrimitive(0, Buffer.from([0x01]))]));
+  }
+  else if (a.sigParams === "pss-bigsalt") {
+    var shaBig = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, shaBig),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), shaBig])),
+      b.explicit(2, b.integer(1n << 60n)),   // saltLength past the safe-integer range
+    ]));
   }
   else if (a.sigParams === "pss-negsalt") {
     var sha = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
@@ -1114,6 +1130,13 @@ async function testAuditRegressions() {
   var leafNegSalt = await mkCert({ subject: "NegSalt", issuer: "NegSaltRoot", signWith: "pssnegsalt", subjectKeys: "ed25519leaf" });
   var resC17 = await run([leafNegSalt], { time: T2027, trustAnchor: anchorNegSalt });
   check("negative PSS saltLength rejected", resC17.valid === false && failCodes(resC17).indexOf("path/unsupported-algorithm") !== -1);
+
+  // an oversized RSASSA-PSS saltLength must be rejected before it
+  // rounds through Number conversion (exact-or-rejected verifier inputs).
+  var anchorBigSalt = await mkAnchor("pssbigsalt", "BigSaltRoot");
+  var leafBigSalt = await mkCert({ subject: "BigSalt", issuer: "BigSaltRoot", signWith: "pssbigsalt", subjectKeys: "ed25519leaf" });
+  var resC17b = await run([leafBigSalt], { time: T2027, trustAnchor: anchorBigSalt });
+  check("oversized PSS saltLength rejected", resC17b.valid === false && failCodes(resC17b).indexOf("path/unsupported-algorithm") !== -1);
 
   // a trailing-dot dNSName SAN must not escape an excluded
   // dNSName constraint (FQDN root-label normalization).

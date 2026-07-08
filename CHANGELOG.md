@@ -22,6 +22,10 @@ An RFC 7292 PKCS#12 (PFX) store parser joins the pki.schema family.
 
 - The npm-publish workflow's vulnerability scan now scans the SBOM unconditionally and the vendored-bundle directory only when it holds a real bundle, so the scan is exact in both states instead of warning on the empty directory.
 
+### Fixed
+
+- Certification-path validation bounds the RSASSA-PSS saltLength and trailerField before numeric conversion, so an oversized value rejects with path/unsupported-algorithm instead of rounding silently on its way to the verifier — the same exact-or-rejected rule the PKCS#12 MAC parameters follow.
+
 ## v0.1.17 — 2026-07-06
 
 An RFC 4211 certificate-request-message parser joins the pki.schema family.

@@ -1077,6 +1077,184 @@ function testPkcs12ConformanceGuards() {
   _report("PKCS#12 RFC-conformance guards present (version v3 / integrity-mode surface incl. legal MAC-less stores / MacData + PBMAC1 rules / authSafe + safe-content dispatch / closed bag sets / single-value attrs / nesting + count budgets)", bad);
 }
 
+function testWorkflowScanFailureMasked() {
+  // class: workflow-scan-failure-masked
+  // A security scanner whose failure is silenced is indistinguishable from a
+  // passing scan. Three shapes, each a real way a scan goes dark:
+  //  (a) a scanner invocation ORed to true — an execution failure (bad token,
+  //      network, config) paints the step green with no findings uploaded;
+  //  (b) a SARIF upload without `actions: read` — on private/GHAS repos the
+  //      upload fails a permission check and the findings never land;
+  //  (c) the dependency-review config losing its zero-runtime-dep gate, its
+  //      dev-scope coverage, or its default-DENY license posture.
+  var wfDir = path.join(REPO_ROOT, ".github", "workflows");
+  var bad = [];
+  var files;
+  try { files = fs.readdirSync(wfDir).filter(function (f) { return /\.ya?ml$/.test(f); }); }
+  catch (_e) { return; }
+  files.forEach(function (f) {
+    var src = fs.readFileSync(path.join(wfDir, f), "utf8");
+    var rel = ".github/workflows/" + f;
+    var lines = _lines(src);
+    for (var i = 0; i < lines.length; i++) {
+      if (/\b(snyk|semgrep|gitleaks|osv-scanner|trivy|grype|zizmor|actionlint)\b/i.test(lines[i]) &&
+          /\|\|\s*true\b/.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "a security scanner ORed to true — an execution failure reads as a clean scan; discriminate findings from failures on the exit code instead" });
+      }
+    }
+    if (src.indexOf("upload-sarif") !== -1 && !/actions:\s*read/.test(src)) {
+      bad.push({ file: rel, line: 0,
+        content: "a SARIF upload without `actions: read` in the workflow permissions — the upload fails a permission check on private/GHAS repos and findings silently never land" });
+    }
+  });
+  // (c) the dependency-review frozen config.
+  var depReview;
+  try { depReview = fs.readFileSync(path.join(wfDir, "dependency-review.yml"), "utf8"); }
+  catch (_e) { depReview = null; }
+  if (depReview !== null) {
+    [
+      ["optionalDependencies", "the zero-runtime-dep gate no longer sweeps every dependency field (dependencies/optional/peer/bundled)"],
+      ["fail-on-scopes: runtime, development", "dependency review no longer covers the dev toolchain — in a zero-runtime-dep repo that is the entire dependency surface"],
+      ["allow-licenses:", "the license gate is no longer default-DENY (an allowlist rejects every unenumerated copyleft variant; a denylist chases SPDX ids forever)"],
+    ].forEach(function (t) {
+      if (depReview.indexOf(t[0]) === -1) {
+        bad.push({ file: ".github/workflows/dependency-review.yml", line: 0, content: t[1] });
+      }
+    });
+  }
+  bad = _filterMarkers(bad, "workflow-scan-failure-masked");
+  _report("security-scan workflows fail loud (no ||-true masking, SARIF uploads carry actions: read, dependency-review keeps its zero-dep + dev-scope + default-DENY config)", bad);
+}
+
+function testSharedLeafOptionScope() {
+  // class: shared-leaf-option-scope
+  // An opt added to a shared codec leaf for ONE format loosens every sibling
+  // that touches the leaf unless its use stays confined to the declaring
+  // sites. allowFractional (RFC 3161 genTime sub-second precision) belongs to
+  // the codec that implements it and the TSP module that consumes it; a third
+  // consumer means X.509/CRL validity times silently start accepting
+  // fractional seconds (RFC 5280 forbids them).
+  var allowed = { "asn1-der.js": 1, "schema-tsp.js": 1 };
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var base = path.basename(f);
+    if (allowed[base]) return;
+    var src = fs.readFileSync(f, "utf8");
+    var lines = _lines(src);
+    for (var i = 0; i < lines.length; i++) {
+      if (lines[i].indexOf("allowFractional") !== -1) {
+        bad.push({ file: path.relative(REPO_ROOT, f), line: i + 1,
+          content: "allowFractional reached a module outside its declaring codec + TSP consumer — a shared-leaf relaxation must not creep into sibling formats (RFC 5280 times have no fractional seconds)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "shared-leaf-option-scope");
+  _report("shared-leaf relaxations stay scoped to their declaring sites (allowFractional: codec + TSP only)", bad);
+}
+
+function testEngineEncodeParity() {
+  // class: engine-encode-parity-dropped
+  // encode is the constructor direction of the same schema walk enforces, so
+  // the repeat constraints (SIZE minimum, element cap, semantic uniqueness)
+  // must be enforced in BOTH directions — an encoder that skips them emits
+  // DER its own decoder rejects, breaking the walk(decode(encode)) invariant.
+  // Anchored on the constraint reads inside the repeat encoder's body up to
+  // the next column-0 brace (rename-proof: the fn may be renamed, but a
+  // repeat encoder that never reads min/max/unique is the regression).
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
+  catch (_e) { return; }
+  var encodeRepeatBody = /function _?\w*[eE]ncodeRepeat\w*\(([\s\S]*?)\n\}/.exec(src);
+  var body = encodeRepeatBody ? encodeRepeatBody[0] : "";
+  var bad = [];
+  if (!body || !/schema\.min\b/.test(body) || !/schema\.max\b/.test(body) || !/schema\.unique\b/.test(body)) {
+    bad.push({ file: "lib/schema-engine.js", line: 0,
+      content: "the repeat encoder no longer enforces min/max/unique — encode can emit DER its own walk rejects (the walk(decode(encode)) parity invariant)" });
+  }
+  bad = _filterMarkers(bad, "engine-encode-parity-dropped");
+  _report("engine encode enforces the same repeat constraints walk enforces (min / max / unique)", bad);
+}
+
+function testReleasePushFixOrder() {
+  // class: release-push-fix-order
+  // The push-fix gate ORDER is load-bearing: the open-PR lookup precedes the
+  // commit (a stale branch whose PR closed must not gain commits), the commit
+  // precedes gitleaks (the scan must cover the fix itself, not the pre-fix
+  // tree), the gates precede the push (nothing unscanned/unsigned reaches the
+  // remote), and a failed gate rolls the commit back (the operator never
+  // dead-ends at the clean-tree guard). Tokens are asserted in sequence — an
+  // absent token FIRES rather than going silent, so a rename is a conscious
+  // update here, never a dead detector.
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "scripts/release.js"), "utf8"); }
+  catch (_e) { return; }
+  var m = /function cmdPushFix\(([\s\S]*?)\n\}/.exec(src);
+  var bad = [];
+  if (!m) {
+    bad.push({ file: "scripts/release.js", line: 0, content: "the push-fix command body was not found — its gate-order contract cannot be verified" });
+  } else {
+    var body = m[0];
+    var sequence = [
+      ["prNum", "the open-PR lookup"],
+      ['"add"', "the fix commit (git add -A)"],
+      ["_gitleaks", "the secret scan of the committed fix"],
+      ['"push"', "the push to the remote"],
+    ];
+    var last = -1;
+    var lastLabel = "the function start";
+    for (var i = 0; i < sequence.length; i++) {
+      var at = body.indexOf(sequence[i][0]);
+      if (at === -1 || at < last) {
+        bad.push({ file: "scripts/release.js", line: 0,
+          content: "push-fix gate order broken: " + sequence[i][1] + " no longer follows " + lastLabel +
+                   " — the lookup->commit->scan->push order is the contract (scan the fix, not the pre-fix tree; nothing unscanned reaches the remote)" });
+        break;
+      }
+      last = at; lastLabel = sequence[i][1];
+    }
+    if (body.indexOf('"--soft"') === -1) {
+      bad.push({ file: "scripts/release.js", line: 0,
+        content: "push-fix no longer rolls back the fix commit when a pre-push gate fails — a failed gate dead-ends at the clean-tree guard on rerun" });
+    }
+  }
+  bad = _filterMarkers(bad, "release-push-fix-order");
+  _report("release push-fix keeps its gate order (PR lookup -> commit -> gitleaks -> push, rollback on gate failure)", bad);
+}
+
+function testAlgorithmLookupNoDefault() {
+  // class: algorithm-lookup-with-default
+  // Resolving an algorithm OID through a registry table must throw on a miss.
+  // A lookup that OR-defaults (`TABLE[oid] || "SHA-256"`), or a preset default
+  // the lookup only conditionally overwrites, leaves a WEAKER algorithm
+  // standing when a certificate names one the table does not know — the
+  // attacker picks the fallback by naming an unknown OID. Two shapes:
+  //  (a) any *_BY_OID / *_TABLE lookup OR-defaulted to a value;
+  //  (b) a hash/algorithm var preset to a literal and later assigned from a
+  //      table lookup without an intervening miss-throw.
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var src = fs.readFileSync(f, "utf8");
+    var rel = path.relative(REPO_ROOT, f);
+    var lines = _lines(src);
+    for (var i = 0; i < lines.length; i++) {
+      if (/\w+_BY_OID\[[^\]]+\]\s*\|\|/.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "an algorithm-table lookup OR-defaulted — an unknown OID must throw, never fall back to a weaker algorithm the input selects by omission" });
+      }
+    }
+    // (b): a quoted algorithm literal preset, then a table lookup assignment
+    // with no throw between them (the pre-set survives an unknown OID).
+    var preset = /var\s+(\w+)\s*=\s*"SHA-1"(?:(?!throw)[\s\S]){0,400}?\1\s*=\s*\w+_BY_OID\[/;
+    if (preset.test(src)) {
+      bad.push({ file: rel, line: 0,
+        content: "an algorithm variable preset to a weak literal is only conditionally overwritten by a table lookup — an unknown OID leaves the weak preset standing; throw on the miss instead" });
+    }
+  });
+  bad = _filterMarkers(bad, "algorithm-lookup-with-default");
+  _report("algorithm-table lookups throw on a miss (no OR-defaults, no weak literal presets surviving unknown OIDs)", bad);
+}
+
 function testCmsEnvelopedDataConformanceGuards() {
   // class: cms-enveloped-guard-dropped
   // Frozen contract of the RFC 5652 §6/§8 EnvelopedData / EncryptedData decode
@@ -2418,6 +2596,11 @@ function run() {
   testTspConformanceGuards();
   testCrmfConformanceGuards();
   testPkcs12ConformanceGuards();
+  testWorkflowScanFailureMasked();
+  testSharedLeafOptionScope();
+  testEngineEncodeParity();
+  testAlgorithmLookupNoDefault();
+  testReleasePushFixOrder();
   testAttrCertConformanceGuards();
   testCmsEnvelopedDataConformanceGuards();
   testPathValidateConformanceGuards();
