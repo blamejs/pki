@@ -243,6 +243,35 @@ function testAcceptPublicKeyIntegrity() {
   // mode exists to provide.
   var noSigner = pfx({ authSafe: signedDataAuthSafe(as, { noSigners: true }) });
   check("signedData authSafe: zero signers rejected", parseCode(noSigner) === "pkcs12/bad-authsafe");
+
+  // The SignedData subtree is walked from the OUTER decode (no OCTET-STRING
+  // re-decode covers it), and a BER producer may stream a signer's
+  // subjectKeyIdentifier [0] as a definite-length constructed IMPLICIT OCTET
+  // STRING — a shape that decodes strictly with no throw anywhere, so it
+  // proves the whole store must be decoded under BER rules, not
+  // strict-first-with-a-retry-on-throw.
+  var k1 = Buffer.alloc(10, 0xc1);
+  var k2 = Buffer.alloc(10, 0xc2);
+  var constructedSkid = pki.asn1.encode(0x80, true, 0, Buffer.concat([b.octetString(k1), b.octetString(k2)]));
+  var skidSigner = b.sequence([
+    b.integer(3),
+    constructedSkid,
+    algId(SHA256),
+    algId("1.2.840.113549.1.1.11"),
+    b.octetString(Buffer.from([1, 2, 3])),
+  ]);
+  var skidSignedData = b.sequence([
+    b.integer(3),
+    b.set([algId(SHA256)]),
+    b.sequence([b.oid(ID_DATA), b.explicit(0, b.octetString(as))]),
+    b.set([skidSigner]),
+  ]);
+  var skidPfx = pfx({ authSafe: contentInfo(ID_SIGNED_DATA, skidSignedData) });
+  check("signedData authSafe: constructed [0] skid sid parses (BER store, no decode-time throw)",
+        parseCode(skidPfx) === "NO-THROW");
+  var sm = parse(skidPfx);
+  check("signedData authSafe: constructed skid reassembles byte-exact",
+        sm.authSafeSigned.signerInfos[0].sid.subjectKeyIdentifier.equals(Buffer.concat([k1, k2])));
 }
 
 // ---- ACCEPT: safeContentsBag recursion ---------------------
@@ -293,6 +322,16 @@ function testAcceptEncryptedSafes() {
   var berEncSafe = contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0), berEci]));
   m = parse(minimalPfx({ elements: [berEncSafe] }));
   check("BER streamed encryptedContent reassembles byte-exact",
+        m.encryptedSafes[0].content.encryptedContentInfo.encryptedContent.equals(Buffer.concat([ct1, ct2])));
+
+  // The definite-length constructed form decodes strictly (no decode-time
+  // throw anywhere in the file), so it proves BER handling cannot hinge on a
+  // strict-decode failure — the whole store is decoded under BER rules.
+  var definiteCt = pki.asn1.encode(0x80, true, 0, Buffer.concat([b.octetString(ct1), b.octetString(ct2)]));
+  var definiteEci = b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))]), definiteCt]);
+  var definiteEncSafe = contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0), definiteEci]));
+  m = parse(minimalPfx({ elements: [definiteEncSafe] }));
+  check("definite-length constructed encryptedContent reassembles byte-exact",
         m.encryptedSafes[0].content.encryptedContentInfo.encryptedContent.equals(Buffer.concat([ct1, ct2])));
 
   // §4.1 — a privacy safe wraps SafeContents, so the encrypted content's
