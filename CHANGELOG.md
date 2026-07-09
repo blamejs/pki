@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.21 — 2026-07-09
+
+SLH-DSA signatures verify in certification-path validation, and the post-quantum / EdDSA parameters-absent rule is enforced across every format.
+
+### Added
+
+- SLH-DSA signature verification in pki.path.validate — all twelve FIPS 205 parameter sets (id-slh-dsa-sha2-{128,192,256}{s,f} and the SHAKE sets). A certificate or CRL signed with SLH-DSA now verifies by importing the issuer's SLH-DSA public key and checking the one-shot signature over the raw signed region; the same rows serve both the certificate signature check and the CRL revocation checker. ML-DSA and the classical RSA / ECDSA / EdDSA set were already wired.
+- pki.oid.paramsMustBeAbsent(oid) — a predicate that reports whether an AlgorithmIdentifier bearing the given OID must encode its parameters field as absent (the ML-DSA and SLH-DSA families and the RFC 8410 Edwards / Montgomery curves). It is the single source the shared AlgorithmIdentifier decoder consults.
+
+### Fixed
+
+- The shared AlgorithmIdentifier decoder now rejects a present parameters field on the algorithms whose parameters MUST be absent — ML-DSA, SLH-DSA, Ed25519, Ed448, X25519, and X448 (RFC 9909 §3, RFC 9814 §4, RFC 9881 §2, RFC 8410 §3) — failing closed with a <format>/bad-algorithm-parameters code. Previously a stray explicit NULL or arbitrary bytes in that field were surfaced raw. The rule is enforced once in the shared decoder, so every format that names an algorithm inherits it; a conforming identifier, which omits the field, is unaffected.
+
 ## v0.1.20 — 2026-07-09
 
 An RFC 6962 Certificate Transparency SCT-list parser joins the toolkit.

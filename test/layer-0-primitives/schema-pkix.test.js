@@ -263,6 +263,44 @@ function testGeneralNameDecodedValue() {
 }
 
 // ---------------------------------------------------------------------------
+// AlgorithmIdentifier params-must-be-absent (RFC 9909 §3 / 9814 §4 / 9881 §2 /
+// 8410 §3) — enforced once in the shared factory, inherited by every consumer.
+// ---------------------------------------------------------------------------
+
+function testAlgParamsMustBeAbsent() {
+  var ALG = pkix.algorithmIdentifier(NS);
+  function res(bytes) { return schema.walk(ALG, asn1.decode(bytes), NS).result; }
+  function rej(bytes) { return code(function () { schema.walk(ALG, asn1.decode(bytes), NS); }); }
+  var slh = oid.byName("id-slh-dsa-sha2-128s"), ml = oid.byName("id-ml-dsa-65"),
+      ed = oid.byName("Ed25519"), x = oid.byName("X25519"), rsa = oid.byName("rsaEncryption");
+
+  // absent parameters: parses (behavior-preserving for the whole class)
+  check("slh-dsa algId without params parses", res(b.sequence([b.oid(slh)])).parameters === null);
+  check("ml-dsa algId without params parses", res(b.sequence([b.oid(ml)])).parameters === null);
+  check("Ed25519 algId without params parses", res(b.sequence([b.oid(ed)])).parameters === null);
+  check("X25519 algId without params parses", res(b.sequence([b.oid(x)])).parameters === null);
+
+  // present parameters — explicit NULL — rejected for every class member
+  check("slh-dsa + NULL params rejected", rej(b.sequence([b.oid(slh), b.nullValue()])) === "path/bad-algorithm-parameters");
+  check("ml-dsa + NULL params rejected", rej(b.sequence([b.oid(ml), b.nullValue()])) === "path/bad-algorithm-parameters");
+  check("Ed25519 + NULL params rejected", rej(b.sequence([b.oid(ed), b.nullValue()])) === "path/bad-algorithm-parameters");
+  check("X25519 + NULL params rejected", rej(b.sequence([b.oid(x), b.nullValue()])) === "path/bad-algorithm-parameters");
+  // present parameters — arbitrary bytes (not just NULL) — rejected
+  check("slh-dsa + garbage params rejected", rej(b.sequence([b.oid(slh), b.integer(1n)])) === "path/bad-algorithm-parameters");
+
+  // behavior-preserving: algorithms that carry parameters are untouched
+  check("rsaEncryption + NULL params still parses", res(b.sequence([b.oid(rsa), b.nullValue()])).parameters !== null);
+  check("rsaEncryption without params still parses", res(b.sequence([b.oid(rsa)])).parameters === null);
+
+  // the guard covers the [tag] IMPLICIT AlgorithmIdentifier shape too (the pwri
+  // keyDerivationAlgorithm [0] variant shares the same build).
+  var IMPL = pkix.algorithmIdentifier(NS, { implicitTag: 0 });
+  var slhImpl = b.contextConstructed(0, Buffer.concat([b.oid(slh), b.nullValue()]));
+  check("slh-dsa + NULL params rejected in IMPLICIT [0] shape too",
+    code(function () { schema.walk(IMPL, asn1.decode(slhImpl), NS); }) === "path/bad-algorithm-parameters");
+}
+
+// ---------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------
 
@@ -273,6 +311,7 @@ function run() {
   testPolicyDecoders();
   testNameAndKeyDecoders();
   testGeneralNameDecodedValue();
+  testAlgParamsMustBeAbsent();
 }
 
 module.exports = { run: run };

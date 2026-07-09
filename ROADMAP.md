@@ -54,7 +54,7 @@ The clearest differentiator: the classical toolkit this library replaces has no 
 
 - **ML-KEM in X.509** — *Targeted.* ML-KEM public keys in certificates and SPKI. draft-ietf-lamps-kyber-certificates.
 - **ML-DSA in X.509** — *Targeted.* ML-DSA certificate signing and verification, tracking the LAMPS certificate specification through publication. draft-ietf-lamps-dilithium-certificates.
-- **SLH-DSA** — *Planned.* Stateless hash-based signatures in X.509 and CMS. RFC 9814 (CMS) and the SLH-DSA X.509 work.
+- **SLH-DSA** — *Verification shipped.* All twelve FIPS 205 parameter sets verify in certification-path validation (`pki.path.validate`), and the parameters-MUST-be-absent rule is enforced across every format's AlgorithmIdentifier. *Planned next:* SLH-DSA certificate/CMS signing (the producing side). RFC 9909 (X.509), RFC 9814 (CMS).
 - **ML-KEM in CMS** — *Planned.* KEM-based content-encryption-key transport via KEMRecipientInfo. RFC 9629.
 - **ML-DSA in CMS** — *Planned.* draft-ietf-lamps-cms-ml-dsa.
 - **Composite (hybrid) signatures and KEMs** — *Under design.* Dual-algorithm certificates and CMS pairing a post-quantum algorithm with a classical one for the transition period. draft-ietf-lamps-pq-composite-sigs and draft-ietf-lamps-pq-composite-kem.

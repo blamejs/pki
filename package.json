@@ -1,6 +1,6 @@
 {
   "name": "@blamejs/pki",
-  "version": "0.1.20",
+  "version": "0.1.21",
   "description": "Pure-JavaScript PKI toolkit that owns its stack — X.509, ASN.1/DER, CMS, PQC-first.",
   "license": "Apache-2.0",
   "author": "blamejs contributors",
