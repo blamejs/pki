@@ -671,6 +671,10 @@
               "kind": "function",
               "arity": 0
             },
+            "assertMinimalNamedBits": {
+              "kind": "function",
+              "arity": 3
+            },
             "bitString": {
               "kind": "function",
               "arity": 0
@@ -730,6 +734,26 @@
             "integerLeaf": {
               "kind": "function",
               "arity": 0
+            },
+            "isContext": {
+              "kind": "function",
+              "arity": 2
+            },
+            "isContextInRange": {
+              "kind": "function",
+              "arity": 3
+            },
+            "isContextOneOf": {
+              "kind": "function",
+              "arity": 2
+            },
+            "isUniversal": {
+              "kind": "function",
+              "arity": 2
+            },
+            "isUniversalOneOf": {
+              "kind": "function",
+              "arity": 2
             },
             "octetString": {
               "kind": "function",
