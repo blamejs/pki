@@ -279,9 +279,14 @@ function testAcceptCertRep() {
   // encoding real CMP responders (OpenSSL/BouncyCastle/EJBCA) emit.
   var encCkp = b.sequence([b.explicit(1, implicitEnveloped())]);
   var cpEnc = certRepMessage({ responses: [certResponse({ certifiedKeyPair: encCkp })] });
-  m = parse(minimalMessage({ body: body(3, cpEnc) }));
+  m = parse(minimalMessage({ headerOpts: { pvno: 3 }, body: body(3, cpEnc) }));
   check("encryptedCert IMPLICIT envelopedData [0] walks via cms",
         m.body.decoded.response[0].certifiedKeyPair.encryptedCert.envelopedData.recipientInfos.length === 1);
+  // RFC 9810 §5.2.2 / §7 — EnvelopedData is cmp2021(3) syntax; a response carrying
+  // it (encryptedCert or privateKey) at pvno < 3 is a version mismatch (the same
+  // version gate the certConf hashAlg rule applies). The pvno-3 form above parses.
+  check("encryptedCert envelopedData at pvno 2 rejected as a version mismatch",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(3, cpEnc) })) === "cmp/bad-version");
   // The non-conformant EXPLICIT-wrapping form (an inner SEQUENCE inside [0]) is
   // NOT a valid IMPLICIT EnvelopedData and must reject, not silently accept.
   var explicitCkp = b.sequence([b.explicit(1, b.contextConstructed(0, ENVELOPED))]);
@@ -323,7 +328,7 @@ function testAcceptCertRep() {
     b.explicit(1, b.sequence([b.oid("1.3.6.1.5.5.7.5.1.2")])),   // publicationInfo [1] raw
   ]);
   var fullResp = certRepMessage({ responses: [certResponse({ certifiedKeyPair: fullCkp, rspInfo: Buffer.alloc(6, 0xdd) })] });
-  m = parse(minimalMessage({ body: body(1, fullResp) }));
+  m = parse(minimalMessage({ headerOpts: { pvno: 3 }, body: body(1, fullResp) }));
   var ckpOut = m.body.decoded.response[0].certifiedKeyPair;
   check("CertifiedKeyPair privateKey [0] surfaced", ckpOut.privateKey && ckpOut.privateKey.envelopedData.recipientInfos.length === 1);
   check("CertifiedKeyPair publicationInfo [1] surfaced raw", Buffer.isBuffer(ckpOut.publicationInfo));
@@ -568,6 +573,17 @@ function testRejectBody() {
   // carrying a content byte is malformed DER the tag check alone would accept.
   var pkiconfNonEmptyNull = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NULL, Buffer.from([0x00]));
   check("pkiconf with a non-empty NULL rejected", parseCode(minimalMessage({ body: body(19, pkiconfNonEmptyNull) })) === "cmp/bad-pkiconf");
+  // RFC 4211 §5 requires a request CertTemplate to OMIT signingAlg (CA-assigned)
+  // unconditionally — cross-certification (ccr [13]) uses CertReqMessages with no
+  // exception, so the shared request walker correctly rejects a ccr that dictates
+  // signingAlg (a requester must not choose the issuer's signing algorithm). This
+  // is why ir/cr/kur/krr/ccr share one walker, not a per-arm relaxation.
+  var ccrSigningAlg = b.sequence([b.sequence([b.sequence([b.integer(0), b.sequence([
+    b.contextConstructed(2, b.oid(SHA256)),   // signingAlg [2] IMPLICIT — CA-assigned, forbidden in a request
+    b.explicit(5, rdn("cross.ca")),           // subject [5]
+  ])])])]);
+  check("ccr CertTemplate dictating signingAlg rejected (shared walker, RFC 4211 §5)",
+        parseCode(minimalMessage({ body: body(13, ccrSigningAlg) })) === "crmf/bad-cert-template");
 }
 
 // ---- dispatch / coercion / misc ------------------------------------------------------
