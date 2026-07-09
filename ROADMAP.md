@@ -91,7 +91,7 @@ Certificate lifecycle management is absent from the toolkit this library replace
 
 ## Messaging
 
-- **S/MIME** — *Under design.* A native S/MIME assembly layer over the CMS building blocks so operators are not left wiring MIME by hand. RFC 8551.
+- **S/MIME** — *ESS attribute decode shipped* (`pki.schema.smime`): the RFC 5035 SigningCertificate / SigningCertificateV2 and RFC 8551 SMIMECapabilities signed-attribute values a CMS SignerInfo carries decode to their signing-certificate binding and capability list, OID-dispatched from a CMS attribute. *Planned next:* the S/MIME assembly / verification layer over the CMS building blocks so operators are not left wiring MIME by hand. RFC 8551, RFC 5035.
 
 ## Assurance and interoperability
 

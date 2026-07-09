@@ -128,6 +128,13 @@ security-only patches after the next major releases.
   that validates every framing length and caps the per-list byte size and SCT
   count before iterating, so a crafted SCT extension is bounded work with a typed
   `ct/*` verdict rather than unbounded work inside a certificate extension.
+  `pki.schema.smime` decodes the ESS signing-certificate attributes the same way:
+  it surfaces the certificate hash, the (implied or decoded) hash algorithm, and
+  the issuer/serial reference raw so a verifier recomputes the hash and matches
+  the binding against the actual signing certificate — it never recomputes a hash
+  or trusts a certificate — and it rejects a `SigningCertificateV2` hash algorithm
+  encoded equal to its DEFAULT as non-canonical DER, closing an
+  encode-ambiguity a signature check would otherwise have to tolerate.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,
