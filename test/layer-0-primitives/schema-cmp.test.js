@@ -122,6 +122,16 @@ var ENVELOPED_FIELDS = [
 ];
 var ENVELOPED = b.sequence(ENVELOPED_FIELDS);
 function implicitEnveloped() { return b.contextConstructed(0, Buffer.concat(ENVELOPED_FIELDS)); }
+// A DETACHED EnvelopedData — the EncryptedContentInfo omits its optional
+// [0] encryptedContent. Legal in bare CMS, but in a CMP EncryptedKey the
+// ciphertext IS the cert/key payload, so a detached value has nothing to
+// decrypt and must reject.
+var ENVELOPED_DETACHED_FIELDS = [
+  ENVELOPED_FIELDS[0],
+  ENVELOPED_FIELDS[1],
+  b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))])]),
+];
+function implicitEnvelopedDetached() { return b.contextConstructed(0, Buffer.concat(ENVELOPED_DETACHED_FIELDS)); }
 function certStatus(o) {
   o = o || {};
   var kids = [b.octetString(o.certHash || Buffer.alloc(32, 1)), b.integer(o.certReqId !== undefined ? o.certReqId : 0)];
@@ -267,6 +277,19 @@ function testAcceptCertRep() {
   var explicitCkp = b.sequence([b.explicit(1, b.contextConstructed(0, ENVELOPED))]);
   check("EXPLICIT-wrapped envelopedData [0] rejected (not the IMPLICIT form)",
         /^(cmp|cms)\//.test(parseCode(minimalMessage({ body: body(3, certRepMessage({ responses: [certResponse({ certifiedKeyPair: explicitCkp })] })) }))));
+  // A detached EnvelopedData (no encryptedContent) carries no ciphertext to
+  // decrypt — it must reject, not parse as a successful response (RFC 9810
+  // §5.2.2/§5.3.4; the CRMF encryptedKey precedent).
+  var detachedCkp = b.sequence([b.explicit(1, implicitEnvelopedDetached())]);
+  check("detached envelopedData (no ciphertext) rejected",
+        parseCode(minimalMessage({ body: body(3, certRepMessage({ responses: [certResponse({ certifiedKeyPair: detachedCkp })] })) })) === "cmp/bad-cert-response");
+  // A PRESENT-but-zero-length ciphertext carries nothing to decrypt just like
+  // the detached form — the empty edge of the same rule.
+  var emptyCtFields = [ENVELOPED_FIELDS[0], ENVELOPED_FIELDS[1],
+    b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))]), b.contextPrimitive(0, Buffer.alloc(0))])];
+  var emptyCtCkp = b.sequence([b.explicit(1, b.contextConstructed(0, Buffer.concat(emptyCtFields)))]);
+  check("envelopedData with a zero-length ciphertext rejected",
+        parseCode(minimalMessage({ body: body(3, certRepMessage({ responses: [certResponse({ certifiedKeyPair: emptyCtCkp })] })) })) === "cmp/bad-cert-response");
 
   // The deprecated encryptedValue arm surfaces RAW — including the shape whose
   // inner symmAlg has an OID and ABSENT parameters (a consumer that walked it
@@ -363,6 +386,12 @@ function testAcceptRawArmsAndProtection() {
   // arbitrary bytes to downstream certificate processing (RFC 9810 §5.1).
   check("extraCerts with a primitive (INTEGER) element rejected",
         parseCode(minimalMessage({ extraCerts: [b.integer(1)] })) === "cmp/bad-extra-certs");
+  // An empty SEQUENCE is the right tag but is not a Certificate (a SEQUENCE of
+  // ≥3 fields) — the degenerate edge of the SEQUENCE-assert.
+  check("extraCerts with an empty SEQUENCE element rejected",
+        parseCode(minimalMessage({ extraCerts: [b.sequence([])] })) === "cmp/bad-extra-certs");
+  check("certificate [0] wrapping an empty SEQUENCE rejected", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([b.explicit(0, b.sequence([]))]) })] })) })) === "cmp/bad-cert-response");
   check("caPubs with a primitive element rejected", parseCode(minimalMessage({
     body: body(1, b.sequence([b.explicit(1, b.sequence([b.integer(1)])), b.sequence([])])) })) === "cmp/bad-cert-rep");
   check("rp crls with a primitive element rejected", parseCode(minimalMessage({

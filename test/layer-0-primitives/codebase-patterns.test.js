@@ -1163,9 +1163,19 @@ function testCmpConformanceGuards() {
   // arbitrary bytes to downstream certificate processing. Freeze the
   // rawSequence factory's SEQUENCE assertion; a revert to a bare `return
   // n.bytes` passthrough drops it and fires.
-  if (!/function rawSequence[\s\S]{0,300}?tagNumber === TAGS\.SEQUENCE/.test(src)) {
+  if (!/function rawSequence[\s\S]{0,400}?tagNumber === TAGS\.SEQUENCE && n\.children && n\.children\.length >= 1/.test(src)) {
     bad.push({ file: "lib/schema-cmp.js", line: 0,
-      content: "the raw certificate/CRL element surface no longer asserts a universal SEQUENCE — a primitive element (e.g. INTEGER) would be surfaced as certificate bytes to downstream processing (RFC 9810 §5.1: CMPCertificate/CertificateList are SEQUENCEs)" });
+      content: "the raw certificate/CRL element surface no longer asserts a NON-EMPTY universal SEQUENCE — a primitive (INTEGER) or an empty SEQUENCE (0x30 0x00) would be surfaced as certificate bytes to downstream processing (RFC 9810 §5.1: CMPCertificate/CertificateList are non-empty SEQUENCEs)" });
+  }
+  // Structural (detached-ciphertext class): an EncryptedKey envelopedData arm
+  // carries the encrypted certificate/key as its ciphertext, so a detached
+  // EnvelopedData (CMS permits an absent encryptedContent) must reject — the
+  // same rule the CRMF encryptedKey POP arm and the PKCS#12 privacy safe
+  // enforce. Freeze the non-null check; a revert that returns any parsing
+  // EnvelopedData drops it and fires.
+  if (!/envelopedData(?:(?!\n {4}\})[\s\S]){0,500}?ct === null \|\| ct\.length === 0/.test(src)) {
+    bad.push({ file: "lib/schema-cmp.js", line: 0,
+      content: "the EncryptedKey envelopedData arm no longer rejects an EnvelopedData with no ciphertext (absent OR zero-length encryptedContent) — a CertResponse would parse as successful carrying nothing to decrypt (RFC 9810 §5.2.2/§5.3.4)" });
   }
   bad = _filterMarkers(bad, "cmp-conformance-guard-dropped");
   _report("CMP RFC-conformance guards present (envelope/header shape / GT-only time / UTF8 freetext / id-it value syntax / 27-arm body dispatch / protection<=>protectionAlg / status whitelist / named-bit trailing-zero / certConf-hashAlg<=>pvno / CRMF + CMS composition / raw protection slices)", bad);
