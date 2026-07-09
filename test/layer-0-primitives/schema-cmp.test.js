@@ -445,6 +445,15 @@ function testAcceptRawArmsAndProtection() {
   var krpEnv3 = parse(minimalMessage({ headerOpts: { pvno: 3 }, body: body(10, krpEnv) }));
   check("krp keyPairHist EnvelopedData at pvno 3 accepted",
         krpEnv3.body.decoded.keyPairHist[0].encryptedCert.envelopedData.recipientInfos.length === 1);
+  // §5.3.13/§7 — the cAKeyUpdAnnV3 [0] RootCaKeyUpdateContent form is cmp2021 syntax;
+  // ckuann stays raw, so a top-level [0] tag under pvno < 3 is a version mismatch,
+  // while the deprecated cAKeyUpdAnnV2 (a SEQUENCE) stays legal at pvno 2.
+  check("ckuann cAKeyUpdAnnV3 [0] at pvno 2 rejected (§5.3.13)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(15, b.contextConstructed(0, b.sequence([RAW_CERT]))) })) === "cmp/bad-version");
+  check("ckuann cAKeyUpdAnnV3 [0] at pvno 3 accepted (surfaced raw)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(15, b.contextConstructed(0, b.sequence([RAW_CERT]))) })) === "NO-THROW");
+  check("ckuann cAKeyUpdAnnV2 SEQUENCE at pvno 2 accepted (deprecated form)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(15, b.sequence([RAW_CERT])) })) === "NO-THROW");
 
   var m = parse(minimalMessage({ extraCerts: [RAW_CERT, RAW_CRL] }));
   check("extraCerts raw", m.extraCerts.length === 2 && m.extraCerts[0].equals(RAW_CERT));
@@ -694,6 +703,22 @@ function testRejectBody() {
   ])])]);
   check("ccr with a pkiArchiveOptions encryptedPrivKey control rejected (RFC 9810 §5.3.11)",
         parseCode(minimalMessage({ body: body(13, ccrArchiveKey) })) === "cmp/bad-body");
+  // §5.2.8.3.1/§7 — in a NON-ccr request the archive control is permitted, but the
+  // encryptedPrivKey EnvelopedData form ([0] EXPLICIT wrapping envelopedData [0])
+  // is cmp2021 syntax, so it is version-gated; the deprecated encryptedValue form
+  // (a SEQUENCE) stays legal at pvno 2.
+  function irArchive(inner) {  // ir with one pkiArchiveOptions control
+    return b.sequence([b.sequence([b.sequence([b.integer(0), b.sequence([b.explicit(5, rdn("req"))]),
+      b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.5.1.4"), inner])])])])]);
+  }
+  var archEnv = b.contextConstructed(0, b.contextConstructed(0, Buffer.alloc(0)));   // encryptedPrivKey [0] { envelopedData [0] }
+  var archVal = b.contextConstructed(0, b.sequence([b.integer(0)]));                 // encryptedPrivKey [0] { encryptedValue SEQUENCE }
+  check("ir archive-control EnvelopedData at pvno 2 rejected (§5.2.8.3.1)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(0, irArchive(archEnv)) })) === "cmp/bad-version");
+  check("ir archive-control EnvelopedData at pvno 3 accepted",
+        parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(0, irArchive(archEnv)) })) === "NO-THROW");
+  check("ir archive-control encryptedValue at pvno 2 accepted (pre-2021 form)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(0, irArchive(archVal)) })) === "NO-THROW");
 }
 
 // ---- dispatch / coercion / misc ------------------------------------------------------
