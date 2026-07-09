@@ -319,6 +319,13 @@ function testAcceptCertRep() {
   var emptyCtCkp = b.sequence([b.explicit(1, b.contextConstructed(0, Buffer.concat(emptyCtFields)))]);
   check("envelopedData with a zero-length ciphertext rejected",
         parseCode(minimalMessage({ body: body(3, certRepMessage({ responses: [certResponse({ certifiedKeyPair: emptyCtCkp })] })) })) === "cmp/bad-cert-response");
+  // A structurally-decodable but invalid EnvelopedData (an empty recipientInfos
+  // SET makes the composed CMS walker throw a CmsError) must surface as the CMP
+  // domain error, not escape cmp.parse as cms/* (RFC 9810 §5.2.2).
+  var cmsBadFields = [ENVELOPED_FIELDS[0], b.set([]), ENVELOPED_FIELDS[2]];
+  var cmsBadCkp = b.sequence([b.explicit(1, b.contextConstructed(0, Buffer.concat(cmsBadFields)))]);
+  check("a malformed EnvelopedData surfaces cmp/* not cms/*",
+        parseCode(minimalMessage({ body: body(3, certRepMessage({ responses: [certResponse({ certifiedKeyPair: cmsBadCkp })] })) })) === "cmp/bad-cert-response");
 
   // The deprecated encryptedValue arm surfaces RAW — including the shape whose
   // inner symmAlg has an OID and ABSENT parameters (a consumer that walked it
