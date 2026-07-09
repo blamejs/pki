@@ -350,6 +350,16 @@ function testAcceptEncryptedSafes() {
   check("definite-length constructed encryptedContent reassembles byte-exact",
         m.encryptedSafes[0].content.encryptedContentInfo.encryptedContent.equals(Buffer.concat([ct1, ct2])));
 
+  // CMS permits a detached EncryptedContentInfo (encryptedContent OPTIONAL),
+  // but in a privacy safe the ciphertext IS the SafeContents — a safe with no
+  // ciphertext has no contents and rejects.
+  var detached = contentInfo(ID_ENCRYPTED_DATA, b.sequence([
+    b.integer(0),
+    b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))])]),
+  ]));
+  check("privacy safe with detached (absent) ciphertext rejected",
+        parseCode(minimalPfx({ elements: [detached] })) === "pkcs12/bad-safe-contentinfo");
+
   // §4.1 — a privacy safe wraps SafeContents, so the encrypted content's
   // declared type must be id-data.
   var wrongType = contentInfo(ID_ENCRYPTED_DATA, b.sequence([
