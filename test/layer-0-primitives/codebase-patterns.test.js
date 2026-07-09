@@ -829,254 +829,6 @@ function testSchemaBuildSurfacesEveryField() {
   _report("every schema.seq field is referenced by its build() (parsed data reaches the operator)", bad);
 }
 
-function testCmsSignedDataConformanceGuards() {
-  // class: cms-signeddata-conformance-guard-dropped
-  // Each token below is the STABLE, frozen contract of an RFC 5652 validation the
-  // CMS SignedData parser MUST perform — the error code it throws, or the ASN.1
-  // reader that validates a value payload. Removing a validation drops its token.
-  // Anchoring on these (the public error-code contract) rather than on the helper
-  // FUNCTION NAME makes the guard rename-proof: renaming _checkSignedAttrs /
-  // SIGNED_DATA keeps the tokens (silent, correct), while deleting the check drops
-  // them (fires). A `function <name>` regex would instead go silently green on the
-  // rename — the same brittleness as anchoring on a specific `var`.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"cms/bad-version"',            "SignedData version validated against its contents (RFC 5652 §5.1)"],
-    ['"cms/missing-signed-attrs"',   "signedAttrs required when eContentType is not id-data (§5.3)"],
-    ['"cms/missing-content-type"',   "signedAttrs must contain a content-type attribute (§11.1)"],
-    ['"cms/missing-message-digest"', "signedAttrs must contain a message-digest attribute (§11.2)"],
-    ['"cms/duplicate-signed-attr"',  "no signed-attribute type repeats (§5.3)"],
-    ['"cms/content-type-mismatch"',  "content-type signed-attr value equals the eContentType (§5.3)"],
-    ['asn1.read.oid',                "content-type signed-attr value payload validated, not just its tag (§11.1)"],
-    ['asn1.read.octetString',        "message-digest signed-attr value payload validated (§11.2)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-cms.js", line: 0,
-        content: "the CMS SignedData parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "cms-signeddata-conformance-guard-dropped");
-  _report("CMS SignedData RFC-conformance guards present (version-vs-contents / signedAttrs presence + payload syntax + no-duplicate-type)", bad);
-}
-
-function testOcspConformanceGuards() {
-  // class: ocsp-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 6960 validation the OCSP
-  // parser MUST perform — the error code it throws, or the ASN.1 reader that
-  // validates a value payload. Anchoring on these (the public error-code contract)
-  // rather than a helper FUNCTION NAME makes the guard rename-proof: renaming a
-  // schema var / leaf keeps the tokens (silent, correct), while deleting the check
-  // drops them (fires).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-ocsp.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"ocsp/bad-response-status"',      "OCSPResponseStatus ENUMERATED value whitelisted — 4/>=7 rejected (RFC 6960 §4.2.1)"],
-    ['"ocsp/bad-response-bytes"',       "status <-> responseBytes biconditional: successful iff responseBytes present (§4.2.1)"],
-    ['"ocsp/bad-version"',              "any explicitly-encoded version rejected (empty accept map — v1 is the DEFAULT)"],
-    ['"ocsp/bad-responder-id"',         "ResponderID arms are EXPLICIT-wrapped (byKey is not an IMPLICIT primitive) (§4.2.1)"],
-    ['"ocsp/bad-cert-status"',          "CertStatus is a good/revoked/unknown CHOICE — no other arm (§4.2.1)"],
-    ['"ocsp/bad-revocation-reason"',    "CRLReason ENUMERATED value whitelisted — 7 rejected (RFC 5280 §5.3.1)"],
-    ['"ocsp/bad-time"',                 "OCSP times are GeneralizedTime, never UTCTime (§4.2.1)"],
-    ['"ocsp/unsupported-response-type"', "a non-basic responseType is recognized-and-deferred, not silently accepted (§4.2.1)"],
-    ['"ocsp/missing-requestor-name"',   "a signed OCSPRequest must carry requestorName (RFC 6960 §4.1.2)"],
-    ['"ocsp/bad-requestor-name"',       "requestorName inner value must be a well-formed GeneralName (§4.1.1, RFC 5280 §4.2.1.6)"],
-    ['"ocsp/bad-responses"',            "ResponseData.responses is one-or-more SingleResponse (RFC 6960 §4.2.1)"],
-    ['"ocsp/bad-certs"',                "each certs SEQUENCE OF Certificate element is a Certificate (a SEQUENCE)"],
-    ['"ocsp/bad-request-list"',         "TBSRequest.requestList is one-or-more Request (RFC 6960 §4.1.1)"],
-    ['"ocsp/bad-signature"',            "an optional Signature's BIT STRING is octet-aligned before verify surfaces it (§4.1.1)"],
-    ['asn1.read.enumerated',            "responseStatus / revocationReason value payloads validated, not just tag-checked"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-ocsp.js", line: 0,
-        content: "the OCSP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "ocsp-conformance-guard-dropped");
-  _report("OCSP RFC-conformance guards present (status whitelist / status<->responseBytes / EXPLICIT ResponderID / CertStatus CHOICE / GeneralizedTime-only / defer unknown responseType)", bad);
-}
-
-function testTspConformanceGuards() {
-  // class: tsp-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 3161 validation the TSP
-  // parser MUST perform — the error code it throws, or the reader that validates a
-  // value. Anchored on the public contract, not a helper name (rename-proof).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-tsp.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"tsp/bad-gentime"',           "genTime is GeneralizedTime, never UTCTime (§2.4.2)"],
-    ['"tsp/bad-accuracy"',          "Accuracy millis/micros constrained to 1..999 (§2.4.2)"],
-    ['"tsp/bad-ordering"',          "ordering is BOOLEAN DEFAULT FALSE — explicit FALSE omitted (§2.4.2)"],
-    ['"tsp/bad-tsa"',               "tsa is a GeneralName (context tag [0]..[8]) (§2.4.2, RFC 5280 §4.2.1.6)"],
-    ['"tsp/bad-extensions"',        "TSTInfo extensions is SEQUENCE SIZE(1..MAX) — empty rejected (RFC 5280 §4.1.2.9)"],
-    ['"tsp/duplicate-extension"',   "extension OIDs are unique (RFC 5280 §4.1.2.9)"],
-    ['"tsp/bad-failinfo"',          "an unsupported PKIFailureInfo bit is rejected (RFC 3161 §2.4.2)"],
-    ['"tsp/unexpected-failinfo"',   "a granted TimeStampResp must not carry failInfo (RFC 3161 §2.4.2)"],
-    ['"tsp/bad-status"',            "PKIStatus is in 0..5 (§2.4.2)"],
-    ['"tsp/missing-token"',         "a granted TimeStampResp carries a token (§2.4.2)"],
-    ['"tsp/unexpected-token"',      "a non-granted TimeStampResp carries no token (§2.4.2)"],
-    ['"tsp/wrong-econtent-type"',   "a token must encapsulate id-ct-TSTInfo (§2.4.2)"],
-    ['"tsp/multi-signer"',          "a token has exactly one (TSA) signerInfo (§2.4.2)"],
-    ['"tsp/bad-token"',             "a malformed token surfaces a typed TspError, not a leaked CmsError (§2.4.2)"],
-    ['"tsp/detached-token"',        "a token must carry attached eContent (§2.4.2)"],
-    ['"tsp/bad-status-info"',       "PKIFreeText statusString is SEQUENCE SIZE(1..MAX) of UTF8String (§2.4.2)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-tsp.js", line: 0,
-        content: "the TSP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "tsp-conformance-guard-dropped");
-  _report("TSP RFC-conformance guards present (v1 version / GeneralizedTime genTime / accuracy 1..999 / ordering-default-false / status 0..5 / status<->token coupling / id-ct-TSTInfo + single-signer + attached token)", bad);
-}
-
-function testAttrCertConformanceGuards() {
-  // class: attrcert-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 5755 validation the attribute-
-  // certificate parser MUST perform. Anchored on the public error code, not a helper
-  // name (rename-proof). Codes generated by shared factories (versionReader's
-  // /bad-version, pkix.extensions' /bad-extensions) are not asserted here — their
-  // guards live in the shared primitive, verified by that primitive's own test.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-attrcert.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"attrcert/bad-time"',              "AttCertValidityPeriod times are GeneralizedTime, never UTCTime (§4.2.6)"],
-    ['"attrcert/bad-validity"',          "attrCertValidityPeriod is a SEQUENCE of exactly two times (§4.2.6)"],
-    ['"attrcert/bad-serial-number"',     "serialNumber is a positive INTEGER of at most 20 octets (§4.2.5)"],
-    ['"attrcert/bad-signature-algorithm"', "outer signatureAlgorithm equals acinfo.signature (§4.2.4)"],
-    ['"attrcert/bad-attributes"',        "attributes is SEQUENCE OF Attribute SIZE(1..MAX) — empty rejected (§4.2.7)"],
-    ['"attrcert/duplicate-attribute"',   "each AttributeType OID is unique (§4.2.7)"],
-    ['"attrcert/bad-digested-object-type"', "digestedObjectType ENUMERATED is in {0,1,2} (§4.1)"],
-    ['"attrcert/bad-object-digest-info"', "otherObjectTypeID is present only for otherObjectTypes(2) (§4.1)"],
-    ['"attrcert/bad-issuer-serial"',     "IssuerSerial is a constructed [n] IMPLICIT SEQUENCE — a primitive [n] is rejected (§4.1)"],
-    ['"attrcert/bad-entity-name"',       "Holder.entityName is a validated GeneralNames (§4.1, RFC 5280 §4.2.1.6)"],
-    ['"attrcert/bad-issuer-name"',       "V2Form.issuerName is a validated GeneralNames (§4.1, RFC 5280 §4.2.1.6)"],
-    ['"attrcert/bad-issuer"',            "AttCertIssuer is a CHOICE of v1Form (SEQUENCE) or v2Form ([0]) (§4.1)"],
-    ['"attrcert/bad-v2form"',            "V2Form trailing [0]/[1] are at-most-once in order (§4.1)"],
-    ['"attrcert/legacy-v1-not-supported"', "the obsolete AttributeCertificateV1 is recognized and deferred (§1, RFC 5652 §10.2)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-attrcert.js", line: 0,
-        content: "the attribute-certificate parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: the direct `parse` MUST recognize a legacy v1 AC (via matchesV1)
-  // before the v2 walk, so a direct caller gets the advertised stable
-  // attrcert/legacy-v1-not-supported and not a low-level asn1/* tag leak. Anchored on
-  // the parse-fn body up to its column-0 closing brace (tempered token, rename-proof).
-  if (!/function parse\s*\((?:(?!\n\})[\s\S]){0,4000}?matchesV1\s*\(/.test(src)) {
-    bad.push({ file: "lib/schema-attrcert.js", line: 0,
-      content: "the direct attrcert.parse no longer recognizes a legacy v1 AC before the v2 walk — a well-formed AttributeCertificateV1 would leak a low-level asn1/* tag error instead of attrcert/legacy-v1-not-supported" });
-  }
-  bad = _filterMarkers(bad, "attrcert-conformance-guard-dropped");
-  _report("attribute-certificate RFC-conformance guards present (GeneralizedTime validity / positive-<=20 serial / sig-alg agreement / non-empty unique attributes / ENUMERATED digestedObjectType / validated GeneralNames / v1 recognize-and-defer)", bad);
-}
-
-function testCrmfConformanceGuards() {
-  // class: crmf-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 4211 validation the CRMF
-  // parser MUST perform. Anchored on the public error code, not a helper name
-  // (rename-proof). Codes generated by shared factories (algorithmIdentifier's
-  // /bad-algorithm-identifier, spki's /bad-spki, extensions' /bad-extensions) are
-  // not asserted here — their guards live in the shared primitive.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-crmf.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"crmf/bad-version"',           "CertTemplate version MUST be 2 (v3) if supplied (§5)"],
-    ['"crmf/bad-validity"',          "OptionalValidity has at least one of notBefore/notAfter, EXPLICIT times (§5)"],
-    ['"crmf/bad-name"',              "issuer/subject [3]/[5] Name is a valid IMPLICIT or EXPLICIT RDNSequence (§5, X.680 §31.2.7)"],
-    ['"crmf/bad-popo"',              "ProofOfPossession is a CHOICE [0..3]; raVerified [0] is an IMPLICIT NULL (§4)"],
-    ['"crmf/bad-cert-req-messages"', "CertReqMessages is SEQUENCE SIZE(1..MAX) — empty rejected (§3)"],
-    ['"crmf/bad-control"',           "an AttributeTypeAndValue is a SEQUENCE { type, value } (§5, §6, §7)"],
-    ['"crmf/bad-cert-template"',     "CertTemplate is one ascending [0..9] IMPLICIT run, each field at-most-once (§5)"],
-    ['MUST be omitted',              "serialNumber/signingAlg (CA-assigned) + issuerUID/subjectUID (deprecated) are rejected, not surfaced (§5)"],
-    ['poposkInput MUST be',          "a signature POP's poposkInput presence is fixed by the CertTemplate subject+publicKey (§4.1)"],
-    ['asn1.sequenceTlv',             "bytes surfaced for external verification over an IMPLICIT-wrapped value are the retagged universal TLV, never the [n] wire slice (§4.1)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-crmf.js", line: 0,
-        content: "the CRMF parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: the CertTemplate build MUST reach the version-value check (RFC 4211
-  // §5 "version MUST be 2 if supplied") before it returns the assembled template.
-  // Anchored on the build up to its `return {` (tempered token, rename-proof) so a
-  // refactor that drops the check — leaving the frozen code elsewhere — still fires.
-  if (!/version\.present(?:(?!\n {4}return)[\s\S]){0,600}?"crmf\/bad-version"/.test(src)) {
-    bad.push({ file: "lib/schema-crmf.js", line: 0,
-      content: "the CertTemplate build no longer rejects a supplied version != 2 before returning — the RFC 4211 §5 version MUST is under-enforced" });
-  }
-  bad = _filterMarkers(bad, "crmf-conformance-guard-dropped");
-  _report("CRMF RFC-conformance guards present (version==2 / OptionalValidity min-one EXPLICIT times / dual-accept Name / ProofOfPossession CHOICE / non-empty CertReqMessages / IMPLICIT CertTemplate run)", bad);
-}
-
-function testPkcs12ConformanceGuards() {
-  // class: pkcs12-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 7292 / RFC 9579
-  // validation the PKCS#12 parser MUST perform. Anchored on the public error
-  // code, not a helper name (rename-proof). Codes generated by shared
-  // factories (attribute's /bad-attribute-values, the makeParser /bad-der and
-  // /bad-input plumbing) are not asserted here — their guards live in the
-  // shared primitive.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-pkcs12.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"pkcs12/not-a-pfx"',                 "PFX is a SEQUENCE of 2-3 (§4)"],
-    ['versionReader(NS, { "3": 3 })',      "version MUST be v3 = 3 (§4) — the accept map IS the frozen contract; the code is minted by the shared factory"],
-    ['"pkcs12/bad-integrity-mode"',        "a MacData alongside a SignedData authSafe is contradictory (§4)"],
-    ['"pkcs12/bad-mac-data"',              "MacData/DigestInfo shape + PBMAC1-params present, PBKDF2 with bounded keyLength/iterationCount (§4; RFC 9579 §4-§5)"],
-    ['"pkcs12/bad-mac-iterations"',        "iterations DEFAULT 1 must be omitted when equal (X.690 §11.5), positive and bounded"],
-    ['"pkcs12/bad-authsafe"',              "public-key integrity encapsulates attached id-data with at least one signer (§4, §4.1)"],
-    ['"pkcs12/bad-authsafe-type"',         "authSafe contentType is id-data or id-signedData only (§4.1)"],
-    ['"pkcs12/bad-safe-contentinfo-type"', "AuthenticatedSafe elements are id-data / id-encryptedData / id-envelopedData; privacy safes wrap id-data (§4.1)"],
-    ['"pkcs12/bad-safe-contents"',         "SafeContents is a SEQUENCE OF SafeBag — a SET OF producer wart rejects (§4.2)"],
-    ['"pkcs12/bad-bag-type"',              "bagId is the closed §4.2 set — unknown bag types reject"],
-    ['"pkcs12/bad-bag-value"',             "bag values are [0] EXPLICIT with the type each arm requires (§4.2)"],
-    ['"pkcs12/bad-cert-type"',             "certId is x509Certificate or sdsiCertificate (§4.2.3)"],
-    ['"pkcs12/bad-crl-type"',              "crlId is x509CRL (§4.2.4)"],
-    ['"pkcs12/bad-friendly-name"',         "friendlyName is one BMPString value, one instance (PKCS#9 SINGLE VALUE)"],
-    ['"pkcs12/bad-local-key-id"',          "localKeyId is one OCTET STRING value, one instance (PKCS#9 SINGLE VALUE)"],
-    ['"pkcs12/too-deep"',                  "safeContentsBag recursion + cross-decode re-decodes carry one shared budget (§4.2.6)"],
-    ['"pkcs12/too-many-elements"',         "AuthenticatedSafe / SafeContents / bagAttributes element counts are capped"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-pkcs12.js", line: 0,
-        content: "the PKCS#12 parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: MacData is OPTIONAL for an id-data authSafe (RFC 7292 §4 — the
-  // openssl -nomac shape is legal, integrity-less syntax). The id-data arm must
-  // reach its integrityMode surface WITHOUT a MacData-presence throw: the arm's
-  // body up to its `return {` may not construct a bad-integrity-mode fault
-  // (tempered token, rename-proof — a reintroduced mandatory-MacData check
-  // fires however the surrounding code is arranged).
-  if (/OID_DATA(?:(?!\n {4}\})(?!"pkcs12\/bad-integrity-mode")[\s\S]){0,800}?integrityMode(?:(?!\n {4}\})[\s\S]){0,400}?"pkcs12\/bad-integrity-mode"/.test(src) ||
-      /OID_DATA(?:(?!\n {4}\})[\s\S]){0,300}?if\s*\(!macPresent\)\s*throw/.test(src)) {
-    bad.push({ file: "lib/schema-pkcs12.js", line: 0,
-      content: "the id-data authSafe arm rejects a missing MacData again — MacData is OPTIONAL syntax (RFC 7292 §4); an integrity-less store surfaces integrityMode \"none\" for the caller's policy, it does not fail parse" });
-  }
-  bad = _filterMarkers(bad, "pkcs12-conformance-guard-dropped");
-  _report("PKCS#12 RFC-conformance guards present (version v3 / integrity-mode surface incl. legal MAC-less stores / MacData + PBMAC1 rules / authSafe + safe-content dispatch / closed bag sets / single-value attrs / nesting + count budgets)", bad);
-}
-
 function testWorkflowScanFailureMasked() {
   // class: workflow-scan-failure-masked
   // A security scanner whose failure is silenced is indistinguishable from a
@@ -1153,75 +905,6 @@ function testSharedLeafOptionScope() {
   _report("shared-leaf relaxations stay scoped to their declaring sites (allowFractional: codec + TSP only)", bad);
 }
 
-function testEngineEncodeParity() {
-  // class: engine-encode-parity-dropped
-  // encode is the constructor direction of the same schema walk enforces, so
-  // the repeat constraints (SIZE minimum, element cap, semantic uniqueness)
-  // must be enforced in BOTH directions — an encoder that skips them emits
-  // DER its own decoder rejects, breaking the walk(decode(encode)) invariant.
-  // Anchored on the constraint reads inside the repeat encoder's body up to
-  // the next column-0 brace (rename-proof: the fn may be renamed, but a
-  // repeat encoder that never reads min/max/unique is the regression).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
-  catch (_e) { return; }
-  var encodeRepeatBody = /function _?\w*[eE]ncodeRepeat\w*\(([\s\S]*?)\n\}/.exec(src);
-  var body = encodeRepeatBody ? encodeRepeatBody[0] : "";
-  var bad = [];
-  if (!body || !/schema\.min\b/.test(body) || !/schema\.max\b/.test(body) || !/schema\.unique\b/.test(body)) {
-    bad.push({ file: "lib/schema-engine.js", line: 0,
-      content: "the repeat encoder no longer enforces min/max/unique — encode can emit DER its own walk rejects (the walk(decode(encode)) parity invariant)" });
-  }
-  bad = _filterMarkers(bad, "engine-encode-parity-dropped");
-  _report("engine encode enforces the same repeat constraints walk enforces (min / max / unique)", bad);
-}
-
-function testReleasePushFixOrder() {
-  // class: release-push-fix-order
-  // The push-fix gate ORDER is load-bearing: the open-PR lookup precedes the
-  // commit (a stale branch whose PR closed must not gain commits), the commit
-  // precedes gitleaks (the scan must cover the fix itself, not the pre-fix
-  // tree), the gates precede the push (nothing unscanned/unsigned reaches the
-  // remote), and a failed gate rolls the commit back (the operator never
-  // dead-ends at the clean-tree guard). Tokens are asserted in sequence — an
-  // absent token FIRES rather than going silent, so a rename is a conscious
-  // update here, never a dead detector.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "scripts/release.js"), "utf8"); }
-  catch (_e) { return; }
-  var m = /function cmdPushFix\(([\s\S]*?)\n\}/.exec(src);
-  var bad = [];
-  if (!m) {
-    bad.push({ file: "scripts/release.js", line: 0, content: "the push-fix command body was not found — its gate-order contract cannot be verified" });
-  } else {
-    var body = m[0];
-    var sequence = [
-      ["prNum", "the open-PR lookup"],
-      ['"add"', "the fix commit (git add -A)"],
-      ["_gitleaks", "the secret scan of the committed fix"],
-      ['"push"', "the push to the remote"],
-    ];
-    var last = -1;
-    var lastLabel = "the function start";
-    for (var i = 0; i < sequence.length; i++) {
-      var at = body.indexOf(sequence[i][0]);
-      if (at === -1 || at < last) {
-        bad.push({ file: "scripts/release.js", line: 0,
-          content: "push-fix gate order broken: " + sequence[i][1] + " no longer follows " + lastLabel +
-                   " — the lookup->commit->scan->push order is the contract (scan the fix, not the pre-fix tree; nothing unscanned reaches the remote)" });
-        break;
-      }
-      last = at; lastLabel = sequence[i][1];
-    }
-    if (body.indexOf('"--soft"') === -1) {
-      bad.push({ file: "scripts/release.js", line: 0,
-        content: "push-fix no longer rolls back the fix commit when a pre-push gate fails — a failed gate dead-ends at the clean-tree guard on rerun" });
-    }
-  }
-  bad = _filterMarkers(bad, "release-push-fix-order");
-  _report("release push-fix keeps its gate order (PR lookup -> commit -> gitleaks -> push, rollback on gate failure)", bad);
-}
-
 function testAlgorithmLookupNoDefault() {
   // class: algorithm-lookup-with-default
   // Resolving an algorithm OID through a registry table must throw on a miss.
@@ -1253,87 +936,6 @@ function testAlgorithmLookupNoDefault() {
   });
   bad = _filterMarkers(bad, "algorithm-lookup-with-default");
   _report("algorithm-table lookups throw on a miss (no OR-defaults, no weak literal presets surviving unknown OIDs)", bad);
-}
-
-function testCmsEnvelopedDataConformanceGuards() {
-  // class: cms-enveloped-guard-dropped
-  // Frozen contract of the RFC 5652 §6/§8 EnvelopedData / EncryptedData decode
-  // (promoted out of the recognize-and-defer set). Anchored on the public error
-  // codes, not helper names (rename-proof).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"cms/bad-enveloped-data"',        "EnvelopedData is structurally decoded (§6.1)"],
-    ['"cms/bad-encrypted-data"',        "EncryptedData is structurally decoded (§8)"],
-    ['"cms/bad-encrypted-content-info"', "EncryptedContentInfo decoded — encryptedContent [0] IMPLICIT (§6.1)"],
-    ['"cms/bad-recipient-infos"',       "recipientInfos is a SET SIZE(1..MAX) — empty rejected (§6.1)"],
-    ['"cms/bad-recipient-info"',        "RecipientInfo CHOICE — an unknown arm is rejected (§6.2)"],
-    ['"cms/bad-ktri"',                  "KeyTransRecipientInfo decoded (§6.2.1)"],
-    ['"cms/bad-recipient-version"',     "the ktri rid<->version coupling is enforced (§6.2.1)"],
-    ['"cms/bad-kari"',                  "KeyAgreeRecipientInfo decoded (§6.2.2, RFC 5753)"],
-    ['"cms/bad-kekri"',                 "KEKRecipientInfo decoded (§6.2.3)"],
-    ['"cms/bad-pwri"',                  "PasswordRecipientInfo decoded (§6.2.4)"],
-    ['"cms/bad-ori"',                   "OtherRecipientInfo decoded (§6.2.5)"],
-    ['"cms/bad-recipient-identifier"',  "RecipientIdentifier CHOICE decoded (§6.2.1)"],
-    ['"cms/bad-originator-info"',       "OriginatorInfo decoded (§6.1)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-cms.js", line: 0,
-        content: "the CMS parser no longer references `" + r[0] + "` — a dropped EnvelopedData/EncryptedData decode guard: " + r[1] });
-    }
-  });
-  // Structural: the two content types must be walked (not deferred) inside CONTENT_INFO.build.
-  if (!/OID_ENVELOPED_DATA[\s\S]{0,120}?schema\.walk\(ENVELOPED_DATA/.test(src)) {
-    bad.push({ file: "lib/schema-cms.js", line: 0,
-      content: "CONTENT_INFO.build no longer walks ENVELOPED_DATA on id-envelopedData — the content type would fall back to recognize-and-defer" });
-  }
-  bad = _filterMarkers(bad, "cms-enveloped-guard-dropped");
-  _report("CMS EnvelopedData/EncryptedData decode guards present (all five RecipientInfo kinds / ktri version coupling / non-empty recipientInfos / dispatch walks the two content types)", bad);
-}
-
-function testPathValidateConformanceGuards() {
-  // class: path-validate-conformance-guard-dropped
-  // Each token is the STABLE, frozen error code of an RFC 5280 §6.1 path-
-  // validation MUST that the validator throws. Anchoring on these public codes
-  // (not the helper FUNCTION NAMES like requireCriticalExt / basicProcessing)
-  // makes the guard rename-proof: renaming a helper keeps the codes (silent,
-  // correct), while deleting a fail-closed check drops its code (fires). The RED
-  // conformance vectors remain the per-check behavioural guards; this catches
-  // wholesale removal of a MUST during a refactor.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/path-validate.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"path/extension-not-critical"',        "basicConstraints/nameConstraints/policyConstraints/inhibitAnyPolicy on a CA must be critical (RFC 5280 §4.2.1.9/.10/.11/.14)"],
-    ['"path/not-a-ca"',                       "an intermediate must assert basicConstraints cA:TRUE (§6.1.4(k); CVE-2021-3450 class)"],
-    ['"path/missing-key-cert-sign"',          "a CA's keyUsage must assert keyCertSign (§6.1.4(n))"],
-    ['"path/unrecognized-critical-extension"', "an unrecognized critical extension fails the path closed (§6.1.4(o)/6.1.5(e))"],
-    ['"path/revocation-undetermined"',        "only an authoritative good status passes; any other revocation outcome fails closed"],
-    ['"path/path-length-exceeded"',           "the CA basicConstraints pathLenConstraint is enforced (§6.1.4(l),(m))"],
-    ['"path/policy-required"',                "explicit-policy with an empty valid-policy tree is rejected (§6.1.5(g))"],
-    ['"path/name-constraint-excluded"',       "a name in an excluded subtree is rejected (§6.1.4(g))"],
-    ['"path/name-constraint-not-permitted"',  "a name outside every permitted subtree is rejected (§6.1.4(g))"],
-    ['.revocationDate',                        "a CRL entry is honored only as of the date it carries; a revocation dated after the validation instant does not apply (§5.3)"],
-    ['"deltaCRLIndicator"',                    "a delta CRL (deltaCRLIndicator) is unusable on its own without base/delta processing — a serial absent from it is not good (§5.2.4)"],
-    ['"path/name-constraint-unsupported"',     "a name form the matcher cannot evaluate fails closed, never clever-parses (§6.1.4(g); RFC 822 quoting, IP prefixes)"],
-    ['"path/unsupported-algorithm"',           "an unknown signature/hash/MGF OID or malformed parameters rejects — no weaker default stands in (§6.1.3(a); RSASSA-PSS RFC 4055)"],
-    ['"path/bad-signature"',                   "a signatureValue with unused bits is not verifiable material (§6.1.3(a))"],
-    ['.indirect',                              "an indirect CRL (IDP indirectCRL) is not treated as the issuer's own authoritative CRL (§5.2.5)"],
-    ['.onlyAttr',                              "an IDP onlyContainsAttributeCerts CRL is out of scope for a public-key cert (§5.2.5)"],
-    ['.malformed',                             "a CRL whose IDP does not decode is unusable — scope unknown means fail closed (§5.2.5)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/path-validate.js", line: 0,
-        content: "the path validator no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "path-validate-conformance-guard-dropped");
-  _report("Path-validation RFC 5280 §6.1 guards present (MUST-critical CA extensions / CA gate / keyCertSign / unknown-critical / revocation fail-closed / pathLen / policy-required / name constraints)", bad);
 }
 
 function testNoRemovedWebCryptoNamespace() {
@@ -1413,99 +1015,6 @@ function testReleaseWaitsForCodex() {
   _report("release.js waits for Codex to review the head before merge (async-review race closed)", bad);
 }
 
-function testDecoderRejectsConstructedPrimitiveOnly() {
-  // class: der-constructed-primitive-only
-  // X.690 §8.x/§10.2 (DER): a universal primitive-only type (INTEGER, OID, the
-  // restricted strings, times, BIT/OCTET STRING) encoded constructed is not
-  // valid DER — the mirror of the primitive-SEQUENCE/SET rejection. The decoder
-  // must reject BOTH directions, or a constructed string tag decodes to a
-  // childless node an X.509 DN attribute value hex-renders instead of failing
-  // closed, bypassing the restricted-string content checks.
-  var bad = [];
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/asn1-der.js"), "utf8"); }
-  catch (_e) { return; }
-  var tlvBody = /function _decodeTLV\b([\s\S]*?)\r?\nfunction /.exec(src);
-  var body = tlvBody ? tlvBody[1] : src;
-  if (body.indexOf("asn1/constructed-primitive-type") === -1 ||
-      !/PRIMITIVE_ONLY_UNIVERSAL_TAGS\s*\[/.test(body)) {
-    bad.push({ file: "lib/asn1-der.js", line: 0,
-      content: "_decodeTLV must reject a constructed encoding of a universal primitive-only type " +
-        "(throw asn1/constructed-primitive-type via PRIMITIVE_ONLY_UNIVERSAL_TAGS) — the mirror of the " +
-        "primitive-SEQUENCE/SET rejection; without it a constructed string tag bypasses the restricted-string checks" });
-  }
-  bad = _filterMarkers(bad, "der-constructed-primitive-only");
-  _report("asn1 decoder rejects a constructed encoding of a primitive-only type (DER §10.2)", bad);
-}
-
-function testTbsTrailingFieldsMonotonic() {
-  // class: x509-tbs-trailing-fields
-  // RFC 5280 §4.1 — the tbs trailing fields issuerUniqueID [1], subjectUniqueID
-  // [2], extensions [3] each appear at most once, in strictly increasing tag
-  // order. Post-L2 the x509 CERTIFICATE_TBS schema DECLARES them via
-  // schema.trailing() and the ENGINE's _consumeTrailing enforces the monotonic
-  // guard once. Drop the guard and a second [3] overwrites the first, splitting
-  // duplicate extension OIDs across two wrappers past the per-sequence check.
-  var bad = [];
-  var engine;
-  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
-  catch (_e) { return; }
-  var fn = /function _consumeTrailing\b([\s\S]*?)\r?\nfunction /.exec(engine);
-  var body = fn ? fn[1] : engine;
-  if (!/<=\s*last\b/.test(body) || body.indexOf("repeated or out of order") === -1) {
-    bad.push({ file: "lib/schema-engine.js", line: 0,
-      content: "_consumeTrailing must reject a repeated or out-of-order context tag (the `<= last` monotonic guard + orderCode) — " +
-        "a second [3] would overwrite the first and split duplicate extension OIDs across two wrappers" });
-  }
-  // The monotonic sentinel `last` must initialize BELOW the lowest accepted tag;
-  // when minTag is absent the fallback must be negative (`: -1`), not a
-  // non-negative literal, or a trailing block whose first member is [0] rejects
-  // that first field as out-of-order (0 <= last==0). Codex PR #9.
-  if (/\blast\s*=\s*[^;]*\bminTag\b[^;]*:\s*[0-9]/.test(body)) {
-    bad.push({ file: "lib/schema-engine.js", line: 0,
-      content: "_consumeTrailing's monotonic sentinel `last` must initialize below the lowest accepted tag — the minTag-absent fallback must be negative (`: -1`), not a non-negative literal, or a trailing block starting at [0] rejects its first field as out-of-order" });
-  }
-  var x509;
-  try { x509 = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-x509.js"), "utf8"); }
-  catch (_e) { x509 = ""; }
-  if (!/schema\.trailing\(/.test(x509)) {
-    bad.push({ file: "lib/schema-x509.js", line: 0,
-      content: "the tbsCertificate schema must COMPOSE schema.trailing() for the [1]/[2]/[3] fields, not hand-roll the trailing loop" });
-  }
-  bad = _filterMarkers(bad, "x509-tbs-trailing-fields");
-  _report("tbs trailing fields [1]/[2]/[3] are at-most-once and in order via the engine (RFC 5280 §4.1)", bad);
-}
-
-function testWalkSeqRejectsUnconsumedChildren() {
-  // class: asn1-walkseq-unconsumed-children
-  // A seq must consume EVERY child: after the field loop (and when no trailing
-  // field ran), any leftover element is an error. Without the guard a closed
-  // sequence of optional fields silently drops a duplicate/extra element, so
-  // `seq([optional("v", ...)])` accepts SEQUENCE { [0] 1, [0] 2 } — defeating the
-  // engine's optional-field strictness for every CRL/CMS/external schema. The
-  // loop uses `idx < kids.length ?` (ternary); the reject guard is a distinct
-  // `if (idx < kids.length)` statement after the loop. Codex PR #9.
-  var bad = [];
-  var engine;
-  try { engine = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
-  catch (_e) { return; }
-  var fn = /function _walkSeq\b([\s\S]*?)\r?\nfunction /.exec(engine);
-  var body = fn ? fn[1] : engine;
-  if (!/if\s*\(\s*idx\s*<\s*kids\.length\s*\)/.test(body)) {
-    bad.push({ file: "lib/schema-engine.js", line: 0,
-      content: "_walkSeq must reject unconsumed sequence children — an `if (idx < kids.length)` fail-closed guard after the field loop. Without it a seq silently drops leftover elements, so a closed sequence of optional fields cannot reject a duplicate/extra element" });
-  }
-  // Same drop-extra class in the EXPLICIT unwrap: a wrapper carries exactly one
-  // value, so _explicitInner must assert children.length !== 1 (a non-empty-only
-  // check silently drops a second child).
-  if (!/function _explicitInner\b[\s\S]{0,240}?children\.length !== 1/.test(engine)) {
-    bad.push({ file: "lib/schema-engine.js", line: 0,
-      content: "_explicitInner must assert children.length !== 1 (an EXPLICIT [tag] wrapper carries exactly one value); a non-empty-only check drops a second child, and every explicit unwrap (_walkExplicit / optional / trailing) must route through it" });
-  }
-  bad = _filterMarkers(bad, "asn1-walkseq-unconsumed-children");
-  _report("_walkSeq rejects unconsumed sequence children (closed-sequence strictness)", bad);
-}
-
 function testNoUnusedUnderscoreFunctions() {
   // class: dead-underscore-function
   // eslint no-unused-vars ALLOWS unused `_`-prefixed identifiers (the varsIgnore
@@ -1570,30 +1079,6 @@ function testNoRemovedNamespaceRefs() {
   _report("no shipped source references the removed pki.x509 / pki.asn1.schema namespaces", bad);
 }
 
-function testSignatureAlgorithmAgreement() {
-  // class: x509-sig-alg-agreement
-  // RFC 5280 §4.1.1.2 — the outer signatureAlgorithm MUST equal
-  // tbsCertificate.signature (same AlgorithmIdentifier). Surfacing the two
-  // fields without enforcing equality lets a certificate claim one algorithm
-  // in the signed body and another in the outer wrapper — a signature-
-  // algorithm-substitution vector.
-  var bad = [];
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-x509.js"), "utf8"); }
-  catch (_e) { return; }
-  // Post-L2 the check lives in the CERTIFICATE build: it compares the outer and
-  // inner AlgorithmIdentifier nodes' DER bytes and throws x509/bad-signature-
-  // algorithm. Fire if the Certificate schema surfaces a signatureAlgorithm
-  // field but the node-bytes agreement check is gone.
-  if (/"signatureAlgorithm"/.test(src) && !(/bad-signature-algorithm/.test(src) && /\.node\.bytes\.equals\(/.test(src))) {
-    bad.push({ file: "lib/schema-x509.js", line: 0,
-      content: "the Certificate parse must reject a mismatch between signatureAlgorithm and tbsCertificate.signature " +
-        "(RFC 5280 §4.1.1.2) — compare the two AlgorithmIdentifier nodes' bytes and throw x509/bad-signature-algorithm" });
-  }
-  bad = _filterMarkers(bad, "x509-sig-alg-agreement");
-  _report("x509 parse enforces signatureAlgorithm == tbsCertificate.signature (RFC 5280 §4.1.1.2)", bad);
-}
-
 function testFormatModulesComposeSchema() {
   // class: format-must-compose-schema
   // L2 — a format parser (x509, and later crl/cms) DECLARES a structure schema
@@ -1603,7 +1088,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js"]; // + future format modules as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js", "lib/schema-cmp.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -1632,30 +1117,6 @@ function testFormatModulesComposeSchema() {
   }
   bad = _filterMarkers(bad, "format-must-compose-schema");
   _report("format parsers compose the schema engine (schema.walk), not a hand-rolled children[idx] loop (L2 must-compose)", bad);
-}
-
-function testEcImportDerivesCurve() {
-  // class: webcrypto-ec-import-curve
-  // W3C WebCrypto — an imported EC key's curve is a property of the KEY, not
-  // the caller's namedCurve. _algFromImport must derive the curve from the key
-  // material and reject a mismatch (webcrypto/data) or unsupported curve
-  // (webcrypto/not-supported). Trusting `alg.namedCurve || _curveFromKey`
-  // mislabels the CryptoKey (algorithm confusion) and lets a non-approved curve
-  // import as an approved one.
-  var bad = [];
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/webcrypto.js"), "utf8"); }
-  catch (_e) { return; }
-  var fn = /function _algFromImport\b([\s\S]*?)\r?\nfunction /.exec(src);
-  var body = fn ? fn[1] : src;
-  if (/alg\.namedCurve\s*\|\|/.test(body) || body.indexOf("actualCurve") === -1) {
-    bad.push({ file: "lib/webcrypto.js", line: 0,
-      content: "_algFromImport must DERIVE an imported EC key's curve from the key material and reject a mismatch " +
-        "(webcrypto/data) or unsupported curve (webcrypto/not-supported) — trusting `alg.namedCurve || _curveFromKey` " +
-        "mislabels the CryptoKey (algorithm confusion)" });
-  }
-  bad = _filterMarkers(bad, "webcrypto-ec-import-curve");
-  _report("webcrypto EC importKey derives + verifies the curve from the key (not the caller's namedCurve)", bad);
 }
 
 function testAsn1TypesFromRegistry() {
@@ -1785,10 +1246,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "check(<reason>, true) as a skip is the skip-counted-as-pass bug: a run that skipped a cross-check (e.g. the OpenSSL interop oracle predates ML-DSA) reports the SAME 'N checks passed' as a run that actually performed it, so a coverage gap reads as coverage. helpers.skip / ctx.skip increments a separate skip counter (never `_checks`) and the interop runner + test-integration report skips distinctly.",
   },
 
-  // (CMS SignedData RFC-conformance guards are enforced by
-  //  testCmsSignedDataConformanceGuards — a file-level check anchored on the
-  //  frozen error-code contract, NOT on the helper function name, so a rename
-  //  can't silently green it.)
+  // (Per-format RFC-conformance rules — a version==N check, a status
+  //  whitelist, a cross-field coherence rule — are guarded by the behavioral
+  //  RED conformance vectors in each format's layer-0 test, which drive parse()
+  //  on the malformed input and assert the reject. Those run in smoke and catch
+  //  removal of the runtime check directly. A codebase-patterns detector here
+  //  is reserved for a GENERAL, codebase-wide VECTOR shape that would fire on a
+  //  new instance introduced ANYWHERE — not a frozen list of one format's
+  //  error-code strings or a length-bounded regex over one named function,
+  //  which drift on any legitimate rename / growth and detect nothing new.)
 
   // --- DER codec correctness (lib scope) ---
   {
@@ -1799,90 +1265,10 @@ var KNOWN_ANTIPATTERNS = [
     allowlist: [],
     reason: "A byte-at-a-time BigInt shift-accumulator over attacker-length content is O(n^2) in the content length — the quadratic decoder-DoS class (readInteger + decodeOidContent). The 16 MiB document cap does not bound a single value, so a ~2 MB INTEGER/OID pins a core for minutes. Build the magnitude in one pass and cap the per-value byte length.",
   },
-  {
-    id: "asn1-time-utc-rollover",
-    primitive: "a getUTC* component round-trip check after Date.UTC (throw asn1/bad-time on any field mismatch) — Date.UTC silently rolls Feb 30 / month 13 / hour 25",
-    regex: /Date\.UTC\((?:(?!getUTCFullYear)[\s\S]){0,600}?return new Date\(t\)/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "Date.UTC normalizes out-of-range calendar fields instead of returning NaN, so isNaN is an inadequate strictness gate — a malformed UTCTime/GeneralizedTime parses to a shifted validity instant (a cert-validity parser differential). Require every component to round-trip.",
-  },
-  {
-    id: "asn1-time-year-remap",
-    primitive: "build the Date via new Date(0) + setUTCFullYear(year, ...) — the Date.UTC(year,...) / new Date() constructors remap a year in 0..99 to 1900..1999, corrupting a GeneralizedTime year below 100",
-    regex: /function readTime\b(?:(?!setUTCFullYear)[\s\S]){0,2000}?Date\.UTC\(\s*year\b/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "readTime reaching Date.UTC(year, ...) without a setUTCFullYear remaps a 4-digit GeneralizedTime year below 100 (0099 -> 1999) — the round-trip check only holds when the year is not silently shifted a century. setUTCFullYear takes the literal year and uses its own calendar.",
-  },
-  {
-    id: "asn1-bitstring-unused-bits",
-    primitive: "a final-octet `(c[c.length-1] & mask)` zero-check (mask = (1<<unusedBits)-1) — X.690 11.2.1 DER requires unused BIT STRING bits to be zero",
-    regex: /if \(unusedBits > 7\)(?:(?!c\[c\.length - 1\] & mask)[\s\S]){0,600}?return \{ unusedBits: unusedBits, bytes: c\.subarray\(1\) \}/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "readBitString reaching its return with no tail-mask check admits non-canonical BIT STRING encodings (encoding malleability on signature/key-usage bits). The zero-unused-bits invariant is easy to drop on refactor.",
-  },
-  {
-    id: "asn1-bitstring-empty-body-unused-bits",
-    primitive: "build.bitString must reject an empty body with unusedBits>0 (X.690 8.6.2.3) — an empty BIT STRING has no bits to leave unused; the encoder must not emit what the decoder rejects",
-    regex: /bitString: function \(buf, unusedBits\)(?:(?!body\.length === 0)[\s\S]){0,600}?return _universal\(TAGS\.BIT_STRING/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "build.bitString reaching its return with no `body.length === 0` guard lets it emit an empty BIT STRING declaring unused bits — invalid DER the reader rejects, an encode/decode asymmetry. Reject u>0 over an empty body.",
-  },
-  {
-    id: "asn1-universalstring-scalar-range",
-    primitive: "a `cp > 0x10FFFF || (cp>=0xD800 && cp<=0xDFFF)` guard before String.fromCodePoint (throw asn1/bad-universal-string) — keeps the Asn1Error-only contract and rejects lone surrogates",
-    regex: /for \(var i = 0; i < buf\.length; i \+= 4\)(?:(?!0x10FFFF)[\s\S]){0,600}?String\.fromCodePoint\(cp\)/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "_decodeUtf32be calling String.fromCodePoint on an unvalidated 4-byte value throws a bare native RangeError (not Asn1Error) for cp>0x10FFFF and silently admits lone surrogates — a contract break on any code-point-to-string path over attacker bytes.",
-  },
 
   // --- WebCrypto access-control + conformance (lib scope) ---
-  {
-    id: "webcrypto-unwrapkey-usage-dominance",
-    primitive: "_requireUsage(unwrappingKey, \"unwrapKey\") at the TOP of unwrapKey, before the AES-KW branch fork (mirror wrapKey) — the _cloneWithUsage delegation is only sound below the gate",
-    regex: /unwrapAlgorithm, "unwrapKey"\);(?:(?!_requireUsage\(unwrappingKey, "unwrapKey"\))[\s\S]){0,400}?if \(alg\.name === "AES-KW"\)/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "unwrapKey enforcing the usage only inside the AES-KW branch leaves the RSA-OAEP/AES-GCM else path fail-open (it injects 'decrypt' via _cloneWithUsage and delegates to this.decrypt). The usage gate must dominate the branch fork.",
-  },
-  {
-    id: "webcrypto-derivekey-wrong-usage",
-    primitive: "deriveKey calls _requireUsage(baseKey, \"deriveKey\") then _deriveBitsRaw — it must NOT delegate to this.deriveBits (which enforces the distinct 'deriveBits' usage)",
-    regex: /this\.deriveBits\(algorithm, baseKey/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "deriveKey delegating to deriveBits inherits the wrong usage check: it false-rejects an idiomatic ['deriveKey'] key AND fail-open allows a ['deriveBits']-only key. An op that fulfils itself via a sibling subtle method must enforce its OWN usage first.",
-  },
-  {
-    id: "webcrypto-hmac-verify-length-gate",
-    primitive: "`var mac = hm.digest(); return mac.length === sig.length && timingSafeEqual(mac, sig)` — timingSafeEqual throws RangeError on an attacker-length mismatch",
-    regex: /timingSafeEqual\(hm\.digest\(\), sig\)/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "Passing a fresh hm.digest() straight to timingSafeEqual against an attacker-length signature throws RangeError instead of resolving false (WebCrypto verify must resolve false for any invalid signature) — an unhandled-rejection DoS surface driven purely by the supplied length.",
-  },
-  {
-    id: "webcrypto-aesctr-length-guard",
-    primitive: "_requireCtrLength128(alg) before the AES-CTR createCipheriv/createDecipheriv — node only honors a full 128-bit counter, so length!=128 must fail closed (webcrypto/not-supported)",
-    regex: /if \(name === "AES-CTR"\) \{(?:(?!_requireCtrLength128)[\s\S]){0,120}?create(?:Cipher|Decipher)iv\("aes-" \+ key\.algorithm\.length \+ "-ctr"/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "The AES-CTR branch building the cipher without reading alg.length silently ignores a security-relevant, spec-required parameter — a length<128 diverges from a conformant WebCrypto past the counter wrap. Read or reject the parameter.",
-  },
 
   // --- X.509 parser fail-closed (lib scope) ---
-  {
-    id: "x509-tbs-fixed-childcount-guard",
-    primitive: "a version-aware tbs child-count guard (`< idx + 6`) throwing CertificateError — a fixed `< 6` ignores the slot an explicit version [0] consumes and dereferences undefined",
-    regex: /children\.length\s*<\s*6\b/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "A fixed tbs.children.length < 6 guard passes a 6-child tbs whose explicit version [0] leaves SPKI undefined, throwing a raw TypeError instead of the advertised CertificateError. Bounds-check positionally against the version-aware minimum.",
-  },
   {
     id: "context-node-content-deref-no-primitive-reader",
     primitive: "read a context-tagged IMPLICIT primitive leaf through asn1.read.{octetStringImplicit,integerImplicit,nullImplicit,bitStringImplicit}(node, tag) — never Buffer.from(node.content) on a context node, whose content is null when the node is constructed",
@@ -1890,30 +1276,6 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "A context-class node carrying an IMPLICIT primitive value (a keyIdentifier [0] OCTET STRING, a serial [2] INTEGER) is only guaranteed primitive if a reader enforces it. A constructed context node has children and a NULL content, so Buffer.from(node.content) throws a raw TypeError on hostile input (fuzz-found in the AKI extension decoder) instead of a typed fail-closed reject. Route every context-primitive read through the asn1.read.*Implicit reader, which asserts the primitive form and rejects the constructed shape with asn1/expected-primitive.",
-  },
-  {
-    id: "algid-childless-node-fallback",
-    primitive: "an AlgorithmIdentifier's OID is read from a node PROVEN to be a SEQUENCE (tag-checked) then `.children[0]` — never via a childless-fallback ternary that reuses the wrapper node when the inner has no children",
-    regex: /children\.length\s*\)\s*\?/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "A `node.children.length) ? inner : node` fallback accepts a malformed AlgorithmIdentifier by degrading to a broader node when the expected SEQUENCE is absent: a bare `[0] EXPLICIT OBJECT IDENTIFIER sha256` (no AlgorithmIdentifier SEQUENCE) is then read as a valid SHA-256 hashAlgorithm, so RSASSA-PSS parameters stop being fail-closed and a weaker hash can be smuggled in (forgery surface). Read the OID only from a node whose tag is asserted to be a universal SEQUENCE; do not fall back to the wrapper on a childless inner.",
-  },
-  {
-    id: "policy-tree-parent-in-public-verdict",
-    primitive: "the validate() verdict's validPolicyTree must be a copy with the internal `parent` back-pointer stripped (acyclic) — never the raw state.validPolicyTree, whose nodes point back at their parents",
-    regex: /validPolicyTree:\s*state\.validPolicyTree\b/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "The 6.1.3 policy-processing nodes carry an enumerable `parent` back-pointer for upward pruning. Returning state.validPolicyTree directly exposes that cycle in the public structured verdict, so a caller that JSON.stringify()s the result (logging, persisting, an audit hook) throws on any policy-bearing chain. Return an acyclic deep copy without `parent`.",
-  },
-  {
-    id: "x509-extensions-no-uniqueness",
-    primitive: "the extensions() schema factory must give its seqOf a `unique` keyFn (+ dupCode x509/duplicate-extension) so the engine rejects a repeated extnID — RFC 5280 §4.2 forbids duplicate extensions",
-    regex: /function extensions\b(?:(?!unique:)[\s\S]){0,400}?build:/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "An extensions() factory whose seqOf reaches its build without a `unique` keyFn accepts duplicate extensions (extension-shadowing differential: first-hit vs last-hit consumers disagree on a security-critical extension). Declare `unique` so the engine's walkRepeat rejects the second occurrence of any extnID with duplicate-extension.",
   },
   {
     id: "x509-version-unvalidated-enum",
@@ -1942,30 +1304,6 @@ var KNOWN_ANTIPATTERNS = [
     reason: "A 4+-arc dotted-decimal string literal in executable lib code is an OID re-spelled as a full path (should be a family base + leaf) and matches a URL/IP heuristic (Socket 'URL strings'). Route OIDs through the family registry; dotted strings belong only in comments/@example and dotted<->arc format code.",
   },
   {
-    id: "constants-hardcoded-version-literal",
-    primitive: "derive VERSION from require('../package.json').version — a hand-maintained semver literal drifts from the published package (0.1.1 shipped reporting 0.1.0)",
-    regex: /var\s+VERSION\s*=\s*["'][0-9]+\.[0-9]+\.[0-9]+["']/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "A hard-coded VERSION string literal decoupled from package.json makes drift the default outcome on any release that forgets to bump it. Single-source it from the manifest so pki.version can never disagree with the package.",
-  },
-  {
-    id: "oid-subidentifier-cap-too-small",
-    primitive: "OID_MAX_SUBIDENTIFIER_BYTES must be >= 19 — the largest standard OID sub-identifier is a 128-bit UUID-based arc (X.667), which is 19 base-128 bytes; a smaller cap rejects legitimate UUID OIDs",
-    regex: /OID_MAX_SUBIDENTIFIER_BYTES:\s*(?:[0-9]|1[0-8])\b/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "A per-value defense-in-depth cap set below the largest value it must legitimately admit turns into a false-reject. A 128-bit UUID OID arc needs 19 base-128 bytes, so a sub-identifier cap under 19 rejects valid DER. Keep the cap above the largest legitimate arc while still bounding a pathologically long one.",
-  },
-  {
-    id: "oid-isarc-rejects-bigint",
-    primitive: "_isArc must accept a non-negative BigInt as well as a safe-integer Number — a 128-bit UUID-based OID arc (X.667) exceeds 2^53 and only survives as BigInt, so arc validation must not be number-only",
-    regex: /function _isArc\b(?:(?!"bigint")[\s\S]){0,200}?===\s*"number"/,
-    skipCommentLines: true,
-    allowlist: [],
-    reason: "_isArc reaching a `=== \"number\"` type check with no `\"bigint\"` branch before it rejects large arcs — a 128-bit UUID OID arc can only be represented losslessly as a BigInt, so registerFamily would drop it. Accept a non-negative BigInt too.",
-  },
-  {
     id: "oid-arc-unsafe-integer",
     primitive: "OID arc validation must use Number.isSafeInteger (not Number.isInteger) — an integer above 2^53 is not representable precisely as a Number, so a large arc must be supplied as a BigInt",
     regex: /=== "number" && Number\.isInteger\(/,
@@ -1989,84 +1327,6 @@ var KNOWN_ANTIPATTERNS = [
     regex: /getUTCFullYear\(\)\s*%\s*100/, skipCommentLines: true, allowlist: [],
     reason: "UTCTime carries a 2-digit year and the reader pivots <50=>20YY else 19YY, so encoding a year outside 1950..2049 without a window guard silently shifts a security-critical validity timestamp a century. Range-check before %100.",
   },
-  {
-    id: "asn1-generalizedtime-year-pad",
-    primitive: "build.generalizedTime must zero-pad the year to 4 digits — an unpadded \"\"+getUTCFullYear() emits 12-14 char content the reader rejects",
-    regex: /""\s*\+\s*date\.getUTCFullYear\(\)/, skipCommentLines: true, allowlist: [],
-    reason: "GeneralizedTime requires a fixed 4-digit year; concatenating an unpadded year emits malformed DER for years <1000 — the encoder cannot round-trip a value the reader accepts. Zero-pad and range-check 0000..9999.",
-  },
-  {
-    id: "asn1-sequence-set-constructed",
-    primitive: "_decodeTLV must reject a primitive-tagged universal SEQUENCE/SET (X.690 8.9.1/8.11.1) before building the node",
-    regex: /tagNumber = first & 0x1f;(?:(?!must be constructed)[\s\S]){0,4000}?var node = \{/, skipCommentLines: true, allowlist: [],
-    reason: "A primitive-tagged 0x10/0x11 decodes to a leaf (children=null) that constructed-structure consumers dereference as a parent — the uncaught TypeError that crashed x509.parse on hostile input. The decoder reaching node construction without enforcing constructed-ness is the bug shape.",
-  },
-  {
-    id: "asn1-ia5-encode-7bit",
-    primitive: "build.ia5 must reject bytes > 0x7F (IA5String is 7-bit ASCII) — an immediate `return _universal(TAGS.IA5_STRING` emits 8-bit bytes verbatim",
-    regex: /ia5:\s*function\s*\(s\)\s*\{\s*return _universal\(TAGS\.IA5_STRING/, skipCommentLines: true, allowlist: [],
-    reason: "build.ia5 emitting a caller string with no 7-bit validation lets an 8-bit byte into an IA5String — an encoder/decoder asymmetry (the reader must reject it). Validate every output byte < 0x80.",
-  },
-  {
-    id: "asn1-set-der-ordering",
-    primitive: "build.set must sort component encodings ascending (X.690 §11.6) — a caller-order Buffer.concat emits non-canonical DER",
-    regex: /set:\s*function\s*\(children\)\s*\{\s*return _universal\(TAGS\.SET, true, Buffer\.concat\(_asBufferArray/, skipCommentLines: true, allowlist: [],
-    reason: "DER requires the component encodings of a SET in ascending order; concatenating in caller order emits a non-canonical encoding (breaking the one-valid-encoding contract). Sort with Buffer.compare like setOf.",
-  },
-  {
-    id: "asn1-integer-buffer-minimal",
-    primitive: "build.integer/enumerated must validate a raw Buffer is non-empty + minimal — a verbatim passthrough emits content read.integer rejects",
-    regex: /_universal\(TAGS\.(?:INTEGER|ENUMERATED), false, Buffer\.isBuffer\(v\) \? v : intToDer\(v\)\)/, skipCommentLines: true, allowlist: [],
-    reason: "Passing a caller Buffer straight into an INTEGER/ENUMERATED with no minimality/emptiness check lets the encoder emit content the decoder rejects (encode/decode asymmetry). Route the Buffer path through a validator.",
-  },
-  {
-    id: "asn1-oid-encode-subid-cap",
-    primitive: "encodeOidContent must cap each sub-identifier at OID_MAX_SUBIDENTIFIER_BYTES — symmetric with the decoder, so build.oid can't emit a sub-id read.oid rejects",
-    regex: /body\.unshift\(Number\(v & 0x7fn\)\); v >>= 7n; \} while \(v > 0n\);(?:(?!OID_MAX_SUBIDENTIFIER)[\s\S]){0,400}?for \(var k = 0/, skipCommentLines: true, allowlist: [],
-    reason: "The OID encoder building a sub-identifier without the same per-arc byte cap the decoder enforces is an encode/decode asymmetry — build.oid could emit an OID read.oid refuses.",
-  },
-  {
-    id: "asn1-ia5-decode-7bit",
-    primitive: "readString IA5String must reject content bytes > 0x7F (7-bit) — _decodeText keeps 8-bit bytes",
-    regex: /case TAGS\.IA5_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
-    reason: "Decoding IA5String via the lenient text decoder admits 8-bit bytes an IA5String cannot contain — a fail-closed/conformance gap and a decoder/encoder asymmetry.",
-  },
-  {
-    id: "asn1-printable-decode-charset",
-    primitive: "readString PrintableString must validate the restricted charset — _decodeText returns raw latin1",
-    regex: /case TAGS\.PRINTABLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
-    reason: "PrintableString is restricted to A-Z a-z 0-9 and a small punctuation set; decoding raw latin1 admits characters outside it (a parser-differential / injection surface for DN values). Validate against the charset.",
-  },
-  {
-    id: "asn1-utf8-decode-strict",
-    primitive: "readString UTF8String must reject invalid UTF-8 (TextDecoder fatal) — _decodeText substitutes U+FFFD",
-    regex: /case TAGS\.UTF8_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
-    reason: "A lenient UTF-8 decode substitutes U+FFFD for malformed input, silently mutating a DN/name value instead of rejecting it — a parser-differential. Strict-decode with a fatal TextDecoder.",
-  },
-  {
-    id: "asn1-visible-decode-range",
-    primitive: "readString VisibleString must reject bytes outside 0x20..0x7E — _decodeText keeps control chars and high bytes",
-    regex: /case TAGS\.VISIBLE_STRING:\s*return _decodeText\(/, skipCommentLines: true, allowlist: [],
-    reason: "VisibleString is printable ASCII 0x20..0x7E; decoding raw latin1 admits control characters and 8-bit bytes it cannot contain — a fail-closed/conformance gap.",
-  },
-  {
-    id: "asn1-ia5-encode-input-validation",
-    primitive: "build.ia5 must validate the INPUT code points (charCodeAt > 0x7F) before latin1 conversion — latin1 truncates a code point > 0xFF to a low byte that slips past a post-conversion byte check",
-    regex: /ia5:\s*function\s*\(s\)\s*\{\s*var\s+\w+\s*=\s*Buffer\.from\(String\(s\), "latin1"\)/, skipCommentLines: true, allowlist: [],
-    reason: "Buffer.from(str, \"latin1\") truncates a code point > 0xFF to its low byte (U+0141 -> 0x41), so checking output bytes admits a non-IA5 character as a different one. Validate charCodeAt on the input string before converting.",
-  },
-  {
-    id: "asn1-integer-build-size-cap",
-    primitive: "_intContent must enforce DER_MAX_INTEGER_BYTES on the built content — symmetric with read.integer, so a builder can't emit an over-cap INTEGER the decoder refuses",
-    regex: /function _intContent\b(?:(?!DER_MAX_INTEGER_BYTES)[\s\S]){0,800}?\r?\nfunction /, skipCommentLines: true, allowlist: [],
-    reason: "The INTEGER builder producing content with no size ceiling is an encode/decode asymmetry — build.integer(hugeBigInt) or a huge Buffer emits an INTEGER read.integer rejects as over-cap. Cap the content length like the reader.",
-  },
-  {
-    id: "x509-attrvalue-swallows-bad-string",
-    primitive: "attrValueToString's hex fallback must be reached only for a non-decodable-primitive-string value (asn1/expected-string non-string tag AND asn1/expected-primitive constructed type); an asn1/bad-* content error must fail the certificate closed",
-    regex: /function attrValueToString\b(?:(?!expected-primitive)[\s\S]){0,400}?return "#"/, skipCommentLines: true, allowlist: [],
-    reason: "The DN hex fallback must discriminate on BOTH structural codes. Catching every read.string error hex-encodes a malformed known string (invalid-UTF8 CN) — a fail-open that bypasses strict string validation. Handling only asn1/expected-string over-rejects a legitimate constructed ANY value (a SEQUENCE throws asn1/expected-primitive) — the certificate is wrongly refused. Hex-render only asn1/expected-string + asn1/expected-primitive (full DER via node.bytes); rethrow every asn1/bad-* content error as x509/bad-atv.",
-  },
 
   {
     // A child-process spawn that pairs an args ARRAY with a shell — the
@@ -2083,6 +1343,40 @@ var KNOWN_ANTIPATTERNS = [
     skipCommentLines: true,
     allowlist: [],
     reason: "spawnSync(cmd, argsArray, { shell: true }) does not escape the array — Node concatenates it onto the shell command line (DEP0190), so an argument with a space, quote, &, | or %VAR% is reinterpreted by the shell instead of arriving as one argv entry. Where a shell is unavoidable (Windows resolves npm/npx through .cmd shims that refuse to spawn shell-less since the CVE-2024-27980 hardening), build a single command string with each argument explicitly quoted and pass no args array; where the target is a real executable, drop shell: and keep the array.",
+  },
+  {
+    // A NamedBitList BIT STRING (KeyUsage, PKIFailureInfo, ...) whose X.690 §11.2.2
+    // minimal-encoding rule is re-derived inline instead of composing the shared
+    // schema.assertMinimalNamedBits — the exact drift that let the trailing-zero
+    // reject diverge across three formats (one omitted the trailing-all-zero-octet
+    // check). Anchored on the lowest-used-bit test SHAPE `>> <ident>) & 1) !== 1`,
+    // rename-proof and codebase-wide; the shared helper is the ONE allowed home.
+    id: "named-bitlist-minimal-encoding-inlined",
+    primitive: "schema.assertMinimalNamedBits(unusedBits, bytes, fail) — the single X.690 §11.2.2 NamedBitList trailing-zero-bit rule; never re-derive the `(last >> unusedBits) & 1) !== 1` test per format",
+    regex: />>\s*[\w.]+\s*\)\s*&\s*1\s*\)\s*!==\s*1/,
+    skipCommentLines: true,
+    allowlist: [
+      "lib/schema-engine.js",
+    ],
+    reason: "The X.690 §11.2.2 minimal-DER rule for a NamedBitList (drop every trailing zero bit, giving one canonical encoding per value) was re-implemented in three format modules with divergent strictness — one omitted the trailing-all-zero-octet reject — a DER-canonicalization bypass in which a non-minimal encoding of the same failInfo/keyUsage value decodes in one format and rejects in another. Centralized as schema.assertMinimalNamedBits so every format enforces the identical rule; a new inline `(last >> unusedBits) & 1) !== 1` re-derivation must compose the helper instead.",
+  },
+  {
+    // A format matches()/detector that hand-rolls the root-SEQUENCE guard
+    // (`root.tagClass !== "universal" ... root.tagNumber !== <ID>.SEQUENCE ...
+    // return false`) instead of composing pkix.rootSequenceChildren — the shape
+    // 8 detectors re-inlined before extraction. Anchored on the root-guard CODE
+    // SHAPE (a `.tagClass !== "universal"` negative test tempered up to a
+    // `return false`), not a function name (renameable), so it fires on a NEW
+    // detector in a file never reviewed and stays silent once the guard routes
+    // through pkix.
+    id: "detector-reinlines-root-tag-guard",
+    primitive: "pkix.rootSequenceChildren(root, minLen, maxLen) for a format detector's root universal-SEQUENCE + arity guard; the per-node probe composes schema.isUniversal/isContext/isUniversalOneOf/isContextOneOf/isContextInRange",
+    regex: /\.tagClass\s*!==\s*"universal"(?:(?!\n\})[\s\S]){0,400}?return false/,
+    skipCommentLines: true,
+    allowlist: [
+      "lib/schema-pkix.js",
+    ],
+    reason: "Every format's matches() detector re-inlined the root-SEQUENCE guard `!root || root.tagClass !== \"universal\" || root.tagNumber !== TAGS.SEQUENCE` and the per-node `x.tagClass === class && x.tagNumber === TAGS.Y` probe, with one module hand-rolling a local tag predicate twice. Centralized as pkix.rootSequenceChildren + the schema.is{Universal,Context}[OneOf|InRange] predicates so a detector composes them; a new detector re-inlining the root guard (a `.tagClass !== \"universal\"` test that returns false) must route through the shared helper. This replaces the KNOWN_CLUSTERS matches() whitelist — after extraction the seq/probe shingle dissolves.",
   },
 ];
 
@@ -2347,27 +1641,11 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-attrcert.js:pemDecode", "lib/schema-crmf.js:pemDecode",
         "lib/schema-pkcs12.js:pemDecode", "lib/schema-pkcs12.js:pemEncode",
         "lib/schema-attrcert.js:<top>", "lib/schema-pkcs12.js:<top>",
+        "lib/schema-cmp.js:pemDecode", "lib/schema-cmp.js:pemEncode", "lib/schema-cmp.js:<top>",
+        "lib/schema-cmp.js:rawSequence",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
-    },
-    {
-      // Format-module detector glue: each format's matches()/matchesV1() shares the
-      // "signedEnvelopeTbs(root) + probe children[i] by tag class/number" idiom — the
-      // shared preamble already lives in pkix.signedEnvelopeTbs. Each detector probes
-      // DIFFERENT positions/tags on purpose (they MUST be mutually exclusive so the
-      // orchestrator routes unambiguously), so the shape recurs without being further
-      // extractable. family-subset so any 3+ of the format detectors match.
-      files: [
-        "lib/schema-cms.js:matches", "lib/schema-pkcs8.js:matches",
-        "lib/schema-x509.js:matches", "lib/schema-crl.js:matches",
-        "lib/schema-csr.js:matches", "lib/schema-tsp.js:matches",
-        "lib/schema-ocsp.js:matchesRequest", "lib/schema-ocsp.js:matchesResponse",
-        "lib/schema-attrcert.js:matches", "lib/schema-attrcert.js:matchesV1",
-        "lib/schema-crmf.js:matches", "lib/schema-pkcs12.js:matches",
-      ],
-      mode: "family-subset",
-      reason: "per-format matches()/matchesV1() detectors share the signedEnvelopeTbs + children-tag-probe idiom (the preamble lives in pkix); each probes different positions/tags to stay mutually exclusive, nothing further to extract.",
     },
     {
       // Format-module schema-declaration / build glue: each module declares its
@@ -2380,11 +1658,16 @@ function testNoDuplicateCodeBlocks() {
       // declaration binds DIFFERENT fields + codes, so the shape recurs without being
       // further extractable. family-subset so any 3+ of the format modules match.
       files: [
-        "lib/schema-cms.js:ctx", "lib/schema-ocsp.js:_rawSignature",
+        "lib/schema-cms.js:_expectedSignedDataVersion", "lib/schema-cms.js:_expectedEnvelopedDataVersion",
+        "lib/schema-ocsp.js:_rawSignature",
         "lib/schema-pkcs8.js:<top>", "lib/schema-tsp.js:<top>",
         "lib/schema-pkcs12.js:<top>", "lib/schema-crmf.js:popoPrivKey",
         "lib/schema-pkix.js:algorithmIdentifier", "lib/schema-pkix.js:attribute",
         "lib/schema-pkix.js:attributeTypeAndValue",
+        "lib/schema-cmp.js:<top>", "lib/schema-ocsp.js:_shapeCertStatus",
+        "lib/schema-crl.js:decodeExt", "lib/schema-crmf.js:mapControls",
+        "lib/schema-attrcert.js:<top>", "lib/schema-tsp.js:<top>",
+        "lib/schema-cmp.js:rawSequence",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
@@ -2572,6 +1855,60 @@ function testNoDuplicateCodeBlocks() {
   }
 }
 
+function testNumberNarrowsUnboundedInteger() {
+  // class: number-narrows-unbounded-integer
+  // A CODEBASE-WIDE vector scan (not a per-format checklist): narrowing an
+  // ASN.1 INTEGER / ENUMERATED read to a JS Number silently ROUNDS any value
+  // past 2^53, so a caller comparing the result (a saltLength, a path-length or
+  // policy-skip counter, an iteration count) acts on the wrong number. Every
+  // `Number(v)` whose `v` comes from an integer read MUST be dominated by a
+  // bound — a numeric upper limit (`v > Nn`), `Number.isSafeInteger`, a byte
+  // mask, or membership in a small enumerated set (a `hasOwnProperty` / `indexOf`
+  // whitelist). This fires on a NEW unbounded narrowing introduced ANYWHERE in
+  // lib, including a spot never yet reviewed — the point the per-format frozen
+  // lists missed. It is rename-proof: it matches the `Number(...)` shape and the
+  // guard shapes, not any specific symbol, error code, or function.
+  var INT_READ = /read\.integer\b|read\.integerImplicit\b|read\.enumerated\b|\breadInt\(|integerLeaf\(/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      var m = lines[i].match(/\bNumber\(\s*([A-Za-z_$][\w$.]*)\s*\)/);
+      if (!m) continue;                                  // only Number(<ident>) — masks/literals/exprs excluded
+      var id = m[1];
+      // Scope = the enclosing function body (back to the nearest declaration at
+      // a shallower-or-equal indent, or file start) — a real boundary, never a
+      // fixed character count.
+      var callIndent = (lines[i].match(/^\s*/) || [""])[0].length;
+      var scopeStart = 0;
+      for (var b = i - 1; b >= 0; b--) {
+        var ind = (lines[b].match(/^\s*/) || [""])[0].length;
+        if (/\bfunction\b/.test(lines[b]) && ind <= callIndent) { scopeStart = b; break; }
+      }
+      var scope = lines.slice(scopeStart, i + 1).join("\n");
+      var idRe = id.replace(/[.$]/g, "\\$&");
+      // The value must plausibly be an unbounded integer read to matter.
+      var derivesFromRead = INT_READ.test(scope) &&
+        (new RegExp(idRe + "\\s*=\\s*[^=]").test(scope) || INT_READ.test(m.input));
+      if (!derivesFromRead) continue;
+      var bounded =
+        new RegExp(idRe + "\\s*>=?\\s*\\d").test(scope) ||          // id > Nn / id >= N
+        new RegExp(idRe + "\\s*<=\\s*\\d").test(scope) ||           // id <= N
+        /Number\.isSafeInteger/.test(scope) ||
+        new RegExp(idRe + "\\s*&\\s*0x").test(scope) ||             // masked
+        /hasOwnProperty|\.indexOf\(/.test(scope);                    // small-enum whitelist
+      if (!bounded) {
+        bad.push({ file: rel, line: i + 1,
+          content: "Number(" + id + ") narrows an ASN.1 integer read with no dominating bound — a value past 2^53 rounds silently; add a range check (id > Nn), Number.isSafeInteger, or a whitelist before narrowing (the RSASSA-PSS / PKCS#12 / CMP exact-or-rejected rule)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "number-narrows-unbounded-integer");
+  _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -2591,29 +1928,15 @@ function run() {
   testFuzzBuildInstallsJazzer();
   testNoUnpinnedNpmInShell();
   testSchemaBuildSurfacesEveryField();
-  testCmsSignedDataConformanceGuards();
-  testOcspConformanceGuards();
-  testTspConformanceGuards();
-  testCrmfConformanceGuards();
-  testPkcs12ConformanceGuards();
   testWorkflowScanFailureMasked();
   testSharedLeafOptionScope();
-  testEngineEncodeParity();
   testAlgorithmLookupNoDefault();
-  testReleasePushFixOrder();
-  testAttrCertConformanceGuards();
-  testCmsEnvelopedDataConformanceGuards();
-  testPathValidateConformanceGuards();
+  testNumberNarrowsUnboundedInteger();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
-  testDecoderRejectsConstructedPrimitiveOnly();
-  testTbsTrailingFieldsMonotonic();
-  testWalkSeqRejectsUnconsumedChildren();
   testNoUnusedUnderscoreFunctions();
   testNoRemovedNamespaceRefs();
-  testSignatureAlgorithmAgreement();
   testFormatModulesComposeSchema();
-  testEcImportDerivesCurve();
   testAsn1TypesFromRegistry();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();

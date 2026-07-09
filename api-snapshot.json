@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.18",
+  "packageVersion": "0.1.19",
   "surface": {
     "C": {
       "kind": "object",
@@ -443,6 +443,10 @@
           "kind": "function",
           "arity": 3
         },
+        "CmpError": {
+          "kind": "function",
+          "arity": 3
+        },
         "CmsError": {
           "kind": "function",
           "arity": 3
@@ -583,6 +587,23 @@
             }
           }
         },
+        "cmp": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
         "cms": {
           "kind": "object",
           "members": {
@@ -650,6 +671,10 @@
               "kind": "function",
               "arity": 0
             },
+            "assertMinimalNamedBits": {
+              "kind": "function",
+              "arity": 3
+            },
             "bitString": {
               "kind": "function",
               "arity": 0
@@ -709,6 +734,26 @@
             "integerLeaf": {
               "kind": "function",
               "arity": 0
+            },
+            "isContext": {
+              "kind": "function",
+              "arity": 2
+            },
+            "isContextInRange": {
+              "kind": "function",
+              "arity": 3
+            },
+            "isContextOneOf": {
+              "kind": "function",
+              "arity": 2
+            },
+            "isUniversal": {
+              "kind": "function",
+              "arity": 2
+            },
+            "isUniversalOneOf": {
+              "kind": "function",
+              "arity": 2
             },
             "octetString": {
               "kind": "function",
@@ -898,6 +943,9 @@
     "pki.schema.parse": "0.1.7",
     "pki.schema.attrcert.parse": "0.1.14",
     "pki.schema.attrcert.pemDecode": "0.1.14",
+    "pki.schema.cmp.parse": "0.1.19",
+    "pki.schema.cmp.pemDecode": "0.1.19",
+    "pki.schema.cmp.pemEncode": "0.1.19",
     "pki.schema.cms.parse": "0.1.10",
     "pki.schema.cms.pemDecode": "0.1.10",
     "pki.schema.cms.pemEncode": "0.1.10",

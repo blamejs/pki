@@ -197,7 +197,10 @@ function testAcceptEmptyTemplate() {
   var t = parse(one({ certReq: { templateNode: b.sequence([]) } })).messages[0].certReq.certTemplate;
   check("empty template: all requestable fields null", t.version === null && t.issuer === null &&
     t.validity === null && t.subject === null && t.publicKey === null && t.extensions === null);
-  check("empty template: CA-assigned fields not surfaced", !("serialNumber" in t) && !("signingAlg" in t) && !("issuerUID" in t) && !("subjectUID" in t));
+  // The CA-assigned fields are surfaced (null in a valid request); the rule that
+  // a request must OMIT them is enforced in CertRequest, not by dropping them —
+  // the shared CertTemplate structure carries them for the revocation consumer.
+  check("empty template: CA-assigned fields surfaced null", t.serialNumber === null && t.signingAlg === null && t.issuerUID === null && t.subjectUID === null);
 }
 
 function testAcceptExplicitName() {
@@ -422,8 +425,31 @@ function testEncodeRoundTrip() {
   check("encode round-trip: encoded bytes route as crmf", crmfMod.matches(pki.asn1.decode(S.encode(crmfMod.certReqMessagesSchema, value))));
 }
 
+// The NS-bound walkers a composing envelope (CMP) delegates to: walking an
+// already-decoded interior node yields the same result parse would, and a
+// malformed interior throws the crmf-owned class/code — never the composer's.
+function testWalkers() {
+  var msgs = b.sequence([b.sequence([b.sequence([b.integer(0n), b.sequence([b.explicit(5, rdnSeq("walker.example"))])])])]);
+  var walked = crmfMod.walkCertReqMessages(pki.asn1.decode(msgs));
+  check("walkCertReqMessages decodes a bare CertReqMessages", walked.messages[0].certReq.certTemplate.subject.dn === "CN=walker.example");
+  check("walkCertReqMessages rejects with a crmf/* code", code(function () {
+    crmfMod.walkCertReqMessages(pki.asn1.decode(b.sequence([])));
+  }) === "crmf/bad-cert-req-messages");
+  var tpl = crmfMod.walkCertTemplate(pki.asn1.decode(b.sequence([b.explicit(5, rdnSeq("tpl.example"))])));
+  check("walkCertTemplate decodes a bare CertTemplate", tpl.subject.dn === "CN=tpl.example");
+  // The bare template surfaces serialNumber/issuer — the CA-assigned omission
+  // rule is REQUEST-context and lives in CertRequest, not the structure, so a
+  // revocation consumer (CMP RevDetails) reads serialNumber off this walker.
+  var revTpl = crmfMod.walkCertTemplate(pki.asn1.decode(b.sequence([implicitInt(1, 5)])));
+  check("walkCertTemplate surfaces serialNumber (no request-omission rule)", revTpl.serialNumber === 5n);
+  check("walkCertTemplate still enforces the structural version==2 rule", code(function () {
+    crmfMod.walkCertTemplate(pki.asn1.decode(b.sequence([implicitInt(0, 5)])));
+  }) === "crmf/bad-version");
+}
+
 // ---- runner ----------------------------------------------------------
 testAcceptMinimal();
+testWalkers();
 testAcceptFullTemplate();
 testAcceptEmptyTemplate();
 testAcceptExplicitName();

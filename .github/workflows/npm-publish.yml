@@ -176,11 +176,17 @@ jobs:
           fi
 
       - name: Vulnerability scan (OSV-Scanner)
-        # Scans the SBOM — the published npm surface.
+        # The published tarball ships zero runtime dependencies (the gate
+        # above refuses the publish otherwise), so its SBOM is empty by
+        # construction and gives the scanner nothing to read — the scannable
+        # dependency surface is the dev/build toolchain the committed
+        # lockfiles pin, which is exactly the supply chain that runs during
+        # this publish.
         uses: google/osv-scanner-action/osv-scanner-action@9a498708959aeaef5ef730655706c5a1df1edbc2  # v2.3.8
         with:
           scan-args: |-
-            --sbom=sbom.cdx.json
+            --lockfile=package-lock.json
+            --lockfile=fuzz/package-lock.json
 
       - name: Vulnerability scan (OSV-Scanner, vendored bundles)
         # lib/vendor/ is the bundled-but-not-in-SBOM surface — vendored

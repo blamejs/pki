@@ -649,7 +649,7 @@ function testDispatch() {
   check("schema.parse routes a PFX to pkcs12", routed.version === 3 && Array.isArray(routed.safeBags));
   check("all() lists pkcs12", pki.schema.all().indexOf("pkcs12") !== -1);
   check("all() order (pkcs12 ahead of pkcs8)", JSON.stringify(pki.schema.all()) ===
-        JSON.stringify(["cms", "tsp", "crmf", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
+        JSON.stringify(["cms", "tsp", "crmf", "cmp", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
 
   // pkcs8 differential: a PrivateKeyInfo routes to pkcs8, never pkcs12.
   var p8 = pki.schema.parse(PRIVATE_KEY_INFO);

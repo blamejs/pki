@@ -80,6 +80,11 @@ var tspDer = b.sequence([b.sequence([b.integer(0n)]), tstToken]);
 var certTemplate = b.sequence([b.explicit(5, name("req.example"))]);
 var crmfDer = b.sequence([b.sequence([b.sequence([b.integer(1n), certTemplate])])]);
 
+// A minimal error PKIMessage (so cmp.parse's example resolves m.body.arm).
+var cmpHeader = b.sequence([b.integer(2n), b.contextConstructed(4, b.sequence([])), b.contextConstructed(4, name("CA"))]);
+var cmpBody = b.explicit(23, b.sequence([b.sequence([b.integer(2n)])]));
+var cmpDer = b.sequence([cmpHeader, cmpBody]);
+
 // A minimal password-integrity PFX with one certBag (so pkcs12.parse's example
 // maps safeBags[].type).
 var certBagValue = b.sequence([b.oid("1.2.840.113549.1.9.22.1"), b.explicit(0, b.octetString(certDer))]);
@@ -102,6 +107,7 @@ var FMT = {
   "pki.schema.attrcert": { der: attrcertDer, label: "ATTRIBUTE CERTIFICATE" },
   "pki.schema.crmf":     { der: crmfDer, label: "CERTIFICATE REQUEST MESSAGE" },
   "pki.schema.pkcs12":   { der: pkcs12Der, label: "PKCS12" },
+  "pki.schema.cmp":      { der: cmpDer, label: "CMP" },
 };
 function fixturesFor(tag) {
   var fmt = null;

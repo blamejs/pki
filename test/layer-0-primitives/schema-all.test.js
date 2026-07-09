@@ -22,6 +22,7 @@ var DETECTORS = {
   "cms":           require("../../lib/schema-cms").matches,
   "tsp":           require("../../lib/schema-tsp").matches,
   "crmf":          require("../../lib/schema-crmf").matches,
+  "cmp":           require("../../lib/schema-cmp").matches,
   "ocsp-request":  require("../../lib/schema-ocsp").matchesRequest,
   "ocsp-response": require("../../lib/schema-ocsp").matchesResponse,
   "pkcs12":        require("../../lib/schema-pkcs12").matches,
@@ -43,7 +44,7 @@ function crlDer() {
 }
 
 function run() {
-  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "crmf", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
+  check("all() lists the registered formats in detection order", JSON.stringify(pki.schema.all()) === JSON.stringify(["cms", "tsp", "crmf", "cmp", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
 
   // A CertReqMessages (RFC 4211) routes to crmf, not to the ocsp-request it sits ahead of.
   var crmfSubject = b.contextConstructed(5, b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("req")])]));
@@ -134,10 +135,19 @@ function run() {
     b.sequence([gtime("2026-01-01T00:00:00Z"), gtime("2027-01-01T00:00:00Z")]),
     b.sequence([b.sequence([b.oid("2.5.4.72"), b.set([b.utf8("a")])])])]);
   var attrcertV1Fixture = b.sequence([acinfoV1, algIdOf(SIG), b.bitString(Buffer.from([0x00]), 0)]);
+  // A minimal error PKIMessage (RFC 9810): header {pvno, NULL-DN sender,
+  // recipient}, body error[23]. Its first child is a bare INTEGER, so it never
+  // matches ocsp-request; cmp registers ahead of ocsp-request for the ir[0]
+  // overlap the matrix pins.
+  var cmpFixture = b.sequence([
+    b.sequence([b.integer(2n), b.contextConstructed(4, b.sequence([])), b.contextConstructed(4, nameOf("CA"))]),
+    b.explicit(23, b.sequence([b.sequence([b.integer(2n)])])),
+  ]);
   var MATRIX_FIXTURES = {
     "cms":           cmsFixture,
     "tsp":           tspFixture,
     "crmf":          crmfDer,
+    "cmp":           cmpFixture,
     "ocsp-request":  ocspRequestFixture,
     "ocsp-response": ocspResponseFixture,
     "pkcs12":        pkcs12Fixture,

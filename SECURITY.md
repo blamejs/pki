@@ -103,7 +103,12 @@ security-only patches after the next major releases.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the bytes
   that were actually signed rather than re-encoding and hoping for round-trip
-  fidelity.
+  fidelity. The same discipline covers the CMP message-protection input:
+  `pki.schema.cmp.parse` surfaces the exact `headerBytes` and `bodyBytes` wire
+  slices so a verifier reconstructs the protected part from the bytes that were
+  actually protected, never a re-encoding; and CMP `caPubs` are surfaced as raw
+  certificates conferring no trust, so a client cannot be steered into installing
+  a trust anchor from an unauthenticated response.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,

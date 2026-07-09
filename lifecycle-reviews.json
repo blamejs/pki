@@ -1,14 +1,14 @@
 {
   "pki.schema.all": {
     "decision": "keep-experimental",
-    "reason": "The format enumerator routes to the still-experimental TSP/OCSP/attribute-cert parsers; marking it stable would freeze their return shapes and continued registration into a stable contract. Graduate once every routed format is stable.",
-    "reviewedAt": "0.1.16",
-    "reviewBy": "0.1.22"
+    "reason": "The format enumerator routes to the still-experimental attribute-cert, CRMF, PKCS#12, and CMP parsers; marking it stable would freeze their return shapes and continued registration into a stable contract. Graduate once every routed format is stable.",
+    "reviewedAt": "0.1.19",
+    "reviewBy": "0.1.25"
   },
   "pki.schema.parse": {
     "decision": "keep-experimental",
-    "reason": "The auto-routing dispatcher's stable contract would include the still-experimental TSP/OCSP/attribute-cert return shapes it routes to, so an allowed change to any of those would break callers of a stable schema.parse. Graduate once every routed format is stable.",
-    "reviewedAt": "0.1.16",
-    "reviewBy": "0.1.22"
+    "reason": "The auto-routing dispatcher's stable contract would include the still-experimental attribute-cert, CRMF, PKCS#12, and CMP return shapes it routes to, so an allowed change to any of those would break callers of a stable schema.parse. Graduate once every routed format is stable.",
+    "reviewedAt": "0.1.19",
+    "reviewBy": "0.1.25"
   }
 }
