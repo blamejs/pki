@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.22 — 2026-07-09
+
+An RFC 5035 / RFC 8551 S/MIME ESS signed-attribute decoder joins the schema family.
+
+### Added
+
+- pki.schema.smime.parseSigningCertificate(der) / parseSigningCertificateV2(der) — decode the RFC 5035 ESS SigningCertificate (v1) and SigningCertificateV2 (v2) signed-attribute values into { certs, policies }. Each certs entry is { certHash, hashAlgorithm, issuerSerial } in wire order: certHash raw; hashAlgorithm the implied SHA-1 for v1, or the decoded algorithm (or the id-sha256 default, flagged defaulted) for v2; issuerSerial (or null) the issuer GeneralNames (each CHOICE arm validated, surfaced raw) plus serialNumber as a BigInt and serialNumberHex. certs is non-empty and order-preserving; a v2 hashAlgorithm encoded byte-equal to its DEFAULT is rejected smime/non-canonical-default (X.690 §11.5). Malformed input fails closed with a typed smime/* (or leaf asn1/*) code.
+- pki.schema.smime.parseSmimeCapabilities(der) — decode an RFC 8551 SMIMECapabilities value into { capabilities }, an ordered list (preference order preserved, never sorted) of { capabilityID, name, parameters } with parameters the raw ANY-DEFINED-BY bytes.
+- pki.schema.smime.decodeAttribute(attr) — an OID-dispatch convenience over the three decoders for a CMS-shaped { type, values } attribute (the shape cms.parse surfaces on signerInfos[i].signedAttrs). It enforces the single-AttributeValue rule (a values length other than one is rejected smime/multi-valued-attribute), routes on the attribute OID, and recognize-and-defers an unknown type as smime/unsupported-attribute carrying the type, registry name, and raw values.
+- The error taxonomy gains SmimeError, carrying a stable smime/* code.
+- The OID registry gains the smimeCapabilities attribute identifier and the RFC 2634 ESS attribute names (receiptRequest through contentReference), so a CMS signed attribute of one of those types resolves to a name in an unsupported-attribute diagnostic.
+
 ## v0.1.21 — 2026-07-09
 
 SLH-DSA signatures verify in certification-path validation, and the post-quantum / EdDSA parameters-absent rule is enforced across every format.

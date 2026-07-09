@@ -1,4 +1,16 @@
 {
+  "pki.path.validate": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 5280 §6 path-validation surface is broad and still hardening — an algorithm-confusion defect in the one-shot PQC/EdDSA verify was fixed at 0.1.21 — and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
+    "reviewedAt": "0.1.22",
+    "reviewBy": "0.1.25"
+  },
+  "pki.path.crlChecker": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same SIG_ALGS verify bridge as pki.path.validate (the algorithm-confusion fix touched both) and the same not-yet-interop-proven revocation path. Graduate alongside pki.path.validate.",
+    "reviewedAt": "0.1.22",
+    "reviewBy": "0.1.25"
+  },
   "pki.schema.attrcert.parse": {
     "decision": "keep-experimental",
     "reason": "The RFC 5755 attribute-certificate parser is not yet interop-proven — no OpenSSL/NSS round-trip covers it in the integration harness — so its return shape is not frozen. It is part of the attribute-cert / CRMF / PKCS#12 / CMP format cohort the schema.all and schema.parse graduation waits on. Graduate once an independent implementation validates a structure it decodes.",

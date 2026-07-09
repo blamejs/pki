@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.21",
+  "packageVersion": "0.1.22",
   "surface": {
     "C": {
       "kind": "object",
@@ -571,6 +571,10 @@
           "kind": "function",
           "arity": 3
         },
+        "SmimeError": {
+          "kind": "function",
+          "arity": 3
+        },
         "TspError": {
           "kind": "function",
           "arity": 3
@@ -932,6 +936,27 @@
             }
           }
         },
+        "smime": {
+          "kind": "object",
+          "members": {
+            "decodeAttribute": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parseSigningCertificate": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parseSigningCertificateV2": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parseSmimeCapabilities": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
         "tsp": {
           "kind": "object",
           "members": {
@@ -1048,6 +1073,10 @@
     "pki.schema.pkcs8.parseEncrypted": "0.1.9",
     "pki.schema.pkcs8.pemDecode": "0.1.9",
     "pki.schema.pkcs8.pemEncode": "0.1.9",
+    "pki.schema.smime.parseSigningCertificate": "0.1.22",
+    "pki.schema.smime.parseSigningCertificateV2": "0.1.22",
+    "pki.schema.smime.parseSmimeCapabilities": "0.1.22",
+    "pki.schema.smime.decodeAttribute": "0.1.22",
     "pki.schema.tsp.parseTstInfo": "0.1.13",
     "pki.schema.tsp.parse": "0.1.13",
     "pki.schema.tsp.parseToken": "0.1.13",

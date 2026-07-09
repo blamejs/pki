@@ -52,6 +52,7 @@ jobs:
           - pkcs12-parse
           - cmp-parse
           - ct-parse
+          - smime-parse
           - pkix-ext-parse
     steps:
       - name: Checkout
