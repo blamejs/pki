@@ -101,6 +101,20 @@ function minimalMessage(o) {
 }
 // A minimal one-message CertReqMessages (crmf) with certReqId 0.
 var CERT_REQ_MESSAGES = b.sequence([b.sequence([b.sequence([b.integer(0), b.sequence([b.explicit(5, rdn("req.example"))])])])]);
+// A CertReqMessages whose one CertReqMsg carries a keyEncipherment [2] POP using
+// the encryptedKey [4] POPOPrivKey choice (a valid v3 EnvelopedData, content type
+// id-ct-encKeyWithID) — a cmp2021(3)-only POP method (RFC 9810 §5.2.8.3).
+function certReqEncKeyPop() {
+  var rid = b.sequence([rdn("CA"), b.integer(1)]);
+  var ktri = b.sequence([b.integer(0), rid, algId(RSA_ENC), b.octetString(Buffer.from([0xde, 0xad]))]);
+  var eci = b.sequence([b.oid("1.2.840.113549.1.9.16.1.21"), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0xde, 0xad, 0xbe, 0xef]))]);
+  var envFields = Buffer.concat([b.integer(0), b.set([ktri]), eci]);
+  var pop = b.contextConstructed(2, b.contextConstructed(4, envFields));   // keyEncipherment [2] { encryptedKey [4] }
+  return b.sequence([b.sequence([
+    b.sequence([b.integer(0), b.sequence([b.explicit(5, rdn("req.example"))])]),   // CertRequest
+    pop,
+  ])]);
+}
 // A raw stand-in "certificate" (surfaced raw — never parsed here).
 var RAW_CERT = b.sequence([b.oid("2.5.4.3"), b.utf8("not-a-real-cert")]);
 var RAW_CRL = b.sequence([b.oid("2.5.4.3"), b.utf8("not-a-real-crl")]);
@@ -622,6 +636,12 @@ function testRejectBody() {
   ])])])]);
   check("ccr CertTemplate dictating signingAlg rejected (shared walker, RFC 4211 §5)",
         parseCode(minimalMessage({ body: body(13, ccrSigningAlg) })) === "crmf/bad-cert-template");
+  // RFC 9810 §5.2.8.3 — the encryptedKey (and agreeMAC) POPOPrivKey choices are
+  // cmp2021(3) syntax; a request carrying one under pvno 2 is a version mismatch.
+  check("ir POP using encryptedKey at pvno 2 rejected (RFC 9810 §5.2.8.3)", parseCode(minimalMessage({
+    headerOpts: { pvno: 2 }, body: body(0, certReqEncKeyPop()) })) === "cmp/bad-version");
+  check("ir POP using encryptedKey at pvno 3 accepted", parseCode(minimalMessage({
+    headerOpts: { pvno: 3 }, body: body(0, certReqEncKeyPop()) })) === "NO-THROW");
 }
 
 // ---- dispatch / coercion / misc ------------------------------------------------------
