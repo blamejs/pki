@@ -24,6 +24,7 @@ An RFC 9810 Certificate Management Protocol message parser joins the pki.schema 
 ### Fixed
 
 - Certification-path validation bounds the BasicConstraints pathLenConstraint and the PolicyConstraints / InhibitAnyPolicy skip counts before narrowing them to a number, so a certificate carrying a value past the safe-integer range is rejected rather than having the counter round silently to the wrong value (the same exact-or-rejected rule the RSASSA-PSS salt length and PKCS#12 iteration count follow).
+- Certification-path validation rejects a non-empty DER NULL in an RSASSA-PSS hash AlgorithmIdentifier's parameters — a NULL must carry empty content (X.690 8.8.2), so the previous tag-only check accepted a malformed encoding it now fails closed.
 
 ## v0.1.18 — 2026-07-08
 

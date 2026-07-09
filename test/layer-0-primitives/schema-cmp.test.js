@@ -132,6 +132,16 @@ var ENVELOPED_DETACHED_FIELDS = [
   b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))])]),
 ];
 function implicitEnvelopedDetached() { return b.contextConstructed(0, Buffer.concat(ENVELOPED_DETACHED_FIELDS)); }
+// A KeyTransRecipientInfo (issuerAndSerialNumber rid) parameterized by its
+// encryptedKey fill byte, so a canonically-ordered two-recipient SET can be
+// built. Legal bare CMS (RecipientInfos is SET SIZE 1..MAX), but a CMP
+// EncryptedKey is addressed to exactly one recipient (RFC 9810 §5.2.2).
+function ktri(fill) {
+  return b.sequence([b.integer(0), b.sequence([rdn("CA"), b.integer(9)]), algId(RSA_ENC), b.octetString(Buffer.alloc(32, fill))]);
+}
+function implicitTwoRecip() {
+  return b.contextConstructed(0, Buffer.concat([ENVELOPED_FIELDS[0], b.set([ktri(6), ktri(7)]), ENVELOPED_FIELDS[2]]));
+}
 function certStatus(o) {
   o = o || {};
   var kids = [b.octetString(o.certHash || Buffer.alloc(32, 1)), b.integer(o.certReqId !== undefined ? o.certReqId : 0)];
@@ -522,6 +532,25 @@ function testRejectBody() {
     body: body(1, certRepMessage({ responses: [certResponse({ status: pkiStatusInfo({ status: 2, failBits: [2] }) })] })) })) === "NO-THROW");
   check("CertResponse success with a cert accepted", parseCode(minimalMessage({
     body: body(1, certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "NO-THROW");
+  // A certifiedKeyPair is allowed ONLY under a granting status (accepted /
+  // grantedWithMods). A rejection or waiting status denies/defers the request,
+  // so a certificate under it is malformed even with no explicit failInfo bit —
+  // the status itself, not just an explicit failInfo, gates the certificate
+  // (RFC 9810 §5.3.4). A rejection is commonly signalled by status alone.
+  check("CertResponse rejection status (no failInfo) with a cert rejected", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ status: pkiStatusInfo({ status: 2 }),
+      certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "cmp/bad-cert-response");
+  check("CertResponse waiting status with a cert rejected", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ status: pkiStatusInfo({ status: 3 }),
+      certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "cmp/bad-cert-response");
+  check("CertResponse grantedWithMods with a cert accepted", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ status: pkiStatusInfo({ status: 1 }),
+      certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "NO-THROW");
+  // RFC 9810 §5.2.2 — a CMP EncryptedKey EnvelopedData is addressed to exactly
+  // ONE recipient; a two-RecipientInfo SET (legal in bare CMS) must reject.
+  check("encryptedCert envelopedData with two RecipientInfos rejected", parseCode(minimalMessage({
+    body: body(3, certRepMessage({ responses: [certResponse({
+      certifiedKeyPair: b.sequence([b.explicit(1, implicitTwoRecip())]) })] })) })) === "cmp/bad-cert-response");
 
   check("EMPTY rp status rejected", parseCode(minimalMessage({
     body: body(12, b.sequence([b.sequence([])])) })) === "cmp/bad-rev-rep");
@@ -535,6 +564,10 @@ function testRejectBody() {
   check("negative checkAfter rejected", parseCode(minimalMessage({
     body: body(26, b.sequence([b.sequence([b.integer(0), b.integer(-5)])])) })) === "cmp/bad-poll-rep");
   check("pkiconf wrapping an INTEGER rejected", parseCode(minimalMessage({ body: body(19, b.integer(1)) })) === "cmp/bad-pkiconf");
+  // A NULL is well-formed only with empty content (X.690 §8.8.2); a NULL tag
+  // carrying a content byte is malformed DER the tag check alone would accept.
+  var pkiconfNonEmptyNull = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NULL, Buffer.from([0x00]));
+  check("pkiconf with a non-empty NULL rejected", parseCode(minimalMessage({ body: body(19, pkiconfNonEmptyNull) })) === "cmp/bad-pkiconf");
 }
 
 // ---- dispatch / coercion / misc ------------------------------------------------------

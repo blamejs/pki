@@ -233,6 +233,17 @@ function algIdDer(a) {
       b.explicit(2, b.integer(32n)),
     ]));
   }
+  else if (a.sigParams === "pss-hash-nullparams-nonempty") {
+    // MALFORMED: hashAlgorithm parameters is a NULL with NON-EMPTY content (05 01 00)
+    // — the right tag but not a well-formed empty NULL (X.690 8.8.2). A tag-only
+    // check accepts it; the NULL's emptiness must be validated.
+    var mgfHne = b.sequence([b.oid(OID_SHA256), b.nullValue()]);
+    children.push(b.sequence([
+      b.explicit(0, b.sequence([b.oid(OID_SHA256), Buffer.from([0x05, 0x01, 0x00])])),
+      b.explicit(1, b.sequence([b.oid(OID_MGF1), mgfHne])),
+      b.explicit(2, b.integer(32n)),
+    ]));
+  }
   else if (a.sigParams === "pss-multichild-salt") {
     // MALFORMED: the EXPLICIT [2] saltLength wrapper carries TWO values; an
     // EXPLICIT wrapper holds exactly one, and reading children[0] would ignore
@@ -1267,6 +1278,13 @@ async function testAuditRegressions() {
   var leafC32b = await mkCert({ subject: "C32b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssBareMgf });
   var resC32b = await run([leafC32b], { time: T2027, trustAnchor: anchor });
   check("PSS MGF1 hash as a bare OID rejected", resC32b.valid === false && failCodes(resC32b).indexOf("path/unsupported-algorithm") !== -1);
+  // an RSASSA-PSS hashAlgorithm parameters field that is a NULL with NON-EMPTY
+  // content is malformed DER — the right tag but not a well-formed empty NULL
+  // (X.690 8.8.2); a tag-only check would accept it. Must fail closed.
+  var pssHashNullNe = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-hash-nullparams-nonempty" });
+  var leafC32c = await mkCert({ subject: "C32c", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashNullNe });
+  var resC32c = await run([leafC32c], { time: T2027, trustAnchor: anchor });
+  check("PSS hashAlgorithm NULL parameters with non-empty content rejected", resC32c.valid === false && failCodes(resC32c).indexOf("path/unsupported-algorithm") !== -1);
 
   // the returned validPolicyTree must be acyclic: no internal
   // `parent` back-pointer, so a caller can JSON.stringify(result) on a
