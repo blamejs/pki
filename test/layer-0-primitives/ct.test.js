@@ -204,6 +204,15 @@ function testCaps() {
   var cap = pki.C.LIMITS.SCT_MAX_BYTES;
   var filler = Buffer.alloc(cap + 10, 0);
   check("41. inner blob over the byte cap -> ct/too-large", code(function () { pki.ct.parseSctList(wrapInner(filler)); }) === "ct/too-large");
+  // A conforming MAX-size list: the outer sct_list vector is <1..2^16-1>, so the
+  // body is up to 65535 bytes and the full blob (2-byte length prefix + body) is
+  // 65537. The byte cap MUST include that prefix, else the largest legal list is
+  // rejected as too-large. One SCT with its signature padded fills the body exactly.
+  var padSig = Buffer.alloc(65535 - 2 - 47, 0x5A);          // 65535 body - 2 SCT-len - 47 min = 65486
+  var maxBody = sctBody({ ext: Buffer.alloc(0), sig: padSig });
+  var maxBlob = extValueOf([serialized(maxBody)]);
+  var parsedMax = pki.ct.parseSctList(maxBlob);
+  check("41b. maximal well-formed list (65537-byte blob) is accepted, not too-large", parsedMax.scts.length === 1 && parsedMax.scts[0].signature.length === padSig.length);
 }
 
 // ---- reconstructSignedData: the digitally-signed preimage ------------
