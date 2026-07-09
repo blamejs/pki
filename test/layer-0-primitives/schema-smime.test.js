@@ -51,6 +51,14 @@ function testSigningCertificate() {
   var multi = smime.parseSigningCertificate(b.sequence([b.sequence([e1, e2])]));
   check("8. v1 certs order preserved", multi.certs.length === 2 && multi.certs[0].certHash[0] === 1 && multi.certs[1].certHash[0] === 2);
 
+  // RFC 5035 §5: only certs[0] (the signing public-key cert) is narrowed to a
+  // directoryName issuer; an ADDITIONAL cert (certs[1..]) may reference an
+  // attribute certificate whose issuer is a non-directoryName GeneralNames.
+  var signerCert = b.sequence([b.octetString(Buffer.alloc(20, 1)), issuerSerial("signer.ca", 1)]);   // directoryName
+  var acCert = b.sequence([b.octetString(Buffer.alloc(20, 2)), b.sequence([b.sequence([gnDns("ac.example")]), b.integer(9n)])]);   // AC ref, dNSName issuer
+  var withAc = smime.parseSigningCertificate(b.sequence([b.sequence([signerCert, acCert])]));
+  check("8b. additional AC cert with a non-directoryName issuer accepted", withAc.certs.length === 2 && withAc.certs[1].issuerSerial.issuer.names[0].tagNumber === 2);
+
   // policies present
   var policy = b.sequence([b.oid(O("anyPolicy"))]);
   var scPol = smime.parseSigningCertificate(b.sequence([b.sequence([essNoIs]), b.sequence([policy])]));

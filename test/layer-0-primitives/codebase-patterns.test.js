@@ -1668,7 +1668,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-crl.js:decodeExt", "lib/schema-crmf.js:mapControls",
         "lib/schema-attrcert.js:<top>", "lib/schema-tsp.js:<top>",
         "lib/schema-cmp.js:rawSequence", "lib/schema-smime.js:<top>",
-        "lib/schema-ocsp.js:_shapeResponderID",
+        "lib/schema-ocsp.js:_shapeResponderID", "lib/schema-smime.js:assertSignerIssuerIsDirectoryName",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
