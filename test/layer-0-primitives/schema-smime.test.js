@@ -55,6 +55,18 @@ function testSigningCertificate() {
   // policies present-but-empty is legal (no SIZE bound)
   var scPolEmpty = smime.parseSigningCertificate(b.sequence([b.sequence([essNoIs]), b.sequence([])]));
   check("10. v1 empty policies list legal", Array.isArray(scPolEmpty.policies) && scPolEmpty.policies.length === 0);
+
+  // policyQualifiers structure validated (RFC 5280 §4.2.1.4), qualifier body raw.
+  var pqi = b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.octetString(Buffer.from("cps"))]);   // PolicyQualifierInfo { id-qt-cps, qualifier }
+  var polGoodQ = b.sequence([b.oid(O("anyPolicy")), b.sequence([pqi])]);
+  var scGoodQ = smime.parseSigningCertificate(b.sequence([b.sequence([essNoIs]), b.sequence([polGoodQ])]));
+  check("10a. well-formed policyQualifiers accepted, surfaced raw", Buffer.isBuffer(scGoodQ.policies[0].policyQualifiers));
+  // empty policyQualifiers SEQUENCE -> rejected (SIZE 1..MAX)
+  var polEmptyQ = b.sequence([b.oid(O("anyPolicy")), b.sequence([])]);
+  check("10b. empty policyQualifiers rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essNoIs]), b.sequence([polEmptyQ])])); }) === "smime/bad-policy-information");
+  // a PolicyQualifierInfo that is not a two-field, OID-led SEQUENCE -> rejected
+  var polBadPqi = b.sequence([b.oid(O("anyPolicy")), b.sequence([b.sequence([b.integer(1n)])])]);
+  check("10c. malformed PolicyQualifierInfo rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essNoIs]), b.sequence([polBadPqi])])); }) === "smime/bad-policy-information");
 }
 
 // ---- ACCEPT: SigningCertificateV2 (ESS v2) ---------------------------
