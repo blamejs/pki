@@ -358,6 +358,17 @@ function testAcceptRawArmsAndProtection() {
 
   var m = parse(minimalMessage({ extraCerts: [RAW_CERT, RAW_CRL] }));
   check("extraCerts raw", m.extraCerts.length === 2 && m.extraCerts[0].equals(RAW_CERT));
+  // A CMPCertificate / CertificateList is structurally a SEQUENCE — a primitive
+  // element (INTEGER) is not a certificate and rejects rather than surfacing
+  // arbitrary bytes to downstream certificate processing (RFC 9810 §5.1).
+  check("extraCerts with a primitive (INTEGER) element rejected",
+        parseCode(minimalMessage({ extraCerts: [b.integer(1)] })) === "cmp/bad-extra-certs");
+  check("caPubs with a primitive element rejected", parseCode(minimalMessage({
+    body: body(1, b.sequence([b.explicit(1, b.sequence([b.integer(1)])), b.sequence([])])) })) === "cmp/bad-cert-rep");
+  check("rp crls with a primitive element rejected", parseCode(minimalMessage({
+    body: body(12, b.sequence([b.sequence([pkiStatusInfo({ status: 0 })]), b.explicit(1, b.sequence([b.integer(1)]))])) })) === "cmp/bad-rev-rep");
+  check("CertOrEncCert certificate [0] wrapping a primitive rejected", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([b.explicit(0, b.integer(1))]) })] })) })) === "cmp/bad-cert-response");
 
   var header = pkiHeader({ protectionAlg: algId(PBMAC1) });
   var bodyDer = ERROR_BODY;

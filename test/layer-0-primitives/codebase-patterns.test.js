@@ -1157,6 +1157,16 @@ function testCmpConformanceGuards() {
         content: "the id-it value-syntax check regressed to tag-only (validate-the-payload bug class): " + a[1] });
     }
   });
+  // Structural (raw-surface class): a raw Certificate / CertificateList /
+  // PKIPublicationInfo element MUST be structurally a universal SEQUENCE — a
+  // primitive (an INTEGER) is not a certificate and must reject, not surface
+  // arbitrary bytes to downstream certificate processing. Freeze the
+  // rawSequence factory's SEQUENCE assertion; a revert to a bare `return
+  // n.bytes` passthrough drops it and fires.
+  if (!/function rawSequence[\s\S]{0,300}?tagNumber === TAGS\.SEQUENCE/.test(src)) {
+    bad.push({ file: "lib/schema-cmp.js", line: 0,
+      content: "the raw certificate/CRL element surface no longer asserts a universal SEQUENCE — a primitive element (e.g. INTEGER) would be surfaced as certificate bytes to downstream processing (RFC 9810 §5.1: CMPCertificate/CertificateList are SEQUENCEs)" });
+  }
   bad = _filterMarkers(bad, "cmp-conformance-guard-dropped");
   _report("CMP RFC-conformance guards present (envelope/header shape / GT-only time / UTF8 freetext / id-it value syntax / 27-arm body dispatch / protection<=>protectionAlg / status whitelist / named-bit trailing-zero / certConf-hashAlg<=>pvno / CRMF + CMS composition / raw protection slices)", bad);
 }
@@ -2432,6 +2442,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-pkcs12.js:pemDecode", "lib/schema-pkcs12.js:pemEncode",
         "lib/schema-attrcert.js:<top>", "lib/schema-pkcs12.js:<top>",
         "lib/schema-cmp.js:pemDecode", "lib/schema-cmp.js:pemEncode", "lib/schema-cmp.js:<top>",
+        "lib/schema-cmp.js:rawSequence",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
@@ -2474,6 +2485,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-cmp.js:<top>", "lib/schema-ocsp.js:_shapeCertStatus",
         "lib/schema-crl.js:decodeExt", "lib/schema-crmf.js:mapControls",
         "lib/schema-attrcert.js:<top>", "lib/schema-tsp.js:<top>",
+        "lib/schema-cmp.js:rawSequence",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
