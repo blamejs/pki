@@ -455,6 +455,21 @@ function testRejectBody() {
     body: body(1, certRepMessage({ responses: [certResponse({ omitStatus: true })] })) })) === "cmp/bad-cert-response");
   check("certOrEncCert tag [2] rejected (closed CHOICE)", parseCode(minimalMessage({
     body: body(1, certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([b.explicit(2, RAW_CERT)]) })] })) })) === "cmp/bad-cert-response");
+  // RFC 9810 §5.3.4 — only ONE of failInfo (in PKIStatusInfo) and
+  // certifiedKeyPair can be present: a rejection carrying a certificate is a
+  // malformed response a caller keying off certifiedKeyPair must not process.
+  var failWithCert = certRepMessage({ responses: [certResponse({
+    status: pkiStatusInfo({ status: 2, failBits: [2] }),
+    certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]),
+  })] });
+  check("CertResponse with both failInfo and certifiedKeyPair rejected",
+        parseCode(minimalMessage({ body: body(1, failWithCert) })) === "cmp/bad-cert-response");
+  // The two legal single-arm shapes still parse: a rejection without a cert,
+  // and a success with a cert.
+  check("CertResponse rejection without a cert accepted", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ status: pkiStatusInfo({ status: 2, failBits: [2] }) })] })) })) === "NO-THROW");
+  check("CertResponse success with a cert accepted", parseCode(minimalMessage({
+    body: body(1, certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "NO-THROW");
 
   check("EMPTY rp status rejected", parseCode(minimalMessage({
     body: body(12, b.sequence([b.sequence([])])) })) === "cmp/bad-rev-rep");

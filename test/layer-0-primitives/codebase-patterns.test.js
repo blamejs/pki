@@ -1130,6 +1130,15 @@ function testCmpConformanceGuards() {
     bad.push({ file: "lib/schema-cmp.js", line: 0,
       content: "the PKIMessage build no longer enforces protection<=>protectionAlg before returning — the RFC 9810 §5.1.1 both-or-neither rule is under-enforced" });
   }
+  // Structural: a CertResponse MUST reject carrying both failInfo and a
+  // certifiedKeyPair (RFC 9810 §5.3.4). The cmp/bad-cert-response token is
+  // shared across several CertResponse checks, so freeze this specific
+  // mutual-exclusion on its field-name comparison (the RFC-semantic contract),
+  // rename-proof — a refactor that drops just this check still fires.
+  if (!/failInfo !== null && certifiedKeyPair !== null/.test(src)) {
+    bad.push({ file: "lib/schema-cmp.js", line: 0,
+      content: "the CertResponse build no longer rejects a response carrying BOTH failInfo and certifiedKeyPair — the RFC 9810 §5.3.4 mutual-exclusion is under-enforced (a caller keying off certifiedKeyPair could process a cert from a failed response)" });
+  }
   bad = _filterMarkers(bad, "cmp-conformance-guard-dropped");
   _report("CMP RFC-conformance guards present (envelope/header shape / GT-only time / UTF8 freetext / id-it value syntax / 27-arm body dispatch / protection<=>protectionAlg / status whitelist / named-bit trailing-zero / certConf-hashAlg<=>pvno / CRMF + CMS composition / raw protection slices)", bad);
 }
