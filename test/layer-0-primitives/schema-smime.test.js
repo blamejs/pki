@@ -136,6 +136,9 @@ function testDecodeAttribute() {
   var tsErr;
   try { smime.decodeAttribute({ type: O("timeStampToken"), values: [b.oid("1.2.3")] }); } catch (e) { tsErr = e; }
   check("27. registered-but-deferred attribute names itself", tsErr && tsErr.code === "smime/unsupported-attribute" && tsErr.name === "timeStampToken");
+  // the single-value rule is specific to the KNOWN ESS / capabilities attributes:
+  // an unknown / custom attribute with two values recognize-and-defers, not multi-valued.
+  check("27b. unknown attribute with 2 values -> unsupported, not multi-valued", code(function () { smime.decodeAttribute({ type: O("contentType"), values: [b.oid("1.2.3"), b.oid("1.2.4")] }); }) === "smime/unsupported-attribute");
 
   // bad attribute shape -> smime/bad-input
   check("28. non-object attr rejected", code(function () { smime.decodeAttribute(42); }) === "smime/bad-input");
