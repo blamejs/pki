@@ -640,17 +640,27 @@ function testRejectBody() {
   // carrying a content byte is malformed DER the tag check alone would accept.
   var pkiconfNonEmptyNull = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NULL, Buffer.from([0x00]));
   check("pkiconf with a non-empty NULL rejected", parseCode(minimalMessage({ body: body(19, pkiconfNonEmptyNull) })) === "cmp/bad-pkiconf");
-  // RFC 4211 §5 requires a request CertTemplate to OMIT signingAlg (CA-assigned)
-  // unconditionally — cross-certification (ccr [13]) uses CertReqMessages with no
-  // exception, so the shared request walker correctly rejects a ccr that dictates
-  // signingAlg (a requester must not choose the issuer's signing algorithm). This
-  // is why ir/cr/kur/krr/ccr share one walker, not a per-arm relaxation.
+  // RFC 9810 Appendix D.6 profiles the ccr CertTemplate with signingAlg PRESENT —
+  // the requesting CA states the algorithm it wants the cross-certificate signed
+  // with — so ccr [13] ALONE relaxes RFC 4211 §5's signingAlg omission; the same
+  // template in an ir still rejects it (serialNumber and the UIDs stay forbidden
+  // for ccr too).
   var ccrSigningAlg = b.sequence([b.sequence([b.sequence([b.integer(0), b.sequence([
-    b.contextConstructed(2, b.oid(SHA256)),   // signingAlg [2] IMPLICIT — CA-assigned, forbidden in a request
+    b.contextConstructed(2, b.oid(SHA256)),   // signingAlg [2] IMPLICIT AlgorithmIdentifier
     b.explicit(5, rdn("cross.ca")),           // subject [5]
   ])])])]);
-  check("ccr CertTemplate dictating signingAlg rejected (shared walker, RFC 4211 §5)",
-        parseCode(minimalMessage({ body: body(13, ccrSigningAlg) })) === "crmf/bad-cert-template");
+  check("ccr CertTemplate carrying signingAlg accepted (Appendix D.6)",
+        parseCode(minimalMessage({ body: body(13, ccrSigningAlg) })) === "NO-THROW");
+  check("ir CertTemplate carrying signingAlg still rejected (RFC 4211 §5)",
+        parseCode(minimalMessage({ body: body(0, ccrSigningAlg) })) === "crmf/bad-cert-template");
+  // RFC 9810 Appendix D.6 — a ccr allows exactly one CertReqMsg (multiple
+  // cross-certificates go in separate PKIMessages).
+  var ccrTwoMsgs = b.sequence([
+    b.sequence([b.sequence([b.integer(0), b.sequence([b.explicit(5, rdn("a"))])])]),
+    b.sequence([b.sequence([b.integer(1), b.sequence([b.explicit(5, rdn("b"))])])]),
+  ]);
+  check("ccr with two CertReqMsgs rejected (Appendix D.6)",
+        parseCode(minimalMessage({ body: body(13, ccrTwoMsgs) })) === "cmp/bad-body");
   // RFC 9810 §5.2.8.3 — the encryptedKey (and agreeMAC) POPOPrivKey choices are
   // cmp2021(3) syntax; a request carrying one under pvno 2 is a version mismatch.
   check("ir POP using encryptedKey at pvno 2 rejected (RFC 9810 §5.2.8.3)", parseCode(minimalMessage({
