@@ -52,6 +52,8 @@ function testBasicConstraints() {
     code(function () { d(b.sequence([b.integer(0n)])); }) === "path/bad-basic-constraints");
   check("bc negative pathLen rejected",
     code(function () { d(b.sequence([b.boolean(true), b.integer(-1n)])); }) === "path/bad-basic-constraints");
+  check("bc oversized pathLen rejected (exact-or-rejected before Number narrowing)",
+    code(function () { d(b.sequence([b.boolean(true), b.integer(1n << 60n)])); }) === "path/bad-basic-constraints");
   check("bc trailing garbage rejected",
     code(function () { d(Buffer.concat([b.sequence([b.boolean(true)]), Buffer.from([0x00])])); }) === "path/bad-basic-constraints");
   check("bc non-SEQUENCE rejected",
@@ -167,6 +169,8 @@ function testPolicyDecoders() {
     code(function () { pc(b.sequence([])); }) === "path/bad-policy");
   check("pc negative value rejected",
     code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0xff]))])); }) === "path/bad-policy");
+  check("pc oversized skip count rejected (exact-or-rejected before Number narrowing)",
+    code(function () { pc(b.sequence([b.contextPrimitive(0, pki.asn1.decode(b.integer(1n << 60n)).content)])); }) === "path/bad-policy");
   check("pc duplicate requireExplicitPolicy field rejected",
     code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0x00])), b.contextPrimitive(0, Buffer.from([0x0a]))])); }) === "path/bad-policy");
   check("pc out-of-order fields rejected ([1] before [0])",
@@ -175,6 +179,8 @@ function testPolicyDecoders() {
   var iap = DEC.byOid[OID_IAP];
   check("iap SkipCerts decodes", iap(b.integer(4n)) === 4);
   check("iap negative rejected", code(function () { iap(b.integer(-1n)); }) === "path/bad-policy");
+  check("iap oversized skip count rejected (exact-or-rejected before Number narrowing)",
+    code(function () { iap(b.integer(1n << 60n)); }) === "path/bad-policy");
   check("iap non-INTEGER rejected", code(function () { iap(b.octetString(Buffer.from([4]))); }) === "path/bad-policy");
 }
 

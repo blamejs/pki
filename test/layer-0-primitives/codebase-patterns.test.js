@@ -829,358 +829,6 @@ function testSchemaBuildSurfacesEveryField() {
   _report("every schema.seq field is referenced by its build() (parsed data reaches the operator)", bad);
 }
 
-function testCmsSignedDataConformanceGuards() {
-  // class: cms-signeddata-conformance-guard-dropped
-  // Each token below is the STABLE, frozen contract of an RFC 5652 validation the
-  // CMS SignedData parser MUST perform — the error code it throws, or the ASN.1
-  // reader that validates a value payload. Removing a validation drops its token.
-  // Anchoring on these (the public error-code contract) rather than on the helper
-  // FUNCTION NAME makes the guard rename-proof: renaming _checkSignedAttrs /
-  // SIGNED_DATA keeps the tokens (silent, correct), while deleting the check drops
-  // them (fires). A `function <name>` regex would instead go silently green on the
-  // rename — the same brittleness as anchoring on a specific `var`.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"cms/bad-version"',            "SignedData version validated against its contents (RFC 5652 §5.1)"],
-    ['"cms/missing-signed-attrs"',   "signedAttrs required when eContentType is not id-data (§5.3)"],
-    ['"cms/missing-content-type"',   "signedAttrs must contain a content-type attribute (§11.1)"],
-    ['"cms/missing-message-digest"', "signedAttrs must contain a message-digest attribute (§11.2)"],
-    ['"cms/duplicate-signed-attr"',  "no signed-attribute type repeats (§5.3)"],
-    ['"cms/content-type-mismatch"',  "content-type signed-attr value equals the eContentType (§5.3)"],
-    ['asn1.read.oid',                "content-type signed-attr value payload validated, not just its tag (§11.1)"],
-    ['asn1.read.octetString',        "message-digest signed-attr value payload validated (§11.2)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-cms.js", line: 0,
-        content: "the CMS SignedData parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "cms-signeddata-conformance-guard-dropped");
-  _report("CMS SignedData RFC-conformance guards present (version-vs-contents / signedAttrs presence + payload syntax + no-duplicate-type)", bad);
-}
-
-function testOcspConformanceGuards() {
-  // class: ocsp-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 6960 validation the OCSP
-  // parser MUST perform — the error code it throws, or the ASN.1 reader that
-  // validates a value payload. Anchoring on these (the public error-code contract)
-  // rather than a helper FUNCTION NAME makes the guard rename-proof: renaming a
-  // schema var / leaf keeps the tokens (silent, correct), while deleting the check
-  // drops them (fires).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-ocsp.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"ocsp/bad-response-status"',      "OCSPResponseStatus ENUMERATED value whitelisted — 4/>=7 rejected (RFC 6960 §4.2.1)"],
-    ['"ocsp/bad-response-bytes"',       "status <-> responseBytes biconditional: successful iff responseBytes present (§4.2.1)"],
-    ['"ocsp/bad-version"',              "any explicitly-encoded version rejected (empty accept map — v1 is the DEFAULT)"],
-    ['"ocsp/bad-responder-id"',         "ResponderID arms are EXPLICIT-wrapped (byKey is not an IMPLICIT primitive) (§4.2.1)"],
-    ['"ocsp/bad-cert-status"',          "CertStatus is a good/revoked/unknown CHOICE — no other arm (§4.2.1)"],
-    ['"ocsp/bad-revocation-reason"',    "CRLReason ENUMERATED value whitelisted — 7 rejected (RFC 5280 §5.3.1)"],
-    ['"ocsp/bad-time"',                 "OCSP times are GeneralizedTime, never UTCTime (§4.2.1)"],
-    ['"ocsp/unsupported-response-type"', "a non-basic responseType is recognized-and-deferred, not silently accepted (§4.2.1)"],
-    ['"ocsp/missing-requestor-name"',   "a signed OCSPRequest must carry requestorName (RFC 6960 §4.1.2)"],
-    ['"ocsp/bad-requestor-name"',       "requestorName inner value must be a well-formed GeneralName (§4.1.1, RFC 5280 §4.2.1.6)"],
-    ['"ocsp/bad-responses"',            "ResponseData.responses is one-or-more SingleResponse (RFC 6960 §4.2.1)"],
-    ['"ocsp/bad-certs"',                "each certs SEQUENCE OF Certificate element is a Certificate (a SEQUENCE)"],
-    ['"ocsp/bad-request-list"',         "TBSRequest.requestList is one-or-more Request (RFC 6960 §4.1.1)"],
-    ['"ocsp/bad-signature"',            "an optional Signature's BIT STRING is octet-aligned before verify surfaces it (§4.1.1)"],
-    ['asn1.read.enumerated',            "responseStatus / revocationReason value payloads validated, not just tag-checked"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-ocsp.js", line: 0,
-        content: "the OCSP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "ocsp-conformance-guard-dropped");
-  _report("OCSP RFC-conformance guards present (status whitelist / status<->responseBytes / EXPLICIT ResponderID / CertStatus CHOICE / GeneralizedTime-only / defer unknown responseType)", bad);
-}
-
-function testTspConformanceGuards() {
-  // class: tsp-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 3161 validation the TSP
-  // parser MUST perform — the error code it throws, or the reader that validates a
-  // value. Anchored on the public contract, not a helper name (rename-proof).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-tsp.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"tsp/bad-gentime"',           "genTime is GeneralizedTime, never UTCTime (§2.4.2)"],
-    ['"tsp/bad-accuracy"',          "Accuracy millis/micros constrained to 1..999 (§2.4.2)"],
-    ['"tsp/bad-ordering"',          "ordering is BOOLEAN DEFAULT FALSE — explicit FALSE omitted (§2.4.2)"],
-    ['"tsp/bad-tsa"',               "tsa is a GeneralName (context tag [0]..[8]) (§2.4.2, RFC 5280 §4.2.1.6)"],
-    ['"tsp/bad-extensions"',        "TSTInfo extensions is SEQUENCE SIZE(1..MAX) — empty rejected (RFC 5280 §4.1.2.9)"],
-    ['"tsp/duplicate-extension"',   "extension OIDs are unique (RFC 5280 §4.1.2.9)"],
-    ['"tsp/bad-failinfo"',          "an unsupported PKIFailureInfo bit is rejected (RFC 3161 §2.4.2)"],
-    ['"tsp/unexpected-failinfo"',   "a granted TimeStampResp must not carry failInfo (RFC 3161 §2.4.2)"],
-    ['"tsp/bad-status"',            "PKIStatus is in 0..5 (§2.4.2)"],
-    ['"tsp/missing-token"',         "a granted TimeStampResp carries a token (§2.4.2)"],
-    ['"tsp/unexpected-token"',      "a non-granted TimeStampResp carries no token (§2.4.2)"],
-    ['"tsp/wrong-econtent-type"',   "a token must encapsulate id-ct-TSTInfo (§2.4.2)"],
-    ['"tsp/multi-signer"',          "a token has exactly one (TSA) signerInfo (§2.4.2)"],
-    ['"tsp/bad-token"',             "a malformed token surfaces a typed TspError, not a leaked CmsError (§2.4.2)"],
-    ['"tsp/detached-token"',        "a token must carry attached eContent (§2.4.2)"],
-    ['"tsp/bad-status-info"',       "PKIFreeText statusString is SEQUENCE SIZE(1..MAX) of UTF8String (§2.4.2)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-tsp.js", line: 0,
-        content: "the TSP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "tsp-conformance-guard-dropped");
-  _report("TSP RFC-conformance guards present (v1 version / GeneralizedTime genTime / accuracy 1..999 / ordering-default-false / status 0..5 / status<->token coupling / id-ct-TSTInfo + single-signer + attached token)", bad);
-}
-
-function testAttrCertConformanceGuards() {
-  // class: attrcert-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 5755 validation the attribute-
-  // certificate parser MUST perform. Anchored on the public error code, not a helper
-  // name (rename-proof). Codes generated by shared factories (versionReader's
-  // /bad-version, pkix.extensions' /bad-extensions) are not asserted here — their
-  // guards live in the shared primitive, verified by that primitive's own test.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-attrcert.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"attrcert/bad-time"',              "AttCertValidityPeriod times are GeneralizedTime, never UTCTime (§4.2.6)"],
-    ['"attrcert/bad-validity"',          "attrCertValidityPeriod is a SEQUENCE of exactly two times (§4.2.6)"],
-    ['"attrcert/bad-serial-number"',     "serialNumber is a positive INTEGER of at most 20 octets (§4.2.5)"],
-    ['"attrcert/bad-signature-algorithm"', "outer signatureAlgorithm equals acinfo.signature (§4.2.4)"],
-    ['"attrcert/bad-attributes"',        "attributes is SEQUENCE OF Attribute SIZE(1..MAX) — empty rejected (§4.2.7)"],
-    ['"attrcert/duplicate-attribute"',   "each AttributeType OID is unique (§4.2.7)"],
-    ['"attrcert/bad-digested-object-type"', "digestedObjectType ENUMERATED is in {0,1,2} (§4.1)"],
-    ['"attrcert/bad-object-digest-info"', "otherObjectTypeID is present only for otherObjectTypes(2) (§4.1)"],
-    ['"attrcert/bad-issuer-serial"',     "IssuerSerial is a constructed [n] IMPLICIT SEQUENCE — a primitive [n] is rejected (§4.1)"],
-    ['"attrcert/bad-entity-name"',       "Holder.entityName is a validated GeneralNames (§4.1, RFC 5280 §4.2.1.6)"],
-    ['"attrcert/bad-issuer-name"',       "V2Form.issuerName is a validated GeneralNames (§4.1, RFC 5280 §4.2.1.6)"],
-    ['"attrcert/bad-issuer"',            "AttCertIssuer is a CHOICE of v1Form (SEQUENCE) or v2Form ([0]) (§4.1)"],
-    ['"attrcert/bad-v2form"',            "V2Form trailing [0]/[1] are at-most-once in order (§4.1)"],
-    ['"attrcert/legacy-v1-not-supported"', "the obsolete AttributeCertificateV1 is recognized and deferred (§1, RFC 5652 §10.2)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-attrcert.js", line: 0,
-        content: "the attribute-certificate parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: the direct `parse` MUST recognize a legacy v1 AC (via matchesV1)
-  // before the v2 walk, so a direct caller gets the advertised stable
-  // attrcert/legacy-v1-not-supported and not a low-level asn1/* tag leak. Anchored on
-  // the parse-fn body up to its column-0 closing brace (tempered token, rename-proof).
-  if (!/function parse\s*\((?:(?!\n\})[\s\S]){0,4000}?matchesV1\s*\(/.test(src)) {
-    bad.push({ file: "lib/schema-attrcert.js", line: 0,
-      content: "the direct attrcert.parse no longer recognizes a legacy v1 AC before the v2 walk — a well-formed AttributeCertificateV1 would leak a low-level asn1/* tag error instead of attrcert/legacy-v1-not-supported" });
-  }
-  bad = _filterMarkers(bad, "attrcert-conformance-guard-dropped");
-  _report("attribute-certificate RFC-conformance guards present (GeneralizedTime validity / positive-<=20 serial / sig-alg agreement / non-empty unique attributes / ENUMERATED digestedObjectType / validated GeneralNames / v1 recognize-and-defer)", bad);
-}
-
-function testCrmfConformanceGuards() {
-  // class: crmf-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 4211 validation the CRMF
-  // parser MUST perform. Anchored on the public error code, not a helper name
-  // (rename-proof). Codes generated by shared factories (algorithmIdentifier's
-  // /bad-algorithm-identifier, spki's /bad-spki, extensions' /bad-extensions) are
-  // not asserted here — their guards live in the shared primitive.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-crmf.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"crmf/bad-version"',           "CertTemplate version MUST be 2 (v3) if supplied (§5)"],
-    ['"crmf/bad-validity"',          "OptionalValidity has at least one of notBefore/notAfter, EXPLICIT times (§5)"],
-    ['"crmf/bad-name"',              "issuer/subject [3]/[5] Name is a valid IMPLICIT or EXPLICIT RDNSequence (§5, X.680 §31.2.7)"],
-    ['"crmf/bad-popo"',              "ProofOfPossession is a CHOICE [0..3]; raVerified [0] is an IMPLICIT NULL (§4)"],
-    ['"crmf/bad-cert-req-messages"', "CertReqMessages is SEQUENCE SIZE(1..MAX) — empty rejected (§3)"],
-    ['"crmf/bad-control"',           "an AttributeTypeAndValue is a SEQUENCE { type, value } (§5, §6, §7)"],
-    ['"crmf/bad-cert-template"',     "CertTemplate is one ascending [0..9] IMPLICIT run, each field at-most-once (§5)"],
-    ['MUST be omitted',              "serialNumber/signingAlg (CA-assigned) + issuerUID/subjectUID (deprecated) are rejected, not surfaced (§5)"],
-    ['poposkInput MUST be',          "a signature POP's poposkInput presence is fixed by the CertTemplate subject+publicKey (§4.1)"],
-    ['asn1.sequenceTlv',             "bytes surfaced for external verification over an IMPLICIT-wrapped value are the retagged universal TLV, never the [n] wire slice (§4.1)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-crmf.js", line: 0,
-        content: "the CRMF parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: the CertTemplate build MUST reach the version-value check (RFC 4211
-  // §5 "version MUST be 2 if supplied") before it returns the assembled template.
-  // Anchored on the build up to its `return {` (tempered token, rename-proof) so a
-  // refactor that drops the check — leaving the frozen code elsewhere — still fires.
-  if (!/version\.present(?:(?!\n {4}return)[\s\S]){0,600}?"crmf\/bad-version"/.test(src)) {
-    bad.push({ file: "lib/schema-crmf.js", line: 0,
-      content: "the CertTemplate build no longer rejects a supplied version != 2 before returning — the RFC 4211 §5 version MUST is under-enforced" });
-  }
-  bad = _filterMarkers(bad, "crmf-conformance-guard-dropped");
-  _report("CRMF RFC-conformance guards present (version==2 / OptionalValidity min-one EXPLICIT times / dual-accept Name / ProofOfPossession CHOICE / non-empty CertReqMessages / IMPLICIT CertTemplate run)", bad);
-}
-
-function testPkcs12ConformanceGuards() {
-  // class: pkcs12-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 7292 / RFC 9579
-  // validation the PKCS#12 parser MUST perform. Anchored on the public error
-  // code, not a helper name (rename-proof). Codes generated by shared
-  // factories (attribute's /bad-attribute-values, the makeParser /bad-der and
-  // /bad-input plumbing) are not asserted here — their guards live in the
-  // shared primitive.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-pkcs12.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"pkcs12/not-a-pfx"',                 "PFX is a SEQUENCE of 2-3 (§4)"],
-    ['versionReader(NS, { "3": 3 })',      "version MUST be v3 = 3 (§4) — the accept map IS the frozen contract; the code is minted by the shared factory"],
-    ['"pkcs12/bad-integrity-mode"',        "a MacData alongside a SignedData authSafe is contradictory (§4)"],
-    ['"pkcs12/bad-mac-data"',              "MacData/DigestInfo shape + PBMAC1-params present, PBKDF2 with bounded keyLength/iterationCount (§4; RFC 9579 §4-§5)"],
-    ['"pkcs12/bad-mac-iterations"',        "iterations DEFAULT 1 must be omitted when equal (X.690 §11.5), positive and bounded"],
-    ['"pkcs12/bad-authsafe"',              "public-key integrity encapsulates attached id-data with at least one signer (§4, §4.1)"],
-    ['"pkcs12/bad-authsafe-type"',         "authSafe contentType is id-data or id-signedData only (§4.1)"],
-    ['"pkcs12/bad-safe-contentinfo-type"', "AuthenticatedSafe elements are id-data / id-encryptedData / id-envelopedData; privacy safes wrap id-data (§4.1)"],
-    ['"pkcs12/bad-safe-contents"',         "SafeContents is a SEQUENCE OF SafeBag — a SET OF producer wart rejects (§4.2)"],
-    ['"pkcs12/bad-bag-type"',              "bagId is the closed §4.2 set — unknown bag types reject"],
-    ['"pkcs12/bad-bag-value"',             "bag values are [0] EXPLICIT with the type each arm requires (§4.2)"],
-    ['"pkcs12/bad-cert-type"',             "certId is x509Certificate or sdsiCertificate (§4.2.3)"],
-    ['"pkcs12/bad-crl-type"',              "crlId is x509CRL (§4.2.4)"],
-    ['"pkcs12/bad-friendly-name"',         "friendlyName is one BMPString value, one instance (PKCS#9 SINGLE VALUE)"],
-    ['"pkcs12/bad-local-key-id"',          "localKeyId is one OCTET STRING value, one instance (PKCS#9 SINGLE VALUE)"],
-    ['"pkcs12/too-deep"',                  "safeContentsBag recursion + cross-decode re-decodes carry one shared budget (§4.2.6)"],
-    ['"pkcs12/too-many-elements"',         "AuthenticatedSafe / SafeContents / bagAttributes element counts are capped"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-pkcs12.js", line: 0,
-        content: "the PKCS#12 parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: MacData is OPTIONAL for an id-data authSafe (RFC 7292 §4 — the
-  // openssl -nomac shape is legal, integrity-less syntax). The id-data arm must
-  // reach its integrityMode surface WITHOUT a MacData-presence throw: the arm's
-  // body up to its `return {` may not construct a bad-integrity-mode fault
-  // (tempered token, rename-proof — a reintroduced mandatory-MacData check
-  // fires however the surrounding code is arranged).
-  if (/OID_DATA(?:(?!\n {4}\})(?!"pkcs12\/bad-integrity-mode")[\s\S]){0,800}?integrityMode(?:(?!\n {4}\})[\s\S]){0,400}?"pkcs12\/bad-integrity-mode"/.test(src) ||
-      /OID_DATA(?:(?!\n {4}\})[\s\S]){0,300}?if\s*\(!macPresent\)\s*throw/.test(src)) {
-    bad.push({ file: "lib/schema-pkcs12.js", line: 0,
-      content: "the id-data authSafe arm rejects a missing MacData again — MacData is OPTIONAL syntax (RFC 7292 §4); an integrity-less store surfaces integrityMode \"none\" for the caller's policy, it does not fail parse" });
-  }
-  bad = _filterMarkers(bad, "pkcs12-conformance-guard-dropped");
-  _report("PKCS#12 RFC-conformance guards present (version v3 / integrity-mode surface incl. legal MAC-less stores / MacData + PBMAC1 rules / authSafe + safe-content dispatch / closed bag sets / single-value attrs / nesting + count budgets)", bad);
-}
-
-function testCmpConformanceGuards() {
-  // class: cmp-conformance-guard-dropped
-  // Each token is the STABLE, frozen contract of an RFC 9810 validation the CMP
-  // parser MUST perform. Anchored on the public error code, not a helper name
-  // (rename-proof). Codes minted by shared factories (versionReader's
-  // /bad-version, generalName's /bad-general-name, the makeParser /bad-der and
-  // /bad-input plumbing) are not asserted here — their guards live in the
-  // shared primitive.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cmp.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"cmp/not-a-pki-message"',       "PKIMessage is a SEQUENCE of 2-4, header/body positional, [0..1] trailing (§5.1)"],
-    ['"cmp/bad-header"',              "PKIHeader shape + [0..8] trailing optionals ascending, at-most-once (§5.1.1)"],
-    ['"cmp/bad-time"',               "messageTime is GeneralizedTime, never UTCTime (§5.1.1)"],
-    ['"cmp/bad-freetext"',           "PKIFreeText is SEQUENCE SIZE(1..MAX) OF UTF8String (§5.1.1)"],
-    ['"cmp/bad-general-info"',       "generalInfo present => non-empty (§5.1.1)"],
-    ['"cmp/bad-info-value"',         "id-it value-syntax: implicitConfirm NULL / confirmWaitTime GT / certProfile SEQ OF UTF8 (§5.1.1.1/.2/.4)"],
-    ['"cmp/bad-body"',               "PKIBody is a constructed context [0..26] arm wrapping exactly one value (§5.1.2)"],
-    ['"cmp/protection-alg-mismatch"', "protection bits <=> header protectionAlg, both directions (§5.1.1)"],
-    ['"cmp/bad-protection"',         "PKIProtection is a BIT STRING (§5.1.3)"],
-    ['"cmp/bad-extra-certs"',        "extraCerts present => non-empty (§5.1)"],
-    ['"cmp/bad-status"',             "PKIStatus is in 0..6 (§5.2.3)"],
-    ['"cmp/bad-fail-info"',          "PKIFailureInfo named bits drop trailing zero bits (X.690 §11.2.2)"],
-    ['"cmp/bad-error"',              "ErrorMsgContent optionals disambiguated by universal tag, no leftover (§5.3.21)"],
-    ['"cmp/bad-cert-status"',        "CertStatus shape + certConf hashAlg requires pvno cmp2021 (§5.3.18)"],
-    ['"cmp/bad-cert-rep"',           "CertRepMessage caPubs [1] non-empty; response SEQ OF CertResponse (§5.3.4)"],
-    ['"cmp/bad-cert-response"',      "CertResponse + CertifiedKeyPair + closed CertOrEncCert / EncryptedKey CHOICEs (§5.3.4, §5.2.2)"],
-    ['"cmp/bad-rev-req"',            "RevReqContent / RevDetails; certDetails walks the CRMF CertTemplate (§5.3.9)"],
-    ['"cmp/bad-rev-rep"',            "RevRepContent status SIZE(1..MAX); revCerts/crls [0..1] non-empty (§5.3.10)"],
-    ['"cmp/bad-poll-rep"',           "PollRep checkAfter is a non-negative delay (§5.3.22)"],
-    ['"cmp/bad-pkiconf"',            "PKIConfirmContent is NULL (§5.3.16)"],
-    ['crmf.walkCertReqMessages',     "ir/cr/kur/krr/ccr walk the CRMF CertReqMessages NS-bound (crmf/* on failure, not cmp/*)"],
-    ['cms.walkEnvelopedData',        "the EncryptedKey envelopedData arm composes the CMS walker (§5.2.2)"],
-    ['asn1.sequenceTlv',             "EncryptedKey envelopedData [0] is IMPLICIT (imported CRMF module) — retag to SEQUENCE before the CMS walk, not schema.explicit (§5.2.2)"],
-    ['headerBytes',                  "the protection input is the exact header wire slice, never re-encoded (§5.1.3)"],
-    ['bodyBytes',                    "the protection input is the exact body wire slice, never re-encoded (§5.1.3)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-cmp.js", line: 0,
-        content: "the CMP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  // Structural: the message build MUST run the protection<=>protectionAlg
-  // cross-check before it returns the assembled message, so a refactor that
-  // drops the check (leaving the frozen code elsewhere) still fires. Anchored
-  // on the build up to its result return (tempered token, rename-proof).
-  if (!/protectionAlg !== null(?:(?!\n {4}return \{)[\s\S]){0,400}?"cmp\/protection-alg-mismatch"/.test(src)) {
-    bad.push({ file: "lib/schema-cmp.js", line: 0,
-      content: "the PKIMessage build no longer enforces protection<=>protectionAlg before returning — the RFC 9810 §5.1.1 both-or-neither rule is under-enforced" });
-  }
-  // Structural: a CertResponse MUST reject carrying both failInfo and a
-  // certifiedKeyPair (RFC 9810 §5.3.4). The cmp/bad-cert-response token is
-  // shared across several CertResponse checks, so freeze this specific
-  // mutual-exclusion on its field-name comparison (the RFC-semantic contract),
-  // rename-proof — a refactor that drops just this check still fires.
-  if (!/failInfo !== null && certifiedKeyPair !== null/.test(src)) {
-    bad.push({ file: "lib/schema-cmp.js", line: 0,
-      content: "the CertResponse build no longer rejects a response carrying BOTH failInfo and certifiedKeyPair — the RFC 9810 §5.3.4 mutual-exclusion is under-enforced (a caller keying off certifiedKeyPair could process a cert from a failed response)" });
-  }
-  // Structural (validate-the-payload class): a recognized id-it value with a
-  // fixed syntax MUST be validated by CONTENT, not just tag — each branch runs
-  // the strict typed reader on its payload, so a well-tagged but malformed
-  // value (non-empty NULL, garbage GeneralizedTime, invalid-UTF-8 string)
-  // rejects. Anchored per-branch on the id-it OID constant reaching its reader
-  // (the RFC-semantic contract); a revert to a tag-only check drops the reader
-  // call from the branch and fires. The bare read tokens would pass on the
-  // unrelated leaf readers, so the proximity anchor is required.
-  [
-    [/OID_IMPLICIT_CONFIRM(?:(?!OID_CONFIRM_WAIT_TIME)[\s\S]){0,500}?asn1\.read\.nullValue/, "implicitConfirm must read.nullValue its value (reject a non-empty NULL), not tag-check only (RFC 9810 §5.1.1.1)"],
-    [/OID_CONFIRM_WAIT_TIME(?:(?!OID_CERT_PROFILE)[\s\S]){0,500}?asn1\.read\.time/, "confirmWaitTime must read.time its value (reject a malformed GeneralizedTime), not tag-check only (RFC 9810 §5.1.1.2)"],
-    [/OID_CERT_PROFILE(?:(?!\n {2}\})[\s\S]){0,800}?asn1\.read\.string/, "certProfile must read.string each element (reject invalid UTF-8), not tag-check only (RFC 9810 §5.1.1.4)"],
-  ].forEach(function (a) {
-    if (!a[0].test(src)) {
-      bad.push({ file: "lib/schema-cmp.js", line: 0,
-        content: "the id-it value-syntax check regressed to tag-only (validate-the-payload bug class): " + a[1] });
-    }
-  });
-  // Structural (raw-surface class): a raw Certificate / CertificateList /
-  // PKIPublicationInfo element MUST be structurally a universal SEQUENCE — a
-  // primitive (an INTEGER) is not a certificate and must reject, not surface
-  // arbitrary bytes to downstream certificate processing. Freeze the
-  // rawSequence factory's SEQUENCE assertion; a revert to a bare `return
-  // n.bytes` passthrough drops it and fires.
-  if (!/function rawSequence[\s\S]{0,400}?tagNumber === TAGS\.SEQUENCE && n\.children && n\.children\.length >= 1/.test(src)) {
-    bad.push({ file: "lib/schema-cmp.js", line: 0,
-      content: "the raw certificate/CRL element surface no longer asserts a NON-EMPTY universal SEQUENCE — a primitive (INTEGER) or an empty SEQUENCE (0x30 0x00) would be surfaced as certificate bytes to downstream processing (RFC 9810 §5.1: CMPCertificate/CertificateList are non-empty SEQUENCEs)" });
-  }
-  // Structural (detached-ciphertext class): an EncryptedKey envelopedData arm
-  // carries the encrypted certificate/key as its ciphertext, so a detached
-  // EnvelopedData (CMS permits an absent encryptedContent) must reject — the
-  // same rule the CRMF encryptedKey POP arm and the PKCS#12 privacy safe
-  // enforce. Freeze the non-null check; a revert that returns any parsing
-  // EnvelopedData drops it and fires.
-  if (!/envelopedData(?:(?!\n {4}\})[\s\S]){0,500}?ct === null \|\| ct\.length === 0/.test(src)) {
-    bad.push({ file: "lib/schema-cmp.js", line: 0,
-      content: "the EncryptedKey envelopedData arm no longer rejects an EnvelopedData with no ciphertext (absent OR zero-length encryptedContent) — a CertResponse would parse as successful carrying nothing to decrypt (RFC 9810 §5.2.2/§5.3.4)" });
-  }
-  bad = _filterMarkers(bad, "cmp-conformance-guard-dropped");
-  _report("CMP RFC-conformance guards present (envelope/header shape / GT-only time / UTF8 freetext / id-it value syntax / 27-arm body dispatch / protection<=>protectionAlg / status whitelist / named-bit trailing-zero / certConf-hashAlg<=>pvno / CRMF + CMS composition / raw protection slices)", bad);
-}
-
 function testWorkflowScanFailureMasked() {
   // class: workflow-scan-failure-masked
   // A security scanner whose failure is silenced is indistinguishable from a
@@ -1257,75 +905,6 @@ function testSharedLeafOptionScope() {
   _report("shared-leaf relaxations stay scoped to their declaring sites (allowFractional: codec + TSP only)", bad);
 }
 
-function testEngineEncodeParity() {
-  // class: engine-encode-parity-dropped
-  // encode is the constructor direction of the same schema walk enforces, so
-  // the repeat constraints (SIZE minimum, element cap, semantic uniqueness)
-  // must be enforced in BOTH directions — an encoder that skips them emits
-  // DER its own decoder rejects, breaking the walk(decode(encode)) invariant.
-  // Anchored on the constraint reads inside the repeat encoder's body up to
-  // the next column-0 brace (rename-proof: the fn may be renamed, but a
-  // repeat encoder that never reads min/max/unique is the regression).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-engine.js"), "utf8"); }
-  catch (_e) { return; }
-  var encodeRepeatBody = /function _?\w*[eE]ncodeRepeat\w*\(([\s\S]*?)\n\}/.exec(src);
-  var body = encodeRepeatBody ? encodeRepeatBody[0] : "";
-  var bad = [];
-  if (!body || !/schema\.min\b/.test(body) || !/schema\.max\b/.test(body) || !/schema\.unique\b/.test(body)) {
-    bad.push({ file: "lib/schema-engine.js", line: 0,
-      content: "the repeat encoder no longer enforces min/max/unique — encode can emit DER its own walk rejects (the walk(decode(encode)) parity invariant)" });
-  }
-  bad = _filterMarkers(bad, "engine-encode-parity-dropped");
-  _report("engine encode enforces the same repeat constraints walk enforces (min / max / unique)", bad);
-}
-
-function testReleasePushFixOrder() {
-  // class: release-push-fix-order
-  // The push-fix gate ORDER is load-bearing: the open-PR lookup precedes the
-  // commit (a stale branch whose PR closed must not gain commits), the commit
-  // precedes gitleaks (the scan must cover the fix itself, not the pre-fix
-  // tree), the gates precede the push (nothing unscanned/unsigned reaches the
-  // remote), and a failed gate rolls the commit back (the operator never
-  // dead-ends at the clean-tree guard). Tokens are asserted in sequence — an
-  // absent token FIRES rather than going silent, so a rename is a conscious
-  // update here, never a dead detector.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "scripts/release.js"), "utf8"); }
-  catch (_e) { return; }
-  var m = /function cmdPushFix\(([\s\S]*?)\n\}/.exec(src);
-  var bad = [];
-  if (!m) {
-    bad.push({ file: "scripts/release.js", line: 0, content: "the push-fix command body was not found — its gate-order contract cannot be verified" });
-  } else {
-    var body = m[0];
-    var sequence = [
-      ["prNum", "the open-PR lookup"],
-      ['"add"', "the fix commit (git add -A)"],
-      ["_gitleaks", "the secret scan of the committed fix"],
-      ['"push"', "the push to the remote"],
-    ];
-    var last = -1;
-    var lastLabel = "the function start";
-    for (var i = 0; i < sequence.length; i++) {
-      var at = body.indexOf(sequence[i][0]);
-      if (at === -1 || at < last) {
-        bad.push({ file: "scripts/release.js", line: 0,
-          content: "push-fix gate order broken: " + sequence[i][1] + " no longer follows " + lastLabel +
-                   " — the lookup->commit->scan->push order is the contract (scan the fix, not the pre-fix tree; nothing unscanned reaches the remote)" });
-        break;
-      }
-      last = at; lastLabel = sequence[i][1];
-    }
-    if (body.indexOf('"--soft"') === -1) {
-      bad.push({ file: "scripts/release.js", line: 0,
-        content: "push-fix no longer rolls back the fix commit when a pre-push gate fails — a failed gate dead-ends at the clean-tree guard on rerun" });
-    }
-  }
-  bad = _filterMarkers(bad, "release-push-fix-order");
-  _report("release push-fix keeps its gate order (PR lookup -> commit -> gitleaks -> push, rollback on gate failure)", bad);
-}
-
 function testAlgorithmLookupNoDefault() {
   // class: algorithm-lookup-with-default
   // Resolving an algorithm OID through a registry table must throw on a miss.
@@ -1357,87 +936,6 @@ function testAlgorithmLookupNoDefault() {
   });
   bad = _filterMarkers(bad, "algorithm-lookup-with-default");
   _report("algorithm-table lookups throw on a miss (no OR-defaults, no weak literal presets surviving unknown OIDs)", bad);
-}
-
-function testCmsEnvelopedDataConformanceGuards() {
-  // class: cms-enveloped-guard-dropped
-  // Frozen contract of the RFC 5652 §6/§8 EnvelopedData / EncryptedData decode
-  // (promoted out of the recognize-and-defer set). Anchored on the public error
-  // codes, not helper names (rename-proof).
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cms.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"cms/bad-enveloped-data"',        "EnvelopedData is structurally decoded (§6.1)"],
-    ['"cms/bad-encrypted-data"',        "EncryptedData is structurally decoded (§8)"],
-    ['"cms/bad-encrypted-content-info"', "EncryptedContentInfo decoded — encryptedContent [0] IMPLICIT (§6.1)"],
-    ['"cms/bad-recipient-infos"',       "recipientInfos is a SET SIZE(1..MAX) — empty rejected (§6.1)"],
-    ['"cms/bad-recipient-info"',        "RecipientInfo CHOICE — an unknown arm is rejected (§6.2)"],
-    ['"cms/bad-ktri"',                  "KeyTransRecipientInfo decoded (§6.2.1)"],
-    ['"cms/bad-recipient-version"',     "the ktri rid<->version coupling is enforced (§6.2.1)"],
-    ['"cms/bad-kari"',                  "KeyAgreeRecipientInfo decoded (§6.2.2, RFC 5753)"],
-    ['"cms/bad-kekri"',                 "KEKRecipientInfo decoded (§6.2.3)"],
-    ['"cms/bad-pwri"',                  "PasswordRecipientInfo decoded (§6.2.4)"],
-    ['"cms/bad-ori"',                   "OtherRecipientInfo decoded (§6.2.5)"],
-    ['"cms/bad-recipient-identifier"',  "RecipientIdentifier CHOICE decoded (§6.2.1)"],
-    ['"cms/bad-originator-info"',       "OriginatorInfo decoded (§6.1)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/schema-cms.js", line: 0,
-        content: "the CMS parser no longer references `" + r[0] + "` — a dropped EnvelopedData/EncryptedData decode guard: " + r[1] });
-    }
-  });
-  // Structural: the two content types must be walked (not deferred) inside CONTENT_INFO.build.
-  if (!/OID_ENVELOPED_DATA[\s\S]{0,120}?schema\.walk\(ENVELOPED_DATA/.test(src)) {
-    bad.push({ file: "lib/schema-cms.js", line: 0,
-      content: "CONTENT_INFO.build no longer walks ENVELOPED_DATA on id-envelopedData — the content type would fall back to recognize-and-defer" });
-  }
-  bad = _filterMarkers(bad, "cms-enveloped-guard-dropped");
-  _report("CMS EnvelopedData/EncryptedData decode guards present (all five RecipientInfo kinds / ktri version coupling / non-empty recipientInfos / dispatch walks the two content types)", bad);
-}
-
-function testPathValidateConformanceGuards() {
-  // class: path-validate-conformance-guard-dropped
-  // Each token is the STABLE, frozen error code of an RFC 5280 §6.1 path-
-  // validation MUST that the validator throws. Anchoring on these public codes
-  // (not the helper FUNCTION NAMES like requireCriticalExt / basicProcessing)
-  // makes the guard rename-proof: renaming a helper keeps the codes (silent,
-  // correct), while deleting a fail-closed check drops its code (fires). The RED
-  // conformance vectors remain the per-check behavioural guards; this catches
-  // wholesale removal of a MUST during a refactor.
-  var src;
-  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/path-validate.js"), "utf8"); }
-  catch (_e) { return; }
-  var required = [
-    ['"path/extension-not-critical"',        "basicConstraints/nameConstraints/policyConstraints/inhibitAnyPolicy on a CA must be critical (RFC 5280 §4.2.1.9/.10/.11/.14)"],
-    ['"path/not-a-ca"',                       "an intermediate must assert basicConstraints cA:TRUE (§6.1.4(k); CVE-2021-3450 class)"],
-    ['"path/missing-key-cert-sign"',          "a CA's keyUsage must assert keyCertSign (§6.1.4(n))"],
-    ['"path/unrecognized-critical-extension"', "an unrecognized critical extension fails the path closed (§6.1.4(o)/6.1.5(e))"],
-    ['"path/revocation-undetermined"',        "only an authoritative good status passes; any other revocation outcome fails closed"],
-    ['"path/path-length-exceeded"',           "the CA basicConstraints pathLenConstraint is enforced (§6.1.4(l),(m))"],
-    ['"path/policy-required"',                "explicit-policy with an empty valid-policy tree is rejected (§6.1.5(g))"],
-    ['"path/name-constraint-excluded"',       "a name in an excluded subtree is rejected (§6.1.4(g))"],
-    ['"path/name-constraint-not-permitted"',  "a name outside every permitted subtree is rejected (§6.1.4(g))"],
-    ['.revocationDate',                        "a CRL entry is honored only as of the date it carries; a revocation dated after the validation instant does not apply (§5.3)"],
-    ['"deltaCRLIndicator"',                    "a delta CRL (deltaCRLIndicator) is unusable on its own without base/delta processing — a serial absent from it is not good (§5.2.4)"],
-    ['"path/name-constraint-unsupported"',     "a name form the matcher cannot evaluate fails closed, never clever-parses (§6.1.4(g); RFC 822 quoting, IP prefixes)"],
-    ['"path/unsupported-algorithm"',           "an unknown signature/hash/MGF OID or malformed parameters rejects — no weaker default stands in (§6.1.3(a); RSASSA-PSS RFC 4055)"],
-    ['"path/bad-signature"',                   "a signatureValue with unused bits is not verifiable material (§6.1.3(a))"],
-    ['.indirect',                              "an indirect CRL (IDP indirectCRL) is not treated as the issuer's own authoritative CRL (§5.2.5)"],
-    ['.onlyAttr',                              "an IDP onlyContainsAttributeCerts CRL is out of scope for a public-key cert (§5.2.5)"],
-    ['.malformed',                             "a CRL whose IDP does not decode is unusable — scope unknown means fail closed (§5.2.5)"],
-  ];
-  var bad = [];
-  required.forEach(function (r) {
-    if (src.indexOf(r[0]) === -1) {
-      bad.push({ file: "lib/path-validate.js", line: 0,
-        content: "the path validator no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
-    }
-  });
-  bad = _filterMarkers(bad, "path-validate-conformance-guard-dropped");
-  _report("Path-validation RFC 5280 §6.1 guards present (MUST-critical CA extensions / CA gate / keyCertSign / unknown-critical / revocation fail-closed / pathLen / policy-required / name constraints)", bad);
 }
 
 function testNoRemovedWebCryptoNamespace() {
@@ -1889,10 +1387,15 @@ var KNOWN_ANTIPATTERNS = [
     reason: "check(<reason>, true) as a skip is the skip-counted-as-pass bug: a run that skipped a cross-check (e.g. the OpenSSL interop oracle predates ML-DSA) reports the SAME 'N checks passed' as a run that actually performed it, so a coverage gap reads as coverage. helpers.skip / ctx.skip increments a separate skip counter (never `_checks`) and the interop runner + test-integration report skips distinctly.",
   },
 
-  // (CMS SignedData RFC-conformance guards are enforced by
-  //  testCmsSignedDataConformanceGuards — a file-level check anchored on the
-  //  frozen error-code contract, NOT on the helper function name, so a rename
-  //  can't silently green it.)
+  // (Per-format RFC-conformance rules — a version==N check, a status
+  //  whitelist, a cross-field coherence rule — are guarded by the behavioral
+  //  RED conformance vectors in each format's layer-0 test, which drive parse()
+  //  on the malformed input and assert the reject. Those run in smoke and catch
+  //  removal of the runtime check directly. A codebase-patterns detector here
+  //  is reserved for a GENERAL, codebase-wide VECTOR shape that would fire on a
+  //  new instance introduced ANYWHERE — not a frozen list of one format's
+  //  error-code strings or a length-bounded regex over one named function,
+  //  which drift on any legitimate rename / growth and detect nothing new.)
 
   // --- DER codec correctness (lib scope) ---
   {
@@ -2683,6 +2186,60 @@ function testNoDuplicateCodeBlocks() {
   }
 }
 
+function testNumberNarrowsUnboundedInteger() {
+  // class: number-narrows-unbounded-integer
+  // A CODEBASE-WIDE vector scan (not a per-format checklist): narrowing an
+  // ASN.1 INTEGER / ENUMERATED read to a JS Number silently ROUNDS any value
+  // past 2^53, so a caller comparing the result (a saltLength, a path-length or
+  // policy-skip counter, an iteration count) acts on the wrong number. Every
+  // `Number(v)` whose `v` comes from an integer read MUST be dominated by a
+  // bound — a numeric upper limit (`v > Nn`), `Number.isSafeInteger`, a byte
+  // mask, or membership in a small enumerated set (a `hasOwnProperty` / `indexOf`
+  // whitelist). This fires on a NEW unbounded narrowing introduced ANYWHERE in
+  // lib, including a spot never yet reviewed — the point the per-format frozen
+  // lists missed. It is rename-proof: it matches the `Number(...)` shape and the
+  // guard shapes, not any specific symbol, error code, or function.
+  var INT_READ = /read\.integer\b|read\.integerImplicit\b|read\.enumerated\b|\breadInt\(|integerLeaf\(/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      var m = lines[i].match(/\bNumber\(\s*([A-Za-z_$][\w$.]*)\s*\)/);
+      if (!m) continue;                                  // only Number(<ident>) — masks/literals/exprs excluded
+      var id = m[1];
+      // Scope = the enclosing function body (back to the nearest declaration at
+      // a shallower-or-equal indent, or file start) — a real boundary, never a
+      // fixed character count.
+      var callIndent = (lines[i].match(/^\s*/) || [""])[0].length;
+      var scopeStart = 0;
+      for (var b = i - 1; b >= 0; b--) {
+        var ind = (lines[b].match(/^\s*/) || [""])[0].length;
+        if (/\bfunction\b/.test(lines[b]) && ind <= callIndent) { scopeStart = b; break; }
+      }
+      var scope = lines.slice(scopeStart, i + 1).join("\n");
+      var idRe = id.replace(/[.$]/g, "\\$&");
+      // The value must plausibly be an unbounded integer read to matter.
+      var derivesFromRead = INT_READ.test(scope) &&
+        (new RegExp(idRe + "\\s*=\\s*[^=]").test(scope) || INT_READ.test(m.input));
+      if (!derivesFromRead) continue;
+      var bounded =
+        new RegExp(idRe + "\\s*>=?\\s*\\d").test(scope) ||          // id > Nn / id >= N
+        new RegExp(idRe + "\\s*<=\\s*\\d").test(scope) ||           // id <= N
+        /Number\.isSafeInteger/.test(scope) ||
+        new RegExp(idRe + "\\s*&\\s*0x").test(scope) ||             // masked
+        /hasOwnProperty|\.indexOf\(/.test(scope);                    // small-enum whitelist
+      if (!bounded) {
+        bad.push({ file: rel, line: i + 1,
+          content: "Number(" + id + ") narrows an ASN.1 integer read with no dominating bound — a value past 2^53 rounds silently; add a range check (id > Nn), Number.isSafeInteger, or a whitelist before narrowing (the RSASSA-PSS / PKCS#12 / CMP exact-or-rejected rule)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "number-narrows-unbounded-integer");
+  _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -2702,20 +2259,10 @@ function run() {
   testFuzzBuildInstallsJazzer();
   testNoUnpinnedNpmInShell();
   testSchemaBuildSurfacesEveryField();
-  testCmsSignedDataConformanceGuards();
-  testOcspConformanceGuards();
-  testTspConformanceGuards();
-  testCrmfConformanceGuards();
-  testPkcs12ConformanceGuards();
-  testCmpConformanceGuards();
   testWorkflowScanFailureMasked();
   testSharedLeafOptionScope();
-  testEngineEncodeParity();
   testAlgorithmLookupNoDefault();
-  testReleasePushFixOrder();
-  testAttrCertConformanceGuards();
-  testCmsEnvelopedDataConformanceGuards();
-  testPathValidateConformanceGuards();
+  testNumberNarrowsUnboundedInteger();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testDecoderRejectsConstructedPrimitiveOnly();

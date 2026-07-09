@@ -21,6 +21,10 @@ An RFC 9810 Certificate Management Protocol message parser joins the pki.schema 
 - pki.schema.tsp parsing (parse, parseTstInfo, parseToken, pemDecode) is now stable.
 - The npm-publish vulnerability scan reads the committed lockfiles (the dev and build toolchain that runs during a publish) instead of the runtime SBOM, which is empty by construction because the package ships zero runtime dependencies.
 
+### Fixed
+
+- Certification-path validation bounds the BasicConstraints pathLenConstraint and the PolicyConstraints / InhibitAnyPolicy skip counts before narrowing them to a number, so a certificate carrying a value past the safe-integer range is rejected rather than having the counter round silently to the wrong value (the same exact-or-rejected rule the RSASSA-PSS salt length and PKCS#12 iteration count follow).
+
 ## v0.1.18 — 2026-07-08
 
 An RFC 7292 PKCS#12 (PFX) store parser joins the pki.schema family.
