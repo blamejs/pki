@@ -661,6 +661,9 @@ function testRejectBody() {
   ]);
   check("ccr with two CertReqMsgs rejected (Appendix D.6)",
         parseCode(minimalMessage({ body: body(13, ccrTwoMsgs) })) === "cmp/bad-body");
+  // RFC 9810 Appendix D.6 — the response mirror: a ccp carries exactly one CertResponse.
+  check("ccp with two CertResponses rejected (Appendix D.6)", parseCode(minimalMessage({
+    body: body(14, certRepMessage({ responses: [certResponse({}), certResponse({})] })) })) === "cmp/bad-body");
   // RFC 9810 §5.2.8.3 — the encryptedKey (and agreeMAC) POPOPrivKey choices are
   // cmp2021(3) syntax; a request carrying one under pvno 2 is a version mismatch.
   check("ir POP using encryptedKey at pvno 2 rejected (RFC 9810 §5.2.8.3)", parseCode(minimalMessage({
