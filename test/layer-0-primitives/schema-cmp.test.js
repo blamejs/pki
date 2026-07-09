@@ -320,6 +320,24 @@ function testAcceptCertRep() {
     var mm = parse(minimalMessage({ body: body(t[0], rep) }));
     check(t[1] + " shares the CertRepMessage schema", mm.body.arm === t[1] && mm.body.decoded.response.length === 1);
   });
+  // RFC 9810 §5.3.12 — a cross-certification response (ccp) reuses CertRepMessage
+  // "with the restriction that no encrypted private key can be sent": cross-cert
+  // certifies an existing CA's public key, so there is no key generation and a
+  // CertifiedKeyPair.privateKey has no meaning. A ccp carrying one is rejected;
+  // the same privateKey [0] is legal in the enrollment responses (ip/cp/kup).
+  var ccpPrivKey = certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([
+    b.explicit(0, RAW_CERT),               // certOrEncCert = certificate [0]
+    b.explicit(0, implicitEnveloped()),    // privateKey [0] EncryptedKey — forbidden in a ccp
+  ]) })] });
+  check("ccp carrying a privateKey rejected (RFC 9810 §5.3.12)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(14, ccpPrivKey) })) === "cmp/bad-cert-response");
+  check("ccp with only a certificate accepted", parseCode(minimalMessage({
+    headerOpts: { pvno: 3 }, body: body(14, certRepMessage({ responses: [certResponse({
+      certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "NO-THROW");
+  // The SAME privateKey [0] is legal in a kup (key-update) response — the
+  // restriction is arm-specific to cross-certification, not the shared schema.
+  check("kup carrying a privateKey accepted (not a ccp)", parseCode(minimalMessage({
+    headerOpts: { pvno: 3 }, body: body(8, ccpPrivKey) })) === "NO-THROW");
 
   // The optional CertifiedKeyPair trailing fields + CertResponse.rspInfo.
   var fullCkp = b.sequence([
