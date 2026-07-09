@@ -258,14 +258,29 @@ function testExtensionDecoderRegistry() {
   var extValue = extValueOf([serialized(sctBody({}))]);
   var viaRegistry = byOid[sctOid](extValue);
   check("49. SCT-list extension decoder returns the parsed list", viaRegistry.scts.length === 1 && viaRegistry.scts[0].version === 0);
-  check("50. SCT-list decoder throws ct/* on malformed value", code(function () { byOid[sctOid](Buffer.from([0x05, 0x00])); }) === "ct/bad-der");
+  // the registry contract is <prefix>/bad-*: the CT module's ct/* fault is wrapped
+  // as x509/bad-extension-value and carried as .cause, not leaked at the registry tier.
+  var regErr;
+  try { byOid[sctOid](Buffer.from([0x05, 0x00])); } catch (e) { regErr = e; }
+  check("50. SCT-list decoder wraps as x509/bad-extension-value", regErr && regErr.code === "x509/bad-extension-value");
+  check("50b. wrapped decoder preserves the ct/* fault as .cause", regErr && regErr.cause && regErr.cause.code === "ct/bad-der");
 
   // the poison decoder: exactly ASN.1 NULL (05 00)
   var poisonVal = b.nullValue ? b.nullValue() : Buffer.from([0x05, 0x00]);
   check("51. poison NULL value accepted", byOid[poisonOid](poisonVal).poison === true);
-  check("52. poison non-NULL value -> x509/bad-precert-poison", code(function () { byOid[poisonOid](b.integer(1n)); }) === "x509/bad-precert-poison");
-  check("53. poison NULL with trailing bytes -> x509/bad-precert-poison", code(function () { byOid[poisonOid](Buffer.from([0x05, 0x00, 0x00])); }) === "x509/bad-precert-poison");
-  check("54. poison non-empty NULL content -> x509/bad-precert-poison", code(function () { byOid[poisonOid](Buffer.from([0x05, 0x01, 0x00])); }) === "x509/bad-precert-poison");
+  check("52. poison non-NULL value -> x509/bad-extension-value", code(function () { byOid[poisonOid](b.integer(1n)); }) === "x509/bad-extension-value");
+  check("53. poison NULL with trailing bytes -> x509/bad-extension-value", code(function () { byOid[poisonOid](Buffer.from([0x05, 0x00, 0x00])); }) === "x509/bad-extension-value");
+  check("54. poison non-empty NULL content -> x509/bad-extension-value", code(function () { byOid[poisonOid](Buffer.from([0x05, 0x01, 0x00])); }) === "x509/bad-extension-value");
+}
+
+// ---- orchestrator exclusion: ct is NOT a pki.schema.parse format ------
+function testNotASchemaFormat() {
+  // An SCT list has no self-describing DER root (its only shape is a bare OCTET
+  // STRING), so it is deliberately NOT registered with the format orchestrator.
+  check("55. pki.schema.all() does not contain ct", pki.schema.all().indexOf("ct") === -1);
+  // a raw SCT-list DER (a bare OCTET STRING) routes to no format, fail-closed.
+  var raw = extValueOf([serialized(sctBody({}))]);
+  check("56. pki.schema.parse of a raw SCT-list DER -> schema/unknown-format", code(function () { pki.schema.parse(raw); }) === "schema/unknown-format");
 }
 
 function run() {
@@ -277,6 +292,7 @@ function run() {
   testCaps();
   testReconstruct();
   testExtensionDecoderRegistry();
+  testNotASchemaFormat();
 }
 
 module.exports = { run: run };
