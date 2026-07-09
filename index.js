@@ -30,6 +30,7 @@ var oid       = require("./lib/oid");
 var webcrypto = require("./lib/webcrypto");
 var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
+var ct        = require("./lib/ct");
 
 module.exports = {
   version:   constants.version,
@@ -46,6 +47,10 @@ module.exports = {
   // `path` is RFC 5280 §6 certification-path validation — pki.path.validate
   // runs the §6.1 state machine over an already-parsed path + a trust anchor.
   path:      path,
+  // `ct` is RFC 6962 Certificate Transparency — pki.ct.parseSctList decodes the
+  // SCT-list extension a certificate / OCSP response carries; the signature is
+  // surfaced raw for external verification (pki.ct.reconstructSignedData).
+  ct:        ct,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.

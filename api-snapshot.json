@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.19",
+  "packageVersion": "0.1.20",
   "surface": {
     "C": {
       "kind": "object",
@@ -60,6 +60,12 @@
               "kind": "number"
             },
             "PKCS12_MAX_REDECODES": {
+              "kind": "number"
+            },
+            "SCT_MAX_BYTES": {
+              "kind": "number"
+            },
+            "SCT_MAX_COUNT": {
               "kind": "number"
             }
           }
@@ -391,6 +397,12 @@
             },
             "PKCS12_MAX_REDECODES": {
               "kind": "number"
+            },
+            "SCT_MAX_BYTES": {
+              "kind": "number"
+            },
+            "SCT_MAX_COUNT": {
+              "kind": "number"
             }
           }
         },
@@ -425,6 +437,62 @@
         },
         "version": {
           "kind": "string"
+        }
+      }
+    },
+    "ct": {
+      "kind": "object",
+      "members": {
+        "HASH_ALGORITHMS": {
+          "kind": "object",
+          "members": {
+            "0": {
+              "kind": "string"
+            },
+            "1": {
+              "kind": "string"
+            },
+            "2": {
+              "kind": "string"
+            },
+            "3": {
+              "kind": "string"
+            },
+            "4": {
+              "kind": "string"
+            },
+            "5": {
+              "kind": "string"
+            },
+            "6": {
+              "kind": "string"
+            }
+          }
+        },
+        "SIGNATURE_ALGORITHMS": {
+          "kind": "object",
+          "members": {
+            "0": {
+              "kind": "string"
+            },
+            "1": {
+              "kind": "string"
+            },
+            "2": {
+              "kind": "string"
+            },
+            "3": {
+              "kind": "string"
+            }
+          }
+        },
+        "parseSctList": {
+          "kind": "function",
+          "arity": 1
+        },
+        "reconstructSignedData": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -464,6 +532,10 @@
           "arity": 3
         },
         "CsrError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "CtError": {
           "kind": "function",
           "arity": 3
         },
@@ -932,6 +1004,8 @@
     "pki.asn1.build": "0.1.0",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
+    "pki.ct.parseSctList": "0.1.20",
+    "pki.ct.reconstructSignedData": "0.1.20",
     "pki.errors.PkiError": "0.1.0",
     "pki.errors.defineClass": "0.1.0",
     "pki.oid.name": "0.1.0",

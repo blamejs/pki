@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.20 — 2026-07-09
+
+An RFC 6962 Certificate Transparency SCT-list parser joins the toolkit.
+
+### Added
+
+- pki.ct.parseSctList(extValue) — RFC 6962 SCT-list parsing. It decodes the SignedCertificateTimestampList extension value (the raw extnValue content an x509 or OCSP extension surfaces) into { scts, unknownScts }. Each scts entry is a fully decoded v1 SCT: version (0), logId (32-byte Buffer) plus logIdHex, timestamp (exact BigInt) plus timestampMs (a Number, or null above 2^53) plus timestampDate, extensions (raw Buffer), the hashAlg / sigAlg code points plus a named signatureAlgorithm, the raw signature, and rawSct (the full SerializedSCT body). A SerializedSCT whose version is not v1 is preserved opaque in unknownScts as { version, rawSct } rather than failing the list (RFC 6962 §3.3 gives each SerializedSCT its own length so unknown versions are skippable). The extension value is the §3.3 double DER OCTET STRING wrap over a TLS-encoded list, decoded with a bounded reader that validates the list and per-SCT framing and every internal length, and asserts a per-list byte and count cap before it iterates. The signature is never verified and the log id never recomputed. Malformed input fails closed with a typed ct/* (or leaf asn1/*) code.
+- pki.ct.reconstructSignedData(entry, sct) — rebuilds the exact digitally-signed preimage a verifier hashes to check an SCT's signature (RFC 6962 §3.2), for a decoded v1 SCT. entry selects the log-entry form: { entryType: 0, leafCert } for an SCT delivered over TLS or OCSP (signed over the leaf certificate), or { entryType: 1, tbsCertificate, issuerKeyHash } for an SCT embedded in a certificate (signed over the issuer key hash and the precertificate TBS). The preimage reuses the parsed SCT's raw extensions byte-for-byte; a verifier hashes the returned bytes and checks the signature with the log's public key.
+- The certificate-extension value registry gains the SCT-list decoder and the precertificate-poison decoder (the poison value is content-validated as ASN.1 NULL, not merely tag-checked).
+- The OID registry gains the Certificate Transparency arc — the SCT-list, precertificate-poison, precertificate-signing-certificate, and OCSP SCT-list identifiers — so those extension OIDs resolve to names.
+- The error taxonomy gains CtError, carrying a stable ct/* code.
+
 ## v0.1.19 — 2026-07-09
 
 An RFC 9810 Certificate Management Protocol message parser joins the pki.schema family.

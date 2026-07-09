@@ -63,7 +63,7 @@ The clearest differentiator: the classical toolkit this library replaces has no 
 ## Revocation and transparency
 
 - **OCSP** — *Targeted.* Request and response, basic OCSP response, per-certificate status: create, parse, sign, verify. RFC 6960.
-- **Certificate Transparency SCTs** — *Planned.* Signed certificate timestamp list encode/decode and signature verification, with correct padding and immutable verification. RFC 6962.
+- **Certificate Transparency SCTs** — *Parsing shipped* (`pki.ct.parseSctList`): the SCT-list extension decodes to per-SCT log id, exact timestamp, named algorithm, and raw signature (unknown versions preserved opaque), and `pki.ct.reconstructSignedData` rebuilds the exact digitally-signed preimage for external verification. *Planned next:* SCT-list encode/sign and in-toolkit signature verification. RFC 6962.
 - **CT log client** — *Under design.* add-chain / add-pre-chain submission and signed-tree-head, inclusion, and consistency-proof verification. RFC 6962.
 
 ## Timestamping — RFC 3161

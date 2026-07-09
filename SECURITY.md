@@ -108,7 +108,15 @@ security-only patches after the next major releases.
   slices so a verifier reconstructs the protected part from the bytes that were
   actually protected, never a re-encoding; and CMP `caPubs` are surfaced as raw
   certificates conferring no trust, so a client cannot be steered into installing
-  a trust anchor from an unauthenticated response.
+  a trust anchor from an unauthenticated response. `pki.ct.parseSctList` follows
+  the same rule for Certificate Transparency: it decodes the SCT-list structure
+  but never verifies a signature or recomputes a log id, and
+  `pki.ct.reconstructSignedData` rebuilds the exact RFC 6962 digitally-signed
+  preimage from the parsed bytes so the log-signature check runs on what was
+  actually signed. The TLS-encoded list itself is decoded with a bounded reader
+  that validates every framing length and caps the per-list byte size and SCT
+  count before iterating, so a crafted SCT extension is bounded work with a typed
+  `ct/*` verdict rather than unbounded work inside a certificate extension.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,
