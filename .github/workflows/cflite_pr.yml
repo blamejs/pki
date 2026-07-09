@@ -50,6 +50,7 @@ jobs:
           - attrcert-parse
           - crmf-parse
           - pkcs12-parse
+          - cmp-parse
           - pkix-ext-parse
     steps:
       - name: Checkout

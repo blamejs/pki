@@ -361,10 +361,67 @@ function testRepeatMax() {
   check("repeat without max is unchanged", code(function () { walk(noMax, over); }) === "NO-THROW");
 }
 
+// The open-CHOICE dispatch idiom: a decode leaf maps a context TAG to an arm
+// name, walks a schema where one exists, and surfaces every other DEFINED arm
+// raw — rejecting only tags outside the defined range. (The CMS OID-dispatch
+// idiom keyed on a tag; stays a decode leaf until a second consumer earns an
+// engine combinator.)
+function testOpenChoiceIdiom() {
+  var INNER = S.seq([S.field("v", S.integerLeaf())],
+    { code: "t/bad-inner", what: "Inner", build: function (m) { return m.fields.v.value; } });
+  var DECODED = { 0: INNER };
+  var NAMES = { 0: "alpha", 1: "beta" };
+  var OPEN = S.decode(function (n, ctx) {
+    if (n.tagClass !== "context" || !n.children) throw ctx.E("t/bad-open", "expected a context-tagged constructed arm");
+    if (!(n.tagNumber in NAMES)) throw ctx.E("t/bad-open", "tag [" + n.tagNumber + "] is not a defined arm");
+    if (n.children.length !== 1) throw ctx.E("t/bad-open", "an EXPLICIT arm wraps exactly one value");
+    var out = { arm: NAMES[n.tagNumber], tag: n.tagNumber, bytes: n.children[0].bytes };
+    if (DECODED[n.tagNumber]) out.decoded = S.walk(DECODED[n.tagNumber], n.children[0], NS).result;
+    return out;
+  });
+  var a = walk(OPEN, b.explicit(0, b.sequence([b.integer(7n)])));
+  check("open-choice: a decoded arm walks its schema", a.arm === "alpha" && a.decoded === 7n);
+  var beta = walk(OPEN, b.explicit(1, b.sequence([b.oid("1.2.3")])));
+  check("open-choice: a defined-undecoded arm surfaces raw", beta.arm === "beta" && !("decoded" in beta) && Buffer.isBuffer(beta.bytes));
+  check("open-choice: an undefined tag rejects", code(function () { walk(OPEN, b.explicit(2, b.integer(1n))); }) === "t/bad-open");
+  check("open-choice: a two-value wrapper rejects", code(function () {
+    walk(OPEN, Buffer.concat([Buffer.from([0xa0, 0x06]), b.integer(1n), b.integer(2n)]));
+  }) === "t/bad-open");
+}
+
+// The named-bits idiom: a decode leaf over read.bitString maps set bits to
+// names and enforces the X.690 §11.2.2 rule that a named-bit BIT STRING
+// carries no trailing zero bits.
+function testNamedBitsIdiom() {
+  var NAMES = ["zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine"];
+  var BITS = S.decode(function (n, ctx) {
+    var bs = pki.asn1.read.bitString(n);
+    var total = bs.bytes.length * 8 - bs.unusedBits;
+    if (total > 0) {
+      var lastByte = bs.bytes[bs.bytes.length - 1];
+      if (((lastByte >> bs.unusedBits) & 1) !== 1) throw ctx.E("t/bad-bits", "a named-bit BIT STRING must drop trailing zero bits (X.690 §11.2.2)");
+    }
+    var names = [];
+    for (var i = 0; i < total; i++) {
+      if ((bs.bytes[i >> 3] >> (7 - (i % 8))) & 1) names.push(NAMES[i] || i);
+    }
+    return names;
+  });
+  check("named-bits: set bits map to names",
+    JSON.stringify(walk(BITS, b.bitString(Buffer.from([0x40, 0x40]), 6))) === JSON.stringify(["one", "nine"]));
+  check("named-bits: empty bit string is the empty set",
+    JSON.stringify(walk(BITS, b.bitString(Buffer.alloc(0), 0))) === "[]");
+  check("named-bits: trailing zero bit rejects", code(function () {
+    walk(BITS, b.bitString(Buffer.from([0x40]), 4));
+  }) === "t/bad-bits");
+}
+
 function run() {
   testLeaves();
   testEmbeddedDer();
   testRepeatMax();
+  testOpenChoiceIdiom();
+  testNamedBitsIdiom();
   testImplicitSetOf();
   testImplicitBitString();
   testImplicitNull();

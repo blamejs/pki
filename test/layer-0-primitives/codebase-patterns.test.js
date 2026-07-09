@@ -1077,6 +1077,63 @@ function testPkcs12ConformanceGuards() {
   _report("PKCS#12 RFC-conformance guards present (version v3 / integrity-mode surface incl. legal MAC-less stores / MacData + PBMAC1 rules / authSafe + safe-content dispatch / closed bag sets / single-value attrs / nesting + count budgets)", bad);
 }
 
+function testCmpConformanceGuards() {
+  // class: cmp-conformance-guard-dropped
+  // Each token is the STABLE, frozen contract of an RFC 9810 validation the CMP
+  // parser MUST perform. Anchored on the public error code, not a helper name
+  // (rename-proof). Codes minted by shared factories (versionReader's
+  // /bad-version, generalName's /bad-general-name, the makeParser /bad-der and
+  // /bad-input plumbing) are not asserted here — their guards live in the
+  // shared primitive.
+  var src;
+  try { src = fs.readFileSync(path.join(REPO_ROOT, "lib/schema-cmp.js"), "utf8"); }
+  catch (_e) { return; }
+  var required = [
+    ['"cmp/not-a-pki-message"',       "PKIMessage is a SEQUENCE of 2-4, header/body positional, [0..1] trailing (§5.1)"],
+    ['"cmp/bad-header"',              "PKIHeader shape + [0..8] trailing optionals ascending, at-most-once (§5.1.1)"],
+    ['"cmp/bad-time"',               "messageTime is GeneralizedTime, never UTCTime (§5.1.1)"],
+    ['"cmp/bad-freetext"',           "PKIFreeText is SEQUENCE SIZE(1..MAX) OF UTF8String (§5.1.1)"],
+    ['"cmp/bad-general-info"',       "generalInfo present => non-empty (§5.1.1)"],
+    ['"cmp/bad-info-value"',         "id-it value-syntax: implicitConfirm NULL / confirmWaitTime GT / certProfile SEQ OF UTF8 (§5.1.1.1/.2/.4)"],
+    ['"cmp/bad-body"',               "PKIBody is a constructed context [0..26] arm wrapping exactly one value (§5.1.2)"],
+    ['"cmp/protection-alg-mismatch"', "protection bits <=> header protectionAlg, both directions (§5.1.1)"],
+    ['"cmp/bad-protection"',         "PKIProtection is a BIT STRING (§5.1.3)"],
+    ['"cmp/bad-extra-certs"',        "extraCerts present => non-empty (§5.1)"],
+    ['"cmp/bad-status"',             "PKIStatus is in 0..6 (§5.2.3)"],
+    ['"cmp/bad-fail-info"',          "PKIFailureInfo named bits drop trailing zero bits (X.690 §11.2.2)"],
+    ['"cmp/bad-error"',              "ErrorMsgContent optionals disambiguated by universal tag, no leftover (§5.3.21)"],
+    ['"cmp/bad-cert-status"',        "CertStatus shape + certConf hashAlg requires pvno cmp2021 (§5.3.18)"],
+    ['"cmp/bad-cert-rep"',           "CertRepMessage caPubs [1] non-empty; response SEQ OF CertResponse (§5.3.4)"],
+    ['"cmp/bad-cert-response"',      "CertResponse + CertifiedKeyPair + closed CertOrEncCert / EncryptedKey CHOICEs (§5.3.4, §5.2.2)"],
+    ['"cmp/bad-rev-req"',            "RevReqContent / RevDetails; certDetails walks the CRMF CertTemplate (§5.3.9)"],
+    ['"cmp/bad-rev-rep"',            "RevRepContent status SIZE(1..MAX); revCerts/crls [0..1] non-empty (§5.3.10)"],
+    ['"cmp/bad-poll-rep"',           "PollRep checkAfter is a non-negative delay (§5.3.22)"],
+    ['"cmp/bad-pkiconf"',            "PKIConfirmContent is NULL (§5.3.16)"],
+    ['crmf.walkCertReqMessages',     "ir/cr/kur/krr/ccr walk the CRMF CertReqMessages NS-bound (crmf/* on failure, not cmp/*)"],
+    ['cms.walkEnvelopedData',        "the EncryptedKey envelopedData arm composes the CMS walker (§5.2.2)"],
+    ['asn1.sequenceTlv',             "EncryptedKey envelopedData [0] is IMPLICIT (imported CRMF module) — retag to SEQUENCE before the CMS walk, not schema.explicit (§5.2.2)"],
+    ['headerBytes',                  "the protection input is the exact header wire slice, never re-encoded (§5.1.3)"],
+    ['bodyBytes',                    "the protection input is the exact body wire slice, never re-encoded (§5.1.3)"],
+  ];
+  var bad = [];
+  required.forEach(function (r) {
+    if (src.indexOf(r[0]) === -1) {
+      bad.push({ file: "lib/schema-cmp.js", line: 0,
+        content: "the CMP parser no longer references `" + r[0] + "` — a dropped fail-closed guard: " + r[1] });
+    }
+  });
+  // Structural: the message build MUST run the protection<=>protectionAlg
+  // cross-check before it returns the assembled message, so a refactor that
+  // drops the check (leaving the frozen code elsewhere) still fires. Anchored
+  // on the build up to its result return (tempered token, rename-proof).
+  if (!/protectionAlg !== null(?:(?!\n {4}return \{)[\s\S]){0,400}?"cmp\/protection-alg-mismatch"/.test(src)) {
+    bad.push({ file: "lib/schema-cmp.js", line: 0,
+      content: "the PKIMessage build no longer enforces protection<=>protectionAlg before returning — the RFC 9810 §5.1.1 both-or-neither rule is under-enforced" });
+  }
+  bad = _filterMarkers(bad, "cmp-conformance-guard-dropped");
+  _report("CMP RFC-conformance guards present (envelope/header shape / GT-only time / UTF8 freetext / id-it value syntax / 27-arm body dispatch / protection<=>protectionAlg / status whitelist / named-bit trailing-zero / certConf-hashAlg<=>pvno / CRMF + CMS composition / raw protection slices)", bad);
+}
+
 function testWorkflowScanFailureMasked() {
   // class: workflow-scan-failure-masked
   // A security scanner whose failure is silenced is indistinguishable from a
@@ -1603,7 +1660,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js"]; // + future format modules as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js", "lib/schema-cmp.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -2347,6 +2404,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-attrcert.js:pemDecode", "lib/schema-crmf.js:pemDecode",
         "lib/schema-pkcs12.js:pemDecode", "lib/schema-pkcs12.js:pemEncode",
         "lib/schema-attrcert.js:<top>", "lib/schema-pkcs12.js:<top>",
+        "lib/schema-cmp.js:pemDecode", "lib/schema-cmp.js:pemEncode", "lib/schema-cmp.js:<top>",
       ],
       mode: "family-subset",
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
@@ -2365,6 +2423,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-ocsp.js:matchesRequest", "lib/schema-ocsp.js:matchesResponse",
         "lib/schema-attrcert.js:matches", "lib/schema-attrcert.js:matchesV1",
         "lib/schema-crmf.js:matches", "lib/schema-pkcs12.js:matches",
+        "lib/schema-cmp.js:matches",
       ],
       mode: "family-subset",
       reason: "per-format matches()/matchesV1() detectors share the signedEnvelopeTbs + children-tag-probe idiom (the preamble lives in pkix); each probes different positions/tags to stay mutually exclusive, nothing further to extract.",
@@ -2385,6 +2444,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-pkcs12.js:<top>", "lib/schema-crmf.js:popoPrivKey",
         "lib/schema-pkix.js:algorithmIdentifier", "lib/schema-pkix.js:attribute",
         "lib/schema-pkix.js:attributeTypeAndValue",
+        "lib/schema-cmp.js:<top>", "lib/schema-ocsp.js:_shapeCertStatus",
+        "lib/schema-crl.js:decodeExt", "lib/schema-crmf.js:mapControls",
+        "lib/schema-attrcert.js:<top>", "lib/schema-tsp.js:<top>",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
@@ -2596,6 +2658,7 @@ function run() {
   testTspConformanceGuards();
   testCrmfConformanceGuards();
   testPkcs12ConformanceGuards();
+  testCmpConformanceGuards();
   testWorkflowScanFailureMasked();
   testSharedLeafOptionScope();
   testEngineEncodeParity();
