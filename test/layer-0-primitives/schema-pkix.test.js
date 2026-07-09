@@ -287,6 +287,10 @@ function testAlgParamsMustBeAbsent() {
   check("X25519 + NULL params rejected", rej(b.sequence([b.oid(x), b.nullValue()])) === "path/bad-algorithm-parameters");
   // present parameters — arbitrary bytes (not just NULL) — rejected
   check("slh-dsa + garbage params rejected", rej(b.sequence([b.oid(slh), b.integer(1n)])) === "path/bad-algorithm-parameters");
+  // the pre-hash HashSLH-DSA OIDs (RFC 9909 §3) are covered too
+  var hashSlh = oid.byName("id-hash-slh-dsa-sha2-128s-with-sha256");
+  check("HashSLH-DSA without params parses", res(b.sequence([b.oid(hashSlh)])).parameters === null);
+  check("HashSLH-DSA + NULL params rejected", rej(b.sequence([b.oid(hashSlh), b.nullValue()])) === "path/bad-algorithm-parameters");
 
   // behavior-preserving: algorithms that carry parameters are untouched
   check("rsaEncryption + NULL params still parses", res(b.sequence([b.oid(rsa), b.nullValue()])).parameters !== null);
