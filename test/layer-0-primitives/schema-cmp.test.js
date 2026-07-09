@@ -657,6 +657,11 @@ function testRejectBody() {
     headerOpts: { pvno: 2 }, body: body(0, certReqEncKeyPop()) })) === "cmp/bad-version");
   check("ir POP using encryptedKey at pvno 3 accepted", parseCode(minimalMessage({
     headerOpts: { pvno: 3 }, body: body(0, certReqEncKeyPop()) })) === "NO-THROW");
+  // RFC 9810 §5.3.11 — a ccr must not send the private key, so the private-key-
+  // carrying encryptedKey POP is forbidden in a ccr even at cmp2021 (the same
+  // POP is legal in an ir above).
+  check("ccr POP sending the private key (encryptedKey) rejected (RFC 9810 §5.3.11)", parseCode(minimalMessage({
+    headerOpts: { pvno: 3 }, body: body(13, certReqEncKeyPop()) })) === "cmp/bad-body");
 }
 
 // ---- dispatch / coercion / misc ------------------------------------------------------
