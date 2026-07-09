@@ -429,11 +429,22 @@ function testAcceptConfirmAndSupport() {
 
 // ---- ACCEPT: raw arms + extraCerts + protection exactness -------------------
 function testAcceptRawArmsAndProtection() {
-  [[4, "p10cr"], [5, "popdecc"], [10, "krp"], [15, "ckuann"], [16, "cann"], [20, "nested"]].forEach(function (t) {
+  [[4, "p10cr"], [5, "popdecc"], [15, "ckuann"], [16, "cann"], [20, "nested"]].forEach(function (t) {
     var m = parse(minimalMessage({ body: body(t[0], b.sequence([b.integer(1)])) }));
     check(t[1] + " surfaces {arm, tag, bytes} raw", m.body.arm === t[1] && m.body.tag === t[0] &&
           Buffer.isBuffer(m.body.bytes) && !("decoded" in m.body));
   });
+  // krp (KeyRecRepContent) decodes structurally (§5.3.8) so its keyPairHist
+  // CertifiedKeyPairs run the same EnvelopedData version gate as ip/cp/kup/ccp.
+  var krp = parse(minimalMessage({ body: body(10, b.sequence([pkiStatusInfo({ status: 0 })])) }));
+  check("krp decodes to a KeyRecRepContent", krp.body.arm === "krp" && krp.body.decoded.status.status.name === "accepted" && krp.body.decoded.keyPairHist === null);
+  var krpEnv = b.sequence([pkiStatusInfo({ status: 0 }),
+    b.explicit(2, b.sequence([b.sequence([b.explicit(1, implicitEnveloped())])]))]);   // keyPairHist [2] { CertifiedKeyPair { encryptedCert [1] { envelopedData [0] } } }
+  check("krp keyPairHist EnvelopedData at pvno 2 rejected (version gate now applies)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(10, krpEnv) })) === "cmp/bad-version");
+  var krpEnv3 = parse(minimalMessage({ headerOpts: { pvno: 3 }, body: body(10, krpEnv) }));
+  check("krp keyPairHist EnvelopedData at pvno 3 accepted",
+        krpEnv3.body.decoded.keyPairHist[0].encryptedCert.envelopedData.recipientInfos.length === 1);
 
   var m = parse(minimalMessage({ extraCerts: [RAW_CERT, RAW_CRL] }));
   check("extraCerts raw", m.extraCerts.length === 2 && m.extraCerts[0].equals(RAW_CERT));
