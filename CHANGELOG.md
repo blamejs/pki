@@ -4,6 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.21 — 2026-07-09
+
+SLH-DSA signatures verify in certification-path validation, and the post-quantum / EdDSA parameters-absent rule is enforced across every format.
+
+### Added
+
+- SLH-DSA signature verification in pki.path.validate — all twelve FIPS 205 parameter sets (id-slh-dsa-sha2-{128,192,256}{s,f} and the SHAKE sets). A certificate or CRL signed with SLH-DSA now verifies by importing the issuer's SLH-DSA public key and checking the one-shot signature over the raw signed region; the same rows serve both the certificate signature check and the CRL revocation checker. ML-DSA and the classical RSA / ECDSA / EdDSA set were already wired.
+- pki.oid.paramsMustBeAbsent(oid) — a predicate that reports whether an AlgorithmIdentifier bearing the given OID must encode its parameters field as absent (the ML-DSA and SLH-DSA families and the RFC 8410 Edwards / Montgomery curves). It is the single source the shared AlgorithmIdentifier decoder consults.
+- The OID registry now names the twelve pre-hash HashSLH-DSA identifiers (id-hash-slh-dsa-*, RFC 9909 §3), so a certificate or CRL that carries a HashSLH-DSA algorithm resolves to a name and is covered by the parameters-absent rule.
+
+### Fixed
+
+- The shared AlgorithmIdentifier decoder now rejects a present parameters field on the algorithms whose parameters MUST be absent — ML-DSA, SLH-DSA, Ed25519, Ed448, X25519, and X448 (RFC 9909 §3, RFC 9814 §4, RFC 9881 §2, RFC 8410 §3) — failing closed with a <format>/bad-algorithm-parameters code. Previously a stray explicit NULL or arbitrary bytes in that field were surfaced raw. The rule is enforced once in the shared decoder, so every format that names an algorithm inherits it; a conforming identifier, which omits the field, is unaffected.
+- Certification-path validation now enforces issuer-key / signature-algorithm consistency for the one-shot families whose public-key OID equals the signature OID — EdDSA, ML-DSA, and SLH-DSA — rejecting a mismatch with a path/algorithm-mismatch reason (RFC 9814 §4). Because the underlying WebCrypto import binds a public key of a different type to the requested algorithm name and verifies with the real key, a certificate or CRL signed by one key type but labelling its signatureAlgorithm as another one-shot type could otherwise validate; the check closes that algorithm-confusion path for both the certificate signature and the CRL revocation checker.
+
 ## v0.1.20 — 2026-07-09
 
 An RFC 6962 Certificate Transparency SCT-list parser joins the toolkit.

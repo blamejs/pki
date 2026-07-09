@@ -99,7 +99,18 @@ security-only patches after the next major releases.
   silently dropped (CVE-2023-0465); name comparison rejects embedded NUL and
   control bytes so a truncated name cannot compare equal (CVE-2009-2408); and an
   unknown critical extension or an undetermined revocation status terminates the
-  path with a typed reason code rather than passing.
+  path with a typed reason code rather than passing. Post-quantum SLH-DSA
+  signatures (all twelve FIPS 205 parameter sets) verify on this path over the
+  exact signed bytes, alongside ML-DSA and the classical set.
+- **Algorithm-parameter confusion.** For the algorithms whose `parameters` field
+  MUST be absent — ML-DSA, SLH-DSA, and the RFC 8410 Edwards/Montgomery curves —
+  the single shared AlgorithmIdentifier decoder rejects a present parameters
+  field (an explicit NULL or arbitrary bytes) fail-closed with a
+  `<format>/bad-algorithm-parameters` code (RFC 9909 §3, RFC 9814 §4, RFC 9881
+  §2, RFC 8410 §3). The check lives in the one decoder every format composes, so
+  a certificate, CMS message, OCSP response, timestamp, CRL, CSR, or key cannot
+  smuggle unauthenticated bytes past a parser through that field, and no format
+  can drift out of the rule.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the bytes
   that were actually signed rather than re-encoding and hoping for round-trip

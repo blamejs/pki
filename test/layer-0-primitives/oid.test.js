@@ -75,6 +75,13 @@ function testSlhDsa() {
     "id-slh-dsa-shake-128s": 26, "id-slh-dsa-shake-128f": 27,
     "id-slh-dsa-shake-192s": 28, "id-slh-dsa-shake-192f": 29,
     "id-slh-dsa-shake-256s": 30, "id-slh-dsa-shake-256f": 31,
+    // pre-hash HashSLH-DSA sets (RFC 9909 §3), .35-.46
+    "id-hash-slh-dsa-sha2-128s-with-sha256": 35, "id-hash-slh-dsa-sha2-128f-with-sha256": 36,
+    "id-hash-slh-dsa-sha2-192s-with-sha512": 37, "id-hash-slh-dsa-sha2-192f-with-sha512": 38,
+    "id-hash-slh-dsa-sha2-256s-with-sha512": 39, "id-hash-slh-dsa-sha2-256f-with-sha512": 40,
+    "id-hash-slh-dsa-shake-128s-with-shake128": 41, "id-hash-slh-dsa-shake-128f-with-shake128": 42,
+    "id-hash-slh-dsa-shake-192s-with-shake256": 43, "id-hash-slh-dsa-shake-192f-with-shake256": 44,
+    "id-hash-slh-dsa-shake-256s-with-shake256": 45, "id-hash-slh-dsa-shake-256f-with-shake256": 46,
   };
   Object.keys(expect).forEach(function (nm) {
     var dotted = SIG + expect[nm];
@@ -87,12 +94,42 @@ function testSlhDsa() {
   check(".27 is shake-128f", pki.oid.name(SIG + "27") === "id-slh-dsa-shake-128f");
 }
 
+// paramsMustBeAbsent — the algorithm identifiers whose AlgorithmIdentifier
+// parameters field MUST be absent (RFC 9909 §3 / 9814 §4 / 9881 §2 / 8410 §3).
+function testParamsMustBeAbsent() {
+  var must = [
+    "id-ml-dsa-44", "id-ml-dsa-65", "id-ml-dsa-87",
+    "id-slh-dsa-sha2-128s", "id-slh-dsa-sha2-128f", "id-slh-dsa-sha2-192s",
+    "id-slh-dsa-sha2-192f", "id-slh-dsa-sha2-256s", "id-slh-dsa-sha2-256f",
+    "id-slh-dsa-shake-128s", "id-slh-dsa-shake-128f", "id-slh-dsa-shake-192s",
+    "id-slh-dsa-shake-192f", "id-slh-dsa-shake-256s", "id-slh-dsa-shake-256f",
+    "id-hash-slh-dsa-sha2-128s-with-sha256", "id-hash-slh-dsa-sha2-128f-with-sha256",
+    "id-hash-slh-dsa-sha2-192s-with-sha512", "id-hash-slh-dsa-sha2-192f-with-sha512",
+    "id-hash-slh-dsa-sha2-256s-with-sha512", "id-hash-slh-dsa-sha2-256f-with-sha512",
+    "id-hash-slh-dsa-shake-128s-with-shake128", "id-hash-slh-dsa-shake-128f-with-shake128",
+    "id-hash-slh-dsa-shake-192s-with-shake256", "id-hash-slh-dsa-shake-192f-with-shake256",
+    "id-hash-slh-dsa-shake-256s-with-shake256", "id-hash-slh-dsa-shake-256f-with-shake256",
+    "Ed25519", "Ed448", "X25519", "X448",
+  ];
+  must.forEach(function (nm) {
+    check("paramsMustBeAbsent(" + nm + ") -> true", pki.oid.paramsMustBeAbsent(pki.oid.byName(nm)) === true);
+  });
+  check("count of the must-absent set is 31 (12 pure + 12 hash SLH-DSA + 3 ML-DSA + 4 Ed/X)", must.length === 31);
+  // Algorithms that legitimately CARRY parameters (or a NULL) are NOT in the set.
+  ["rsaEncryption", "sha256WithRSAEncryption", "rsassaPss", "ecPublicKey", "prime256v1", "id-ml-kem-512"].forEach(function (nm) {
+    check("paramsMustBeAbsent(" + nm + ") -> false", pki.oid.paramsMustBeAbsent(pki.oid.byName(nm)) === false);
+  });
+  // An unregistered dotted OID is not in the set (no throw, plain false).
+  check("paramsMustBeAbsent of an unknown OID -> false", pki.oid.paramsMustBeAbsent("1.2.3.4.5.6.7.8") === false);
+}
+
 function run() {
   testRegistry();
   testRegister();
   testArcs();
   testDer();
   testSlhDsa();
+  testParamsMustBeAbsent();
 }
 
 module.exports = { run: run };

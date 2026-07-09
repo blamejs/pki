@@ -53,6 +53,11 @@ var ALG = {
     gen: { name: "ML-DSA-65" }, sign: { name: "ML-DSA-65" },
     sigOid: "2.16.840.1.101.3.4.3.18", sigParams: "omit",
   },
+  // SLH-DSA-SHA2-128F — the fast-signing set keeps the verify-path test quick.
+  slhdsa: {
+    gen: { name: "SLH-DSA-SHA2-128F" }, sign: { name: "SLH-DSA-SHA2-128F" },
+    sigOid: "2.16.840.1.101.3.4.3.21", sigParams: "omit",
+  },
   rsapss: {
     gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
     sign: { name: "RSA-PSS", saltLength: 32 },
@@ -492,6 +497,13 @@ async function testAcceptChains() {
   var leafPq = await mkCert({ subject: "PqLeaf", issuer: "PqRoot", signWith: "mldsa65", subjectKeys: "ed25519leaf" });
   var resPq = await run([leafPq], { time: T2027, trustAnchor: anchorPq });
   check("ML-DSA-65-signed chain validates", resPq.valid === true);
+
+  // SLH-DSA-SHA2-128F chain (FIPS 205 one-shot PQC verify path — the twelve
+  // SIG_ALGS rows plug into the same builtinVerify the ML-DSA rows use).
+  var anchorSlh = await mkAnchor("slhdsa", "SlhRoot");
+  var leafSlh = await mkCert({ subject: "SlhLeaf", issuer: "SlhRoot", signWith: "slhdsa", subjectKeys: "ed25519leaf" });
+  var resSlh = await run([leafSlh], { time: T2027, trustAnchor: anchorSlh });
+  check("SLH-DSA-SHA2-128F-signed chain validates", resSlh.valid === true);
 
   // RSA chain.
   var anchorRsa = await mkAnchor("rsa", "RsaRoot");
@@ -1179,12 +1191,34 @@ async function testAuditRegressions() {
   var resC21 = await pki.path.validate([leafC21], { time: T2027, trustAnchor: anchor });
   check("non-octet-aligned signature rejected by the validator guard", resC21.valid === false && failCodes(resC21).indexOf("path/bad-signature") !== -1);
 
-  // a fixed-parameter algorithm with the WRONG parameter
-  // shape (ECDSA with a DER NULL where params must be absent) must be rejected.
+  // A fixed-parameter algorithm carrying the WRONG parameter shape — Ed25519
+  // with a stray DER NULL where RFC 8410 §3 requires the parameters ABSENT — is
+  // now rejected fail-closed at PARSE by the shared AlgorithmIdentifier guard,
+  // before the path validator runs. (The validator's own params-shape check
+  // remains as defense-in-depth for a hand-built parsed path.)
   var ecNullParams = b.sequence([b.oid("1.3.101.112"), b.nullValue()]);   // Ed25519 OID + a stray NULL
   var leafWrongParams = await mkCert({ subject: "WrongP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: ecNullParams });
-  var resC22 = await run([leafWrongParams], { time: T2027, trustAnchor: anchor });
-  check("EdDSA with a stray NULL parameter rejected", resC22.valid === false && failCodes(resC22).indexOf("path/unsupported-algorithm") !== -1);
+  var wrongParamsCode;
+  try { pki.schema.x509.parse(leafWrongParams); } catch (e) { wrongParamsCode = e.code; }
+  check("EdDSA with a stray NULL parameter rejected at parse (RFC 8410 §3 params-absent)", wrongParamsCode === "x509/bad-algorithm-parameters");
+
+  // Algorithm confusion (RFC 9814 §4 consistency): a certificate SIGNED by the
+  // issuer's Ed25519 key but LABELLING its signatureAlgorithm as a one-shot PQC
+  // OID must NOT validate. Node's WebCrypto imports a mismatched SPKI under the
+  // requested PQC name and verifies with the real key, so the issuer-key ↔
+  // signature-algorithm consistency is enforced structurally (the key algorithm
+  // OID must equal the signature OID for the same-OID one-shot families).
+  var edConfAnchor = await mkAnchor("ed25519", "EdConfRoot");
+  var slhLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.21")]);   // id-slh-dsa-sha2-128f, params absent
+  var confusedSlh = await mkCert({ subject: "ConfSlh", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: slhLabel });
+  var resConfSlh = await run([confusedSlh], { time: T2027, trustAnchor: edConfAnchor });
+  check("Ed25519-signed cert labelled SLH-DSA rejected (no algorithm confusion)",
+    resConfSlh.valid === false && failCodes(resConfSlh).indexOf("path/algorithm-mismatch") !== -1);
+  var mlLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.18")]);   // id-ml-dsa-65, params absent
+  var confusedMl = await mkCert({ subject: "ConfMl", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: mlLabel });
+  var resConfMl = await run([confusedMl], { time: T2027, trustAnchor: edConfAnchor });
+  check("Ed25519-signed cert labelled ML-DSA rejected (no algorithm confusion)",
+    resConfMl.valid === false && failCodes(resConfMl).indexOf("path/algorithm-mismatch") !== -1);
 
   // a SHA-1 PSS signature is rejected (SHA-1 is dropped from
   // the supported set, matching the no-sha1WithRSAEncryption posture).
