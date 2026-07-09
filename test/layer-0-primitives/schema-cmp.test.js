@@ -523,6 +523,14 @@ function testRejectHeader() {
     header: pkiHeader({ generalInfo: [twoProfiles] }), body: body(0, CERT_REQ_MESSAGES) })) === "cmp/bad-info-value");
   check("ir with one certProfile name for one request accepted", parseCode(minimalMessage({
     header: pkiHeader({ generalInfo: [oneProfile] }), body: body(0, CERT_REQ_MESSAGES) })) === "NO-THROW");
+  // The count check keys on the certProfile OID, not the mutable display name, so
+  // re-registering that OID's name does not bypass it (RFC 9810 §5.1.1.4).
+  var origProfileName = pki.oid.name("1.3.6.1.5.5.7.4.21");
+  pki.oid.register("1.3.6.1.5.5.7.4.21", "renamedProfile");
+  try {
+    check("certProfile count check survives an OID name override", parseCode(minimalMessage({
+      header: pkiHeader({ generalInfo: [twoProfiles] }), body: body(0, CERT_REQ_MESSAGES) })) === "cmp/bad-info-value");
+  } finally { pki.oid.register("1.3.6.1.5.5.7.4.21", origProfileName); }
 
   // The recognized id-it values are validated by CONTENT, not just tag: a
   // well-tagged but malformed payload rejects (RFC 9810 §5.1.1.1/.2/.4).
