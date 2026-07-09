@@ -391,10 +391,12 @@ function testAcceptConfirmAndSupport() {
   m = parse(minimalMessage({ body: body(19, b.nullValue()) }));
   check("pkiconf decodes to null", m.body.arm === "pkiconf" && m.body.decoded === null);
 
-  var genm = b.sequence([itv(IT_CA_CERTS, b.sequence([RAW_CERT])), itv(IT_CERT_PROFILE)]);
+  // A bare (value-less) id-it is legal only for an OPEN / query type; certProfile
+  // has a fixed value syntax and is exercised for that separately below.
+  var genm = b.sequence([itv(IT_CA_CERTS, b.sequence([RAW_CERT])), itv("1.3.6.1.5.5.7.4.99")]);
   m = parse(minimalMessage({ body: body(21, genm) }));
   check("genm InfoTypeAndValue decodes", m.body.decoded[0].name === "caCerts" && Buffer.isBuffer(m.body.decoded[0].value));
-  check("genm bare infoValue is null", m.body.decoded[1].value === null);
+  check("genm bare (open id-it) infoValue is null", m.body.decoded[1].value === null);
   m = parse(minimalMessage({ body: body(22, b.sequence([])) }));
   check("EMPTY genp legal", m.body.decoded.length === 0);
 
@@ -482,6 +484,24 @@ function testRejectHeader() {
     header: pkiHeader({ generalInfo: [itv(IT_CERT_PROFILE, b.sequence([]))] }), body: ERROR_BODY })) === "cmp/bad-info-value");
   check("certProfile with a PrintableString element rejected", parseCode(pkiMessage({
     header: pkiHeader({ generalInfo: [itv(IT_CERT_PROFILE, b.sequence([b.printable("x")]))] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+  // RFC 9810 §5.1.1 — a fixed-syntax id-it (implicitConfirm NULL, confirmWaitTime
+  // GeneralizedTime, certProfile SEQUENCE) MUST carry its value; a bare OID is
+  // legal only for the open query types.
+  check("implicitConfirm with no value rejected", parseCode(pkiMessage({
+    header: pkiHeader({ generalInfo: [itv(IT_IMPLICIT_CONFIRM)] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+  check("confirmWaitTime with no value rejected", parseCode(pkiMessage({
+    header: pkiHeader({ generalInfo: [itv(IT_CONFIRM_WAIT)] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+  check("certProfile with no value rejected", parseCode(pkiMessage({
+    header: pkiHeader({ generalInfo: [itv(IT_CERT_PROFILE)] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+  // RFC 9810 §5.1.1.4 — the certProfile name count is bounded by the body.
+  var twoProfiles = itv(IT_CERT_PROFILE, b.sequence([b.utf8("p1"), b.utf8("p2")]));
+  var oneProfile = itv(IT_CERT_PROFILE, b.sequence([b.utf8("p1")]));
+  check("p10cr with two certProfile names rejected (at most one)", parseCode(minimalMessage({
+    header: pkiHeader({ generalInfo: [twoProfiles] }), body: body(4, b.sequence([b.integer(1)])) })) === "cmp/bad-info-value");
+  check("ir with more certProfile names than requests rejected", parseCode(minimalMessage({
+    header: pkiHeader({ generalInfo: [twoProfiles] }), body: body(0, CERT_REQ_MESSAGES) })) === "cmp/bad-info-value");
+  check("ir with one certProfile name for one request accepted", parseCode(minimalMessage({
+    header: pkiHeader({ generalInfo: [oneProfile] }), body: body(0, CERT_REQ_MESSAGES) })) === "NO-THROW");
 
   // The recognized id-it values are validated by CONTENT, not just tag: a
   // well-tagged but malformed payload rejects (RFC 9810 §5.1.1.1/.2/.4).
