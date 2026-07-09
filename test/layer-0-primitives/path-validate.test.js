@@ -1202,6 +1202,24 @@ async function testAuditRegressions() {
   try { pki.schema.x509.parse(leafWrongParams); } catch (e) { wrongParamsCode = e.code; }
   check("EdDSA with a stray NULL parameter rejected at parse (RFC 8410 §3 params-absent)", wrongParamsCode === "x509/bad-algorithm-parameters");
 
+  // Algorithm confusion (RFC 9814 §4 consistency): a certificate SIGNED by the
+  // issuer's Ed25519 key but LABELLING its signatureAlgorithm as a one-shot PQC
+  // OID must NOT validate. Node's WebCrypto imports a mismatched SPKI under the
+  // requested PQC name and verifies with the real key, so the issuer-key ↔
+  // signature-algorithm consistency is enforced structurally (the key algorithm
+  // OID must equal the signature OID for the same-OID one-shot families).
+  var edConfAnchor = await mkAnchor("ed25519", "EdConfRoot");
+  var slhLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.21")]);   // id-slh-dsa-sha2-128f, params absent
+  var confusedSlh = await mkCert({ subject: "ConfSlh", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: slhLabel });
+  var resConfSlh = await run([confusedSlh], { time: T2027, trustAnchor: edConfAnchor });
+  check("Ed25519-signed cert labelled SLH-DSA rejected (no algorithm confusion)",
+    resConfSlh.valid === false && failCodes(resConfSlh).indexOf("path/algorithm-mismatch") !== -1);
+  var mlLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.18")]);   // id-ml-dsa-65, params absent
+  var confusedMl = await mkCert({ subject: "ConfMl", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: mlLabel });
+  var resConfMl = await run([confusedMl], { time: T2027, trustAnchor: edConfAnchor });
+  check("Ed25519-signed cert labelled ML-DSA rejected (no algorithm confusion)",
+    resConfMl.valid === false && failCodes(resConfMl).indexOf("path/algorithm-mismatch") !== -1);
+
   // a SHA-1 PSS signature is rejected (SHA-1 is dropped from
   // the supported set, matching the no-sha1WithRSAEncryption posture).
   var anchorSha1 = await mkAnchor("psssha1", "Sha1Root");
