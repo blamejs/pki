@@ -57,14 +57,20 @@ The clearest differentiator: the classical toolkit this library replaces has no 
 - **SLH-DSA** — *Verification shipped.* All twelve FIPS 205 parameter sets verify in certification-path validation (`pki.path.validate`), and the parameters-MUST-be-absent rule is enforced across every format's AlgorithmIdentifier. *Planned next:* SLH-DSA certificate/CMS signing (the producing side). RFC 9909 (X.509), RFC 9814 (CMS).
 - **ML-KEM in CMS** — *Planned.* KEM-based content-encryption-key transport via KEMRecipientInfo. RFC 9629.
 - **ML-DSA in CMS** — *Planned.* draft-ietf-lamps-cms-ml-dsa.
-- **Composite (hybrid) signatures and KEMs** — *Under design.* Dual-algorithm certificates and CMS pairing a post-quantum algorithm with a classical one for the transition period. draft-ietf-lamps-pq-composite-sigs and draft-ietf-lamps-pq-composite-kem.
-- **EdDSA** — *Planned.* Ed25519/Ed448 signing and verification and X25519/X448 key agreement. RFC 8410 / RFC 8032.
+- **Composite (hybrid) signatures** — *Targeted.* Dual-algorithm signatures pairing ML-DSA with a classical RSA/ECDSA/EdDSA for the transition period, verified with the all-components-must-verify rule (an OR would be a downgrade). Composite KEMs follow. draft-ietf-lamps-pq-composite-sigs / draft-ietf-lamps-pq-composite-kem.
+- **Stateful hash-based signatures (verify-only)** — *Targeted.* LMS/HSS and XMSS/XMSS^MT verification for firmware and long-term signatures (CNSA 2.0), as pure hashing with no side-channel exposure. Signing is deliberately out of scope — stateful-key reuse is catastrophic and belongs in an HSM. RFC 8554 / RFC 8391 / NIST SP 800-208; RFC 9802 (X.509) / RFC 9708 (CMS).
+- **HPKE** — *Planned.* Hybrid Public Key Encryption over the native crypto engine — the DHKEM and ML-KEM KEMs, HKDF, and AEAD ciphersuites — the composition every modern protocol (ECH, MLS, OHTTP) and the X-Wing PQ-hybrid KEM builds on. RFC 9180.
+- **FN-DSA** — *Under design.* Registry rows and the parameters-absent treatment reserved so the FIPS 206 lattice signature becomes a data-row addition once the standard and the runtime land. FIPS 206 (draft).
+- **EdDSA** — *Shipped (verify).* Ed25519/Ed448 signature verification is wired into certification-path validation with the issuer-key/signature-algorithm consistency check; X25519/X448 key agreement and EdDSA signing follow. RFC 8410 / RFC 8032.
 
 ## Revocation and transparency
 
 - **OCSP** — *Targeted.* Request and response, basic OCSP response, per-certificate status: create, parse, sign, verify. RFC 6960.
 - **Certificate Transparency SCTs** — *Parsing shipped* (`pki.ct.parseSctList`): the SCT-list extension decodes to per-SCT log id, exact timestamp, named algorithm, and raw signature (unknown versions preserved opaque), and `pki.ct.reconstructSignedData` rebuilds the exact digitally-signed preimage for external verification. *Planned next:* SCT-list encode/sign and in-toolkit signature verification. RFC 6962.
-- **CT log client** — *Under design.* add-chain / add-pre-chain submission and signed-tree-head, inclusion, and consistency-proof verification. RFC 6962.
+- **Merkle transparency proofs** — *Under design.* A bounded Merkle-proof core — checkpoint and tile parsing plus inclusion and consistency proof verification — designed against the static CT API (tiled logs) rather than the legacy HTTP interface. One primitive serves a static-CT log client, Merkle Tree Certificate verification, transparency-log inclusion proofs, and the shipped SCT surface. RFC 6962 / RFC 9162; C2SP static-ct-api / tlog-tiles / tlog-checkpoint.
+- **Merkle Tree Certificates** — *Under design.* Verification of the post-quantum-oriented certificate format (compact, transparency-log-anchored) that major CAs and browsers are piloting, composing the Merkle-proof core. draft-ietf-plants-merkle-tree-certs.
+- **Partitioned / sharded CRLs** — *Planned.* CRL Distribution Point sharding and the Issuing Distribution Point correspondence so a partitioned CRL establishes status for its shard, extending the CRL parser and the path validator's revocation checker as the ecosystem moves CRL-first. RFC 5280 §5 / §6.3.
+- **Trust-store ingestion (`pki.trust`)** — *Planned.* Ingesting the Mozilla/CCADB root program into constraint-carrying trust anchors — distrust-after dates and per-root purpose constraints the bare root list omits — feeding path validation.
 
 ## Timestamping — RFC 3161
 
@@ -78,7 +84,7 @@ The clearest differentiator: the classical toolkit this library replaces has no 
 
 Certificate lifecycle management is absent from the toolkit this library replaces; it is a first-class goal here.
 
-- **ACME** — *Planned.* Account, order, authorization, challenge, and JWS flow for automated Web PKI issuance. RFC 8555.
+- **ACME** — *Planned.* Account, order, authorization, challenge, and JWS flow for automated Web PKI issuance, including the ACME Renewal Information (ARI) endpoint every client now needs to survive mass revocation. RFC 8555 / RFC 9773.
 - **EST** — *Planned.* Enrollment over Secure Transport for device and IoT enrollment. RFC 7030.
 - **Certificate request messages (CRMF)** — *Shipped (parse).* `pki.schema.crmf.parse` decodes an RFC 4211 CertReqMessages — the request body CMP and EST enrollment carry — into the requested-certificate template, proof-of-possession, and registration controls, surfacing the raw CertRequest bytes a proof-of-possession verifier hashes. Building CertReqMessages, and building the CMP message envelope around them, remain *Planned* (parsing the CMP envelope shipped — see below).
 - **CMP** — *Shipped (parse).* `pki.schema.cmp.parse` decodes an RFC 9810 PKIMessage — the protected transport envelope CMP enrollment, revocation, confirmation, and support exchanges ride — into its header, its 27-arm body (certificate requests via the CRMF parser, encrypted certificates via CMS, response / revocation / confirmation / error / support / polling arms structural, the rest raw), protection inputs, and extra certificates, surfacing the exact byte slices an external verifier reconstructs the protected part from. Message building, HTTP transfer (RFC 9811), the lightweight profile (RFC 9483) validation rules, and MAC / signature verification are *Planned*. RFC 9810 / RFC 9483 / RFC 9481.
@@ -93,8 +99,20 @@ Certificate lifecycle management is absent from the toolkit this library replace
 
 - **S/MIME** — *ESS attribute decode shipped* (`pki.schema.smime`): the RFC 5035 SigningCertificate / SigningCertificateV2 and RFC 8551 SMIMECapabilities signed-attribute values a CMS SignerInfo carries decode to their signing-certificate binding and capability list, OID-dispatched from a CMS attribute. *Planned next:* the S/MIME assembly / verification layer over the CMS building blocks so operators are not left wiring MIME by hand. RFC 8551, RFC 5035.
 
+## Attestation and supply chain
+
+Path validation's fastest-growing consumers are attestation chains, and the Node ecosystem has no native, zero-dependency layer for any of them.
+
+- **WebAuthn / passkey attestation** — *Under design.* Trust evaluation of the attestation statement formats (packed, tpm, android-key, apple, fido-u2f), the Android key-attestation ASN.1 extension, and the FIDO metadata roots — the layer under the ceremony libraries. W3C WebAuthn Level 3.
+- **Sigstore / provenance verification** — *Under design.* A zero-dependency verifier for signed provenance — DSSE envelopes, the Fulcio certificate chain through the toolkit's own path validator, embedded SCTs through the CT surface, and Rekor inclusion proofs through the Merkle-proof core — so npm/SLSA provenance verifies with no dependency tree of its own.
+
+## Alternative encodings
+
+- **C509 CBOR certificates** — *Under design.* A CBOR encoding of the X.509 model the toolkit already parses, built on a new strict deterministic-CBOR codec (a sibling of the DER codec, same fail-closed discipline) that also opens COSE / CWT / EAT. draft-ietf-cose-cbor-encoded-cert; RFC 8949 §4.2.
+
 ## Assurance and interoperability
 
+- **Certificate linting** — *Under design.* A profile-conformance lint engine over the strict codec and schema — a declarative rule set for the RFC 5280 profile and the CA/Browser Forum TLS and S/MIME Baseline Requirements — with a non-throwing advisory result surface and an inspect/lint/convert/verify CLI. Pre-issuance linting is now expected CA practice, and no JavaScript linter exists.
 - **Interoperability gates** — *Targeted.* Cross-tool round-trip and parse checks (OpenSSL, and for PKCS#12 also Windows CAPI, macOS Keychain, and NSS) run as acceptance gates, not aspirations.
 - **Fuzzing** — *Targeted.* An adversarial fuzz corpus against the ASN.1 codec and every parse path, run continuously.
 - **Independent security review** — *Planned.* A published security assessment of the parser and every crypto path as a release deliverable.

@@ -23,8 +23,11 @@ var smime = pki.schema.smime;
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e && e.code ? e.code : ("RAW:" + (e && e.message)); } }
 function O(n) { return pki.oid.byName(n); }
 function gnDns(s) { return b.contextPrimitive(2, Buffer.from(s, "latin1")); }
-function issuerSerial(cn, serial) { return b.sequence([b.sequence([gnDns(cn)]), b.integer(BigInt(serial))]); }
-function algId(name) { return b.sequence([b.oid(O(name))]); }
+function name(cn) { return b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8(cn)])])]); }
+function gnDir(cn) { return b.explicit(4, name(cn)); }   // directoryName [4] GeneralName
+// RFC 5035 §5: the IssuerSerial issuer is a single directoryName.
+function issuerSerial(cn, serial) { return b.sequence([b.sequence([gnDir(cn)]), b.integer(BigInt(serial))]); }
+function algId(nm) { return b.sequence([b.oid(O(nm))]); }
 
 // ---- ACCEPT: SigningCertificate (ESS v1) -----------------------------
 function testSigningCertificate() {
@@ -156,6 +159,13 @@ function testReject() {
   // malformed GeneralName arm (tag > 8) -> smime/bad-general-names
   var essBadGn = b.sequence([b.octetString(Buffer.alloc(20, 1)), b.sequence([b.sequence([b.contextPrimitive(9, Buffer.from([1]))]), b.integer(1n)])]);
   check("33. malformed GeneralName arm rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essBadGn])])); }) === "smime/bad-general-names");
+  // RFC 5035 §5: a well-formed but non-directoryName issuer (e.g. dNSName) parses
+  // as a GeneralName yet fails the ESS profile -> smime/bad-issuer-serial.
+  var essDnsIssuer = b.sequence([b.octetString(Buffer.alloc(20, 1)), b.sequence([b.sequence([gnDns("ca.example")]), b.integer(1n)])]);
+  check("33b. non-directoryName issuer rejected (RFC 5035 §5)", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essDnsIssuer])])); }) === "smime/bad-issuer-serial");
+  // two directoryNames (SIZE>1) also fails the single-name ESS rule
+  var essTwoDir = b.sequence([b.octetString(Buffer.alloc(20, 1)), b.sequence([b.sequence([gnDir("a"), gnDir("b")]), b.integer(1n)])]);
+  check("33c. multi-name issuer rejected (RFC 5035 §5)", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essTwoDir])])); }) === "smime/bad-issuer-serial");
   // certHash not an OCTET STRING -> typed reject
   var essBadHash = b.sequence([b.integer(1n)]);
   check("34. certHash wrong type rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essBadHash])])); }).indexOf("smime/") === 0 || code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([essBadHash])])); }).indexOf("asn1/") === 0);
