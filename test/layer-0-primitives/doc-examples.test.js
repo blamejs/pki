@@ -80,6 +80,16 @@ var tspDer = b.sequence([b.sequence([b.integer(0n)]), tstToken]);
 var certTemplate = b.sequence([b.explicit(5, name("req.example"))]);
 var crmfDer = b.sequence([b.sequence([b.sequence([b.integer(1n), certTemplate])])]);
 
+// A minimal valid RFC 6962 SCT-list extension value (the inner DER OCTET STRING
+// wrapping the TLS list) so the pki.ct examples exercise the real parse path.
+function _sctU16(n) { return Buffer.from([(n >> 8) & 0xff, n & 0xff]); }
+var _sctBody = Buffer.concat([
+  Buffer.from([0]), Buffer.alloc(32, 0xAB), (function () { var t = Buffer.alloc(8); t.writeBigUInt64BE(1700000000000n); return t; })(),
+  _sctU16(0), Buffer.from([4, 3]), _sctU16(5), Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]),
+]);
+var _sctSer = Buffer.concat([_sctU16(_sctBody.length), _sctBody]);
+var sctListDer = b.octetString(Buffer.concat([_sctU16(_sctSer.length), _sctSer]));
+
 // A minimal error PKIMessage (so cmp.parse's example resolves m.body.arm).
 var cmpHeader = b.sequence([b.integer(2n), b.contextConstructed(4, b.sequence([])), b.contextConstructed(4, name("CA"))]);
 var cmpBody = b.explicit(23, b.sequence([b.sequence([b.integer(2n)])]));
@@ -119,6 +129,8 @@ function fixturesFor(tag) {
     der: der, input: der, bytes: der, node: pki.asn1.decode(certDer),
     pemText: toPem(der, label), pemString: toPem(der, label), pem: toPem(der, label),
     tokenDer: tstToken, tokenBytes: tstToken,
+    // RFC 6962 SCT-list extension value (inner DER OCTET STRING) for the pki.ct examples.
+    sctExtValue: sctListDer,
     // the stand-in "your error class" some engine examples pass as ctx.E — a
     // PkiError factory so a thrown result still satisfies the fuzz-style contract.
     MyError: function (code, msg) { return new pki.errors.PkiError(msg, code); },

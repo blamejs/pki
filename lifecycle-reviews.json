@@ -1,4 +1,16 @@
 {
+  "pki.schema.attrcert.parse": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 5755 attribute-certificate parser is not yet interop-proven — no OpenSSL/NSS round-trip covers it in the integration harness — so its return shape is not frozen. It is part of the attribute-cert / CRMF / PKCS#12 / CMP format cohort the schema.all and schema.parse graduation waits on. Graduate once an independent implementation validates a structure it decodes.",
+    "reviewedAt": "0.1.20",
+    "reviewBy": "0.1.25"
+  },
+  "pki.schema.attrcert.pemDecode": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same attribute-certificate parser whose return shape is not yet frozen (no OpenSSL/NSS interop round-trip in the harness). Graduate alongside pki.schema.attrcert.parse.",
+    "reviewedAt": "0.1.20",
+    "reviewBy": "0.1.25"
+  },
   "pki.schema.all": {
     "decision": "keep-experimental",
     "reason": "The format enumerator routes to the still-experimental attribute-cert, CRMF, PKCS#12, and CMP parsers; marking it stable would freeze their return shapes and continued registration into a stable contract. Graduate once every routed format is stable.",
