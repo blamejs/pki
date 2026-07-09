@@ -675,6 +675,14 @@ function testRejectBody() {
   // POP is legal in an ir above).
   check("ccr POP sending the private key (encryptedKey) rejected (RFC 9810 §5.3.11)", parseCode(minimalMessage({
     headerOpts: { pvno: 3 }, body: body(13, certReqEncKeyPop()) })) === "cmp/bad-body");
+  // §5.3.11 via the OTHER private-key transport — a pkiArchiveOptions control with
+  // the encryptedPrivKey [0] arm (§5.2.8.3.1) is likewise forbidden in a ccr.
+  var ccrArchiveKey = b.sequence([b.sequence([b.sequence([
+    b.integer(0), b.sequence([b.explicit(5, rdn("cross.ca"))]),
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.5.1.4"), b.contextConstructed(0, Buffer.alloc(0))])]),  // controls: pkiArchiveOptions encryptedPrivKey [0]
+  ])])]);
+  check("ccr with a pkiArchiveOptions encryptedPrivKey control rejected (RFC 9810 §5.3.11)",
+        parseCode(minimalMessage({ body: body(13, ccrArchiveKey) })) === "cmp/bad-body");
 }
 
 // ---- dispatch / coercion / misc ------------------------------------------------------
