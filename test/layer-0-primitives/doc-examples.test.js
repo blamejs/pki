@@ -75,6 +75,19 @@ var tstToken = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequen
 // res.timeStampToken.tstInfo.genTime).
 var tspDer = b.sequence([b.sequence([b.integer(0n)]), tstToken]);
 
+// A one-message CertReqMessages (so crmf.parse's example resolves
+// m.messages[0].certReq.certTemplate.subject.dn).
+var certTemplate = b.sequence([b.explicit(5, name("req.example"))]);
+var crmfDer = b.sequence([b.sequence([b.sequence([b.integer(1n), certTemplate])])]);
+
+// A minimal password-integrity PFX with one certBag (so pkcs12.parse's example
+// maps safeBags[].type).
+var certBagValue = b.sequence([b.oid("1.2.840.113549.1.9.22.1"), b.explicit(0, b.octetString(certDer))]);
+var safeBag = b.sequence([b.oid("1.2.840.113549.1.12.10.1.3"), b.explicit(0, certBagValue)]);
+var authenticatedSafe = b.sequence([b.sequence([b.oid(DATA), b.explicit(0, b.octetString(b.sequence([safeBag])))])]);
+var macData = b.sequence([b.sequence([algId(DIG), b.octetString(Buffer.alloc(32, 2))]), b.octetString(Buffer.alloc(8, 3)), b.integer(2048n)]);
+var pkcs12Der = b.sequence([b.integer(3n), b.sequence([b.oid(DATA), b.explicit(0, b.octetString(authenticatedSafe))]), macData]);
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -87,6 +100,8 @@ var FMT = {
   "pki.schema.ocsp":     { der: ocspDer, label: "OCSP REQUEST" },
   "pki.schema.tsp":      { der: tspDer, label: "TIMESTAMP" },
   "pki.schema.attrcert": { der: attrcertDer, label: "ATTRIBUTE CERTIFICATE" },
+  "pki.schema.crmf":     { der: crmfDer, label: "CERTIFICATE REQUEST MESSAGE" },
+  "pki.schema.pkcs12":   { der: pkcs12Der, label: "PKCS12" },
 };
 function fixturesFor(tag) {
   var fmt = null;

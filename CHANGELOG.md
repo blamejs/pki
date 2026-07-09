@@ -4,7 +4,29 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.17 — 2026-07-07
+## v0.1.18 — 2026-07-08
+
+An RFC 7292 PKCS#12 (PFX) store parser joins the pki.schema family.
+
+### Added
+
+- pki.schema.pkcs12.parse(input) — RFC 7292 PFX parsing. It decodes a DER / BER Buffer or PEM into { version, integrityMode, mac, macedBytes, authSafeSigned, safeBags, encryptedSafes }. Password-integrity stores surface { kind, hashOid, hashName, hashParameters, pbmac1, macValue, macSalt, iterations } plus macedBytes — the exact value octets the HMAC covers, excluding the octet-string header, so an external verifier hashes the correct region. The RFC 9579 PBMAC1 arm is validated, not just recognized: its parameters must be present, the key-derivation function must be PBKDF2 with a keyLength, and the decoded KDF (salt, iteration count, key length, PRF) and MAC scheme surface on pbmac1. The X.690 DEFAULT rule is enforced (an explicitly encoded iterations = 1 is non-canonical and rejects). Public-key-integrity stores surface the CMS SignedData and must carry at least one signer (the signature itself is verified externally). Each safeBag carries its type, friendlyName / localKeyId (decoded, single-value and single-instance rules enforced), and all attributes: keyBags delegate to pki.schema.pkcs8.parse, shrouded key bags to parseEncrypted (algorithm surfaced, ciphertext opaque), cert / CRL / secret values stay raw and byte-exact, and safeContentsBags recurse under a depth ceiling. Encrypted and enveloped safes are validated structurally by the CMS module with ciphertext kept raw, and must declare id-data (a SafeContents) as their encrypted content type. The version-3 rule, the contradictory MacData-alongside-SignedData combination, the closed bag-type and cert/CRL-type sets, and per-list element caps all fail closed with typed pkcs12/* codes; a MacData-less id-data store is legal syntax and parses as integrityMode "none".
+- pki.schema.pkcs12.pemDecode(text, label?) / pemEncode(der, label?) — PEM handling for stores that transit text channels (default label PKCS12).
+- pki.asn1.decode gains an opt-in ber option accepting exactly two shapes — an indefinite length on a constructed value and a constructed OCTET STRING, whose segments reassemble into one primitive content — for formats whose content is normatively BER. The default remains strict DER; minimal-length, minimal-integer, trailing-byte, and size / depth verdicts are unchanged in both modes, an indefinite length on a primitive value still rejects, a foreign-type segment inside a constructed string rejects, and constructed-string nesting is capped (each level re-copies its payload, so deep nesting is memory amplification, not data).
+- pki.schema.engine.embeddedDer(schema, bytes, ctx, opts) — the named form of the re-decode idiom: decode a fresh DER / BER blob carried inside an already-decoded value and walk it against a schema, wrapping codec failures in the caller's typed code. A shared budget option bounds how many nested blobs one parse may unwrap, so a container that chains encodings across octet-string boundaries cannot restart the depth caps from zero. The timestamp, OCSP, and certificate-request parsers now route their embedded-structure decodes through it.
+- SEQUENCE OF / SET OF schemas can declare an element-count ceiling (max), so a container listing a great many tiny elements fails typed instead of amplifying memory through per-element parse products; a single attribute's value list is now capped this way across every format.
+- The OID registry gains the PKCS#12 bag types, the PKCS#12 password-based encryption identifiers, the PKCS#9 certTypes / crlTypes / friendlyName / localKeyId entries, PKCS#5 PBKDF2 / PBES2 / PBMAC1, the NIST AES content-encryption arc, and the HMAC-with-SHA identifiers, so a store's algorithms resolve to names.
+- The error taxonomy gains Pkcs12Error, carrying a stable pkcs12/* code.
+
+### Changed
+
+- The npm-publish workflow's vulnerability scan now scans the SBOM unconditionally and the vendored-bundle directory only when it holds a real bundle, so the scan is exact in both states instead of warning on the empty directory.
+
+### Fixed
+
+- Certification-path validation bounds the RSASSA-PSS saltLength and trailerField before numeric conversion, so an oversized value rejects with path/unsupported-algorithm instead of rounding silently on its way to the verifier — the same exact-or-rejected rule the PKCS#12 MAC parameters follow.
+
+## v0.1.17 — 2026-07-06
 
 An RFC 4211 certificate-request-message parser joins the pki.schema family.
 

@@ -118,4 +118,70 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.schema.pkcs12.parse : a real `openssl pkcs12 -export` store parses --
+  "pki.schema.pkcs12.parse": [
+    {
+      desc: "parses an `openssl pkcs12 -export` store (default encoding, incl. BER)",
+      run: function (ctx) {
+        var keyPath = ctx.tmpFile(Buffer.alloc(0), "key.pem");
+        var certPath = ctx.tmpFile(Buffer.alloc(0), "cert.pem");
+        var p12Path = ctx.tmpFile(Buffer.alloc(0), "store.p12");
+        try {
+          ctx.runOpenssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                          "-keyout", keyPath, "-out", certPath, "-days", "1", "-nodes",
+                          "-subj", "/CN=p12-interop"]);
+          ctx.runOpenssl(["pkcs12", "-export", "-in", certPath, "-inkey", keyPath,
+                          "-out", p12Path, "-passout", "pass:interop"]);
+          var store = ctx.pki.schema.pkcs12.parse(ctx.fs.readFileSync(p12Path));
+          ctx.check("openssl store parses to version 3", store.version === 3);
+          ctx.check("openssl store is password-integrity", store.integrityMode === "password" && store.mac !== null);
+          ctx.check("openssl store surfaces the MACed byte range", Buffer.isBuffer(store.macedBytes) && store.macedBytes.length > 0);
+          ctx.check("openssl store MAC iterations surfaced", store.mac.iterations >= 1);
+          // Default `-export` shrouds the key (a pkcs8ShroudedKeyBag in a plain
+          // safe) and encrypts the cert safe (an id-encryptedData element).
+          var shrouded = store.safeBags.filter(function (b) { return b.type === "pkcs8ShroudedKeyBag"; });
+          ctx.check("openssl store carries a shrouded key bag", shrouded.length === 1);
+          ctx.check("shrouded key algorithm surfaced, ciphertext opaque",
+                    typeof shrouded[0].encrypted.encryptionAlgorithm.oid === "string" &&
+                    Buffer.isBuffer(shrouded[0].encrypted.encryptedData));
+          ctx.check("shrouded key carries its localKeyId", Buffer.isBuffer(shrouded[0].localKeyId));
+          ctx.check("openssl store carries an encrypted cert safe",
+                    store.encryptedSafes.length === 1 && store.encryptedSafes[0].type === "encryptedData");
+          ctx.check("encrypted safe ciphertext surfaced raw",
+                    Buffer.isBuffer(store.encryptedSafes[0].content.encryptedContentInfo.encryptedContent));
+        } finally {
+          [keyPath, certPath, p12Path].forEach(function (p) {
+            try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ }
+          });
+        }
+      },
+    },
+    {
+      desc: "parses an `openssl pkcs12 -export -nomac` store as integrity-less",
+      run: function (ctx) {
+        // -nomac drops MacData while keeping the id-data authSafe — MacData is
+        // OPTIONAL in the PFX syntax, so the store parses with
+        // integrityMode "none" and no-integrity is the caller's policy call.
+        var keyPath = ctx.tmpFile(Buffer.alloc(0), "key2.pem");
+        var certPath = ctx.tmpFile(Buffer.alloc(0), "cert2.pem");
+        var p12Path = ctx.tmpFile(Buffer.alloc(0), "store2.p12");
+        try {
+          ctx.runOpenssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+                          "-keyout", keyPath, "-out", certPath, "-days", "1", "-nodes",
+                          "-subj", "/CN=p12-nomac"]);
+          ctx.runOpenssl(["pkcs12", "-export", "-nomac", "-in", certPath, "-inkey", keyPath,
+                          "-out", p12Path, "-passout", "pass:interop"]);
+          var store = ctx.pki.schema.pkcs12.parse(ctx.fs.readFileSync(p12Path));
+          ctx.check("a -nomac store surfaces integrityMode none", store.integrityMode === "none" && store.mac === null);
+          ctx.check("a -nomac store still carries its shrouded key bag",
+                    store.safeBags.filter(function (b) { return b.type === "pkcs8ShroudedKeyBag"; }).length === 1);
+        } finally {
+          [keyPath, certPath, p12Path].forEach(function (p) {
+            try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ }
+          });
+        }
+      },
+    },
+  ],
 };

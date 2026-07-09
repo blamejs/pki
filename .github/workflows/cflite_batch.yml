@@ -40,6 +40,7 @@ jobs:
           - tsp-parse
           - attrcert-parse
           - crmf-parse
+          - pkcs12-parse
           - pkix-ext-parse
     steps:
       - name: Checkout

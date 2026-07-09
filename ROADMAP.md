@@ -46,7 +46,7 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 
 - **PKCS#8 private keys and SPKI public keys** — *Targeted.* Import/export of private-key and public-key info, including encrypted private keys. RFC 5958 / RFC 5280.
 - **Password-based encryption** — *Targeted.* PBES2 and PBKDF2 parameter handling with UTF-8 password encoding (correct for non-ASCII passwords) and tunable, standards-compliant salt and iteration counts. RFC 8018.
-- **PKCS#12 (PFX)** — *Targeted.* Parse and build key-and-certificate stores: authenticated safe, cert/CRL/key/secret bags, shrouded key bags, and MAC integrity. Output is spec-correct — AEAD algorithm identifiers carry their parameter structures, octet strings are never split — and interoperability with OpenSSL, Windows CAPI, macOS Keychain, and NSS is a release acceptance gate. RFC 7292.
+- **PKCS#12 (PFX)** — *Shipped (parse).* Parse key-and-certificate stores: authenticated safe, cert/CRL/key/secret bags, shrouded key bags (algorithm surfaced, ciphertext opaque), nested safe contents, `friendlyName` / `localKeyId` attributes, and MAC integrity surfaced with the exact MACed byte range — RFC 9579 PBMAC1 recognized. BER content regions (indefinite lengths, constructed octet strings) accepted exactly where §4.1 requires them; interoperability with OpenSSL is a release acceptance gate. Building, MAC verification, and bag decryption ride the PBES2 work above. RFC 7292.
 
 ## Post-quantum and hybrid cryptography
 
