@@ -1139,6 +1139,24 @@ function testCmpConformanceGuards() {
     bad.push({ file: "lib/schema-cmp.js", line: 0,
       content: "the CertResponse build no longer rejects a response carrying BOTH failInfo and certifiedKeyPair — the RFC 9810 §5.3.4 mutual-exclusion is under-enforced (a caller keying off certifiedKeyPair could process a cert from a failed response)" });
   }
+  // Structural (validate-the-payload class): a recognized id-it value with a
+  // fixed syntax MUST be validated by CONTENT, not just tag — each branch runs
+  // the strict typed reader on its payload, so a well-tagged but malformed
+  // value (non-empty NULL, garbage GeneralizedTime, invalid-UTF-8 string)
+  // rejects. Anchored per-branch on the id-it OID constant reaching its reader
+  // (the RFC-semantic contract); a revert to a tag-only check drops the reader
+  // call from the branch and fires. The bare read tokens would pass on the
+  // unrelated leaf readers, so the proximity anchor is required.
+  [
+    [/OID_IMPLICIT_CONFIRM(?:(?!OID_CONFIRM_WAIT_TIME)[\s\S]){0,500}?asn1\.read\.nullValue/, "implicitConfirm must read.nullValue its value (reject a non-empty NULL), not tag-check only (RFC 9810 §5.1.1.1)"],
+    [/OID_CONFIRM_WAIT_TIME(?:(?!OID_CERT_PROFILE)[\s\S]){0,500}?asn1\.read\.time/, "confirmWaitTime must read.time its value (reject a malformed GeneralizedTime), not tag-check only (RFC 9810 §5.1.1.2)"],
+    [/OID_CERT_PROFILE(?:(?!\n {2}\})[\s\S]){0,800}?asn1\.read\.string/, "certProfile must read.string each element (reject invalid UTF-8), not tag-check only (RFC 9810 §5.1.1.4)"],
+  ].forEach(function (a) {
+    if (!a[0].test(src)) {
+      bad.push({ file: "lib/schema-cmp.js", line: 0,
+        content: "the id-it value-syntax check regressed to tag-only (validate-the-payload bug class): " + a[1] });
+    }
+  });
   bad = _filterMarkers(bad, "cmp-conformance-guard-dropped");
   _report("CMP RFC-conformance guards present (envelope/header shape / GT-only time / UTF8 freetext / id-it value syntax / 27-arm body dispatch / protection<=>protectionAlg / status whitelist / named-bit trailing-zero / certConf-hashAlg<=>pvno / CRMF + CMS composition / raw protection slices)", bad);
 }

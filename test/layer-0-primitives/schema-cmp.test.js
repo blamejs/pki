@@ -409,6 +409,18 @@ function testRejectHeader() {
     header: pkiHeader({ generalInfo: [itv(IT_CERT_PROFILE, b.sequence([]))] }), body: ERROR_BODY })) === "cmp/bad-info-value");
   check("certProfile with a PrintableString element rejected", parseCode(pkiMessage({
     header: pkiHeader({ generalInfo: [itv(IT_CERT_PROFILE, b.sequence([b.printable("x")]))] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+
+  // The recognized id-it values are validated by CONTENT, not just tag: a
+  // well-tagged but malformed payload rejects (RFC 9810 §5.1.1.1/.2/.4).
+  var badNull = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NULL, Buffer.from([0x00]));   // NULL with non-empty content
+  check("implicitConfirm with a non-empty NULL rejected", parseCode(pkiMessage({
+    header: pkiHeader({ generalInfo: [itv(IT_IMPLICIT_CONFIRM, badNull)] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+  var badGt = pki.asn1.encode(0x00, false, pki.asn1.TAGS.GENERALIZED_TIME, Buffer.from("notatime", "latin1"));
+  check("confirmWaitTime with a malformed GeneralizedTime rejected", parseCode(pkiMessage({
+    header: pkiHeader({ generalInfo: [itv(IT_CONFIRM_WAIT, badGt)] }), body: ERROR_BODY })) === "cmp/bad-info-value");
+  var badUtf8 = pki.asn1.encode(0x00, false, pki.asn1.TAGS.UTF8_STRING, Buffer.from([0xff, 0xfe]));   // invalid UTF-8
+  check("certProfile with an invalid-UTF8 element rejected", parseCode(pkiMessage({
+    header: pkiHeader({ generalInfo: [itv(IT_CERT_PROFILE, b.sequence([badUtf8]))] }), body: ERROR_BODY })) === "cmp/bad-info-value");
   check("sender with an out-of-range GeneralName tag rejected", /^(cmp|asn1)\//.test(parseCode(pkiMessage({
     header: pkiHeader({ rawKids: [b.integer(2), b.contextConstructed(9, b.sequence([])), genName4("CA")] }), body: ERROR_BODY }))));
 }
