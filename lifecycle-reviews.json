@@ -52,5 +52,29 @@
     "reason": "The schema engine's encode direction backs the round-trip tests but has no external consumer that pins its API; the combinator surface is still absorbing new leaves (implicitBoolean landed at 0.1.23). Graduate once the combinator set is settled and an operator-facing encode path depends on it.",
     "reviewedAt": "0.1.23",
     "reviewBy": "0.1.25"
+  },
+  "pki.schema.engine.embeddedDer": {
+    "decision": "keep-experimental",
+    "reason": "The embedded-DER leaf is part of the still-settling engine combinator surface (implicitBoolean landed at 0.1.23); it has no external consumer pinning its return shape. Graduate alongside pki.schema.engine.encode once the leaf set is settled.",
+    "reviewedAt": "0.1.24",
+    "reviewBy": "0.1.25"
+  },
+  "pki.schema.pkcs12.parse": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 7292 PKCS#12 parser is not yet interop-proven — no OpenSSL/NSS round-trip covers a PFX it decodes in the integration harness — so its return shape is not frozen. It is one of the format cohort (attribute-cert, CRMF, PKCS#12, CMP) that schema.all / schema.parse graduation waits on. Graduate once an independent implementation validates a store it decodes.",
+    "reviewedAt": "0.1.24",
+    "reviewBy": "0.1.25"
+  },
+  "pki.schema.pkcs12.pemDecode": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same PKCS#12 parser whose return shape is not yet frozen (no OpenSSL/NSS interop round-trip in the harness). Graduate alongside pki.schema.pkcs12.parse.",
+    "reviewedAt": "0.1.24",
+    "reviewBy": "0.1.25"
+  },
+  "pki.schema.pkcs12.pemEncode": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same PKCS#12 parser whose return shape is not yet frozen (no OpenSSL/NSS interop round-trip in the harness). Graduate alongside pki.schema.pkcs12.parse.",
+    "reviewedAt": "0.1.24",
+    "reviewBy": "0.1.25"
   }
 }

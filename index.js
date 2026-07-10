@@ -35,6 +35,7 @@ var webcrypto = require("./lib/webcrypto");
 var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
+var est        = require("./lib/est");
 
 module.exports = {
   version:   constants.version,
@@ -55,6 +56,11 @@ module.exports = {
   // SCT-list extension a certificate / OCSP response carries; the signature is
   // surfaced raw for external verification (pki.ct.reconstructSignedData).
   ct:        ct,
+  // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the
+  // transport-agnostic client codecs (base64 transfer, multipart splitter),
+  // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,
+  // and the HTTP response classifier. No socket; fail-closed.
+  est:       est,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.

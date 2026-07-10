@@ -149,6 +149,14 @@ function testRecognizedAttributeValues() {
 
   check("extensionRequest with one Extensions value parses",
     parseCode(attrsCsr([attribute(EXTREQ, [b.sequence([ext1])])])) === "NO-THROW");
+  // The requested extensions are surfaced decoded on the attribute (same shape a
+  // certificate's extensions use) so a CA / re-enroll consumer reads them off
+  // .extensions rather than re-walking the raw Extensions bytes.
+  var withExt = parse(attrsCsr([attribute(EXTREQ, [b.sequence([ext1, ext2])])]));
+  var extReqAttr = withExt.attributes.filter(function (a) { return a.type === EXTREQ; })[0];
+  check("extensionRequest surfaces decoded .extensions",
+    Array.isArray(extReqAttr.extensions) && extReqAttr.extensions.length === 2 &&
+    extReqAttr.extensions[0].oid === "2.5.29.14" && Buffer.isBuffer(extReqAttr.extensions[0].value));
   check("extensionRequest with a non-Extensions value (INTEGER) rejected",
     parseCode(attrsCsr([attribute(EXTREQ, [b.integer(42n)])])) === "csr/bad-attribute-value");
   check("extensionRequest with an empty Extensions SEQUENCE rejected (SIZE 1..MAX)",

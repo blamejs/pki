@@ -21,6 +21,8 @@ action wrapper, which does not support JavaScript targets.
 | ------------------------ | ----------------------------------------------------- |
 | `asn1-der.fuzz.js`       | `pki.asn1.decode`                                     |
 | `schema-all-parse.fuzz.js` | `pki.schema.parse` (the detect-and-route orchestrator: every format's `matches()` detector + the BER-tolerant root decode) |
+| `csrattrs-parse.fuzz.js` | `pki.schema.csrattrs.parse` (RFC 8951 CsrAttrs + RFC 9908 templates) |
+| `est-transfer.fuzz.js`   | `pki.est.transferDecode` + `pki.est.splitMultipartMixed` (RFC 8951 base64 + RFC 2046 multipart) |
 | `x509-parse.fuzz.js`     | `pki.schema.x509.parse`                               |
 | `crl-parse.fuzz.js`      | `pki.schema.crl.parse`                                |
 | `csr-parse.fuzz.js`      | `pki.schema.csr.parse`                                |

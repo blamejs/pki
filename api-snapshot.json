@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.23",
+  "packageVersion": "0.1.24",
   "surface": {
     "C": {
       "kind": "object",
@@ -554,7 +554,15 @@
           "kind": "function",
           "arity": 3
         },
+        "CsrattrsError": {
+          "kind": "function",
+          "arity": 3
+        },
         "CtError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "EstError": {
           "kind": "function",
           "arity": 3
         },
@@ -601,6 +609,67 @@
         "defineClass": {
           "kind": "function",
           "arity": 2
+        }
+      }
+    },
+    "est": {
+      "kind": "object",
+      "members": {
+        "asymmetricDecryptKeyIdentifierAttr": {
+          "kind": "function",
+          "arity": 1
+        },
+        "buildEnrollAttributes": {
+          "kind": "function",
+          "arity": 1
+        },
+        "challengePasswordFromTlsUnique": {
+          "kind": "function",
+          "arity": 1
+        },
+        "classifyResponse": {
+          "kind": "function",
+          "arity": 4
+        },
+        "decryptKeyIdentifierAttr": {
+          "kind": "function",
+          "arity": 1
+        },
+        "findIssuedCert": {
+          "kind": "function",
+          "arity": 2
+        },
+        "parseCertsOnly": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseServerKeygenResponse": {
+          "kind": "function",
+          "arity": 3
+        },
+        "paths": {
+          "kind": "function",
+          "arity": 2
+        },
+        "reenrollGuard": {
+          "kind": "function",
+          "arity": 2
+        },
+        "smimeCapabilitiesAttr": {
+          "kind": "function",
+          "arity": 1
+        },
+        "splitMultipartMixed": {
+          "kind": "function",
+          "arity": 2
+        },
+        "transferDecode": {
+          "kind": "function",
+          "arity": 1
+        },
+        "transferEncode": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -772,6 +841,15 @@
             "pemEncode": {
               "kind": "function",
               "arity": 2
+            }
+          }
+        },
+        "csrattrs": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
             }
           }
         },
@@ -1078,6 +1156,11 @@
     "pki.C.BYTES": "0.1.0",
     "pki.ct.parseSctList": "0.1.20",
     "pki.ct.reconstructSignedData": "0.1.20",
+    "pki.est.transferDecode": "0.1.24",
+    "pki.est.transferEncode": "0.1.24",
+    "pki.est.parseCertsOnly": "0.1.24",
+    "pki.est.classifyResponse": "0.1.24",
+    "pki.est.paths": "0.1.24",
     "pki.errors.PkiError": "0.1.0",
     "pki.errors.defineClass": "0.1.0",
     "pki.oid.name": "0.1.0",
@@ -1106,6 +1189,7 @@
     "pki.schema.csr.parse": "0.1.8",
     "pki.schema.csr.pemDecode": "0.1.8",
     "pki.schema.csr.pemEncode": "0.1.8",
+    "pki.schema.csrattrs.parse": "0.1.24",
     "pki.schema.engine.walk": "0.1.7",
     "pki.schema.engine.encode": "0.1.17",
     "pki.schema.engine.embeddedDer": "0.1.18",

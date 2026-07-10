@@ -40,17 +40,21 @@ function _rewrite(href, opts) {
 // brackets); inline-code content is thereby escaped for display too.
 function _inline(text, opts) {
   var out = esc(text);
+  // The whole text is HTML-escaped above, so a captured src/href is ALREADY
+  // escaped (a URL's `&` is `&amp;`). `_rewrite` remaps a relative target and
+  // leaves an escaped absolute URL alone -- re-escaping here would double it
+  // (`&amp;` -> `&amp;amp;`), breaking a badge URL's query string.
   // image-link: a badge/image wrapped in a link.
   out = out.replace(/\[!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)\]\(([^)\s]+)\)/g, function (_m, alt, src, href) {
-    return '<a href="' + esc(_rewrite(href, opts)) + '"><img src="' + esc(_rewrite(src, opts)) + '" alt="' + alt + '"></a>';
+    return '<a href="' + _rewrite(href, opts) + '"><img src="' + _rewrite(src, opts) + '" alt="' + alt + '"></a>';
   });
   // image.
   out = out.replace(/!\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, function (_m, alt, src) {
-    return '<img src="' + esc(_rewrite(src, opts)) + '" alt="' + alt + '">';
+    return '<img src="' + _rewrite(src, opts) + '" alt="' + alt + '">';
   });
   // link.
   out = out.replace(/\[([^\]]+)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g, function (_m, txt, href) {
-    return '<a href="' + esc(_rewrite(href, opts)) + '">' + txt + "</a>";
+    return '<a href="' + _rewrite(href, opts) + '">' + txt + "</a>";
   });
   // bold, then inline code (code last so ** inside a code span is left literal).
   out = out.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");

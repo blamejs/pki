@@ -45,6 +45,7 @@ var NO_FIXTURE_YET = {
   "pki.schema.crmf":     "openssl has no offline CRMF generator (`openssl cmp` needs a live server); add a fixtures row when an oracle path exists",
   "pki.schema.cmp":      "openssl's `cmp` subcommand is client-only (needs a live server as the oracle peer); add a fixtures row when an oracle path exists",
   "pki.schema.attrcert": "openssl cannot emit RFC 5755 attribute certificates; add a fixtures row when an independent oracle exists",
+  "pki.schema.csrattrs": "openssl/NSS have no generator for the EST CSR Attributes wire format (RFC 8951 / 9908 CsrAttrs); add a fixtures row when an independent oracle exists",
 };
 
 // Discover every primitive name from the lib/ @primitive comment blocks.
