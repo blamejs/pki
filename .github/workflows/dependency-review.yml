@@ -58,6 +58,9 @@ jobs:
           # Default-DENY licenses: only these permissive SPDX identifiers are
           # allowed, so any copyleft variant (GPL-2.0-only / -or-later, LGPL, AGPL,
           # and forms not enumerated) is rejected without relying on a denylist of
-          # deprecated IDs.
-          allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-3-Clause, ISC, 0BSD, Unlicense, CC0-1.0, BlueOak-1.0.0, Python-2.0
+          # deprecated IDs. BSD-2-Clause-Views is the BSD-2-Clause text plus a
+          # non-endorsement views clause (permissive, OSI-adjacent) carried by the
+          # dev-only uri-js transitive; a compound `A AND B` license passes only
+          # when every clause is allow-listed.
+          allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-2-Clause-Views, BSD-3-Clause, ISC, 0BSD, Unlicense, CC0-1.0, BlueOak-1.0.0, Python-2.0
           comment-summary-in-pr: on-failure
