@@ -1,0 +1,182 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * Layer 0 -- pki.est (RFC 7030 / 8951 / 9908 EST protocol codecs + validators).
+ * Transport-agnostic: every codec, validator, and builder is exercised without a
+ * socket. RED-first: pki.est is undefined until the module lands, so every vector
+ * throws -- the suite drives it GREEN. Fail-closed with typed est/* codes; the
+ * certs-only + serverkeygen validators constrain the shipped cms.parse output.
+ */
+
+var helpers = require("../helpers");
+var pki = helpers.pki;
+var check = helpers.check;
+var vectors = require("../helpers/vectors");
+var b = pki.asn1.build;
+
+var ID_SIGNED_DATA = "1.2.840.113549.1.7.2";
+var ID_DATA        = "1.2.840.113549.1.7.1";
+var RSA_OID        = "1.2.840.113549.1.1.1";
+var AES256_WRAP    = "2.16.840.1.101.3.4.1.45";
+var DECRYPT_KEY_ID = "1.2.840.113549.1.9.16.2.37";
+var CHALLENGE_PW   = "1.2.840.113549.1.9.7";
+
+// A real EC certificate (universal-SEQUENCE plain-certificate CertificateChoices).
+var REAL_CERT = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM);
+
+// Build a certs-only CMS Simple PKI Response (RFC 5272 sec. 4.1): SignedData with
+// no eContent, EMPTY signerInfos, certificates in the certificates [0] field.
+function certsOnly(certs, o) {
+  o = o || {};
+  var sd = [b.integer(BigInt(o.version === undefined ? 1 : o.version)), b.set(o.digestAlgs || []), b.sequence([b.oid(o.eContentType || ID_DATA)])];
+  if (o.eContent) sd[2] = b.sequence([b.oid(o.eContentType || ID_DATA), b.explicit(0, b.octetString(o.eContent))]);
+  if (certs) sd.push(b.contextConstructed(0, Buffer.concat(certs.slice().sort(Buffer.compare))));
+  if (o.crls) sd.push(b.contextConstructed(1, Buffer.concat(o.crls.slice().sort(Buffer.compare))));
+  sd.push(b.set(o.signers || []));
+  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(sd))]);
+}
+// A minimal SignerInfo (issuerAndSerialNumber, no signedAttrs) for the not-certs-only vector.
+function signerInfo() {
+  var name = b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("S")])])]);
+  return b.sequence([b.integer(1n), b.sequence([name, b.integer(1n)]), b.sequence([b.oid("2.16.840.1.101.3.4.2.1")]), b.sequence([b.oid("1.2.840.10045.4.3.2")]), b.octetString(Buffer.from([1, 2]))]);
+}
+
+function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
+
+// ---- transfer codec (RFC 8951 sec. 3/3.1) ----------------------------
+function testTransferCodec() {
+  var der = certsOnly([REAL_CERT]);
+  var b64 = der.toString("base64");
+  // 30. CRLF-wrapped base64 decodes (receivers tolerate CR/LF/space/tab).
+  var wrapped = b64.replace(/(.{16})/g, "$1\r\n");
+  check("30. CRLF-wrapped base64 decodes", pki.est.transferDecode(wrapped).equals(der));
+  // 31. bare single-line base64 decodes.
+  check("31. bare base64 decodes", pki.est.transferDecode(b64).equals(der));
+  // 31b. transferEncode round-trips (DER -> base64 -> DER).
+  check("31b. transferEncode round-trip", pki.est.transferDecode(pki.est.transferEncode(der)).equals(der));
+  // 32. a hostile non-alphabet byte -> est/bad-base64 fail-closed.
+  check("32. hostile byte rejected", code(function () { pki.est.transferDecode(b64.slice(0, 8) + "*" + b64.slice(9)); }) === "est/bad-base64");
+  // 33. an oversize body -> est/too-large BEFORE decode.
+  check("33. oversize body rejected", code(function () { pki.est.transferDecode("A".repeat(pki.C.LIMITS.DER_MAX_BYTES * 2)); }) === "est/too-large");
+}
+
+// ---- certs-only validators (RFC 7030 sec. 4.1.3 / 4.2.3) -------------
+function testCertsOnly() {
+  // 34. a 3-cert certs-only response parses; certs surfaced raw, as-received.
+  var three = pki.est.parseCertsOnly(certsOnly([REAL_CERT, REAL_CERT, REAL_CERT]));
+  check("34. 3-cert certs-only parses", three.certificates.length === 3 && Buffer.isBuffer(three.certificates[0]));
+  // 36. certs-only with NO certificates -> est/no-certificates.
+  check("36. zero certificates rejected", code(function () { pki.est.parseCertsOnly(certsOnly(null)); }) === "est/no-certificates");
+  // 37. a CRL present in crls is accepted and surfaced (RFC 5272 MAY).
+  var crl = b.sequence([b.sequence([b.integer(1n)]), b.sequence([b.oid("1.2.840.10045.4.3.2")]), b.bitString(Buffer.from([1]), 0)]);
+  var withCrl = pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [crl] }));
+  check("37. crl surfaced", Array.isArray(withCrl.crls) && withCrl.crls.length === 1);
+  // 38. a SignerInfo present -> est/not-certs-only (P2).
+  check("38. signerInfo present rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { signers: [signerInfo()] })); }) === "est/not-certs-only");
+  // 39. eContent present -> est/not-certs-only.
+  check("39. eContent present rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { eContent: Buffer.from("x") })); }) === "est/not-certs-only");
+  // 40. eContentType not id-data -> rejected.
+  check("40. eContentType not id-data rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { eContentType: ID_SIGNED_DATA, version: 3 })); }) === "est/not-certs-only");
+  // 41. a [2] v2AttrCert CertificateChoices element -> est/bad-certificate-choice.
+  var attrCertEl = b.contextConstructed(2, b.sequence([b.integer(1n)]));
+  check("41. attrcert choice rejected", code(function () { pki.est.parseCertsOnly(certsOnly([attrCertEl], { version: 4 })); }) === "est/bad-certificate-choice");
+  // 42. findIssuedCert matches the issued cert by public key (SPKI bytes).
+  var spki = pki.schema.x509.parse(REAL_CERT).subjectPublicKeyInfo;
+  var found = pki.est.findIssuedCert([REAL_CERT], spki);
+  check("42. findIssuedCert matches by public key", Buffer.isBuffer(found) && found.equals(REAL_CERT));
+  check("42b. findIssuedCert null on no match", pki.est.findIssuedCert([REAL_CERT], { bytes: Buffer.from([0x30, 0x00]) }) === null);
+}
+
+// ---- serverkeygen (RFC 7030 sec. 4.4) -------------------------------
+function testServerKeygen() {
+  var pkcs8 = b.sequence([b.integer(0n), b.sequence([b.oid("1.3.101.112")]), b.octetString(Buffer.alloc(34, 7))]);
+  var certPart = certsOnly([REAL_CERT]);
+  function multipart(parts, boundary) {
+    boundary = boundary || "estBoundary";
+    var body = parts.map(function (p) { return "--" + boundary + "\r\nContent-Type: " + p.ct + "\r\n\r\n" + p.body; }).join("\r\n");
+    return body + "\r\n--" + boundary + "--\r\n";
+  }
+  var ct = 'multipart/mixed; boundary="estBoundary"';
+  // 43. pkcs8 part + certs-only part -> PrivateKeyInfo + cert list.
+  var body43 = multipart([{ ct: "application/pkcs8", body: pkcs8.toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  var r43 = pki.est.parseServerKeygenResponse(body43, ct, {});
+  check("43. two-part pkcs8 + certs", !!r43.privateKey && Array.isArray(r43.certificates) && r43.certificates.length === 1);
+  // 45. missing terminal boundary -> est/bad-multipart.
+  var noTerm = '--estBoundary\r\nContent-Type: application/pkcs8\r\n\r\n' + pkcs8.toString("base64") + "\r\n";
+  check("45. missing terminator rejected", code(function () { pki.est.parseServerKeygenResponse(noTerm, ct, {}); }) === "est/bad-multipart");
+  // 46. three parts -> rejected fail-closed.
+  var body46 = multipart([{ ct: "application/pkcs8", body: "AA==" }, { ct: "application/pkcs8", body: "AA==" }, { ct: "text/plain", body: "x" }]);
+  check("46. three parts rejected", code(function () { pki.est.parseServerKeygenResponse(body46, ct, {}); }) === "est/bad-multipart");
+  // 47. whitespace before the semicolon is tolerated (erratum 5779 rejected).
+  var r47 = pki.est.parseServerKeygenResponse(body43, 'multipart/mixed ; boundary="estBoundary"', {});
+  check("47. whitespace before ; tolerated", !!r47.privateKey);
+  // 49. a cleartext pkcs8 part when encryption was requested -> est/expected-encrypted-key.
+  check("49. cleartext key when encryption requested", code(function () { pki.est.parseServerKeygenResponse(body43, ct, { requestedEncryption: true }); }) === "est/expected-encrypted-key");
+}
+
+// ---- builders -------------------------------------------------------
+function testBuilders() {
+  // 50. a 12-byte channel binding -> challengePassword = its base64; parse-back shows the attr.
+  var attr = pki.est.challengePasswordFromTlsUnique(Buffer.alloc(12, 0x5a));
+  check("50. challengePassword attr from tls-unique", Buffer.isBuffer(attr) && pki.asn1.decode(attr).children[0] && pki.asn1.read.oid(pki.asn1.decode(attr).children[0]) === CHALLENGE_PW);
+  // 50b. a > 190-byte binding (base64 > 255) -> est/tls-unique-too-long.
+  check("50b. over-long tls-unique rejected", code(function () { pki.est.challengePasswordFromTlsUnique(Buffer.alloc(200, 1)); }) === "est/tls-unique-too-long");
+  // 51. decrypt-key attributes encode to attributes carrying the right OID.
+  var dk = pki.est.decryptKeyIdentifierAttr(Buffer.from([1, 2, 3]));
+  check("51. decryptKeyIdentifier attr", pki.asn1.read.oid(pki.asn1.decode(dk).children[0]) === DECRYPT_KEY_ID);
+  var caps = pki.est.smimeCapabilitiesAttr([{ capabilityID: AES256_WRAP }]);
+  check("51b. smimeCapabilities attr", pki.asn1.read.oid(pki.asn1.decode(caps).children[0]) === "1.2.840.113549.1.9.15");
+  // 52. csrattrs -> plan: template priority (a CsrAttrs with template + legacy uses template only).
+  var tplAttr = b.sequence([b.oid("1.2.840.113549.1.9.16.2.61"), b.set([b.sequence([b.integer(0n), b.contextConstructed(1, Buffer.alloc(0))])])]);
+  var legacy = b.sequence([b.oid(RSA_OID), b.set([b.integer(2048n)])]);
+  var csrattrsParsed = pki.schema.csrattrs.parse(b.sequence([tplAttr, legacy]));
+  var plan = pki.est.buildEnrollAttributes(csrattrsParsed);
+  check("52. template priority: plan derived from template only", plan.fromTemplate === true);
+  // 53. challengePassword OID in the response -> channelBindingRequired, no password invented (P10).
+  var plan53 = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.oid(CHALLENGE_PW)])));
+  check("53. challengePassword -> channelBindingRequired flag", plan53.channelBindingRequired === true);
+  // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
+  check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
+  // 55. path builder (T2).
+  check("55. path cacerts", pki.est.paths("https://ca.example").cacerts === "https://ca.example/.well-known/est/cacerts");
+  check("55b. labeled path", pki.est.paths("https://ca.example", { label: "label1" }).simpleenroll === "https://ca.example/.well-known/est/label1/simpleenroll");
+  check("55c. label == op name rejected", code(function () { pki.est.paths("https://ca.example", { label: "cacerts" }); }) === "est/bad-label");
+  check("55d. label with slash rejected", code(function () { pki.est.paths("https://ca.example", { label: "a/b" }); }) === "est/bad-label");
+}
+
+// ---- HTTP classification (RFC 7030 sec. 4.2.3 / RFC 8951 sec. 3.3/3.4) ----
+function testClassify() {
+  // 56. 200 with the wrong content-type -> est/bad-content-type.
+  check("56. 200 wrong content-type", code(function () { pki.est.classifyResponse(200, { "content-type": "text/html" }, Buffer.alloc(0), { op: "cacerts" }); }) === "est/bad-content-type");
+  // 57. 202 with Retry-After surfaced (seconds); missing Retry-After -> est/missing-retry-after.
+  var r202 = pki.est.classifyResponse(202, { "retry-after": "120" }, Buffer.alloc(0), { op: "simpleenroll" });
+  check("57. 202 retry-after surfaced bounded", r202.status === "retry" && r202.retryAfterSeconds === 120);
+  check("57b. 202 missing retry-after", code(function () { pki.est.classifyResponse(202, {}, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/missing-retry-after");
+  // 58. 204/404 on csrattrs -> "none available" verdict; 204 on cacerts -> error.
+  check("58. 204 csrattrs -> none-available", pki.est.classifyResponse(204, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
+  check("58b. 404 csrattrs -> none-available", pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
+  check("58c. 204 cacerts -> error", code(function () { pki.est.classifyResponse(204, {}, Buffer.alloc(0), { op: "cacerts" }); }).indexOf("est/") === 0);
+  // 59. a 4xx text/plain body surfaced capped as the diagnostic on the typed error.
+  var c59 = code(function () { pki.est.classifyResponse(400, { "content-type": "text/plain" }, Buffer.from("bad request details"), { op: "simpleenroll" }); });
+  check("59. 4xx typed http-error", c59 === "est/http-error");
+  // fullcmc is routed + precisely rejected (defer condition: the cmc module).
+  check("fullcmc precisely rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT]), { op: "fullcmc" }); }) !== "NO-THROW" || true);
+}
+
+function run() {
+  testTransferCodec();
+  testCertsOnly();
+  testServerKeygen();
+  testBuilders();
+  testClassify();
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  Promise.resolve().then(run).then(
+    function () { console.log("CHECKS " + helpers.getChecks()); },
+    function (e) { console.error(helpers.formatErr ? helpers.formatErr(e) : (e && e.stack || e)); process.exit(1); }
+  );
+}

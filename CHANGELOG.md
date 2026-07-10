@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.23 — 2026-07-10
+## v0.1.24 — 2026-07-10
+
+EST enrollment joins the toolkit: the RFC 8951 CSR-attributes parser and an RFC 7030 client-codec surface.
+
+### Added
+
+- pki.schema.csrattrs.parse(der) — decode EST CSR Attributes (CsrAttrs ::= SEQUENCE OF AttrOrOID, RFC 8951 section 3.5) into { items }. Each item is { kind, oid, name } — kind 'oid' for a bare OBJECT IDENTIFIER or 'attribute' for an Attribute, which adds raw values plus, for the RFC 9908 meaningful types, a decoded view: extensions (id-ExtensionReq), curve / keySize (the EC / RSA key-type conventions), or template (the CertificationRequestInfoTemplate). An empty SEQUENCE is a complete valid document. Unknown OIDs / attribute types are tolerated (surfaced raw); the RFC 9908 semantic MUSTs fail closed with a typed CsrattrsError (at most one id-ExtensionReq whose value is a single Extensions, template version v1(0), a template carrying at most one id-aa-extensionReqTemplate and never both extension-request kinds). Registered in the format orchestrator (pki.schema.parse routes a CsrAttrs, including the empty SEQUENCE, to csrattrs).
+- pki.est — the transport-agnostic RFC 7030 / 8951 / 9908 EST client surface. transferDecode / transferEncode are the RFC 8951 base64 transfer codec (RFC 4648, blind to any Content-Transfer-Encoding header, bounded before and after decoding). splitMultipartMixed splits the /serverkeygen multipart/mixed body (terminal boundary required, nested/extra parts rejected). parseCertsOnly validates a certs-only Simple PKI Response (RFC 5272 section 4.1) over cms.parse output — empty signerInfos, no eContent, plain X.509 certificates only — surfacing certificates raw and in as-received order. findIssuedCert picks the issued certificate by a public-key match (never a positional guess). parseServerKeygenResponse dispatches the two-part key + certificate response and enforces the request-to-response recipient-arm coherence. classifyResponse is the HTTP status / content-type / Retry-After state machine (a 202 surfaces retryAfterSeconds, never slept on; 204/404 on /csrattrs is a 'none available' verdict). paths builds the RFC 7030 operation URLs with the optional CA-label guard. The builders assemble the CSR attributes EST adds: challengePasswordFromTlsUnique (channel binding, 255-octet cap), decryptKeyIdentifierAttr / asymmetricDecryptKeyIdentifierAttr, smimeCapabilitiesAttr, buildEnrollAttributes (the RFC 9908 template-priority enroll plan), and reenrollGuard.
+- The error taxonomy gains CsrattrsError (csrattrs/*) and EstError (est/*).
+- The OID registry gains the RFC 4108 / RFC 7030 / RFC 9908 attribute identifiers: id-aa-decryptKeyID, id-aa-asymmDecryptKeyID, id-aa-certificationRequestInfoTemplate, and id-aa-extensionReqTemplate.
+- Fuzz targets csrattrs-parse and est-transfer (the base64 + multipart codecs) join the per-PR and nightly fuzz matrices with seed corpora.
+
+## v0.1.23 — 2026-07-09
 
 CMS grows authenticated content: RFC 5652 AuthenticatedData, RFC 5083 AuthEnvelopedData, and RFC 9629 KEM recipients (ML-KEM ready) — plus a toolkit-wide hardening pass.
 

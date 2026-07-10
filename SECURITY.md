@@ -112,6 +112,16 @@ security-only patches after the next major releases.
   a certificate, CMS message, OCSP response, timestamp, CRL, CSR, or key cannot
   smuggle unauthenticated bytes past a parser through that field, and no format
   can drift out of the rule.
+- **EST enrollment-response confusion.** The `pki.est` client codecs are
+  fail-closed over hostile server output: the RFC 8951 base64 transfer decode is
+  bounded before and after decoding and never reads a Content-Transfer-Encoding
+  header (the class of errata 5904/5107); the `multipart/mixed` splitter requires
+  the terminal boundary and rejects nested/extra parts; the certs-only validator
+  rejects any response that is not an empty-signerInfos, no-eContent SignedData
+  of plain X.509 certificates, and the serverkeygen validator enforces the
+  request-to-response recipient-arm coherence. The issued certificate is picked
+  by a public-key match (`findIssuedCert`), never a positional guess (RFC 5272
+  forbids assuming an order).
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's

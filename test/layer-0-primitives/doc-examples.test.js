@@ -103,6 +103,12 @@ var authenticatedSafe = b.sequence([b.sequence([b.oid(DATA), b.explicit(0, b.oct
 var macData = b.sequence([b.sequence([algId(DIG), b.octetString(Buffer.alloc(32, 2))]), b.octetString(Buffer.alloc(8, 3)), b.integer(2048n)]);
 var pkcs12Der = b.sequence([b.integer(3n), b.sequence([b.oid(DATA), b.explicit(0, b.octetString(authenticatedSafe))]), macData]);
 
+// A valid EST CsrAttrs (so csrattrs.parse's example maps a.items[0].kind).
+var csrattrsDer = b.sequence([b.oid("1.2.840.113549.1.9.7"), b.sequence([b.oid("1.2.840.113549.1.1.1"), b.set([b.integer(2048n)])])]);
+// A certs-only CMS Simple PKI Response (so est.parseCertsOnly's example resolves
+// r.certificates): SignedData v1, id-data no eContent, one cert, empty signerInfos.
+var caCertsDer = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([b.integer(1n), b.set([]), b.sequence([b.oid(DATA)]), b.contextConstructed(0, certDer), b.set([])]))]);
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -118,6 +124,7 @@ var FMT = {
   "pki.schema.crmf":     { der: crmfDer, label: "CERTIFICATE REQUEST MESSAGE" },
   "pki.schema.pkcs12":   { der: pkcs12Der, label: "PKCS12" },
   "pki.schema.cmp":      { der: cmpDer, label: "CMP" },
+  "pki.schema.csrattrs": { der: csrattrsDer, label: "CSRATTRS" },
 };
 function fixturesFor(tag) {
   var fmt = null;
@@ -129,6 +136,8 @@ function fixturesFor(tag) {
     der: der, input: der, bytes: der, node: pki.asn1.decode(certDer),
     pemText: toPem(der, label), pemString: toPem(der, label), pem: toPem(der, label),
     tokenDer: tstToken, tokenBytes: tstToken,
+    // EST fixtures: a certs-only bag for est.parseCertsOnly's example.
+    caCertsDer: caCertsDer, roundTripped: null,
     // RFC 6962 SCT-list extension value (inner DER OCTET STRING) for the pki.ct examples.
     sctExtValue: sctListDer,
     // the stand-in "your error class" some engine examples pass as ctx.E — a

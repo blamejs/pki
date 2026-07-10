@@ -796,7 +796,7 @@ function testDispatchAndCoercion() {
   var routed = pki.schema.parse(der);
   check("schema.parse routes a PKIMessage to cmp", routed.body && routed.body.arm === "error");
   check("all() lists cmp between crmf and ocsp-request", JSON.stringify(pki.schema.all()) ===
-        JSON.stringify(["cms", "tsp", "crmf", "cmp", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
+        JSON.stringify(["cms", "tsp", "crmf", "cmp", "csrattrs", "ocsp-request", "ocsp-response", "pkcs12", "pkcs8", "csr", "attrcert", "attrcert-v1", "crl", "x509"]));
 
   // The one order-dependent pair: a 2-child PKIMessage with body ir[0]
   // satisfies the shallow ocsp-request probe, so cmp must sit ahead of it.
