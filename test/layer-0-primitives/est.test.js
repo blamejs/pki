@@ -211,6 +211,10 @@ function testServerKeygen() {
   //      smime-type parameter -> the part is not dispatched as the encrypted key.
   var body46e = multipart([{ ct: 'application/pkcs7-mime; name="; smime-type=server-generated-key"', body: "AA==" }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   check("46e. quoted smime-type substring not a key part", code(function () { pki.est.parseServerKeygenResponse(body46e, ct, { requestedEncryption: true }); }) === "est/bad-multipart");
+  // 46f. the certificate part must be smime-type=certs-only too (RFC 7030 sec. 4.4.2);
+  //      a bare application/pkcs7-mime cert part is rejected.
+  var body46f = multipart([{ ct: "application/pkcs8", body: pkcs8.toString("base64") }, { ct: "application/pkcs7-mime", body: certPart.toString("base64") }]);
+  check("46f. cert part missing certs-only rejected", code(function () { pki.est.parseServerKeygenResponse(body46f, ct, {}); }) === "est/bad-multipart");
   // 46d. a "--boundaryX" line is NOT an RFC 2046 delimiter -> it stays part body,
   //      not a split point (a raw-substring split would treat it as a boundary).
   var trick = "--bnd\r\nContent-Type: text/plain\r\n\r\nhello\r\n--bndX still body\r\nmore\r\n--bnd--\r\n";
@@ -290,6 +294,10 @@ function testBuilders() {
   // 53f. rsaEncryption + Ed25519 are two key types -> ambiguous, fail closed.
   var twoKt2 = b.sequence([b.sequence([b.oid(RSA_OID), b.set([])]), b.sequence([b.oid("1.3.101.112"), b.set([])])]);
   check("53f. mixed RSA + Ed25519 key types rejected", code(function () { pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(twoKt2)); }) === "est/ambiguous-key-type");
+  // 53g. an undecoded key type's raw values (RFC 9908 key-type parameters) are
+  //      surfaced on keyType.values, never silently dropped.
+  var planEdParam = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.sequence([b.oid("1.3.101.112"), b.set([b.integer(1n)])])])));
+  check("53g. non-RSA key-type params preserved", planEdParam.keyType.type === "Ed25519" && Array.isArray(planEdParam.keyType.values) && planEdParam.keyType.values.length === 1);
   // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
   check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
   var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;
