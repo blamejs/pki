@@ -89,6 +89,10 @@ function testTransferCodec() {
   check("31b. transferEncode round-trip", pki.est.transferDecode(pki.est.transferEncode(der)).equals(der));
   // 32. a hostile non-alphabet byte -> est/bad-base64 fail-closed.
   check("32. hostile byte rejected", code(function () { pki.est.transferDecode(b64.slice(0, 8) + "*" + b64.slice(9)); }) === "est/bad-base64");
+  // 32b. a non-canonical / truncated body (length 1 mod 4, e.g. "A") -> est/bad-base64,
+  //      not a silently truncated decode.
+  check("32b. truncated base64 rejected", code(function () { pki.est.transferDecode("A"); }) === "est/bad-base64");
+  check("32c. unpadded base64 rejected", code(function () { pki.est.transferDecode("QQ"); }) === "est/bad-base64");
   // 33. an oversize body -> est/too-large BEFORE decode.
   check("33. oversize body rejected", code(function () { pki.est.transferDecode("A".repeat(pki.C.LIMITS.DER_MAX_BYTES * 2)); }) === "est/too-large");
 }
@@ -113,6 +117,9 @@ function testCertsOnly() {
   // 41. a [2] v2AttrCert CertificateChoices element -> est/bad-certificate-choice.
   var attrCertEl = b.contextConstructed(2, b.sequence([b.integer(1n)]));
   check("41. attrcert choice rejected", code(function () { pki.est.parseCertsOnly(certsOnly([attrCertEl], { version: 4 })); }) === "est/bad-certificate-choice");
+  // 41b. a universal SEQUENCE that is not a valid X.509 Certificate -> est/bad-certificate
+  //      (the tag check alone would let a malformed SEQUENCE through).
+  check("41b. non-certificate SEQUENCE rejected", code(function () { pki.est.parseCertsOnly(certsOnly([b.sequence([b.integer(1n)])])); }) === "est/bad-certificate");
   // 42. findIssuedCert matches the issued cert by public key (SPKI bytes).
   var spki = pki.schema.x509.parse(REAL_CERT).subjectPublicKeyInfo;
   var found = pki.est.findIssuedCert([REAL_CERT], spki);
@@ -173,9 +180,12 @@ function testBuilders() {
   var csrattrsParsed = pki.schema.csrattrs.parse(b.sequence([tplAttr, legacy]));
   var plan = pki.est.buildEnrollAttributes(csrattrsParsed);
   check("52. template priority: plan derived from template only", plan.fromTemplate === true);
-  // 53. challengePassword OID in the response -> channelBindingRequired, no password invented (P10).
+  // 53. challengePassword OID in the response -> channelBindingRequired, no password invented.
   var plan53 = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.oid(CHALLENGE_PW)])));
   check("53. challengePassword -> channelBindingRequired flag", plan53.channelBindingRequired === true);
+  // 53b. an empty rsaEncryption key-type hint ("any size") is carried into the plan.
+  var planAny = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.sequence([b.oid(RSA_OID), b.set([])])])));
+  check("53b. empty key-type hint -> keyType any", !!planAny.keyType && planAny.keyType.type === "rsaEncryption" && planAny.keyType.keySize === null);
   // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
   check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
   var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;

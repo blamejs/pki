@@ -90,6 +90,8 @@ function extTemplate(oid, critical, valueDer) {
   if (valueDer !== undefined) c.push(b.octetString(valueDer));
   return b.sequence(c);
 }
+// ExtensionReqTemplate ::= SEQUENCE SIZE (1..MAX) OF ExtensionTemplate (RFC 9908 sec. 3.4).
+function extReqTemplate(tpls) { return b.sequence(tpls); }
 
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
 function parseCode(der) { return code(function () { pki.schema.csrattrs.parse(der); }); }
@@ -129,6 +131,11 @@ function testAccept() {
   // 4b. a multi-valued key-type hint is ambiguous -> fail closed (never read values[0]).
   check("4b. multi-valued rsaEncryption rejected", parseCode(csrattrs([attr(RSA_ENCRYPTION, [b.integer(2048n), b.integer(4096n)])])) === "csrattrs/bad-key-type-attr");
   check("4c. multi-valued ecPublicKey rejected", parseCode(csrattrs([attr(EC_PUBLIC_KEY, [b.oid(SECP384R1), b.oid("1.2.840.10045.3.1.7")])])) === "csrattrs/bad-key-type-attr");
+  // 4d. an EMPTY key-type values SET is valid -- "any key of this type" (RFC 9908 sec. 3.2).
+  var ecAny = parse(csrattrs([attr(EC_PUBLIC_KEY, [])]));
+  check("4d. empty ecPublicKey values accepted (any curve)", ecAny.items[0].oid === EC_PUBLIC_KEY && ecAny.items[0].curve === undefined);
+  var rsaAny = parse(csrattrs([attr(RSA_ENCRYPTION, [])]));
+  check("4e. empty rsaEncryption values accepted (any size)", rsaAny.items[0].oid === RSA_ENCRYPTION && rsaAny.items[0].keySize === undefined);
 
   // 5. id-ExtensionReq with one Extensions value -> decoded extensions array.
   var er = parse(csrattrs([extReqAttr([ext(BASIC_CONSTRAINTS, undefined, Buffer.from([0x30, 0x00]))])]));
@@ -145,12 +152,19 @@ function testAccept() {
   var rdn = b.set([singleAttrTemplate(CN)]);                     // value-absent SingleAttributeTemplate
   var subj = nameTemplate([rdn]);
   var spki = spkiTemplate(RSA_ENCRYPTION, Buffer.from([0x00, 0x01]));
-  var innerExtReqTpl = attr(EXT_REQ_TEMPLATE, [extTemplate(SUBJECT_ALT_NAME)]);  // one ExtensionTemplate (value-absent)
+  var innerExtReqTpl = attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate(SUBJECT_ALT_NAME)])]);  // SEQUENCE OF one value-absent ExtensionTemplate
   var full = parse(csrattrs([templateAttr({ subject: subj, subjectPKInfo: spki, attributesBody: innerExtReqTpl })]));
   var ft = full.items[0].template;
   check("7. template full: subject one RDN, value null", ft.subject.length === 1 && ft.subject[0][0].value === null);
   check("7. template full: subjectPKInfo alg + placeholder key", ft.subjectPKInfo.algorithm.oid === RSA_ENCRYPTION && Buffer.isBuffer(ft.subjectPKInfo.placeholderKey));
   check("7. template full: extensionReqTemplate value-absent extension", ft.extensionTemplates.length === 1 && ft.extensionTemplates[0].oid === SUBJECT_ALT_NAME && ft.extensionTemplates[0].value === null);
+  // 7b. an ExtensionReqTemplate is a SEQUENCE OF ExtensionTemplate -> two decode to two.
+  var twoTpl = attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate(BASIC_CONSTRAINTS), extTemplate(SUBJECT_ALT_NAME)])]);
+  var ft7b = parse(csrattrs([templateAttr({ attributesBody: twoTpl })])).items[0].template;
+  check("7b. extensionReqTemplate SEQUENCE OF two templates", ft7b.extensionTemplates.length === 2);
+  // 7c. the non-standard single-ExtensionTemplate-as-value (not wrapped in the
+  //     SEQUENCE OF) is now rejected (its first child is an OID, not a SEQUENCE).
+  check("7c. bare ExtensionTemplate value rejected", parseCode(csrattrs([templateAttr({ attributesBody: attr(EXT_REQ_TEMPLATE, [extTemplate(SUBJECT_ALT_NAME)]) })])) === "csrattrs/bad-extension-template");
 
   // 8. unknown attribute type -> raw values, parse succeeds (P9).
   var unk = parse(csrattrs([attr("1.3.99.1.2", [b.integer(7n), b.octetString(Buffer.from([1, 2]))].sort(Buffer.compare))]));
@@ -166,8 +180,9 @@ function testAccept() {
 function testRejectStructure() {
   // 10. a child INTEGER (neither OID nor SEQUENCE) -> bad-attr-or-oid.
   check("10. bad arm (INTEGER child)", parseCode(csrattrs([b.integer(1n)])) === "csrattrs/bad-attr-or-oid");
-  // 11. Attribute with empty values SET -> SIZE(1..MAX) fault.
-  check("11. empty values SET rejected", parseCode(csrattrs([attr(RSA_ENCRYPTION, [])])) !== "NO-THROW");
+  // 11. an empty values SET is legal for a key-type hint (vector 4d/4e) but NOT
+  //     for id-ExtensionReq, which MUST carry exactly one Extensions (RFC 9908 sec. 3.2).
+  check("11. empty id-ExtensionReq values rejected", parseCode(csrattrs([attr(EXTENSION_REQUEST, [])])) === "csrattrs/bad-extension-req");
   // 12. Attribute SEQUENCE of 3 children -> rejected.
   check("12. attribute of 3 children rejected", parseCode(csrattrs([b.sequence([b.oid(RSA_ENCRYPTION), b.set([b.integer(1n)]), b.integer(9n)])])) !== "NO-THROW");
   // 13. values SET in descending DER order -> derSetOrder fault.
@@ -195,8 +210,8 @@ function testRejectSemantics() {
   check("20. template bad version", parseCode(csrattrs([templateAttr({ version: b.integer(1n) })])) === "csrattrs/bad-template-version");
   // 21. two template attributes -> rejected.
   check("21. duplicate template", parseCode(csrattrs([templateAttr({}), templateAttr({})])) !== "NO-THROW");
-  // 22. template attributes carrying BOTH id-ExtensionReq and id-aa-extensionReqTemplate -> rejected (P13).
-  var mixedBody = Buffer.concat([attr(EXTENSION_REQUEST, [extensions([ext(BASIC_CONSTRAINTS)])]), attr(EXT_REQ_TEMPLATE, [extTemplate(SUBJECT_ALT_NAME)])].sort(Buffer.compare));
+  // 22. template attributes carrying BOTH id-ExtensionReq and id-aa-extensionReqTemplate -> rejected.
+  var mixedBody = Buffer.concat([attr(EXTENSION_REQUEST, [extensions([ext(BASIC_CONSTRAINTS)])]), attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate(SUBJECT_ALT_NAME)])])].sort(Buffer.compare));
   check("22. template mixed extension-req kinds", parseCode(csrattrs([templateAttr({ attributesBody: mixedBody })])) === "csrattrs/bad-template-attrs");
   // 23. extensionReqTemplate values SET of 2 -> rejected.
   check("23. extensionReqTemplate two values", parseCode(csrattrs([templateAttr({ attributesBody: attr(EXT_REQ_TEMPLATE, [extTemplate(BASIC_CONSTRAINTS), extTemplate(SUBJECT_ALT_NAME)]) })])) !== "NO-THROW");
