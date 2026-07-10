@@ -299,6 +299,7 @@ async function testBuilders() {
   var eabHdr = b64uJson(eab.protected);
   check("67c. EAB header: HS256, kid, url==outer, no nonce", eabHdr.alg === "HS256" && eabHdr.kid === "mac-kid-1" && eabHdr.url === base.url && !("nonce" in eabHdr));
   check("67d. EAB rejects a signature alg", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acct.jwk, alg: "ES256" }); })) === "acme/bad-input");
+  check("67d2. EAB rejects a non-key macKey (fail closed, no raw TypeError)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: "notakey", kid: "k", url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
   check("67e. EAB inner refused by the outer profile (no HS* outside EAB)", (await acode(function () { return pki.jose.verify(eab, { profile: "acme-outer", key: macJwk }); })) !== "NO-THROW");
 
   // newAccount: jwk-signed (a new account has no kid), contact validated fail-closed, EAB attached.
@@ -384,6 +385,9 @@ function testAri() {
   // 74. missing start or end rejected.
   check("74a. missing end rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-01T00:00:00Z" } }); }) === "acme/bad-renewal-window");
   check("74b. missing start rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { end: "2026-01-08T00:00:00Z" } }); }) === "acme/bad-renewal-window");
+  // the generic validate() dispatch routes renewalInfo through the full window check,
+  // not just the spec shape -- a { suggestedWindow: {} } must not slip through.
+  check("74f. validate(renewalInfo) applies the window check", code(function () { pki.acme.validate("renewalInfo", { suggestedWindow: {} }); }) === "acme/bad-renewal-window");
   // A malformed renewalInfo must throw a WELL-FORMED typed fault -- the kind name
   // "renewalInfo" must not leak camelCase into the error code (a code like
   // "acme/bad-renewalInfo" violates the domain/reason shape and would make the
