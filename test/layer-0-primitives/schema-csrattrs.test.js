@@ -170,6 +170,9 @@ function testAccept() {
   var tplExtReq = attr(EXTENSION_REQUEST, [extensions([ext(BASIC_CONSTRAINTS, undefined, Buffer.from([0x30, 0x00]))])]);
   var ft7d = parse(csrattrs([templateAttr({ attributesBody: tplExtReq })])).items[0].template;
   check("7d. template id-ExtensionReq decoded to .extensions", Array.isArray(ft7d.extensions) && ft7d.extensions.length === 1 && ft7d.extensions[0].oid === BASIC_CONSTRAINTS);
+  // 7e. two id-ExtensionReq attributes in a template -> rejected, not last-one-wins.
+  var twoExtReq = Buffer.concat([attr(EXTENSION_REQUEST, [extensions([ext(BASIC_CONSTRAINTS)])]), attr(EXTENSION_REQUEST, [extensions([ext(SUBJECT_ALT_NAME)])])].sort(Buffer.compare));
+  check("7e. duplicate template id-ExtensionReq rejected", parseCode(csrattrs([templateAttr({ attributesBody: twoExtReq })])) === "csrattrs/bad-template-attrs");
 
   // 8. unknown attribute type -> raw values, parse succeeds (P9).
   var unk = parse(csrattrs([attr("1.3.99.1.2", [b.integer(7n), b.octetString(Buffer.from([1, 2]))].sort(Buffer.compare))]));

@@ -138,6 +138,12 @@ function testTransferCodec() {
   check("32c. unpadded base64 rejected", code(function () { pki.est.transferDecode("QQ"); }) === "est/bad-base64");
   // 33. an oversize body -> est/too-large BEFORE decode.
   check("33. oversize body rejected", code(function () { pki.est.transferDecode("A".repeat(pki.C.LIMITS.DER_MAX_BYTES * 2)); }) === "est/too-large");
+  // 33b. a CRLF-wrapped body whose DECODED DER is exactly at the limit is accepted:
+  //      the pre-decode ceiling allows normal line-wrapping whitespace (the wrapped
+  //      form exceeds a base64-length-only cap even though the DER is within bounds).
+  var atLimit = Buffer.alloc(pki.C.LIMITS.DER_MAX_BYTES, 0);
+  var wrappedLimit = atLimit.toString("base64").replace(/(.{64})/g, "$1\r\n");
+  check("33b. CRLF-wrapped near-limit body accepted", pki.est.transferDecode(wrappedLimit).length === atLimit.length);
 }
 
 // ---- certs-only validators (RFC 7030 sec. 4.1.3 / 4.2.3) -------------
