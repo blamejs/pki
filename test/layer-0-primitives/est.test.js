@@ -30,11 +30,15 @@ var CHALLENGE_PW   = "1.2.840.113549.1.9.7";
 function algId(o) { return b.sequence([b.oid(o)]); }
 // A minimal, structurally valid CMS EnvelopedData ContentInfo (one KTRI, opaque
 // ciphertext) -- the server-generated encrypted-key shape (RFC 7030 sec. 4.4.2).
-function envelopedKeyCI() {
+// o.skid: a Buffer -> a subjectKeyIdentifier recipient (ktri v2, envelope v2);
+// otherwise an issuerAndSerialNumber recipient (ktri v0, envelope v0).
+function envelopedKeyCI(o) {
+  o = o || {};
   var iasn = b.sequence([b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), b.integer(9n)]);
-  var ktri = b.sequence([b.integer(0n), iasn, algId(RSA_OID), b.octetString(Buffer.from([0xAA, 0xBB]))]);
+  var rid = o.skid ? b.contextPrimitive(0, Buffer.from(o.skid)) : iasn;
+  var ktri = b.sequence([b.integer(o.skid ? 2n : 0n), rid, algId(RSA_OID), b.octetString(Buffer.from([0xAA, 0xBB]))]);
   var eci = b.sequence([b.oid(ID_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
-  var env = b.sequence([b.integer(0n), b.set([ktri]), eci]);
+  var env = b.sequence([b.integer(o.skid ? 2n : 0n), b.set([ktri]), eci]);
   return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
 }
 // A structurally valid PKCS#10 CSR reusing REAL_CERT's raw subject + SPKI, with
@@ -163,6 +167,13 @@ function testServerKeygen() {
   // 48b. an encrypted-labeled key part that is a SignedData (not EnvelopedData) -> est/bad-key-part.
   var body48b = multipart([{ ct: encPart, body: certsOnly([REAL_CERT]).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   check("48b. non-EnvelopedData encrypted key rejected", code(function () { pki.est.parseServerKeygenResponse(body48b, ct, { requestedEncryption: true }); }) === "est/bad-key-part");
+  // 48c. the recipient key id matches the advertised decryptKeyID -> accepted.
+  var kid = Buffer.from([0x33, 0x44]);
+  var bodySkid = multipart([{ ct: encPart, body: envelopedKeyCI({ skid: kid }).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  var r48c = pki.est.parseServerKeygenResponse(bodySkid, ct, { requestedEncryption: true, expectedRecipientKeyId: kid });
+  check("48c. matching recipient key id accepted", !!r48c.encryptedKey);
+  // 48d. a DIFFERENT recipient key id than advertised -> est/recipient-mismatch fail-closed.
+  check("48d. recipient key id mismatch rejected", code(function () { pki.est.parseServerKeygenResponse(bodySkid, ct, { requestedEncryption: true, expectedRecipientKeyId: Buffer.from([0x99, 0x99]) }); }) === "est/recipient-mismatch");
 }
 
 // ---- builders -------------------------------------------------------
@@ -217,6 +228,10 @@ function testBuilders() {
   check("55b. labeled path", pki.est.paths("https://ca.example", { label: "label1" }).simpleenroll === "https://ca.example/.well-known/est/label1/simpleenroll");
   check("55c. label == op name rejected", code(function () { pki.est.paths("https://ca.example", { label: "cacerts" }); }) === "est/bad-label");
   check("55d. label with slash rejected", code(function () { pki.est.paths("https://ca.example", { label: "a/b" }); }) === "est/bad-label");
+  // 55e-g. dot-segment + reserved-character labels retarget the URL -> rejected.
+  check("55e. dot-segment label rejected", code(function () { pki.est.paths("https://ca.example", { label: ".." }); }) === "est/bad-label");
+  check("55f. query-char label rejected", code(function () { pki.est.paths("https://ca.example", { label: "a?b" }); }) === "est/bad-label");
+  check("55g. fragment-char label rejected", code(function () { pki.est.paths("https://ca.example", { label: "a#b" }); }) === "est/bad-label");
 }
 
 // ---- HTTP classification (RFC 7030 sec. 4.2.3 / RFC 8951 sec. 3.3/3.4) ----
