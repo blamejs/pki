@@ -292,6 +292,14 @@ function testAlgParamsMustBeAbsent() {
   check("HashSLH-DSA without params parses", res(b.sequence([b.oid(hashSlh)])).parameters === null);
   check("HashSLH-DSA + NULL params rejected", rej(b.sequence([b.oid(hashSlh), b.nullValue()])) === "path/bad-algorithm-parameters");
 
+  // FIPS 203 ML-KEM (draft-ietf-lamps-kyber-certificates) is in the same
+  // parameters-MUST-be-absent class as its ML-DSA signature sibling — a KEM
+  // never reaches the signature-verification path, so parse time is the ONLY
+  // layer that can reject the violation.
+  var mlkem = oid.byName("id-ml-kem-512");
+  check("ml-kem algId without params parses", res(b.sequence([b.oid(mlkem)])).parameters === null);
+  check("ml-kem + NULL params rejected", rej(b.sequence([b.oid(mlkem), b.nullValue()])) === "path/bad-algorithm-parameters");
+
   // behavior-preserving: algorithms that carry parameters are untouched
   check("rsaEncryption + NULL params still parses", res(b.sequence([b.oid(rsa), b.nullValue()])).parameters !== null);
   check("rsaEncryption without params still parses", res(b.sequence([b.oid(rsa)])).parameters === null);
@@ -302,6 +310,108 @@ function testAlgParamsMustBeAbsent() {
   var slhImpl = b.contextConstructed(0, Buffer.concat([b.oid(slh), b.nullValue()]));
   check("slh-dsa + NULL params rejected in IMPLICIT [0] shape too",
     code(function () { schema.walk(IMPL, asn1.decode(slhImpl), NS); }) === "path/bad-algorithm-parameters");
+}
+
+// ---------------------------------------------------------------------------
+// pemDecode strictness (RFC 7468 sec. 3; RFC 4648 sec. 3.5 canonical base64)
+// ---------------------------------------------------------------------------
+
+function testPemDecodeStrictness() {
+  var PemError = errors.PemError;
+  function dec(body) { return pkix.pemDecode("-----BEGIN X-----\n" + body + "\n-----END X-----", null, PemError); }
+  function decCode(body) { return code(function () { dec(body); }); }
+
+  check("pemDecode: canonical body decodes", dec("AQE=").equals(Buffer.from([0x01, 0x01])));
+  check("pemDecode: no armor -> pem/no-block",
+    code(function () { pkix.pemDecode("just text", null, PemError); }) === "pem/no-block");
+  check("pemDecode: non-string/non-Buffer input -> pem/bad-input",
+    code(function () { pkix.pemDecode(42, null, PemError); }) === "pem/bad-input");
+  check("pemDecode: PEM-armored Buffer decodes (readFileSync path)",
+    pkix.pemDecode(Buffer.from("-----BEGIN X-----\nAQE=\n-----END X-----", "utf8"), null, PemError).equals(Buffer.from([0x01, 0x01])));
+  // The size cap binds the Buffer input form too, and as a typed verdict: the
+  // byte length is checked BEFORE the latin1 string copy, so an oversized file
+  // never gets a full-size string allocation (nor, above Node's max string
+  // length, an untyped ERR_STRING_TOO_LONG in place of pem/too-large).
+  check("pemDecode: Buffer above PEM_MAX_BYTES -> pem/too-large",
+    code(function () { pkix.pemDecode(Buffer.alloc(pki.C.LIMITS.PEM_MAX_BYTES + 1), null, PemError); }) === "pem/too-large");
+  check("pemDecode: non-alphabet body -> pem/bad-base64", decCode("A!B=") === "pem/bad-base64");
+  // Canonical-form rejects: several distinct PEM texts must not alias one DER.
+  check("pemDecode: nonzero trailing bits in the final symbol (AQF=) rejected", decCode("AQF=") === "pem/bad-base64");
+  check("pemDecode: stray pad on a complete group (QUJD=) rejected", decCode("QUJD=") === "pem/bad-base64");
+  check("pemDecode: truncated 2-character group (AB) rejected", decCode("AB") === "pem/bad-base64");
+  check("pemDecode: unpadded complete group (QUJD) decodes", dec("QUJD").equals(Buffer.from("ABC", "ascii")));
+  check("pemDecode: shipped path routes the verdict (x509.pemDecode)",
+    code(function () { pki.schema.x509.pemDecode("-----BEGIN CERTIFICATE-----\nAQF=\n-----END CERTIFICATE-----", "CERTIFICATE"); }) === "pem/bad-base64");
+}
+
+// ---------------------------------------------------------------------------
+// pemEncode label validation (RFC 7468 sec. 3 label grammar)
+// ---------------------------------------------------------------------------
+
+function testPemEncodeLabel() {
+  var PemError = errors.PemError;
+  function encCode(label) { return code(function () { pkix.pemEncode(Buffer.from([0x01]), label, PemError); }); }
+  check("pemEncode: uppercase multi-word label accepted", encCode("X509 CRL") === "NO-THROW");
+  check("pemEncode: lowercase label rejected (pemDecode could not re-read it)", encCode("certificate") === "pem/bad-label");
+  check("pemEncode: label containing '-----' rejected (armor injection)", encCode("X-----BOOM") === "pem/bad-label");
+  check("pemEncode: leading-space label rejected", encCode(" CERT") === "pem/bad-label");
+  check("pemEncode: trailing-space label rejected", encCode("CERT ") === "pem/bad-label");
+  check("pemEncode: empty label rejected", encCode("") === "pem/bad-label");
+  check("pemEncode: newline in label rejected", encCode("A\nB") === "pem/bad-label");
+  var der = Buffer.from([0x01, 0x02, 0x03]);
+  check("pemEncode/pemDecode round-trip",
+    pkix.pemDecode(pkix.pemEncode(der, "TEST BLOCK", PemError), "TEST BLOCK", PemError).equals(der));
+}
+
+// ---------------------------------------------------------------------------
+// attrValueToString encode direction (RFC 4514 sec. 2.4) — the '#hex' form is
+// validated (throw, never silent truncation) and cannot collide with a literal
+// '#'-leading string (the decode escapes the leading character).
+// ---------------------------------------------------------------------------
+
+function testAttrValueEncodeHexForm() {
+  var ATV = pkix.attrValueToString(NS);
+  function enc(v) { return schema.encode(ATV, v, NS); }
+  function encCode(v) { return code(function () { enc(v); }); }
+
+  check("atv encode: valid #hex emits the raw TLV", enc("#0500").equals(Buffer.from([0x05, 0x00])));
+  check("atv encode: non-hex after # rejected (no silent empty buffer)", encCode("#zz") === "path/bad-atv");
+  check("atv encode: partial hex rejected (no silent truncation)", encCode("#abzz") === "path/bad-atv");
+  check("atv encode: odd-length hex rejected", encCode("#050") === "path/bad-atv");
+  check("atv encode: hex that is not one whole DER TLV rejected", encCode("#00") === "path/bad-atv");
+  check("atv encode: empty hex rejected", encCode("#") === "path/bad-atv");
+
+  var literal = schema.walk(ATV, asn1.decode(b.utf8("#0500")), NS);
+  check("atv decode: literal '#'-leading string surfaced escaped", literal === "\\#0500");
+  check("atv encode: escaped literal re-encodes as the original UTF8String",
+    enc(literal).equals(b.utf8("#0500")));
+  var bs = schema.walk(ATV, asn1.decode(b.utf8("\\x")), NS);
+  check("atv decode: literal '\\'-leading string surfaced escaped", bs === "\\\\x");
+  check("atv encode: escaped backslash re-encodes as the original UTF8String", enc(bs).equals(b.utf8("\\x")));
+  var hexForm = schema.walk(ATV, asn1.decode(b.integer(5n)), NS);
+  check("atv decode: non-string value takes the # hex form", hexForm === "#020105");
+  check("atv encode: hex form round-trips the raw DER", enc(hexForm).equals(b.integer(5n)));
+  check("atv decode/encode: plain string unchanged",
+    enc(schema.walk(ATV, asn1.decode(b.utf8("plain")), NS)).equals(b.utf8("plain")));
+}
+
+// ---------------------------------------------------------------------------
+// pkix.time — the RFC 5280 Time cutover on decode (sec. 4.1.2.5): a date
+// through 2049 MUST be UTCTime; GeneralizedTime is reserved for 2050 onward.
+// ---------------------------------------------------------------------------
+
+function testRfc5280TimeCutover() {
+  var T = pkix.time(NS);
+  function w(node) { return schema.walk(T, asn1.decode(node), NS); }
+  check("time: UTCTime 2026 decodes", w(b.utcTime(new Date("2026-01-01T00:00:00Z"))) instanceof Date);
+  check("time: GeneralizedTime 2050 decodes", w(b.generalizedTime(new Date("2050-01-01T00:00:00Z"))) instanceof Date);
+  check("time: GeneralizedTime 1949 decodes (UTCTime cannot express it)",
+    w(b.generalizedTime(new Date("1949-12-31T00:00:00Z"))) instanceof Date);
+  check("time: GeneralizedTime 2020 rejected (must be UTCTime through 2049)",
+    code(function () { w(b.generalizedTime(new Date("2020-01-01T00:00:00Z"))); }) === "path/bad-time");
+  check("time: GeneralizedTime 2049 rejected (cutover boundary)",
+    code(function () { w(b.generalizedTime(new Date("2049-12-31T23:59:59Z"))); }) === "path/bad-time");
+  check("time: non-time tag rejected", code(function () { w(b.integer(1n)); }) === "path/bad-time");
 }
 
 // ---------------------------------------------------------------------------
@@ -316,6 +426,10 @@ function run() {
   testNameAndKeyDecoders();
   testGeneralNameDecodedValue();
   testAlgParamsMustBeAbsent();
+  testPemDecodeStrictness();
+  testPemEncodeLabel();
+  testAttrValueEncodeHexForm();
+  testRfc5280TimeCutover();
 }
 
 module.exports = { run: run };

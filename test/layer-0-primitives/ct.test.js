@@ -253,6 +253,30 @@ function testReconstruct() {
   // an opaque unknownScts entry has no decoded body to sign over -> ct/bad-input
   var uk = pki.ct.parseSctList(extValueOf([serialized(sctBody({ version: 3 }))])).unknownScts[0];
   check("48b. unknown SCT to reconstruct -> ct/bad-input", code(function () { pki.ct.reconstructSignedData({ entryType: 0, leafCert: Buffer.alloc(10) }, uk); }) === "ct/bad-input");
+
+  // RFC 6962 §3.2: the timestamp is a uint64. A hand-built sct outside
+  // 0..2^64-1 must be refused typed, never escape as a raw Node RangeError
+  // from the fixed-width Buffer write.
+  var tsOver = Object.assign({}, s, { timestamp: 1n << 64n });
+  check("48c. timestamp 2^64 -> ct/bad-input", code(function () { pki.ct.reconstructSignedData({ entryType: 0, leafCert: leaf }, tsOver); }) === "ct/bad-input");
+  var tsNeg = Object.assign({}, s, { timestamp: -1n });
+  check("48d. negative timestamp -> ct/bad-input", code(function () { pki.ct.reconstructSignedData({ entryType: 0, leafCert: leaf }, tsNeg); }) === "ct/bad-input");
+  // control: the uint64 maximum is representable.
+  var tsMax = Object.assign({}, s, { timestamp: 0xffffffffffffffffn });
+  var preTsMax = pki.ct.reconstructSignedData({ entryType: 0, leafCert: leaf }, tsMax);
+  check("48e. control: timestamp 2^64-1 emitted exactly", preTsMax.subarray(2, 10).equals(Buffer.alloc(8, 0xff)));
+
+  // RFC 6962 §3.2: CtExtensions is opaque<0..2^16-1>. A hand-built sct whose
+  // extensions exceed 65535 bytes cannot be length-prefixed (the prefix would
+  // silently truncate mod 65536, an internally inconsistent preimage) -> refuse.
+  var extOver = Object.assign({}, s, { extensions: Buffer.alloc(65536, 0x41) });
+  check("48f. extensions > 65535 bytes -> ct/bad-extensions", code(function () { pki.ct.reconstructSignedData({ entryType: 0, leafCert: leaf }, extOver); }) === "ct/bad-extensions");
+  // control: a 65535-byte extensions value is representable with an exact prefix.
+  var extMax = Object.assign({}, s, { extensions: Buffer.alloc(65535, 0x42) });
+  var preExtMax = pki.ct.reconstructSignedData({ entryType: 0, leafCert: leaf }, extMax);
+  check("48g. control: 65535-byte extensions emitted with an exact prefix",
+    preExtMax.subarray(preExtMax.length - 65537, preExtMax.length - 65535).equals(Buffer.from([0xff, 0xff])) &&
+    preExtMax.subarray(preExtMax.length - 65535).equals(extMax.extensions));
 }
 
 // ---- extension-decoder registry integration (schema-pkix byOid) ------
@@ -292,6 +316,65 @@ function testNotASchemaFormat() {
   check("56. pki.schema.parse of a raw SCT-list DER -> schema/unknown-format", code(function () { pki.schema.parse(raw); }) === "schema/unknown-format");
 }
 
+// ---- known-answer vector: a real, independently produced SCT ----------
+// A production Let's Encrypt leaf certificate (CN valid-isrgrootx1.letsencrypt.org)
+// carrying two embedded v1 SCTs. The expected logId / timestamp / extensions
+// values below are pinned from an independent decode of the same certificate
+// (OpenSSL's SCT text output), so a mis-derivation of the RFC 6962 TLS layout
+// shared by the parser and this file's fixture builders cannot pass. Driven
+// end-to-end through the documented operator flow: pki.schema.x509.parse ->
+// find the SCT extension -> pki.ct.parseSctList(ext.value).
+var REAL_CT_LEAF_PEM = [
+  "-----BEGIN CERTIFICATE-----",
+  "MIIFGzCCBAOgAwIBAgISBScwL3h0YjfOIWf42EnShaPZMA0GCSqGSIb3DQEBCwUA",
+  "MDMxCzAJBgNVBAYTAlVTMRYwFAYDVQQKEw1MZXQncyBFbmNyeXB0MQwwCgYDVQQD",
+  "EwNZUjIwHhcNMjYwNzAxMTczODMzWhcNMjYwOTI5MTczODMyWjArMSkwJwYDVQQD",
+  "EyB2YWxpZC1pc3Jncm9vdHgxLmxldHNlbmNyeXB0Lm9yZzCCASIwDQYJKoZIhvcN",
+  "AQEBBQADggEPADCCAQoCggEBAJ0zYXLkgDHFg/2R3n2Elz69RSKjvuNKTIMZmygM",
+  "JHmwFOt+4IA8WW0+3mm3xQwocdL1qpDdsyklPHLbyloK6XVDAIPYdrP97BK0rZ9Q",
+  "W531xEhOj89JbMQK/IzvJvnS1EADHFn83qHex/SpXsb9WAfz+NA1v9Of8hxAACs9",
+  "2ab5De+UpTj6PvdgKS9iVu1YkrM7WUZvSqb3H67pjHa0taTET+FrMNVpJL41NDkV",
+  "T5FzM52X2AAwC90jfbWfXoRsUXPsHqoBBCPBuw15JD9tj6iradBTb3xILoqhaUTi",
+  "xAM2wRyj7RQSp4WkzN2U6db8Z7WGmQBq0Doo+usAOSXMaSkCAwEAAaOCAi8wggIr",
+  "MA4GA1UdDwEB/wQEAwIFoDATBgNVHSUEDDAKBggrBgEFBQcDATAMBgNVHRMBAf8E",
+  "AjAAMB0GA1UdDgQWBBS9xWPTtqCiJfWLHyC7m9quhvU3TzAfBgNVHSMEGDAWgBRA",
+  "FS0mee0yIJ7fmnId1jIfgQyBDDAzBggrBgEFBQcBAQQnMCUwIwYIKwYBBQUHMAKG",
+  "F2h0dHA6Ly95cjIuaS5sZW5jci5vcmcvMCsGA1UdEQQkMCKCIHZhbGlkLWlzcmdy",
+  "b290eDEubGV0c2VuY3J5cHQub3JnMBMGA1UdIAQMMAowCAYGZ4EMAQIBMC4GA1Ud",
+  "HwQnMCUwI6AhoB+GHWh0dHA6Ly95cjIuYy5sZW5jci5vcmcvOTAuY3JsMIIBDQYK",
+  "KwYBBAHWeQIEAgSB/gSB+wD5AHcAlE5Dh/rswe+B8xkkJqgYZQHH0184AgE/cmd9",
+  "VTcuGdgAAAGfHvhnOgAABAMASDBGAiEApph0bB2+jablka/lzTH8QVGibWr3JrfV",
+  "Ab7XExHY6BYCIQDAkOXIjF03IIstuFyAubypsM5xj4Vd1BK2Ag1prUJaZgB+AKgm",
+  "y+MKxjUSRlM/4GXxTxnZbhkIE8Qd2W15ALMSPFUnAAABnx74aZ8ACAAABQAR7Pcd",
+  "BAMARzBFAiAZH5kB9nPBERQUbQziMFS7SvOQMcmJxQtNMtdSok9WEQIhAKh+QYmF",
+  "BCavMZNF2gkyrLX91m1d+IJwPKLPnjXIUC6xMA0GCSqGSIb3DQEBCwUAA4IBAQAA",
+  "YXvpP0EfWxeSptnjn79DByvoPT1wziN/EjIgAuaAUTUf0L+MNLgGg4gAxIAb9m2u",
+  "Fwj/zL5w+qIuSfPPvVq6LMnJQUibBggMCJU3o/wloWqLzNFYKeIRhoHlZAeGpYKP",
+  "9FxY2fsEeLBXdg0La44+LS78I3A44mxxoCNmtJxj8i4EdjfdpSoYTQ2cGZtc9qOY",
+  "cMvsoc5MtryNh0kGp2FbcqSNC6bGUUTdO37MEXIz2kM8P0cnxvLSrpuXQb7ui5QO",
+  "KBlzKwJL9TRfIxtUawg+im+HTgEU4Am8NM9x72gZxPw8wh5H9BVypXEMnOV8DpCf",
+  "00aajhuGyvSbZcOB/Wdf",
+  "-----END CERTIFICATE-----",
+].join("\n");
+
+function testKnownAnswerVector() {
+  var cert = pki.schema.x509.parse(REAL_CT_LEAF_PEM);
+  var sctOid = pki.oid.byName("signedCertificateTimestampList");
+  var ext = cert.extensions.filter(function (e) { return e.oid === sctOid; })[0];
+  check("57. real leaf carries the SCT-list extension", !!ext && ext.critical === false);
+  var list = pki.ct.parseSctList(ext.value);
+  check("58. real leaf decodes two v1 SCTs, none unknown", list.scts.length === 2 && list.unknownScts.length === 0);
+  var s0 = list.scts[0], s1 = list.scts[1];
+  check("59. SCT[0] logId matches the published log key id", s0.logIdHex === "944e4387faecc1ef81f3192426a8186501c7d35f3802013f72677d55372e19d8");
+  check("60. SCT[0] exact timestamp", s0.timestamp === 1782931023674n && s0.timestampDate.toISOString() === "2026-07-01T18:37:03.674Z");
+  check("61. SCT[0] empty extensions + ecdsa/sha256", s0.extensions.length === 0 && s0.signatureAlgorithm.hashName === "sha256" && s0.signatureAlgorithm.signatureName === "ecdsa");
+  check("62. SCT[0] DER ECDSA signature surfaced raw", s0.signature.length === 72 && s0.signature[0] === 0x30);
+  check("63. SCT[1] logId matches the published log key id", s1.logIdHex === "a826cbe30ac6351246533fe065f14f19d96e190813c41dd96d7900b3123c5527");
+  check("64. SCT[1] exact timestamp", s1.timestamp === 1782931024287n && s1.timestampDate.toISOString() === "2026-07-01T18:37:04.287Z");
+  check("65. SCT[1] non-empty extensions surfaced byte-exact", s1.extensions.toString("hex") === "0000050011ecf71d");
+  check("66. SCT[1] DER ECDSA signature surfaced raw", s1.signature.length === 71 && s1.signature[0] === 0x30);
+}
+
 function run() {
   testAccept();
   testInnerWrap();
@@ -302,6 +385,7 @@ function run() {
   testReconstruct();
   testExtensionDecoderRegistry();
   testNotASchemaFormat();
+  testKnownAnswerVector();
 }
 
 module.exports = { run: run };

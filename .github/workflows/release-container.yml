@@ -47,8 +47,10 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
         with:
           node-version: '24.18.0'
+      - name: Install devDependencies (lockfile-pinned)
+        run: npm ci --no-audit --no-fund
       - name: Run ESLint (max-warnings 0)
-        run: npx --yes eslint@10.3.0 --max-warnings 0 .
+        run: npx --no-install eslint --max-warnings 0 .
 
   lint-hadolint:
     name: Hadolint (Dockerfiles)

@@ -7,9 +7,9 @@
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (CI PRs + nightly batch)
  * and OSS-Fuzz (continuous) both consume this shape:
  * `module.exports.fuzz = function (data)` where `data` is a Buffer the
- * engine mutates via coverage-guided fuzzing. A CertReqMessages is a DER
- * SEQUENCE, so the shared ASN.1 seed corpus exercises the front door and
- * the mutator reaches the IMPLICIT-TAGS CertTemplate run, the dual-accepted
+ * engine mutates via coverage-guided fuzzing. The seeds in
+ * fuzz/crmf-parse_seed_corpus/ exercise the front door, and the mutator
+ * reaches the IMPLICIT-TAGS CertTemplate run, the dual-accepted
  * issuer / subject Name dispatch, the EXPLICIT OptionalValidity times, and
  * the ProofOfPossession CHOICE arms.
  *

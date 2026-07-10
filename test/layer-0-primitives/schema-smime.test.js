@@ -32,7 +32,7 @@ function algId(nm) { return b.sequence([b.oid(O(nm))]); }
 // ---- ACCEPT: SigningCertificate (ESS v1) -----------------------------
 function testSigningCertificate() {
   var ess = b.sequence([b.octetString(Buffer.alloc(20, 0xAB)), issuerSerial("ca.example", 42)]);
-  var sc = smime.parseSigningCertificate(b.sequence([b.sequence([ess])]));
+  var sc = pki.schema.smime.parseSigningCertificate(b.sequence([b.sequence([ess])]));
   check("1. v1 certs surfaced", sc.certs.length === 1);
   check("2. v1 certHash raw 20 bytes", Buffer.isBuffer(sc.certs[0].certHash) && sc.certs[0].certHash.length === 20);
   check("3. v1 hashAlgorithm is the implied SHA-1", sc.certs[0].hashAlgorithm.name === "sha1" && sc.certs[0].hashAlgorithm.implied === true && sc.certs[0].hashAlgorithm.oid === O("sha1"));
@@ -84,7 +84,7 @@ function testSigningCertificate() {
 function testSigningCertificateV2() {
   // hashAlgorithm DEFAULT (absent) -> id-sha256, defaulted:true
   var essDef = b.sequence([b.octetString(Buffer.alloc(32, 2))]);
-  var scDef = smime.parseSigningCertificateV2(b.sequence([b.sequence([essDef])]));
+  var scDef = pki.schema.smime.parseSigningCertificateV2(b.sequence([b.sequence([essDef])]));
   check("11. v2 hashAlgorithm defaults to sha256", scDef.certs[0].hashAlgorithm.name === "sha256" && scDef.certs[0].hashAlgorithm.defaulted === true && scDef.certs[0].hashAlgorithm.oid === O("sha256"));
 
   // hashAlgorithm present, non-default (sha384) -> decoded, defaulted:false
@@ -96,6 +96,14 @@ function testSigningCertificateV2() {
   var essFull = b.sequence([algId("sha512"), b.octetString(Buffer.alloc(64, 4)), issuerSerial("ca2.example", 7)]);
   var scFull = smime.parseSigningCertificateV2(b.sequence([b.sequence([essFull])]));
   check("13. v2 full ESSCertIDv2 (hashAlg + certHash + issuerSerial)", scFull.certs[0].hashAlgorithm.name === "sha512" && scFull.certs[0].issuerSerial.serialNumber === 7n);
+
+  // The fourth pivot combination: hashAlgorithm DEFAULTED (absent) with
+  // issuerSerial PRESENT — the two same-tag optionals sit on opposite sides of
+  // the mandatory certHash OCTET STRING, so this is the shape where a greedy
+  // leading-optional recognizer would misparse the trailing SEQUENCE.
+  var essDefIs = b.sequence([b.octetString(Buffer.alloc(32, 7)), issuerSerial("ca3.example", 5)]);
+  var scDefIs = smime.parseSigningCertificateV2(b.sequence([b.sequence([essDefIs])]));
+  check("13b. v2 defaulted hashAlgorithm + present issuerSerial", scDefIs.certs[0].hashAlgorithm.defaulted === true && scDefIs.certs[0].issuerSerial.serialNumber === 5n);
 
   // present-and-byte-equal-to-default (explicit sha256, params absent) -> reject (X.690 §11.5)
   var essNc = b.sequence([algId("sha256"), b.octetString(Buffer.alloc(32, 5))]);
@@ -109,7 +117,7 @@ function testSigningCertificateV2() {
 
 // ---- ACCEPT: SMIMECapabilities ---------------------------------------
 function testSmimeCapabilities() {
-  var caps = smime.parseSmimeCapabilities(b.sequence([
+  var caps = pki.schema.smime.parseSmimeCapabilities(b.sequence([
     b.sequence([b.oid(O("aes256-CBC"))]),
     b.sequence([b.oid(O("aes128-CBC")), b.integer(128n)]),
   ]));
@@ -130,7 +138,7 @@ function testDecodeAttribute() {
   var essV1 = b.sequence([b.sequence([b.sequence([b.octetString(Buffer.alloc(20, 1))])])]);
   var caps = b.sequence([b.sequence([b.oid(O("aes256-CBC"))])]);   // SMIMECapabilities -> SMIMECapability -> capabilityID
 
-  check("20. dispatch signingCertificate", smime.decodeAttribute({ type: O("signingCertificate"), values: [essV1] }).kind === "signingCertificate");
+  check("20. dispatch signingCertificate", pki.schema.smime.decodeAttribute({ type: O("signingCertificate"), values: [essV1] }).kind === "signingCertificate");
   check("21. dispatch signingCertificateV2", smime.decodeAttribute({ type: O("signingCertificateV2"), values: [essDef] }).kind === "signingCertificateV2");
   check("22. dispatch smimeCapabilities", smime.decodeAttribute({ type: O("smimeCapabilities"), values: [caps] }).kind === "smimeCapabilities");
 
@@ -186,6 +194,14 @@ function testReject() {
   check("37. non-buffer input rejected", code(function () { smime.parseSigningCertificate(42); }) === "smime/bad-input");
   // extra trailing child beyond the schema (SigningCertificate has 2 fields) -> reject
   check("38. extra trailing field rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([b.sequence([b.octetString(Buffer.alloc(20, 1))])]), b.sequence([]), b.integer(9n)])); }).indexOf("smime/") === 0);
+  // IssuerSerial ::= SEQUENCE { issuer GeneralNames, serialNumber } — a SEQUENCE
+  // of exactly two members (RFC 5035 Appendix A); both arity edges reject, on the
+  // v1 path and (shared schema) the v2 path.
+  var isThree = b.sequence([b.sequence([gnDir("ca")]), b.integer(1n), b.integer(2n)]);
+  check("38b. IssuerSerial with a third element rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([b.sequence([b.octetString(Buffer.alloc(20, 1)), isThree])])])); }) === "smime/bad-issuer-serial");
+  var isOne = b.sequence([b.sequence([gnDir("ca")])]);
+  check("38c. IssuerSerial missing serialNumber rejected", code(function () { smime.parseSigningCertificate(b.sequence([b.sequence([b.sequence([b.octetString(Buffer.alloc(20, 1)), isOne])])])); }) === "smime/bad-issuer-serial");
+  check("38d. v2 IssuerSerial arity enforced via the shared schema", code(function () { smime.parseSigningCertificateV2(b.sequence([b.sequence([b.sequence([b.octetString(Buffer.alloc(32, 1)), isThree])])])); }) === "smime/bad-issuer-serial");
 }
 
 // ---- orchestrator exclusion: smime is NOT a schema.parse format ------

@@ -6,9 +6,10 @@
  * counter (kept instead of node:test for now; the per-file split is
  * the modularity win, the assertion swap is orthogonal scope).
  *
- * One global counter shared by every test file via this module's
- * singleton-require semantics. The smoke runner reads getChecks()
- * after walking every layer to print the total.
+ * One counter per process via this module's singleton-require
+ * semantics. Each test file's CLI entry prints `CHECKS <n>` from
+ * getChecks(); the smoke runner forks each file as its own process and
+ * parses that line out of the child's stdout to aggregate the total.
  */
 
 var _checks = 0;
@@ -34,16 +35,6 @@ function skip(reason) {
 function getChecks()         { return _checks; }
 function getSkips()          { return _skips.length; }
 function getSkipReasons()    { return _skips.slice(); }
-function resetChecksForTest() { _checks = 0; _skips = []; }
-
-// addExternalChecks — the parallel smoke runner forks per-file
-// children; each child runs its own _checks counter in its process
-// and reports it back to the parent. The parent calls this to fold
-// the children's counts into the parent total so the final
-// "OK — N checks passed" line aggregates correctly.
-function addExternalChecks(n) {
-  if (typeof n === "number" && isFinite(n) && n >= 0) _checks += n;
-}
 
 // formatErr — render a thrown error as a single-line, bounded diagnostic for a
 // test runner's failure catch. A thrown error's message/stack can carry a test
@@ -68,7 +59,5 @@ module.exports = {
   getChecks:          getChecks,
   getSkips:           getSkips,
   getSkipReasons:     getSkipReasons,
-  resetChecksForTest: resetChecksForTest,
-  addExternalChecks:  addExternalChecks,
   formatErr:          formatErr,
 };

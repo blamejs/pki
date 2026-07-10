@@ -68,19 +68,25 @@ function crl(o) {
 // ---- valid CRLs -------------------------------------------------------
 function testValid() {
   // minimal v1: no version, no nextUpdate, no revoked, no extensions
-  var m = parse(crl({}));
+  var minimalDer = crl({});
+  var m = parse(minimalDer);
   check("minimal v1 parses: version 1", m.version === 1);
   check("minimal v1: nextUpdate absent", m.nextUpdate === null);
   check("minimal v1: empty revoked list", Array.isArray(m.revokedCertificates) && m.revokedCertificates.length === 0);
   check("minimal v1: thisUpdate is a Date", m.thisUpdate instanceof Date && m.thisUpdate.toISOString() === "2026-01-01T00:00:00.000Z");
   check("minimal v1: tbsBytes is a non-empty Buffer", Buffer.isBuffer(m.tbsBytes) && m.tbsBytes.length > 0);
+  // tbsBytes is the exact signed region an external verifier hashes — it must
+  // be the tbsCertList TLV byte-for-byte off the wire, never re-serialized.
+  check("minimal v1: tbsBytes byte-identical to the tbsCertList TLV on the wire",
+    m.tbsBytes.equals(pki.asn1.decode(minimalDer).children[0].bytes));
   check("minimal v1: issuer dn", m.issuer.dn === "CN=Test CA");
   check("minimal v1: signatureAlgorithm named", m.signatureAlgorithm.oid === SIGALG);
 
-  // full v2: version, nextUpdate, two revoked entries, crlExtensions
+  // full v2: version, nextUpdate (a legal post-2049 GeneralizedTime), two
+  // revoked entries, crlExtensions
   var full = parse(crl({
     version: 1n,
-    nextUpdate: gen("2030-01-01T00:00:00Z"),
+    nextUpdate: gen("2050-01-01T00:00:00Z"),
     revoked: [revoked(3n, utc("2026-02-01T00:00:00Z")), revoked(1n, utc("2026-03-01T00:00:00Z"))],
     crlExtensions: [ext("2.5.29.20", b.integer(42n))], // cRLNumber = 42
   }));
@@ -138,7 +144,7 @@ function testVersion() {
 
 // ---- nextUpdate / revoked disambiguation (§5.1.2.5/2.6) ---------------
 function testOptionalDisambiguation() {
-  check("nextUpdate present (GeneralizedTime) parses", parse(crl({ nextUpdate: gen("2030-01-01T00:00:00Z") })).nextUpdate instanceof Date);
+  check("nextUpdate present (GeneralizedTime) parses", parse(crl({ nextUpdate: gen("2050-01-01T00:00:00Z") })).nextUpdate instanceof Date);
   check("revokedCertificates present-but-empty rejected", parseCode(crl({ version: 1n, revoked: [], crlExtensions: [ext("2.5.29.20", b.integer(1n))] })) === "crl/bad-revoked-certificates");
   check("revoked entry not a SEQUENCE rejected", parseCode(crl({ revoked: [b.integer(1n)] })) === "crl/bad-revoked-entry");
   check("revoked entry missing revocationDate rejected", parseCode(crl({ revoked: [b.sequence([b.integer(1n)])] })) === "crl/bad-revoked-entry");
@@ -211,6 +217,29 @@ function testExtensionStrictness() {
   })());
 }
 
+// ---- Time encoding cutover (RFC 5280 §5.1.2.4-§5.1.2.6) ---------------
+// CRL dates through the year 2049 MUST be encoded as UTCTime; GeneralizedTime
+// is reserved for 2050 or later. Applies to thisUpdate, nextUpdate, and each
+// entry's revocationDate (invalidityDate stays GeneralizedTime by syntax).
+function testTimeEncodingCutover() {
+  check("thisUpdate as GeneralizedTime 2020 rejected (must be UTCTime through 2049)",
+    parseCode(crl({ thisUpdate: gen("2020-06-01T00:00:00Z") })) === "crl/bad-time");
+  check("nextUpdate as GeneralizedTime 2030 rejected",
+    parseCode(crl({ nextUpdate: gen("2030-01-01T00:00:00Z") })) === "crl/bad-time");
+  check("revocationDate as GeneralizedTime 2026 rejected",
+    parseCode(crl({ version: 1n, revoked: [revoked(1n, gen("2026-02-01T00:00:00Z"))],
+      crlExtensions: [ext("2.5.29.20", b.integer(1n))] })) === "crl/bad-time");
+  check("thisUpdate as GeneralizedTime 2050 parses",
+    parseCode(crl({ thisUpdate: gen("2050-01-01T00:00:00Z") })) === "NO-THROW");
+  // invalidityDate (§5.3.2) is ALWAYS a GeneralizedTime, any year — the
+  // cutover rule must not leak into the GeneralizedTime-only extension value.
+  check("invalidityDate as GeneralizedTime 2026 still decodes", (function () {
+    var m = parse(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"),
+      [ext("2.5.29.24", b.generalizedTime(new Date("2026-01-15T00:00:00Z")))])] }));
+    return m.revokedCertificates[0].crlEntryExtensions[0].value instanceof Date;
+  })());
+}
+
 // ---- input coercion (parity with the certificate parser) -------------
 function testInputCoercion() {
   var der = crl({});
@@ -222,6 +251,20 @@ function testInputCoercion() {
   check("crl.parse accepts a PEM Buffer with a UTF-8 BOM", parse(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(pem, "utf8")])).thisUpdate instanceof Date);
   check("crl.parse accepts a Uint8Array DER", parse(new Uint8Array(der)).thisUpdate instanceof Date);
   check("crl.parse rejects a non-buffer/string input", parseCode(42) === "crl/bad-input");
+  // The pem surface itself: pemDecode returns the exact DER inside the armor
+  // and enforces the requested label.
+  check("crl.pemDecode yields the armored DER", pki.schema.crl.pemDecode(pem, "X509 CRL").equals(der));
+  check("crl.pemDecode rejects a wrong label",
+    code(function () { pki.schema.crl.pemDecode(pem, "CERTIFICATE"); }) === "pem/label-mismatch");
+  // pemEncode pairs with pemDecode under the format's canonical RFC 7468 label
+  // (X509 CRL), so re-armoring a CRL never needs another format's encoder.
+  check("crl.pemEncode defaults to the X509 CRL label",
+    pki.schema.crl.pemEncode(der).indexOf("-----BEGIN X509 CRL-----") === 0);
+  check("crl.pemEncode/pemDecode round-trip to identical DER",
+    pki.schema.crl.pemDecode(pki.schema.crl.pemEncode(der)).equals(der));
+  check("crl.pemEncode honors an explicit label",
+    pki.schema.crl.pemEncode(der, "TEST CRL").indexOf("-----BEGIN TEST CRL-----") === 0);
+  check("schema-all curates crl.pemEncode", typeof pki.schema.crl.pemEncode === "function");
 }
 
 // ---- multi-defect fail-closed ----------------------------------------
@@ -238,6 +281,7 @@ function run() {
   testOptionalDisambiguation();
   testExtensions();
   testExtensionStrictness();
+  testTimeEncodingCutover();
   testInputCoercion();
   testMultiDefectFailClosed();
 }

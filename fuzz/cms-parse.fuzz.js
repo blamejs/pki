@@ -7,9 +7,11 @@
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (CI PRs + nightly batch)
  * and OSS-Fuzz (continuous) both consume this shape:
  * `module.exports.fuzz = function (data)` where `data` is a Buffer the
- * engine mutates via coverage-guided fuzzing. It reuses the ASN.1 seed
- * corpus — a CMS ContentInfo is a DER SEQUENCE, so those seeds exercise
- * the OID-dispatch envelope's front door.
+ * engine mutates via coverage-guided fuzzing. Its seed corpus
+ * (`fuzz/cms-parse_seed_corpus/`) carries copies of the shared ASN.1
+ * samples — a CMS ContentInfo is a DER SEQUENCE, so those seeds exercise
+ * the OID-dispatch envelope's front door. (CI passes each target ONLY its
+ * own corpus directory, so shared seeds are copied in, never referenced.)
  *
  * Contract: parsing an attacker-controlled CMS message has exactly two
  * acceptable outcomes — a successful parse, or a thrown

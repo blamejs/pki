@@ -115,6 +115,25 @@ function certReqEncKeyPop() {
     pop,
   ])]);
 }
+// A CertReqMessages whose one CertReqMsg carries a keyAgreement [3] POP using the
+// agreeMAC [3] IMPLICIT PKMACValue choice — the other cmp2021(3)-only POP method
+// (RFC 9810 §5.2.8.3, §7). A MAC POP requires the template to carry both subject
+// and publicKey (RFC 4211 §4.3).
+function certReqAgreeMacPop() {
+  var tpl = b.sequence([
+    b.explicit(5, rdn("req.example")),                                                   // subject [5]
+    b.contextConstructed(6, Buffer.concat([algId(RSA_ENC), b.bitString(Buffer.from([4, 5, 6]), 0)])),   // publicKey [6] IMPLICIT SPKI
+  ]);
+  var agreeMac = b.contextConstructed(3, Buffer.concat([algId(SHA256), b.bitString(Buffer.from([0xaa]), 0)]));   // agreeMAC [3] IMPLICIT PKMACValue
+  return b.sequence([b.sequence([
+    b.sequence([b.integer(0), tpl]),        // CertRequest
+    b.contextConstructed(3, agreeMac),      // keyAgreement [3] { agreeMAC [3] }
+  ])]);
+}
+// A one-message CertReqMessages whose CertTemplate carries version [0] = v.
+function certReqWithVersion(v) {
+  return b.sequence([b.sequence([b.sequence([b.integer(0), b.sequence([implicitInt(0, v), b.explicit(5, rdn("cross.ca"))])])])]);
+}
 // A raw stand-in "certificate" (surfaced raw — never parsed here).
 var RAW_CERT = b.sequence([b.oid("2.5.4.3"), b.utf8("not-a-real-cert")]);
 var RAW_CRL = b.sequence([b.oid("2.5.4.3"), b.utf8("not-a-real-crl")]);
@@ -335,6 +354,11 @@ function testAcceptCertRep() {
   m = parse(minimalMessage({ body: body(3, cpVal) }));
   check("deprecated encryptedValue arm surfaces raw, no crash",
         Buffer.isBuffer(m.body.decoded.response[0].certifiedKeyPair.encryptedCert.encryptedValue));
+  // An RFC 4211 §2 EncryptedValue REQUIRES encValue (its final BIT STRING), so an
+  // encryptedCert [1] wrapping an EMPTY SEQUENCE is not any valid EncryptedValue —
+  // the same non-empty rule every other raw-SEQUENCE surface in the module applies.
+  check("encryptedCert wrapping an empty SEQUENCE rejected", parseCode(minimalMessage({
+    body: body(3, certRepMessage({ responses: [certResponse({ certifiedKeyPair: b.sequence([b.explicit(1, b.sequence([]))]) })] })) })) === "cmp/bad-cert-response");
 
   [[8, "kup"], [14, "ccp"]].forEach(function (t) {
     var rep = certRepMessage({ responses: [certResponse({})] });
@@ -454,6 +478,20 @@ function testAcceptRawArmsAndProtection() {
         parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(15, b.contextConstructed(0, b.sequence([RAW_CERT]))) })) === "NO-THROW");
   check("ckuann cAKeyUpdAnnV2 SEQUENCE at pvno 2 accepted (deprecated form)",
         parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(15, b.sequence([RAW_CERT])) })) === "NO-THROW");
+  // §5.2.8.3.2/§7 — Challenge.encryptedRand [0] EnvelopedData is cmp2021 syntax,
+  // the last EnvelopedData site: popdecc stays raw, so the version gate inspects
+  // the Challenge tags exactly as the ckuann gate above inspects its top tag.
+  function challenge(withEncryptedRand) {
+    var kids = [b.octetString(Buffer.alloc(20, 1)), b.octetString(Buffer.alloc(16, 2))];   // witness, challenge
+    if (withEncryptedRand) kids.push(b.contextConstructed(0, Buffer.concat(ENVELOPED_FIELDS)));
+    return b.sequence(kids);
+  }
+  check("popdecc encryptedRand [0] at pvno 2 rejected (§5.2.8.3.2)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(5, b.sequence([challenge(true)])) })) === "cmp/bad-version");
+  check("popdecc encryptedRand [0] at pvno 3 accepted (surfaced raw)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(5, b.sequence([challenge(true)])) })) === "NO-THROW");
+  check("popdecc without encryptedRand at pvno 2 accepted (deprecated challenge form)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 2 }, body: body(5, b.sequence([challenge(false)])) })) === "NO-THROW");
 
   var m = parse(minimalMessage({ extraCerts: [RAW_CERT, RAW_CRL] }));
   check("extraCerts raw", m.extraCerts.length === 2 && m.extraCerts[0].equals(RAW_CERT));
@@ -572,6 +610,11 @@ function testRejectEnvelope() {
         parseCode(minimalMessage({ protection: b.bitString(Buffer.alloc(8, 1), 0) })) === "cmp/protection-alg-mismatch");
   check("protectionAlg without protection rejected",
         parseCode(minimalMessage({ headerOpts: { protectionAlg: algId(PBMAC1) } })) === "cmp/protection-alg-mismatch");
+  // PKIProtection carries a MAC or signature an external verifier consumes; every
+  // RFC 9481 MSG_SIG_ALG / MSG_MAC_ALG output is an octet string, so a
+  // non-octet-aligned BIT STRING is malformed (RFC 9810 sec. 5.1.3).
+  check("protection with unused bits rejected",
+        parseCode(minimalMessage({ headerOpts: { protectionAlg: algId(PBMAC1) }, protection: b.bitString(Buffer.alloc(8, 0x10), 4) })) === "cmp/bad-protection");
   var twoInner = Buffer.concat([Buffer.from([0xa0, 0x08]), b.bitString(Buffer.from([1]), 0), b.bitString(Buffer.from([2]), 0)]);
   check("protection wrapper with two inner TLVs rejected", /^cmp\//.test(parseCode(pkiMessage({
     header: pkiHeader({ protectionAlg: algId(PBMAC1) }), body: ERROR_BODY, extraRaw: twoInner }))));
@@ -655,6 +698,12 @@ function testRejectBody() {
 
   check("negative checkAfter rejected", parseCode(minimalMessage({
     body: body(26, b.sequence([b.sequence([b.integer(0), b.integer(-5)])])) })) === "cmp/bad-poll-rep");
+  // The upper half of the checkAfter bound — the half that guards the Number()
+  // narrowing: 2^31-1 is the last exact accepted delay, 2^31 rejects.
+  check("checkAfter 2147483647 (boundary) accepted", parseCode(minimalMessage({
+    body: body(26, b.sequence([b.sequence([b.integer(0), b.integer(2147483647n)])])) })) === "NO-THROW");
+  check("checkAfter 2147483648 rejected", parseCode(minimalMessage({
+    body: body(26, b.sequence([b.sequence([b.integer(0), b.integer(2147483648n)])])) })) === "cmp/bad-poll-rep");
   check("pkiconf wrapping an INTEGER rejected", parseCode(minimalMessage({ body: body(19, b.integer(1)) })) === "cmp/bad-pkiconf");
   // A NULL is well-formed only with empty content (X.690 §8.8.2); a NULL tag
   // carrying a content byte is malformed DER the tag check alone would accept.
@@ -673,6 +722,20 @@ function testRejectBody() {
         parseCode(minimalMessage({ body: body(13, ccrSigningAlg) })) === "NO-THROW");
   check("ir CertTemplate carrying signingAlg still rejected (RFC 4211 §5)",
         parseCode(minimalMessage({ body: body(0, ccrSigningAlg) })) === "crmf/bad-cert-template");
+  // RFC 9810 Appendix D.6 also profiles the ccr certTemplate version as "v1 or
+  // v3", overriding RFC 4211 §5's v3-only rule for the ccr arm exactly as it
+  // overrides signingAlg; v2 stays undefined everywhere, and every non-ccr
+  // consumer of the template keeps the §5 rule.
+  check("ccr CertTemplate version v1 accepted (Appendix D.6)",
+        parseCode(minimalMessage({ body: body(13, certReqWithVersion(0)) })) === "NO-THROW");
+  check("ccr CertTemplate version v3 accepted",
+        parseCode(minimalMessage({ body: body(13, certReqWithVersion(2)) })) === "NO-THROW");
+  check("ccr CertTemplate version v2 still rejected",
+        parseCode(minimalMessage({ body: body(13, certReqWithVersion(1)) })) === "crmf/bad-version");
+  check("ir CertTemplate version v1 still rejected (RFC 4211 §5)",
+        parseCode(minimalMessage({ body: body(0, certReqWithVersion(0)) })) === "crmf/bad-version");
+  check("rr certDetails version v1 still rejected (no ccr relaxation)",
+        parseCode(minimalMessage({ body: body(11, b.sequence([b.sequence([b.sequence([implicitInt(0, 0), implicitInt(1, 7)])])])) })) === "crmf/bad-version");
   // RFC 9810 Appendix D.6 — a ccr allows exactly one CertReqMsg (multiple
   // cross-certificates go in separate PKIMessages).
   var ccrTwoMsgs = b.sequence([
@@ -690,6 +753,12 @@ function testRejectBody() {
     headerOpts: { pvno: 2 }, body: body(0, certReqEncKeyPop()) })) === "cmp/bad-version");
   check("ir POP using encryptedKey at pvno 3 accepted", parseCode(minimalMessage({
     headerOpts: { pvno: 3 }, body: body(0, certReqEncKeyPop()) })) === "NO-THROW");
+  // The agreeMAC half of the same §5.2.8.3 gate — §7 names both POPOPrivKey
+  // choices as cmp2021(3)-only syntax.
+  check("ir POP using agreeMAC at pvno 2 rejected (RFC 9810 §5.2.8.3)", parseCode(minimalMessage({
+    headerOpts: { pvno: 2 }, body: body(0, certReqAgreeMacPop()) })) === "cmp/bad-version");
+  check("ir POP using agreeMAC at pvno 3 accepted", parseCode(minimalMessage({
+    headerOpts: { pvno: 3 }, body: body(0, certReqAgreeMacPop()) })) === "NO-THROW");
   // RFC 9810 §5.3.11 — a ccr must not send the private key, so the private-key-
   // carrying encryptedKey POP is forbidden in a ccr even at cmp2021 (the same
   // POP is legal in an ir above).

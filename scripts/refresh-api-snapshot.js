@@ -205,6 +205,27 @@ function checkOriginated(oldSince, newSince, originatedMap, surfaceUnchanged) {
   return violations;
 }
 
+// Gate against silent deletion of a documented primitive's introduction
+// record: every token in the prior map must still be present in the new map,
+// or its origin version preserved by an @originated declaration (the
+// documented-path-correction flow). Deleting the @since line would otherwise
+// vacate the immutability freeze for that primitive, letting a later re-add
+// pass the new-primitive check with a rewritten introduction version.
+// Returns human-readable violation strings (empty = clean).
+function checkSinceDropped(oldMap, newMap, originatedMap) {
+  if (!oldMap || typeof oldMap !== "object") return [];
+  var declared = Object.keys(originatedMap || {}).map(function (k) { return originatedMap[k]; });
+  var violations = [];
+  Object.keys(oldMap).sort().forEach(function (tok) {
+    if (Object.prototype.hasOwnProperty.call(newMap, tok)) return;   // still documented
+    if (declared.indexOf(oldMap[tok]) !== -1) return;                // origin preserved
+    violations.push(tok + ": documented @since " + oldMap[tok] + " was removed from source " +
+      "(a shipped primitive's introduction record cannot be deleted; a corrected path must " +
+      "declare `@originated " + oldMap[tok] + "`)");
+  });
+  return violations;
+}
+
 // Compare two captured snapshots. Only the `surface` tree is compared —
 // packageVersion drift is ignored on purpose. Returns:
 //   { breaking: [ "<path>: <reason>" ], additive: [ "<path>: added" ] }
@@ -239,6 +260,15 @@ function _diffNode(pathPrefix, baseNode, curNode, breaking, additive, isRoot) {
     if (b.kind === "function" && b.arity !== c.arity) {
       breaking.push(childPath + ": arity changed (" + b.arity + " -> " + c.arity + ")");
     }
+    // An exported array's length is part of the surface: a shrink removes
+    // members (breaking), a growth adds them (additive).
+    if (b.kind === "array" && b.length !== c.length) {
+      if (c.length < b.length) {
+        breaking.push(childPath + ": array length changed (" + b.length + " -> " + c.length + ")");
+      } else {
+        additive.push(childPath + ": array grew (" + b.length + " -> " + c.length + ")");
+      }
+    }
     if (b.kind === "object") {
       _diffNode(childPath, b, c, breaking, additive, false);
     }
@@ -271,6 +301,19 @@ function read(p) {
   return JSON.parse(fs.readFileSync(p, "utf8"));
 }
 
+// Read the committed baseline, distinguishing "absent" from "unreadable":
+// only ENOENT bootstraps (returns null). A corrupted or merge-conflicted
+// baseline rethrows so the @since / @originated gates never degrade to
+// first-run mode and overwrite the record they exist to protect.
+function readBaselineIfPresent(p) {
+  try {
+    return read(p);
+  } catch (e) {
+    if (e && e.code === "ENOENT") return null;
+    throw e;
+  }
+}
+
 function write(snapshot, p) {
   fs.writeFileSync(p, JSON.stringify(snapshot, null, 2) + "\n");
 }
@@ -281,9 +324,11 @@ module.exports = {
   formatDiff:   formatDiff,
   extractSince: extractSince,
   checkSince:   checkSince,
+  checkSinceDropped: checkSinceDropped,
   extractOriginated: extractOriginated,
   checkOriginated:   checkOriginated,
   read:         read,
+  readBaselineIfPresent: readBaselineIfPresent,
   write:        write,
 };
 
@@ -297,8 +342,7 @@ if (require.main === module) {
   // this is the only point where "what existed before this refresh" is still
   // readable, so a newly-added primitive with the wrong introduction version
   // (or a mutated @since) is refused here rather than silently baked in.
-  var prior = null;
-  try { prior = read(outPath); } catch (_e) { /* first run — nothing to compare */ }
+  var prior = readBaselineIfPresent(outPath);   // null ONLY when genuinely absent
   var sinceViolations = checkSince(prior && prior.sinceByPrimitive, sinceByPrimitive, pkg.version);
   if (sinceViolations.length > 0) {
     process.stderr.write("[refresh-api-snapshot] @since violations (fix the source @since tags):\n");

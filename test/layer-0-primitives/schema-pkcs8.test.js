@@ -95,6 +95,13 @@ function testOuterAndPrivateKey() {
 
 function testAlgIdAndAttributes() {
   check("privateKeyAlgorithm not a SEQUENCE rejected", parseCode(pk({ alg: b.integer(5n) })) === "pkcs8/bad-algorithm-identifier");
+  // FIPS 203 ML-KEM AlgorithmIdentifier parameters MUST be absent — a KEM never
+  // reaches the signature-verification path, so the shipped parse is the only
+  // layer that can reject the violation.
+  check("ML-KEM key with NULL algorithm parameters rejected (params MUST be absent)",
+    parseCode(pk({ alg: b.sequence([b.oid("2.16.840.1.101.3.4.4.1"), b.nullValue()]) })) === "pkcs8/bad-algorithm-parameters");
+  check("ML-KEM key without algorithm parameters parses",
+    parseCode(pk({ alg: b.sequence([b.oid("2.16.840.1.101.3.4.4.1")]) })) === "NO-THROW");
   check("attributes [0] primitive rejected (must be constructed)", parseCode(pk({ attrNode: b.contextPrimitive(0, Buffer.from([1, 2, 3])) })) === "pkcs8/bad-attributes");
   check("unknown trailing context tag [2] rejected", parseCode(pk({ trailing: [b.contextConstructed(2, Buffer.alloc(0))] })) !== "NO-THROW");
   var descending = parseCode(pk({ children: [b.integer(1n), algId(ED25519), b.octetString(Buffer.from([1])), pub(Buffer.from([1])), attrs([attribute(FRIENDLY, [b.utf8("x")])])] }));
@@ -154,6 +161,33 @@ function testMultiDefectFailClosed() {
   check("multi-defect PKCS#8 stays fail-closed (typed, no raw crash)", c !== "NO-THROW" && c.indexOf("RAW:") !== 0);
 }
 
+// parseEncrypted's fail-closed envelope (RFC 5958 §3): EncryptedPrivateKeyInfo
+// is a SEQUENCE of EXACTLY {AlgorithmIdentifier, OCTET STRING}, and the PEM
+// entry enforces the ENCRYPTED PRIVATE KEY label.
+function testParseEncryptedRejections() {
+  var PBES2 = "1.2.840.113549.1.5.13";
+  function encCode(input) { return code(function () { pki.schema.pkcs8.parseEncrypted(input); }); }
+  var good = b.sequence([b.sequence([b.oid(PBES2)]), b.octetString(Buffer.from([0xDE, 0xAD]))]);
+
+  check("parseEncrypted: 3-element SEQUENCE rejected (exactly two fields)",
+    encCode(b.sequence([b.sequence([b.oid(PBES2)]), b.octetString(Buffer.from([0xDE])), b.integer(1n)])) === "pkcs8/not-an-encrypted-private-key-info");
+  check("parseEncrypted: outer not a SEQUENCE (a SET) rejected",
+    encCode(b.set([b.sequence([b.oid(PBES2)]), b.octetString(Buffer.from([0xDE]))])) === "pkcs8/not-an-encrypted-private-key-info");
+  var bitStr = encCode(b.sequence([b.sequence([b.oid(PBES2)]), b.bitString(Buffer.from([0xDE]), 0)]));
+  check("parseEncrypted: encryptedData as BIT STRING rejected",
+    bitStr !== "NO-THROW" && (bitStr.indexOf("asn1/") === 0 || bitStr.indexOf("pkcs8/") === 0));
+  check("parseEncrypted: encryptionAlgorithm not a SEQUENCE rejected",
+    encCode(b.sequence([b.integer(1n), b.octetString(Buffer.from([0xDE]))])) === "pkcs8/bad-algorithm-identifier");
+
+  var wrongLabelPem = "-----BEGIN PRIVATE KEY-----\n" + good.toString("base64") + "\n-----END PRIVATE KEY-----";
+  check("parseEncrypted: a 'PRIVATE KEY' PEM label rejected (label enforcement)",
+    encCode(wrongLabelPem) === "pem/label-mismatch");
+  var pem = pki.schema.pkcs8.pemEncode(good, "ENCRYPTED PRIVATE KEY");
+  var viaPem = pki.schema.pkcs8.parseEncrypted(pem);
+  check("parseEncrypted: an ENCRYPTED PRIVATE KEY PEM round-trips",
+    viaPem.encryptionAlgorithm.oid === PBES2 && viaPem.encryptedData.equals(Buffer.from([0xDE, 0xAD])));
+}
+
 function run() {
   testValid();
   testVersion();
@@ -163,6 +197,7 @@ function run() {
   testDispatch();
   testInputCoercion();
   testMultiDefectFailClosed();
+  testParseEncryptedRejections();
 }
 
 module.exports = { run: run };

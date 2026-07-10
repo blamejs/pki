@@ -37,9 +37,9 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 - **SignedData** — *Targeted.* Sign and verify, detached and attached, single- and multi-signer, with signed and unsigned attributes. Signed attributes are canonical-DER encoded before hashing. Verification derives each parameter from the correct structure — the content digest, the signer's digest algorithm, and the key's own algorithm identifier are kept distinct — and validates algorithm-identifier parameters strictly per OID.
 - **EnvelopedData with a first-class recipient model** — *Targeted.* Encrypt and decrypt with key-transport, key-agreement, pre-shared-key, and password recipients. Recipient identification is pluggable: issuer-and-serial, subject key identifier, and recipient key identifier for cases with no X.509 certificate. Key agreement follows RFC 5753 for the ECC profile.
 - **EncryptedData** — *Targeted.* Password- and predefined-key symmetric content protection.
-- **AuthenticatedData** — *Targeted.* MAC-protected content.
-- **AuthEnvelopedData** — *Planned.* The correct CMS wrapper for AEAD content encryption, with spec-correct AEAD parameter encoding. RFC 5083 / RFC 5084.
-- **KEMRecipientInfo** — *Planned.* The recipient type that carries KEM-encapsulated content-encryption keys, enabling post-quantum CMS encryption. RFC 9629.
+- **AuthenticatedData** — *Shipped (parse); MAC generation/verification Targeted.* `pki.schema.cms.parse` decodes `id-ct-authData` with the §9.1 version rule, the digestAlgorithm⇔authAttrs biconditional, the content-binding attribute rules, and the raw `authAttrsBytes`/`mac` a verifier consumes.
+- **AuthEnvelopedData** — *Shipped (parse); AEAD encrypt/decrypt Targeted.* `pki.schema.cms.parse` decodes `id-ct-authEnvelopedData` with RFC 5084 AES-GCM/CCM parameter validation (presence, nonce bounds, ICV-length whitelist, ICV==mac length, DEFAULT-omission) surfaced as `aead`. RFC 5083 / RFC 5084.
+- **KEMRecipientInfo** — *Shipped (parse); KEM decrypt Targeted.* Parsed and content-validated under the `id-ori-kem` OtherRecipientInfo arm: version 0, kekLength⇔wrap consistency, ML-KEM ciphertext sizes pinned to FIPS 203, HKDF/ML-KEM parameters-absent enforced via the shared registry. RFC 9629.
 - **Streaming CMS** — *Planned.* Streaming sign/verify and encrypt/decrypt for large payloads, enabled by the in-house crypto engine.
 
 ## Keys and credential stores
@@ -55,7 +55,7 @@ The clearest differentiator: the classical toolkit this library replaces has no 
 - **ML-KEM in X.509** — *Targeted.* ML-KEM public keys in certificates and SPKI. draft-ietf-lamps-kyber-certificates.
 - **ML-DSA in X.509** — *Targeted.* ML-DSA certificate signing and verification, tracking the LAMPS certificate specification through publication. draft-ietf-lamps-dilithium-certificates.
 - **SLH-DSA** — *Verification shipped.* All twelve FIPS 205 parameter sets verify in certification-path validation (`pki.path.validate`), and the parameters-MUST-be-absent rule is enforced across every format's AlgorithmIdentifier. *Planned next:* SLH-DSA certificate/CMS signing (the producing side). RFC 9909 (X.509), RFC 9814 (CMS).
-- **ML-KEM in CMS** — *Planned.* KEM-based content-encryption-key transport via KEMRecipientInfo. RFC 9629.
+- **ML-KEM in CMS** — *Shipped (parse); decrypt Targeted.* ML-KEM KEMRecipientInfo recipients parse with FIPS 203 ciphertext-size and parameters-absent enforcement (RFC 9936); decryption rides KEM encapsulation in the crypto engine. RFC 9629.
 - **ML-DSA in CMS** — *Planned.* draft-ietf-lamps-cms-ml-dsa.
 - **Composite (hybrid) signatures** — *Targeted.* Dual-algorithm signatures pairing ML-DSA with a classical RSA/ECDSA/EdDSA for the transition period, verified with the all-components-must-verify rule (an OR would be a downgrade). Composite KEMs follow. draft-ietf-lamps-pq-composite-sigs / draft-ietf-lamps-pq-composite-kem.
 - **Stateful hash-based signatures (verify-only)** — *Targeted.* LMS/HSS and XMSS/XMSS^MT verification for firmware and long-term signatures (CNSA 2.0), as pure hashing with no side-channel exposure. Signing is deliberately out of scope — stateful-key reuse is catastrophic and belongs in an HSM. RFC 8554 / RFC 8391 / NIST SP 800-208; RFC 9802 (X.509) / RFC 9708 (CMS).

@@ -71,10 +71,11 @@ function _cmpSemver(a, b) {
 // and so naming the clause forces opening the spec. A crypto primitive
 // cites BOTH the algorithm standard (FIPS / SP 800 / SEC / ANSI X9) AND the
 // PKIX/encoding profile (RFC / X.690) — this checks each entry's shape, not
-// the pairing. A trailing `§clause` and/or `(label)` is allowed in any
-// order; `internal (design: ...)` is the only escape for genuine
-// infrastructure with no external standard.
-var _SPEC_OPT = "(?:\\s+(?:§[\\w.]+|\\([^)]*\\)))*";
+// the pairing. A trailing section clause (`sec. N` — the pure-ASCII form
+// lib/ sources use — or `§N`) and/or `(label)` is allowed in any order;
+// `internal (design: ...)` is the only escape for genuine infrastructure
+// with no external standard.
+var _SPEC_OPT = "(?:\\s+(?:sec\\. [\\w.]+|§[\\w.]+|\\([^)]*\\)))*";
 var SPEC_PATTERNS = [
   new RegExp("^FIPS \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^(?:NIST )?SP 800-\\d+[A-Za-z]?(?:\\s+Rev\\.?\\s*\\d+)?" + _SPEC_OPT + "$"),

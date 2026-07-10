@@ -292,11 +292,21 @@ function _verifyCommitSignature(label) {
   _ok(label + " commit signature verified");
 }
 
+// Digest-pinned gitleaks image. The scan runs immediately before the branch
+// push, so a floating tag would let a tag-swapped upstream image execute
+// arbitrary code with the repo mounted at the most sensitive point in the
+// flow — the same reason every GitHub Action is SHA-pinned and every
+// Dockerfile FROM is digest-synced. Refresh by updating BOTH the version tag
+// (informational) and the digest (the actual pin) together.
+var GITLEAKS_IMAGE = "zricethezav/gitleaks:v8.30.1@sha256:c00b6bd0aeb3071cbcb79009cb16a60dd9e0a7c60e2be9ab65d25e6bc8abbb7f";
+
 // Docker gitleaks scan over full history — the same gate CI runs. Shared by
 // `push` (before the PR opens) and `push-fix` (before a fix reaches the remote),
 // so no secret is pushed even briefly. Windows host paths (`C:\Users\...`) must
 // be rewritten to Docker Desktop's `//c/Users/...` form — the colon in `C:`
-// confuses the `-v src:dst` splitter.
+// confuses the `-v src:dst` splitter. The mount is read-only: gitleaks only
+// reads the work tree + .git history, and a scanner must not be able to write
+// into the tree it is about to certify.
 function _gitleaks() {
   _section("gitleaks");
   var mount;
@@ -308,9 +318,9 @@ function _gitleaks() {
   }
   _run("docker", [
     "run", "--rm",
-    "-v", mount + ":/repo",
+    "-v", mount + ":/repo:ro",
     "-w", "//repo",
-    "zricethezav/gitleaks:latest",
+    GITLEAKS_IMAGE,
     "git", "--config=.gitleaks.toml", "--redact", "--exit-code=1",
   ]);
   _ok("gitleaks clean");
@@ -338,7 +348,9 @@ function _openPrNumber(branch) {
 //
 // Non-skippable except via an explicit, audited override
 // (--skip-interop --interop-skip-reason="<why>"), printed loudly so a
-// bypass is never silent.
+// bypass is never silent. Returns true when the gate RAN, false when the
+// audited override skipped it — callers that publish gate results (the PR
+// body) must reflect the actual state.
 function cmdInterop(opts) {
   opts = opts || {};
   _section("interop");
@@ -355,15 +367,23 @@ function cmdInterop(opts) {
     console.log("!! INTEROP SKIPPED — operator override");
     console.log("!! reason: " + opts.skipReason);
     console.log("!! This override is recorded in the release-flow output above.");
-    return;
+    return false;
   }
 
-  var ran = _runScriptIfPresent("scripts/test-integration.js");
-  if (ran) {
-    _ok("interop green");
-  } else {
-    _ok("interop gate not configured — nothing to run");
+  // The interop gate IS configured for this repo: scripts/test-integration.js
+  // is a required release input, so its absence is a broken tree, not an
+  // unconfigured gate. Tolerating absence here would convert the one
+  // non-skippable gate into a silent bypass (delete the script, skip the
+  // gate) — the audited --skip-interop override is the ONLY bypass.
+  if (!fs.existsSync(path.join(ROOT, "scripts", "test-integration.js"))) {
+    throw new Error(
+      "release: scripts/test-integration.js is missing — the interop gate is " +
+      "required and a missing gate script is not a pass. Restore the script, or " +
+      "use --skip-interop --interop-skip-reason=\"<why>\" for an audited override.");
   }
+  _run("node", ["scripts/test-integration.js"]);
+  _ok("interop green");
+  return true;
 }
 
 // ---- Subcommands ---------------------------------------------------------
@@ -525,9 +545,15 @@ function cmdPush(opts) {
   // the in-process smoke must prove itself against real-world encodings
   // here; a failure is a hard stop that refuses the push. Non-skippable
   // except via an explicit, audited override (see cmdInterop).
-  cmdInterop({ skip: opts.skipInterop, skipReason: opts.interopSkipReason });
+  var interopRan = cmdInterop({ skip: opts.skipInterop, skipReason: opts.interopSkipReason });
 
   _gitleaks();
+
+  // Cheap static gate re-run so the PR body claims only what this command
+  // verified against the exact tree being pushed.
+  _section("api-snapshot");
+  _run("node", ["scripts/check-api-snapshot.js"]);
+  _ok("api surface tracked");
 
   _section("push branch");
   _run("git", ["push", "-u", "origin", _releaseBranchFor(next)]);
@@ -536,9 +562,18 @@ function cmdPush(opts) {
   _section("open PR");
   var rn = JSON.parse(fs.readFileSync(_releaseNotesPath(next), "utf8"));
   var title = next + " — " + rn.headline;
+  // Each checkbox states what THIS command verified: interop / api-snapshot /
+  // gitleaks ran above; smoke runs in its own phase and CI re-verifies, so
+  // its box (and CI's) stay open for the reviewer. A skipped interop is
+  // published as skipped with its audited reason — never as a pass.
   var summaryLines = ["## Summary", "", rn.summary, "", "## Test plan", ""];
-  summaryLines.push("- [x] `node test/smoke.js` — passes");
-  summaryLines.push("- [x] `node scripts/test-integration.js` — interop clean");
+  summaryLines.push("- [ ] `node test/smoke.js` — runs in the smoke phase; CI re-verifies");
+  if (interopRan) {
+    summaryLines.push("- [x] `node scripts/test-integration.js` — interop clean");
+  } else {
+    summaryLines.push("- [ ] `node scripts/test-integration.js` — SKIPPED (operator override): " +
+                      opts.interopSkipReason);
+  }
   summaryLines.push("- [x] `node scripts/check-api-snapshot.js` — surface tracked");
   summaryLines.push("- [x] `gitleaks` — no leaks");
   summaryLines.push("- [ ] CI green");
@@ -644,10 +679,10 @@ function cmdPushFix(opts) {
 // The async-review race: Codex (chatgpt-codex-connector) reviews a PR a
 // minute or two AFTER the status checks go green. required_review_thread_
 // resolution can only block threads that EXIST at merge time, so a merge
-// fired the instant CI is green outruns Codex and ships its findings (this
-// is exactly how a P1 and the version-drift P2 reached npm). Closing it:
-// before the thread gate runs, WAIT until Codex has actually reviewed the
-// CURRENT head — then the thread-resolution gate sees its findings.
+// fired the instant CI is green outruns Codex and ships its findings.
+// Closing it: before the thread gate runs, WAIT until Codex has actually
+// reviewed the CURRENT head — then the thread-resolution gate sees its
+// findings.
 var CODEX_LOGIN = "chatgpt-codex-connector";
 
 // GitHub renders a GitHub App / bot author's login as the bare handle in
@@ -660,6 +695,24 @@ function _isCodexLogin(login) {
 // Synchronous sleep with no busy-spin (release.js is a synchronous CLI).
 function _sleepSync(ms) {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+}
+
+// Parse a captured gh JSON payload, failing closed: a non-zero exit or an
+// unparseable payload throws instead of degrading to the gate-passing empty
+// value — an unreadable review/thread state is not an empty one (a transient
+// gh failure must never merge past a live finding).
+function _ghJson(rv, what) {
+  if (rv.status !== 0) {
+    throw new Error("release: " + what + " lookup failed (gh exit " + rv.status + ") — " +
+                    "an unreadable result is not an empty one.\n" +
+                    (rv.stderr || rv.stdout || "(no output)"));
+  }
+  try {
+    return JSON.parse(rv.stdout || "");
+  } catch (e) {
+    throw new Error("release: " + what + " payload did not parse (" + ((e && e.message) || e) +
+                    ") — an unreadable result is not an empty one.");
+  }
 }
 
 // True once Codex has reviewed the PR's current head — i.e. it reviewed THIS
@@ -683,8 +736,7 @@ function _codexReviewedHead(prNum) {
       "\") { pullRequest(number:" + prNum +
       ") { reviews(last:100) { nodes { author{login} commit{oid} } } } } }",
     "--jq", ".data.repository.pullRequest.reviews.nodes"]);
-  var nodes;
-  try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
+  var nodes = _ghJson(rv, "PR #" + prNum + " review list");
   if ((nodes || []).some(function (r) {
     return r && r.author && _isCodexLogin(r.author.login) &&
            r.commit && r.commit.oid === head;
@@ -692,8 +744,7 @@ function _codexReviewedHead(prNum) {
 
   // (2) Clean-verdict issue comment citing the current head's commit sha.
   var cv = _capture("gh", ["pr", "view", prNum, "--json", "comments", "--jq", ".comments"]);
-  var comments;
-  try { comments = JSON.parse(cv.stdout || "[]"); } catch (_e) { comments = []; }
+  var comments = _ghJson(cv, "PR #" + prNum + " comment list");
   var headPrefix = head.slice(0, 10);
   return (comments || []).some(function (c) {
     return c && c.author && _isCodexLogin(c.author.login) &&
@@ -734,8 +785,9 @@ function _unresolvedThreads(prNum) {
       ") { reviewThreads(first:100) { nodes { id isResolved path line " +
       "comments(first:1) { nodes { author{login} body } } } } } } }",
     "--jq", ".data.repository.pullRequest.reviewThreads.nodes"]);
-  var nodes;
-  try { nodes = JSON.parse(rv.stdout || "[]"); } catch (_e) { nodes = []; }
+  // Fail closed: [] is this gate's PASS value, so a failed lookup must throw
+  // rather than report the thread list as empty.
+  var nodes = _ghJson(rv, "PR #" + prNum + " review-thread list");
   return (nodes || []).filter(function (t) { return t && t.isResolved === false; })
     .map(function (t) {
       var c = t.comments && t.comments.nodes && t.comments.nodes[0];
@@ -847,16 +899,24 @@ function cmdTag() {
     throw new Error("release: tag " + tag + " already exists locally");
   }
   _run("git", ["tag", "-s", tag, "-m", tag]);
-  _run("git", ["push", "origin", tag]);
-  _ok("tagged + pushed " + tag);
 
+  // Verify the signature BEFORE the tag leaves the machine: the npm-publish
+  // workflow triggers on the tag push, so a bad signature must stop the flow
+  // while the tag is still local. Mirrors _verifyCommitSignature — throw,
+  // never warn-and-continue; the just-created tag is deleted so a re-run
+  // after fixing the signing setup starts clean.
   var verify = _capture("git", ["tag", "-v", tag]);
   if (verify.stderr.indexOf("Good") === -1 && verify.stdout.indexOf("Good") === -1) {
-    console.error("warning: `git tag -v " + tag + "` did not report a Good signature:");
-    console.error(verify.stderr || verify.stdout);
-  } else {
-    _ok("tag signature: Good");
+    _run("git", ["tag", "-d", tag], { allowFail: true });
+    throw new Error("release: `git tag -v " + tag + "` did not report a Good signature — " +
+      "check SSH signing setup (tag.gpgsign=true + gpg.format=ssh + " +
+      "~/.ssh/allowed_signers populated). The local tag was removed; fix the " +
+      "setup and re-run tag.\n" + (verify.stderr || verify.stdout));
   }
+  _ok("tag signature: Good");
+
+  _run("git", ["push", "origin", tag]);
+  _ok("tagged + pushed " + tag);
 
   console.log("\nnext: node scripts/release.js publish");
 }
@@ -873,7 +933,15 @@ function cmdPublish() {
                                   "--json", "databaseId",
                                   "--jq",   ".[0].databaseId"]).stdout;
   if (npmRunId) {
-    _run("gh", ["run", "watch", npmRunId, "--exit-status"], { allowFail: true });
+    // The watch's exit status IS the publish verdict — a failed npm-publish
+    // run means nothing reached the registry, and `all` must not exit 0 on
+    // an unpublished release.
+    var npmWatch = _run("gh", ["run", "watch", npmRunId, "--exit-status"], { allowFail: true });
+    if (npmWatch.status !== 0) {
+      throw new Error("release: the npm-publish workflow run concluded FAILED — " +
+        "nothing was published. Inspect it (gh run view " + npmRunId + "), fix the " +
+        "cause, and re-run the workflow or re-push the tag.");
+    }
   } else {
     console.log("no npm-publish run found (workflow may not be configured)");
   }
@@ -885,20 +953,29 @@ function cmdPublish() {
                                   "--json", "databaseId",
                                   "--jq",   ".[0].databaseId"]).stdout;
   if (containerRunId) {
-    _run("gh", ["run", "watch", containerRunId, "--exit-status"], { allowFail: true });
+    var containerWatch = _run("gh", ["run", "watch", containerRunId, "--exit-status"], { allowFail: true });
+    if (containerWatch.status !== 0) {
+      throw new Error("release: the release-container workflow run concluded FAILED — " +
+        "the docs image did not publish. Inspect it (gh run view " + containerRunId + ").");
+    }
   } else {
     console.log("no release-container run found (the pkijs.com docs image builds on tag)");
   }
 
+  // Verify path: the exit code is the verdict. A registry answer that
+  // mismatches — or no answer at all — is a failed verification, never a
+  // warning that exits 0 (publish is the last step of `all`, so its exit
+  // code is the whole flow's verdict).
   _section("verify");
   var npmVersion = _capture("npm", ["view", pkg.name, "version"]).stdout;
   console.log("npm " + pkg.name + ": " + (npmVersion || "(unable to query)") +
               "  (expected: " + next + ")");
-  if (npmVersion && npmVersion !== next) {
-    console.error("warning: npm version doesn't match expected — workflow may still be in flight");
-  } else if (npmVersion === next) {
-    _ok("npm matches " + next);
+  if (npmVersion !== next) {
+    throw new Error("release: npm reports " + (npmVersion || "(unable to query)") +
+      " but this release expected " + next + " — the registry may still be " +
+      "propagating; re-run `node scripts/release.js publish` to re-verify.");
   }
+  _ok("npm matches " + next);
 }
 
 function cmdAll(opts) {

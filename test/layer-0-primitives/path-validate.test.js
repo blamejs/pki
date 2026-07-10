@@ -964,6 +964,57 @@ async function testRevocation() {
   check("onlyContainsCACerts CRL out of scope for an EE cert", res46.valid === false && failCodes(res46).indexOf("path/revocation-undetermined") !== -1);
 }
 
+// The standalone pki.path.crlChecker (the RevocationChecker interface an
+// external validator composes) must fail CLOSED when an extension its
+// authorization / scope gates read is unreadable. Driven through
+// checker.check directly: inside pki.path.validate the same malformed
+// extension already fails the path in the 6.1.4 processing, which would
+// mask the checker's own verdict.
+async function testCrlCheckerUnreadableExtensions() {
+  var signer = await ensureKeys("ed25519i");
+  var rootKeys = await ensureKeys("ed25519");
+  var ctx = { time: T2027, historicalMode: false };
+
+  // RFC 5280 §6.3.3(f): a PRESENT keyUsage must have its cRLSign bit
+  // VERIFIED. Garbage keyUsage bytes on the CRL issuer's certificate cannot
+  // be verified, so they must not authorize CRL signing (an unreadable
+  // extension is not an absent one).
+  var badKu = ext("2.5.29.15", false, b.octetString(Buffer.from([0xde, 0xad])));   // OCTET STRING where a BIT STRING must be
+  var interBadKu = pki.schema.x509.parse(await mkCert({ subject: "BadKuSigner", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), badKu] }));
+  var leafUnderBad = pki.schema.x509.parse(await mkCert({ subject: "UnderBadKu", issuer: "BadKuSigner", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 6161n }));
+  var cleanCrl = await mkCrl({ issuer: "BadKuSigner", signWith: "ed25519i" });
+  var r1 = await pki.path.crlChecker([cleanCrl]).check(leafUnderBad, { workingPublicKey: signer.spki, issuerCert: interBadKu }, ctx);
+  check("unreadable CRL-issuer keyUsage yields unknown, never good", r1.status === "unknown");
+  // control: the same shape with a well-formed cRLSign keyUsage is authoritative.
+  var interGoodKu = pki.schema.x509.parse(await mkCert({ subject: "GoodKuSigner", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN])] }));
+  var leafUnderGood = pki.schema.x509.parse(await mkCert({ subject: "UnderGoodKu", issuer: "GoodKuSigner", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 6162n }));
+  var crlGood = await mkCrl({ issuer: "GoodKuSigner", signWith: "ed25519i" });
+  var r2 = await pki.path.crlChecker([crlGood]).check(leafUnderGood, { workingPublicKey: signer.spki, issuerCert: interGoodKu }, ctx);
+  check("control: readable cRLSign keyUsage stays authoritative", r2.status === "good");
+
+  // §6.3.3(b)(2) scope: a cert whose basicConstraints is unreadable has
+  // UNDETERMINABLE CA-ness, so neither an onlyContainsUserCerts nor an
+  // onlyContainsCACerts CRL can be shown to cover it -- a clean scoped CRL
+  // must not establish "good" for it.
+  var badBc = ext("2.5.29.19", false, b.boolean(true));   // BOOLEAN where a SEQUENCE must be
+  var leafBadBc = pki.schema.x509.parse(await mkCert({ subject: "BadBcLeaf", issuer: "ScopeRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 6163n, extensions: [badBc] }));
+  var crlUserOnly = await mkCrl({ issuer: "ScopeRoot", signWith: "ed25519", extensions: [crlNumberExt(9), idpExt({ onlyUser: true })] });
+  var r3 = await pki.path.crlChecker([crlUserOnly]).check(leafBadBc, { workingPublicKey: rootKeys.spki, issuerCert: null }, ctx);
+  check("unreadable basicConstraints skips a user-scoped CRL (unknown)", r3.status === "unknown");
+  var crlCaScoped = await mkCrl({ issuer: "ScopeRoot", signWith: "ed25519", extensions: [crlNumberExt(10), idpExt({ onlyCa: true })] });
+  var r4 = await pki.path.crlChecker([crlCaScoped]).check(leafBadBc, { workingPublicKey: rootKeys.spki, issuerCert: null }, ctx);
+  check("unreadable basicConstraints skips a CA-scoped CRL (unknown)", r4.status === "unknown");
+  // control: a readable end-entity cert IS covered by the user-scoped CRL.
+  var leafOkBc = pki.schema.x509.parse(await mkCert({ subject: "OkBcLeaf", issuer: "ScopeRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 6164n, extensions: [bcExt(false)] }));
+  var r5 = await pki.path.crlChecker([crlUserOnly]).check(leafOkBc, { workingPublicKey: rootKeys.spki, issuerCert: null }, ctx);
+  check("control: a readable end-entity cert is covered by the user-scoped CRL", r5.status === "good");
+  // a FULL-scope CRL covers every cert of the issuer regardless of CA-ness,
+  // so it still speaks for the unreadable-basicConstraints cert.
+  var crlFull = await mkCrl({ issuer: "ScopeRoot", signWith: "ed25519" });
+  var r6 = await pki.path.crlChecker([crlFull]).check(leafBadBc, { workingPublicKey: rootKeys.spki, issuerCert: null }, ctx);
+  check("a full-scope CRL still covers a cert with unreadable basicConstraints", r6.status === "good");
+}
+
 // ---------------------------------------------------------------------------
 // Leaf exemption + parameter inheritance (V24, V25)
 // ---------------------------------------------------------------------------
@@ -1019,11 +1070,12 @@ async function testLeafRulesAndParams() {
 }
 
 // ---------------------------------------------------------------------------
-// Adversarial-audit regressions (A1-A11) — each pins a real RFC MUST the
-// pre-push audit found under-enforced.
+// RFC 5280 conformance MUSTs pinned individually -- each vector drives a
+// distinct under-enforceable rule (criticality, scope, encoding-form) through
+// the shipped validate()/crlChecker() surface on the malformed input.
 // ---------------------------------------------------------------------------
 
-async function testAuditRegressions() {
+async function testRfc5280ConformanceMusts() {
   var anchor = await mkAnchor("ed25519", "Root");
   var P1m = "1.3.6.1.4.1.99999.1", P2m = "1.3.6.1.4.1.99999.2", P3m = "1.3.6.1.4.1.99999.3";
   var SER = 9911n;
@@ -1183,6 +1235,23 @@ async function testAuditRegressions() {
   var resC20 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadBool]) });
   check("malformed IDP BOOLEAN makes the CRL unusable", resC20.valid === false && failCodes(resC20).indexOf("path/revocation-undetermined") !== -1);
 
+  // DER encodes SEQUENCE fields in definition order, at most once -- an IDP
+  // carrying [1] twice, or [4] before [1], is not a DER IssuingDistributionPoint,
+  // so the scope is unknown and the CRL unusable.
+  var idpDupField = ext("2.5.29.28", true, b.sequence([b.contextPrimitive(1, Buffer.from([0xff])), b.contextPrimitive(1, Buffer.from([0xff]))]));
+  var crlDupField = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpDupField] });
+  var resC20b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDupField]) });
+  check("duplicate IDP field makes the CRL unusable", resC20b.valid === false && failCodes(resC20b).indexOf("path/revocation-undetermined") !== -1);
+  var idpDisorder = ext("2.5.29.28", true, b.sequence([b.contextPrimitive(4, Buffer.from([0xff])), b.contextPrimitive(1, Buffer.from([0xff]))]));
+  var crlDisorder = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpDisorder] });
+  var resC20c = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDisorder]) });
+  check("out-of-order IDP fields make the CRL unusable", resC20c.valid === false && failCodes(resC20c).indexOf("path/revocation-undetermined") !== -1);
+  // an explicitly-encoded FALSE is the omitted DEFAULT (X.690 sec. 11.5) -- non-DER.
+  var idpFalse = ext("2.5.29.28", true, b.sequence([b.contextPrimitive(1, Buffer.from([0x00]))]));
+  var crlFalse = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpFalse] });
+  var resC20d = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFalse]) });
+  check("encoded-FALSE IDP flag makes the CRL unusable", resC20d.valid === false && failCodes(resC20d).indexOf("path/revocation-undetermined") !== -1);
+
   // the validator's own octet-alignment guard fails a
   // signature with a non-zero unused-bit count (defense in depth: the strict
   // DER codec already rejects it at parse, so this drives a pre-parsed object).
@@ -1257,13 +1326,16 @@ async function testAuditRegressions() {
   var resC26 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
   check("unknown critical CRL-entry extension makes the CRL unusable", resC26.valid === false && failCodes(resC26).indexOf("path/revocation-undetermined") !== -1);
 
-  // the (d)(1)(ii) anyPolicy-fallback must be gated on the
-  // inhibit counter: an intermediate asserting anyPolicy with inhibitAnyPolicy:0
-  // then a leaf asserting P1 must NOT satisfy explicit policy (P1 is pruned).
+  // RFC 5280 6.1.3(d)(1)(ii): the child-from-anyPolicy fallback is
+  // UNCONDITIONAL — inhibit_anyPolicy (4.2.1.14) gates only the (d)(2)
+  // expansion of a cert-asserted anyPolicy. An intermediate asserting anyPolicy
+  // with inhibitAnyPolicy:0 then a leaf asserting P1: P1 chains through the
+  // depth-1 anyPolicy node (created while processing was active), so explicit
+  // policy is satisfied and the user-constrained set is [P1].
   var interIapC = await mkCert({ subject: "IapC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), iapExt(0)]) });
   var leafIapC = await mkCert({ subject: "IapCLeaf", issuer: "IapC", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
   var resC27 = await run([interIapC, leafIapC], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
-  check("anyPolicy fallback gated on inhibit counter", resC27.valid === false && failCodes(resC27).indexOf("path/policy-required") !== -1);
+  check("anyPolicy fallback unconditional under an exhausted inhibit counter", resC27.valid === true && resC27.userConstrainedPolicySet.indexOf(P1m) !== -1);
 
   // a URI SAN with an empty authority cannot be evaluated
   // against a URI constraint -> fail closed, not escape.
@@ -1769,6 +1841,147 @@ async function testAuditRegressions() {
 }
 
 // ---------------------------------------------------------------------------
+// 6.1.1 user-initial inputs, target-cert criticality, extendedKeyUsage
+// ---------------------------------------------------------------------------
+
+// CertificatePolicies with a policyQualifiers SEQUENCE OF PolicyQualifierInfo
+// { id-qt-cps, CPSuri } on each PolicyInformation — exercises AP-Q propagation.
+function cpQualExt(policyOids, cpsUri) {
+  return ext("2.5.29.32", false, b.sequence(policyOids.map(function (p) {
+    return b.sequence([b.oid(p), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.ia5(cpsUri)])])]);
+  })));
+}
+
+// ExtKeyUsage ::= SEQUENCE SIZE(1..MAX) OF KeyPurposeId.
+function ekuExt(purposeOids, critical) {
+  return ext("2.5.29.37", critical === true, b.sequence(purposeOids.map(function (p) { return b.oid(p); })));
+}
+var EKU_SERVER_AUTH = "1.3.6.1.5.5.7.3.1", EKU_CODE_SIGNING = "1.3.6.1.5.5.7.3.3", EKU_ANY = "2.5.29.37.0";
+
+async function testInitialInputsAndTargetGates() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var Pq1 = "1.3.6.1.4.1.99999.61", Pq2 = "1.3.6.1.4.1.99999.62";
+
+  // ---- 6.1.1(b,c) initial permitted / excluded subtrees --------------------
+  // A correct-shape excluded seed rejects a matching SAN.
+  var leafEvil = await mkCert({ subject: "SeedEvil", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("www.evil.example")])] });
+  var resSeedEx = await run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ tag: 2, base: "evil.example" }] });
+  check("initialExcludedSubtrees rejects a matching dNSName SAN", resSeedEx.valid === false && failCodes(resSeedEx).indexOf("path/name-constraint-excluded") !== -1);
+  // A MIS-SHAPED seed entry (the decoder-natural { base: { tagNumber, value } }
+  // shape) must throw at the entry point — absorbed raw it would never match
+  // and the configured exclusion would silently not apply.
+  check("mis-shaped excluded seed throws path/bad-input",
+    (await codeOf(run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ base: { tagNumber: 2, value: "evil.example" } }] }))) === "path/bad-input");
+  check("excluded seed with a wrong-typed base throws path/bad-input",
+    (await codeOf(run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ tag: 2, base: 42 }] }))) === "path/bad-input");
+  check("non-array initialExcludedSubtrees throws path/bad-input",
+    (await codeOf(run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: { tag: 2, base: "evil.example" } }))) === "path/bad-input");
+  // An initial permitted generation constrains the form for the whole path.
+  var leafOutside = await mkCert({ subject: "SeedOut", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.other.example")])] });
+  var resSeedPerm = await run([leafOutside], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 2, base: "good.example" }] });
+  check("initialPermittedSubtrees rejects a name outside the seed", resSeedPerm.valid === false && failCodes(resSeedPerm).indexOf("path/name-constraint-not-permitted") !== -1);
+  var leafInside = await mkCert({ subject: "SeedIn", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.good.example")])] });
+  var resSeedPermOk = await run([leafInside], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 2, base: "good.example" }] });
+  check("control: a name within the permitted seed validates", resSeedPermOk.valid === true);
+  check("mis-shaped permitted seed throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: "2", base: "good.example" }] }))) === "path/bad-input");
+
+  // ---- maxPolicyNodes is entry-point-validated ------------------------------
+  check("maxPolicyNodes 0 throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: 0 }))) === "path/bad-input");
+  check("negative maxPolicyNodes throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: -5 }))) === "path/bad-input");
+  check("non-numeric maxPolicyNodes throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: "4096" }))) === "path/bad-input");
+
+  // ---- userInitialPolicySet is entry-point-validated -------------------------
+  // A raw string would be consulted via indexOf — a SUBSTRING match, not set
+  // membership — so a non-array (or empty / non-string-element) set throws.
+  check("string userInitialPolicySet throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: "1.3.6.1.4.1.99999.61" }))) === "path/bad-input");
+  check("empty userInitialPolicySet throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: [] }))) === "path/bad-input");
+  check("non-string userInitialPolicySet element throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: [42] }))) === "path/bad-input");
+
+  // ---- 6.1.1(e) initial-any-policy-inhibit ----------------------------------
+  // With the inhibit set, a cert-asserted anyPolicy is not expanded ((d)(2)
+  // gated from the start), so an anyPolicy-only leaf leaves the tree empty.
+  var leafAnyOnly = await mkCert({ subject: "IapiLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [cpExt([ANY_POLICY])] });
+  var resIapi = await run([leafAnyOnly], { time: T2027, trustAnchor: anchor, initialAnyPolicyInhibit: true, initialExplicitPolicy: true });
+  check("initialAnyPolicyInhibit suppresses a cert-asserted anyPolicy", resIapi.valid === false && failCodes(resIapi).indexOf("path/policy-required") !== -1);
+  var resIapiCtl = await run([leafAnyOnly], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  check("control: without the inhibit the anyPolicy leaf validates", resIapiCtl.valid === true);
+
+  // ---- 6.1.1(e) initial-policy-mapping-inhibit -------------------------------
+  // With the inhibit set, a mapping cert's mapped-from nodes are DELETED
+  // (6.1.4(b)(2)) instead of remapped, emptying the tree.
+  var interMapI = await mkCert({ subject: "IpmiInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([Pq1]), pmExt([[Pq1, Pq2]])]) });
+  var leafMapped = await mkCert({ subject: "IpmiLeaf", issuer: "IpmiInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([Pq2])] });
+  var resIpmi = await run([interMapI, leafMapped], { time: T2027, trustAnchor: anchor, initialPolicyMappingInhibit: true, initialExplicitPolicy: true });
+  check("initialPolicyMappingInhibit forces the (b)(2) deletion arm", resIpmi.valid === false && failCodes(resIpmi).indexOf("path/policy-required") !== -1);
+  var resIpmiCtl = await run([interMapI, leafMapped], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  check("control: without the inhibit the mapped chain validates", resIpmiCtl.valid === true && resIpmiCtl.userConstrainedPolicySet.indexOf(Pq2) !== -1);
+
+  // ---- 6.1.3(d)(2): expansion children carry AP-Q ---------------------------
+  // The anyPolicy entry's qualifier set (AP-Q) must ride on every (d)(2)
+  // expansion child ("set the qualifier_set to AP-Q"), not be dropped.
+  var cpsQual = b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.ia5("https://cps.example/cps")])]);
+  var interQ = await mkCert({ subject: "ApqInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpQualExt([ANY_POLICY], "https://cps.example/cps")]) });
+  var leafQ = await mkCert({ subject: "ApqLeaf", issuer: "ApqInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([Pq1])] });
+  var resApq = await run([interQ, leafQ], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var apqNode = resApq.validPolicyTree && resApq.validPolicyTree.children[0];
+  check("(d)(2) expansion node carries the anyPolicy qualifiers (AP-Q)",
+    resApq.valid === true && !!apqNode && apqNode.validPolicy === ANY_POLICY &&
+    apqNode.qualifierSet.length === 1 && Buffer.isBuffer(apqNode.qualifierSet[0]) && apqNode.qualifierSet[0].equals(cpsQual));
+
+  // ---- 4.2.1.10 / 4.2.1.14 criticality on the TARGET cert -------------------
+  // nameConstraints and inhibitAnyPolicy MUST be critical wherever they appear;
+  // the target leg applies the same check the intermediate path does.
+  var leafNcNC = await mkCert({ subject: "NcTargetNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.30", false, ncVal([gnDns("example.com")], null))] });
+  var resNcNC = await run([leafNcNC], { time: T2027, trustAnchor: anchor });
+  check("non-critical nameConstraints on the target rejected", resNcNC.valid === false && failCodes(resNcNC).indexOf("path/extension-not-critical") !== -1);
+  var leafIapNC = await mkCert({ subject: "IapTargetNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.54", false, b.integer(0n))] });
+  var resIapNC = await run([leafIapNC], { time: T2027, trustAnchor: anchor });
+  check("non-critical inhibitAnyPolicy on the target rejected", resIapNC.valid === false && failCodes(resIapNC).indexOf("path/extension-not-critical") !== -1);
+  // controls: the critical forms are accepted (semantically inert on a leaf,
+  // structure still validated).
+  var leafNcC = await mkCert({ subject: "NcTargetC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ncExt([gnDns("example.com")], null)] });
+  check("control: critical nameConstraints on the target accepted", (await run([leafNcC], { time: T2027, trustAnchor: anchor })).valid === true);
+  var leafIapCr = await mkCert({ subject: "IapTargetC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [iapExt(0)] });
+  check("control: critical inhibitAnyPolicy on the target accepted", (await run([leafIapCr], { time: T2027, trustAnchor: anchor })).valid === true);
+
+  // ---- 4.2.1.12 extendedKeyUsage --------------------------------------------
+  // EKU is RECOGNIZED: the critical form is legal ('MAY ... be either critical
+  // or non-critical') and appears in the wild (RFC 6960 §4.2.2.2 delegated OCSP
+  // responders), so it must not fail as unrecognized. RFC 5280 6.1 defines no
+  // EKU processing step — purpose enforcement is the caller's opts.requiredEku.
+  var leafEkuCrit = await mkCert({ subject: "EkuCrit", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], true)] });
+  var resEkuCrit = await run([leafEkuCrit], { time: T2027, trustAnchor: anchor });
+  check("critical extendedKeyUsage is recognized", resEkuCrit.valid === true);
+  // a critical MALFORMED EKU still fails closed structurally.
+  var leafEkuBad = await mkCert({ subject: "EkuBad", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.37", true, b.integer(1n))] });
+  var resEkuBad = await run([leafEkuBad], { time: T2027, trustAnchor: anchor });
+  check("critical malformed extendedKeyUsage rejected", resEkuBad.valid === false && failCodes(resEkuBad).indexOf("path/bad-extension-value") !== -1);
+  // requiredEku: every named purpose must be asserted by the target's EKU.
+  check("requiredEku satisfied by the asserted purpose", (await run([leafEkuCrit], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  check("requiredEku accepts a dotted purpose OID", (await run([leafEkuCrit], { time: T2027, trustAnchor: anchor, requiredEku: [EKU_SERVER_AUTH] })).valid === true);
+  var leafEkuCode = await mkCert({ subject: "EkuCode", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_CODE_SIGNING], false)] });
+  var resEkuMiss = await run([leafEkuCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] });
+  check("required purpose missing from the EKU fails path/eku-not-permitted", resEkuMiss.valid === false && failCodes(resEkuMiss).indexOf("path/eku-not-permitted") !== -1);
+  // anyExtendedKeyUsage satisfies a required purpose (4.2.1.12: rejecting it is
+  // an application MAY, not the default).
+  var leafEkuAny = await mkCert({ subject: "EkuAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_ANY], false)] });
+  check("anyExtendedKeyUsage satisfies a required purpose", (await run([leafEkuAny], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  // an ABSENT EKU leaves the key unrestricted (4.2.1.12 restricts only when present).
+  var leafNoEku = await mkCert({ subject: "EkuNone", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  check("absent EKU is unrestricted under requiredEku", (await run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  // requiredEku is entry-point-validated.
+  check("empty requiredEku throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: [] }))) === "path/bad-input");
+  check("unregistered requiredEku name throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: ["no-such-purpose-name"] }))) === "path/bad-input");
+}
+
+// ---------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------
 
@@ -1780,8 +1993,10 @@ async function runSuite() {
   await testConstraintOrderingAndAnchor();
   await testSignatureAndInputEdges();
   await testRevocation();
+  await testCrlCheckerUnreadableExtensions();
   await testLeafRulesAndParams();
-  await testAuditRegressions();
+  await testRfc5280ConformanceMusts();
+  await testInitialInputsAndTargetGates();
 }
 
 module.exports = { run: runSuite };

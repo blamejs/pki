@@ -69,6 +69,9 @@ function rfc822(s) { return b.contextPrimitive(2, Buffer.from(s, "latin1")); }
 // Extension { extnID, critical DEFAULT FALSE, extnValue OCTET STRING } — nonce
 // extnValue wraps a DER OCTET STRING carrying the nonce bytes (RFC 6960 §4.4.1).
 function nonceExt(nonceBytes) { return b.sequence([b.oid(ID_PKIX_OCSP_NONCE), b.octetString(b.octetString(Buffer.from(nonceBytes)))]); }
+// A nonce extension whose extnValue content is an arbitrary DER payload (not
+// necessarily an OCTET STRING) — for the inner-syntax reject vectors.
+function nonceExtRaw(payloadDer) { return b.sequence([b.oid(ID_PKIX_OCSP_NONCE), b.octetString(payloadDer)]); }
 function extensions(list) { return b.sequence(list); }
 
 // SingleResponse { certID, certStatus, thisUpdate, nextUpdate [0] EXPLICIT OPT, singleExtensions [1] EXPLICIT OPT }
@@ -182,6 +185,10 @@ function testAcceptRequest() {
   check("3. signed request: signatureAlgorithm surfaced", ms.optionalSignature && ms.optionalSignature.signatureAlgorithm.oid === SIG_ALG);
   check("3. signed request: raw signature bytes", Buffer.isBuffer(ms.optionalSignature.signature) && ms.optionalSignature.signature.equals(sigBytes));
   check("3. signed request: one raw cert", Array.isArray(ms.optionalSignature.certs) && ms.optionalSignature.certs.length === 1 && Buffer.isBuffer(ms.optionalSignature.certs[0]));
+  // 3c. an EMPTY SEQUENCE (30 00) has the Certificate tag but is not a
+  //     Certificate (RFC 5280 sec. 4.1 requires the three-element envelope).
+  check("3c. empty-SEQUENCE certs element rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example") }), optionalSignature: signature({ certs: [b.sequence([])] }) }).der) === "ocsp/bad-certs");
   // 3b. signed request WITHOUT requestorName -> reject (RFC 6960 §4.1.2 SHALL).
   check("3b. signed request without requestorName rejected",
     parseReqCode(ocspRequest({ optionalSignature: signature({}) }).der) === "ocsp/missing-requestor-name");
@@ -195,12 +202,27 @@ function testAcceptRequest() {
   check("4. requestorName surfaced raw", mn.requestorName && Buffer.isBuffer(mn.requestorName.bytes) && mn.requestorName.tagNumber === 2);
   check("4. requestExtensions nonce named", Array.isArray(mn.requestExtensions) && mn.requestExtensions[0].name === "ocspNonce");
   check("4. requestExtensions nonce value raw", Buffer.isBuffer(mn.requestExtensions[0].value));
+  check("4. requestExtensions nonce decoded bytes surfaced", mn.requestExtensions[0].nonce.equals(Buffer.from([1, 2, 3, 4, 5])));
   // 4b. requestorName whose inner value is not a GeneralName ([1] EXPLICIT INTEGER) -> reject.
   check("4b. non-GeneralName requestorName rejected",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.integer(5n) }) }).der) === "ocsp/bad-requestor-name");
   // 4f. requestorName as directoryName [4] EXPLICIT Name (a valid constructed GeneralName) -> accept.
   check("4f. directoryName requestorName accepted",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.explicit(4, name("Requestor CA")) }), optionalSignature: signature({}) }).der) === "NO-THROW");
+
+  // The pem surface: pemDecode returns the exact DER inside the armor and
+  // enforces the requested label.
+  var reqPem = "-----BEGIN OCSP REQUEST-----\n" +
+    req.der.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") +
+    "\n-----END OCSP REQUEST-----\n";
+  check("ocsp.pemDecode yields the armored DER",
+    pki.schema.ocsp.pemDecode(reqPem, "OCSP REQUEST").equals(req.der));
+  check("ocsp.pemDecode rejects a wrong label",
+    code(function () { pki.schema.ocsp.pemDecode(reqPem, "OCSP RESPONSE"); }) === "pem/label-mismatch");
+  check("ocsp.pemEncode default label round-trips",
+    pki.schema.ocsp.pemDecode(pki.schema.ocsp.pemEncode(req.der)).equals(req.der));
+  check("ocsp.pemEncode request label round-trips",
+    pki.schema.ocsp.pemDecode(pki.schema.ocsp.pemEncode(req.der, "OCSP REQUEST"), "OCSP REQUEST").equals(req.der));
 }
 
 // ---- ACCEPT — response -----------------------------------------------
@@ -317,6 +339,24 @@ function testRejectTimeCertIdExt() {
   check("35. empty Extensions rejected", parseReqCode(emptyExtReq.der) === "ocsp/bad-extensions");
 }
 
+// ---- REJECT — nonce extension syntax (RFC 9654 §2.1, updating RFC 6960) ----
+function testNonceSyntax() {
+  function reqWithNonce(extDer) { return ocspRequest({ tbs: tbsRequest({ requestExtensions: extensions([extDer]) }) }).der; }
+  // Nonce ::= OCTET STRING (SIZE(1..128)) — the RFC 9654 responder bound.
+  check("44a. empty nonce rejected", parseReqCode(reqWithNonce(nonceExt([]))) === "ocsp/bad-nonce");
+  check("44b. 129-octet nonce rejected", parseReqCode(reqWithNonce(nonceExt(new Array(129).fill(7)))) === "ocsp/bad-nonce");
+  check("44c. 128-octet nonce accepted (the RFC 9654 upper bound)", parseReqCode(reqWithNonce(nonceExt(new Array(128).fill(7)))) === "NO-THROW");
+  // The extnValue content must itself be a primitive OCTET STRING.
+  check("44d. non-OCTET-STRING nonce payload rejected", parseReqCode(reqWithNonce(nonceExtRaw(b.integer(5n)))) === "ocsp/bad-nonce");
+  // The same syntax rule binds the response side (responseExtensions carry the
+  // server's echoed nonce) and single-response extensions.
+  var badRespNonce = basicOcspResponse(basicResponse({ tbs: responseData({ responseExtensions: extensions([nonceExtRaw(b.integer(5n))]) }) }));
+  check("44e. response nonce payload rejected", parseRespCode(badRespNonce) === "ocsp/bad-nonce");
+  var goodRespNonce = basicOcspResponse(basicResponse({ tbs: responseData({ responseExtensions: extensions([nonceExt([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16])]) }) }));
+  var mrn = parseResp(goodRespNonce);
+  check("44f. response nonce decoded bytes surfaced", mrn.basicResponse.responseExtensions[0].nonce.length === 16);
+}
+
 // ---- REJECT — response re-dispatch -----------------------------------
 function testRejectRedispatch() {
   // 36. responseType != id-pkix-ocsp-basic -> ocsp/unsupported-response-type.
@@ -423,6 +463,7 @@ function run() {
   testRejectEnvelope();
   testRejectResponderCertStatus();
   testRejectTimeCertIdExt();
+  testNonceSyntax();
   testRejectRedispatch();
   testRejectExtras();
   testDispatch();

@@ -4,6 +4,41 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.23 — 2026-07-10
+
+CMS grows authenticated content: RFC 5652 AuthenticatedData, RFC 5083 AuthEnvelopedData, and RFC 9629 KEM recipients (ML-KEM ready) — plus a toolkit-wide hardening pass.
+
+### Added
+
+- pki.schema.cms.parse decodes id-ct-authData (RFC 5652 section 9 AuthenticatedData): { version, originatorInfo, recipientInfos, macAlgorithm, digestAlgorithm, encapContentInfo, authAttrs, authAttrsBytes, mac, unauthAttrs }. The section 9.1 version rule is computed from originatorInfo contents (recipient kinds never influence it); digestAlgorithm and authAttrs are enforced as a biconditional; authAttrs are required for a non-id-data content type and must carry content-type (matching the eContentType) and message-digest; authAttrsBytes is the raw on-wire [2] TLV for the section 9.2 MAC re-tag.
+- pki.schema.cms.parse decodes id-ct-authEnvelopedData (RFC 5083): { version, originatorInfo, recipientInfos, encryptedContentInfo, aead, authAttrs, authAttrsBytes, mac, unauthAttrs }. A recognized AES-GCM/CCM content-encryption algorithm gets its RFC 5084 parameters validated (present, nonce bounds — CCM 7..13 octets, ICV length from the allowed set and equal to the mac length, DEFAULT-omitted per X.690 11.5) and surfaced as aead: { kind, nonce, icvLen }; an unrecognized algorithm surfaces raw parameters with aead null.
+- KEMRecipientInfo (RFC 9629) parsed under the OtherRecipientInfo id-ori-kem arm: { version, rid, ridType, kem, kemct, kdf, kekLength, ukm, wrap, encryptedKey } as kemri alongside the raw oriValue. version must be 0; kekLength must be 1..65535 and match a recognized AES key-wrap's KEK size; a recognized ML-KEM kem pins the exact FIPS 203 ciphertext length. An unrecognized oriType still surfaces raw (the ORI extension point); a recognized one is validated by content, never accepted on the type OID alone.
+- The parameters-absent registry (pki.oid.paramsMustBeAbsent) gains ML-KEM-512/768/1024 (RFC 9936) and the three HKDF identifiers (RFC 8619), enforced once in the shared AlgorithmIdentifier schema so certificates, CMS, and every other format inherit the rule.
+- RFC 5652 section 11 attribute placement rules, enforced everywhere attribute sets are parsed: content-type / message-digest / signing-time must not appear in unsigned, unauthenticated, or unprotected attribute sets; countersignature only in unsigned attributes. signing-time values are validated as single-valued Time; every countersignature value is validated as a SignerInfo whose signedAttrs carry message-digest and no content-type (RFC 5652 section 11.4), recursively.
+- Every pki.schema.cms.parse result carries contentType (the dotted OID) and contentTypeName, naming which of the five content types was dispatched — no more duck-typing the result shape.
+- pemEncode lands on every remaining format: pki.schema.ocsp.pemEncode (default label OCSP RESPONSE), pki.schema.attrcert.pemEncode (ATTRIBUTE CERTIFICATE), pki.schema.crl.pemEncode (X509 CRL), and label-required pki.schema.tsp.pemEncode / pki.schema.crmf.pemEncode (no standard PEM label exists for those formats, so the operator names the envelope explicitly).
+- New fuzz targets with seed corpora: crl-parse, csr-parse, pkcs8-parse, and schema-all-parse (the orchestrator front door), plus authenticated-content and KEM-recipient seeds for cms-parse; all wired into the per-PR and nightly fuzz matrices.
+- pki.oid.register / registerFamily validate X.660 encodability at registration: root arc 0..2, second arc 0..39 under roots 0 and 1, at least two arcs, and no leading-zero components — a typo fails at config time instead of minting an unmatchable registry key.
+
+### Changed
+
+- SignedData and OriginatorInfo certificates/crls buckets validate the closed CertificateChoices / RevocationInfoChoice tag sets (RFC 5652 sections 10.2.1-10.2.2): elements are still surfaced raw, but a tag outside the CHOICE — or a primitive encoding — is rejected instead of silently feeding the version computation.
+- Signed and authenticated attribute sets must be DER encoded even when the enclosing structure is BER (RFC 5652 sections 5.3/9.1, RFC 5083 section 2.1) — an indefinite-length attribute set reaching the PKCS#12 public-key-integrity path is now rejected instead of surfacing re-tag bytes a verifier would hash incorrectly.
+- Validity, TBSCertificate, and AttributeTypeAndValue assert their SEQUENCE tag (RFC 5280 section 4.1): a SET-tagged body no longer parses through pki.schema.x509.parse while the format orchestrator rejects the same bytes.
+- issuerUniqueID / subjectUniqueID are decoded as the [n] IMPLICIT BIT STRING RFC 5280 section 4.1.2.8 defines — an EXPLICIT-wrapped or malformed unique identifier is rejected.
+- The IssuingDistributionPoint decoder enforces the DER field grammar (strictly ascending tags, each at most once, DER BOOLEAN values, no encoded DEFAULT FALSE); a CRL whose IDP violates it has unknown scope and is unusable for revocation decisions.
+- An empty embedded SEQUENCE is rejected wherever a Certificate / CertificateList is expected (OCSP certs lists, CMP, CRMF); CRMF encryptedKey proof-of-possession and PKCS#12 encrypted safes reject a zero-length ciphertext the same way as a missing one.
+- RecipientEncryptedKey surfaces ridType (rKeyId | issuerAndSerialNumber) so a key-agreement consumer no longer duck-types the recipient-matching form.
+- The pki.schema.cms.parse reference documentation describes all five decoded content types and their return shapes.
+
+### Fixed
+
+- Crypto engine: deriveKey implements the W3C get-key-length rules (AES lengths limited to 128/192/256, HMAC defaulting to the hash block size); deriveBits rejects over-length, zero, and non-multiple-of-8 requests against the actual shared-secret size; unwrapKey surfaces a typed error instead of a bare JSON.parse SyntaxError; an RSA publicExponent is bounds-checked before numeric narrowing.
+- Path validation: an unreadable basicConstraints or issuer key-usage extension now fails the check that consulted it instead of being silently swallowed; name-constraint inputs are validated at the entry point; the policy-tree node budget is a documented constant (LIMITS.PATH_MAX_POLICY_NODES).
+- ASN.1 codec: the constructed encodings of GeneralString, NumericString, and ObjectDescriptor are rejected in DER mode; the byte caps passed to asn1.decode are validated as finite non-negative integers.
+- Publish pipeline: the npm tarball and SBOM are re-hashed against the attested SLSA subjects and verified with slsa-verifier before anything is signed, released, or published; eslint is lockfile-pinned and runs isolated from the pack workspace; gitleaks is version+checksum pinned; the OpenSSF Scorecard threshold gate fails closed when a score cannot be extracted.
+- Every behavioral fix above ships with a conformance vector driving the public parse/validate surface on the malformed input.
+
 ## v0.1.22 — 2026-07-09
 
 An RFC 5035 / RFC 8551 S/MIME ESS signed-attribute decoder joins the schema family.

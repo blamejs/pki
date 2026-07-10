@@ -54,8 +54,10 @@ jobs:
   # CII-Badge / Code-Review / CI-Tests scores are constrained by repo age
   # + ownership shape rather than security posture. Operators on a mature
   # multi-maintainer fork should set SCORECARD_MIN to 7.5+ via repo
-  # variable. Fails-open on SARIF parse failure (warning, not error) so a
-  # Scorecard output-shape change doesn't break CI silently.
+  # variable. Fails CLOSED on SARIF parse failure: an unextractable score
+  # is a red job demanding a one-line jq fix — a warning on a green run
+  # would silently disable the floor forever after a Scorecard
+  # output-shape change.
   threshold:
     name: Threshold gate
     needs: analysis
@@ -74,8 +76,8 @@ jobs:
         run: |
           set -euo pipefail
           if ! command -v jq >/dev/null 2>&1; then
-            echo "::warning::jq not on runner — skipping threshold gate"
-            exit 0
+            echo "::error::jq not on runner — the threshold gate cannot evaluate the score. Install jq in this step or fix the runner image."
+            exit 1
           fi
           SCORE=$(jq -r '
             (.runs[0].properties.aggregateScore
@@ -83,8 +85,9 @@ jobs:
              // empty)
           ' results.sarif | head -1)
           if [ -z "$SCORE" ] || [ "$SCORE" = "null" ]; then
-            echo "::warning::Could not extract aggregate score from results.sarif — skipping threshold gate (Scorecard SARIF output shape may have changed)."
-            exit 0
+            echo "::error::Could not extract the aggregate score from results.sarif (looked for .runs[0].properties.aggregateScore, then .runs[0].properties[\"openssf-scorecard-aggregate-score\"])."
+            echo "::error::The Scorecard SARIF output shape changed — update the jq paths above; the gate fails closed rather than silently retiring the score floor."
+            exit 1
           fi
           echo "[scorecard] aggregate score: ${SCORE} (min: ${SCORECARD_MIN})"
           BELOW=$(awk -v s="$SCORE" -v t="$SCORECARD_MIN" 'BEGIN{print (s+0 < t+0)}')

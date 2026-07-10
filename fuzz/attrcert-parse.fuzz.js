@@ -7,8 +7,8 @@
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (CI PRs + nightly batch)
  * and OSS-Fuzz (continuous) both consume this shape:
  * `module.exports.fuzz = function (data)` where `data` is a Buffer the
- * engine mutates via coverage-guided fuzzing. An AttributeCertificate is a
- * DER SEQUENCE, so the shared ASN.1 seed corpus exercises the front door;
+ * engine mutates via coverage-guided fuzzing. The seeds in
+ * fuzz/attrcert-parse_seed_corpus/ exercise the front door;
  * the parser drives the signed envelope, the validated GeneralNames, the
  * IMPLICIT-tagged Holder / V2Form bodies, and the ENUMERATED / GeneralizedTime
  * leaves.

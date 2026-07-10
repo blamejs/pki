@@ -50,7 +50,9 @@ function _logWrite(chunk) {
   } catch (_e) { /* best-effort */ }
 }
 var _origStdoutWrite = process.stdout.write.bind(process.stdout);
+var _origStderrWrite = process.stderr.write.bind(process.stderr);
 process.stdout.write = function (chunk, encoding, cb) { _logWrite(chunk); return _origStdoutWrite(chunk, encoding, cb); };
+process.stderr.write = function (chunk, encoding, cb) { _logWrite(chunk); return _origStderrWrite(chunk, encoding, cb); };
 process.on("exit", function () { try { fs.closeSync(_logFd); } catch (_e) { /* best-effort */ } });
 
 console.log("@blamejs/pki v" + pki.version + " — smoke test");
@@ -134,6 +136,9 @@ async function _pool(items, worker, concurrency) {
     console.error("\n" + failures.length + " file(s) FAILED:");
     failures.forEach(function (r) {
       console.error("\n=== " + r.entry.layer + " / " + r.entry.name + " (exit " + r.code + ") ===");
+      // The console shows the tail; the log gets the failed child's FULL
+      // combined output so the on-disk record is complete without a re-run.
+      _logWrite("\n--- full output: " + r.entry.layer + " / " + r.entry.name + " ---\n" + r.out + "\n--- end full output ---\n");
       console.error(r.out.trim().split("\n").slice(-25).join("\n"));
     });
     process.exit(1);

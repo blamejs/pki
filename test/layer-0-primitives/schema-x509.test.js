@@ -11,6 +11,8 @@ var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
 var vectors = helpers.vectors;
+var pkix = require("../../lib/schema-pkix");
+var oidReg = require("../../lib/oid");
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
 var EXPECT = vectors.CERT_EC_EXPECT;
@@ -31,6 +33,11 @@ function testParseFields() {
   check("SPKI algorithm name", cert.subjectPublicKeyInfo.algorithm.name === EXPECT.spkiAlgName);
   check("public key bytes present", cert.subjectPublicKeyInfo.publicKey.bytes.length > 0);
   check("tbsBytes is a non-empty Buffer", Buffer.isBuffer(cert.tbsBytes) && cert.tbsBytes.length > 0);
+  // tbsBytes is the exact signed region an external verifier hashes — it must
+  // be the tbsCertificate TLV byte-for-byte off the wire, never re-serialized.
+  var wireDer = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "CERTIFICATE");
+  check("tbsBytes byte-identical to the tbsCertificate TLV on the wire",
+    cert.tbsBytes.equals(pki.asn1.decode(wireDer).children[0].bytes));
   check("signature value present", cert.signatureValue.bytes.length > 0);
 }
 
@@ -44,6 +51,23 @@ function testExtensions() {
   check("basicConstraints is critical", bc && bc.critical === true);
   check("basicConstraints named", bc && bc.name === "basicConstraints");
   check("extension value is a Buffer", bc && Buffer.isBuffer(bc.value));
+
+  // Known-answer SAN decode against the openssl oracle: drive the RFC 5280
+  // sec. 4.2.1.6 subjectAltName decoder (the same OID-keyed registry
+  // certification-path validation uses on attacker-supplied bytes) over the
+  // real certificate's extension value and compare the dNSName entries to
+  // the independently-read expectation.
+  var sanOid = oidReg.byName("subjectAltName");
+  var sanExt = cert.extensions.filter(function (e) { return e.oid === sanOid; })[0];
+  check("subjectAltName extension present", Boolean(sanExt));
+  var NS = pkix.makeNS("path", pki.errors.PathError, oidReg);
+  var san = pkix.certExtensionDecoders(NS).byOid[sanOid](sanExt.value);
+  var dns = san.names
+    .filter(function (nm) { return nm.tagClass === "context" && nm.tagNumber === 2; })
+    .map(function (nm) { return nm.value; });
+  check("SAN dNSName entries match the openssl-read expectation",
+    dns.length === EXPECT.sanDnsNames.length &&
+    dns.every(function (d, i) { return d === EXPECT.sanDnsNames[i]; }));
 }
 
 function testPem() {
@@ -57,6 +81,14 @@ function testPem() {
     return a.subject.dn === b.subject.dn && a.serialNumberHex === b.serialNumberHex;
   })());
   check("pemDecode rejects wrong label", code(function () { pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "PRIVATE KEY"); }) === "pem/label-mismatch");
+  // The format's canonical RFC 7468 label (CERTIFICATE) is the default, matching
+  // every sibling format: called label-less on text whose first block is a
+  // foreign type, pemDecode refuses rather than returning the first block of
+  // anything; an explicit null label opts into the any-block behavior.
+  check("label-less pemDecode enforces the CERTIFICATE label", pki.schema.x509.pemDecode(vectors.CERT_EC_PEM).equals(der));
+  var bundle = pki.schema.x509.pemEncode(Buffer.from([0x30, 0x00]), "PRIVATE KEY") + vectors.CERT_EC_PEM;
+  check("label-less pemDecode rejects a foreign first block", code(function () { pki.schema.x509.pemDecode(bundle); }) === "pem/label-mismatch");
+  check("pemDecode(text, null) takes the first block of any type", pki.schema.x509.pemDecode(bundle, null).equals(Buffer.from([0x30, 0x00])));
 }
 
 function testRejects() {
@@ -105,7 +137,7 @@ function _cert(tbsChildren) {
   return build.sequence([tbs, _algId("1.2.840.10045.4.3.2"), build.bitString(Buffer.from([0x30, 0x03]), 0)]);
 }
 
-// FIX 9 — a tbs with an explicit version [0] but only six children (SPKI
+// a tbs with an explicit version [0] but only six children (SPKI
 // omitted): 6 children survive a bare `< 6` guard, then the positional SPKI
 // read is `undefined` and `.children` throws a raw TypeError (no `.code`).
 function testShortTbsWithVersion() {
@@ -122,7 +154,7 @@ function testShortTbsWithVersion() {
     typeof c === "string" && c.indexOf("x509/") === 0);
 }
 
-// FIX 10 — two identical subjectKeyIdentifier extensions must be refused.
+// two identical subjectKeyIdentifier extensions must be refused.
 function testDuplicateExtension() {
   var cert = _cert([
     build.explicit(0, build.integer(2n)),
@@ -150,7 +182,7 @@ function testDuplicateExtension() {
     code(function () { pki.schema.x509.parse(multiOu); }) === "NO-THROW");
 }
 
-// FIX 11 — the certificate version is validated against the RFC 5280 set.
+// the certificate version is validated against the RFC 5280 set.
 function testVersionValidation() {
   function withVersion(vInt) {
     return _cert([
@@ -259,6 +291,18 @@ function testMalformedDnStringRejected() {
   // a representable ANY value (RFC 4514 §2.4), not a malformed string.
   check("x509.parse hex-renders a constructed ANY DN value (does not reject)",
     (dnOf(certWithDnValue(build.sequence([build.integer(1n)]))) || "").indexOf("#3003020101") !== -1);
+
+  // RFC 4514 sec. 2.4 escapes — a literal '#'-leading string is surfaced and
+  // rendered escaped ('\#...'), so it cannot collide with the '#'+hex form the
+  // non-string fallback emits; leading/trailing spaces and NUL are escaped too.
+  check("x509.parse renders a literal '#'-leading string escaped, distinct from the hex form",
+    dnOf(certWithDnValue(build.utf8("#0500"))) === "CN=\\#0500");
+  check("literal '#'-leading value surfaced escaped in rdns",
+    pki.schema.x509.parse(certWithDnValue(build.utf8("#0500"))).subject.rdns[0][0].value === "\\#0500");
+  check("x509.parse escapes leading/trailing spaces in a DN value",
+    dnOf(certWithDnValue(build.utf8(" padded "))) === "CN=\\ padded\\ ");
+  check("x509.parse escapes NUL in a DN value",
+    dnOf(certWithDnValue(build.utf8("a\u0000b"))) === "CN=a\\00b");
 }
 
 // RFC 5280 §4.1 — the optional trailing tbs fields (issuerUniqueID [1],
@@ -274,7 +318,9 @@ function testTbsTrailingFieldGrammar() {
     ].concat(trailing));
   }
   var exts = build.explicit(3, build.sequence([_ext("2.5.29.14")]));
-  var uid1 = build.explicit(1, build.bitString(Buffer.from([0x01]), 0));
+  // [1] IMPLICIT BIT STRING (RFC 5280 sec. 4.1.2.8): context PRIMITIVE,
+  // content = unusedBits octet + bits.
+  var uid1 = build.contextPrimitive(1, Buffer.from([0x00, 0x01]));
   check("two [3] extension wrappers rejected",
     code(function () { pki.schema.x509.parse(tbs([exts, build.explicit(3, build.sequence([_ext("2.5.29.15")]))])); }) === "x509/bad-tbs");
   check("out-of-order trailing fields ([3] before [1]) rejected",
@@ -285,6 +331,81 @@ function testTbsTrailingFieldGrammar() {
     code(function () { pki.schema.x509.parse(tbs([exts])); }) === "NO-THROW");
   check("ordered issuerUniqueID [1] then extensions [3] still parses",
     code(function () { pki.schema.x509.parse(tbs([uid1, exts])); }) === "NO-THROW");
+}
+
+// RFC 5280 sec. 4.1.2.8 — issuerUniqueID / subjectUniqueID MUST NOT appear
+// when the version is 1; they require a v2 or v3 certificate.
+function testUniqueIdVersionCoupling() {
+  var uid1 = build.contextPrimitive(1, Buffer.from([0x00, 0x01]));
+  var uid2 = build.contextPrimitive(2, Buffer.from([0x00, 0x01]));
+  function v1Cert(trailing) {
+    return _cert([
+      build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), _validity(), _name("subject"), _spki(),
+    ].concat(trailing));
+  }
+  check("v1 cert with issuerUniqueID [1] rejected",
+    code(function () { pki.schema.x509.parse(v1Cert([uid1])); }) === "x509/bad-version");
+  check("v1 cert with subjectUniqueID [2] rejected",
+    code(function () { pki.schema.x509.parse(v1Cert([uid2])); }) === "x509/bad-version");
+  // v2 is the minimum version for the unique identifiers. RFC 5280 sec. 4.1.2.8:
+  // the field is [1] IMPLICIT BIT STRING -- a context PRIMITIVE whose content
+  // is unusedBits + bits, never an EXPLICIT wrap around a universal BIT STRING.
+  function v2Cert(trailing) {
+    return _cert([
+      build.explicit(0, build.integer(1n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), _validity(), _name("subject"), _spki(),
+    ].concat(trailing));
+  }
+  var v2WithUid = v2Cert([build.contextPrimitive(1, Buffer.from([0x00, 0xAF]))]);
+  check("v2 cert with IMPLICIT issuerUniqueID [1] parses",
+    code(function () { pki.schema.x509.parse(v2WithUid); }) === "NO-THROW");
+  check("constructed (EXPLICIT-wrapped) issuerUniqueID rejected",
+    code(function () { pki.schema.x509.parse(v2Cert([build.explicit(1, build.bitString(Buffer.from([0x01]), 0))])); }) !== "NO-THROW");
+  check("subjectUniqueID with unusedBits above 7 rejected",
+    code(function () { pki.schema.x509.parse(v2Cert([build.contextPrimitive(2, Buffer.from([0x09, 0x01]))])); }) !== "NO-THROW");
+}
+
+// RFC 5280 sec. 4.1 -- Validity, TBSCertificate, and AttributeTypeAndValue are
+// SEQUENCEs in the normative ASN.1; a SET-tagged (0x31) body is a different
+// type a conforming decoder cannot decode, even though it is constructed.
+function testSequenceTagEnforcement() {
+  function setTag(der) { var c = Buffer.from(der); c[0] = 0x31; return c; }
+  var sig = "1.2.840.10045.4.3.2";
+  var tbsChildren = [build.integer(1n), _algId(sig), _name("issuer"), _validity(), _name("subject"), _spki()];
+  var certSetTbs = build.sequence([setTag(build.sequence(tbsChildren)), _algId(sig), build.bitString(Buffer.from([0x30, 0x03]), 0)]);
+  check("SET-tagged tbsCertificate rejected",
+    code(function () { pki.schema.x509.parse(certSetTbs); }) === "x509/bad-tbs");
+  var certSetValidity = _cert([build.integer(1n), _algId(sig), _name("issuer"), setTag(_validity()), _name("subject"), _spki()]);
+  check("SET-tagged Validity rejected",
+    code(function () { pki.schema.x509.parse(certSetValidity); }) === "x509/bad-validity");
+  var badRdnName = build.sequence([build.set([setTag(_atv("2.5.4.3", "x"))])]);
+  var certSetAtv = _cert([build.integer(1n), _algId(sig), badRdnName, _validity(), _name("subject"), _spki()]);
+  check("SET-tagged AttributeTypeAndValue rejected",
+    code(function () { pki.schema.x509.parse(certSetAtv); }) === "x509/bad-atv");
+}
+
+// RFC 5280 sec. 4.1.2.5 — validity dates through the year 2049 MUST be
+// encoded as UTCTime; GeneralizedTime is reserved for 2050 or later.
+function testValidityTimeEncodingCutover() {
+  function certWithValidity(validityNode) {
+    return _cert([
+      build.explicit(0, build.integer(2n)), build.integer(1n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), validityNode, _name("subject"), _spki(),
+    ]);
+  }
+  var genPre2050 = build.sequence([
+    build.generalizedTime(new Date("2020-01-01T00:00:00Z")),
+    build.utcTime(new Date("2030-01-01T00:00:00Z")),
+  ]);
+  check("notBefore as GeneralizedTime 2020 rejected (must be UTCTime through 2049)",
+    code(function () { pki.schema.x509.parse(certWithValidity(genPre2050)); }) === "x509/bad-time");
+  var genPost2050 = build.sequence([
+    build.utcTime(new Date("2026-01-01T00:00:00Z")),
+    build.generalizedTime(new Date("2050-01-01T00:00:00Z")),
+  ]);
+  check("notAfter as GeneralizedTime 2050 parses",
+    code(function () { pki.schema.x509.parse(certWithValidity(genPost2050)); }) === "NO-THROW");
 }
 
 // Additional RFC 5280 tbsCertificate conformance MUSTs.
@@ -368,6 +489,9 @@ function run() {
   testVersionValidation();
   testMalformedDnStringRejected();
   testTbsTrailingFieldGrammar();
+  testUniqueIdVersionCoupling();
+  testSequenceTagEnforcement();
+  testValidityTimeEncodingCutover();
   testRfc5280Conformance();
   testMultiDefectFailClosed();
 }

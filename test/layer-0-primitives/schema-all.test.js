@@ -128,13 +128,23 @@ function run() {
     b.sequence([gtime("2026-01-01T00:00:00Z"), gtime("2027-01-01T00:00:00Z")]),
     b.sequence([b.sequence([b.oid("2.5.4.72"), b.set([b.utf8("a")])])])]);
   var attrcertFixture = b.sequence([acinfoV2, algIdOf(SIG), b.bitString(Buffer.from([0x00]), 0)]);
-  var acinfoV1 = b.sequence([
-    b.contextConstructed(1, Buffer.concat([b.explicit(4, nameOf("H"))])),
-    b.sequence([b.explicit(4, nameOf("I"))]),
-    algIdOf(SIG), b.integer(7n),
-    b.sequence([gtime("2026-01-01T00:00:00Z"), gtime("2027-01-01T00:00:00Z")]),
-    b.sequence([b.sequence([b.oid("2.5.4.72"), b.set([b.utf8("a")])])])]);
-  var attrcertV1Fixture = b.sequence([acinfoV1, algIdOf(SIG), b.bitString(Buffer.from([0x00]), 0)]);
+  // AttributeCertificateV1 subject is a CHOICE: baseCertificateID [0] IssuerSerial
+  // or subjectName [1] GeneralNames. The matrix row uses the [0] arm because it is
+  // the one registry overlap whose ordering is load-bearing: a [0]-subject v1 AC
+  // ALSO satisfies x509.matches (the [0] child reads as the certificate's EXPLICIT
+  // version marker, putting the 2-GeneralizedTime validity at the Validity probe
+  // offset), so this row fails if attrcert-v1 is ever reordered below x509.
+  function acV1Fixture(subject) {
+    var acinfo = b.sequence([
+      subject,
+      b.sequence([b.explicit(4, nameOf("I"))]),
+      algIdOf(SIG), b.integer(7n),
+      b.sequence([gtime("2026-01-01T00:00:00Z"), gtime("2027-01-01T00:00:00Z")]),
+      b.sequence([b.sequence([b.oid("2.5.4.72"), b.set([b.utf8("a")])])])]);
+    return b.sequence([acinfo, algIdOf(SIG), b.bitString(Buffer.from([0x00]), 0)]);
+  }
+  var attrcertV1Fixture = acV1Fixture(b.contextConstructed(0,
+    Buffer.concat([b.sequence([b.explicit(4, nameOf("H"))]), b.integer(1n)])));
   // A minimal error PKIMessage (RFC 9810): header {pvno, NULL-DN sender,
   // recipient}, body error[23]. Its first child is a bare INTEGER, so it never
   // matches ocsp-request; cmp registers ahead of ocsp-request for the ir[0]
@@ -171,6 +181,27 @@ function run() {
     }
     check("dispatch matrix: the " + name + " fixture first-matches " + name, first === name);
   });
+
+  // The cms pem surface round-trips its own armor: pemEncode emits RFC 7468
+  // armor that pemDecode returns to byte-identical DER, and the armored text
+  // routes through the orchestrator like any PEM input.
+  var cmsPem = pki.schema.cms.pemEncode(cmsFixture, "CMS");
+  check("cms pemEncode/pemDecode round-trips to identical DER",
+        pki.schema.cms.pemDecode(cmsPem, "CMS").equals(cmsFixture));
+  check("parse unwraps + routes the cms PEM armor",
+        pki.schema.parse(Buffer.from(cmsPem, "utf8")).contentType === pki.schema.parse(cmsFixture).contentType);
+
+  // The one deliberate detector overlap in the registry: BOTH attrcert-v1 and
+  // x509 accept a [0]-subject v1 AC, and first-match order must resolve it to
+  // the attrcert-v1 legacy defer, never to the x509 parser. Both subject CHOICE
+  // arms route to the same stable code through the shipped orchestrator.
+  var v1Root = pki.asn1.decode(attrcertV1Fixture);
+  check("a [0]-subject v1 AC satisfies BOTH the attrcert-v1 and x509 detectors",
+        DETECTORS["attrcert-v1"](v1Root) === true && DETECTORS["x509"](v1Root) === true);
+  check("parse defers a [0]-subject v1 AC as legacy (never routed to x509)",
+        code(function () { pki.schema.parse(attrcertV1Fixture); }) === "attrcert/legacy-v1-not-supported");
+  check("parse defers a [1]-subject v1 AC as legacy",
+        code(function () { pki.schema.parse(acV1Fixture(b.contextConstructed(1, Buffer.concat([b.explicit(4, nameOf("H"))])))); }) === "attrcert/legacy-v1-not-supported");
 }
 
 module.exports = { run: run };
