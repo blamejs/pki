@@ -284,6 +284,12 @@ function testBuilders() {
   //      instruction, RFC 8951) is surfaced on unhandled, never silently dropped.
   var sigPlan = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.oid("1.2.840.10045.4.3.3")])));
   check("53d. registered unmodeled OID surfaced", sigPlan.unhandled.length === 1 && sigPlan.unhandled[0].oid === "1.2.840.10045.4.3.3" && sigPlan.unhandled[0].name === "ecdsaWithSHA384");
+  // 53e. a non-RSA/EC key type (Ed25519) is modeled as keyType, not unhandled.
+  var planEd = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.sequence([b.oid("1.3.101.112"), b.set([])])])));
+  check("53e. Ed25519 key-type modeled", !!planEd.keyType && planEd.keyType.type === "Ed25519" && planEd.unhandled.length === 0);
+  // 53f. rsaEncryption + Ed25519 are two key types -> ambiguous, fail closed.
+  var twoKt2 = b.sequence([b.sequence([b.oid(RSA_OID), b.set([])]), b.sequence([b.oid("1.3.101.112"), b.set([])])]);
+  check("53f. mixed RSA + Ed25519 key types rejected", code(function () { pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(twoKt2)); }) === "est/ambiguous-key-type");
   // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
   check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
   var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;
