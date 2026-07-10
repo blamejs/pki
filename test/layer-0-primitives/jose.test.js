@@ -76,6 +76,9 @@ async function testJws() {
   // 28e. a key whose curve does not match the alg produces the wrong signature length -> caught at sign.
   var ec384 = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-384" }, true, ["sign", "verify"]);
   check("28e. wrong-curve signing key (P-384 under ES256) rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "https://ca.example/a" }, payload: Buffer.from("{}"), key: ec384.privateKey }); })) === "jose/bad-key");
+  // 28f. an embedded jwk must match the alg (verify enforces the same binding), so a
+  // header advertising an RSA key while signing with an EC key is rejected.
+  check("28f. embedded jwk not matching the alg rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: { kty: "RSA", e: "AQAB", n: "0vx7" } }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-alg");
   var md = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });
