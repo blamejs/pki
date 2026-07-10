@@ -300,6 +300,8 @@ async function testBuilders() {
   check("67c. EAB header: HS256, kid, url==outer, no nonce", eabHdr.alg === "HS256" && eabHdr.kid === "mac-kid-1" && eabHdr.url === base.url && !("nonce" in eabHdr));
   check("67d. EAB rejects a signature alg", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acct.jwk, alg: "ES256" }); })) === "acme/bad-input");
   check("67d2. EAB rejects a non-key macKey (fail closed, no raw TypeError)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: "notakey", kid: "k", url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
+  var acctPrivJwk = await subtle.exportKey("jwk", acct.key);   // carries the private `d`
+  check("67d3. EAB rejects a private account jwk (no key leak in the payload)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acctPrivJwk }); })) === "jose/private-key-material");
   check("67e. EAB inner refused by the outer profile (no HS* outside EAB)", (await acode(function () { return pki.jose.verify(eab, { profile: "acme-outer", key: macJwk }); })) !== "NO-THROW");
 
   // newAccount: jwk-signed (a new account has no kid), contact validated fail-closed, EAB attached.
@@ -317,6 +319,8 @@ async function testBuilders() {
   // account flags must be actual booleans -- never coerce "false"/0 to true.
   check("67n. newAccount non-boolean termsOfServiceAgreed rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, termsOfServiceAgreed: "false" }); })) === "acme/bad-input");
   check("67o. newAccount non-boolean onlyReturnExisting rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, onlyReturnExisting: 1 }); })) === "acme/bad-input");
+  // a mailto contact is caught regardless of scheme case (RFC 3986 schemes are case-insensitive).
+  check("67q. newAccount uppercase MAILTO with header fields rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["MAILTO:a@b.com?subject=x"] }); })) === "acme/bad-contact");
 
   // 68. keyChange nested JWS: inner jwk, no nonce, url == outer; payload {account, oldKey}.
   var nk = await ecKeyPair();
@@ -328,6 +332,8 @@ async function testBuilders() {
   check("68b. keyChange inner payload {account, oldKey}", innerPay.account === kid && JSON.stringify(innerPay.oldKey) === JSON.stringify(acct.jwk));
   check("68c. keyChange inner verifies under keychange-inner + new key", (await acode(function () { return pki.jose.verify(inner, { profile: "keychange-inner", key: nk.jwk }); })) === "NO-THROW");
   check("68d. keyChange missing oldKey rejected", (await acode(function () { return pki.acme.keyChange({ key: acct.key, alg: "ES256", kid: kid, account: kid, newKey: nk.key, newJwk: nk.jwk, newAlg: "ES256", nonce: base.nonce, url: "https://ca/k" }); })) === "acme/bad-input");
+  var acctPrivJwk2 = await subtle.exportKey("jwk", acct.key);
+  check("68e. keyChange rejects a private oldKey (no key leak in the inner payload)", (await acode(function () { return pki.acme.keyChange({ key: acct.key, alg: "ES256", kid: kid, account: kid, oldKey: acctPrivJwk2, newKey: nk.key, newJwk: nk.jwk, newAlg: "ES256", nonce: base.nonce, url: "https://ca/k" }); })) === "jose/private-key-material");
 
   // 69. revokeCert: certificate = b64u(DER); reason 0..10; both key modes; exactly-one key ref.
   var predCert = makeCert({ exts: [akiExt(Buffer.from("aabbccddeeff00112233445566778899aabbccdd", "hex"))] });

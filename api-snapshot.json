@@ -158,6 +158,10 @@
         "jose": {
           "kind": "object",
           "members": {
+            "assertPublicJwk": {
+              "kind": "function",
+              "arity": 1
+            },
             "base64url": {
               "kind": "object",
               "members": {
@@ -825,6 +829,10 @@
     "jose": {
       "kind": "object",
       "members": {
+        "assertPublicJwk": {
+          "kind": "function",
+          "arity": 1
+        },
         "base64url": {
           "kind": "object",
           "members": {
@@ -1370,6 +1378,7 @@
     "pki.jose.base64url.encode": "0.1.25",
     "pki.jose.base64url.decode": "0.1.25",
     "pki.jose.parseJson": "0.1.25",
+    "pki.jose.assertPublicJwk": "0.1.25",
     "pki.jose.verify": "0.1.25",
     "pki.jose.sign": "0.1.25",
     "pki.jose.thumbprint": "0.1.25",

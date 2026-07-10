@@ -79,6 +79,10 @@ async function testJws() {
   // 28f. an embedded jwk must match the alg (verify enforces the same binding), so a
   // header advertising an RSA key while signing with an EC key is rejected.
   check("28f. embedded jwk not matching the alg rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: { kty: "RSA", e: "AQAB", n: "0vx7" } }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-alg");
+  // 28g/h. a private JWK must never be embedded in a protected header (key leak).
+  var ecPrivJwk = await subtle.exportKey("jwk", ec.privateKey);   // carries the private `d`
+  check("28g. sign with a private embedded jwk rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: ecPrivJwk }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/private-key-material");
+  check("28h. assertPublicJwk rejects private, accepts public", code(function () { pki.jose.assertPublicJwk(ecPrivJwk); }) === "jose/private-key-material" && pki.jose.assertPublicJwk(ecJwk) === ecJwk);
   var md = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });
