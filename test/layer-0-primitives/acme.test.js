@@ -75,6 +75,8 @@ function extensionRequestAttr(dnsNames) {
   return b.sequence([b.oid(oid.byName("extensionRequest")), b.set([exts])]);
 }
 function cnSubject(cn) { return b.sequence([b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8(cn)])])]); }
+function cnRdn(cn) { return b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8(cn)])]); }
+function twoCnSubject(cn1, cn2) { return b.sequence([cnRdn(cn1), cnRdn(cn2)]); }
 function buildCsr(o) {
   o = o || {};
   var attrTlvs = [];
@@ -304,6 +306,9 @@ async function testBuilders() {
   var twoAttrCsr = buildCsr({ spki: cert.spki, san: ["example.org"], san2: ["extra.example"] });
   check("65f. finalize counts a second extensionRequest's SAN (mismatch)", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoAttrCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
   check("65g. finalize matches the full aggregated set", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoAttrCsr, identifiers: [{ type: "dns", value: "example.org" }, { type: "dns", value: "extra.example" }], accountJwk: acct.jwk })); })) === "NO-THROW");
+  // 65h. every subject CN is counted (a second CN cannot be smuggled past the match).
+  var twoCnCsr = buildCsr({ spki: cert.spki, subject: twoCnSubject("cn1.example", "cn2.example") });
+  check("65h. finalize counts every subject CN", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoCnCsr, identifiers: [{ type: "dns", value: "cn1.example" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
 
   // 66. CSR public key == account key -> acme/key-reuse (sec. 11.1).
   var reuseCsr = buildCsr({ spki: acct.spki, san: ["example.org"] });
