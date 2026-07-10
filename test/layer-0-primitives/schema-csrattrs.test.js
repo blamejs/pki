@@ -165,6 +165,11 @@ function testAccept() {
   // 7c. the non-standard single-ExtensionTemplate-as-value (not wrapped in the
   //     SEQUENCE OF) is now rejected (its first child is an OID, not a SEQUENCE).
   check("7c. bare ExtensionTemplate value rejected", parseCode(csrattrs([templateAttr({ attributesBody: attr(EXT_REQ_TEMPLATE, [extTemplate(SUBJECT_ALT_NAME)]) })])) === "csrattrs/bad-extension-template");
+  // 7d. a template using a normal id-ExtensionReq exposes its decoded extensions
+  //     (not just raw bytes) the way a top-level extensionRequest does.
+  var tplExtReq = attr(EXTENSION_REQUEST, [extensions([ext(BASIC_CONSTRAINTS, undefined, Buffer.from([0x30, 0x00]))])]);
+  var ft7d = parse(csrattrs([templateAttr({ attributesBody: tplExtReq })])).items[0].template;
+  check("7d. template id-ExtensionReq decoded to .extensions", Array.isArray(ft7d.extensions) && ft7d.extensions.length === 1 && ft7d.extensions[0].oid === BASIC_CONSTRAINTS);
 
   // 8. unknown attribute type -> raw values, parse succeeds (P9).
   var unk = parse(csrattrs([attr("1.3.99.1.2", [b.integer(7n), b.octetString(Buffer.from([1, 2]))].sort(Buffer.compare))]));
@@ -180,9 +185,12 @@ function testAccept() {
 function testRejectStructure() {
   // 10. a child INTEGER (neither OID nor SEQUENCE) -> bad-attr-or-oid.
   check("10. bad arm (INTEGER child)", parseCode(csrattrs([b.integer(1n)])) === "csrattrs/bad-attr-or-oid");
-  // 11. an empty values SET is legal for a key-type hint (vector 4d/4e) but NOT
-  //     for id-ExtensionReq, which MUST carry exactly one Extensions (RFC 9908 sec. 3.2).
-  check("11. empty id-ExtensionReq values rejected", parseCode(csrattrs([attr(EXTENSION_REQUEST, [])])) === "csrattrs/bad-extension-req");
+  // 11. an empty values SET is legal ONLY for a key-type hint (vector 4d/4e). Every
+  //     other attribute keeps SET SIZE(1..MAX): id-ExtensionReq needs one Extensions,
+  //     and a challengePassword / unknown attribute with SET {} fails closed.
+  check("11. empty id-ExtensionReq values rejected", parseCode(csrattrs([attr(EXTENSION_REQUEST, [])])) === "csrattrs/bad-attribute-values");
+  check("11b. empty challengePassword values rejected", parseCode(csrattrs([attr(CHALLENGE_PASSWORD, [])])) === "csrattrs/bad-attribute-values");
+  check("11c. empty unknown-attribute values rejected", parseCode(csrattrs([attr("1.3.99.7.7", [])])) === "csrattrs/bad-attribute-values");
   // 12. Attribute SEQUENCE of 3 children -> rejected.
   check("12. attribute of 3 children rejected", parseCode(csrattrs([b.sequence([b.oid(RSA_ENCRYPTION), b.set([b.integer(1n)]), b.integer(9n)])])) !== "NO-THROW");
   // 13. values SET in descending DER order -> derSetOrder fault.

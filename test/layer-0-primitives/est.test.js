@@ -174,6 +174,12 @@ function testServerKeygen() {
   // 46. three parts -> rejected fail-closed.
   var body46 = multipart([{ ct: "application/pkcs8", body: "AA==" }, { ct: "application/pkcs8", body: "AA==" }, { ct: "text/plain", body: "x" }]);
   check("46. three parts rejected", code(function () { pki.est.parseServerKeygenResponse(body46, ct, {}); }) === "est/bad-multipart");
+  // 46b. a look-alike key media type (application/pkcs8evil) is not a valid part -> est/bad-multipart.
+  var body46b = multipart([{ ct: "application/pkcs8evil", body: pkcs8.toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  check("46b. look-alike key media type rejected", code(function () { pki.est.parseServerKeygenResponse(body46b, ct, {}); }) === "est/bad-multipart");
+  // 46c. a stray smime-type=server-generated-key on the wrong media type is not a key part.
+  var body46c = multipart([{ ct: "text/plain; smime-type=server-generated-key", body: "AA==" }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  check("46c. smime-type on wrong media type rejected", code(function () { pki.est.parseServerKeygenResponse(body46c, ct, {}); }) === "est/bad-multipart");
   // 47. whitespace before the semicolon is tolerated (erratum 5779 rejected).
   var r47 = pki.est.parseServerKeygenResponse(body43, 'multipart/mixed ; boundary="estBoundary"', {});
   check("47. whitespace before ; tolerated", !!r47.privateKey);
