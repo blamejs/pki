@@ -122,6 +122,10 @@ async function testThumbprint() {
   var md = await subtle.generateKey({ name: "ML-DSA-44" }, true, ["sign", "verify"]);
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   check("38. AKP ML-DSA thumbprint", typeof (await pki.jose.thumbprint(mdJwk)) === "string" && (await pki.jose.thumbprint(mdJwk)).length > 0);
+  // 38b. the AKP thumbprint includes alg (RFC 9964 sec. 6) -- required, and part of the digest.
+  var tpA = await pki.jose.thumbprint({ kty: "AKP", alg: "ML-DSA-65", pub: "AQID" });
+  var tpB = await pki.jose.thumbprint({ kty: "AKP", alg: "ML-DSA-44", pub: "AQID" });
+  check("38b. AKP thumbprint requires and includes alg", tpA !== tpB && (await acode(function () { return pki.jose.thumbprint({ kty: "AKP", pub: "AQID" }); })) === "jose/bad-key");
 }
 
 // ---- base64url codec (RFC 7515 sec. 2 / RFC 8555 sec. 6.1) -----------

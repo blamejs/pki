@@ -113,6 +113,9 @@ function testObjects() {
   // URL fields are PARSED, not prefix-matched -- a malformed or hostless value is rejected.
   check("40b. malformed directory URL rejected", code(function () { pki.acme.validate("directory", Object.assign({}, DIRECTORY, { newNonce: "https://[" })); }) === "acme/bad-directory");
   check("40c. hostless directory URL rejected", code(function () { pki.acme.validate("directory", Object.assign({}, DIRECTORY, { newNonce: "http://" })); }) === "acme/bad-directory");
+  // a URL the parser would REPAIR (trim leading space, insert the missing //) is rejected.
+  check("40d. leading-whitespace URL rejected", code(function () { pki.acme.validate("directory", Object.assign({}, DIRECTORY, { newNonce: " https://ca/n" })); }) === "acme/bad-directory");
+  check("40e. authority-less URL rejected", code(function () { pki.acme.validate("directory", Object.assign({}, DIRECTORY, { newNonce: "https:ca.example/n" })); }) === "acme/bad-directory");
   // 41. an unrecognized order status rejects.
   check("41. order bad status rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { status: "complete" })); }) === "acme/bad-status");
   // 42. expires is required-when pending/valid; optional otherwise.
