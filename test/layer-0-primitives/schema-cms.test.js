@@ -851,6 +851,10 @@ function testAuthEnvelopedData() {
   var nidOk = parse(aeCI({ eci: eciP(ID_CT_TSTINFO, algIdP(ID_AES256_GCM, aeadParams(12)), CT), authAttrs: [contentTypeAttr(ID_CT_TSTINFO)] }));
   check("authEnv: non-id-data with authAttrs accepted", nidOk.encryptedContentInfo.contentType === ID_CT_TSTINFO);
   check("authEnv: authAttrs content-type mismatch rejected", parseCode(aeCI({ authAttrs: [contentTypeAttr(ID_CT_TSTINFO)] })) === "cms/content-type-mismatch");
+  // a present content-type attribute must be single-valued (RFC 5652 sec. 11.1),
+  // even in AuthEnvelopedData where content-type is not REQUIRED -- an expected
+  // first value plus an extra OID must not slip through as an ambiguous set.
+  check("authEnv: multi-valued content-type attr rejected", parseCode(aeCI({ authAttrs: [attribute(CT_ATTR, [b.oid(ID_DATA), b.oid(ID_CT_TSTINFO)])] })) === "cms/bad-content-type-attr");
   check("authEnv: duplicate attr type rejected", parseCode(aeCI({ authAttrs: [attribute(NEUTRAL_ATTR, [b.integer(1n)]), attribute(NEUTRAL_ATTR, [b.integer(2n)])] })) === "cms/duplicate-attr");
   check("authEnv: GCM params absent rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algId(ID_AES256_GCM), CT) })) === "cms/bad-aead-params");
   check("authEnv: GCM ICVlen 8 rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, 8)), CT) })) === "cms/bad-aead-params");

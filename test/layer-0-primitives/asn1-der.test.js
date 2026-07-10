@@ -330,11 +330,21 @@ function testConstructedPrimitiveOnlyRejected() {
     check("constructed " + c[0] + " (unregistered universal type) is rejected at decode",
       code(function () { pki.asn1.decode(tlv); }) === "asn1/constructed-primitive-type");
   });
-  // The whitelist covers non-string universal tags too: EXTERNAL (8) has no
-  // registered descriptor, so its constructed form rejects rather than decoding
-  // to a node no reader validates.
-  check("constructed unregistered universal tag 8 is rejected at decode",
-    code(function () { pki.asn1.decode(pki.asn1.encode(0x00, true, 8, b.octetString(Buffer.alloc(0)))); }) === "asn1/constructed-primitive-type");
+  // X.690 sec. 8.9/8.10/8.21 -- EXTERNAL (8), EMBEDDED PDV (11), and the
+  // unrestricted CHARACTER STRING (29) are ALWAYS-constructed universal types
+  // (SEQUENCE-based encodings), so a constructed encoding MUST decode -- one may
+  // appear inside an ANY field (a CSR / CMS attribute value) the codec surfaces
+  // raw. Rejecting them would fail otherwise-valid DER before a format parser sees it.
+  [["EXTERNAL", 8], ["EMBEDDED PDV", 11], ["CHARACTER STRING", 29]].forEach(function (c) {
+    var tlv = pki.asn1.encode(0x00, true, c[1], b.integer(1n));  // constructed, one inner TLV
+    check("constructed " + c[0] + " decodes",
+      code(function () { pki.asn1.decode(tlv); }) === "NO-THROW");
+    var node = pki.asn1.decode(tlv);
+    check("constructed " + c[0] + " surfaces its children", node.constructed && node.children.length === 1);
+    // The mirror rule: an always-constructed type encoded PRIMITIVE is not valid DER.
+    check("primitive " + c[0] + " is rejected at decode",
+      code(function () { pki.asn1.decode(pki.asn1.encode(0x00, false, c[1], Buffer.alloc(0))); }) === "asn1/bad-tlv");
+  });
 }
 
 // A non-finite / negative / fractional size or depth cap silently DISABLES the

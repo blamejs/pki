@@ -122,7 +122,16 @@
             "BOOLEAN": {
               "kind": "number"
             },
+            "CHARACTER_STRING": {
+              "kind": "number"
+            },
+            "EMBEDDED_PDV": {
+              "kind": "number"
+            },
             "ENUMERATED": {
+              "kind": "number"
+            },
+            "EXTERNAL": {
               "kind": "number"
             },
             "GENERALIZED_TIME": {

@@ -11,10 +11,20 @@ in-house, fail-closed DER codec and a post-quantum-first algorithm registry.
 No npm runtime dependencies. No TypeScript. No Web Crypto ceiling.
 
 [![npm version](https://img.shields.io/npm/v/@blamejs/pki.svg?label=%40blamejs%2Fpki&color=2563eb)](https://www.npmjs.com/package/@blamejs/pki)
+[![npm downloads](https://img.shields.io/npm/dm/@blamejs/pki.svg?color=2563eb)](https://www.npmjs.com/package/@blamejs/pki)
 [![License: Apache 2.0](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://www.apache.org/licenses/LICENSE-2.0)
 [![node](https://img.shields.io/node/v/@blamejs/pki.svg)](https://nodejs.org)
+
+[![CI](https://github.com/blamejs/pki/actions/workflows/ci.yml/badge.svg)](https://github.com/blamejs/pki/actions/workflows/ci.yml)
+[![CodeQL](https://github.com/blamejs/pki/actions/workflows/codeql.yml/badge.svg)](https://github.com/blamejs/pki/actions/workflows/codeql.yml)
+[![Fuzzing](https://github.com/blamejs/pki/actions/workflows/cflite_batch.yml/badge.svg)](https://github.com/blamejs/pki/actions/workflows/cflite_batch.yml)
+[![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/blamejs/pki/badge)](https://scorecard.dev/viewer/?uri=github.com/blamejs/pki)
+[![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev/spec/v1.0/levels#build-l3)
+
 [![Zero runtime deps](https://img.shields.io/badge/runtime%20deps-0-2ea043)](#security-posture)
 [![PQC-first](https://img.shields.io/badge/crypto-PQC--first-2563eb)](#security-posture)
+[![No TypeScript](https://img.shields.io/badge/TypeScript-not%20required-2ea043)](#why-this-toolkit)
+[![strict DER](https://img.shields.io/badge/DER-strict%20%2F%20fail--closed-2ea043)](#security-posture)
 
 [pkijs.com](https://pkijs.com) · [Roadmap](ROADMAP.md) · [Security](SECURITY.md) · [Changelog](CHANGELOG.md)
 

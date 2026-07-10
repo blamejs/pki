@@ -92,6 +92,16 @@ async function run() {
     check("GET /pkijs-logo.png -> 200", logo.status === 200);
     check("logo served as image/png", String(logo.headers["content-type"]).indexOf("image/png") === 0);
 
+    // Overview: the repository README rendered to HTML.
+    var overview = await _get(port, "/overview");
+    check("GET /overview -> 200", overview.status === 200);
+    check("overview renders the README table (What ships)", overview.body.indexOf("<table>") !== -1);
+    check("overview renders fenced code", overview.body.indexOf("<pre><code>") !== -1);
+    check("overview rewrites the logo asset to the wiki route", overview.body.indexOf('src="/pkijs-logo.png"') !== -1);
+    check("overview rewrites a repo-relative .md link to GitHub", overview.body.indexOf("github.com/blamejs/pki/blob/main/ROADMAP.md") !== -1);
+    check("overview escapes nothing raw from the badge image-links", overview.body.indexOf('<img src="https://img.shields.io') !== -1);
+    check("overview appears in the nav", overview.body.indexOf('href="/overview"') !== -1);
+
     // Each namespace page.
     var docs = parser.parseTree(site.LIB_DIR);
     var primCountByNs = {};
