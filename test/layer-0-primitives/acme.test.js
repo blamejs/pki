@@ -255,6 +255,9 @@ async function testChallenges() {
   check("61b. two-entry SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(makeValidationCert([acmeIdExt(digest32, true), sanExt([dnsName("pkijs.com"), dnsName("www.pkijs.com")], false)]), TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
   // 61c. a wrong-domain SAN rejected.
   check("61c. wrong SAN dNSName rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, { type: "dns", value: "other.example" }); })) === "acme/bad-tlsalpn");
+  // 61d. a wildcard or malformed dns identifier is rejected (tls-alpn validates a base name).
+  var wildCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([dnsName("*.example.org")], false)]);
+  check("61d. wildcard dns identifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(wildCert, TOKEN, jwk, { type: "dns", value: "*.example.org" }); })) === "acme/bad-identifier");
   // 62. an ip identifier requires a single iPAddress SAN.
   var ipCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([192, 168, 1, 1])], false)]);
   check("62a. ip identifier iPAddress SAN accepted", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "192.168.1.1" }); })) === "NO-THROW");
