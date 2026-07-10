@@ -179,6 +179,8 @@ function testTransitions() {
   check("48i. challenge valid->invalid rejected (valid is terminal)", code(function () { pki.acme.assertTransition("challenge", "valid", "invalid"); }) === "acme/bad-transition");
   // a non-terminal state -> invalid stays legal (the table, not a blanket shortcut).
   check("48j. order ready->invalid ok", code(function () { pki.acme.assertTransition("order", "ready", "invalid"); }) === "NO-THROW");
+  // a synchronous CA may issue immediately: ready -> valid without a visible processing (RFC 8555 sec. 7.1.6).
+  check("48k. order ready->valid ok (synchronous issuance)", code(function () { pki.acme.assertTransition("order", "ready", "valid"); }) === "NO-THROW");
 }
 
 // ---- problem documents (RFC 8555 sec. 6.7) ---------------------------
