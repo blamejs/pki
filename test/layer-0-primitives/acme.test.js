@@ -134,6 +134,10 @@ function testObjects() {
   check("46b. valid challenge with validated accepted", pki.acme.validate("challenge", Object.assign({}, CHALLENGE, { status: "valid", validated: "2026-01-01T00:00:00Z" })).status === "valid");
   // 47. a processing challenge MAY carry an error (errata 5732).
   check("47. processing challenge with error accepted", pki.acme.validate("challenge", Object.assign({}, CHALLENGE, { status: "processing", error: { type: "urn:ietf:params:acme:error:connection" } })).status === "processing");
+  // a registered challenge type REQUIRES an entropy-bearing token; a short/absent one fails closed.
+  check("46c. known challenge type without token rejected", code(function () { pki.acme.validate("challenge", { type: "http-01", url: "https://ca/c", status: "pending" }); }) === "acme/missing-field");
+  check("46d. known challenge type with a short token rejected", code(function () { pki.acme.validate("challenge", { type: "http-01", url: "https://ca/c", status: "pending", token: "short" }); }) === "acme/bad-token");
+  check("46e. unknown challenge type without a token accepted", pki.acme.validate("challenge", { type: "future-99", url: "https://ca/c", status: "pending" }).type === "future-99");
   // unknown fields are tolerated, never reflected.
   check("47b. unknown field ignored", pki.acme.validate("order", Object.assign({}, ORDER, { futureField: 1 })).status === "pending");
   // a wildcard dns identifier is legal in an ORDER (CA order resources carry them);
@@ -374,6 +378,7 @@ async function testBuilders() {
   // deactivate: the only client-settable status, kid-signed.
   var deact = await pki.acme.deactivate({ key: acct.key, alg: "ES256", nonce: base.nonce, url: "https://ca/authz/1", kid: kid });
   check("69f. deactivate payload is {status:deactivated} and verifies", b64uJson(deact.payload).status === "deactivated" && (await acode(function () { return pki.jose.verify(deact, { profile: "acme-outer", key: acct.jwk }); })) === "NO-THROW");
+  check("69i. deactivate with no options fails closed (no TypeError)", (await acode(function () { return pki.acme.deactivate(); })) === "acme/bad-input");
 
   // 70. newOrder replaces == the ARI certID of the predecessor.
   var predId = pki.acme.ariCertId(predCert);

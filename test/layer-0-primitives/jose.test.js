@@ -83,6 +83,12 @@ async function testJws() {
   var ecPrivJwk = await subtle.exportKey("jwk", ec.privateKey);   // carries the private `d`
   check("28g. sign with a private embedded jwk rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: ecPrivJwk }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/private-key-material");
   check("28h. assertPublicJwk rejects private, accepts public", code(function () { pki.jose.assertPublicJwk(ecPrivJwk); }) === "jose/private-key-material" && pki.jose.assertPublicJwk(ecJwk) === ecJwk);
+  // 28i. inherited (prototype) header fields are rejected -- JSON.stringify would drop them.
+  check("28i. inherited header fields rejected", (await acode(function () { return pki.jose.sign({ protected: Object.create({ alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "https://ca.example/a" }), payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-header");
+  // 28j. an embedded jwk from a DIFFERENT key of the same type is rejected (it cannot verify).
+  var ecOther = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var ecOtherJwk = await subtle.exportKey("jwk", ecOther.publicKey);
+  check("28j. embedded jwk not matching the signing key rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: ecOtherJwk }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-key");
   var md = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });
