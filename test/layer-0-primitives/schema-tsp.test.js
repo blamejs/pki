@@ -286,6 +286,23 @@ function testToken() {
   //      leaked CmsError (parseToken wraps the composed cms.parse).
   var c44c = tokenCode(b.sequence([b.integer(5n)]));
   check("44c. malformed token -> tsp/bad-token (typed)", c44c === "tsp/bad-token");
+  // 44d. an AuthenticatedData ContentInfo whose eContentType is id-ct-TSTInfo now
+  //      DECODES via cms.parse (it is no longer a deferred content type), but it is
+  //      not a SignedData -- parseToken must reject it with a typed TspError before
+  //      dereferencing SignedData-only fields (signerInfos), never a raw TypeError.
+  var ID_CT_AUTHDATA = "1.2.840.113549.1.9.16.1.2";
+  var HMAC_SHA256 = "1.2.840.113549.2.9";
+  var authEncap = b.sequence([b.oid(ID_CT_TSTINFO), b.explicit(0, b.octetString(tstInfo({})))]);
+  var ktriR = b.sequence([b.integer(0n), iasn("R", 9), algId("1.2.840.113549.1.1.1"), b.octetString(Buffer.from([0xAA, 0xBB]))]);
+  // A VALID AuthenticatedData (RFC 5652 sec. 9): digestAlgorithm [1] + authAttrs [2]
+  // (content-type == the id-ct-TSTInfo eContentType, message-digest), so cms.parse
+  // SUCCEEDS -- and parseToken must still reject it (it is not a SignedData) with a
+  // typed code, not a raw TypeError on the absent signerInfos.
+  var authAttrs = [attribute(CT_ATTR, [b.oid(ID_CT_TSTINFO)]), attribute(MD_ATTR, [b.octetString(Buffer.alloc(32, 0x02))])];
+  var authData = b.sequence([b.integer(0n), b.set([ktriR]), algId(HMAC_SHA256),
+    b.contextConstructed(1, b.oid(SHA256)), authEncap, implicitSetOf(2, authAttrs), b.octetString(Buffer.alloc(32, 0x4D))]);
+  var authToken = b.sequence([b.oid(ID_CT_AUTHDATA), b.explicit(0, authData)]);
+  check("44d. AuthenticatedData token (not SignedData) rejected typed", tokenCode(authToken) === "tsp/not-signed-data");
 }
 
 // ---- Dispatch + coercion ---------------------------------------------
