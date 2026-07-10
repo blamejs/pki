@@ -25,18 +25,37 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Run Scorecard
+      - name: Run Scorecard (SARIF, for the Security tab + public badge)
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a  # v2.4.3
         with:
           results_file: results.sarif
           results_format: sarif
           publish_results: true
 
+      # The SARIF code-scanning format carries no aggregate score, so the
+      # threshold gate reads it from the JSON output (top-level `.score`, the
+      # documented aggregate). A second run is cheaper than losing either the
+      # Security-tab integration or the enforced floor; this one does not
+      # re-publish (the SARIF run above already fed the public API).
+      - name: Run Scorecard (JSON, for the threshold gate)
+        uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a  # v2.4.3
+        with:
+          results_file: results.json
+          results_format: json
+          publish_results: false
+
       - name: Upload SARIF artifact
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: SARIF file
           path: results.sarif
+          retention-days: 5
+
+      - name: Upload JSON results artifact (score source for the gate)
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
+        with:
+          name: scorecard-json
+          path: results.json
           retention-days: 5
 
       - name: Upload SARIF to GitHub Security tab
@@ -65,10 +84,10 @@ jobs:
     permissions:
       contents: read
     steps:
-      - name: Download SARIF artifact
+      - name: Download JSON results artifact
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
-          name: SARIF file
+          name: scorecard-json
 
       - name: Threshold gate (fail when aggregate score < SCORECARD_MIN)
         env:
@@ -79,14 +98,12 @@ jobs:
             echo "::error::jq not on runner — the threshold gate cannot evaluate the score. Install jq in this step or fix the runner image."
             exit 1
           fi
-          SCORE=$(jq -r '
-            (.runs[0].properties.aggregateScore
-             // .runs[0].properties["openssf-scorecard-aggregate-score"]
-             // empty)
-          ' results.sarif | head -1)
+          # The Scorecard JSON carries the aggregate at the top-level `.score`
+          # (documented, stable); older builds used `.aggregateScore`. Try both.
+          SCORE=$(jq -r '(.score // .aggregateScore // empty)' results.json | head -1)
           if [ -z "$SCORE" ] || [ "$SCORE" = "null" ]; then
-            echo "::error::Could not extract the aggregate score from results.sarif (looked for .runs[0].properties.aggregateScore, then .runs[0].properties[\"openssf-scorecard-aggregate-score\"])."
-            echo "::error::The Scorecard SARIF output shape changed — update the jq paths above; the gate fails closed rather than silently retiring the score floor."
+            echo "::error::Could not extract the aggregate score from results.json (looked for .score, then .aggregateScore)."
+            echo "::error::The Scorecard JSON output shape changed — update the jq paths above; the gate fails closed rather than silently retiring the score floor."
             exit 1
           fi
           echo "[scorecard] aggregate score: ${SCORE} (min: ${SCORECARD_MIN})"
