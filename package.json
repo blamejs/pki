@@ -65,10 +65,12 @@
     "lint": "eslint --max-warnings 0 .",
     "fuzz": "npm ci --prefix fuzz && npx --prefix fuzz jazzer fuzz/asn1-der.fuzz.js -- -max_total_time=60",
     "gates": "node test/layer-0-primitives/codebase-patterns.test.js && node scripts/validate-source-comment-blocks.js && node scripts/check-api-snapshot.js",
+    "coverage": "c8 --include=lib/** --include=index.js --reporter=text-summary --reporter=lcov node test/smoke.js",
     "prepack": "node scripts/check-pack-against-gitignore.js",
     "check:vendor-currency": "node scripts/check-vendor-currency.js"
   },
   "devDependencies": {
+    "c8": "11.0.0",
     "esbuild": "0.28.1",
     "eslint": "10.3.0"
   }
