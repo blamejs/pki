@@ -40,16 +40,19 @@ function envelopedKeyCI() {
 // A structurally valid PKCS#10 CSR reusing REAL_CERT's raw subject + SPKI, with
 // an optional extensionRequest SubjectAltName (o.san = raw GeneralNames DER). The
 // signature is a placeholder BIT STRING (csr.parse is structural, not verifying).
+function extReqAttr(sanVal) {
+  var exts = b.sequence([b.sequence([b.oid(SAN_OID), b.octetString(sanVal)])]);   // Extensions ::= SEQ OF Extension
+  return b.sequence([b.oid(EXTREQ_OID), b.set([exts])]);                            // extensionRequest Attribute
+}
 function reenrollCsr(o) {
   o = o || {};
   var tbs = pki.asn1.decode(REAL_CERT).children[0];
   var subjectDer = o.subjectDer || tbs.children[5].bytes;
   var spkiDer = tbs.children[6].bytes;
-  var attrs = Buffer.alloc(0);
-  if (o.san !== undefined) {
-    var exts = b.sequence([b.sequence([b.oid(SAN_OID), b.octetString(o.san)])]);   // Extensions ::= SEQ OF Extension
-    attrs = b.sequence([b.oid(EXTREQ_OID), b.set([exts])]);                          // one Attribute -> [0] content directly
-  }
+  var sans = o.sans || (o.san !== undefined ? [o.san] : []);
+  var attrList = sans.map(extReqAttr);
+  // [0] IMPLICIT SET OF Attribute: DER-sort when more than one is present.
+  var attrs = attrList.length ? Buffer.concat(attrList.slice().sort(Buffer.compare)) : Buffer.alloc(0);
   var cri = b.sequence([b.integer(0n), subjectDer, spkiDer, b.contextConstructed(0, attrs)]);
   return b.sequence([cri, algId(ECDSA_SHA256), b.bitString(Buffer.from([1, 2, 3]), 0)]);
 }
@@ -199,6 +202,16 @@ function testBuilders() {
   // 54e. a mutated subject still rejects (subject guard precedes the SAN guard).
   var otherSubject = b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("other")])])]);
   check("54e. mutated subject rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ subjectDer: otherSubject, san: OLD_SAN })); }) === "est/reenroll-subject-mismatch");
+  // 54f. two extensionRequest attributes -> ambiguous, fail closed (a later one
+  //      could request a different SAN than the DER-first one).
+  check("54f. duplicate extensionRequest rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ sans: [OLD_SAN, b.sequence([b.contextPrimitive(2, Buffer.from("x.example", "latin1"))])] })); }) === "est/reenroll-ambiguous-request");
+  // 54g. the SAME rendered DN re-encoded with a different ASN.1 string type is
+  //      NOT byte-identical -> rejected (RFC 7030 sec. 4.2.2 compares DER, not DN).
+  function atv(o, enc, val) { return b.set([b.sequence([b.oid(o), enc(val)])]); }
+  var sameDnDiffDer = b.sequence([atv("2.5.4.6", b.printable, "US"), atv("2.5.4.8", b.utf8, "California"), atv("2.5.4.10", b.utf8, "blamejs pki"), atv("2.5.4.11", b.utf8, "Test"), atv("2.5.4.3", b.printable, "pkijs.com")]);
+  check("54g. same DN string encoding differs -> byte-mismatch rejected",
+    pki.schema.csr.parse(reenrollCsr({ subjectDer: sameDnDiffDer, san: OLD_SAN })).subject.dn === pki.schema.x509.parse(REAL_CERT).subject.dn &&
+    code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ subjectDer: sameDnDiffDer, san: OLD_SAN })); }) === "est/reenroll-subject-mismatch");
   // 55. path builder (T2).
   check("55. path cacerts", pki.est.paths("https://ca.example").cacerts === "https://ca.example/.well-known/est/cacerts");
   check("55b. labeled path", pki.est.paths("https://ca.example", { label: "label1" }).simpleenroll === "https://ca.example/.well-known/est/label1/simpleenroll");
