@@ -136,6 +136,10 @@ function testAccept() {
   check("4d. empty ecPublicKey values accepted (any curve)", ecAny.items[0].oid === EC_PUBLIC_KEY && ecAny.items[0].curve === undefined);
   var rsaAny = parse(csrattrs([attr(RSA_ENCRYPTION, [])]));
   check("4e. empty rsaEncryption values accepted (any size)", rsaAny.items[0].oid === RSA_ENCRYPTION && rsaAny.items[0].keySize === undefined);
+  // 4f-g. a recognized no-parameter key type beyond RSA/EC (Ed25519, ML-DSA) with an
+  //       empty values SET is accepted -- RSA/EC are only the RFC 9908 sec. 3.2 examples.
+  check("4f. empty Ed25519 key-type accepted", parse(csrattrs([attr("1.3.101.112", [])])).items[0].oid === "1.3.101.112");
+  check("4g. empty ML-DSA key-type accepted", parse(csrattrs([attr("2.16.840.1.101.3.4.3.18", [])])).items[0].oid === "2.16.840.1.101.3.4.3.18");
 
   // 5. id-ExtensionReq with one Extensions value -> decoded extensions array.
   var er = parse(csrattrs([extReqAttr([ext(BASIC_CONSTRAINTS, undefined, Buffer.from([0x30, 0x00]))])]));
