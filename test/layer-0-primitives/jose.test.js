@@ -87,6 +87,9 @@ async function testJws() {
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });
   check("29. ML-DSA-65 round-trip + siglen 3309", pki.jose.base64url.decode(mdJws.signature).length === 3309 && (await pki.jose.verify(mdJws, OUTER)).header.alg === "ML-DSA-65");
+  // 29b. an AKP jwk whose parameter set disagrees with the alg is rejected (an
+  // ML-DSA-65 header must not embed an ML-DSA-44-labelled JWK).
+  check("29b. AKP param-set mismatch rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ML-DSA-65", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: Object.assign({}, mdJwk, { alg: "ML-DSA-44" }) }, payload: Buffer.from("{}"), key: md.privateKey }); })) === "jose/bad-alg");
   var rsJws = await pki.jose.sign({ protected: outerHeader({ alg: "RS256", jwk: rsaJwk }), payload: Buffer.from("{}"), key: rsa.privateKey });
   check("30. RS256 round-trip", (await pki.jose.verify(rsJws, OUTER)).header.alg === "RS256");
   // 30b. an RSA key whose bound hash disagrees with the alg is rejected at sign

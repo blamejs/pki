@@ -77,7 +77,11 @@ function extensionRequestAttr(dnsNames) {
 function cnSubject(cn) { return b.sequence([b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8(cn)])])]); }
 function buildCsr(o) {
   o = o || {};
-  var attrList = o.san ? extensionRequestAttr(o.san) : Buffer.alloc(0);
+  var attrTlvs = [];
+  if (o.san) attrTlvs.push(extensionRequestAttr(o.san));
+  if (o.san2) attrTlvs.push(extensionRequestAttr(o.san2));   // a SECOND extensionRequest attribute
+  attrTlvs.sort(Buffer.compare);                             // DER SET OF ordering
+  var attrList = attrTlvs.length ? Buffer.concat(attrTlvs) : Buffer.alloc(0);
   var cri = b.sequence([
     b.integer(0n),
     o.subject || b.sequence([]),
@@ -258,6 +262,7 @@ async function testChallenges() {
   // 61d. a wildcard or malformed dns identifier is rejected (tls-alpn validates a base name).
   var wildCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([dnsName("*.example.org")], false)]);
   check("61d. wildcard dns identifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(wildCert, TOKEN, jwk, { type: "dns", value: "*.example.org" }); })) === "acme/bad-identifier");
+  check("61e. dns identifier with no value fails closed (no TypeError)", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, { type: "dns" }); })) === "acme/bad-identifier");
   // 62. an ip identifier requires a single iPAddress SAN.
   var ipCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([192, 168, 1, 1])], false)]);
   check("62a. ip identifier iPAddress SAN accepted", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "192.168.1.1" }); })) === "NO-THROW");
@@ -269,6 +274,7 @@ async function testChallenges() {
   check("62d. matching IPv6 iPAddress SAN accepted", (await acode(function () { return pki.acme.verifyTlsAlpn01(ip6Cert, TOKEN, jwk, { type: "ip", value: "2001:db8::1" }); })) === "NO-THROW");
   // 62e. a non-canonical ip identifier is REJECTED, not silently normalized to match.
   check("62e. non-canonical ip identifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "192.168.001.001" }); })) === "acme/bad-identifier");
+  check("62f. ip identifier with no value fails closed (no TypeError)", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip" }); })) === "acme/bad-identifier");
   // 63. the acmeIdentifier OID row resolves.
   check("63. acmeIdentifier OID row", oid.name("1.3.6.1.5.5.7.1.31") === "acmeIdentifier");
 }
@@ -294,6 +300,10 @@ async function testBuilders() {
   var cnCsr = buildCsr({ spki: cert.spki, subject: cnSubject("cn.example") });
   check("65d. CN counted in the identifier set", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: cnCsr, identifiers: [{ type: "dns", value: "cn.example" }], accountJwk: acct.jwk })); })) === "NO-THROW");
   check("65e. finalize with a malformed identifier fails closed (no TypeError)", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: [{ type: "dns" }], accountJwk: acct.jwk })); })) === "acme/bad-identifier");
+  // 65f/g. a SECOND extensionRequest attribute's SAN is aggregated, not ignored.
+  var twoAttrCsr = buildCsr({ spki: cert.spki, san: ["example.org"], san2: ["extra.example"] });
+  check("65f. finalize counts a second extensionRequest's SAN (mismatch)", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoAttrCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
+  check("65g. finalize matches the full aggregated set", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoAttrCsr, identifiers: [{ type: "dns", value: "example.org" }, { type: "dns", value: "extra.example" }], accountJwk: acct.jwk })); })) === "NO-THROW");
 
   // 66. CSR public key == account key -> acme/key-reuse (sec. 11.1).
   var reuseCsr = buildCsr({ spki: acct.spki, san: ["example.org"] });
