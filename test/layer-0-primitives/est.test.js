@@ -330,6 +330,11 @@ function testClassify() {
   // 56c. the exact token, bare or with parameters -> ok.
   check("56c. exact content-type with params ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
   check("56d. exact content-type bare ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
+  // 56e-g. simpleenroll requires smime-type=certs-only (RFC 7030 sec. 4.2.3): a
+  //        different S/MIME message type or a missing smime-type is not a success.
+  check("56e. enroll wrong smime-type rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=CMC-response" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-content-type");
+  check("56f. enroll certs-only ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.alloc(0), { op: "simpleenroll" }).status === "ok");
+  check("56g. enroll missing smime-type rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-content-type");
   // 57. 202 with Retry-After surfaced (seconds); missing Retry-After -> est/missing-retry-after.
   var r202 = pki.est.classifyResponse(202, { "retry-after": "120" }, Buffer.alloc(0), { op: "simpleenroll" });
   check("57. 202 retry-after surfaced bounded", r202.status === "retry" && r202.retryAfterSeconds === 120);
