@@ -364,6 +364,9 @@ function testClassify() {
   // 57e2. a non-HTTP-date string Date.parse would accept (ISO "2026-07-10") is NOT a
   //       valid Retry-After header value -> est/bad-retry-after.
   check("57e2. ISO-form retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "2026-07-10" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
+  // 57e3. a syntactically-shaped but impossible calendar date (Feb 31) that V8 would
+  //       normalize to March -> est/bad-retry-after, not an accepted retry date.
+  check("57e3. impossible calendar date rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "Wed, 31 Feb 2020 00:00:00 GMT" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
   // 57f-g. an overflowing / nonsensical delay-seconds -> est/bad-retry-after, never an unsafe number.
   check("57f. overflow retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "99999999999999999999" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
   check("57g. over-cap retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "40000000" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
