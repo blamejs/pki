@@ -345,6 +345,30 @@ function testPemDecodeStrictness() {
 }
 
 // ---------------------------------------------------------------------------
+// pemDecodeAll — strict RFC 7468 multi-block chain (RFC 8555 sec. 9.1)
+// ---------------------------------------------------------------------------
+
+function testPemDecodeAll() {
+  var PemError = errors.PemError;
+  var vectors = require("../helpers/vectors");
+  var certDer = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM);
+  var block = pkix.pemEncode(certDer, "CERTIFICATE", PemError);   // trailing \n
+  // 75. a 3-block chain -> 3 DER buffers, each a parseable certificate.
+  var got = pkix.pemDecodeAll(block + block + block, "CERTIFICATE", PemError);
+  check("75. 3-block chain -> 3 parseable certs", got.length === 3 && got.every(function (d) { return d.equals(certDer) && !!pki.schema.x509.parse(d); }));
+  // 75b. the default label is CERTIFICATE.
+  check("75b. default label CERTIFICATE", pkix.pemDecodeAll(block, undefined, PemError).length === 1);
+  // 76. explanatory text between blocks rejected (sec. 9.1 MUST NOT).
+  check("76. prose between blocks rejected", code(function () { pkix.pemDecodeAll(block + "notes\n" + block, "CERTIFICATE", PemError); }) === "pem/explanatory-text");
+  check("76b. prose before the first block rejected", code(function () { pkix.pemDecodeAll("preamble\n" + block, "CERTIFICATE", PemError); }) === "pem/explanatory-text");
+  // 77. a non-CERTIFICATE block in the chain rejected.
+  var pk = pkix.pemEncode(Buffer.from([1, 2, 3]), "PRIVATE KEY", PemError);
+  check("77. wrong-label block rejected", code(function () { pkix.pemDecodeAll(block + pk, "CERTIFICATE", PemError); }) === "pem/label-mismatch");
+  // 78. zero blocks rejected.
+  check("78. zero blocks rejected", code(function () { pkix.pemDecodeAll("no pem here", "CERTIFICATE", PemError); }) === "pem/no-block");
+}
+
+// ---------------------------------------------------------------------------
 // pemEncode label validation (RFC 7468 sec. 3 label grammar)
 // ---------------------------------------------------------------------------
 
@@ -427,6 +451,7 @@ function run() {
   testGeneralNameDecodedValue();
   testAlgParamsMustBeAbsent();
   testPemDecodeStrictness();
+  testPemDecodeAll();
   testPemEncodeLabel();
   testAttrValueEncodeHexForm();
   testRfc5280TimeCutover();

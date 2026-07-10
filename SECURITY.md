@@ -122,6 +122,23 @@ security-only patches after the next major releases.
   request-to-response recipient-arm coherence. The issued certificate is picked
   by a public-key match (`findIssuedCert`), never a positional guess (RFC 5272
   forbids assuming an order).
+- **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
+  binds every `alg` to its key type in a registry, so the classic JWS attacks
+  have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms
+  exist only in the External Account Binding profile so an `RS256`→`HS256` key
+  confusion cannot resolve (CVE-2016-10555), signature lengths are pinned before
+  any crypto call, and an all-zero ECDSA signature is refused (CVE-2022-21449).
+  The base64url codec rejects padding, non-alphabet bytes, and non-canonical
+  trailing bits (RFC 8555 §6.1), and the JSON reader rejects a duplicate member
+  at any nesting depth (the parser-differential smuggling class, CVE-2017-12635)
+  under hard size and depth caps. `pki.acme` carries the protocol MUSTs
+  fail-closed: a finalize CSR whose public key is the account key is rejected
+  (RFC 8555 §11.1), a `mailto` contact with header fields or multiple addresses
+  is refused rather than guessed, a tls-alpn-01 validation certificate must carry
+  a critical `id-pe-acmeIdentifier` with a 32-octet Authorization and a
+  single-entry SubjectAltName (RFC 8737), a wildcard is one leading label on a
+  `dns` identifier only, and the ARI certID preserves the serial's DER
+  sign-padding byte so it matches what the CA computes (RFC 9773).
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.24",
+  "packageVersion": "0.1.25",
   "surface": {
     "C": {
       "kind": "object",
@@ -29,6 +29,9 @@
         "LIMITS": {
           "kind": "object",
           "members": {
+            "ACME_TOKEN_MIN_CHARS": {
+              "kind": "number"
+            },
             "ATTRIBUTE_MAX_VALUES": {
               "kind": "number"
             },
@@ -42,6 +45,12 @@
               "kind": "number"
             },
             "DER_MAX_INTEGER_BYTES": {
+              "kind": "number"
+            },
+            "JSON_MAX_BYTES": {
+              "kind": "number"
+            },
+            "JSON_MAX_DEPTH": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -104,6 +113,133 @@
         },
         "version": {
           "kind": "string"
+        }
+      }
+    },
+    "acme": {
+      "kind": "object",
+      "members": {
+        "ariCertId": {
+          "kind": "function",
+          "arity": 1
+        },
+        "assertTransition": {
+          "kind": "function",
+          "arity": 3
+        },
+        "challengeResponse": {
+          "kind": "function",
+          "arity": 1
+        },
+        "deactivate": {
+          "kind": "function",
+          "arity": 1
+        },
+        "dns01": {
+          "kind": "function",
+          "arity": 3
+        },
+        "externalAccountBinding": {
+          "kind": "function",
+          "arity": 1
+        },
+        "finalize": {
+          "kind": "function",
+          "arity": 1
+        },
+        "http01": {
+          "kind": "function",
+          "arity": 2
+        },
+        "identify": {
+          "kind": "function",
+          "arity": 1
+        },
+        "jose": {
+          "kind": "object",
+          "members": {
+            "assertPublicJwk": {
+              "kind": "function",
+              "arity": 1
+            },
+            "base64url": {
+              "kind": "object",
+              "members": {
+                "decode": {
+                  "kind": "function",
+                  "arity": 1
+                },
+                "encode": {
+                  "kind": "function",
+                  "arity": 1
+                }
+              }
+            },
+            "parseJson": {
+              "kind": "function",
+              "arity": 1
+            },
+            "sign": {
+              "kind": "function",
+              "arity": 1
+            },
+            "thumbprint": {
+              "kind": "function",
+              "arity": 1
+            },
+            "verify": {
+              "kind": "function",
+              "arity": 2
+            }
+          }
+        },
+        "keyAuthorization": {
+          "kind": "function",
+          "arity": 2
+        },
+        "keyChange": {
+          "kind": "function",
+          "arity": 1
+        },
+        "newAccount": {
+          "kind": "function",
+          "arity": 1
+        },
+        "newOrder": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseAriCertId": {
+          "kind": "function",
+          "arity": 1
+        },
+        "postAsGet": {
+          "kind": "function",
+          "arity": 1
+        },
+        "revokeCert": {
+          "kind": "function",
+          "arity": 1
+        },
+        "tlsAlpn01Extension": {
+          "kind": "function",
+          "arity": 2
+        },
+        "validate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "validateProblem": {
+          "kind": "function",
+          "arity": 1
+        },
+        "validateRenewalInfo": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifyTlsAlpn01": {
+          "kind": "function",
+          "arity": 4
         }
       }
     },
@@ -381,6 +517,9 @@
         "LIMITS": {
           "kind": "object",
           "members": {
+            "ACME_TOKEN_MIN_CHARS": {
+              "kind": "number"
+            },
             "ATTRIBUTE_MAX_VALUES": {
               "kind": "number"
             },
@@ -394,6 +533,12 @@
               "kind": "number"
             },
             "DER_MAX_INTEGER_BYTES": {
+              "kind": "number"
+            },
+            "JSON_MAX_BYTES": {
+              "kind": "number"
+            },
+            "JSON_MAX_DEPTH": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -518,6 +663,10 @@
     "errors": {
       "kind": "object",
       "members": {
+        "AcmeError": {
+          "kind": "function",
+          "arity": 3
+        },
         "Asn1Error": {
           "kind": "function",
           "arity": 3
@@ -563,6 +712,10 @@
           "arity": 3
         },
         "EstError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "JoseError": {
           "kind": "function",
           "arity": 3
         },
@@ -670,6 +823,44 @@
         "transferEncode": {
           "kind": "function",
           "arity": 1
+        }
+      }
+    },
+    "jose": {
+      "kind": "object",
+      "members": {
+        "assertPublicJwk": {
+          "kind": "function",
+          "arity": 1
+        },
+        "base64url": {
+          "kind": "object",
+          "members": {
+            "decode": {
+              "kind": "function",
+              "arity": 1
+            },
+            "encode": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "parseJson": {
+          "kind": "function",
+          "arity": 1
+        },
+        "sign": {
+          "kind": "function",
+          "arity": 1
+        },
+        "thumbprint": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verify": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -1148,6 +1339,27 @@
     }
   },
   "sinceByPrimitive": {
+    "pki.acme.assertTransition": "0.1.25",
+    "pki.acme.validateProblem": "0.1.25",
+    "pki.acme.validate": "0.1.25",
+    "pki.acme.identify": "0.1.25",
+    "pki.acme.keyAuthorization": "0.1.25",
+    "pki.acme.http01": "0.1.25",
+    "pki.acme.dns01": "0.1.25",
+    "pki.acme.tlsAlpn01Extension": "0.1.25",
+    "pki.acme.verifyTlsAlpn01": "0.1.25",
+    "pki.acme.postAsGet": "0.1.25",
+    "pki.acme.newAccount": "0.1.25",
+    "pki.acme.externalAccountBinding": "0.1.25",
+    "pki.acme.newOrder": "0.1.25",
+    "pki.acme.finalize": "0.1.25",
+    "pki.acme.challengeResponse": "0.1.25",
+    "pki.acme.deactivate": "0.1.25",
+    "pki.acme.revokeCert": "0.1.25",
+    "pki.acme.keyChange": "0.1.25",
+    "pki.acme.ariCertId": "0.1.25",
+    "pki.acme.parseAriCertId": "0.1.25",
+    "pki.acme.validateRenewalInfo": "0.1.25",
     "pki.asn1.decode": "0.1.0",
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",
@@ -1163,6 +1375,13 @@
     "pki.est.paths": "0.1.24",
     "pki.errors.PkiError": "0.1.0",
     "pki.errors.defineClass": "0.1.0",
+    "pki.jose.base64url.encode": "0.1.25",
+    "pki.jose.base64url.decode": "0.1.25",
+    "pki.jose.parseJson": "0.1.25",
+    "pki.jose.assertPublicJwk": "0.1.25",
+    "pki.jose.verify": "0.1.25",
+    "pki.jose.sign": "0.1.25",
+    "pki.jose.thumbprint": "0.1.25",
     "pki.oid.name": "0.1.0",
     "pki.oid.register": "0.1.0",
     "pki.oid.registerFamily": "0.1.2",
