@@ -65,6 +65,12 @@ async function testJws() {
   var edJwk = await subtle.exportKey("jwk", ed.publicKey);
   var edJws = await pki.jose.sign({ protected: outerHeader({ alg: "EdDSA", jwk: edJwk }), payload: Buffer.from("{}"), key: ed.privateKey });
   check("28. EdDSA round-trip", (await pki.jose.verify(edJws, OUTER)).header.alg === "EdDSA");
+  // 28b. an EdDSA kid-signed request (no embedded jwk) must still sign -- the curve
+  // comes from the signing key, not the absent header jwk.
+  var edKidJws = await pki.jose.sign({ protected: { alg: "EdDSA", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "https://ca.example/acct/1" }, payload: Buffer.from("{}"), key: ed.privateKey });
+  check("28b. EdDSA kid-signed (no jwk) signs and verifies", typeof edKidJws.signature === "string" && (await pki.jose.verify(edKidJws, { profile: "acme-outer", key: edJwk })).header.kid === "https://ca.example/acct/1");
+  // 28c. a non-string kid in the one-of (acme-outer) profile is rejected before serialization.
+  check("28c. non-string kid rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "EdDSA", nonce: "aGVsbG8", url: "https://ca.example/o", kid: 123 }, payload: Buffer.from("{}"), key: ed.privateKey }); })) === "jose/bad-header");
   var md = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });

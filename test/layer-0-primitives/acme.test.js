@@ -172,6 +172,8 @@ function testProblem() {
   check("50. compound + subproblem identifier accepted", pki.acme.validate("problem", compound).subproblems.length === 1);
   // validateProblem is reachable directly (not only via validate("problem", ...)).
   check("50b. validateProblem accepts a bare problem document", pki.acme.validateProblem({ type: "urn:ietf:params:acme:error:malformed", detail: "x" }).detail === "x");
+  // a subproblem identifier MAY be a wildcard (a rejectedIdentifier for a wildcard order).
+  check("50c. wildcard subproblem identifier accepted", pki.acme.validateProblem({ type: "urn:ietf:params:acme:error:compound", subproblems: [{ type: "urn:ietf:params:acme:error:rejectedIdentifier", identifier: { type: "dns", value: "*.example.org" } }] }).subproblems.length === 1);
 }
 
 // ---- identifiers (RFC 8555 sec. 7.1.4 / RFC 8738) --------------------
@@ -302,6 +304,10 @@ async function testBuilders() {
   check("67h. newAccount mailto with header fields rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["mailto:a@b.com?subject=x"] }); })) === "acme/bad-contact");
   check("67i. newAccount mailto with two addresses rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["mailto:a@b.com,c@d.com"] }); })) === "acme/bad-contact");
   check("67j. newAccount without an embedded jwk rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url }); })) === "acme/bad-input");
+  check("67k. newAccount non-URI contact rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["not a uri"] }); })) === "acme/bad-contact");
+  check("67l. newAccount bare-email contact rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["admin@example.org"] }); })) === "acme/bad-contact");
+  // a kid-mode builder called without a kid must fail closed, not emit a keyless header.
+  check("67m. newOrder with an undefined kid rejected", (await acode(function () { return pki.acme.newOrder({ key: acct.key, alg: "ES256", nonce: base.nonce, url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }] }); })) === "jose/bad-header");
 
   // 68. keyChange nested JWS: inner jwk, no nonce, url == outer; payload {account, oldKey}.
   var nk = await ecKeyPair();
