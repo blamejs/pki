@@ -37,8 +37,11 @@ ENV NODE_ENV=production \
     WIKI_SITE_URL=https://pkijs.com
 
 WORKDIR /app
-# The toolkit source the page generator parses, then the site itself.
+# The toolkit source the page generator parses, then the site itself. README.md
+# sits at the repo root (resolved as LIB_DIR/../README.md) and backs the
+# generated Overview page, so it must land at /app/README.md alongside lib/.
 COPY --chown=65532:65532 lib ./lib
+COPY --chown=65532:65532 README.md ./README.md
 COPY --chown=65532:65532 examples/wiki ./examples/wiki
 
 WORKDIR /app/examples/wiki
