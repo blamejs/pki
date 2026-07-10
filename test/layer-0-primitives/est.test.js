@@ -44,20 +44,22 @@ function kemEnvelopedKeyCI(skid) {
     b.octetString(Buffer.from([0xAA, 0xBB])),          // encryptedKey
   ]);
   var ori = b.contextConstructed(4, Buffer.concat([b.oid(KEM_ORI_OID), kemri]));  // [4] { oriType, oriValue }
-  var eci = b.sequence([b.oid(ID_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
+  var eci = b.sequence([b.oid(ID_SIGNED_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
   var env = b.sequence([b.integer(3n), b.set([ori]), eci]);   // ori recipient -> EnvelopedData version 3
   return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
 }
 // A minimal, structurally valid CMS EnvelopedData ContentInfo (one KTRI, opaque
-// ciphertext) -- the server-generated encrypted-key shape (RFC 7030 sec. 4.4.2).
+// ciphertext) -- the server-generated encrypted-key shape (RFC 7030 sec. 4.4.2):
+// the encapsulated content type is id-signedData (the SignedData holding the key).
 // o.skid: a Buffer -> a subjectKeyIdentifier recipient (ktri v2, envelope v2);
 // otherwise an issuerAndSerialNumber recipient (ktri v0, envelope v0).
+// o.innerType overrides the encapsulated content type for the reject vector.
 function envelopedKeyCI(o) {
   o = o || {};
   var iasn = b.sequence([b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), b.integer(9n)]);
   var rid = o.skid ? b.contextPrimitive(0, Buffer.from(o.skid)) : iasn;
   var ktri = b.sequence([b.integer(o.skid ? 2n : 0n), rid, algId(RSA_OID), b.octetString(Buffer.from([0xAA, 0xBB]))]);
-  var eci = b.sequence([b.oid(ID_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
+  var eci = b.sequence([b.oid(o.innerType || ID_SIGNED_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
   var env = b.sequence([b.integer(o.skid ? 2n : 0n), b.set([ktri]), eci]);
   return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
 }
@@ -198,6 +200,9 @@ function testServerKeygen() {
   // 48b. an encrypted-labeled key part that is a SignedData (not EnvelopedData) -> est/bad-key-part.
   var body48b = multipart([{ ct: encPart, body: certsOnly([REAL_CERT]).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   check("48b. non-EnvelopedData encrypted key rejected", code(function () { pki.est.parseServerKeygenResponse(body48b, ct, { requestedEncryption: true }); }) === "est/bad-key-part");
+  // 48b2. an EnvelopedData that encapsulates id-data (not id-signedData) -> est/bad-key-part.
+  var body48b2 = multipart([{ ct: encPart, body: envelopedKeyCI({ innerType: ID_DATA }).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  check("48b2. non-SignedData encapsulated content rejected", code(function () { pki.est.parseServerKeygenResponse(body48b2, ct, { requestedEncryption: true }); }) === "est/bad-key-part");
   // 48c. the recipient key id matches the advertised decryptKeyID -> accepted.
   var kid = Buffer.from([0x33, 0x44]);
   var bodySkid = multipart([{ ct: encPart, body: envelopedKeyCI({ skid: kid }).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
