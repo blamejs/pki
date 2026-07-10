@@ -126,6 +126,9 @@ function testAccept() {
   // 4. rsaEncryption {INTEGER 4096} -> decoded key size (RFC 9908 sec. 3.2).
   var rsa = parse(csrattrs([attr(RSA_ENCRYPTION, [b.integer(4096n)])]));
   check("4. rsa key size decoded", rsa.items[0].oid === RSA_ENCRYPTION && rsa.items[0].keySize === 4096);
+  // 4b. a multi-valued key-type hint is ambiguous -> fail closed (never read values[0]).
+  check("4b. multi-valued rsaEncryption rejected", parseCode(csrattrs([attr(RSA_ENCRYPTION, [b.integer(2048n), b.integer(4096n)])])) === "csrattrs/bad-key-type-attr");
+  check("4c. multi-valued ecPublicKey rejected", parseCode(csrattrs([attr(EC_PUBLIC_KEY, [b.oid(SECP384R1), b.oid("1.2.840.10045.3.1.7")])])) === "csrattrs/bad-key-type-attr");
 
   // 5. id-ExtensionReq with one Extensions value -> decoded extensions array.
   var er = parse(csrattrs([extReqAttr([ext(BASIC_CONSTRAINTS, undefined, Buffer.from([0x30, 0x00]))])]));

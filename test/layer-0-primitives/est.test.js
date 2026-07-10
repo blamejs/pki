@@ -16,11 +16,43 @@ var vectors = require("../helpers/vectors");
 var b = pki.asn1.build;
 
 var ID_SIGNED_DATA = "1.2.840.113549.1.7.2";
+var ID_ENVELOPED_DATA = "1.2.840.113549.1.7.3";
 var ID_DATA        = "1.2.840.113549.1.7.1";
 var RSA_OID        = "1.2.840.113549.1.1.1";
+var AES256_CBC     = "2.16.840.1.101.3.4.1.42";
 var AES256_WRAP    = "2.16.840.1.101.3.4.1.45";
+var ECDSA_SHA256   = "1.2.840.10045.4.3.2";
+var SAN_OID        = "2.5.29.17";
+var EXTREQ_OID     = "1.2.840.113549.1.9.14";
 var DECRYPT_KEY_ID = "1.2.840.113549.1.9.16.2.37";
 var CHALLENGE_PW   = "1.2.840.113549.1.9.7";
+
+function algId(o) { return b.sequence([b.oid(o)]); }
+// A minimal, structurally valid CMS EnvelopedData ContentInfo (one KTRI, opaque
+// ciphertext) -- the server-generated encrypted-key shape (RFC 7030 sec. 4.4.2).
+function envelopedKeyCI() {
+  var iasn = b.sequence([b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), b.integer(9n)]);
+  var ktri = b.sequence([b.integer(0n), iasn, algId(RSA_OID), b.octetString(Buffer.from([0xAA, 0xBB]))]);
+  var eci = b.sequence([b.oid(ID_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
+  var env = b.sequence([b.integer(0n), b.set([ktri]), eci]);
+  return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
+}
+// A structurally valid PKCS#10 CSR reusing REAL_CERT's raw subject + SPKI, with
+// an optional extensionRequest SubjectAltName (o.san = raw GeneralNames DER). The
+// signature is a placeholder BIT STRING (csr.parse is structural, not verifying).
+function reenrollCsr(o) {
+  o = o || {};
+  var tbs = pki.asn1.decode(REAL_CERT).children[0];
+  var subjectDer = o.subjectDer || tbs.children[5].bytes;
+  var spkiDer = tbs.children[6].bytes;
+  var attrs = Buffer.alloc(0);
+  if (o.san !== undefined) {
+    var exts = b.sequence([b.sequence([b.oid(SAN_OID), b.octetString(o.san)])]);   // Extensions ::= SEQ OF Extension
+    attrs = b.sequence([b.oid(EXTREQ_OID), b.set([exts])]);                          // one Attribute -> [0] content directly
+  }
+  var cri = b.sequence([b.integer(0n), subjectDer, spkiDer, b.contextConstructed(0, attrs)]);
+  return b.sequence([cri, algId(ECDSA_SHA256), b.bitString(Buffer.from([1, 2, 3]), 0)]);
+}
 
 // A real EC certificate (universal-SEQUENCE plain-certificate CertificateChoices).
 var REAL_CERT = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM);
@@ -113,6 +145,14 @@ function testServerKeygen() {
   check("47. whitespace before ; tolerated", !!r47.privateKey);
   // 49. a cleartext pkcs8 part when encryption was requested -> est/expected-encrypted-key.
   check("49. cleartext key when encryption requested", code(function () { pki.est.parseServerKeygenResponse(body43, ct, { requestedEncryption: true }); }) === "est/expected-encrypted-key");
+  // 48. an encrypted key part carrying a real EnvelopedData -> encryptedKey surfaced.
+  var encPart = "application/pkcs7-mime; smime-type=server-generated-key";
+  var body48 = multipart([{ ct: encPart, body: envelopedKeyCI().toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  var r48 = pki.est.parseServerKeygenResponse(body48, ct, { requestedEncryption: true });
+  check("48. encrypted key part -> EnvelopedData surfaced", !!r48.encryptedKey && r48.encryptedKey.contentTypeName === "envelopedData" && r48.certificates.length === 1);
+  // 48b. an encrypted-labeled key part that is a SignedData (not EnvelopedData) -> est/bad-key-part.
+  var body48b = multipart([{ ct: encPart, body: certsOnly([REAL_CERT]).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  check("48b. non-EnvelopedData encrypted key rejected", code(function () { pki.est.parseServerKeygenResponse(body48b, ct, { requestedEncryption: true }); }) === "est/bad-key-part");
 }
 
 // ---- builders -------------------------------------------------------
@@ -138,6 +178,17 @@ function testBuilders() {
   check("53. challengePassword -> channelBindingRequired flag", plan53.channelBindingRequired === true);
   // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
   check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
+  var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;
+  // 54b. a re-enroll CSR reusing subject + the identical SAN passes.
+  check("54b. matching subject + SAN accepted", pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ san: OLD_SAN })).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
+  // 54c. the old cert has a SAN but the CSR omits it -> est/reenroll-san-mismatch (RFC 7030 sec. 4.2.2 MUST).
+  check("54c. omitted SAN rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({})); }) === "est/reenroll-san-mismatch");
+  // 54d. the CSR requests a DIFFERENT SAN -> est/reenroll-san-mismatch.
+  var otherSan = b.sequence([b.contextPrimitive(2, Buffer.from("other.example", "latin1"))]);
+  check("54d. changed SAN rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ san: otherSan })); }) === "est/reenroll-san-mismatch");
+  // 54e. a mutated subject still rejects (subject guard precedes the SAN guard).
+  var otherSubject = b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("other")])])]);
+  check("54e. mutated subject rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ subjectDer: otherSubject, san: OLD_SAN })); }) === "est/reenroll-subject-mismatch");
   // 55. path builder (T2).
   check("55. path cacerts", pki.est.paths("https://ca.example").cacerts === "https://ca.example/.well-known/est/cacerts");
   check("55b. labeled path", pki.est.paths("https://ca.example", { label: "label1" }).simpleenroll === "https://ca.example/.well-known/est/label1/simpleenroll");
@@ -160,8 +211,11 @@ function testClassify() {
   // 59. a 4xx text/plain body surfaced capped as the diagnostic on the typed error.
   var c59 = code(function () { pki.est.classifyResponse(400, { "content-type": "text/plain" }, Buffer.from("bad request details"), { op: "simpleenroll" }); });
   check("59. 4xx typed http-error", c59 === "est/http-error");
-  // fullcmc is routed + precisely rejected (defer condition: the cmc module).
-  check("fullcmc precisely rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT]), { op: "fullcmc" }); }) !== "NO-THROW" || true);
+  // 60. fullcmc is a real path (paths() emits it) but its CMC response is deferred
+  //     -> a precise est/fullcmc-not-supported, never a silently-accepted 200.
+  check("60. fullcmc classification rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "fullcmc" }); }) === "est/fullcmc-not-supported");
+  // 60b. an unrecognized operation name -> est/unsupported-operation (not a pass).
+  check("60b. unrecognized op rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "bogus" }); }) === "est/unsupported-operation");
 }
 
 function run() {
