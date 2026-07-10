@@ -1976,6 +1976,23 @@ async function testInitialInputsAndTargetGates() {
   // an ABSENT EKU leaves the key unrestricted (4.2.1.12 restricts only when present).
   var leafNoEku = await mkCert({ subject: "EkuNone", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   check("absent EKU is unrestricted under requiredEku", (await run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  // RFC 5280 4.2.1.12 EKU chaining: an intermediate CA carrying an EKU
+  // constrains the purposes of the certs beneath it. An intermediate whose EKU
+  // is {codeSigning} cannot issue a serverAuth path -- the required purpose must
+  // be in every CA cert's EKU too, not only the target's.
+  var interEkuCode = await mkCert({ subject: "EkuCodeInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ekuExt([EKU_CODE_SIGNING], true)] });
+  var leafUnderCode = await mkCert({ subject: "LeafUnderCode", issuer: "EkuCodeInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
+  var resEkuChain = await run([interEkuCode, leafUnderCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] });
+  check("intermediate EKU excluding the required purpose fails the path", resEkuChain.valid === false && failCodes(resEkuChain).indexOf("path/eku-not-permitted") !== -1);
+  // an intermediate whose EKU INCLUDES the purpose (or anyExtendedKeyUsage) chains fine.
+  var interEkuBoth = await mkCert({ subject: "EkuBothInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ekuExt([EKU_SERVER_AUTH, EKU_CODE_SIGNING], true)] });
+  var leafUnderBoth = await mkCert({ subject: "LeafUnderBoth", issuer: "EkuBothInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
+  check("intermediate EKU including the required purpose chains", (await run([interEkuBoth, leafUnderBoth], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  // an intermediate with NO EKU is unconstrained (chaining restricts only when present).
+  var interNoEku = await mkCert({ subject: "NoEkuInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var leafUnderNone = await mkCert({ subject: "LeafUnderNone", issuer: "NoEkuInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
+  check("intermediate without an EKU does not constrain the path", (await run([interNoEku, leafUnderNone], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+
   // requiredEku is entry-point-validated.
   check("empty requiredEku throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: [] }))) === "path/bad-input");
   check("unregistered requiredEku name throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: ["no-such-purpose-name"] }))) === "path/bad-input");
