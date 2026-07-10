@@ -66,8 +66,11 @@ function envelopedKeyCI(o) {
 // A structurally valid PKCS#10 CSR reusing REAL_CERT's raw subject + SPKI, with
 // an optional extensionRequest SubjectAltName (o.san = raw GeneralNames DER). The
 // signature is a placeholder BIT STRING (csr.parse is structural, not verifying).
-function extReqAttr(sanVal) {
-  var exts = b.sequence([b.sequence([b.oid(SAN_OID), b.octetString(sanVal)])]);   // Extensions ::= SEQ OF Extension
+function extReqAttr(sanVal, critical) {
+  var extChildren = [b.oid(SAN_OID)];
+  if (critical) extChildren.push(b.boolean(true));                                  // critical BOOLEAN (DEFAULT FALSE)
+  extChildren.push(b.octetString(sanVal));
+  var exts = b.sequence([b.sequence(extChildren)]);                                 // Extensions ::= SEQ OF Extension
   return b.sequence([b.oid(EXTREQ_OID), b.set([exts])]);                            // extensionRequest Attribute
 }
 function reenrollCsr(o) {
@@ -76,7 +79,7 @@ function reenrollCsr(o) {
   var subjectDer = o.subjectDer || tbs.children[5].bytes;
   var spkiDer = tbs.children[6].bytes;
   var sans = o.sans || (o.san !== undefined ? [o.san] : []);
-  var attrList = sans.map(extReqAttr);
+  var attrList = sans.map(function (sv) { return extReqAttr(sv, o.criticalSan); });
   // [0] IMPLICIT SET OF Attribute: DER-sort when more than one is present.
   var attrs = attrList.length ? Buffer.concat(attrList.slice().sort(Buffer.compare)) : Buffer.alloc(0);
   var cri = b.sequence([b.integer(0n), subjectDer, spkiDer, b.contextConstructed(0, attrs)]);
@@ -265,6 +268,9 @@ function testBuilders() {
   // 54d. the CSR requests a DIFFERENT SAN -> est/reenroll-san-mismatch.
   var otherSan = b.sequence([b.contextPrimitive(2, Buffer.from("other.example", "latin1"))]);
   check("54d. changed SAN rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ san: otherSan })); }) === "est/reenroll-san-mismatch");
+  // 54d2. the same SAN names but the critical flag flipped -> est/reenroll-san-mismatch
+  //       ("identical" covers criticality, not just the GeneralNames bytes).
+  check("54d2. flipped SAN criticality rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ san: OLD_SAN, criticalSan: true })); }) === "est/reenroll-san-mismatch");
   // 54e. a mutated subject still rejects (subject guard precedes the SAN guard).
   var otherSubject = b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("other")])])]);
   check("54e. mutated subject rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ subjectDer: otherSubject, san: OLD_SAN })); }) === "est/reenroll-subject-mismatch");
