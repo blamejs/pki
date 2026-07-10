@@ -264,6 +264,8 @@ async function testChallenges() {
   check("62c. mismatched iPAddress SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "203.0.113.10" }); })) === "acme/bad-tlsalpn");
   var ip6Cert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])], false)]);
   check("62d. matching IPv6 iPAddress SAN accepted", (await acode(function () { return pki.acme.verifyTlsAlpn01(ip6Cert, TOKEN, jwk, { type: "ip", value: "2001:db8::1" }); })) === "NO-THROW");
+  // 62e. a non-canonical ip identifier is REJECTED, not silently normalized to match.
+  check("62e. non-canonical ip identifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "192.168.001.001" }); })) === "acme/bad-identifier");
   // 63. the acmeIdentifier OID row resolves.
   check("63. acmeIdentifier OID row", oid.name("1.3.6.1.5.5.7.1.31") === "acmeIdentifier");
 }
