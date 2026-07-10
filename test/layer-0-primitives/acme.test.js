@@ -357,6 +357,11 @@ async function testBuilders() {
   var pag = await pki.acme.postAsGet(Object.assign({}, base, { url: kid }));
   var cr = await pki.acme.challengeResponse(Object.assign({}, base, { url: "https://ca/chall/1" }));
   check("33. POST-as-GET payload empty vs challenge {} distinct", pag.payload === "" && cr.payload === pki.jose.base64url.encode(Buffer.from("{}", "utf8")));
+  // POST-as-GET is always kid-signed: a leftover jwk (no kid) is ignored, and the
+  // missing kid fails closed rather than downgrading to an embedded-key read.
+  check("33b. postAsGet ignores a leftover jwk and requires kid", (await acode(function () { return pki.acme.postAsGet({ key: acct.key, alg: "ES256", nonce: base.nonce, url: kid, jwk: acct.jwk }); })) === "jose/bad-header");
+  var pag2 = await pki.acme.postAsGet(Object.assign({}, base, { url: kid, jwk: acct.jwk }));
+  check("33c. postAsGet with kid+jwk still emits a kid-only header", !("jwk" in b64uJson(pag2.protected)) && b64uJson(pag2.protected).kid === kid);
 }
 
 // ---- ARI (RFC 9773) --------------------------------------------------

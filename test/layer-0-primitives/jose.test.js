@@ -82,6 +82,10 @@ async function testJws() {
   check("29. ML-DSA-65 round-trip + siglen 3309", pki.jose.base64url.decode(mdJws.signature).length === 3309 && (await pki.jose.verify(mdJws, OUTER)).header.alg === "ML-DSA-65");
   var rsJws = await pki.jose.sign({ protected: outerHeader({ alg: "RS256", jwk: rsaJwk }), payload: Buffer.from("{}"), key: rsa.privateKey });
   check("30. RS256 round-trip", (await pki.jose.verify(rsJws, OUTER)).header.alg === "RS256");
+  // 30b. an RSA key whose bound hash disagrees with the alg is rejected at sign
+  // (the modulus length is identical, so the length pin cannot catch it).
+  var rsa512 = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-512" }, true, ["sign", "verify"]);
+  check("30b. RSA SHA-512 key under RS256 rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "RS256", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "https://ca.example/a" }, payload: Buffer.from("{}"), key: rsa512.privateKey }); })) === "jose/bad-key");
   // 33. POST-as-GET payload is the empty string; challenge-response is b64u("{}").
   var getJws = await pki.jose.sign({ protected: outerHeader({ jwk: ecJwk }), payload: Buffer.alloc(0), key: ec.privateKey });
   check("33. POST-as-GET payload empty vs {}", getJws.payload === "" && jws.payload === pki.jose.base64url.encode(Buffer.from("{}")));
