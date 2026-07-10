@@ -121,6 +121,16 @@ function testJsonReader() {
   check("5a. duplicate top-level member rejected", code(function () { pki.jose.parseJson('{"a":1,"a":2}'); }) === "jose/duplicate-member");
   check("5b. duplicate nested member rejected", code(function () { pki.jose.parseJson('{"o":{"x":1,"x":2}}'); }) === "jose/duplicate-member");
   check("5c. distinct members parse", pki.jose.parseJson('{"a":1,"b":2}').b === 2);
+  // A "__proto__" member must become an OWN property -- never mutate the returned
+  // object's prototype (pollution) and never slip past the duplicate-member gate
+  // (a primitive assignment to __proto__ creates no own property, so a naive
+  // hasOwnProperty check would miss the repeat).
+  check("5d. __proto__ member does not pollute the prototype", (function () {
+    var r = pki.jose.parseJson('{"__proto__":{"polluted":1}}');
+    return Object.getPrototypeOf(r) === Object.prototype && r.polluted === undefined && Object.prototype.hasOwnProperty.call(r, "__proto__");
+  })());
+  check("5e. duplicate __proto__ member rejected", code(function () { pki.jose.parseJson('{"__proto__":1,"__proto__":2}'); }) === "jose/duplicate-member");
+  check("5f. duplicate __proto__ member at depth rejected", code(function () { pki.jose.parseJson('{"h":{"__proto__":1,"__proto__":2}}'); }) === "jose/duplicate-member");
   // 6. nesting one past the depth cap rejected.
   var deep = "[".repeat(C.LIMITS.JSON_MAX_DEPTH + 1) + "1" + "]".repeat(C.LIMITS.JSON_MAX_DEPTH + 1);
   check("6. depth cap enforced", code(function () { pki.jose.parseJson(deep); }) === "jose/too-deep");

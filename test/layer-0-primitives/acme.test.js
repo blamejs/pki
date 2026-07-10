@@ -337,6 +337,13 @@ function testAri() {
   // 74. missing start or end rejected.
   check("74a. missing end rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-01T00:00:00Z" } }); }) === "acme/bad-renewal-window");
   check("74b. missing start rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { end: "2026-01-08T00:00:00Z" } }); }) === "acme/bad-renewal-window");
+  // A malformed renewalInfo must throw a WELL-FORMED typed fault -- the kind name
+  // "renewalInfo" must not leak camelCase into the error code (a code like
+  // "acme/bad-renewalInfo" violates the domain/reason shape and would make the
+  // error constructor itself throw a raw TypeError instead of a PkiError).
+  check("74c. non-object renewalInfo throws a typed acme fault", code(function () { pki.acme.validate("renewalInfo", "notanobject"); }).indexOf("acme/") === 0);
+  check("74d. mistyped suggestedWindow throws a typed acme fault", code(function () { pki.acme.validate("renewalInfo", { suggestedWindow: 5 }); }).indexOf("acme/") === 0);
+  check("74e. validateRenewalInfo on a non-object throws a typed acme fault", code(function () { pki.acme.validateRenewalInfo(42); }).indexOf("acme/") === 0);
 }
 
 // ---- FORMATS non-registration (dispatch) -----------------------------
