@@ -228,6 +228,10 @@ function testBuilders() {
   //      (RFC 9908 sec. 3.2 non-template form: exactly one key-type attribute).
   var twoKt = b.sequence([b.sequence([b.oid(RSA_OID), b.set([])]), b.sequence([b.oid("1.2.840.10045.2.1"), b.set([])])]);
   check("53c. two key-type attributes rejected", code(function () { pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(twoKt)); }) === "est/ambiguous-key-type");
+  // 53d. a registered-but-unmodeled bare OID (ecdsaWithSHA384 signature-scheme
+  //      instruction, RFC 8951) is surfaced on unhandled, never silently dropped.
+  var sigPlan = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.oid("1.2.840.10045.4.3.3")])));
+  check("53d. registered unmodeled OID surfaced", sigPlan.unhandled.length === 1 && sigPlan.unhandled[0].oid === "1.2.840.10045.4.3.3" && sigPlan.unhandled[0].name === "ecdsaWithSHA384");
   // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
   check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
   var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;
@@ -283,6 +287,9 @@ function testClassify() {
   check("57d. HTTP-date retry-after without now -> date, seconds null", r57d.retryAfterDate === when && r57d.retryAfterSeconds === null);
   // 57e. an uninterpretable Retry-After -> est/bad-retry-after (no delay-less retry verdict).
   check("57e. garbage retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "soon" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
+  // 57f-g. an overflowing / nonsensical delay-seconds -> est/bad-retry-after, never an unsafe number.
+  check("57f. overflow retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "99999999999999999999" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
+  check("57g. over-cap retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "40000000" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
   // 58. 204/404 on csrattrs -> "none available" verdict; 204 on cacerts -> error.
   check("58. 204 csrattrs -> none-available", pki.est.classifyResponse(204, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
   check("58b. 404 csrattrs -> none-available", pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
