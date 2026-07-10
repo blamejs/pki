@@ -89,6 +89,10 @@ async function testJws() {
   var ecOther = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   var ecOtherJwk = await subtle.exportKey("jwk", ecOther.publicKey);
   check("28j. embedded jwk not matching the signing key rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: ecOtherJwk }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-key");
+  // 28k-m. empty nonce / url / kid are each rejected (a Replay-Nonce / URL / account kid is non-empty).
+  check("28k. empty nonce rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "", url: "https://ca.example/o", kid: "https://ca.example/a" }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-header");
+  check("28l. empty url rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "", kid: "https://ca.example/a" }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-header");
+  check("28m. empty kid rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "" }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-header");
   var md = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
   var mdJwk = await subtle.exportKey("jwk", md.publicKey);
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });
