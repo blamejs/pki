@@ -180,6 +180,11 @@ function testServerKeygen() {
   // 46c. a stray smime-type=server-generated-key on the wrong media type is not a key part.
   var body46c = multipart([{ ct: "text/plain; smime-type=server-generated-key", body: "AA==" }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   check("46c. smime-type on wrong media type rejected", code(function () { pki.est.parseServerKeygenResponse(body46c, ct, {}); }) === "est/bad-multipart");
+  // 46d. a "--boundaryX" line is NOT an RFC 2046 delimiter -> it stays part body,
+  //      not a split point (a raw-substring split would treat it as a boundary).
+  var trick = "--bnd\r\nContent-Type: text/plain\r\n\r\nhello\r\n--bndX still body\r\nmore\r\n--bnd--\r\n";
+  var tparts = pki.est.splitMultipartMixed(trick, 'multipart/mixed; boundary="bnd"');
+  check("46d. non-delimiter --boundaryX stays body", tparts.length === 1 && /--bndX still body/.test(tparts[0].body));
   // 47. whitespace before the semicolon is tolerated (erratum 5779 rejected).
   var r47 = pki.est.parseServerKeygenResponse(body43, 'multipart/mixed ; boundary="estBoundary"', {});
   check("47. whitespace before ; tolerated", !!r47.privateKey);
@@ -303,6 +308,9 @@ function testClassify() {
   // 57f-g. an overflowing / nonsensical delay-seconds -> est/bad-retry-after, never an unsafe number.
   check("57f. overflow retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "99999999999999999999" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
   check("57g. over-cap retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "40000000" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
+  // 57h. an HTTP-date more than a year ahead (with opts.now) exceeds the same cap.
+  var farDate = "Wed, 01 Jan 2020 00:00:00 GMT";
+  check("57h. far-future HTTP-date rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": farDate }, Buffer.alloc(0), { op: "simpleenroll", now: Date.parse(farDate) - 63072000000 }); }) === "est/bad-retry-after");
   // 58. 204/404 on csrattrs -> "none available" verdict; 204 on cacerts -> error.
   check("58. 204 csrattrs -> none-available", pki.est.classifyResponse(204, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
   check("58b. 404 csrattrs -> none-available", pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
