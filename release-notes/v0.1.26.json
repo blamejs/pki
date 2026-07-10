@@ -1,0 +1,13 @@
+{
+  "version": "0.1.26",
+  "headline": "Test-coverage measurement and the OpenSSF Best Practices badge.",
+  "summary": "A coverage script measures statement and branch coverage across the full test suite with c8, a dev-only tool that does not affect the published package (runtime dependencies remain zero). The README badge row now carries the project's OpenSSF Best Practices badge. There are no library or API changes in this release.",
+  "sections": {
+    "Added": [
+      "npm run coverage measures statement and branch coverage over the full test suite with c8. It is a development dependency only — the published package still declares zero runtime dependencies."
+    ],
+    "Changed": [
+      "The README badge row now includes the OpenSSF Best Practices badge."
+    ]
+  }
+}

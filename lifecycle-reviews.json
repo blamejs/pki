@@ -94,5 +94,17 @@
     "reason": "Rides the pkcs12 parser held for the batched format-cohort stabilization pass. Graduate alongside pki.schema.pkcs12.parse.",
     "reviewedAt": "0.1.25",
     "reviewBy": "0.1.30"
+  },
+  "pki.ct.parseSctList": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6962 signed-certificate-timestamp list parser is not yet interop-proven end-to-end: no test in the harness verifies an SCT it decodes against a production CT log's public key, so its return shape is not frozen. Graduate once an independent verifier cross-checks an SCT it parses.",
+    "reviewedAt": "0.1.26",
+    "reviewBy": "0.1.30"
+  },
+  "pki.ct.reconstructSignedData": {
+    "decision": "keep-experimental",
+    "reason": "Reconstructs the RFC 6962 digitally-signed structure that an SCT signature covers; it is unverified against an independent CT verifier end-to-end, the same interop gap as pki.ct.parseSctList. Graduate alongside pki.ct.parseSctList.",
+    "reviewedAt": "0.1.26",
+    "reviewBy": "0.1.30"
   }
 }
