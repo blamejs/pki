@@ -29,5 +29,8 @@ ignore_actions:
   # tag-pinned ref this single exception carries (currently v2.1.0).
   - name: slsa-framework/slsa-github-generator/.github/workflows/generator_generic_slsa3.yml
     ref: .*
+  # Pinned to the exact SHA the workflows reference — a future tag-shaped
+  # trivy-action ref no longer matches this exemption, so it fails
+  # `pinact run --check` instead of riding the wildcard through.
   - name: aquasecurity/trivy-action
-    ref: .*
+    ref: ^ed142fd0673e97e23eac54620cfb913e5ce36c25$

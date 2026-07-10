@@ -137,11 +137,28 @@ function fixturesFor(tag) {
   };
 }
 
+// Concatenated source of every test/**/*.test.js EXCEPT this harness, so a
+// primitive path mentioned only here can never satisfy its own TESTED gate.
+function _testSources() {
+  var out = [];
+  (function walkDir(dir) {
+    fs.readdirSync(dir, { withFileTypes: true }).forEach(function (e) {
+      var full = path.join(dir, e.name);
+      if (e.isDirectory()) { walkDir(full); return; }
+      if (!e.name.endsWith(".test.js")) return;
+      if (path.resolve(full) === path.resolve(__filename)) return;
+      out.push(fs.readFileSync(full, "utf8"));
+    });
+  })(path.join(ROOT, "test"));
+  return out.join("\n");
+}
+
 // ---- the walk --------------------------------------------------------
 async function run() {
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 
   var readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");
+  var testSources = _testSources();
 
   var seenNs = {};
   var names = Object.keys(docs);
@@ -165,6 +182,10 @@ async function run() {
       // 1. the documented path resolves to a defined export.
       var resolved = tag.replace(/^pki\./, "").split(".").reduce(function (o, k) { return o == null ? o : o[k]; }, pki);
       check(tag + " resolves to a defined export", resolved !== undefined && resolved !== null);
+
+      // 3. the advertised surface is exercised by name: some *.test.js
+      // (other than this harness) references the primitive's full path.
+      check(tag + " is referenced by full path from a *.test.js", testSources.indexOf(tag) !== -1);
 
       // 2. every @example executes (completes OR throws a typed PkiError).
       var exs = (p.tags && p.tags.examples) || [];

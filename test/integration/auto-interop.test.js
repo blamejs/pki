@@ -27,6 +27,26 @@ var FIXTURES = require("./interop-fixtures");
 
 var LIB_DIR = path.join(__dirname, "..", "..", "lib");
 
+// Format namespaces whose parse surface has no interop fixture yet. The
+// structural check below fails any discovered `pki.schema.<fmt>.parse*`
+// namespace that is in NEITHER interop-fixtures.js NOR this ledger, so a new
+// format cannot ship silently uncovered — it must either register fixtures
+// or add a row here naming the oracle command that builds them. Every row is
+// surfaced as an explicit SKIP (a skip is never a pass); deleting a row
+// without registering the fixture fails the run.
+var NO_FIXTURE_YET = {
+  "pki.schema.cms":      "oracle available (`openssl cms`); register a fixtures row keyed pki.schema.cms.parse to cover it and drop this skip",
+  "pki.schema.crl":      "oracle available (`openssl crl`); register a fixtures row keyed pki.schema.crl.parse to cover it and drop this skip",
+  "pki.schema.csr":      "oracle available (`openssl req`); register a fixtures row keyed pki.schema.csr.parse to cover it and drop this skip",
+  "pki.schema.pkcs8":    "oracle available (`openssl pkcs8`/`openssl pkey`); register a fixtures row keyed pki.schema.pkcs8.parse to cover it and drop this skip",
+  "pki.schema.ocsp":     "oracle available (`openssl ocsp`); register a fixtures row keyed pki.schema.ocsp.parseRequest/parseResponse to cover it and drop this skip",
+  "pki.schema.tsp":      "oracle available (`openssl ts`); register a fixtures row keyed pki.schema.tsp.parse to cover it and drop this skip",
+  "pki.schema.smime":    "oracle available (`openssl cms` emits the ESS signing-certificate attribute); register a fixtures row keyed to a pki.schema.smime.parse* primitive to cover it and drop this skip",
+  "pki.schema.crmf":     "openssl has no offline CRMF generator (`openssl cmp` needs a live server); add a fixtures row when an oracle path exists",
+  "pki.schema.cmp":      "openssl's `cmp` subcommand is client-only (needs a live server as the oracle peer); add a fixtures row when an oracle path exists",
+  "pki.schema.attrcert": "openssl cannot emit RFC 5755 attribute certificates; add a fixtures row when an independent oracle exists",
+};
+
 // Discover every primitive name from the lib/ @primitive comment blocks.
 function _discoverPrimitives() {
   var tree = parser.parseTree(LIB_DIR);
@@ -66,6 +86,35 @@ async function run() {
   var orphaned = Object.keys(FIXTURES).filter(function (k) { return primitives.indexOf(k) === -1; });
   check("no interop fixtures orphaned from a removed primitive", orphaned.length === 0);
   check("at least one discovered primitive has interop coverage", covered > 0);
+
+  // Structural coverage expectation, mirroring the schema-all dispatch
+  // matrix: every format namespace with a discovered parse-shaped primitive
+  // (`pki.schema.<fmt>.parse*`) must either register interop fixtures or
+  // carry an explicit NO_FIXTURE_YET row — cross-implementation coverage is
+  // structural, never per-format authoring discipline a new format can skip.
+  var fmtNamespaces = [];
+  primitives.forEach(function (name) {
+    var m = /^(pki\.schema\.\w+)\.parse\w*$/.exec(name);
+    if (m && fmtNamespaces.indexOf(m[1]) === -1) fmtNamespaces.push(m[1]);
+  });
+  var fixtureKeys = Object.keys(FIXTURES);
+  fmtNamespaces.forEach(function (ns) {
+    var hasFixture = fixtureKeys.some(function (k) { return k.indexOf(ns + ".") === 0; });
+    if (hasFixture) {
+      check(ns + ".* has interop fixtures", true);
+      return;
+    }
+    check(ns + ".* has interop fixtures or an explicit no-fixture row",
+      Object.prototype.hasOwnProperty.call(NO_FIXTURE_YET, ns));
+    helpers.skip("no interop fixture for " + ns + ".* — " + NO_FIXTURE_YET[ns]);
+  });
+  // A stale ledger row (its format gained fixtures, or was removed) must be
+  // deleted — a dead row would mask the gate the day the fixtures regress.
+  var staleRows = Object.keys(NO_FIXTURE_YET).filter(function (ns) {
+    var hasFixture = fixtureKeys.some(function (k) { return k.indexOf(ns + ".") === 0; });
+    return hasFixture || fmtNamespaces.indexOf(ns) === -1;
+  });
+  check("no stale no-fixture rows (format covered or gone)", staleRows.length === 0);
 }
 
 module.exports = { run: run };

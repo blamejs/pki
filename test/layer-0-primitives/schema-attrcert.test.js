@@ -194,10 +194,21 @@ function testHolderVariants() {
   check("holder objectDigestInfo: objectDigest raw bits", Buffer.isBuffer(m2.holder.objectDigestInfo.objectDigest.bytes));
 }
 
-function testIssuerV1Form() {
-  var m = parse(attrCert({ issuerNode: issuerV1([gnDirName("V1 Issuer")]) }));
-  check("issuer v1Form: form flag", m.issuer.form === "v1Form" && m.issuer.v2Form === null);
-  check("issuer v1Form: names decoded", m.issuer.v1Form.names.length === 1 && m.issuer.v1Form.names[0].tagNumber === 4);
+function testIssuerProfile() {
+  // RFC 5755 §4.2.3 — a conformant AC MUST use v2Form; the v1Form arm is
+  // recognized and rejected with a precise verdict.
+  check("issuer v1Form rejected (must use v2Form)", parseCode(attrCert({ issuerNode: issuerV1([gnDirName("V1 Issuer")]) })) === "attrcert/bad-issuer");
+  // v2Form MUST carry issuerName — an empty V2Form identifies no issuer at all.
+  check("empty v2Form rejected (issuerName required)", parseCode(attrCert({ issuerNode: b.contextConstructed(0, Buffer.alloc(0)) })) === "attrcert/bad-issuer-name");
+  // issuerName MUST contain one and only one GeneralName ...
+  check("two-name issuerName rejected", parseCode(attrCert({ issuerNode: issuerV2({ issuerName: [gnDirName("A"), gnDirName("B")] }) })) === "attrcert/bad-issuer-name");
+  // ... which MUST be a directoryName ...
+  check("non-directoryName issuerName rejected", parseCode(attrCert({ issuerNode: issuerV2({ issuerName: [gnDns("ca.example")] }) })) === "attrcert/bad-issuer-name");
+  // ... containing a non-empty distinguished name.
+  check("empty-DN directoryName issuerName rejected", parseCode(attrCert({ issuerNode: issuerV2({ issuerName: [b.explicit(4, b.sequence([]))] }) })) === "attrcert/bad-issuer-name");
+  // baseCertificateID / objectDigestInfo MUST NOT be present in v2Form.
+  check("v2Form baseCertificateID rejected", parseCode(attrCert({ issuerNode: issuerV2({ issuerName: [gnDirName("CA")], baseCertificateID: {} }) })) === "attrcert/bad-v2form");
+  check("v2Form objectDigestInfo rejected", parseCode(attrCert({ issuerNode: issuerV2({ issuerName: [gnDirName("CA")], objectDigestInfo: { type: 0 } }) })) === "attrcert/bad-v2form");
 }
 
 function testOptionalTail() {
@@ -334,6 +345,24 @@ function testInputCoercion() {
   check("parse(Buffer) ok", parse(der).version === 2);
   check("parse(Uint8Array) ok", parse(new Uint8Array(der)).version === 2);
   check("parse(42) bad-input", parseCode(42) === "attrcert/bad-input");
+  // The PEM path pins the OpenSSL label (RFC 7468 armor, ATTRIBUTE CERTIFICATE):
+  // a string or a Buffer holding the armor parses; a foreign label is a
+  // label-mismatch, not a first-block-of-anything acceptance.
+  var pem = "-----BEGIN ATTRIBUTE CERTIFICATE-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END ATTRIBUTE CERTIFICATE-----\n";
+  check("parse(PEM string) ok", parse(pem).version === 2);
+  check("parse(PEM Buffer) ok", parse(Buffer.from(pem, "latin1")).version === 2);
+  check("CERTIFICATE-labeled PEM rejected (label pinned)", parseCode(pem.replace(/ATTRIBUTE CERTIFICATE/g, "CERTIFICATE")) === "pem/label-mismatch");
+  check("pemDecode round-trips", pki.schema.attrcert.pemDecode(pem).equals(der));
+  check("pemEncode default label round-trips",
+    pki.schema.attrcert.pemDecode(pki.schema.attrcert.pemEncode(der)).equals(der));
+  // The OpenSSL armor label (ATTRIBUTE CERTIFICATE) is the default, matching the
+  // labeled sibling formats: label-less pemDecode refuses a foreign first block;
+  // an explicit null label opts into the any-block behavior.
+  var foreign = pem.replace(/ATTRIBUTE CERTIFICATE/g, "CERTIFICATE");
+  check("label-less pemDecode rejects a foreign first block", code(function () { pki.schema.attrcert.pemDecode(foreign); }) === "pem/label-mismatch");
+  check("pemDecode(text, null) takes the first block of any type", pki.schema.attrcert.pemDecode(foreign, null).equals(der));
+  check("missing envelope -> pem/no-block", parseCode("not a pem block") === "pem/no-block");
+  check("bad base64 body -> pem/bad-base64", parseCode("-----BEGIN ATTRIBUTE CERTIFICATE-----\n@@@@\n-----END ATTRIBUTE CERTIFICATE-----\n") === "pem/bad-base64");
   // multi-defect fail-closed: never NO-THROW
   var multi = attrCert({ version: 0, validityNode: b.sequence([b.utcTime(new Date("2026-01-01T00:00:00Z")), gt("2027-01-01T00:00:00Z")]), attributesNode: b.sequence([roleAttr(), roleAttr()]) });
   var mc = parseCode(multi);
@@ -343,7 +372,7 @@ function testInputCoercion() {
 // ---- runner ----------------------------------------------------------
 testAcceptV2();
 testHolderVariants();
-testIssuerV1Form();
+testIssuerProfile();
 testOptionalTail();
 testTwoAttributes();
 testRejectVersionEnvelope();

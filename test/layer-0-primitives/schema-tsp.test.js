@@ -72,23 +72,35 @@ function tstInfo(o) {
 }
 
 // CMS SignedData token wrapper. A non-id-data eContentType requires signedAttrs
-// (content-type == eContentType + message-digest), per RFC 5652 §5.3.
+// (content-type == eContentType + message-digest), per RFC 5652 §5.3, and the TSA
+// signerInfo carries a SigningCertificate(V2) attribute (RFC 3161 §2.4.2 / RFC 5816).
+var SIGNING_CERT_ATTR    = "1.2.840.113549.1.9.16.2.12"; // id-aa-signingCertificate
+var SIGNING_CERT_V2_ATTR = "1.2.840.113549.1.9.16.2.47"; // id-aa-signingCertificateV2
 function attribute(typeOid, values) { return b.sequence([b.oid(typeOid), b.set(values)]); }
 function implicitSetOf(tag, members) { var a = members.slice().sort(Buffer.compare); return b.contextConstructed(tag, Buffer.concat(a)); }
 function iasn(cn, s) { return b.sequence([name(cn), b.integer(BigInt(s))]); }
-function signerInfo(ctOid) {
+// SigningCertificate(V2) ::= SEQUENCE { certs SEQUENCE OF ESSCertID(v2) } — a
+// minimal one-cert value; the hash-vs-certificate binding is a verification concern.
+function signingCertValue(hashLen) { return b.sequence([b.sequence([b.sequence([b.octetString(Buffer.alloc(hashLen, 0x0C))])])]); }
+function signerInfo(ctOid, opts) {
+  opts = opts || {};
   // The content-type signed attribute value MUST equal the eContentType (RFC 5652
   // §5.3), so thread the token's eContentType through.
   var attrs = [attribute(CT_ATTR, [b.oid(ctOid || ID_CT_TSTINFO)]), attribute(MD_ATTR, [b.octetString(Buffer.alloc(32, 0x01))])];
+  if (!opts.omitSigningCert) {
+    attrs.push(opts.signingCertV2
+      ? attribute(SIGNING_CERT_V2_ATTR, [signingCertValue(32)])
+      : attribute(SIGNING_CERT_ATTR, [signingCertValue(20)]));
+  }
   return b.sequence([
     b.integer(1n), iasn("TSA", 7), algId(SHA256),
     implicitSetOf(0, attrs), algId(SIG_ALG), b.octetString(Buffer.from([0xDE, 0xAD])),
   ]);
 }
-function signedData(eContentType, eContent, signerCount) {
+function signedData(eContentType, eContent, signerCount, signerOpts) {
   var n = signerCount === undefined ? 1 : signerCount;
   var signers = [];
-  for (var i = 0; i < n; i++) signers.push(signerInfo(eContentType));
+  for (var i = 0; i < n; i++) signers.push(signerInfo(eContentType, signerOpts));
   var encap = eContent !== null
     ? b.sequence([b.oid(eContentType), b.explicit(0, b.octetString(eContent))])
     : b.sequence([b.oid(eContentType)]);
@@ -100,7 +112,7 @@ function timeStampToken(tstInfoDer, opts) {
   opts = opts || {};
   var ct = opts.eContentType || ID_CT_TSTINFO;
   var ec = opts.detached ? null : (tstInfoDer || tstInfo({}));
-  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, signedData(ct, ec, opts.signerCount))]);
+  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, signedData(ct, ec, opts.signerCount, opts))]);
 }
 function pkiStatusInfo(o) {
   o = o || {};
@@ -137,6 +149,10 @@ function testAcceptTstInfo() {
 
   var s = pki.schema.tsp.parseTstInfo(tstInfo({ accuracy: accuracy({ seconds: 1 }) }));
   check("3. accuracy seconds only (lossless BigInt)", s.accuracy.seconds === 1n && s.accuracy.millis === 0 && s.accuracy.micros === 0);
+  // seconds is OPTIONAL with no DEFAULT (RFC 3161 §2.4.2), so an explicit 0 is a
+  // legal encoding — unlike millis/micros, whose 1..999 range excludes 0.
+  var z = pki.schema.tsp.parseTstInfo(tstInfo({ accuracy: accuracy({ seconds: 0 }) }));
+  check("3b. accuracy explicit seconds 0 accepted (OPTIONAL, no DEFAULT)", z.accuracy.seconds === 0n);
   var mm = pki.schema.tsp.parseTstInfo(tstInfo({ accuracy: accuracy({ millis: 500, micros: 250 }) }));
   check("4. accuracy millis/micros [0]/[1] IMPLICIT", mm.accuracy.millis === 500 && mm.accuracy.micros === 250 && mm.accuracy.seconds === 0n);
   check("5. ordering TRUE present", pki.schema.tsp.parseTstInfo(tstInfo({ ordering: true })).ordering === true);
@@ -179,6 +195,9 @@ function testRejectTstInfo() {
   check("22. genTime no Z rejected", tstCode(tstInfo({ genTime: genRaw("20260705120000") })) === "asn1/bad-generalizedtime");
   check("23. accuracy millis 0 rejected", tstCode(tstInfo({ accuracy: accuracy({ millis: 0 }) })) !== "NO-THROW");
   check("24. accuracy micros 1000 rejected", tstCode(tstInfo({ accuracy: accuracy({ micros: 1000 }) })) === "tsp/bad-accuracy");
+  // A negative seconds inverts the [genTime-accuracy, genTime+accuracy] window a
+  // verifier computes — the same semantically-impossible class as millis/micros 0.
+  check("25. accuracy negative seconds rejected", tstCode(tstInfo({ accuracy: accuracy({ seconds: -5 }) })) === "tsp/bad-accuracy");
   check("26. ordering explicit FALSE rejected", tstCode(tstInfo({ ordering: false })) === "tsp/bad-ordering");
   check("28. accuracy after nonce (out of order) rejected", tstCode(tstInfo({ nonce: 5, tail: [accuracy({ seconds: 1 })] })) !== "NO-THROW");
   check("30. extensions [1] before tsa [0] rejected", tstCode(tstInfo({ tail: [tstExtensions([extension("1.2.3")]), b.explicit(0, b.contextPrimitive(2, Buffer.from("x")))] })) === "tsp/bad-tst-info");
@@ -191,11 +210,27 @@ function testRejectTstInfo() {
 
 // ---- PKIStatusInfo / TimeStampResp -----------------------------------
 function testResp() {
-  var g = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: timeStampToken(tstInfo({})) }));
+  var respDer = timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: timeStampToken(tstInfo({})) });
+  var g = pki.schema.tsp.parse(respDer);
   check("32. granted response: status 0 + decoded token", g.status === 0 && g.timeStampToken.tstInfo.version === 1);
+  // The pem surface: pemDecode returns the exact DER inside the armor.
+  var respPem = "-----BEGIN TIMESTAMP RESPONSE-----\n" +
+    respDer.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") +
+    "\n-----END TIMESTAMP RESPONSE-----\n";
+  check("tsp.pemDecode yields the armored DER",
+    pki.schema.tsp.pemDecode(respPem, "TIMESTAMP RESPONSE").equals(respDer));
+  check("tsp.pemEncode with an explicit label round-trips",
+    pki.schema.tsp.pemDecode(pki.schema.tsp.pemEncode(respDer, "TIMESTAMP RESPONSE"), "TIMESTAMP RESPONSE").equals(respDer));
+  check("tsp.pemEncode without a label fails closed",
+    code(function () { pki.schema.tsp.pemEncode(respDer); }) === "pem/bad-label");
   // 32b. a granted response whose token is not a well-formed CMS TimeStampToken -> a
   //      typed TspError (not a leaked CmsError), so tsp.parse keeps its contract.
   check("32b. granted response with a malformed token -> tsp/bad-token", respCode(timeStampResp({ status: pkiStatusInfo({ status: 0 }), token: b.sequence([b.integer(5n)]) })) === "tsp/bad-token");
+  // grantedWithMods(1) is the other granted arm of the status-to-token coupling —
+  // it must carry (and decode) a token, and reject when the token is absent.
+  var gwm = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 1 }), token: timeStampToken(tstInfo({})) }));
+  check("32c. grantedWithMods(1) + token parses and decodes", gwm.status === 1 && gwm.timeStampToken.tstInfo.version === 1);
+  check("32d. grantedWithMods(1) without token rejected", respCode(timeStampResp({ status: pkiStatusInfo({ status: 1 }) })) === "tsp/missing-token");
   var badRequestBit = b.bitString(Buffer.from([0x20]), 5); // bit 2 set (badRequest), canonical NamedBitList
   var rej = pki.schema.tsp.parse(timeStampResp({ status: pkiStatusInfo({ status: 2, failInfo: badRequestBit }) }));
   check("33. rejection: status 2, failInfo named bits, no token", rej.status === 2 && rej.failInfo.bits.indexOf("badRequest") !== -1 && rej.timeStampToken === null);
@@ -237,6 +272,11 @@ function testToken() {
   check("45. wrong eContentType rejected", tokenCode(timeStampToken(tstInfo({}), { eContentType: ID_DATA })) === "tsp/wrong-econtent-type");
   check("46. detached token rejected", tokenCode(timeStampToken(tstInfo({}), { detached: true })) === "tsp/detached-token");
   check("47. multi-signer token rejected", tokenCode(timeStampToken(tstInfo({}), { signerCount: 2 })) === "tsp/multi-signer");
+  // RFC 3161 §2.4.2 / RFC 5816 — the TSA certificate identifier MUST be present as
+  // a SigningCertificate (or SigningCertificateV2) signed attribute; a token whose
+  // signerInfo carries neither is structurally nonconformant.
+  check("47b. token without a SigningCertificate attribute rejected", tokenCode(timeStampToken(tstInfo({}), { omitSigningCert: true })) === "tsp/missing-signing-certificate");
+  check("47c. token with SigningCertificateV2 accepted (RFC 5816)", tokenCode(timeStampToken(tstInfo({}), { signingCertV2: true })) === "NO-THROW");
   // 44b. parseToken accepts a PEM-armored token regardless of label (RFC 3161 has no
   //      standard label), de-armoring with the TSP rules before the CMS parse.
   var tokDer = timeStampToken(tstInfo({}));
@@ -246,6 +286,23 @@ function testToken() {
   //      leaked CmsError (parseToken wraps the composed cms.parse).
   var c44c = tokenCode(b.sequence([b.integer(5n)]));
   check("44c. malformed token -> tsp/bad-token (typed)", c44c === "tsp/bad-token");
+  // 44d. an AuthenticatedData ContentInfo whose eContentType is id-ct-TSTInfo now
+  //      DECODES via cms.parse (it is no longer a deferred content type), but it is
+  //      not a SignedData -- parseToken must reject it with a typed TspError before
+  //      dereferencing SignedData-only fields (signerInfos), never a raw TypeError.
+  var ID_CT_AUTHDATA = "1.2.840.113549.1.9.16.1.2";
+  var HMAC_SHA256 = "1.2.840.113549.2.9";
+  var authEncap = b.sequence([b.oid(ID_CT_TSTINFO), b.explicit(0, b.octetString(tstInfo({})))]);
+  var ktriR = b.sequence([b.integer(0n), iasn("R", 9), algId("1.2.840.113549.1.1.1"), b.octetString(Buffer.from([0xAA, 0xBB]))]);
+  // A VALID AuthenticatedData (RFC 5652 sec. 9): digestAlgorithm [1] + authAttrs [2]
+  // (content-type == the id-ct-TSTInfo eContentType, message-digest), so cms.parse
+  // SUCCEEDS -- and parseToken must still reject it (it is not a SignedData) with a
+  // typed code, not a raw TypeError on the absent signerInfos.
+  var authAttrs = [attribute(CT_ATTR, [b.oid(ID_CT_TSTINFO)]), attribute(MD_ATTR, [b.octetString(Buffer.alloc(32, 0x02))])];
+  var authData = b.sequence([b.integer(0n), b.set([ktriR]), algId(HMAC_SHA256),
+    b.contextConstructed(1, b.oid(SHA256)), authEncap, implicitSetOf(2, authAttrs), b.octetString(Buffer.alloc(32, 0x4D))]);
+  var authToken = b.sequence([b.oid(ID_CT_AUTHDATA), b.explicit(0, authData)]);
+  check("44d. AuthenticatedData token (not SignedData) rejected typed", tokenCode(authToken) === "tsp/not-signed-data");
 }
 
 // ---- Dispatch + coercion ---------------------------------------------

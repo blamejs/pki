@@ -37,8 +37,6 @@ module.exports = {
   getChecks:          _check.getChecks,
   getSkips:           _check.getSkips,
   getSkipReasons:     _check.getSkipReasons,
-  resetChecksForTest: _check.resetChecksForTest,
-  addExternalChecks:  _check.addExternalChecks,
   formatErr:          _check.formatErr,
 
   // Poll-until-condition — replaces fixed-budget setTimeout(r, N) sleeps.

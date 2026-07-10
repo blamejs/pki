@@ -65,6 +65,21 @@ try {
     process.exit(1);
   }
 
+  // Deleting a documented primitive's @since line must not vacate the
+  // immutability freeze: every token the committed baseline records must
+  // still be documented in source, or its origin preserved via @originated
+  // when the documented path moved. checkSince alone iterates only the
+  // CURRENT map, so a deleted tag would otherwise vanish without a verdict.
+  var droppedViolations = snap.checkSinceDropped(
+    baseline.sinceByPrimitive || {}, sinceByPrimitive, snap.extractOriginated());
+  if (droppedViolations.length > 0) {
+    console.error("[check-api-snapshot] @since deletion violation(s):");
+    droppedViolations.forEach(function (m) { console.error("  - " + m); });
+    console.error("[check-api-snapshot] restore the @since tag (or declare @originated on the " +
+      "corrected path) — a shipped primitive's introduction record is immutable.");
+    process.exit(1);
+  }
+
   if (diff.additive.length > 0) {
     console.log("[check-api-snapshot] " + diff.additive.length +
       " additive change(s) — refresh the baseline at the next release " +

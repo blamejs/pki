@@ -128,11 +128,11 @@ function popoKeyEnc(inner) { return b.contextConstructed(2, inner || b.contextPr
 // The fields of a minimal valid v0 EnvelopedData (version, recipientInfos {ktri v0},
 // encryptedContentInfo) — the content of an IMPLICIT encryptedKey [4]. The content
 // type defaults to id-ct-encKeyWithID (RFC 4211 §4.2); override to test the reject.
-function envDataFields(ct, detached) {
+function envDataFields(ct, detached, emptyCt) {
   var rid = b.sequence([rdnSeq("CA"), b.integer(1)]);
   var ktri = b.sequence([b.integer(0), rid, algId(RSA_ENC), b.octetString(Buffer.from([0xde, 0xad]))]);
   var eciFields = [b.oid(ct || "1.2.840.113549.1.9.16.1.21"), algId("2.16.840.1.101.3.4.1.2")];
-  if (!detached) eciFields.push(b.contextPrimitive(0, Buffer.from([0xde, 0xad, 0xbe, 0xef])));  // encryptedContent [0]
+  if (!detached) eciFields.push(b.contextPrimitive(0, emptyCt ? Buffer.alloc(0) : Buffer.from([0xde, 0xad, 0xbe, 0xef])));  // encryptedContent [0]
   return Buffer.concat([b.integer(0), b.set([ktri]), b.sequence(eciFields)]);
 }
 
@@ -294,6 +294,11 @@ function testRejectPoposkInput() {
   check("poposkInput bad publicKey (not SPKI) rejected", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput({ publicKey: b.integer(1) }) }))) === "crmf/bad-spki");
   // authInfo sender [0] EXPLICIT GeneralName is accepted.
   check("poposkInput authInfo sender [0] GeneralName accepted", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput({ authInfo: b.explicit(0, b.contextPrimitive(2, Buffer.from("dns.example", "latin1"))) }) }))) === "NO-THROW");
+  // A POP signature / PKMACValue MAC is octet-string algorithm output handed to
+  // an external verifier -- a non-octet-aligned BIT STRING is malformed
+  // (RFC 4211 sec. 4.1, RFC 9481).
+  check("POP signature with unused bits rejected", parseCode(msg(complete, popoSignature({ sig: Buffer.from([0xa0]), sigUnused: 4 }))) === "crmf/bad-popo");
+  check("poposkInput PKMACValue with unused bits rejected", parseCode(msg(subjectOnly, popoSignature({ poposkInput: poposkInput({ authInfo: b.sequence([algId(SHA256_RSA), b.bitString(Buffer.from([0xa0]), 4)]) }) }))) === "crmf/bad-popo");
 }
 
 // ---- POPOPrivKey methods + §4.2/§4.3 validation ----------------------
@@ -315,10 +320,15 @@ function testPopoPrivKeyMethods() {
   check("dhMAC [2] + incomplete template rejected", parseCode(m2(subjectOnly, keyAgree(b.contextPrimitive(2, Buffer.from([0x00, 0xaa]))))) === "crmf/bad-popo");
   // Each alternative's PAYLOAD is decoded, not just form-checked.
   check("agreeMAC [3] non-PKMACValue payload rejected", parseCode(m2(complete, keyAgree(b.contextConstructed(3, b.integer(1))))) === "crmf/bad-popo");
+  // The PKMACValue MAC is octet-string output -- unused BIT STRING bits are malformed.
+  check("agreeMAC [3] PKMACValue with unused bits rejected", parseCode(m2(complete, keyAgree(b.contextConstructed(3, Buffer.concat([algId(SHA256_RSA), b.bitString(Buffer.from([0xa0]), 4)]))))) === "crmf/bad-popo");
   check("dhMAC [2] malformed BIT STRING rejected", parseCode(m2(complete, keyAgree(b.contextPrimitive(2, Buffer.from([0x08]))))) === "crmf/bad-popo");
   check("thisMessage [0] malformed BIT STRING rejected", parseCode(one({ popo: keyEnc(b.contextPrimitive(0, Buffer.from([0x08]))) })) === "crmf/bad-popo");
   // encryptedKey [4] EnvelopedData is structurally validated, not deferred raw.
   check("encryptedKey [4] valid EnvelopedData accepted + method surfaced", parse(one({ popo: keyEnc(b.contextConstructed(4, envDataFields())) })).messages[0].popo.method === "encryptedKey");
+  // A ZERO-LENGTH attached ciphertext is as meaningless a POP as a detached one
+  // (no key material to verify or archive) -- same reject, same code.
+  check("encryptedKey [4] zero-length ciphertext rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, envDataFields(null, false, true))) })) === "crmf/bad-popo");
   check("encryptedKey [4] malformed EnvelopedData rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, b.integer(9))) })) === "crmf/bad-popo");
   // RFC 4211 §4.2 — the enveloped content type MUST be id-ct-encKeyWithID.
   check("encryptedKey [4] wrong content type (id-data) rejected", parseCode(one({ popo: keyEnc(b.contextConstructed(4, envDataFields("1.2.840.113549.1.7.1"))) })) === "crmf/bad-popo");
@@ -398,6 +408,19 @@ function testInputCoercion() {
   check("parse(Buffer) ok", parse(der).messages.length === 1);
   check("parse(Uint8Array) ok", parse(new Uint8Array(der)).messages.length === 1);
   check("parse(42) bad-input", parseCode(42) === "crmf/bad-input");
+  // The PEM path: RFC 4211 registers no RFC 7468 label (pemLabel null), so the
+  // FIRST block of any label is taken — as a string and as a Buffer — and a bad
+  // envelope fails with the pem/* verdict.
+  var pem = "-----BEGIN CERT REQUEST MESSAGES-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END CERT REQUEST MESSAGES-----\n";
+  check("parse(PEM string) ok (label-agnostic)", parse(pem).messages.length === 1);
+  check("parse(PEM Buffer) ok", parse(Buffer.from(pem, "latin1")).messages.length === 1);
+  check("pemDecode round-trips", pki.schema.crmf.pemDecode(pem).equals(der));
+  check("pemEncode with an explicit label round-trips",
+    pki.schema.crmf.pemDecode(pki.schema.crmf.pemEncode(der, "CERT REQUEST MESSAGES"), "CERT REQUEST MESSAGES").equals(der));
+  check("pemEncode without a label fails closed",
+    code(function () { pki.schema.crmf.pemEncode(der); }) === "pem/bad-label");
+  check("missing envelope -> pem/no-block", parseCode("not a pem block") === "pem/no-block");
+  check("bad base64 body -> pem/bad-base64", parseCode("-----BEGIN X-----\n@@@@\n-----END X-----\n") === "pem/bad-base64");
   // multi-defect fail-closed: never NO-THROW.
   var multi = one({ certReq: { templateNode: certTemplate({ version: 0, rawKids: [implicitInt(0, 0), implicitName(5, "s"), implicitName(3, "i")] }) } });
   var mc = parseCode(multi);

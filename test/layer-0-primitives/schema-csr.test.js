@@ -51,18 +51,30 @@ function csr(o) {
 }
 
 function testValid() {
-  var m = parse(csr({ cri: { subject: b.sequence([]), attrNode: attrs([]) } }));
+  var minimalDer = csr({ cri: { subject: b.sequence([]), attrNode: attrs([]) } });
+  var m = parse(minimalDer);
   check("minimal CSR: version 1", m.version === 1);
   check("minimal CSR: empty subject accepted", Array.isArray(m.subject.rdns) && m.subject.rdns.length === 0 && m.subject.dn === "");
   check("minimal CSR: empty attributes", Array.isArray(m.attributes) && m.attributes.length === 0);
   check("minimal CSR: subjectPublicKeyInfo", m.subjectPublicKeyInfo.algorithm.oid === "1.2.840.10045.2.1" && m.subjectPublicKeyInfo.publicKey.bytes.length > 0);
   check("minimal CSR: signatureAlgorithm named", m.signatureAlgorithm.oid === SIGALG);
   check("minimal CSR: certificationRequestInfoBytes is a non-empty Buffer", Buffer.isBuffer(m.certificationRequestInfoBytes) && m.certificationRequestInfoBytes.length > 0);
+  // certificationRequestInfoBytes is the exact proof-of-possession region an
+  // external verifier hashes — it must be the CRI TLV byte-for-byte off the
+  // wire, never re-serialized.
+  check("minimal CSR: certificationRequestInfoBytes byte-identical to the CRI TLV on the wire",
+    m.certificationRequestInfoBytes.equals(pki.asn1.decode(minimalDer).children[0].bytes));
 
   var full = parse(csr({ cri: { subject: name("req.example"), attrNode: attrs([attribute(CHALLENGE, [b.printable("secret")])]) } }));
   check("CSR subject dn", full.subject.dn === "CN=req.example");
   check("CSR one attribute, stable dotted type", full.attributes.length === 1 && full.attributes[0].type === CHALLENGE && full.attributes[0].values.length === 1);
   check("CSR attribute value kept as raw DER", Buffer.isBuffer(full.attributes[0].values[0]));
+
+  // The pem surfaces: pemEncode emits armor that pemDecode returns to
+  // byte-identical DER, with the requested label enforced.
+  var csrPem = pki.schema.csr.pemEncode(minimalDer, "CERTIFICATE REQUEST");
+  check("csr.pemEncode/pemDecode round-trips to identical DER",
+    pki.schema.csr.pemDecode(csrPem, "CERTIFICATE REQUEST").equals(minimalDer));
 }
 
 // Anti-regression: guards that MUST NOT be copied from the cert/CRL parsers.
@@ -121,6 +133,50 @@ function testAttributes() {
   check("Attribute empty values SET rejected (SET SIZE 1..MAX)", parseCode(csr({ cri: { attrNode: attrs([b.sequence([b.oid(CHALLENGE), b.set([])])]) } })) === "csr/bad-attribute-values");
 }
 
+// PKCS#9 recognized-attribute value syntax (RFC 2985 §5.4.1 / §5.4.2):
+// extensionRequest and challengePassword are SINGLE VALUE TRUE with a fixed
+// WITH SYNTAX — one Extensions value / one DirectoryString (1..255 chars). A
+// recognized type carrying a malformed value fails closed with
+// csr/bad-attribute-value; an UNRECOGNIZED type stays opaque raw DER; and
+// duplicate attribute TYPES stay legal (no SET-OF uniqueness — see
+// testDoNotCopyGuards).
+var EXTREQ = "1.2.840.113549.1.9.14"; // extensionRequest
+function extNode(o, v) { return b.sequence([b.oid(o), b.octetString(v)]); }
+function testRecognizedAttributeValues() {
+  var ext1 = extNode("2.5.29.14", Buffer.from([0x04, 0x01, 0xaa]));
+  var ext2 = extNode("2.5.29.15", Buffer.from([0x03, 0x02, 0x05, 0xa0]));
+  function attrsCsr(list) { return csr({ cri: { attrNode: attrs(list) } }); }
+
+  check("extensionRequest with one Extensions value parses",
+    parseCode(attrsCsr([attribute(EXTREQ, [b.sequence([ext1])])])) === "NO-THROW");
+  check("extensionRequest with a non-Extensions value (INTEGER) rejected",
+    parseCode(attrsCsr([attribute(EXTREQ, [b.integer(42n)])])) === "csr/bad-attribute-value");
+  check("extensionRequest with an empty Extensions SEQUENCE rejected (SIZE 1..MAX)",
+    parseCode(attrsCsr([attribute(EXTREQ, [b.sequence([])])])) === "csr/bad-attribute-value");
+  check("extensionRequest with two values rejected (SINGLE VALUE TRUE)",
+    parseCode(attrsCsr([attribute(EXTREQ, [b.sequence([ext1]), b.sequence([ext2])])])) === "csr/bad-attribute-value");
+  check("extensionRequest carrying a duplicate extension OID rejected",
+    parseCode(attrsCsr([attribute(EXTREQ, [b.sequence([ext1, extNode("2.5.29.14", Buffer.from([0x04, 0x01, 0xbb]))])])])) === "csr/bad-attribute-value");
+  check("two separate extensionRequest attributes still parse (no SET-OF uniqueness)",
+    parseCode(attrsCsr([attribute(EXTREQ, [b.sequence([ext1])]), attribute(EXTREQ, [b.sequence([ext2])])])) === "NO-THROW");
+
+  check("challengePassword as PrintableString parses",
+    parseCode(attrsCsr([attribute(CHALLENGE, [b.printable("secret")])])) === "NO-THROW");
+  check("challengePassword as UTF8String parses",
+    parseCode(attrsCsr([attribute(CHALLENGE, [b.utf8("secret")])])) === "NO-THROW");
+  check("challengePassword as INTEGER rejected (DirectoryString required)",
+    parseCode(attrsCsr([attribute(CHALLENGE, [b.integer(1n)])])) === "csr/bad-attribute-value");
+  check("challengePassword as IA5String rejected (not a DirectoryString alternative)",
+    parseCode(attrsCsr([attribute(CHALLENGE, [b.ia5("pw")])])) === "csr/bad-attribute-value");
+  check("empty challengePassword rejected (SIZE 1..255)",
+    parseCode(attrsCsr([attribute(CHALLENGE, [b.utf8("")])])) === "csr/bad-attribute-value");
+  check("challengePassword with two values rejected (SINGLE VALUE TRUE)",
+    parseCode(attrsCsr([attribute(CHALLENGE, [b.printable("a"), b.printable("b")])])) === "csr/bad-attribute-value");
+
+  check("unrecognized attribute type stays opaque raw DER (INTEGER value parses)",
+    parseCode(attrsCsr([attribute("1.2.840.113549.1.9.99", [b.integer(7n)])])) === "NO-THROW");
+}
+
 function testMultiDefectFailClosed() {
   var c = parseCode(csr({ cri: { version: b.integer(9n), subject: b.set([]), attrNode: attrs([b.integer(1n)]) } }));
   check("multi-defect CSR stays fail-closed (typed rejection, no raw crash)", c !== "NO-THROW" && c.indexOf("RAW:") !== 0);
@@ -132,6 +188,7 @@ function run() {
   testVersion();
   testOuterAndCri();
   testAttributes();
+  testRecognizedAttributeValues();
   testMultiDefectFailClosed();
 }
 

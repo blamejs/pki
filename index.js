@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * @blamejs/pki — public API entry point.
+ * @blamejs/pki -- public API entry point.
  *
  * A pure-JavaScript PKI toolkit that owns its stack. Zero npm runtime
  * dependencies; strict, fail-closed parsing; post-quantum-first crypto.
@@ -11,14 +11,18 @@
  *
  *   Core:          C / constants (scale helpers + version), errors
  *                  (PkiError taxonomy), asn1 (strict DER codec), oid
- *                  (OID ↔ name registry), webcrypto (W3C SubtleCrypto
- *                  engine over node:crypto — PQC-first, classical-capable)
- *   Schema:        schema (the structure-schema engine + per-format parsers:
- *                  schema.engine, schema.x509, schema.parse detect-and-route)
+ *                  (OID <-> name registry), webcrypto (W3C SubtleCrypto
+ *                  engine over node:crypto -- PQC-first, classical-capable,
+ *                  ML-DSA / ML-KEM / SLH-DSA alongside the classical set)
+ *   Schema:        schema (the structure-schema engine + the registered
+ *                  format parsers -- X.509, CRL, CSR, PKCS#8, PKCS#12, CMS,
+ *                  OCSP, timestamps, CRMF, CMP, attribute certificates --
+ *                  with detect-and-route schema.parse; schema.all() lists
+ *                  the registered set)
+ *   Validation:    path (RFC 5280 certification-path validation), ct
+ *                  (RFC 6962 Certificate Transparency SCT decoding)
  *
- * The surface grows per ROADMAP.md — CMS, OCSP, CRL, CSR, PKCS#8/#12,
- * timestamping, path validation, and the post-quantum algorithm set are
- * targeted additions that ride the same core.
+ * ROADMAP.md tracks what remains ahead of the shipped surface.
  *
  * See LICENSE (Apache-2.0) and NOTICE for vendored attribution.
  */
@@ -42,12 +46,12 @@ module.exports = {
   asn1:      asn1,
   oid:       oid,
   // `schema` is the family: the L2 structure-schema engine (schema.engine) and
-  // the per-format parsers (schema.x509, …) with detect-and-route schema.parse.
+  // the per-format parsers (schema.x509, ...) with detect-and-route schema.parse.
   schema:    schema,
-  // `path` is RFC 5280 §6 certification-path validation — pki.path.validate
-  // runs the §6.1 state machine over an already-parsed path + a trust anchor.
+  // `path` is RFC 5280 sec. 6 certification-path validation -- pki.path.validate
+  // runs the sec. 6.1 state machine over an already-parsed path + a trust anchor.
   path:      path,
-  // `ct` is RFC 6962 Certificate Transparency — pki.ct.parseSctList decodes the
+  // `ct` is RFC 6962 Certificate Transparency -- pki.ct.parseSctList decodes the
   // SCT-list extension a certificate / OCSP response carries; the signature is
   // surfaced raw for external verification (pki.ct.reconstructSignedData).
   ct:        ct,

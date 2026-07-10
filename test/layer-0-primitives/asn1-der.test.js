@@ -99,7 +99,7 @@ function testRejects() {
 
 function testIntegerAndOidCaps() {
   var TAGS = pki.asn1.TAGS;
-  // FIX 1 — quadratic-BigInt DoS: an over-cap INTEGER is refused before
+  // quadratic-BigInt DoS: an over-cap INTEGER is refused before
   // the BigInt magnitude is built. DER_MAX_INTEGER_BYTES is 16384; any
   // longer content (a hostile length prefix) must be rejected up front.
   var bigIntDer = pki.asn1.encode(0x00, false, TAGS.INTEGER, Buffer.alloc(20000, 0x01));
@@ -139,7 +139,7 @@ function testTimeOutOfRange() {
   var TAGS = pki.asn1.TAGS;
   function readGen(s) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.GENERALIZED_TIME, Buffer.from(s, "latin1")))); }
   function readUtc(s) { return pki.asn1.read.time(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.UTC_TIME, Buffer.from(s, "latin1")))); }
-  // FIX 2 — Date.UTC silently rolls over; every component must round-trip.
+  // Date.UTC silently rolls over; every component must round-trip.
   ["20250230000000Z", "20251301000000Z", "20250101250000Z", "20250100000000Z"].forEach(function (s) {
     check("GeneralizedTime " + s + " throws bad-time", code(function () { readGen(s); }) === "asn1/bad-time");
   });
@@ -188,7 +188,7 @@ function testFractionalTimeAndImplicitInteger() {
 
 function testBitStringUnusedBits() {
   var TAGS = pki.asn1.TAGS;
-  // FIX 3 — DER requires the declared unused low bits to be zero.
+  // DER requires the declared unused low bits to be zero.
   var der = pki.asn1.encode(0x00, false, TAGS.BIT_STRING, Buffer.from([0x03, 0xFF]));
   check("BIT STRING with non-zero unused bits throws bad-bit-string",
     code(function () { pki.asn1.read.bitString(pki.asn1.decode(der)); }) === "asn1/bad-bit-string");
@@ -206,11 +206,20 @@ function testBitStringUnusedBits() {
     code(function () { pki.asn1.build.bitString(Buffer.alloc(0), 3); }) === "asn1/bad-bit-string");
   check("build.bitString accepts empty body with zero unused bits",
     code(function () { pki.asn1.build.bitString(Buffer.alloc(0), 0); }) === "NO-THROW");
+  // A fractional / non-finite unusedBits would be silently bit-truncated into a
+  // DIFFERENT count when written into the leading octet — reject it like the
+  // other numeric builder inputs (encodeLength, the tag number).
+  check("build.bitString rejects a fractional unusedBits",
+    code(function () { pki.asn1.build.bitString(Buffer.from([0xA0]), 3.5); }) === "asn1/bad-bit-string");
+  check("build.bitString rejects a NaN unusedBits",
+    code(function () { pki.asn1.build.bitString(Buffer.from([0xA0]), NaN); }) === "asn1/bad-bit-string");
+  check("build.bitString still defaults an omitted unusedBits to 0",
+    code(function () { pki.asn1.build.bitString(Buffer.from([0xA0])); }) === "NO-THROW");
 }
 
 function testUniversalStringScalarRange() {
   var TAGS = pki.asn1.TAGS;
-  // FIX 4 — scalar value out of range must be a typed Asn1Error, not a bare RangeError.
+  // scalar value out of range must be a typed Asn1Error, not a bare RangeError.
   var der = pki.asn1.encode(0x00, false, TAGS.UNIVERSAL_STRING, Buffer.from([0xFF, 0x00, 0x00, 0x00]));
   check("UniversalString code point out of range throws bad-universal-string",
     code(function () { pki.asn1.read.string(pki.asn1.decode(der)); }) === "asn1/bad-universal-string");
@@ -229,7 +238,7 @@ function testUniversalStringScalarRange() {
 
 function testUtcTimeYearRange() {
   var b = pki.asn1.build;
-  // FIX A — RFC 5280 §4.1.2.5.1 restricts UTCTime to 1950..2049; a year
+  // RFC 5280 §4.1.2.5.1 restricts UTCTime to 1950..2049; a year
   // outside that wraps to the wrong century (2050 -> "50" -> decodes 1950).
   check("build.utcTime year 2050 throws bad-utctime",
     code(function () { b.utcTime(new Date(Date.UTC(2050, 0, 1))); }) === "asn1/bad-utctime");
@@ -244,7 +253,7 @@ function testUtcTimeYearRange() {
 
 function testGeneralizedTimeYearPad() {
   var b = pki.asn1.build;
-  // FIX B — a GeneralizedTime year below 1000 must zero-pad to 4 digits, or
+  // a GeneralizedTime year below 1000 must zero-pad to 4 digits, or
   // it emits 12-14 char content that read.time rejects.
   check("build.generalizedTime year 99 round-trips to 99", (function () {
     // No try/catch: a regression that makes read.time reject the year-99 value
@@ -263,7 +272,7 @@ function testGeneralizedTimeYearPad() {
 }
 
 function testSequenceSetMustBeConstructed() {
-  // FIX C — X.690 8.9.1/8.11.1: universal SEQUENCE (0x10) / SET (0x11) MUST be
+  // X.690 8.9.1/8.11.1: universal SEQUENCE (0x10) / SET (0x11) MUST be
   // constructed; a primitive-tagged one decodes to a leaf (children=null) that
   // constructed-structure consumers dereference as a parent.
   check("primitive-tagged SEQUENCE throws bad-tlv",
@@ -304,11 +313,93 @@ function testConstructedPrimitiveOnlyRejected() {
     code(function () { pki.asn1.decode(b.set([b.integer(1n)])); }) === "NO-THROW");
   check("constructed SEQUENCE still decodes (mirror)",
     code(function () { pki.asn1.decode(b.sequence([b.integer(1n)])); }) === "NO-THROW");
+
+  // Universal types OUTSIDE the registry obey the same X.690 §10.2 form rule:
+  // the constructed-capable universal set is a whitelist (SEQUENCE / SET), so a
+  // constructed encoding of a restricted string type the codec never registered
+  // cannot slip past the form check and reach a downstream consumer (an X.509
+  // DN attribute hex-render) as a childless leaf.
+  [
+    ["ObjectDescriptor", 7],
+    ["NumericString", 18],
+    ["VideotexString", 21],
+    ["GraphicString", 25],
+    ["GeneralString", 27],
+  ].forEach(function (c) {
+    var tlv = pki.asn1.encode(0x00, true, c[1], b.octetString(Buffer.alloc(0)));
+    check("constructed " + c[0] + " (unregistered universal type) is rejected at decode",
+      code(function () { pki.asn1.decode(tlv); }) === "asn1/constructed-primitive-type");
+  });
+  // X.690 sec. 8.9/8.10/8.21 -- EXTERNAL (8), EMBEDDED PDV (11), and the
+  // unrestricted CHARACTER STRING (29) are ALWAYS-constructed universal types
+  // (SEQUENCE-based encodings), so a constructed encoding MUST decode -- one may
+  // appear inside an ANY field (a CSR / CMS attribute value) the codec surfaces
+  // raw. Rejecting them would fail otherwise-valid DER before a format parser sees it.
+  [["EXTERNAL", 8], ["EMBEDDED PDV", 11], ["CHARACTER STRING", 29]].forEach(function (c) {
+    var tlv = pki.asn1.encode(0x00, true, c[1], b.integer(1n));  // constructed, one inner TLV
+    check("constructed " + c[0] + " decodes",
+      code(function () { pki.asn1.decode(tlv); }) === "NO-THROW");
+    var node = pki.asn1.decode(tlv);
+    check("constructed " + c[0] + " surfaces its children", node.constructed && node.children.length === 1);
+    // The mirror rule: an always-constructed type encoded PRIMITIVE is not valid DER.
+    check("primitive " + c[0] + " is rejected at decode",
+      code(function () { pki.asn1.decode(pki.asn1.encode(0x00, false, c[1], Buffer.alloc(0))); }) === "asn1/bad-tlv");
+  });
+}
+
+// A non-finite / negative / fractional size or depth cap silently DISABLES the
+// DoS guard (`depth > NaN` and `length > Infinity` are always false), letting a
+// deeply nested input run to a bare RangeError instead of a typed verdict. A
+// bad cap is a config fault and throws at entry (the tier-1 TypeError shape),
+// so the CWE-400 caps can never be switched off by a typo.
+function testDecodeCapOptsValidated() {
+  var b = pki.asn1.build;
+  var deep = b.integer(1n);
+  for (var i = 0; i < 80; i++) deep = b.sequence([deep]);
+  [NaN, Infinity, -1, 3.5, "64"].forEach(function (v) {
+    check("decode rejects maxDepth " + String(v) + " as a TypeError", (function () {
+      try { pki.asn1.decode(deep, { maxDepth: v }); return false; } catch (e) { return e instanceof TypeError; }
+    })());
+    check("decode rejects maxBytes " + String(v) + " as a TypeError", (function () {
+      try { pki.asn1.decode(b.nullValue(), { maxBytes: v }); return false; } catch (e) { return e instanceof TypeError; }
+    })());
+  });
+  check("decode with valid explicit caps still decodes",
+    code(function () { pki.asn1.decode(b.nullValue(), { maxBytes: 16, maxDepth: 4 }); }) === "NO-THROW");
+  check("decode with the default caps (opts omitted) still decodes",
+    code(function () { pki.asn1.decode(b.nullValue()); }) === "NO-THROW");
+}
+
+// encode validates the tag number the way encodeLength validates the length: a
+// negative tag corrupts the identifier octet (-1 emitted 0xff00), a fraction is
+// silently bit-truncated to a DIFFERENT tag (3.7 -> 3), and a tag past the
+// decoder's 4-octet high-tag cap emits DER decode() refuses — authoring faults
+// that throw instead of breaking encode/decode round-trip symmetry.
+function testEncodeIdentifierValidation() {
+  check("encode rejects a negative tag",
+    code(function () { pki.asn1.encode(0x00, false, -1, Buffer.alloc(0)); }) === "asn1/bad-tag");
+  check("encode rejects a fractional tag",
+    code(function () { pki.asn1.encode(0x80, false, 3.7, Buffer.alloc(0)); }) === "asn1/bad-tag");
+  check("encode rejects a NaN tag",
+    code(function () { pki.asn1.encode(0x80, false, NaN, Buffer.alloc(0)); }) === "asn1/bad-tag");
+  check("encode rejects a non-number tag",
+    code(function () { pki.asn1.encode(0x80, false, "31", Buffer.alloc(0)); }) === "asn1/bad-tag");
+  check("encode rejects a tag past the decoder's high-tag cap",
+    code(function () { pki.asn1.encode(0x80, false, 0x10000000, Buffer.alloc(0)); }) === "asn1/tag-too-large");
+  // The cap is symmetric: the largest 4-octet high tag encodes AND decodes.
+  check("encode of the max 4-octet high tag round-trips", (function () {
+    var tlv = pki.asn1.encode(0x80, false, 0x0fffffff, Buffer.alloc(0));
+    return pki.asn1.decode(tlv).tagNumber === 0x0fffffff;
+  })());
+  check("encode of a 2-octet high tag round-trips", (function () {
+    var tlv = pki.asn1.encode(0x80, false, 128, Buffer.alloc(0));
+    return pki.asn1.decode(tlv).tagNumber === 128;
+  })());
 }
 
 function testIa5SevenBit() {
   var b = pki.asn1.build;
-  // FIX D — IA5String is 7-bit (0..127); a byte > 0x7F is not IA5.
+  // IA5String is 7-bit (0..127); a byte > 0x7F is not IA5.
   check("build.ia5 rejects a byte > 0x7F",
     code(function () { b.ia5(String.fromCharCode(0xE9)); }) === "asn1/bad-ia5-string");
   check("build.ia5 accepts plain ASCII", code(function () { b.ia5("abc"); }) === "NO-THROW");
@@ -320,7 +411,7 @@ function testIa5SevenBit() {
 
 function testSetSorted() {
   var b = pki.asn1.build;
-  // FIX E — DER (X.690 11.6) requires SET components in ascending encoded
+  // DER (X.690 11.6) requires SET components in ascending encoded
   // order, regardless of caller order.
   var tlvA = b.integer(1n); // 02 01 01
   var tlvB = b.integer(2n); // 02 01 02  (tlvA < tlvB by Buffer.compare)
@@ -330,7 +421,7 @@ function testSetSorted() {
 
 function testIntegerBufferMinimal() {
   var b = pki.asn1.build;
-  // FIX F — a raw INTEGER/ENUMERATED Buffer must be non-empty + minimal, or
+  // a raw INTEGER/ENUMERATED Buffer must be non-empty + minimal, or
   // build emits content read.integer rejects.
   check("build.integer rejects a non-minimal positive buffer",
     code(function () { b.integer(Buffer.from([0x00, 0x01])); }) === "asn1/non-minimal-integer");
@@ -357,7 +448,7 @@ function testIntegerBufferMinimal() {
 
 function testOidSubIdentifierCap() {
   var b = pki.asn1.build;
-  // FIX G — build.oid can't emit a sub-identifier over the byte cap the
+  // build.oid can't emit a sub-identifier over the byte cap the
   // decoder rejects (OID_MAX_SUBIDENTIFIER_BYTES).
   check("build.oid rejects an over-cap sub-identifier",
     code(function () { b.oid("2.25." + (2n ** 260n).toString()); }) === "oid/subidentifier-too-large");
@@ -375,21 +466,21 @@ function testReadStringValidation() {
   function decRead(tag, bytes) {
     return pki.asn1.read.string(pki.asn1.decode(pki.asn1.encode(0x00, false, tag, Buffer.from(bytes))));
   }
-  // FIX H — IA5String content bytes >= 0x80 are not 7-bit ASCII.
+  // IA5String content bytes >= 0x80 are not 7-bit ASCII.
   check("read IA5String with a 0x80 byte throws bad-ia5-string",
     code(function () { decRead(TAGS.IA5_STRING, [0x41, 0x80]); }) === "asn1/bad-ia5-string");
   check("read a valid IA5String decodes", decRead(TAGS.IA5_STRING, [0x61, 0x62, 0x63]) === "abc");
-  // FIX I — PrintableString outside the restricted set (here "@").
+  // PrintableString outside the restricted set (here "@").
   check("read PrintableString with '@' throws bad-printable-string",
     code(function () { decRead(TAGS.PRINTABLE_STRING, Buffer.from("A@B", "latin1")); }) === "asn1/bad-printable-string");
   check("read a valid PrintableString decodes",
     decRead(TAGS.PRINTABLE_STRING, Buffer.from("Hello, World.", "latin1")) === "Hello, World.");
-  // FIX J — UTF8String with invalid UTF-8 must be rejected, not U+FFFD-substituted.
+  // UTF8String with invalid UTF-8 must be rejected, not U+FFFD-substituted.
   check("read UTF8String with invalid UTF-8 throws bad-utf8-string",
     code(function () { decRead(TAGS.UTF8_STRING, [0xFF, 0xFE]); }) === "asn1/bad-utf8-string");
   check("read a valid UTF8String decodes",
     decRead(TAGS.UTF8_STRING, Buffer.from("héllo", "utf8")) === "héllo");
-  // FIX K — VisibleString is 0x20..0x7E (no control chars, no high bytes).
+  // VisibleString is 0x20..0x7E (no control chars, no high bytes).
   check("read VisibleString with a control char throws bad-visible-string",
     code(function () { decRead(TAGS.VISIBLE_STRING, [0x41, 0x1F]); }) === "asn1/bad-visible-string");
   check("read VisibleString with a high byte throws bad-visible-string",
@@ -495,6 +586,8 @@ function run() {
   testGeneralizedTimeYearPad();
   testSequenceSetMustBeConstructed();
   testConstructedPrimitiveOnlyRejected();
+  testDecodeCapOptsValidated();
+  testEncodeIdentifierValidation();
   testIa5SevenBit();
   testSetSorted();
   testIntegerBufferMinimal();

@@ -45,6 +45,12 @@ jobs:
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+          SNYK_CLI_VERSION: 1.1306.0
+        # The CLI version is pinned: these steps run with SNYK_TOKEN in the
+        # environment, and a floating `snyk@latest` would hand a compromised
+        # registry release (or transitive resolved that day) the secret with
+        # zero review. The vulnerability DB is server-side, so pinning the
+        # CLI does not stale the detections; bump the version deliberately.
         # --dev is required: this repo ships zero runtime dependencies (Hard Rule
         # #1), so the entire npm dependency surface is devDependencies, which Snyk
         # skips by default. Without it the SCA scan would cover nothing.
@@ -54,7 +60,7 @@ jobs:
         # instead of || true painting a broken scan as a passing one.
         run: |
           set +e
-          npx --yes snyk@latest test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-oss.sarif
+          npx --yes "snyk@${SNYK_CLI_VERSION}" test --all-projects --dev --severity-threshold=high --sarif-file-output=snyk-oss.sarif
           code=$?
           set -e
           if [ "$code" = "0" ] || [ "$code" = "1" ]; then exit 0; fi
@@ -75,11 +81,13 @@ jobs:
         continue-on-error: true
         env:
           SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
-        # Same exit-code handling: findings (1) succeed; an execution failure
-        # (e.g. Snyk Code not enabled for the org) surfaces as a red step.
+          SNYK_CLI_VERSION: 1.1306.0
+        # Same version pin (SNYK_TOKEN is in scope) and same exit-code
+        # handling: findings (1) succeed; an execution failure (e.g. Snyk
+        # Code not enabled for the org) surfaces as a red step.
         run: |
           set +e
-          npx --yes snyk@latest code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
+          npx --yes "snyk@${SNYK_CLI_VERSION}" code test --severity-threshold=high --sarif-file-output=snyk-code.sarif
           code=$?
           set -e
           if [ "$code" = "0" ] || [ "$code" = "1" ]; then exit 0; fi

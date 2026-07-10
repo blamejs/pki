@@ -41,6 +41,23 @@ function testRegister() {
     pki.oid.name("2.25.340282366920938463463374607431768211455") === "bigUuidArc");
   check("registerFamily rejects an unsafe Number arc",
     code(function () { pki.oid.registerFamily([2, 26], { x: 9007199254740992 }); }) === "oid/bad-arc");
+  // Collision semantics: a later registration of the same OID replaces the
+  // forward name; the reverse (name -> OID) keeps the first registration.
+  pki.oid.register("1.3.6.1.4.1.99999.200", "fwdA");
+  pki.oid.register("1.3.6.1.4.1.99999.200", "fwdB");
+  check("re-register replaces the forward name", pki.oid.name("1.3.6.1.4.1.99999.200") === "fwdB");
+  check("first reverse registration stays canonical", pki.oid.byName("fwdA") === "1.3.6.1.4.1.99999.200");
+  // A leading-zero component is a key no decoded OID can produce — the same
+  // string round-trips through the arc converters to a DIFFERENT OID.
+  check("register rejects a leading-zero component", code(function () { pki.oid.register("01.2.840.113549", "x"); }) === "oid/bad-input");
+  check("name rejects a leading-zero component", code(function () { pki.oid.name("01.2.840.113549"); }) === "oid/bad-input");
+  // X.660 encodability: root arc 0..2; second arc 0..39 under roots 0 and 1.
+  check("register rejects a root arc above 2", code(function () { pki.oid.register("9.9.9", "x"); }) === "oid/bad-arc");
+  check("register rejects second arc 40 under root 1", code(function () { pki.oid.register("1.40.1", "x"); }) === "oid/bad-arc");
+  check("register accepts second arc 40 under root 2", code(function () { pki.oid.register("2.40.99999", "joint40"); }) === "NO-THROW");
+  // A member whose derived OID has fewer than 2 arcs can never round-trip
+  // through name()/has()/toDER() (all require >= 2 arcs) — reject at register.
+  check("registerFamily rejects a one-arc member", code(function () { pki.oid.registerFamily([2], { loneArc: [] }); }) === "oid/bad-input");
 }
 
 function testArcs() {
@@ -95,7 +112,8 @@ function testSlhDsa() {
 }
 
 // paramsMustBeAbsent — the algorithm identifiers whose AlgorithmIdentifier
-// parameters field MUST be absent (RFC 9909 §3 / 9814 §4 / 9881 §2 / 8410 §3).
+// parameters field MUST be absent (RFC 9909 §3 / 9814 §4 / 9881 §2 / 8410 §3 /
+// 9936 §3 ML-KEM / 8619 §2 HKDF).
 function testParamsMustBeAbsent() {
   var must = [
     "id-ml-dsa-44", "id-ml-dsa-65", "id-ml-dsa-87",
@@ -110,13 +128,15 @@ function testParamsMustBeAbsent() {
     "id-hash-slh-dsa-shake-192s-with-shake256", "id-hash-slh-dsa-shake-192f-with-shake256",
     "id-hash-slh-dsa-shake-256s-with-shake256", "id-hash-slh-dsa-shake-256f-with-shake256",
     "Ed25519", "Ed448", "X25519", "X448",
+    "id-ml-kem-512", "id-ml-kem-768", "id-ml-kem-1024",
+    "hkdfWithSha256", "hkdfWithSha384", "hkdfWithSha512",
   ];
   must.forEach(function (nm) {
     check("paramsMustBeAbsent(" + nm + ") -> true", pki.oid.paramsMustBeAbsent(pki.oid.byName(nm)) === true);
   });
-  check("count of the must-absent set is 31 (12 pure + 12 hash SLH-DSA + 3 ML-DSA + 4 Ed/X)", must.length === 31);
+  check("count of the must-absent set is 37 (12 pure + 12 hash SLH-DSA + 3 ML-DSA + 4 Ed/X + 3 ML-KEM + 3 HKDF)", must.length === 37);
   // Algorithms that legitimately CARRY parameters (or a NULL) are NOT in the set.
-  ["rsaEncryption", "sha256WithRSAEncryption", "rsassaPss", "ecPublicKey", "prime256v1", "id-ml-kem-512"].forEach(function (nm) {
+  ["rsaEncryption", "sha256WithRSAEncryption", "rsassaPss", "ecPublicKey", "prime256v1", "aes256-GCM"].forEach(function (nm) {
     check("paramsMustBeAbsent(" + nm + ") -> false", pki.oid.paramsMustBeAbsent(pki.oid.byName(nm)) === false);
   });
   // An unregistered dotted OID is not in the set (no throw, plain false).

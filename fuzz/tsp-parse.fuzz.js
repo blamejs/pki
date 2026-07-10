@@ -9,9 +9,9 @@
  * `module.exports.fuzz = function (data)` where `data` is a Buffer the
  * engine mutates via coverage-guided fuzzing. All three RFC 3161 entry
  * points are driven on the same input — a TimeStampResp, a bare TSTInfo,
- * and a TimeStampToken are all DER SEQUENCEs, so the shared ASN.1 seed
- * corpus exercises every front door; the token path additionally drives
- * the CMS composition and the nested TSTInfo re-decode.
+ * and a TimeStampToken are all DER SEQUENCEs, so every seed in
+ * fuzz/tsp-parse_seed_corpus/ exercises every front door; the token path
+ * additionally drives the CMS composition and the nested TSTInfo re-decode.
  *
  * Contract: parsing an attacker-controlled timestamp structure has exactly
  * two acceptable outcomes — a successful parse, or a thrown

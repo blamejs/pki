@@ -139,18 +139,30 @@ function minimalPfx(o) {
 function rdn(cn) { return b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8(cn)])])]); }
 function signedDataAuthSafe(authenticatedSafeDer, opts) {
   opts = opts || {};
-  var signer = b.sequence([
+  var ct = opts.eContentType || ID_DATA;
+  var signerKids = [
     b.integer(1),
     b.sequence([rdn("Signer"), b.integer(7)]),
     algId(SHA256),
-    algId("1.2.840.113549.1.1.11"),
-    b.octetString(Buffer.from([1, 2, 3])),
-  ]);
+  ];
+  if (opts.signedAttrs) {
+    // signedAttrs [0] IMPLICIT SET OF Attribute, canonically ordered; the
+    // content-type attribute value must equal the eContentType (RFC 5652 §5.3).
+    var attrs = [
+      b.sequence([b.oid("1.2.840.113549.1.9.3"), b.set([b.oid(ct)])]),
+      b.sequence([b.oid("1.2.840.113549.1.9.4"), b.set([b.octetString(Buffer.alloc(32, 1))])]),
+    ].sort(Buffer.compare);
+    signerKids.push(pki.asn1.encode(0x80, true, 0, Buffer.concat(attrs)));
+  }
+  signerKids.push(algId("1.2.840.113549.1.1.11"), b.octetString(Buffer.from([1, 2, 3])));
+  var encap = opts.detached
+    ? b.sequence([b.oid(ct)])
+    : b.sequence([b.oid(ct), b.explicit(0, b.octetString(authenticatedSafeDer))]);
   var signedData = b.sequence([
-    b.integer(1),                               // version 1 (eContentType id-data)
+    b.integer(ct === ID_DATA ? 1 : 3),          // version 1 for id-data, 3 otherwise (RFC 5652 §5.1)
     b.set([algId(SHA256)]),                     // digestAlgorithms
-    b.sequence([b.oid(ID_DATA), b.explicit(0, b.octetString(authenticatedSafeDer))]),
-    b.set(opts.noSigners ? [] : [signer]),      // signerInfos
+    encap,
+    b.set(opts.noSigners ? [] : [b.sequence(signerKids)]),   // signerInfos
   ]);
   return contentInfo(ID_SIGNED_DATA, signedData);
 }
@@ -161,8 +173,9 @@ function pbmac1MacData(o) {
   o = o || {};
   var kdfParams = [b.octetString(Buffer.alloc(16, 8)), b.integer(o.kdfIterations !== undefined ? o.kdfIterations : 2048)];
   if (o.omitKeyLength !== true) kdfParams.push(b.integer(o.keyLength !== undefined ? o.keyLength : 32));
+  if (o.prf) kdfParams.push(o.prf);
   var params = b.sequence([
-    b.sequence([b.oid("1.2.840.113549.1.5.12"), b.sequence(kdfParams)]),
+    b.sequence([b.oid(o.kdfOid || "1.2.840.113549.1.5.12"), b.sequence(kdfParams)]),
     b.sequence([b.oid("1.2.840.113549.2.9")]),
   ]);
   var alg = o.omitParams ? b.sequence([b.oid(PBMAC1)]) : b.sequence([b.oid(PBMAC1), params]);
@@ -174,11 +187,11 @@ function pbmac1MacData(o) {
 }
 
 // A minimal EncryptedData ContentInfo (password-privacy safe).
-function encryptedDataSafe() {
+function encryptedDataSafe(emptyCt) {
   return contentInfo(ID_ENCRYPTED_DATA, b.sequence([
     b.integer(0),
     b.sequence([b.oid(ID_DATA), b.sequence([b.oid(AES256_CBC), b.octetString(Buffer.alloc(16, 4))]),
-                b.contextPrimitive(0, Buffer.alloc(48, 5))]),
+                b.contextPrimitive(0, emptyCt ? Buffer.alloc(0) : Buffer.alloc(48, 5))]),
   ]));
 }
 
@@ -260,6 +273,16 @@ function testAcceptPublicKeyIntegrity() {
   var noSigner = pfx({ authSafe: signedDataAuthSafe(as, { noSigners: true }) });
   check("signedData authSafe: zero signers rejected", parseCode(noSigner) === "pkcs12/bad-authsafe");
 
+  // RFC 7292 §4.1 — a public-key-integrity authSafe must encapsulate id-data
+  // carrying the AuthenticatedSafe; the signer carries signedAttrs so the CMS
+  // §5.3 missing-signed-attrs rule cannot shadow this branch.
+  var wrongCt = pfx({ authSafe: signedDataAuthSafe(as, { eContentType: ID_DIGESTED_DATA, signedAttrs: true }) });
+  check("signedData authSafe: non-id-data eContentType rejected", parseCode(wrongCt) === "pkcs12/bad-authsafe");
+  // A detached (absent) eContent leaves no AuthenticatedSafe for the signature
+  // to protect.
+  var detachedAs = pfx({ authSafe: signedDataAuthSafe(as, { detached: true }) });
+  check("signedData authSafe: detached (absent) eContent rejected", parseCode(detachedAs) === "pkcs12/bad-authsafe");
+
   // The SignedData subtree is walked from the OUTER decode (no OCTET-STRING
   // re-decode covers it), and a BER producer may stream a signer's
   // subjectKeyIdentifier [0] as a definite-length constructed IMPLICIT OCTET
@@ -322,6 +345,10 @@ function testAcceptEncryptedSafes() {
   check("encryptedData safe: cms result shape", m.encryptedSafes[0].type === "encryptedData" &&
         m.encryptedSafes[0].content.encryptedContentInfo.contentEncryptionAlgorithm.oid === AES256_CBC);
   check("encryptedData safe: ciphertext raw", Buffer.isBuffer(m.encryptedSafes[0].content.encryptedContentInfo.encryptedContent));
+  // A ZERO-LENGTH ciphertext holds no SafeContents a passphrase could recover --
+  // the same fault as a detached encryptedContent, same reject.
+  check("encryptedData safe: zero-length ciphertext rejected",
+        parseCode(minimalPfx({ elements: [innerData(safeContents([certBag()])), encryptedDataSafe(true)] })) === "pkcs12/bad-safe-contentinfo");
 
   m = parse(minimalPfx({ elements: [envelopedDataSafe()] }));
   check("envelopedData safe: parses with recipientInfos", m.encryptedSafes[0].type === "envelopedData" &&
@@ -403,6 +430,19 @@ function testAcceptMacVariants() {
         parseCode(minimalPfx({ macData: pbmac1MacData({ keyLength: 0n }) })) === "pkcs12/bad-mac-data");
   check("mac: PBMAC1 oversized keyLength rejected",
         parseCode(minimalPfx({ macData: pbmac1MacData({ keyLength: (1n << 60n) }) })) === "pkcs12/bad-mac-data");
+  // RFC 9579 §4 — the keyDerivationFunc is PBKDF2 and nothing else.
+  check("mac: PBMAC1 non-PBKDF2 keyDerivationFunc rejected",
+        parseCode(minimalPfx({ macData: pbmac1MacData({ kdfOid: "1.3.6.1.4.1.11591.4.11" }) })) === "pkcs12/bad-mac-data");
+  // X.690 §11.5 — a prf byte-equal to its RFC 8018 §5.2 DEFAULT (algid-hmacWithSHA1:
+  // hmacWithSHA1 with NULL parameters) must be omitted from a DER encoding; an
+  // explicit non-default prf decodes, and hmacWithSHA1 with ABSENT parameters is
+  // not byte-equal to the NULL-parameters default and decodes too.
+  check("mac: PBMAC1 explicit-DEFAULT prf rejected",
+        parseCode(minimalPfx({ macData: pbmac1MacData({ prf: b.sequence([b.oid("1.2.840.113549.2.7"), b.nullValue()]) }) })) === "pkcs12/bad-mac-data");
+  m = parse(minimalPfx({ macData: pbmac1MacData({ prf: b.sequence([b.oid("1.2.840.113549.2.9")]) }) }));
+  check("mac: PBMAC1 explicit non-default prf decoded", m.mac.pbmac1.kdf.prfName === "hmacWithSHA256");
+  m = parse(minimalPfx({ macData: pbmac1MacData({ prf: b.sequence([b.oid("1.2.840.113549.2.7")]) }) }));
+  check("mac: PBMAC1 hmacWithSHA1 with absent params accepted (not byte-equal to the DEFAULT)", m.mac.pbmac1.kdf.prfName === "hmacWithSHA1");
 }
 
 // ---- REJECT: version ---------------------------------------
@@ -689,6 +729,22 @@ function testRejectInnerContentType() {
   check("inner id-digestedData rejected", parseCode(der) === "pkcs12/bad-safe-contentinfo-type");
 }
 
+// ---- container-level OCTET STRING faults carry container codes -------------
+function testContainerOctetStringCodes() {
+  // A container-level fault surfaces the CONTAINER's reason code, never the
+  // SafeBag code — an operator branching on reason must be able to distinguish
+  // an authSafe fault from a bag fault.
+  var seqAuthSafe = pfx({ authSafe: contentInfo(ID_DATA, b.sequence([])), macData: macData({ iterations: 2048 }) });
+  check("id-data authSafe content not an OCTET STRING -> pkcs12/bad-authsafe",
+        parseCode(seqAuthSafe) === "pkcs12/bad-authsafe");
+  var seqSafe = pfx({
+    authSafe: contentInfo(ID_DATA, b.octetString(authenticatedSafe([contentInfo(ID_DATA, b.sequence([]))]))),
+    macData: macData({ iterations: 2048 }),
+  });
+  check("id-data safe content not an OCTET STRING -> pkcs12/bad-safe-contentinfo",
+        parseCode(seqSafe) === "pkcs12/bad-safe-contentinfo");
+}
+
 // ---- empty AuthenticatedSafe is legal (RFC 7292 section 4.1) --------------------------------------
 function testEmptyAuthenticatedSafe() {
   var der = pfx({ authSafe: contentInfo(ID_DATA, b.octetString(authenticatedSafe([]))), macData: macData({ iterations: 2048 }) });
@@ -722,6 +778,7 @@ testDispatch();
 testInputCoercion();
 testMultiDefectFailClosed();
 testRejectInnerContentType();
+testContainerOctetStringCodes();
 testEmptyAuthenticatedSafe();
 
 if (require.main === module) console.log("CHECKS " + helpers.getChecks());

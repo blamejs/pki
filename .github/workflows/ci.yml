@@ -83,7 +83,7 @@ jobs:
         run: npm ci --no-audit --no-fund
 
       - name: ESLint (max-warnings 0)
-        run: npx --yes eslint@10.3.0 --max-warnings 0 .
+        run: npx --no-install eslint --max-warnings 0 .
 
       - name: Codebase-patterns detectors
         # In-repo structural-drift + bug-class detectors. Walks the whole
@@ -156,47 +156,35 @@ jobs:
           # even if a later commit reverts it.
           fetch-depth: 0
 
-      - name: Install gitleaks
+      - name: Install gitleaks (release binary + sha256 verify)
         # Pull the OSS gitleaks binary directly from GitHub releases. The
         # `gitleaks/gitleaks-action` wrapper requires a commercial license
         # for organization accounts; the underlying binary is Apache-2.0
-        # with no such requirement. Track the LATEST release rather than
-        # pinning — a secret-scanner is a forward-looking security gate and
-        # pinning would silently miss new detection rules. Authenticate the
-        # API call so the shared-runner-IP unauthenticated rate limit
-        # (60/hour) does not 403 the install mid-run.
+        # with no such requirement. Exact version + inline expected sha256
+        # (the zizmor install pattern in actions-lint.yml): a checksums
+        # file downloaded from the same release as the tarball can only
+        # detect transport corruption — a compromised release ships
+        # matching checksums — so the expected hash is pinned here where a
+        # bump is reviewed before it can execute in CI. New detection
+        # rules ride deliberate version bumps. Authenticate the github.com
+        # download so the shared-runner-IP unauthenticated rate limit does
+        # not 403 the install mid-run; curl drops the Authorization header
+        # on the cross-host redirect to the release-asset CDN, so the
+        # token is only sent to github.com.
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITLEAKS_VERSION: 8.30.1
+          GITLEAKS_SHA256:  551f6fc83ea457d62a0d98237cbad105af8d557003051f41f3e7ca7b3f2470eb
         run: |
           set -euo pipefail
-          GITLEAKS_VERSION=$(curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" \
-            https://api.github.com/repos/gitleaks/gitleaks/releases/latest \
-            | grep -oP '"tag_name":\s*"v\K[^"]+' | head -1)
-          if [ -z "$GITLEAKS_VERSION" ]; then
-            echo "::error::Could not resolve latest gitleaks release tag from GitHub API"
-            exit 1
-          fi
-          echo "[gitleaks] resolved latest release: v${GITLEAKS_VERSION}"
           TARBALL="gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
           BASE="https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}"
-          # Authenticate the github.com asset downloads too (the token is already
-          # in scope for the API call above), so they don't share the shared-
-          # runner-IP unauthenticated rate limit. curl drops the Authorization
-          # header on the cross-host redirect to the release-asset CDN, so it is
-          # only sent to github.com — the CDN uses its own signed URL.
-          AUTH=(-H "Authorization: Bearer ${GITHUB_TOKEN}")
-          curl -fsSL "${AUTH[@]}" -o "/tmp/${TARBALL}" "${BASE}/${TARBALL}"
-          # Integrity: verify the downloaded tarball against the checksums file
-          # published in the same release before extracting it, so a corrupted
-          # or tampered download can't be run as the secret-scan gate. Tracking
-          # "latest" keeps detection current; the checksum still fails closed.
-          curl -fsSL "${AUTH[@]}" -o /tmp/gitleaks_checksums.txt "${BASE}/gitleaks_${GITLEAKS_VERSION}_checksums.txt"
-          EXPECTED=$(awk -v f="${TARBALL}" '$2 == f {print $1}' /tmp/gitleaks_checksums.txt)
-          if [ -z "$EXPECTED" ]; then
-            echo "::error::no sha256 for ${TARBALL} in the gitleaks checksums file"
+          curl -fsSL -H "Authorization: Bearer ${GITHUB_TOKEN}" -o "/tmp/${TARBALL}" "${BASE}/${TARBALL}"
+          ACTUAL=$(sha256sum "/tmp/${TARBALL}" | awk '{print $1}')
+          if [ "$ACTUAL" != "$GITLEAKS_SHA256" ]; then
+            echo "::error::gitleaks tarball sha256 ${ACTUAL} does not match pinned ${GITLEAKS_SHA256}"
             exit 1
           fi
-          echo "${EXPECTED}  /tmp/${TARBALL}" | sha256sum -c -
           tar -xzf "/tmp/${TARBALL}" -C /tmp gitleaks
           sudo mv /tmp/gitleaks /usr/local/bin/gitleaks
           gitleaks version

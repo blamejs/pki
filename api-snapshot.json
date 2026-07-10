@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.22",
+  "packageVersion": "0.1.23",
   "surface": {
     "C": {
       "kind": "object",
@@ -48,6 +48,9 @@
               "kind": "number"
             },
             "PATH_MAX_CERTS": {
+              "kind": "number"
+            },
+            "PATH_MAX_POLICY_NODES": {
               "kind": "number"
             },
             "PEM_MAX_BYTES": {
@@ -119,7 +122,16 @@
             "BOOLEAN": {
               "kind": "number"
             },
+            "CHARACTER_STRING": {
+              "kind": "number"
+            },
+            "EMBEDDED_PDV": {
+              "kind": "number"
+            },
             "ENUMERATED": {
+              "kind": "number"
+            },
+            "EXTERNAL": {
               "kind": "number"
             },
             "GENERALIZED_TIME": {
@@ -290,6 +302,10 @@
               "kind": "function",
               "arity": 1
             },
+            "booleanImplicit": {
+              "kind": "function",
+              "arity": 2
+            },
             "enumerated": {
               "kind": "function",
               "arity": 1
@@ -384,6 +400,9 @@
               "kind": "number"
             },
             "PATH_MAX_CERTS": {
+              "kind": "number"
+            },
+            "PATH_MAX_POLICY_NODES": {
               "kind": "number"
             },
             "PEM_MAX_BYTES": {
@@ -664,6 +683,10 @@
             "pemDecode": {
               "kind": "function",
               "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
             }
           }
         },
@@ -711,6 +734,10 @@
             "pemDecode": {
               "kind": "function",
               "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
             }
           }
         },
@@ -722,6 +749,10 @@
               "arity": 1
             },
             "pemDecode": {
+              "kind": "function",
+              "arity": 2
+            },
+            "pemEncode": {
               "kind": "function",
               "arity": 2
             }
@@ -788,6 +819,10 @@
               "arity": 2
             },
             "implicitBitString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "implicitBoolean": {
               "kind": "function",
               "arity": 1
             },
@@ -891,6 +926,10 @@
             "pemDecode": {
               "kind": "function",
               "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
             }
           }
         },
@@ -975,6 +1014,10 @@
             "pemDecode": {
               "kind": "function",
               "arity": 2
+            },
+            "pemEncode": {
+              "kind": "function",
+              "arity": 2
             }
           }
         },
@@ -1047,6 +1090,7 @@
     "pki.schema.parse": "0.1.7",
     "pki.schema.attrcert.parse": "0.1.14",
     "pki.schema.attrcert.pemDecode": "0.1.14",
+    "pki.schema.attrcert.pemEncode": "0.1.23",
     "pki.schema.cmp.parse": "0.1.19",
     "pki.schema.cmp.pemDecode": "0.1.19",
     "pki.schema.cmp.pemEncode": "0.1.19",
@@ -1055,8 +1099,10 @@
     "pki.schema.cms.pemEncode": "0.1.10",
     "pki.schema.crl.parse": "0.1.7",
     "pki.schema.crl.pemDecode": "0.1.7",
+    "pki.schema.crl.pemEncode": "0.1.23",
     "pki.schema.crmf.parse": "0.1.17",
     "pki.schema.crmf.pemDecode": "0.1.17",
+    "pki.schema.crmf.pemEncode": "0.1.23",
     "pki.schema.csr.parse": "0.1.8",
     "pki.schema.csr.pemDecode": "0.1.8",
     "pki.schema.csr.pemEncode": "0.1.8",
@@ -1066,6 +1112,7 @@
     "pki.schema.ocsp.parseRequest": "0.1.11",
     "pki.schema.ocsp.parseResponse": "0.1.11",
     "pki.schema.ocsp.pemDecode": "0.1.11",
+    "pki.schema.ocsp.pemEncode": "0.1.23",
     "pki.schema.pkcs12.parse": "0.1.18",
     "pki.schema.pkcs12.pemDecode": "0.1.18",
     "pki.schema.pkcs12.pemEncode": "0.1.18",
@@ -1081,6 +1128,7 @@
     "pki.schema.tsp.parse": "0.1.13",
     "pki.schema.tsp.parseToken": "0.1.13",
     "pki.schema.tsp.pemDecode": "0.1.13",
+    "pki.schema.tsp.pemEncode": "0.1.23",
     "pki.schema.x509.pemDecode": "0.1.7",
     "pki.schema.x509.pemEncode": "0.1.7",
     "pki.schema.x509.parse": "0.1.7",

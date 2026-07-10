@@ -19,7 +19,9 @@ var TAGS = pki.asn1.TAGS;
 function E(code, msg) { var e = new Error(msg); e.code = code; return e; }
 var NS = { prefix: "t", E: E, oid: pki.oid };
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + e.constructor.name); } }
-function walk(schema, der) { return S.walk(schema, pki.asn1.decode(der), NS); }
+// Drives the documented pki.schema.engine.walk path (S aliases the namespace
+// for every other call site).
+function walk(schema, der) { return pki.schema.engine.walk(schema, pki.asn1.decode(der), NS); }
 
 function testLeaves() {
   check("oidLeaf reads the dotted OID", walk(S.oidLeaf(), b.oid("1.2.840.10045.4.3.2")) === "1.2.840.10045.4.3.2");
@@ -38,7 +40,7 @@ function testLeaves() {
 // EXPLICIT/IMPLICIT tag handling cannot diverge between the two directions.
 function testEncodeRoundTrip() {
   function rt(label, schema, value, hand) {
-    var der = S.encode(schema, value);
+    var der = pki.schema.engine.encode(schema, value);
     check(label + ": encode == hand-built canonical DER", der.equals(hand));
     check(label + ": walk(decode(encode)) round-trips", code(function () { S.walk(schema, pki.asn1.decode(der), NS); }) === "NO-THROW");
   }
@@ -57,6 +59,14 @@ function testEncodeRoundTrip() {
   // choice: { arm, value }
   var CH = S.choice([{ when: { tagClass: "context", tagNumber: 0 }, schema: S.explicit(0, S.integerLeaf()) }, { when: { tagClass: "universal", tagNumber: TAGS.SEQUENCE }, schema: S.seq([S.field("x", S.integerLeaf())]) }]);
   rt("choice arm 1 (universal seq)", CH, { arm: 1, value: { x: 5n } }, b.sequence([b.integer(5n)]));
+  // A NaN / fractional arm slips past a `< 0 || >= length` range check (both
+  // compares are false for NaN) into an undefined alts lookup — the same
+  // authoring fault as an out-of-range arm, so it gets the same descriptive
+  // encode error, not a bare property-access TypeError.
+  check("encode choice rejects a NaN arm as an authoring fault",
+    code(function () { S.encode(CH, { arm: NaN, value: {} }, NS); }) === "RAW:Error");
+  check("encode choice rejects a fractional arm as an authoring fault",
+    code(function () { S.encode(CH, { arm: 0.5, value: {} }, NS); }) === "RAW:Error");
   // time encodes UTCTime for < 2050, GeneralizedTime otherwise.
   check("time write: 2050+ is GeneralizedTime", S.encode(S.time(NS), new Date("2060-01-01T00:00:00Z")).equals(b.generalizedTime(new Date("2060-01-01T00:00:00Z"))));
   // encode enforces the same repeat constraints walk does (so it can't emit DER its
@@ -78,6 +88,126 @@ function testSeqAssertAndArity() {
   var conAny = S.seq([S.field("a", S.integerLeaf())], { assert: "constructed", arity: { min: 1 }, code: "t/bad-con" });
   check("seq(constructed) accepts a SET-tagged node", code(function () { walk(conAny, b.set([b.integer(1n)])); }) === "NO-THROW");
   check("seq(constructed) min-arity rejects empty", code(function () { walk(conAny, b.sequence([])); }) === "t/bad-con");
+
+  // arity.max caps the child count even when greedy optionals (whenAny) would
+  // otherwise consume every element — a declared cap the engine ignored was a
+  // schema self-documenting an enforcement that did not exist.
+  var greedyMax = S.seq([S.field("a", S.any()), S.optional("b", S.any(), { whenAny: true })],
+    { assert: "sequence", arity: { max: 1 }, code: "t/bad-max" });
+  check("seq arity max rejects an over-cap child count",
+    code(function () { walk(greedyMax, b.sequence([b.integer(1n), b.integer(2n)])); }) === "t/bad-max");
+  check("seq arity max at the cap accepts",
+    code(function () { walk(greedyMax, b.sequence([b.integer(1n)])); }) === "NO-THROW");
+}
+
+// X.690 §11.5 — DER: a component equal to its DEFAULT value shall not be
+// included in the encoding. The walk side is opt-in per field (`defaultCode`
+// keeps each format's own reject code); the encode side always omits a present
+// optional whose canonical field encoding byte-equals its declared default.
+function testDefaultOmission() {
+  var strict = S.seq([
+    S.optional("v", S.integerLeaf(), { tag: 0, explicit: true, emptyCode: "t/bad-v", default: 1n, defaultCode: "t/default-encoded" }),
+    S.field("n", S.integerLeaf()),
+  ], { assert: "sequence", code: "t/bad", build: function (m) { return { v: m.fields.v.value, present: m.fields.v.present }; } });
+  check("walk (defaultCode) rejects an explicitly-encoded DEFAULT",
+    code(function () { walk(strict, b.sequence([b.explicit(0, b.integer(1n)), b.integer(9n)])); }) === "t/default-encoded");
+  check("walk (defaultCode) accepts a present non-default value",
+    (function () { var r = walk(strict, b.sequence([b.explicit(0, b.integer(2n)), b.integer(9n)])).result; return r.v === 2n && r.present === true; })());
+  check("walk (defaultCode) still binds the default when absent",
+    (function () { var r = walk(strict, b.sequence([b.integer(9n)])).result; return r.v === 1n && r.present === false; })());
+  // The whenUniversal-recognized shape (a bare INTEGER with a DEFAULT — the
+  // PKCS#12 MacData iterations position) gets the same opt-in reject.
+  var whenUni = S.seq([
+    S.optional("iter", S.integerLeaf(), { whenUniversal: [TAGS.INTEGER], default: 1n, defaultCode: "t/default-encoded" }),
+    S.field("alg", S.oidLeaf()),
+  ], { assert: "sequence", code: "t/bad" });
+  check("walk (defaultCode, whenUniversal) rejects an explicitly-encoded DEFAULT",
+    code(function () { walk(whenUni, b.sequence([b.integer(1n), b.oid("1.2.3")])); }) === "t/default-encoded");
+  check("walk (defaultCode, whenUniversal) accepts a non-default value",
+    code(function () { walk(whenUni, b.sequence([b.integer(2n), b.oid("1.2.3")])); }) === "NO-THROW");
+  // Without defaultCode the walk verdict is unchanged — a format keeps its own
+  // hand-rolled reject until it migrates onto the engine option.
+  var lenient = S.seq([
+    S.optional("v", S.integerLeaf(), { tag: 0, explicit: true, default: 1n }),
+    S.field("n", S.integerLeaf()),
+  ], { assert: "sequence", code: "t/bad" });
+  check("walk without defaultCode keeps accepting an encoded default",
+    code(function () { walk(lenient, b.sequence([b.explicit(0, b.integer(1n)), b.integer(9n)])); }) === "NO-THROW");
+  // Encode: a present optional equal to its DEFAULT is omitted, so encode
+  // emits the same canonical DER as leaving the field out.
+  check("encode omits a present optional equal to its DEFAULT",
+    S.encode(lenient, { v: 1n, n: 9n }).equals(b.sequence([b.integer(9n)])));
+  check("encode keeps a present non-default optional",
+    S.encode(lenient, { v: 2n, n: 9n }).equals(b.sequence([b.explicit(0, b.integer(2n)), b.integer(9n)])));
+  check("encode with the optional absent is unchanged",
+    S.encode(lenient, { n: 9n }).equals(b.sequence([b.integer(9n)])));
+}
+
+// A malformed field descriptor (a typo'd fkind) is the same authoring fault
+// as an unknown schema.kind: both surfaces fail loud. A silently-skipped
+// descriptor under-specifies the sequence — the field never binds, and its
+// wire element would be caught only incidentally by the leftover-child guard.
+function testUnknownFieldKind() {
+  var bad = S.seq([{ fkind: "optionaI", name: "x", schema: S.integerLeaf() }],
+    { assert: "sequence", code: "t/bad-seq" });
+  check("walk rejects an unknown field kind (t/bad-schema)",
+    code(function () { walk(bad, b.sequence([])); }) === "t/bad-schema");
+  check("encode rejects an unknown field kind",
+    code(function () { S.encode(bad, {}, NS); }) === "RAW:Error");
+}
+
+// The tags: recognizer — an OPTIONAL field whose type is a CHOICE of several
+// context tags (the CRMF CertReqMsg popo shape, RFC 4211 §3): ANY in-set tag
+// marks the field present; an out-of-set tag leaves it absent; the field
+// consumes at most one element, so a second in-set element is a leftover child.
+function testOptionalTags() {
+  var ARM = S.decode(function (n, ctx) {
+    if (n.tagClass !== "context") throw ctx.E("t/bad-arm", "expected a context-tagged arm");
+    return n.tagNumber;
+  });
+  var spec = S.seq([
+    S.field("head", S.integerLeaf()),
+    S.optional("popo", ARM, { tags: [0, 1, 2, 3] }),
+    S.optional("regInfo", S.any(), { whenUniversal: [TAGS.SEQUENCE] }),
+  ], { assert: "sequence", code: "t/bad-msg", build: function (m) {
+    return { present: m.fields.popo.present, arm: m.fields.popo.value, reg: m.fields.regInfo.present };
+  } });
+  [0, 1, 2, 3].forEach(function (t) {
+    var r = walk(spec, b.sequence([b.integer(1n), b.contextPrimitive(t, Buffer.alloc(0))])).result;
+    check("tags: in-set context [" + t + "] is consumed as the optional", r.present === true && r.arm === t);
+  });
+  check("tags: an out-of-set context [4] leaves the field absent (leftover rejects)",
+    code(function () { walk(spec, b.sequence([b.integer(1n), b.contextPrimitive(4, Buffer.alloc(0))])); }) === "t/bad-msg");
+  check("tags: a following universal SEQUENCE is not consumed by the tags field", (function () {
+    var r = walk(spec, b.sequence([b.integer(1n), b.sequence([])])).result;
+    return r.present === false && r.reg === true;
+  })());
+  check("tags: a second in-set element trips the leftover-child guard",
+    code(function () { walk(spec, b.sequence([b.integer(1n), b.contextPrimitive(0, Buffer.alloc(0)), b.contextPrimitive(1, Buffer.alloc(0))])); }) === "t/bad-msg");
+}
+
+// The seq checks hook: cross-field validators that run against the match tree
+// BEFORE build — a throwing check rejects typed and prevents build from running,
+// and a passing chain reaches build in declaration order.
+function testSeqChecksHook() {
+  var order = [];
+  var spec = S.seq([S.field("a", S.integerLeaf())], {
+    assert: "sequence", code: "t/bad-seq",
+    checks: [function (m, ctx) {
+      order.push("check");
+      if (m.fields.a.value === 7n) throw ctx.E("t/check-reject", "a must not be 7");
+    }],
+    build: function (m) { order.push("build"); return m.fields.a.value; },
+  });
+  check("a passing check runs before build", (function () {
+    order.length = 0;
+    var r = walk(spec, b.sequence([b.integer(5n)])).result;
+    return r === 5n && order.join(",") === "check,build";
+  })());
+  check("a throwing check rejects typed and prevents build", (function () {
+    order.length = 0;
+    return code(function () { walk(spec, b.sequence([b.integer(7n)])); }) === "t/check-reject" && order.join(",") === "check";
+  })());
 }
 
 function testOptional() {
@@ -114,7 +244,7 @@ function testTrailing() {
 }
 
 function testTrailingNoMinTag() {
-  // Regression (Codex PR #9): a trailing block that OMITS minTag with a member
+  // A trailing block that OMITS minTag with a member
   // at tag [0] must accept a leading [0] field. The monotonic-order sentinel
   // starts BELOW the lowest accepted tag; a fallback of 0 rejected the first
   // [0] field as "repeated or out of order". x509's tbs always passes minTag:1,
@@ -165,7 +295,7 @@ function testChoiceAndExplicit() {
 }
 
 function testRejectUnconsumedChildren() {
-  // Codex PR #9: a seq without a trailing field silently dropped leftover
+  // A seq without a trailing field silently dropped leftover
   // children, so a closed sequence of optional fields could not reject a
   // duplicate/extra element (SEQUENCE { [0] 1, [0] 2 } read the first, dropped
   // the second). Every child must be consumed by a field or it is an error.
@@ -259,6 +389,16 @@ function testImplicitNull() {
   check("implicitNull rejects a constructed [0]", code(function () { walk(leaf, b.contextConstructed(0, Buffer.alloc(0))); }) === "asn1/expected-primitive");
   check("implicitNull rejects a non-empty [0]", code(function () { walk(leaf, b.contextPrimitive(0, Buffer.from([0x00]))); }) === "asn1/bad-null");
 
+  // [tag] IMPLICIT BOOLEAN: a context-class PRIMITIVE node whose single content
+  // octet obeys the DER BOOLEAN rules -- the RFC 5280 sec. 5.2.5 IDP scope flags.
+  var boolLeaf = S.implicitBoolean(1);
+  check("implicitBoolean reads [1] 0xFF as true", walk(boolLeaf, b.contextPrimitive(1, Buffer.from([0xff]))) === true);
+  check("implicitBoolean reads [1] 0x00 as false", walk(boolLeaf, b.contextPrimitive(1, Buffer.from([0x00]))) === false);
+  check("implicitBoolean rejects a non-DER value 0x01", code(function () { walk(boolLeaf, b.contextPrimitive(1, Buffer.from([0x01]))); }) === "asn1/bad-boolean");
+  check("implicitBoolean rejects 2-octet content", code(function () { walk(boolLeaf, b.contextPrimitive(1, Buffer.from([0xff, 0xff]))); }) === "asn1/bad-boolean");
+  check("implicitBoolean rejects a constructed [1]", code(function () { walk(boolLeaf, b.contextConstructed(1, b.boolean(true))); }) === "asn1/expected-primitive");
+  check("implicitBoolean rejects the wrong context tag [2]", code(function () { walk(boolLeaf, b.contextPrimitive(2, Buffer.from([0xff]))); }) === "asn1/unexpected-tag");
+
   // gap-3 characterization: seq(fields, { assert:"constructed" }) swallows the
   // context tag (the OCSP revoked [1] IMPLICIT RevokedInfo body), but still fails
   // closed on a PRIMITIVE node — the choice pins the tag; constructed-mode's
@@ -324,7 +464,7 @@ function testEmbeddedDer() {
   var der = b.sequence([b.integer(7n)]);
 
   check("embeddedDer decodes and walks the inner schema",
-    S.embeddedDer(inner, der, NS, { code: "t/bad-embed" }).result === 7n);
+    pki.schema.engine.embeddedDer(inner, der, NS, { code: "t/bad-embed" }).result === 7n);
   check("embeddedDer wraps a malformed blob in the caller's code",
     code(function () { S.embeddedDer(inner, Buffer.from([0x30, 0x05, 0x02]), NS, { code: "t/bad-embed" }); }) === "t/bad-embed");
   check("embeddedDer keeps an inner-schema reject's own code (no re-wrap)",
@@ -430,6 +570,10 @@ function run() {
   testSeqImplicitTag();
   testSeqAssertAndArity();
   testOptional();
+  testDefaultOmission();
+  testUnknownFieldKind();
+  testOptionalTags();
+  testSeqChecksHook();
   testTrailing();
   testTrailingNoMinTag();
   testEncodeRoundTrip();

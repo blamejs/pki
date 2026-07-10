@@ -9,6 +9,8 @@
  * tagged @since 0.1.1 while it is introduced in 0.1.2).
  */
 
+var fs   = require("node:fs");
+var os   = require("node:os");
 var path = require("node:path");
 
 var helpers = require("../helpers");
@@ -27,7 +29,7 @@ function testExtractSinceFromSource() {
   check("every extracted @since is valid X.Y.Z", Object.keys(m).every(function (k) { return /^\d+\.\d+\.\d+$/.test(m[k]); }));
 }
 
-// The exact Codex finding: a primitive absent from the prior baseline (newly
+// A primitive absent from the prior baseline (newly
 // added) must carry @since === the introducing version, not an earlier one.
 function testNewPrimitiveMustMatchIntroVersion() {
   var base = { "pki.oid.name": "0.1.0" }; // baseline WITHOUT the new primitive
@@ -78,6 +80,65 @@ function testOriginatedRequiredOnPathCorrection() {
   check("read.oid carries @originated 0.1.0 in source", snap.extractOriginated()["pki.asn1.read.oid"] === "0.1.0");
 }
 
+// Deleting a documented primitive's @since line must not vacate the
+// immutability freeze: a token recorded in the prior map that vanishes from
+// the new map is flagged unless its origin version is preserved by an
+// @originated declaration (the documented-path-correction flow).
+function testDroppedSinceRefused() {
+  var oldMap = { "pki.oid.name": "0.1.0", "pki.oid.registerFamily": "0.1.2" };
+  var newMap = { "pki.oid.name": "0.1.0" };
+  var v = snap.checkSinceDropped(oldMap, newMap, {});
+  check("deleting a documented @since is flagged",
+    v.length === 1 && /registerFamily/.test(v[0]) && /0\.1\.2/.test(v[0]));
+  check("a dropped token whose origin is preserved via @originated is clean",
+    snap.checkSinceDropped(oldMap, newMap, { "pki.oid.register": "0.1.2" }).length === 0);
+  check("no removals is clean", snap.checkSinceDropped(oldMap, oldMap, {}).length === 0);
+  check("bootstrap (no prior map) is clean", snap.checkSinceDropped(null, newMap, {}).length === 0);
+  // live tree end to end: nothing recorded in the committed baseline has been
+  // dropped from source.
+  check("live baseline records no dropped @since tokens",
+    snap.checkSinceDropped(live.sinceByPrimitive || {}, snap.extractSince(), snap.extractOriginated()).length === 0);
+}
+
+// An exported array's length is part of the surface: a shrink removes members
+// (breaking), a growth adds them (additive) — neither may diff clean.
+function testArrayLengthCompared() {
+  var base   = { surface: { arr: { kind: "array", length: 3 } } };
+  var shrunk = { surface: { arr: { kind: "array", length: 2 } } };
+  var grown  = { surface: { arr: { kind: "array", length: 4 } } };
+  var d1 = snap.compare(base, shrunk);
+  check("a shrunk exported array is a breaking change",
+    d1.breaking.length === 1 && /length/.test(d1.breaking[0]));
+  var d2 = snap.compare(base, grown);
+  check("a grown exported array is additive, not breaking",
+    d2.breaking.length === 0 && d2.additive.length === 1);
+  var d3 = snap.compare(base, base);
+  check("an unchanged array diffs clean", d3.breaking.length === 0 && d3.additive.length === 0);
+}
+
+// A corrupted or merge-conflicted baseline must never be mistaken for a
+// missing one: only ENOENT bootstraps (null); any other read/parse failure
+// rethrows so the @since / @originated gates keep their baseline instead of
+// degrading to first-run mode and overwriting the record they protect.
+function testCorruptBaselineRefused() {
+  var tmp = fs.mkdtempSync(path.join(os.tmpdir(), "pki-snap-"));
+  try {
+    check("an absent baseline bootstraps to null",
+      snap.readBaselineIfPresent(path.join(tmp, "absent.json")) === null);
+    var corrupt = path.join(tmp, "corrupt.json");
+    fs.writeFileSync(corrupt, "{ \"surface\": <<<<<<< conflict");
+    var threw = false;
+    try { snap.readBaselineIfPresent(corrupt); } catch (e) { threw = e instanceof SyntaxError; }
+    check("a corrupt baseline rethrows instead of bootstrapping", threw);
+    var intact = path.join(tmp, "intact.json");
+    fs.writeFileSync(intact, JSON.stringify({ surface: {}, sinceByPrimitive: { "pki.a": "0.1.0" } }));
+    var got = snap.readBaselineIfPresent(intact);
+    check("an intact baseline reads through", got && got.sinceByPrimitive["pki.a"] === "0.1.0");
+  } finally {
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+}
+
 // The committed baseline must agree with the shipped source, and the live
 // surface must satisfy the contract end to end.
 function testLiveSnapshotConsistent() {
@@ -96,6 +157,9 @@ function run() {
   testSinceNotFutureDated();
   testBootstrapSeedAllowsMixed();
   testOriginatedRequiredOnPathCorrection();
+  testDroppedSinceRefused();
+  testArrayLengthCompared();
+  testCorruptBaselineRefused();
   testLiveSnapshotConsistent();
 }
 

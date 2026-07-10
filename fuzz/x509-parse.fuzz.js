@@ -7,9 +7,11 @@
  * libFuzzer / jazzer.js harness. ClusterFuzzLite (local PRs) and
  * OSS-Fuzz (continuous, Google-hosted) both consume this shape:
  * `module.exports.fuzz = function (data)` where `data` is a Buffer
- * the engine mutates via coverage-guided fuzzing. It reuses the ASN.1
- * seed corpus (`fuzz/asn1-der_seed_corpus/`) — a certificate is a DER
- * SEQUENCE, so those seeds exercise the parser's front door.
+ * the engine mutates via coverage-guided fuzzing. Its seed corpus
+ * (`fuzz/x509-parse_seed_corpus/`) carries copies of the shared ASN.1
+ * samples — a certificate is a DER SEQUENCE, so those seeds exercise the
+ * parser's front door. (CI passes each target ONLY its own corpus
+ * directory, so shared seeds are copied in, never referenced.)
  *
  * Contract: parsing an attacker-controlled certificate has exactly two
  * acceptable outcomes — a successful parse, or a thrown

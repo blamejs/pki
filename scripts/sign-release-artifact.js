@@ -5,14 +5,16 @@
 /**
  * scripts/sign-release-artifact.js
  *
- * Workflow-side helper: sign a release artifact (typically the npm tarball)
- * with the toolkit's ML-DSA-65 release-signing key, then write the
- * signature alongside as `<artifact>.mldsa.sig`.
+ * Sign a release artifact (typically the npm tarball) with the toolkit's
+ * ML-DSA-65 release-signing key, then write the signature alongside as
+ * `<artifact>.mldsa.sig`.
  *
  * Signing runs on Node's built-in node:crypto (OpenSSL 3.5, FIPS 204) — no
  * vendored crypto.
  *
- * Invoked from the pack step of `.github/workflows/npm-publish.yml`:
+ * Operator-run against the packed tarball; no workflow invokes it
+ * automatically. The operator attaches the resulting sidecar to the GitHub
+ * release when post-quantum release signing is wanted:
  *
  *   node scripts/sign-release-artifact.js dist/blamejs-pki-X.Y.Z.tgz
  *

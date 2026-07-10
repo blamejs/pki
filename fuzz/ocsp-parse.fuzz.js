@@ -9,9 +9,9 @@
  * `module.exports.fuzz = function (data)` where `data` is a Buffer the
  * engine mutates via coverage-guided fuzzing. Both OCSP entry points are
  * driven on the same input — an OCSPRequest and an OCSPResponse are both
- * DER SEQUENCEs, so the shared ASN.1 seed corpus exercises both front
- * doors, and the response path additionally drives the ResponseBytes
- * OID-dispatch + the nested BasicOCSPResponse re-decode.
+ * DER SEQUENCEs, so every seed in fuzz/ocsp-parse_seed_corpus/ exercises
+ * both front doors, and the response path additionally drives the
+ * ResponseBytes OID-dispatch + the nested BasicOCSPResponse re-decode.
  *
  * Contract: parsing an attacker-controlled OCSP message has exactly two
  * acceptable outcomes — a successful parse, or a thrown

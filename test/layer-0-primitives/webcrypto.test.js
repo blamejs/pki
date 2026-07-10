@@ -260,10 +260,211 @@ async function testAesCtrLength() {
   check("AES-CTR length:128 round-trips", Buffer.from(back).toString() === "ctr payload");
 }
 
+// W3C WebCrypto sign/verify/encrypt/decrypt/deriveBits/deriveKey/wrapKey/
+// unwrapKey: when the requested algorithm's name differs from the key's own
+// algorithm name the operation MUST throw an InvalidAccessError. The binding
+// is load-bearing for the one-shot families (EdDSA / ML-DSA / SLH-DSA), where
+// node derives the algorithm from the KEY handle and the requested name would
+// otherwise be silently ignored -- verify({name:"Ed25519"}, mlDsaKey, ...)
+// must not report an ML-DSA verification as an Ed25519 one.
+async function testAlgorithmKeyBinding() {
+  var data = Buffer.from("bound to the key's own algorithm");
+  var ml = await subtle.generateKey({ name: "ML-DSA-44" }, true, ["sign", "verify"]);
+  var mlSig = await subtle.sign({ name: "ML-DSA-44" }, ml.privateKey, data);
+  check("verify binds the name to the key (Ed25519 name on an ML-DSA key)",
+    (await code(async function () { await subtle.verify({ name: "Ed25519" }, ml.publicKey, mlSig, data); })) === "webcrypto/invalid-access");
+  check("verify binds the name across PQC families (SLH-DSA name on an ML-DSA key)",
+    (await code(async function () { await subtle.verify({ name: "SLH-DSA-SHA2-128S" }, ml.publicKey, mlSig, data); })) === "webcrypto/invalid-access");
+  check("sign binds the name to the key (Ed448 name on an ML-DSA key)",
+    (await code(async function () { await subtle.sign({ name: "Ed448" }, ml.privateKey, data); })) === "webcrypto/invalid-access");
+
+  // RSA: PKCS#1 v1.5 and PSS are distinct algorithms; a key labeled for one
+  // must not sign or verify under the other.
+  var pkcs1 = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, hash: "SHA-256" }, true, ["sign", "verify"]);
+  var pkcs1Sig = await subtle.sign({ name: "RSASSA-PKCS1-v1_5" }, pkcs1.privateKey, data);
+  check("an RSASSA-PKCS1-v1_5 key cannot sign under RSA-PSS",
+    (await code(async function () { await subtle.sign({ name: "RSA-PSS", saltLength: 32 }, pkcs1.privateKey, data); })) === "webcrypto/invalid-access");
+  check("an RSASSA-PKCS1-v1_5 key cannot verify under RSA-PSS",
+    (await code(async function () { await subtle.verify({ name: "RSA-PSS", saltLength: 32 }, pkcs1.publicKey, pkcs1Sig, data); })) === "webcrypto/invalid-access");
+
+  var gcm = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  var iv = pki.webcrypto.getRandomValues(new Uint8Array(16));
+  check("an AES-GCM key cannot encrypt under AES-CBC",
+    (await code(async function () { await subtle.encrypt({ name: "AES-CBC", iv: iv }, gcm, data); })) === "webcrypto/invalid-access");
+  check("an AES-GCM key cannot decrypt under AES-CBC",
+    (await code(async function () { await subtle.decrypt({ name: "AES-CBC", iv: iv }, gcm, Buffer.alloc(16)); })) === "webcrypto/invalid-access");
+
+  var ec = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits", "deriveKey"]);
+  var xk = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  check("deriveBits binds the name to the base key",
+    (await code(async function () { await subtle.deriveBits({ name: "X25519", public: xk.publicKey }, ec.privateKey, 256); })) === "webcrypto/invalid-access");
+  check("deriveBits binds the name to the peer public key",
+    (await code(async function () { await subtle.deriveBits({ name: "ECDH", public: xk.publicKey }, ec.privateKey, 256); })) === "webcrypto/invalid-access");
+  check("deriveKey binds the name to the base key",
+    (await code(async function () { await subtle.deriveKey({ name: "X25519", public: xk.publicKey }, ec.privateKey, { name: "AES-GCM", length: 256 }, true, ["encrypt"]); })) === "webcrypto/invalid-access");
+
+  var kw = await subtle.generateKey({ name: "AES-KW", length: 256 }, true, ["wrapKey", "unwrapKey"]);
+  var target = await subtle.generateKey({ name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  check("wrapKey binds the name to the wrapping key",
+    (await code(async function () { await subtle.wrapKey("raw", target, kw, { name: "AES-GCM", iv: iv }); })) === "webcrypto/invalid-access");
+  check("unwrapKey binds the name to the unwrapping key",
+    (await code(async function () { await subtle.unwrapKey("raw", Buffer.alloc(24), kw, { name: "AES-GCM", iv: iv }, { name: "AES-GCM", length: 128 }, true, ["encrypt"]); })) === "webcrypto/invalid-access");
+
+  // An unrecognized name still reports not-supported: algorithm recognition
+  // precedes the name/key binding in the W3C error ordering.
+  check("an unrecognized name still reports not-supported, not invalid-access",
+    (await code(async function () { await subtle.verify({ name: "NOPE" }, ml.publicKey, mlSig, data); })) === "webcrypto/not-supported");
+}
+
+// exportKey("raw") / importKey("raw") for the OKP families: an EdDSA public
+// key round-trips through the raw point form, keeps its canonical algorithm
+// label, and still verifies.
+async function testRawOkpImportExport() {
+  var data = Buffer.from("okp raw round-trip");
+  var kp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  var sig = await subtle.sign({ name: "Ed25519" }, kp.privateKey, data);
+  var raw = await subtle.exportKey("raw", kp.publicKey);
+  check("raw Ed25519 public export is the 32-byte point", raw.byteLength === 32);
+  var pub2 = await subtle.importKey("raw", raw, { name: "Ed25519" }, true, ["verify"]);
+  check("raw Ed25519 import is labeled Ed25519", pub2.algorithm.name === "Ed25519");
+  check("raw Ed25519 import verifies the original signature", (await subtle.verify({ name: "Ed25519" }, pub2, sig, data)) === true);
+
+  var kp8 = await subtle.generateKey({ name: "Ed448" }, true, ["sign", "verify"]);
+  var sig8 = await subtle.sign({ name: "Ed448" }, kp8.privateKey, data);
+  var raw8 = await subtle.exportKey("raw", kp8.publicKey);
+  var pub8 = await subtle.importKey("raw", raw8, { name: "Ed448" }, true, ["verify"]);
+  check("raw Ed448 import is labeled Ed448 and verifies",
+    pub8.algorithm.name === "Ed448" && (await subtle.verify({ name: "Ed448" }, pub8, sig8, data)) === true);
+}
+
+// W3C deriveBits: a request the derivation cannot satisfy MUST throw an
+// OperationError. Buffer.subarray clamps at the end of the secret, so an
+// unchecked over-request would silently hand back fewer bytes of key material
+// than the caller believes it received; a non-multiple-of-8 length would
+// silently truncate to a byte boundary.
+async function testDeriveBitsLength() {
+  var a = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  var b = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  check("deriveBits rejects a request beyond the ECDH shared-secret size",
+    (await code(async function () { await subtle.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 4096); })) === "webcrypto/operation");
+  check("deriveBits rejects a non-multiple-of-8 length",
+    (await code(async function () { await subtle.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 250); })) === "webcrypto/operation");
+  check("deriveBits rejects a zero length",
+    (await code(async function () { await subtle.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, 0); })) === "webcrypto/operation");
+  var full = await subtle.deriveBits({ name: "ECDH", public: b.publicKey }, a.privateKey, null);
+  check("deriveBits with a null length returns the full shared secret", full.byteLength === 32);
+
+  var ikm = await subtle.importKey("raw", Buffer.from("input key material"), { name: "HKDF" }, false, ["deriveBits"]);
+  check("HKDF deriveBits rejects a non-multiple-of-8 length",
+    (await code(async function () { await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: Buffer.from("s"), info: Buffer.from("i") }, ikm, 129); })) === "webcrypto/operation");
+  var pw = await subtle.importKey("raw", Buffer.from("password"), { name: "PBKDF2" }, false, ["deriveBits"]);
+  check("PBKDF2 deriveBits rejects a non-multiple-of-8 length",
+    (await code(async function () { await subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("NaCl"), iterations: 1000 }, pw, 129); })) === "webcrypto/operation");
+}
+
+// W3C get-key-length for AES: an AES derivedKeyType carries a REQUIRED length
+// of 128/192/256. Deriving without one must fail as a syntax error rather
+// than silently sizing the key from the raw agreement secret (a curve-sized
+// "AES" key is unusable and wrong).
+async function testDeriveKeyAesLength() {
+  var a = await subtle.generateKey({ name: "ECDH", namedCurve: "P-384" }, true, ["deriveKey"]);
+  var b = await subtle.generateKey({ name: "ECDH", namedCurve: "P-384" }, true, ["deriveKey"]);
+  check("deriveKey rejects an AES derivedKeyType with no length",
+    (await code(async function () { await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]); })) === "webcrypto/syntax");
+  check("deriveKey rejects an AES derivedKeyType with an off-size length",
+    (await code(async function () { await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "AES-GCM", length: 384 }, true, ["encrypt", "decrypt"]); })) === "webcrypto/syntax");
+  // An explicit 128 over a P-384 secret derives a working 128-bit key.
+  var k = await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  var iv = pki.webcrypto.getRandomValues(new Uint8Array(12));
+  var ct = await subtle.encrypt({ name: "AES-GCM", iv: iv }, k, Buffer.from("derived"));
+  check("deriveKey with an explicit AES length yields a working key",
+    Buffer.from(await subtle.decrypt({ name: "AES-GCM", iv: iv }, k, ct)).toString() === "derived" && k.algorithm.length === 128);
+}
+
+// W3C HMAC get-key-length: an omitted length defaults to the BLOCK size of
+// the hash (the HMAC key-pad width -- 512 bits for SHA-256, 1024 for
+// SHA-384), NOT the digest size. A digest-size default would mint key
+// material no conforming WebCrypto engine agrees with for identical inputs,
+// so MACs keyed through this engine would fail to verify elsewhere.
+async function testHmacDefaultLength() {
+  var g = await subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
+  check("generateKey HMAC defaults to the SHA-256 block size (512 bits)", g.algorithm.length === 512);
+  var g384 = await subtle.generateKey({ name: "HMAC", hash: "SHA-384" }, true, ["sign"]);
+  check("generateKey HMAC defaults to the SHA-384 block size (1024 bits)", g384.algorithm.length === 1024);
+  // A fractional byte count cannot be minted exactly -- typed rejection, not
+  // a raw RangeError out of randomBytes.
+  check("generateKey HMAC rejects a non-multiple-of-8 length",
+    (await code(async function () { await subtle.generateKey({ name: "HMAC", hash: "SHA-256", length: 100 }, true, ["sign"]); })) === "webcrypto/syntax");
+
+  // deriveKey inherits the same default: the defaulted derivation must equal
+  // an explicit block-size derivation of the same agreement secret.
+  var a = await subtle.generateKey({ name: "ECDH", namedCurve: "P-521" }, true, ["deriveKey"]);
+  var b = await subtle.generateKey({ name: "ECDH", namedCurve: "P-521" }, true, ["deriveKey"]);
+  var hk = await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "HMAC", hash: "SHA-256" }, true, ["sign"]);
+  var hkExplicit = await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "HMAC", hash: "SHA-256", length: 512 }, true, ["sign"]);
+  var r1 = Buffer.from(await subtle.exportKey("raw", hk));
+  var r2 = Buffer.from(await subtle.exportKey("raw", hkExplicit));
+  check("deriveKey HMAC without length derives the block-size key",
+    hk.algorithm.length === 512 && r1.length === 64 && r1.equals(r2));
+
+  // An HKDF derivedKeyType has no intrinsic size (W3C get-key-length is
+  // null): the FULL agreement secret becomes the input keying material --
+  // not a silently truncated 256-bit prefix of it.
+  var ikm = await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "HKDF" }, false, ["deriveBits"]);
+  check("deriveKey to an HKDF base key carries the full agreement secret", ikm.algorithm.length === 528);
+
+  // A KDF base has no implicit output size: deriving a length-less KDF type
+  // from it must fail closed with the module's typed code, never feed an
+  // undefined length into the KDF.
+  var kdfBase = await subtle.importKey("raw", Buffer.from("input key material"), { name: "HKDF" }, false, ["deriveKey"]);
+  check("deriveKey to a length-less KDF type over a KDF base fails closed",
+    (await code(async function () { await subtle.deriveKey({ name: "HKDF", hash: "SHA-256", salt: Buffer.from("s"), info: Buffer.from("i") }, kdfBase, { name: "HKDF" }, false, ["deriveBits"]); })) === "webcrypto/operation");
+}
+
+// W3C RsaKeyGenParams.publicExponent is a BigInteger octet string that the
+// engine narrows through Number() for node:crypto. An empty buffer has no
+// integer value (BigInt("0x") is a raw SyntaxError), and a value above
+// 2^32-1 is outside the interoperable WebCrypto exponent range and heads
+// toward Number's exact-integer limit, where the narrowing would silently
+// hand node a DIFFERENT exponent than requested. Both must reject typed at
+// the entry point, before any narrowing.
+async function testRsaPublicExponentValidation() {
+  check("generateKey RSA: empty publicExponent rejects typed",
+    (await code(async function () {
+      await subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, hash: "SHA-256", publicExponent: new Uint8Array(0) }, true, ["encrypt", "decrypt"]);
+    })) === "webcrypto/syntax");
+  check("generateKey RSA: publicExponent above 2^32-1 rejects typed",
+    (await code(async function () {
+      // 2^56 + 1 -- odd on the wire, but Number(BigInt(2^56+1)) rounds to the
+      // even 2^56, so without the bound node would be handed a changed value.
+      await subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, hash: "SHA-256", publicExponent: new Uint8Array([1, 0, 0, 0, 0, 0, 0, 1]) }, true, ["encrypt", "decrypt"]);
+    })) === "webcrypto/syntax");
+  check("generateKey RSA: explicit 65537 publicExponent still accepted",
+    (await code(async function () {
+      await subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, hash: "SHA-256", publicExponent: new Uint8Array([1, 0, 1]) }, true, ["encrypt", "decrypt"]);
+    })) === "NO-THROW");
+}
+
+// unwrapKey (jwk) under a NON-authenticating algorithm (AES-CBC / AES-CTR)
+// "successfully" decrypts tampered bytes; the JSON.parse of that plaintext
+// is the first point that can notice, and its failure must surface as the
+// module's typed error (W3C: DataError) -- never a raw SyntaxError escaping
+// the public API.
+async function testUnwrapJwkNotJson() {
+  var kek = await subtle.generateKey({ name: "AES-CBC", length: 256 }, true, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
+  var iv = pki.webcrypto.getRandomValues(new Uint8Array(16));
+  var notJwk = await subtle.encrypt({ name: "AES-CBC", iv: iv }, kek, Buffer.from("not a jwk"));
+  var err = null;
+  try { await subtle.unwrapKey("jwk", notJwk, kek, { name: "AES-CBC", iv: iv }, { name: "AES-GCM", length: 128 }, true, ["encrypt"]); }
+  catch (e) { err = e; }
+  check("unwrapKey (jwk) surfaces non-JSON plaintext as typed webcrypto/data",
+    err instanceof pki.errors.PkiError && err.code === "webcrypto/data" && err.cause instanceof SyntaxError);
+}
+
 async function testSurface() {
   check("pki.webcrypto is a Crypto instance", pki.webcrypto instanceof pki.webcrypto.Crypto);
   check("pki.webcrypto.subtle is a SubtleCrypto", pki.webcrypto.subtle instanceof pki.webcrypto.SubtleCrypto);
-  check("WebCryptoError is a PkiError", new pki.webcrypto.WebCryptoError("x", "y") instanceof pki.errors.PkiError);
+  check("WebCryptoError is a PkiError", new pki.webcrypto.WebCryptoError("webcrypto/syntax", "y") instanceof pki.errors.PkiError);
   check("the WebCrypto classes are reachable under pki.webcrypto", typeof pki.webcrypto.CryptoKey === "function" && pki.WebCrypto === undefined);
   var k = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
   check("unsupported algorithm throws not-supported", (await code(async function () { await subtle.sign({ name: "NOPE" }, k.privateKey, Buffer.from("x")); })) === "webcrypto/not-supported");
@@ -284,6 +485,13 @@ async function run() {
   await testDeriveKeyUsage();
   await testHmacVerifyLength();
   await testAesCtrLength();
+  await testAlgorithmKeyBinding();
+  await testRawOkpImportExport();
+  await testDeriveBitsLength();
+  await testDeriveKeyAesLength();
+  await testHmacDefaultLength();
+  await testRsaPublicExponentValidation();
+  await testUnwrapJwkNotJson();
 }
 
 module.exports = { run: run };

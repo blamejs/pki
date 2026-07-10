@@ -167,7 +167,7 @@ function testContentType() {
   check("14a. id-encryptedData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_ENCRYPTED_DATA, b.sequence([b.integer(0n)]))) === "cms/bad-encrypted-data");
   check("14b. id-digestedData -> unsupported", parseCode(contentInfo(ID_DIGESTED_DATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
   check("14c. id-signedAndEnvelopedData -> unsupported", parseCode(contentInfo(ID_SIGNED_ENV, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
-  check("14d. id-ct-authData -> unsupported", parseCode(contentInfo(ID_CT_AUTHDATA, b.sequence([b.integer(0n)]))) === "cms/unsupported-content-type");
+  check("14d. id-ct-authData now decoded (structural error, not unsupported)", parseCode(contentInfo(ID_CT_AUTHDATA, b.sequence([b.integer(0n)]))) === "cms/bad-auth-data");
   check("15. unknown OID -> unknown-content-type", parseCode(contentInfo("1.2.3.4.5", b.sequence([b.integer(0n)]))) === "cms/unknown-content-type");
 }
 
@@ -266,10 +266,11 @@ function testCompleteness() {
   check("26d. content-type malformed OID payload rejected",
     parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [attribute(CT_ATTR, [Buffer.from([0x06, 0x01, 0x80])]), messageDigestAttr([1])] })]) })) === "cms/bad-content-type-attr");
 
-  // 25b. two instances of the SAME non-mandatory attribute type (signingTime) ->
-  //      reject; §5.3 forbids any repeated signed-attribute type.
+  // 25b. two instances of the SAME non-mandatory attribute type (signingTime,
+  //      each a valid single Time) -> reject; §5.3 forbids any repeated
+  //      signed-attribute type.
   check("25b. duplicate signed-attribute type rejected",
-    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(ST_ATTR, [b.octetString(Buffer.from([1]))]), attribute(ST_ATTR, [b.octetString(Buffer.from([2]))])] })]) })) === "cms/duplicate-signed-attr");
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(ST_ATTR, [b.utcTime(new Date("2026-01-02T03:04:05Z"))]), attribute(ST_ATTR, [b.utcTime(new Date("2026-01-02T03:04:06Z"))])] })]) })) === "cms/duplicate-signed-attr");
 
   // 25c. content-type signed-attr value is syntactically valid but differs from
   //      the eContentType (id-data content carrying an id-ct-TSTInfo content-type
@@ -418,10 +419,11 @@ function testEncryptedData() {
   check("EncryptedData encryptedContent raw exact", m.encryptedContentInfo.encryptedContent.equals(CT));
   check("EncryptedData contentEncryptionAlgorithm", m.encryptedContentInfo.contentEncryptionAlgorithm.oid === ID_AES256_CBC);
   check("EncryptedData detached (null ct)", parse(encCI({ version: 0, eci: eci(ID_DATA, ID_AES256_CBC, null) })).encryptedContentInfo.encryptedContent === null);
-  var mu = parse(encCI({ version: 2, unprotectedAttrs: [attribute(ST_ATTR, [b.utf8("x")])] }));
+  // a NEUTRAL attribute type — the §11 types are misplaced in unprotectedAttrs.
+  var mu = parse(encCI({ version: 2, unprotectedAttrs: [attribute(NEUTRAL_ATTR, [b.utf8("x")])] }));
   check("EncryptedData v2 with unprotectedAttrs", mu.version === 2 && mu.unprotectedAttrs.length === 1);
   // version cross-field
-  check("EncryptedData v0 WITH unprotectedAttrs rejected", parseCode(encCI({ version: 0, unprotectedAttrs: [attribute(ST_ATTR, [b.utf8("x")])] })) === "cms/bad-version");
+  check("EncryptedData v0 WITH unprotectedAttrs rejected", parseCode(encCI({ version: 0, unprotectedAttrs: [attribute(NEUTRAL_ATTR, [b.utf8("x")])] })) === "cms/bad-version");
   check("EncryptedData v2 WITHOUT unprotectedAttrs rejected", parseCode(encCI({ version: 2 })) === "cms/bad-version");
   check("EncryptedData unprotectedAttrs empty SET rejected", parseCode(encCI({ version: 2, children: [b.integer(2n), eci(ID_DATA, ID_AES256_CBC, CT), b.contextConstructed(1, Buffer.alloc(0))] })) === "cms/bad-unprotected-attrs");
 }
@@ -463,7 +465,9 @@ function testEnvelopedOtherArms() {
   var mp = parse(envCI({ version: 3, recips: [pwri({ version: 0, kdf: "1.2.840.113549.1.5.12" })] }));
   check("EnvelopedData pwri -> envelope v3", mp.version === 3 && mp.recipientInfos[0].type === "pwri" && mp.recipientInfos[0].keyDerivationAlgorithm.oid === "1.2.840.113549.1.5.12");
   check("EnvelopedData pwri kdf omitted -> null", parse(envCI({ version: 3, recips: [pwri({ version: 0 })] })).recipientInfos[0].keyDerivationAlgorithm === null);
-  var mo = parse(envCI({ version: 3, recips: [ori({})] }));
+  // an UNRECOGNIZED oriType — a recognized id-ori-kem value is content-validated
+  // (see testKemRecipientInfo), so the opaque-surface vector uses a foreign arc.
+  var mo = parse(envCI({ version: 3, recips: [ori({ oriType: "1.3.99.1" })] }));
   check("EnvelopedData ori -> envelope v3", mo.version === 3 && mo.recipientInfos[0].type === "ori" && Buffer.isBuffer(mo.recipientInfos[0].oriValue));
   // originatorInfo present forces the version up from 0 to 2 (an extendedCertificate [0]
   // element is neither the v2AttrCert [2] nor the other [3] that would force v3/v4).
@@ -510,8 +514,373 @@ function testEnvelopedDispatch() {
   check("orchestrator routes EnvelopedData to cms", !!routed.recipientInfos && !!routed.encryptedContentInfo && routed.signerInfos === undefined);
   var routedEnc = pki.schema.parse(encCI({ version: 0 }));
   check("orchestrator routes EncryptedData to cms", routedEnc.recipientInfos === undefined && !!routedEnc.encryptedContentInfo);
-  check("authEnvelopedData not walked as EnvelopedData", parseCode(contentInfo("1.2.840.113549.1.9.16.1.23", b.sequence([b.integer(0n)]))).indexOf("cms/un") === 0);
+  check("authEnvelopedData now decoded (structural error, not unsupported)", parseCode(contentInfo("1.2.840.113549.1.9.16.1.23", b.sequence([b.integer(0n)]))) === "cms/bad-auth-enveloped-data");
   check("EnvelopedData + trailing byte rejected", parseCode(Buffer.concat([envCI({ version: 0 }), Buffer.from([0x00])])) === "cms/bad-der");
+}
+
+// ---- AuthenticatedData / AuthEnvelopedData / KEMRecipientInfo ---------
+// (RFC 5652 §9, RFC 5083, RFC 9629, RFC 9936, RFC 5084, RFC 8619)
+var ID_CT_AUTHENV = "1.2.840.113549.1.9.16.1.23";
+var HMAC_SHA256   = "1.2.840.113549.2.9";
+var ML_KEM_768    = "2.16.840.1.101.3.4.4.2";
+var HKDF_SHA256   = "1.2.840.113549.1.9.16.3.28";
+var ID_AES256_GCM = "2.16.840.1.101.3.4.1.46";
+var ID_AES256_CCM = "2.16.840.1.101.3.4.1.47";
+var CS_ATTR       = "1.2.840.113549.1.9.6";  // id-countersignature
+var NEUTRAL_ATTR  = "1.3.99.7.7";            // no §11 placement rule
+var MAC12 = Buffer.alloc(12, 0x4D);
+var KEMCT_768 = Buffer.alloc(1088, 0x2A);    // ML-KEM-768 ciphertext size (FIPS 203)
+
+// AlgorithmIdentifier WITH a parameters node.
+function algIdP(o, params) { return b.sequence([b.oid(o), params]); }
+// GCMParameters / CCMParameters ::= SEQUENCE { aes-nonce OCTET STRING, aes-ICVlen INTEGER DEFAULT 12 }
+function aeadParams(nonceLen, icv) {
+  var c = [b.octetString(Buffer.alloc(nonceLen, 0x11))];
+  if (icv !== undefined) c.push(b.integer(BigInt(icv)));
+  return b.sequence(c);
+}
+function eciP(ctType, algNode, ciphertext) {
+  var c = [b.oid(ctType), algNode];
+  if (ciphertext !== null && ciphertext !== undefined) c.push(b.contextPrimitive(0, ciphertext));
+  return b.sequence(c);
+}
+// KEMRecipientInfo ::= SEQUENCE { version(0), rid, kem, kemct OCTET STRING, kdf,
+//   kekLength INTEGER (1..65535), ukm [0] EXPLICIT OPT, wrap, encryptedKey } (RFC 9629 §3)
+function kemri(o) {
+  o = o || {};
+  if (o.children) return b.sequence(o.children);
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n)];
+  c.push(o.rid || iasn("KemRecipient", 7));
+  c.push(o.kem || algId(ML_KEM_768));
+  c.push(o.kemct || b.octetString(KEMCT_768));
+  c.push(o.kdf || algId(HKDF_SHA256));
+  c.push(o.kekLength || b.integer(32n));
+  if (o.ukm) c.push(b.explicit(0, b.octetString(o.ukm)));
+  if (o.ukmWrongTag) c.push(b.explicit(1, b.octetString(o.ukmWrongTag)));
+  c.push(o.wrap || algId(ID_AES256_WRAP));
+  c.push(o.ekey || b.octetString(EKEY));
+  return b.sequence(c);
+}
+function oriKem(o) { return ori({ oriValue: kemri(o) }); }
+// AuthenticatedData ::= SEQUENCE { version, originatorInfo [0]?, recipientInfos SET,
+//   macAlgorithm, digestAlgorithm [1]?, encapContentInfo, authAttrs [2]?, mac, unauthAttrs [3]? }
+function authData(o) {
+  o = o || {};
+  if (o.children) return b.sequence(o.children);
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n)];
+  if (o.originatorInfo) c.push(o.originatorInfo);
+  c.push(o.recipsRaw || b.set(o.recips || [ktri({})]));
+  c.push(o.macAlg || algId(HMAC_SHA256));
+  if (o.digestAlg) c.push(b.contextConstructed(1, b.oid(o.digestAlg)));
+  c.push(o.encap || encap(ID_DATA, Buffer.from("auth me")));
+  if (o.authAttrs) c.push(implicitSetOf(2, o.authAttrs, { sort: o.authAttrsSort !== false }));
+  if (o.authAttrsRaw) c.push(o.authAttrsRaw);
+  c.push(o.mac || b.octetString(MAC12));
+  if (o.unauthAttrs) c.push(implicitSetOf(3, o.unauthAttrs));
+  return b.sequence(c);
+}
+function adCI(o) { return contentInfo(ID_CT_AUTHDATA, authData(o)); }
+// AuthEnvelopedData ::= SEQUENCE { version(0), originatorInfo [0]?, recipientInfos SET,
+//   authEncryptedContentInfo, authAttrs [1]?, mac, unauthAttrs [2]? } (RFC 5083 §2.1)
+function authEnv(o) {
+  o = o || {};
+  if (o.children) return b.sequence(o.children);
+  var c = [o.version !== undefined ? b.integer(BigInt(o.version)) : b.integer(0n)];
+  if (o.originatorInfo) c.push(o.originatorInfo);
+  c.push(o.recipsRaw || b.set(o.recips || [ktri({})]));
+  c.push(o.eci || eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12)), CT));
+  if (o.authAttrs) c.push(implicitSetOf(1, o.authAttrs, { sort: o.authAttrsSort !== false }));
+  c.push(o.mac || b.octetString(MAC12));
+  if (o.unauthAttrs) c.push(implicitSetOf(2, o.unauthAttrs));
+  return b.sequence(c);
+}
+function aeCI(o) { return contentInfo(ID_CT_AUTHENV, authEnv(o)); }
+
+// ---- SignedData version branches driven by cert/crl element tags (§5.1) ----
+function testSignedDataCertCrlVersions() {
+  var v1AttrCert = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  var v2AttrCert = b.contextConstructed(2, b.sequence([b.integer(1n)]));
+  var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
+  var otherCrl = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  var crl = b.sequence([b.sequence([b.integer(0n)]), algId(SHA256), b.bitString(Buffer.from([1]), 0)]);
+  check("SignedData v1AttrCert [1] -> v3", parse(cms({ version: b.integer(3n), certs: [v1AttrCert] })).version === 3);
+  check("SignedData v2AttrCert [2] -> v4", parse(cms({ version: b.integer(4n), certs: [v2AttrCert] })).version === 4);
+  check("SignedData other cert [3] -> v5", parse(cms({ version: b.integer(5n), certs: [otherCert] })).version === 5);
+  check("SignedData other crl [1] -> v5", parse(cms({ version: b.integer(5n), crls: [otherCrl] })).version === 5);
+  check("SignedData v1AttrCert stated v1 rejected", parseCode(cms({ version: b.integer(1n), certs: [v1AttrCert] })) === "cms/bad-version");
+  check("SignedData other crl stated v1 rejected", parseCode(cms({ version: b.integer(1n), crls: [otherCrl] })) === "cms/bad-version");
+  // a CertificateList (universal SEQUENCE) in crls stays v1 and is surfaced raw.
+  var mc = parse(cms({ version: b.integer(1n), crls: [crl] }));
+  check("SignedData crls CertificateList surfaced raw", mc.crls.length === 1 && mc.crls[0].bytes.equals(crl));
+  // two signers in ascending DER order parse green (multi-signer accept).
+  var siA = signerInfo({ sid: iasn("Alice", 1) }), siB = signerInfo({ sid: iasn("Bob", 2) });
+  var pair = [siA, siB].sort(Buffer.compare);
+  check("SignedData two sorted signers accepted", parse(cms({ signers: b.set(pair) })).signerInfos.length === 2);
+  // mixed sid arms in one SET: an issuerAndSerialNumber (v1) signer beside a
+  // subjectKeyIdentifier (v3) signer; the v3 signer forces SignedData v3
+  // (sec. 5.1), so the same pair under a stated v1 rejects.
+  var msV1 = signerInfo({ sid: iasn("Alice", 1) });
+  var msV3 = signerInfo({ version: b.integer(3n), sid: skid([1, 2, 3, 4]) });
+  var msPair = [msV1, msV3].sort(Buffer.compare);
+  var msOk = parse(cms({ version: b.integer(3n), signers: b.set(msPair) }));
+  check("SignedData mixed iasn+skid signers accepted", msOk.signerInfos.length === 2 &&
+    msOk.signerInfos.filter(function (s) { return s.version === 3; }).length === 1);
+  check("SignedData mixed signers stated v1 rejected", parseCode(cms({ version: b.integer(1n), signers: b.set(msPair) })) === "cms/bad-version");
+}
+
+// ---- CertificateChoices / RevocationInfoChoice are CLOSED tag sets ----
+function testCertCrlChoiceClosure() {
+  var seqEl = b.sequence([b.integer(1n)]);
+  check("certs INTEGER element rejected", parseCode(cms({ certs: [b.integer(7n)] })) === "cms/bad-certificates");
+  check("certs context [7] element rejected", parseCode(cms({ certs: [b.contextConstructed(7, seqEl)] })) === "cms/bad-certificates");
+  check("certs [3] PRIMITIVE element rejected", parseCode(cms({ certs: [b.contextPrimitive(3, Buffer.from([1]))] })) === "cms/bad-certificates");
+  check("crls [0] element rejected", parseCode(cms({ version: b.integer(1n), crls: [b.contextConstructed(0, seqEl)] })) === "cms/bad-crls");
+  check("crls [2] element rejected", parseCode(cms({ version: b.integer(1n), crls: [b.contextConstructed(2, seqEl)] })) === "cms/bad-crls");
+  check("crls PRIMITIVE [1] element rejected", parseCode(cms({ version: b.integer(1n), crls: [b.contextPrimitive(1, Buffer.from([1]))] })) === "cms/bad-crls");
+  // the same closed sets bind OriginatorInfo's buckets (§6.1 uses the same CHOICEs).
+  check("OriginatorInfo certs INTEGER rejected", parseCode(envCI({ version: 2, originatorInfo: originatorInfo({ certs: [b.integer(7n)] }), recips: [ktri({ version: 0 })] })) === "cms/bad-originator-certs");
+  check("OriginatorInfo crls [0] rejected", parseCode(envCI({ version: 2, originatorInfo: originatorInfo({ crls: [b.contextConstructed(0, seqEl)] }), recips: [ktri({ version: 0 })] })) === "cms/bad-originator-crls");
+}
+
+// ---- signedAttrs MUST be DER even when the envelope is BER (§5.3) ----
+// Drives the module-level walkSignedData the PKCS#12 public-key-integrity path
+// consumes (schema-pkcs12 walks a ber-decoded AuthenticatedSafe through it).
+function testDerAttrsUnderBer() {
+  var cmsLib = require("../../lib/schema-cms.js");
+  var ctA = contentTypeAttr(ID_DATA), mdA = messageDigestAttr([1]);
+  var sorted = [ctA, mdA].sort(Buffer.compare);
+  // [0] with an INDEFINITE length (A0 80 ... 00 00).
+  var indefOuter = Buffer.concat([Buffer.from([0xA0, 0x80]), Buffer.concat(sorted), Buffer.from([0x00, 0x00])]);
+  var si1 = b.sequence([b.integer(1n), iasn("S", 1), algId(SHA256), indefOuter, algId(SHA256), b.octetString(Buffer.from([1]))]);
+  var sd1 = signedData({ signers: b.set([si1]) });
+  var n1 = pki.asn1.decode(sd1, { ber: true });
+  check("ber walkSignedData: indefinite [0] signedAttrs rejected",
+    code(function () { cmsLib.walkSignedData(n1); }) === "cms/bad-signed-attrs");
+  // definite [0] whose INNER attribute TLV is indefinite.
+  var indefAttr = Buffer.concat([Buffer.from([0x30, 0x80]), b.oid(CT_ATTR), b.set([b.oid(ID_DATA)]), Buffer.from([0x00, 0x00])]);
+  var si2 = b.sequence([b.integer(1n), iasn("S", 1), algId(SHA256),
+    b.contextConstructed(0, Buffer.concat([mdA, indefAttr])), algId(SHA256), b.octetString(Buffer.from([1]))]);
+  var n2 = pki.asn1.decode(signedData({ signers: b.set([si2]) }), { ber: true });
+  check("ber walkSignedData: indefinite INNER attribute rejected",
+    code(function () { cmsLib.walkSignedData(n2); }) === "cms/bad-signed-attrs");
+  // a fully-DER signedAttrs through the same ber path stays green.
+  var si3 = signerInfo({ signedAttrs: [ctA, mdA] });
+  var n3 = pki.asn1.decode(signedData({ signers: b.set([si3]) }), { ber: true });
+  var ok3 = cmsLib.walkSignedData(n3);
+  check("ber walkSignedData: DER signedAttrs accepted", ok3.signerInfos[0].signedAttrs.length === 2);
+}
+
+// ---- §11 attribute placement + signing-time syntax + countersignature ----
+function testAttrPlacementRules() {
+  var st = attribute(ST_ATTR, [b.utcTime(new Date("2026-01-02T03:04:05Z"))]);
+  var neutral = attribute(NEUTRAL_ATTR, [b.integer(1n)]);
+  // placement rejects: each §11 type outside its allowed set(s).
+  check("countersignature in signedAttrs rejected", parseCode(cms({ signers: b.set([signerInfo({
+    signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(CS_ATTR, [b.sequence([b.integer(1n)])])] })]) })) === "cms/misplaced-attr");
+  check("signing-time in unsignedAttrs rejected", parseCode(cms({ signers: b.set([signerInfo({ unsignedAttrs: [st] })]) })) === "cms/misplaced-attr");
+  check("content-type in EnvelopedData unprotectedAttrs rejected",
+    parseCode(envCI({ version: 2, recips: [ktri({ version: 0 })], unprotectedAttrs: [contentTypeAttr(ID_DATA)] })) === "cms/misplaced-attr");
+  check("message-digest in EncryptedData unprotectedAttrs rejected",
+    parseCode(encCI({ version: 2, unprotectedAttrs: [messageDigestAttr([1])] })) === "cms/misplaced-attr");
+  // signing-time value rules (§11.3): single-valued, Time syntax.
+  check("signing-time 2-valued rejected", parseCode(cms({ signers: b.set([signerInfo({
+    signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]),
+      attribute(ST_ATTR, [b.utcTime(new Date("2026-01-02T03:04:05Z")), b.utcTime(new Date("2026-01-02T03:04:06Z"))])] })]) })) === "cms/bad-signing-time-attr");
+  check("signing-time non-Time value rejected", parseCode(cms({ signers: b.set([signerInfo({
+    signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(ST_ATTR, [b.integer(5n)])] })]) })) === "cms/bad-signing-time-attr");
+  var mOk = parse(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), st] })]) }));
+  check("signing-time valid UTCTime accepted", mOk.signerInfos[0].signedAttrs.length === 3);
+  var g51 = attribute(ST_ATTR, [b.generalizedTime(new Date("2051-06-07T08:09:10Z"))]);
+  var mG = parse(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), g51] })]) }));
+  check("signing-time post-2049 GeneralizedTime accepted", mG.signerInfos[0].signedAttrs.length === 3);
+  // unsignedAttrs surface (a neutral type) + empty-SET rejects.
+  var mU = parse(cms({ signers: b.set([signerInfo({ unsignedAttrs: [neutral] })]) }));
+  check("unsignedAttrs surfaced", mU.signerInfos[0].unsignedAttrs.length === 1 && mU.signerInfos[0].unsignedAttrs[0].type === NEUTRAL_ATTR);
+  check("empty signedAttrs [0] SET rejected", parseCode(cms({ signers: b.set([b.sequence([b.integer(1n), iasn("S", 1), algId(SHA256),
+    b.contextConstructed(0, Buffer.alloc(0)), algId(SHA256), b.octetString(Buffer.from([1]))])]) })) === "cms/bad-signed-attrs");
+  check("empty unsignedAttrs [1] SET rejected", parseCode(cms({ signers: b.set([b.sequence([b.integer(1n), iasn("S", 1), algId(SHA256),
+    algId(SHA256), b.octetString(Buffer.from([1])), b.contextConstructed(1, Buffer.alloc(0))])]) })) === "cms/bad-unsigned-attrs");
+}
+
+// ---- countersignature values are SignerInfos with §11.4 binding rules ----
+function testCountersignatureValues() {
+  // a countersignature's signedAttrs carry message-digest but MUST NOT carry content-type.
+  function csValue(o) {
+    o = o || {};
+    return b.sequence([b.integer(1n), iasn("Countersigner", 3), algId(SHA256),
+      implicitSetOf(0, o.signedAttrs || [messageDigestAttr([7])]),
+      algId(SHA256), b.octetString(Buffer.from([9, 9]))]);
+  }
+  var mOk = parse(cms({ signers: b.set([signerInfo({ unsignedAttrs: [attribute(CS_ATTR, [csValue()])] })]) }));
+  check("countersignature in unsignedAttrs accepted", mOk.signerInfos[0].unsignedAttrs[0].type === CS_ATTR);
+  check("countersignature w/ content-type attr rejected", parseCode(cms({ signers: b.set([signerInfo({
+    unsignedAttrs: [attribute(CS_ATTR, [csValue({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([7])] })])] })]) })) === "cms/misplaced-attr");
+  check("countersignature w/o message-digest rejected", parseCode(cms({ signers: b.set([signerInfo({
+    unsignedAttrs: [attribute(CS_ATTR, [csValue({ signedAttrs: [attribute(NEUTRAL_ATTR, [b.integer(1n)])] })])] })]) })) === "cms/missing-message-digest");
+  var garbage = parseCode(cms({ signers: b.set([signerInfo({ unsignedAttrs: [attribute(CS_ATTR, [b.integer(5n)])] })]) }));
+  check("countersignature garbage value rejected (typed)", garbage !== "NO-THROW" && garbage.indexOf("RAW:") !== 0);
+  // §11.4 explicitly permits multiple countersignature instances in unsignedAttrs.
+  var two = [attribute(CS_ATTR, [csValue()]), attribute(CS_ATTR, [csValue({ signedAttrs: [messageDigestAttr([8])] })])];
+  var mTwo = parse(cms({ signers: b.set([signerInfo({ unsignedAttrs: two })]) }));
+  check("two countersignature instances accepted", mTwo.signerInfos[0].unsignedAttrs.length === 2);
+}
+
+// ---- KEMRecipientInfo (RFC 9629 via ori [4], ML-KEM RFC 9936) ----------
+function testKemRecipientInfo() {
+  var m = parse(envCI({ version: 3, recips: [oriKem({})] }));
+  var r = m.recipientInfos[0];
+  check("kemri: envelope v3 + ori surface", m.version === 3 && r.type === "ori" && r.oriType === KEM_ORI_OID);
+  check("kemri: version 0", r.kemri.version === 0);
+  check("kemri: rid issuerAndSerialNumber", r.kemri.ridType === "issuerAndSerialNumber" && !!r.kemri.rid.issuer.dn);
+  check("kemri: kem algorithm surfaced", r.kemri.kem.oid === ML_KEM_768);
+  check("kemri: kemct raw exact", r.kemri.kemct.equals(KEMCT_768));
+  check("kemri: kdf surfaced", r.kemri.kdf.oid === HKDF_SHA256);
+  check("kemri: kekLength 32", r.kemri.kekLength === 32);
+  check("kemri: ukm absent -> null", r.kemri.ukm === null);
+  check("kemri: wrap surfaced", r.kemri.wrap.oid === ID_AES256_WRAP);
+  check("kemri: encryptedKey raw exact", r.kemri.encryptedKey.equals(EKEY));
+  var mS = parse(envCI({ version: 3, recips: [oriKem({ rid: skid([0x77]), ukm: UKM })] }));
+  check("kemri: skid rid + ukm [0] EXPLICIT", mS.recipientInfos[0].kemri.ridType === "subjectKeyIdentifier" && mS.recipientInfos[0].kemri.ukm.equals(UKM));
+  // an unrecognized oriType stays raw-opaque (the ORI extension point).
+  var mU = parse(envCI({ version: 3, recips: [ori({ oriType: "1.3.99.1" })] }));
+  check("unknown oriType stays raw", Buffer.isBuffer(mU.recipientInfos[0].oriValue) && mU.recipientInfos[0].kemri === null);
+  // an unrecognized kem/wrap pair carries no ML-KEM/AES-wrap value rules.
+  var mF = parse(envCI({ version: 3, recips: [oriKem({ kem: algIdP(ID_ECDH, b.octetString(Buffer.from([1]))), kemct: b.octetString(Buffer.from([1, 2])), wrap: algId("1.3.99.2"), kekLength: b.integer(7n) })] }));
+  check("kemri: unrecognized kem accepted raw", mF.recipientInfos[0].kemri.kem.oid === ID_ECDH && mF.recipientInfos[0].kemri.kekLength === 7);
+  // rejects.
+  check("kemri: version 1 rejected", parseCode(envCI({ version: 3, recips: [oriKem({ version: 1 })] })) === "cms/bad-version");
+  check("kemri: kekLength 0 rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kekLength: b.integer(0n) })] })) === "cms/bad-kek-length");
+  check("kemri: kekLength 65536 rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kekLength: b.integer(65536n) })] })) === "cms/bad-kek-length");
+  check("kemri: kekLength 16 vs aes256-wrap rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kekLength: b.integer(16n) })] })) === "cms/kek-length-mismatch");
+  check("kemri: ML-KEM-768 short kemct rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kemct: b.octetString(Buffer.alloc(1087, 0x2A)) })] })) === "cms/bad-kem-ciphertext");
+  check("kemri: ML-KEM params present rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kem: algIdP(ML_KEM_768, Buffer.from([0x05, 0x00])) })] })) === "cms/bad-algorithm-parameters");
+  check("kemri: HKDF params present rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kdf: algIdP(HKDF_SHA256, Buffer.from([0x05, 0x00])) })] })) === "cms/bad-algorithm-parameters");
+  var wrongTag = parseCode(envCI({ version: 3, recips: [oriKem({ ukmWrongTag: UKM })] }));
+  check("kemri: ukm at [1] rejected", wrongTag !== "NO-THROW" && wrongTag.indexOf("cms/") === 0);
+  check("kemri: truncated (no encryptedKey) rejected", parseCode(envCI({ version: 3, recips: [oriKem({ children: [b.integer(0n), iasn("K", 7), algId(ML_KEM_768), b.octetString(KEMCT_768), algId(HKDF_SHA256), b.integer(32n), algId(ID_AES256_WRAP)] })] })) === "cms/bad-kem-recipient-info");
+  // the recognized id-ori-kem type is validated by CONTENT — a value that is not
+  // a KEMRecipientInfo rejects with a typed cms/* code, never accepted on tag.
+  var garbageOri = parseCode(envCI({ version: 3, recips: [ori({})] }));
+  check("kemri: recognized ori garbage value rejected", garbageOri.indexOf("cms/") === 0);
+  check("kemri: kekLength not INTEGER rejected", parseCode(envCI({ version: 3, recips: [oriKem({ kekLength: b.octetString(Buffer.from([32])) })] })) === "asn1/unexpected-tag");
+}
+
+// ---- AuthenticatedData (RFC 5652 §9) -----------------------------------
+function testAuthenticatedData() {
+  var m = parse(adCI({}));
+  check("authData: minimal v0", m.version === 0 && m.recipientInfos.length === 1);
+  check("authData: macAlgorithm surfaced", m.macAlgorithm.oid === HMAC_SHA256);
+  check("authData: mac raw exact", m.mac.equals(MAC12));
+  check("authData: no digestAlgorithm -> null", m.digestAlgorithm === null && m.authAttrs === null && m.authAttrsBytes === null);
+  check("authData: eContent surfaced", m.encapContentInfo.eContent.equals(Buffer.from("auth me")));
+  var full = parse(adCI({ digestAlg: SHA256,
+    authAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1])],
+    unauthAttrs: [attribute(NEUTRAL_ATTR, [b.integer(1n)])] }));
+  check("authData: digestAlgorithm surfaced", full.digestAlgorithm.oid === SHA256);
+  check("authData: authAttrs decoded", full.authAttrs.length === 2);
+  check("authData: authAttrsBytes raw [2] TLV", full.authAttrsBytes[0] === 0xA2);
+  check("authData: unauthAttrs decoded", full.unauthAttrs.length === 1);
+  // version rule (§9.1): originatorInfo tags only; recipient kinds do NOT bump.
+  var v2AttrCert = b.contextConstructed(2, b.sequence([b.integer(1n)]));
+  var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
+  var otherCrl = b.contextConstructed(1, b.sequence([b.integer(1n)]));
+  check("authData: v2AttrCert -> v1", parse(adCI({ version: 1, originatorInfo: originatorInfo({ certs: [v2AttrCert] }) })).version === 1);
+  check("authData: other cert [3] -> v3", parse(adCI({ version: 3, originatorInfo: originatorInfo({ certs: [otherCert] }) })).version === 3);
+  check("authData: other crl [1] -> v3", parse(adCI({ version: 3, originatorInfo: originatorInfo({ crls: [otherCrl] }) })).version === 3);
+  check("authData: pwri recipient does NOT bump version", parse(adCI({ version: 0, recips: [pwri({ version: 0 })] })).version === 0);
+  check("authData: kemri ori recipient does NOT bump version", parse(adCI({ version: 0, recips: [oriKem({})] })).version === 0);
+  check("authData: version 2 rejected", parseCode(adCI({ version: 2 })) === "cms/bad-version");
+  check("authData: v3 stated without originatorInfo rejected", parseCode(adCI({ version: 3 })) === "cms/bad-version");
+  check("authData: v0 stated with v2AttrCert rejected", parseCode(adCI({ version: 0, originatorInfo: originatorInfo({ certs: [v2AttrCert] }) })) === "cms/bad-version");
+  // §9.1 biconditional + non-id-data rules.
+  check("authData: digestAlgorithm without authAttrs rejected", parseCode(adCI({ digestAlg: SHA256 })) === "cms/missing-auth-attrs");
+  check("authData: authAttrs without digestAlgorithm rejected", parseCode(adCI({ authAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1])] })) === "cms/missing-digest-algorithm");
+  check("authData: non-id-data without authAttrs rejected", parseCode(adCI({ encap: encap(ID_CT_TSTINFO, Buffer.from("t")) })) === "cms/missing-auth-attrs");
+  var nid = parse(adCI({ version: 0, digestAlg: SHA256, encap: encap(ID_CT_TSTINFO, Buffer.from("t")),
+    authAttrs: [contentTypeAttr(ID_CT_TSTINFO), messageDigestAttr([1])] }));
+  check("authData: non-id-data with authAttrs accepted", nid.encapContentInfo.eContentType === ID_CT_TSTINFO);
+  // authAttrs carry the §11.1/§11.2 binding rules.
+  check("authData: authAttrs missing content-type rejected", parseCode(adCI({ digestAlg: SHA256, authAttrs: [messageDigestAttr([1])] })) === "cms/missing-content-type");
+  check("authData: authAttrs missing message-digest rejected", parseCode(adCI({ digestAlg: SHA256, authAttrs: [contentTypeAttr(ID_DATA)] })) === "cms/missing-message-digest");
+  check("authData: authAttrs content-type mismatch rejected", parseCode(adCI({ digestAlg: SHA256, authAttrs: [contentTypeAttr(ID_CT_TSTINFO), messageDigestAttr([1])] })) === "cms/content-type-mismatch");
+  check("authData: duplicate attr type rejected", parseCode(adCI({ digestAlg: SHA256,
+    authAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), attribute(NEUTRAL_ATTR, [b.integer(1n)]), attribute(NEUTRAL_ATTR, [b.integer(2n)])] })) === "cms/duplicate-signed-attr");
+  check("authData: message-digest in unauthAttrs rejected", parseCode(adCI({ unauthAttrs: [messageDigestAttr([1])] })) === "cms/misplaced-attr");
+  // structural rejects.
+  check("authData: empty authAttrs [2] rejected", parseCode(adCI({ authAttrsRaw: b.contextConstructed(2, Buffer.alloc(0)) })) === "cms/bad-auth-attrs");
+  check("authData: empty unauthAttrs [3] rejected", parseCode(adCI({ children: [b.integer(0n), b.set([ktri({})]), algId(HMAC_SHA256), encap(ID_DATA, Buffer.from("x")), b.octetString(MAC12), b.contextConstructed(3, Buffer.alloc(0))] })) === "cms/bad-unauth-attrs");
+  check("authData: empty recipientInfos rejected", parseCode(adCI({ recipsRaw: b.set([]) })) === "cms/bad-recipient-infos");
+  check("authData: mac not OCTET STRING rejected", parseCode(adCI({ mac: b.integer(5n) })) === "asn1/unexpected-tag");
+  var misordered = parseCode(adCI({ digestAlg: SHA256, authAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1])].sort(Buffer.compare).reverse(), authAttrsSort: false }));
+  check("authData: authAttrs not DER-sorted rejected", misordered !== "NO-THROW");
+  check("authData: trailing byte rejected", parseCode(Buffer.concat([adCI({}), Buffer.from([0x00])])) === "cms/bad-der");
+  // orchestrator routing.
+  var routed = pki.schema.parse(adCI({}));
+  check("orchestrator routes AuthenticatedData to cms", !!routed.macAlgorithm && !!routed.mac && routed.signerInfos === undefined);
+}
+
+// ---- AuthEnvelopedData (RFC 5083 + RFC 5084 AEAD parameters) -----------
+function testAuthEnvelopedData() {
+  var m = parse(aeCI({}));
+  check("authEnv: minimal v0", m.version === 0 && m.recipientInfos.length === 1);
+  check("authEnv: encryptedContentInfo surfaced", m.encryptedContentInfo.contentType === ID_DATA && m.encryptedContentInfo.encryptedContent.equals(CT));
+  check("authEnv: mac raw exact", m.mac.equals(MAC12));
+  check("authEnv: GCM aead surfaced", m.aead.kind === "gcm" && m.aead.nonce.length === 12 && m.aead.icvLen === 12);
+  check("authEnv: authAttrs absent -> null", m.authAttrs === null && m.authAttrsBytes === null);
+  // authAttrs here carry NO content-binding presence rules (§11.1/§11.2 bind
+  // signed-data and authenticated-data) — a lone neutral attribute is legal.
+  var wa = parse(aeCI({ authAttrs: [attribute(NEUTRAL_ATTR, [b.integer(1n)])], unauthAttrs: [attribute("1.3.99.8.8", [b.integer(2n)])] }));
+  check("authEnv: authAttrs decoded (no presence rules)", wa.authAttrs.length === 1);
+  check("authEnv: authAttrsBytes raw [1] TLV", wa.authAttrsBytes[0] === 0xA1);
+  check("authEnv: unauthAttrs decoded", wa.unauthAttrs.length === 1);
+  // GCM explicit ICVlen 16 + matching 16-byte mac.
+  var g16 = parse(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, 16)), CT), mac: b.octetString(Buffer.alloc(16, 0x4D)) }));
+  check("authEnv: GCM ICVlen 16 accepted", g16.aead.icvLen === 16 && g16.mac.length === 16);
+  // CCM accept (nonce 7..13, ICVlen from the CCM set).
+  var ccm = parse(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_CCM, aeadParams(13, 8)), CT), mac: b.octetString(Buffer.alloc(8, 0x4D)) }));
+  check("authEnv: CCM accepted", ccm.aead.kind === "ccm" && ccm.aead.icvLen === 8);
+  // an unrecognized content-encryption algorithm surfaces raw, no AEAD rules.
+  var unk = parse(aeCI({ eci: eciP(ID_DATA, algIdP("1.3.99.3", b.octetString(Buffer.from([1]))), CT) }));
+  check("authEnv: unrecognized alg raw (aead null)", unk.aead === null);
+  // originatorInfo never changes the version (RFC 5083 fixes it at 0).
+  var otherCert = b.contextConstructed(3, b.sequence([b.integer(1n)]));
+  check("authEnv: originatorInfo other cert stays v0", parse(aeCI({ originatorInfo: originatorInfo({ certs: [otherCert] }) })).version === 0);
+  // rejects.
+  check("authEnv: version 1 rejected", parseCode(aeCI({ version: 1 })) === "cms/bad-version");
+  check("authEnv: non-id-data without authAttrs rejected", parseCode(aeCI({ eci: eciP(ID_CT_TSTINFO, algIdP(ID_AES256_GCM, aeadParams(12)), CT) })) === "cms/missing-auth-attrs");
+  var nidOk = parse(aeCI({ eci: eciP(ID_CT_TSTINFO, algIdP(ID_AES256_GCM, aeadParams(12)), CT), authAttrs: [contentTypeAttr(ID_CT_TSTINFO)] }));
+  check("authEnv: non-id-data with authAttrs accepted", nidOk.encryptedContentInfo.contentType === ID_CT_TSTINFO);
+  check("authEnv: authAttrs content-type mismatch rejected", parseCode(aeCI({ authAttrs: [contentTypeAttr(ID_CT_TSTINFO)] })) === "cms/content-type-mismatch");
+  // a present content-type attribute must be single-valued (RFC 5652 sec. 11.1),
+  // even in AuthEnvelopedData where content-type is not REQUIRED -- an expected
+  // first value plus an extra OID must not slip through as an ambiguous set.
+  check("authEnv: multi-valued content-type attr rejected", parseCode(aeCI({ authAttrs: [attribute(CT_ATTR, [b.oid(ID_DATA), b.oid(ID_CT_TSTINFO)])] })) === "cms/bad-content-type-attr");
+  check("authEnv: duplicate attr type rejected", parseCode(aeCI({ authAttrs: [attribute(NEUTRAL_ATTR, [b.integer(1n)]), attribute(NEUTRAL_ATTR, [b.integer(2n)])] })) === "cms/duplicate-attr");
+  check("authEnv: GCM params absent rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algId(ID_AES256_GCM), CT) })) === "cms/bad-aead-params");
+  check("authEnv: GCM ICVlen 8 rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, 8)), CT) })) === "cms/bad-aead-params");
+  check("authEnv: GCM encoded DEFAULT ICVlen 12 rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, 12)), CT) })) === "cms/non-canonical-default");
+  check("authEnv: mac length != ICVlen rejected", parseCode(aeCI({ mac: b.octetString(Buffer.alloc(16, 0x4D)) })) === "cms/mac-length-mismatch");
+  check("authEnv: CCM nonce 14 rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_CCM, aeadParams(14, 8)), CT), mac: b.octetString(Buffer.alloc(8)) })) === "cms/bad-aead-params");
+  check("authEnv: CCM nonce 6 rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_CCM, aeadParams(6, 8)), CT), mac: b.octetString(Buffer.alloc(8)) })) === "cms/bad-aead-params");
+  check("authEnv: CCM ICVlen 7 rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_CCM, aeadParams(13, 7)), CT), mac: b.octetString(Buffer.alloc(7)) })) === "cms/bad-aead-params");
+  check("authEnv: GCM nonce not OCTET STRING rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, b.sequence([b.integer(1n)])), CT) })) === "cms/bad-aead-params");
+  check("authEnv: GCM params 3 children rejected", parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, b.sequence([b.octetString(Buffer.alloc(12)), b.integer(13n), b.integer(13n)])), CT) })) === "cms/bad-aead-params");
+  check("authEnv: empty authAttrs [1] rejected", parseCode(aeCI({ children: [b.integer(0n), b.set([ktri({})]), eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12)), CT), b.contextConstructed(1, Buffer.alloc(0)), b.octetString(MAC12)] })) === "cms/bad-auth-attrs");
+  check("authEnv: empty unauthAttrs [2] rejected", parseCode(aeCI({ children: [b.integer(0n), b.set([ktri({})]), eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12)), CT), b.octetString(MAC12), b.contextConstructed(2, Buffer.alloc(0))] })) === "cms/bad-unauth-attrs");
+  check("authEnv: empty recipientInfos rejected", parseCode(aeCI({ recipsRaw: b.set([]) })) === "cms/bad-recipient-infos");
+  // orchestrator routing.
+  var routed = pki.schema.parse(aeCI({}));
+  check("orchestrator routes AuthEnvelopedData to cms", !!routed.mac && !!routed.encryptedContentInfo && routed.macAlgorithm === undefined);
+}
+
+// ---- the dispatched ContentInfo type rides every parse result ----------
+function testContentTypeDiscriminator() {
+  check("SignedData result carries contentTypeName", parse(cms({})).contentTypeName === "signedData");
+  check("EnvelopedData result carries contentTypeName", parse(envCI({ version: 0 })).contentTypeName === "envelopedData");
+  check("EncryptedData result carries contentTypeName", parse(encCI({ version: 0 })).contentTypeName === "encryptedData");
+  check("AuthenticatedData result carries contentTypeName", parse(adCI({})).contentTypeName === "authData");
+  check("AuthEnvelopedData result carries contentTypeName", parse(aeCI({})).contentTypeName === "authEnvelopedData");
+  check("contentType is the dotted OID", parse(cms({})).contentType === ID_SIGNED_DATA);
 }
 
 function run() {
@@ -527,6 +896,15 @@ function run() {
   testEnvelopedOtherArms();
   testEnvelopedVersionAndStructure();
   testEnvelopedDispatch();
+  testSignedDataCertCrlVersions();
+  testCertCrlChoiceClosure();
+  testDerAttrsUnderBer();
+  testAttrPlacementRules();
+  testCountersignatureValues();
+  testKemRecipientInfo();
+  testAuthenticatedData();
+  testAuthEnvelopedData();
+  testContentTypeDiscriminator();
 }
 
 module.exports = { run: run };

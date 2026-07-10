@@ -20,13 +20,20 @@ action wrapper, which does not support JavaScript targets.
 | File                     | Target                                                |
 | ------------------------ | ----------------------------------------------------- |
 | `asn1-der.fuzz.js`       | `pki.asn1.decode`                                     |
+| `schema-all-parse.fuzz.js` | `pki.schema.parse` (the detect-and-route orchestrator: every format's `matches()` detector + the BER-tolerant root decode) |
 | `x509-parse.fuzz.js`     | `pki.schema.x509.parse`                               |
+| `crl-parse.fuzz.js`      | `pki.schema.crl.parse`                                |
+| `csr-parse.fuzz.js`      | `pki.schema.csr.parse`                                |
+| `pkcs8-parse.fuzz.js`    | `pki.schema.pkcs8.parse` / `parseEncrypted`           |
 | `cms-parse.fuzz.js`      | `pki.schema.cms.parse`                                |
 | `ocsp-parse.fuzz.js`     | `pki.schema.ocsp.parseRequest` / `parseResponse`      |
-| `tsp-parse.fuzz.js`      | `pki.schema.tsp.parse`                                |
+| `tsp-parse.fuzz.js`      | `pki.schema.tsp.parse` / `parseTstInfo` / `parseToken` |
 | `attrcert-parse.fuzz.js` | `pki.schema.attrcert.parse`                           |
 | `crmf-parse.fuzz.js`     | `pki.schema.crmf.parse`                               |
+| `cmp-parse.fuzz.js`      | `pki.schema.cmp.parse`                                |
 | `pkcs12-parse.fuzz.js`   | `pki.schema.pkcs12.parse`                             |
+| `ct-parse.fuzz.js`       | `pki.schema.ct` SCT-list decoders                     |
+| `smime-parse.fuzz.js`    | `pki.schema.smime` attribute decoders                 |
 | `pkix-ext-parse.fuzz.js` | the shared PKIX extension decoders                    |
 
 Each harness exports a `fuzz(data)` function the engine drives with

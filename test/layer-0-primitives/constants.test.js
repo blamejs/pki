@@ -38,6 +38,13 @@ function testThrows() {
   check("ConstantsError is a PkiError", (function () {
     try { pki.C.TIME.days(-1); return false; } catch (e) { return e instanceof pki.errors.PkiError; }
   })());
+  // The PRODUCT is validated too: a finite-but-huge operand must throw, not
+  // return Infinity — an Infinity plumbed into a codec cap (opts.maxBytes)
+  // would silently disable the bound (`len > Infinity` is always false).
+  check("TIME.days(1e304) throws (product overflows)", code(function () { pki.C.TIME.days(1e304); }) === "constants/bad-scale");
+  check("BYTES.gib(1e300) throws (product overflows)", code(function () { pki.C.BYTES.gib(1e300); }) === "constants/bad-scale");
+  check("TIME.weeks(2^53) throws (product not a safe integer)", code(function () { pki.C.TIME.weeks(9007199254740992); }) === "constants/bad-scale");
+  check("control: a large in-range product still returns exactly", pki.C.TIME.days(365000) === 365000 * 86400000);
 }
 
 function testMeta() {

@@ -2,7 +2,7 @@
 // Copyright (c) blamejs contributors
 "use strict";
 // Emit a NIST SP 800-218 (SSDF) / OMB M-22-18 producer self-attestation as
-// a machine-readable JSON artifact, attached to each GitHub release.
+// a machine-readable JSON artifact for a given release.
 //
 // Run via:
 //   node scripts/generate-ssdf-attestation.js \
@@ -10,12 +10,13 @@
 //     > ssdf-attestation.json
 //
 //   # or with --out:
-//   node scripts/generate-ssdf-attestation.js --out ssdf-attestation.json
+//   node scripts/generate-ssdf-attestation.js --commit <sha> --date <ts> \
+//     --out ssdf-attestation.json
 //
-// Intended to run in the release workflow alongside the SBOM + cosign +
-// SLSA steps. Downstream consumers who require SSDF supplier-compliance
-// evidence (OMB M-22-18 / M-23-16 self-attestation) download this from the
-// release page.
+// Operator-run at release time; the artifact is suitable for attaching to
+// the GitHub release. Downstream consumers who require SSDF
+// supplier-compliance evidence (OMB M-22-18 / M-23-16 self-attestation)
+// obtain it from the producer.
 //
 // WHAT THIS IS — AND IS NOT.
 //   This is a PRODUCER SELF-ATTESTATION, the machine-readable companion to
@@ -104,12 +105,19 @@ function _resolveVersion(args, pkg) {
   throw new Error("generate-ssdf-attestation: no version (pass --version or set package.json version)");
 }
 
-// Source-control commit: --commit wins; else GITHUB_SHA; else null.
+// Source-control commit: --commit wins; else GITHUB_SHA; else fail closed —
+// the per-statement controls are auditable only against a specific source
+// revision, so an attestation without a commit anchor asserts controls
+// against no identifiable tree.
 function _resolveCommit(args, env) {
   if (typeof args.commit === "string" && args.commit.length > 0) return args.commit;
   var sha = env.GITHUB_SHA;
   if (typeof sha === "string" && sha.length > 0) return sha;
-  return null;
+  throw new Error(
+    "generate-ssdf-attestation: no commit source. Pass --commit <sha> or set " +
+    "GITHUB_SHA — the attestation's statements are checkable only against a " +
+    "specific source revision."
+  );
 }
 
 // Normalize the package.json repository field to a bare https URL.
@@ -159,8 +167,8 @@ function _attestationStatements() {
         },
         {
           "ssdf": ["PO.5.1"],
-          "claim": "Third-party GitHub Actions are SHA-pinned; the two tag-pinned exceptions (the SLSA reusable workflow and aquasecurity/trivy-action) are documented in .pinact.yaml with the structural reason each cannot be SHA-verified online. A currency gate fails the release if any pin falls behind upstream.",
-          "control": ".github/workflows/*.yml SHA pins; .pinact.yaml exceptions; scripts/check-actions-currency.js.",
+          "claim": "Third-party GitHub Actions are SHA-pinned; the two tag-pinned exceptions (the SLSA reusable workflow and aquasecurity/trivy-action) are documented in .pinact.yaml with the structural reason each cannot be SHA-verified online. A lockfile pin-currency gate runs in the publish workflow; Action-SHA currency is checked on demand.",
+          "control": ".github/workflows/*.yml SHA pins; .pinact.yaml exceptions; scripts/pin-all.js --check (npm-publish.yml validate job); scripts/check-actions-currency.js (on-demand).",
         },
       ],
     },
@@ -176,13 +184,13 @@ function _attestationStatements() {
         },
         {
           "ssdf": ["PS.3.1", "PS.3.2"],
-          "claim": "Each release ships a complete CycloneDX 1.6 SBOM (npm-tree view plus a vendored-bundle view) so consumers can inventory exactly what ships inside the tarball.",
-          "control": "sbom.cdx.json (npm tree) + sbom.vendored.cdx.json (scripts/build-vendored-sbom.js); both attached to the GitHub release.",
+          "claim": "Each release ships a CycloneDX 1.6 SBOM of the npm dependency tree (empty by the zero-runtime-dep contract); the vendored-bundle view is generated on demand from the SHA-256-pinned vendor manifest.",
+          "control": "sbom.cdx.json (npm tree) attached to the GitHub release; scripts/build-vendored-sbom.js renders lib/vendor/MANIFEST.json as a CycloneDX document, verifying every recorded hash against the on-disk bytes.",
         },
         {
           "ssdf": ["PS.2.1"],
-          "claim": "Release integrity is verifiable through independent trust roots, each detecting tampering with the others: SLSA L3 npm provenance, a Sigstore-keyless SBOM signature, SSH-signed annotated tags, per-artifact SHA-256/SHA3-512 sidecars, and an optional ML-DSA-65 (FIPS 204) release-signing sidecar over the tarball computed with node:crypto.",
-          "control": "cosign sign-blob (sbom.cdx.json.sigstore); SSH-signed tags enforced by the release-tags ruleset; scripts/sha3-digest.js sidecars; scripts/sign-release-artifact.js (<tarball>.mldsa.sig). Verification recipes in SECURITY.md.",
+          "claim": "Release integrity is verifiable through independent trust roots, each detecting tampering with the others: SLSA L3 npm provenance, a Sigstore-keyless SBOM signature, SSH-signed annotated tags, and a per-tarball SHA-256 sidecar. Operator-run tooling additionally produces SHA3-512 digests and an ML-DSA-65 (FIPS 204) tarball signature with node:crypto.",
+          "control": "cosign sign-blob (sbom.cdx.json.sigstore); SSH-signed tags enforced by the release-tags ruleset; <tarball>.sha256 attached to the GitHub release; scripts/sha3-digest.js + scripts/sign-release-artifact.js (operator-run). Verification recipes in SECURITY.md.",
         },
       ],
     },
@@ -193,8 +201,8 @@ function _attestationStatements() {
       "statements": [
         {
           "ssdf": ["RV.1.1", "RV.1.2", "PW.7.2"],
-          "claim": "Every release is scanned for known vulnerabilities before publish: OSV-Scanner runs against the SBOM and the vendored tree, and the release fails on any finding. A vendored-dependency currency gate refuses a stale, potentially-vulnerable pin.",
-          "control": "OSV-Scanner step in npm-publish.yml (--sbom sbom.cdx.json + -r lib/vendor/); scripts/check-vendor-currency.js.",
+          "claim": "Every release is scanned for known vulnerabilities before publish: OSV-Scanner runs against the committed lockfiles that pin the build toolchain, and against the vendored tree whenever lib/vendor/ carries content; the release fails on any finding. A vendored-dependency currency gate refuses a stale, potentially-vulnerable pin.",
+          "control": "OSV-Scanner steps in npm-publish.yml (--lockfile=package-lock.json + --lockfile=fuzz/package-lock.json; -r lib/vendor/ when vendored content is present); scripts/check-vendor-currency.js.",
         },
         {
           "ssdf": ["PW.8.2", "PW.7.1"],
@@ -274,8 +282,8 @@ function buildAttestation(opts) {
         "SLSA L3 npm provenance (npm publish --provenance + blamejs-pki-<version>.intoto.jsonl)",
         "Sigstore-keyless SBOM signature (sbom.cdx.json.sigstore)",
         "SSH-signed annotated git tag (release-tags ruleset, enforced server-side)",
-        "Per-artifact SHA-256 / SHA3-512 sidecars (scripts/sha3-digest.js)",
-        "Optional ML-DSA-65 release-signing sidecar (<tarball>.mldsa.sig, FIPS 204, node:crypto)",
+        "Per-tarball SHA-256 sidecar (<tarball>.sha256, attached to the GitHub release)",
+        "Operator-run deep verification (scripts/sha3-digest.js SHA3-512 digests; scripts/sign-release-artifact.js ML-DSA-65 signature, FIPS 204, node:crypto)",
       ],
       "recipes": "SECURITY.md -> 'Verifying release authenticity'",
     },
@@ -290,7 +298,8 @@ function main() {
       "Usage: node scripts/generate-ssdf-attestation.js " +
       "[--version <v>] [--commit <sha>] [--date <RFC3339>] " +
       "[--repository <url>] [--out <path>]\n" +
-      "Timestamp source (required, deterministic): --date or SOURCE_DATE_EPOCH.\n"
+      "Timestamp source (required, deterministic): --date or SOURCE_DATE_EPOCH.\n" +
+      "Commit source (required): --commit or GITHUB_SHA.\n"
     );
     return;
   }

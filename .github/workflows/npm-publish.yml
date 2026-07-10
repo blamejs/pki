@@ -54,8 +54,41 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  # eslint is a devDependency, lockfile-integrity-pinned and installed with
+  # `npm ci` — no registry-resolved, unpinned code executes anywhere in the
+  # pipeline. Defense in depth on top of the pin: nothing beyond the lockfile
+  # set may execute in the workspace that packs the published bytes (a
+  # compromised transitive there could rewrite lib/ before `npm pack`, and
+  # the SLSA provenance would faithfully attest the tampered tarball), so
+  # eslint still runs in its own job — a release gate (validate needs it)
+  # whose compromise is confined to the lint verdict, never the tree the
+  # pack + subject hashes are computed from.
+  lint:
+    name: ESLint (isolated from the pack workspace)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    timeout-minutes: 10
+    steps:
+      - name: Checkout
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0  # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Set up Node 24.18.0 LTS
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e  # v6.4.0
+        with:
+          node-version: '24.18.0'
+
+      - name: Install devDependencies (lockfile-pinned)
+        run: npm ci --no-audit --no-fund
+
+      - name: ESLint (max-warnings 0)
+        run: npx --no-install eslint --max-warnings 0 .
+
   validate:
-    name: Lint, smoke, SBOM, pack
+    name: Static gates, smoke, SBOM, pack
+    needs: lint
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -104,12 +137,10 @@ jobs:
         # allowlist in package.json.
         run: npm ci --no-audit --no-fund
 
-      - name: ESLint (max-warnings 0)
-        run: npx --yes eslint@10.3.0 --max-warnings 0 .
-
       # The tag-push publish path is independent of the pull_request CI, so the
       # full static-gate battery re-runs here before `npm pack` — a tree that
       # fails any of these must never be packed into the published tarball.
+      # (eslint re-runs too, in the isolated `lint` job this one needs.)
       - name: Codebase-patterns detectors
         run: node test/layer-0-primitives/codebase-patterns.test.js
 
@@ -199,16 +230,14 @@ jobs:
             -r lib/vendor/
 
       - name: Pack tarball (the exact bytes that will be published)
-        # Reproducible build: npm respects SOURCE_DATE_EPOCH for the mtime
-        # stamped into every tar header. Deriving it from the tagged
-        # commit's author date makes `npm pack` byte-identical when re-run
-        # from the same commit, so an operator can rebuild the tarball from
-        # source and match the published sha256.
+        # Reproducible build: `npm pack` stamps a fixed, hardcoded mtime
+        # into every tar header (pacote's tar-create-options pins it to
+        # 1985-10-26T08:15:00Z), so re-packing the same commit is
+        # byte-identical and an operator can rebuild the tarball from
+        # source and match the published sha256. npm does not consult
+        # SOURCE_DATE_EPOCH — no timestamp export is needed here.
         run: |
           set -euo pipefail
-          SOURCE_DATE_EPOCH="$(git log -1 --pretty=%ct)"
-          export SOURCE_DATE_EPOCH
-          echo "SOURCE_DATE_EPOCH=$SOURCE_DATE_EPOCH ($(date -u -d "@$SOURCE_DATE_EPOCH" 2>/dev/null || true))"
           mkdir -p dist
           npm pack --pack-destination ./dist
           ls -lh dist/
@@ -259,9 +288,16 @@ jobs:
   provenance:
     needs: validate
     if: ${{ github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v') && needs.validate.outputs.is_tag == 'true' && !inputs.dry_run }}
+    # `contents: write` is demanded by the called workflow, not used here:
+    # GitHub validates every nested job's requested permissions against the
+    # caller's grant when the reusable workflow is resolved — including the
+    # generator's upload-assets job, which declares contents:write and is
+    # merely `if:`-skipped by `upload-assets: false`. Withholding the grant
+    # startup-fails the whole call. The generator downgrades to
+    # contents:read in every job that actually runs.
     permissions:
       id-token: write    # OIDC token for Sigstore-keyless signing
-      contents: write    # SLSA caller example default; future-proofs upload-assets:true
+      contents: write    # statically required by the generator's (skipped) upload-assets job
       actions: read      # introspect this workflow run for the attestation
     # IMPORTANT: Tag-pinned, NOT SHA-pinned. SLSA's internal builder-fetch
     # step expects `BUILDER_REF` in `refs/tags/vX.Y.Z` form and refuses a
@@ -285,8 +321,11 @@ jobs:
       # chain and the workflow exits nonzero even though the generator job
       # created the provenance artifact successfully.
       # `continue-on-error: true` reports success regardless of that
-      # computation; a real missing-artifact failure still surfaces at the
-      # publish-and-release "Download SLSA provenance" step.
+      # computation. It also masks a REAL internal generator failure, so
+      # publish-and-release never trusts this job's verdict: it re-hashes
+      # the downloaded artifacts against the attested subjects and runs
+      # slsa-verifier on the attestation before anything is published — a
+      # generator failure (or missing artifact) fails the publish there.
       continue-on-error: true
 
   publish-and-release:
@@ -317,6 +356,73 @@ jobs:
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c  # v8.0.1
         with:
           name: blamejs-pki-${{ needs.validate.outputs.version }}.intoto.jsonl
+
+      - name: Verify downloaded artifacts against the attested subject hashes
+        # The publish bundle travels through the actions artifact store
+        # between jobs. Recompute the sha256 of the tarball + SBOM with the
+        # exact commands the validate job used to derive the SLSA subjects
+        # and require byte-identical output — a divergence means the bytes
+        # about to be published are NOT the bytes the provenance attests,
+        # and the publish must not proceed. (The .sha256 release sidecar is
+        # derived from the downloaded tarball further down; this check is
+        # what entitles it to be.)
+        env:
+          HASHES_B64: ${{ needs.validate.outputs.hashes }}
+        run: |
+          set -euo pipefail
+          EXPECTED=$(echo "$HASHES_B64" | base64 -d)
+          TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          ACTUAL=$(
+            (cd dist && sha256sum "$(basename "$TARBALL")") && \
+            sha256sum sbom.cdx.json
+          )
+          if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$ACTUAL" ]; then
+            echo "::error::Downloaded artifacts do not match the SLSA subject hashes the validate job computed."
+            echo "attested subjects:"
+            echo "$EXPECTED"
+            echo "downloaded artifacts:"
+            echo "$ACTUAL"
+            exit 1
+          fi
+          echo "[subject-verify] tarball + SBOM match the attested subject hashes"
+
+      - name: Install slsa-verifier (release binary + sha256 verify)
+        # Exact version + inline expected sha256 (from SHA256SUM.md in the
+        # slsa-verifier repository), mirroring the zizmor install pattern:
+        # a rewritten upstream release fails closed instead of executing on
+        # the publish path.
+        env:
+          SLSA_VERIFIER_VERSION: v2.7.1
+          SLSA_VERIFIER_SHA256:  946dbec729094195e88ef78e1734324a27869f03e2c6bd2f61cbc06bd5350339
+        run: |
+          set -euo pipefail
+          curl -fsSLo /tmp/slsa-verifier "https://github.com/slsa-framework/slsa-verifier/releases/download/${SLSA_VERIFIER_VERSION}/slsa-verifier-linux-amd64"
+          ACTUAL=$(sha256sum /tmp/slsa-verifier | awk '{print $1}')
+          if [ "$ACTUAL" != "$SLSA_VERIFIER_SHA256" ]; then
+            echo "::error::slsa-verifier sha256 ${ACTUAL} does not match pinned ${SLSA_VERIFIER_SHA256}"
+            exit 1
+          fi
+          sudo install -m 0755 /tmp/slsa-verifier /usr/local/bin/slsa-verifier
+          slsa-verifier version
+
+      - name: Verify the SLSA provenance against the artifacts it attests
+        # The provenance job's verdict is untrustworthy by construction
+        # (its `continue-on-error: true` input reports success even when
+        # the generator fails internally), so the attestation is proven
+        # here instead: slsa-verifier checks the Sigstore signature, the
+        # source-repo + tag binding, and that every artifact digest appears
+        # in the attested subjects. A release never ships an attestation
+        # that does not verify against its own assets.
+        env:
+          VERSION: ${{ needs.validate.outputs.version }}
+        run: |
+          set -euo pipefail
+          TARBALL=$(find dist -maxdepth 1 -name '*.tgz' | head -1)
+          slsa-verifier verify-artifact "$TARBALL" sbom.cdx.json \
+            --provenance-path "blamejs-pki-${VERSION}.intoto.jsonl" \
+            --source-uri "github.com/${GITHUB_REPOSITORY}" \
+            --source-tag "v${VERSION}"
+          echo "[slsa-verify] provenance verifies against the tarball + SBOM"
 
       - name: Verify NPM_TOKEN is reachable
         # Fail loud + early if the NPM_TOKEN secret isn't visible to this

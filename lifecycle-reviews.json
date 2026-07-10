@@ -34,5 +34,23 @@
     "reason": "The auto-routing dispatcher's stable contract would include the still-experimental attribute-cert, CRMF, PKCS#12, and CMP return shapes it routes to, so an allowed change to any of those would break callers of a stable schema.parse. Graduate once every routed format is stable.",
     "reviewedAt": "0.1.19",
     "reviewBy": "0.1.25"
+  },
+  "pki.schema.crmf.parse": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 4211 CertReqMessages parser is not yet interop-proven against an independent CRMF/CMP implementation in the integration harness, so its return shape is not frozen. Part of the same format cohort schema.all / schema.parse graduation waits on. Graduate once an external implementation validates a request it decodes.",
+    "reviewedAt": "0.1.23",
+    "reviewBy": "0.1.25"
+  },
+  "pki.schema.crmf.pemDecode": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same CRMF parser whose return shape is not yet frozen (no cross-implementation interop round-trip in the harness). Graduate alongside pki.schema.crmf.parse.",
+    "reviewedAt": "0.1.23",
+    "reviewBy": "0.1.25"
+  },
+  "pki.schema.engine.encode": {
+    "decision": "keep-experimental",
+    "reason": "The schema engine's encode direction backs the round-trip tests but has no external consumer that pins its API; the combinator surface is still absorbing new leaves (implicitBoolean landed at 0.1.23). Graduate once the combinator set is settled and an operator-facing encode path depends on it.",
+    "reviewedAt": "0.1.23",
+    "reviewBy": "0.1.25"
   }
 }

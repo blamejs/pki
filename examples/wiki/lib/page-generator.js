@@ -18,10 +18,30 @@
 // <h1> and populated content. No runtime dependencies — the whole site
 // is a function of the source comments.
 
+var fs      = require("node:fs");
+var path    = require("node:path");
 var parser  = require("./source-doc-parser");
 var auto    = require("./auto-site-entries");
 var ent     = require("./html-entities");
+var markdown = require("./markdown");
 var site    = require("../site.config");
+
+// The GitHub blob base for rewriting the README's repo-relative links so they
+// resolve from the deployed wiki (a `.md` sibling or a bare repo path points at
+// the source tree, not a wiki route).
+var REPO_BLOB = "https://github.com/blamejs/pki/blob/main/";
+
+// Rewrite one README link/image target for the wiki context: the logo asset is
+// served locally; an in-page `#anchor` and any absolute URL pass through; a
+// repo-relative path (ROADMAP.md, assets/..., LICENSE) points at the GitHub
+// source tree.
+function _readmeLink(href) {
+  if (!href) return href;
+  if (href.indexOf("assets/pkijs-logo.png") !== -1) return "/pkijs-logo.png";
+  if (href.charAt(0) === "#") return href;
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(href) || href.indexOf("mailto:") === 0) return href;
+  return REPO_BLOB + href.replace(/^\.?\//, "");
+}
 
 var esc = ent.escapeHtml;
 
@@ -226,6 +246,18 @@ function _shell(opts) {
     ".card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;transition:border-color .15s}",
     ".card:hover{border-color:var(--accent)}.card h3{margin:0 0 6px;font-size:17px}.card p{margin:0;color:var(--muted);font-size:14px}",
     "footer{color:var(--muted);font-size:13px;margin-top:48px;border-top:1px solid var(--line);padding-top:16px}",
+    // The README overview page: a faithful GitHub-style render (tables, fenced
+    // code, the centered header block, badge image-links).
+    ".readme{max-width:none}.readme div[align=center]{text-align:center;margin-bottom:20px}",
+    ".readme img{max-width:100%;vertical-align:middle}.readme div[align=center] img[width]{margin-bottom:10px}",
+    ".readme a img{margin:2px}",
+    ".readme table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;display:block;overflow-x:auto}",
+    ".readme th,.readme td{border:1px solid var(--line);padding:6px 11px;text-align:left;vertical-align:top}",
+    ".readme th{background:var(--panel);white-space:nowrap}",
+    ".readme pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:12px 0}",
+    ".readme pre code{background:none;border:none;padding:0;color:#cfe3ff;font-size:13px}",
+    ".readme hr{border:none;border-top:1px solid var(--line);margin:26px 0}",
+    ".readme h2{margin-top:30px}.readme ul{padding-left:22px}.readme li{margin:4px 0}",
     "@media(max-width:720px){.wrap{flex-direction:column}aside{width:auto;flex:none;border-right:none;border-bottom:1px solid var(--line)}main{padding:24px 18px}}",
   ].join("");
   return [
@@ -290,6 +322,20 @@ function build(opts) {
   });
   var navGroups = groupOrder.map(function (g) { return { group: g, items: groupMap[g] }; });
 
+  // ---- Overview: the repository README, rendered to HTML ----
+  // A single curated top-level page (like Home) -- the README is the project's
+  // front door, so the wiki carries it verbatim rather than a hand-maintained
+  // second copy. Repo-relative links are rewritten for the wiki context.
+  var overviewItem = { slug: "overview", title: "Overview", path: "/overview" };
+  var readmePath = path.resolve(libDir, "..", "README.md");
+  var readmeHtml;
+  try { readmeHtml = markdown.render(fs.readFileSync(readmePath, "utf8"), { rewriteLink: _readmeLink }); }
+  catch (_e) { readmeHtml = null; }
+  if (readmeHtml) {
+    navGroups.unshift({ group: "Overview", items: [overviewItem] });
+    pathToGroup["/overview"] = "Overview";
+  }
+
   var pages = {};
 
   // ---- Home page ----
@@ -313,6 +359,15 @@ function build(opts) {
     h1:    BRAND,
     html:  _shell({ title: "Home", nav: _renderNav(navGroups, "/"), main: homeMain.join("\n"), siteUrl: siteUrl }),
   };
+
+  // ---- Overview page (rendered README) ----
+  if (readmeHtml) {
+    pages["/overview"] = {
+      title: "Overview",
+      h1:    BRAND,
+      html:  _shell({ title: "Overview", nav: _renderNav(navGroups, "/overview"), main: '<div class="readme">' + readmeHtml + "</div>", siteUrl: siteUrl }),
+    };
+  }
 
   // ---- Namespace pages ----
   entries.forEach(function (e) {
