@@ -19,6 +19,7 @@ No npm runtime dependencies. No TypeScript. No Web Crypto ceiling.
 [![CodeQL](https://github.com/blamejs/pki/actions/workflows/codeql.yml/badge.svg)](https://github.com/blamejs/pki/actions/workflows/codeql.yml)
 [![Fuzzing](https://github.com/blamejs/pki/actions/workflows/cflite_batch.yml/badge.svg)](https://github.com/blamejs/pki/actions/workflows/cflite_batch.yml)
 [![OpenSSF Scorecard](https://api.securityscorecards.dev/projects/github.com/blamejs/pki/badge)](https://scorecard.dev/viewer/?uri=github.com/blamejs/pki)
+[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/13562/badge)](https://www.bestpractices.dev/projects/13562)
 [![SLSA 3](https://slsa.dev/images/gh-badge-level3.svg)](https://slsa.dev/spec/v1.0/levels#build-l3)
 
 [![Zero runtime deps](https://img.shields.io/badge/runtime%20deps-0-2ea043)](#security-posture)

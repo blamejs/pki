@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.26 — 2026-07-10
+
+Test-coverage measurement and the OpenSSF Best Practices badge.
+
+### Added
+
+- npm run coverage measures statement and branch coverage over the full test suite with c8. It is a development dependency only — the published package still declares zero runtime dependencies.
+
+### Changed
+
+- The README badge row now includes the OpenSSF Best Practices badge.
+
 ## v0.1.25 — 2026-07-10
 
 ACME joins the toolkit: an RFC 8555 message layer over a new RFC 7515 JOSE surface.
