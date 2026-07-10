@@ -204,6 +204,13 @@ function testServerKeygen() {
   var bodyKem = multipart([{ ct: encPart, body: kemEnvelopedKeyCI(kid).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   var r48e = pki.est.parseServerKeygenResponse(bodyKem, ct, { requestedEncryption: true, expectedRecipientKeyId: kid });
   check("48e. KEM recipient key id matched", !!r48e.encryptedKey);
+  // 48f-g. an issuerAndSerialNumber recipient (the server mapped the advertised
+  //        identifier to a cert) is matched by opts.expectedRecipientIssuerSerial.
+  var recipIssuer = b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]);
+  var bodyIas = multipart([{ ct: encPart, body: envelopedKeyCI().toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  var r48f = pki.est.parseServerKeygenResponse(bodyIas, ct, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: recipIssuer, serialNumber: 9n } });
+  check("48f. issuerAndSerial recipient matched", !!r48f.encryptedKey);
+  check("48g. issuerAndSerial mismatch rejected", code(function () { pki.est.parseServerKeygenResponse(bodyIas, ct, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: recipIssuer, serialNumber: 42n } }); }) === "est/recipient-mismatch");
 }
 
 // ---- builders -------------------------------------------------------
