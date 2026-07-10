@@ -141,6 +141,8 @@ function testObjects() {
   check("47j. out-of-range zone offset rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-01-01T00:00:00+25:00" })); }) === "acme/bad-order");
   check("47k. leap-year February 29 accepted", pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2028-02-29T00:00:00Z" })).status === "pending");
   check("47l. non-leap February 29 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-02-29T00:00:00Z" })); }) === "acme/bad-order");
+  // a :60 leap second is rejected -- the toolkit only handles instants it can compare.
+  check("47o. leap-second timestamp rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-06-30T23:59:60Z" })); }) === "acme/bad-order");
   // an authorization's challenges are each validated as a challenge, not just "an object".
   check("47m. authz with a malformed challenge rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { challenges: [{ type: "http-01" }] })); }) === "acme/missing-field");
   check("47n. authz with a bad-status challenge rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { challenges: [{ type: "http-01", url: "https://ca/c", status: "bogus" }] })); }) === "acme/bad-status");
@@ -167,6 +169,9 @@ function testTransitions() {
 function testProblem() {
   // 49. a top-level identifier is forbidden.
   check("49. problem top-level identifier rejected", code(function () { pki.acme.validate("problem", { type: "urn:ietf:params:acme:error:malformed", identifier: { type: "dns", value: "x" } }); }) === "acme/bad-problem");
+  // the type MUST be in the ACME error namespace -- a generic problem+json (about:blank) is not an ACME error.
+  check("49b. non-namespace problem type rejected", code(function () { pki.acme.validate("problem", { type: "about:blank" }); }) === "acme/bad-problem");
+  check("49c. non-namespace subproblem type rejected", code(function () { pki.acme.validateProblem({ type: "urn:ietf:params:acme:error:compound", subproblems: [{ type: "about:blank" }] }); }) === "acme/bad-problem");
   // 50. subproblems (each optionally carrying an identifier) surfaced.
   var compound = { type: "urn:ietf:params:acme:error:compound", subproblems: [{ type: "urn:ietf:params:acme:error:rejectedIdentifier", identifier: { type: "dns", value: "a.example" } }] };
   check("50. compound + subproblem identifier accepted", pki.acme.validate("problem", compound).subproblems.length === 1);
@@ -308,6 +313,9 @@ async function testBuilders() {
   check("67l. newAccount bare-email contact rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["admin@example.org"] }); })) === "acme/bad-contact");
   // a kid-mode builder called without a kid must fail closed, not emit a keyless header.
   check("67m. newOrder with an undefined kid rejected", (await acode(function () { return pki.acme.newOrder({ key: acct.key, alg: "ES256", nonce: base.nonce, url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }] }); })) === "jose/bad-header");
+  // account flags must be actual booleans -- never coerce "false"/0 to true.
+  check("67n. newAccount non-boolean termsOfServiceAgreed rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, termsOfServiceAgreed: "false" }); })) === "acme/bad-input");
+  check("67o. newAccount non-boolean onlyReturnExisting rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, onlyReturnExisting: 1 }); })) === "acme/bad-input");
 
   // 68. keyChange nested JWS: inner jwk, no nonce, url == outer; payload {account, oldKey}.
   var nk = await ecKeyPair();
@@ -372,6 +380,7 @@ function testAri() {
   check("73a. inverted window rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-08T00:00:00Z", end: "2026-01-01T00:00:00Z" } }); }) === "acme/bad-renewal-window");
   check("73b. zero-width window rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-01T00:00:00Z", end: "2026-01-01T00:00:00Z" } }); }) === "acme/bad-renewal-window");
   check("73c. a valid window accepted", pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-01T00:00:00Z", end: "2026-01-08T00:00:00Z" } }).suggestedWindow.end === "2026-01-08T00:00:00Z");
+  check("73d. a leap-second window endpoint rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-01T00:00:00Z", end: "2026-06-30T23:59:60Z" } }); }) === "acme/bad-renewal-window");
   // 74. missing start or end rejected.
   check("74a. missing end rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { start: "2026-01-01T00:00:00Z" } }); }) === "acme/bad-renewal-window");
   check("74b. missing start rejected", code(function () { pki.acme.validateRenewalInfo({ suggestedWindow: { end: "2026-01-08T00:00:00Z" } }); }) === "acme/bad-renewal-window");
