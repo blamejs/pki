@@ -192,12 +192,15 @@ function testAccept() {
 function testRejectStructure() {
   // 10. a child INTEGER (neither OID nor SEQUENCE) -> bad-attr-or-oid.
   check("10. bad arm (INTEGER child)", parseCode(csrattrs([b.integer(1n)])) === "csrattrs/bad-attr-or-oid");
-  // 11. an empty values SET is legal ONLY for a key-type hint (vector 4d/4e). Every
-  //     other attribute keeps SET SIZE(1..MAX): id-ExtensionReq needs one Extensions,
-  //     and a challengePassword / unknown attribute with SET {} fails closed.
+  // 11. only the recognized NON-KEY attributes that require a value keep
+  //     SET SIZE(1..MAX): an empty id-ExtensionReq fails closed.
   check("11. empty id-ExtensionReq values rejected", parseCode(csrattrs([attr(EXTENSION_REQUEST, [])])) === "csrattrs/bad-attribute-values");
-  check("11b. empty challengePassword values rejected", parseCode(csrattrs([attr(CHALLENGE_PASSWORD, [])])) === "csrattrs/bad-attribute-values");
-  check("11c. empty unknown-attribute values rejected", parseCode(csrattrs([attr("1.3.99.7.7", [])])) === "csrattrs/bad-attribute-values");
+  // 11b-c. a key-type hint's empty SET means "any" (4d/4e/4f/4g); an UNKNOWN OID --
+  //        a key type this build does not know yet, or any other attribute -- is
+  //        TOLERATED with an empty SET (RFC 8951: ignore what you don't recognize),
+  //        surfaced raw rather than failing the whole response.
+  check("11b. empty unknown-key-type OID tolerated", parse(csrattrs([attr("1.3.6.1.4.1.99999.42", [])])).items[0].oid === "1.3.6.1.4.1.99999.42");
+  check("11c. empty unknown-attribute values tolerated", parse(csrattrs([attr("1.3.99.7.7", [])])).items[0].values.length === 0);
   // 12. Attribute SEQUENCE of 3 children -> rejected.
   check("12. attribute of 3 children rejected", parseCode(csrattrs([b.sequence([b.oid(RSA_ENCRYPTION), b.set([b.integer(1n)]), b.integer(9n)])])) !== "NO-THROW");
   // 13. values SET in descending DER order -> derSetOrder fault.
