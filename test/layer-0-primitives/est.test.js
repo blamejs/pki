@@ -367,6 +367,10 @@ function testClassify() {
   // 57e3. a syntactically-shaped but impossible calendar date (Feb 31) that V8 would
   //       normalize to March -> est/bad-retry-after, not an accepted retry date.
   check("57e3. impossible calendar date rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "Wed, 31 Feb 2020 00:00:00 GMT" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
+  // 57i. the obsolete asctime form carries no GMT token -> it MUST be parsed as
+  //      UTC (Date.UTC), not local time, so retryAfterDate is timezone-independent.
+  var ascWhen = Date.UTC(1994, 10, 6, 8, 49, 37);
+  check("57i. asctime retry-after parsed as UTC", pki.est.classifyResponse(202, { "retry-after": "Sun Nov  6 08:49:37 1994" }, Buffer.alloc(0), { op: "simpleenroll" }).retryAfterDate === ascWhen);
   // 57f-g. an overflowing / nonsensical delay-seconds -> est/bad-retry-after, never an unsafe number.
   check("57f. overflow retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "99999999999999999999" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
   check("57g. over-cap retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "40000000" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
