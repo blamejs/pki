@@ -134,6 +134,16 @@ function testObjects() {
   // an account contact is a URI, most commonly mailto: -- it must not be narrowed to http(s).
   check("47e. account mailto contact accepted", pki.acme.validate("account", { status: "valid", orders: "https://ca/acct/1/orders", contact: ["mailto:admin@example.org"] }).status === "valid");
   check("47f. account non-URI contact rejected", code(function () { pki.acme.validate("account", { status: "valid", orders: "https://ca/acct/1/orders", contact: ["not a uri"] }); }) === "acme/bad-account");
+  // a syntactically well-formed but CALENDAR-impossible RFC 3339 instant is rejected.
+  check("47g. impossible month rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-13-01T00:00:00Z" })); }) === "acme/bad-order");
+  check("47h. February 30 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-02-30T00:00:00Z" })); }) === "acme/bad-order");
+  check("47i. hour 25 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-01-01T25:00:00Z" })); }) === "acme/bad-order");
+  check("47j. out-of-range zone offset rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-01-01T00:00:00+25:00" })); }) === "acme/bad-order");
+  check("47k. leap-year February 29 accepted", pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2028-02-29T00:00:00Z" })).status === "pending");
+  check("47l. non-leap February 29 rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: "2026-02-29T00:00:00Z" })); }) === "acme/bad-order");
+  // an authorization's challenges are each validated as a challenge, not just "an object".
+  check("47m. authz with a malformed challenge rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { challenges: [{ type: "http-01" }] })); }) === "acme/missing-field");
+  check("47n. authz with a bad-status challenge rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { challenges: [{ type: "http-01", url: "https://ca/c", status: "bogus" }] })); }) === "acme/bad-status");
 }
 
 // ---- state machines (RFC 8555 sec. 7.1.6) ----------------------------
@@ -172,6 +182,9 @@ function testIdentifiers() {
   // 53. a malformed xn-- A-label rejected.
   check("53. bad xn-- ACE rejected", code(function () { dns("xn--.example"); }) === "acme/bad-identifier");
   check("53b. good xn-- ACE accepted", dns("xn--mnchen-3ya.example").status === "pending");
+  // a label over 63 octets is invalid (RFC 1035 sec. 2.3.4).
+  check("53c. over-long dns label rejected", code(function () { dns(new Array(65).join("a") + ".example"); }) === "acme/bad-identifier");
+  check("53d. 63-octet label accepted", dns(new Array(64).join("a") + ".example").status === "pending");
   // 54. ip canonical round-trip (RFC 8738 / RFC 5952).
   function ip(v) { return pki.acme.validate("authorization", { identifier: { type: "ip", value: v }, status: "pending", challenges: [{ type: "http-01", url: "https://ca/c", status: "pending", token: "DGyRejmCefe7v4NfDGDKfA" }] }); }
   check("54a. IPv4 leading-zero rejected", code(function () { ip("192.168.001.001"); }) === "acme/bad-identifier");
@@ -310,6 +323,8 @@ async function testBuilders() {
   check("69c. revokeCert jwk-mode signs with the cert key", (await acode(function () { return pki.jose.verify(revJwk, { profile: "acme-outer", key: cert.jwk }); })) === "NO-THROW");
   check("69d. revokeCert reason out of range rejected", (await acode(function () { return pki.acme.revokeCert(Object.assign({}, base, { url: "https://ca/r", certificate: predCert, reason: 11 })); })) === "acme/bad-revocation-reason");
   check("69e. revokeCert both kid and jwk rejected", (await acode(function () { return pki.acme.revokeCert(Object.assign({}, base, { url: "https://ca/r", certificate: predCert, jwk: cert.jwk })); })) === "acme/bad-input");
+  check("69g. revokeCert unassigned reason 7 rejected", (await acode(function () { return pki.acme.revokeCert(Object.assign({}, base, { url: "https://ca/r", certificate: predCert, reason: 7 })); })) === "acme/bad-revocation-reason");
+  check("69h. revokeCert assigned reasons 6 and 8 accepted", (await acode(function () { return pki.acme.revokeCert(Object.assign({}, base, { url: "https://ca/r", certificate: predCert, reason: 6 })); })) === "NO-THROW" && (await acode(function () { return pki.acme.revokeCert(Object.assign({}, base, { url: "https://ca/r", certificate: predCert, reason: 8 })); })) === "NO-THROW");
 
   // deactivate: the only client-settable status, kid-signed.
   var deact = await pki.acme.deactivate({ key: acct.key, alg: "ES256", nonce: base.nonce, url: "https://ca/authz/1", kid: kid });
