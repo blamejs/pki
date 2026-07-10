@@ -27,7 +27,27 @@ var EXTREQ_OID     = "1.2.840.113549.1.9.14";
 var DECRYPT_KEY_ID = "1.2.840.113549.1.9.16.2.37";
 var CHALLENGE_PW   = "1.2.840.113549.1.9.7";
 
+var KEM_ORI_OID = "1.2.840.113549.1.9.16.13.3";  // id-ori-kem (RFC 9629)
 function algId(o) { return b.sequence([b.oid(o)]); }
+// A KEM-recipient EnvelopedData ContentInfo (KEMRecipientInfo under the ori [4]
+// arm, RFC 9629) with a subjectKeyIdentifier recipient. Uses unregistered kem /
+// kdf / wrap OIDs so no algorithm-specific length rule fires.
+function kemEnvelopedKeyCI(skid) {
+  var kemri = b.sequence([
+    b.integer(0n),                                     // version
+    b.contextPrimitive(0, Buffer.from(skid)),          // rid = subjectKeyIdentifier [0]
+    algId("1.3.6.1.4.1.99999.1"),                      // kem (unregistered)
+    b.octetString(Buffer.from([1, 2, 3, 4])),          // kemct
+    algId("1.3.6.1.4.1.99999.2"),                      // kdf (unregistered)
+    b.integer(32n),                                    // kekLength
+    algId("1.3.6.1.4.1.99999.3"),                      // wrap (unregistered)
+    b.octetString(Buffer.from([0xAA, 0xBB])),          // encryptedKey
+  ]);
+  var ori = b.contextConstructed(4, Buffer.concat([b.oid(KEM_ORI_OID), kemri]));  // [4] { oriType, oriValue }
+  var eci = b.sequence([b.oid(ID_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
+  var env = b.sequence([b.integer(3n), b.set([ori]), eci]);   // ori recipient -> EnvelopedData version 3
+  return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
+}
 // A minimal, structurally valid CMS EnvelopedData ContentInfo (one KTRI, opaque
 // ciphertext) -- the server-generated encrypted-key shape (RFC 7030 sec. 4.4.2).
 // o.skid: a Buffer -> a subjectKeyIdentifier recipient (ktri v2, envelope v2);
@@ -174,6 +194,10 @@ function testServerKeygen() {
   check("48c. matching recipient key id accepted", !!r48c.encryptedKey);
   // 48d. a DIFFERENT recipient key id than advertised -> est/recipient-mismatch fail-closed.
   check("48d. recipient key id mismatch rejected", code(function () { pki.est.parseServerKeygenResponse(bodySkid, ct, { requestedEncryption: true, expectedRecipientKeyId: Buffer.from([0x99, 0x99]) }); }) === "est/recipient-mismatch");
+  // 48e. a KEM-recipient (RFC 9629) key id is collected too -> a matching one is accepted.
+  var bodyKem = multipart([{ ct: encPart, body: kemEnvelopedKeyCI(kid).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  var r48e = pki.est.parseServerKeygenResponse(bodyKem, ct, { requestedEncryption: true, expectedRecipientKeyId: kid });
+  check("48e. KEM recipient key id matched", !!r48e.encryptedKey);
 }
 
 // ---- builders -------------------------------------------------------
@@ -200,6 +224,10 @@ function testBuilders() {
   // 53b. an empty rsaEncryption key-type hint ("any size") is carried into the plan.
   var planAny = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.sequence([b.oid(RSA_OID), b.set([])])])));
   check("53b. empty key-type hint -> keyType any", !!planAny.keyType && planAny.keyType.type === "rsaEncryption" && planAny.keyType.keySize === null);
+  // 53c. two key-type attributes (rsaEncryption + ecPublicKey) -> ambiguous, fail closed
+  //      (RFC 9908 sec. 3.2 non-template form: exactly one key-type attribute).
+  var twoKt = b.sequence([b.sequence([b.oid(RSA_OID), b.set([])]), b.sequence([b.oid("1.2.840.10045.2.1"), b.set([])])]);
+  check("53c. two key-type attributes rejected", code(function () { pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(twoKt)); }) === "est/ambiguous-key-type");
   // 54. reenrollGuard: the new CSR carries the old cert's subject bytes; a mutated subject rejects.
   check("54. reenrollGuard surfaces the old subject for reuse", pki.est.reenrollGuard(REAL_CERT).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
   var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;
