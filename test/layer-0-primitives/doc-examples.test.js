@@ -143,8 +143,23 @@ function fixturesFor(tag) {
     // the stand-in "your error class" some engine examples pass as ctx.E — a
     // PkiError factory so a thrown result still satisfies the fuzz-style contract.
     MyError: function (code, msg) { return new pki.errors.PkiError(msg, code); },
+    // pki.jose / pki.acme fixtures. The pure examples run on a real static EC JWK
+    // and a valid token; the builder examples reference `key`/`priv` as undefined
+    // so the builder fails closed with a typed PkiError before any crypto (the
+    // contract accepts a completed run OR a PkiError). certDer is a real cert with
+    // no acmeIdentifier / AKI, so verifyTlsAlpn01 and ariCertId throw a typed fault.
+    accountJwk: JOSE_EC_JWK, jwk: JOSE_EC_JWK, oldJwk: JOSE_EC_JWK, newJwk: JOSE_EC_JWK,
+    token: "DGyRejmCefe7v4NfDGDKfA",
+    orderObj: {}, jws: {}, hdr: {},
+    key: undefined, priv: undefined, oldKey: undefined, newKey: undefined, macKey: undefined,
+    nonce: "aGVsbG8", url: "https://ca/o", orderUrl: "https://ca/o/1", challUrl: "https://ca/chall/1",
+    authzUrl: "https://ca/authz/1", kid: "https://ca/acct/1",
+    certDer: certDer, csrDer: csrDer, identifiers: [{ type: "dns", value: "example.org" }],
   };
 }
+// A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples
+// (thumbprint, key authorization, the challenge computations) run against it.
+var JOSE_EC_JWK = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" };
 
 // Concatenated source of every test/**/*.test.js EXCEPT this harness, so a
 // primitive path mentioned only here can never satisfy its own TESTED gate.

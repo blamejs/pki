@@ -36,6 +36,8 @@ var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
 var est        = require("./lib/est");
+var jose       = require("./lib/jose");
+var acme       = require("./lib/acme");
 
 module.exports = {
   version:   constants.version,
@@ -61,6 +63,16 @@ module.exports = {
   // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,
   // and the HTTP response classifier. No socket; fail-closed.
   est:       est,
+  // `jose` is the RFC 7515 Flattened JWS + RFC 7638 JWK-thumbprint layer: a strict
+  // base64url codec, a bounded duplicate-key-rejecting JSON reader, profiled
+  // sign/verify (ACME-outer / EAB-inner / keyChange-inner), and an alg registry
+  // (ES/RS/PS/EdDSA/ML-DSA). It is the crypto envelope pki.acme composes.
+  jose:      jose,
+  // `acme` is the RFC 8555 / 8737 / 8738 / 9773 ACME message layer over pki.jose:
+  // resource-object validators, the three state machines, request builders,
+  // http-01 / dns-01 / tls-alpn-01 challenge math, and the ARI certID. A message
+  // layer, not an HTTP client -- transport is the operator's to inject.
+  acme:      acme,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.

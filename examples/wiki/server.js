@@ -23,7 +23,53 @@ var generator = require("./lib/page-generator");
 var PORT = parseInt(process.env.WIKI_PORT, 10) || 3009;
 var BIND = process.env.WIKI_BIND || "0.0.0.0";
 
-var LOGO_PATH = path.join(__dirname, "public", "pkijs-logo.png");
+var PUBLIC_DIR = path.join(__dirname, "public");
+
+// Static assets served from public/ by exact request path. The favicons are
+// resized from the logo (a multi-size .ico for the browser's default probe plus
+// 16/32 PNGs), and the PWA manifest + apple-touch + maskable icons complete the
+// install surface.
+var STATIC_ASSETS = {
+  "/pkijs-logo.png":       { file: "pkijs-logo.png",       type: "image/png" },
+  "/favicon.ico":          { file: "favicon.ico",          type: "image/x-icon" },
+  "/favicon-16.png":       { file: "favicon-16.png",       type: "image/png" },
+  "/favicon-32.png":       { file: "favicon-32.png",       type: "image/png" },
+  "/apple-touch-icon.png": { file: "apple-touch-icon.png", type: "image/png" },
+  "/icon-192.png":         { file: "icon-192.png",         type: "image/png" },
+  "/icon-512.png":         { file: "icon-512.png",         type: "image/png" },
+  "/manifest.webmanifest": { file: "manifest.webmanifest", type: "application/manifest+json" },
+};
+
+// Response security headers on EVERY response. The Content-Security-Policy keeps
+// a tight default while allowing the README status badges (shields.io, GitHub
+// Actions, OpenSSF Scorecard, SLSA) to load as images; the inline <style>/<svg>
+// the generator emits needs 'unsafe-inline' for styles only (no inline script).
+var SECURITY_HEADERS = {
+  "content-security-policy":
+    "default-src 'self'; " +
+    "img-src 'self' data: https://img.shields.io https://github.com https://api.securityscorecards.dev https://slsa.dev; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "script-src 'self'; " +
+    "font-src 'self'; " +
+    "connect-src 'self'; " +
+    "manifest-src 'self'; " +
+    "base-uri 'self'; " +
+    "form-action 'self'; " +
+    "frame-ancestors 'none'; " +
+    "object-src 'none'; " +
+    "upgrade-insecure-requests",
+  "x-content-type-options": "nosniff",
+  "referrer-policy": "strict-origin-when-cross-origin",
+  "x-frame-options": "DENY",
+  "permissions-policy": "geolocation=(), microphone=(), camera=(), interest-cohort=()",
+};
+
+function _withSecurity(headers) {
+  var h = {};
+  Object.keys(SECURITY_HEADERS).forEach(function (k) { h[k] = SECURITY_HEADERS[k]; });
+  Object.keys(headers || {}).forEach(function (k) { h[k] = headers[k]; });
+  return h;
+}
 
 // buildSite() is exported so test/e2e.js boots the identical page map
 // in-process without opening a socket.
@@ -39,15 +85,16 @@ function createServer(site) {
     // release-container post-publish smoke test. Pages are generated at
     // boot, so a served /healthz means the site is up.
     if (url === "/healthz") {
-      res.writeHead(200, { "content-type": "application/json" });
+      res.writeHead(200, _withSecurity({ "content-type": "application/json" }));
       res.end(JSON.stringify({ status: "ok", pages: Object.keys(site.pages).length }));
       return;
     }
 
-    if (url === "/pkijs-logo.png") {
-      fs.readFile(LOGO_PATH, function (err, buf) {
-        if (err) { res.writeHead(404, { "content-type": "text/plain" }); res.end("not found"); return; }
-        res.writeHead(200, { "content-type": "image/png", "cache-control": "public, max-age=86400" });
+    var asset = STATIC_ASSETS[url];
+    if (asset) {
+      fs.readFile(path.join(PUBLIC_DIR, asset.file), function (err, buf) {
+        if (err) { res.writeHead(404, _withSecurity({ "content-type": "text/plain" })); res.end("not found"); return; }
+        res.writeHead(200, _withSecurity({ "content-type": asset.type, "cache-control": "public, max-age=86400" }));
         res.end(buf);
       });
       return;
@@ -58,11 +105,11 @@ function createServer(site) {
 
     var page = site.pages[url];
     if (!page) {
-      res.writeHead(404, { "content-type": "text/html; charset=utf-8" });
+      res.writeHead(404, _withSecurity({ "content-type": "text/html; charset=utf-8" }));
       res.end("<!doctype html><meta charset=utf-8><title>404 — pkijs.com</title><h1>404</h1><p>No such page. <a href=\"/\">Home</a></p>");
       return;
     }
-    res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+    res.writeHead(200, _withSecurity({ "content-type": "text/html; charset=utf-8" }));
     res.end(page.html);
   });
 }

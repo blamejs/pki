@@ -1,0 +1,17 @@
+{
+  "name": "pkijs.com — @blamejs/pki",
+  "short_name": "pkijs.com",
+  "description": "A pure-JavaScript PKI toolkit: X.509, ASN.1/DER, CMS, OCSP, PKCS, EST — with an in-house fail-closed DER codec and a post-quantum-first algorithm registry.",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0d1117",
+  "theme_color": "#0d1117",
+  "icons": [
+    { "src": "/favicon-32.png", "type": "image/png", "sizes": "32x32", "purpose": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "any" },
+    { "src": "/icon-192.png", "type": "image/png", "sizes": "192x192", "purpose": "maskable" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "any" },
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512", "purpose": "maskable" }
+  ]
+}

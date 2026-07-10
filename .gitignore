@@ -98,3 +98,10 @@ memory/
 
 # Test-runner diagnostics (sync-fd persisted, read on failure).
 .test-output/
+
+# Fuzzer-discovered corpus entries (libFuzzer writes 40-hex, extensionless
+# inputs back into the seed dir during a local run) are NOT tracked; only the
+# curated seeds — which all carry an extension — are committed. This keeps a
+# release-time `git add -A` from sweeping generated inputs into the repo.
+fuzz/*_seed_corpus/*
+!fuzz/*_seed_corpus/*.*

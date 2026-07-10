@@ -46,6 +46,14 @@ function _readmeLink(href) {
 var esc = ent.escapeHtml;
 
 var BRAND = "pkijs.com";
+var SITE_DESCRIPTION = "A pure-JavaScript PKI toolkit: X.509, ASN.1/DER, OID, CMS, OCSP, timestamping, EST, and PKCS formats — with an in-house, fail-closed DER codec, a post-quantum-first algorithm registry, and zero runtime dependencies.";
+
+// A one-line meta description from prose: strip tags/whitespace, cap length.
+function _metaDescription(src) {
+  var text = String(src || "").replace(/<[^>]*>/g, " ").replace(/\s+/g, " ").trim();
+  if (text.length > 200) text = text.slice(0, 197).replace(/\s+\S*$/, "") + "…";
+  return text || SITE_DESCRIPTION;
+}
 
 function _moduleNs(modTag) {
   return String(modTag || "").replace(/^\s*pki\./, "").trim();
@@ -260,12 +268,47 @@ function _shell(opts) {
     ".readme h2{margin-top:30px}.readme ul{padding-left:22px}.readme li{margin:4px 0}",
     "@media(max-width:720px){.wrap{flex-direction:column}aside{width:auto;flex:none;border-right:none;border-bottom:1px solid var(--line)}main{padding:24px 18px}}",
   ].join("");
+  var siteUrl = (opts.siteUrl || "https://" + BRAND).replace(/\/+$/, "");
+  var canonical = siteUrl + (opts.path || "/");
+  var desc = String(opts.description || SITE_DESCRIPTION).replace(/\s+/g, " ").trim();
+  var fullTitle = esc(opts.title) + " — " + BRAND;
+  var ogImage = siteUrl + "/pkijs-logo.png";
   return [
     "<!doctype html>",
     '<html lang="en"><head>',
     '<meta charset="utf-8">',
     '<meta name="viewport" content="width=device-width,initial-scale=1">',
-    "<title>" + esc(opts.title) + " — " + BRAND + "</title>",
+    "<title>" + fullTitle + "</title>",
+    '<meta name="description" content="' + esc(desc) + '">',
+    '<meta name="robots" content="index,follow">',
+    '<meta name="color-scheme" content="dark light">',
+    '<link rel="canonical" href="' + esc(canonical) + '">',
+    // Icons + PWA install surface.
+    '<link rel="icon" href="/favicon.ico" sizes="any">',
+    '<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">',
+    '<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">',
+    '<link rel="apple-touch-icon" href="/apple-touch-icon.png">',
+    '<link rel="manifest" href="/manifest.webmanifest">',
+    '<meta name="theme-color" content="#0d1117">',
+    '<meta name="application-name" content="' + BRAND + '">',
+    '<meta name="apple-mobile-web-app-title" content="' + BRAND + '">',
+    '<meta name="apple-mobile-web-app-capable" content="yes">',
+    '<meta name="mobile-web-app-capable" content="yes">',
+    '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',
+    // Open Graph.
+    '<meta property="og:type" content="website">',
+    '<meta property="og:site_name" content="' + BRAND + '">',
+    '<meta property="og:title" content="' + fullTitle + '">',
+    '<meta property="og:description" content="' + esc(desc) + '">',
+    '<meta property="og:url" content="' + esc(canonical) + '">',
+    '<meta property="og:image" content="' + esc(ogImage) + '">',
+    '<meta property="og:image:alt" content="' + BRAND + '">',
+    '<meta property="og:locale" content="en_US">',
+    // Twitter card.
+    '<meta name="twitter:card" content="summary_large_image">',
+    '<meta name="twitter:title" content="' + fullTitle + '">',
+    '<meta name="twitter:description" content="' + esc(desc) + '">',
+    '<meta name="twitter:image" content="' + esc(ogImage) + '">',
     "<style>" + css + "</style>",
     "</head><body><div class=\"wrap\">",
     opts.nav,
@@ -357,7 +400,7 @@ function build(opts) {
   pages["/"] = {
     title: "Home",
     h1:    BRAND,
-    html:  _shell({ title: "Home", nav: _renderNav(navGroups, "/"), main: homeMain.join("\n"), siteUrl: siteUrl }),
+    html:  _shell({ title: "Home", path: "/", description: SITE_DESCRIPTION, nav: _renderNav(navGroups, "/"), main: homeMain.join("\n"), siteUrl: siteUrl }),
   };
 
   // ---- Overview page (rendered README) ----
@@ -365,7 +408,7 @@ function build(opts) {
     pages["/overview"] = {
       title: "Overview",
       h1:    BRAND,
-      html:  _shell({ title: "Overview", nav: _renderNav(navGroups, "/overview"), main: '<div class="readme">' + readmeHtml + "</div>", siteUrl: siteUrl }),
+      html:  _shell({ title: "Overview", path: "/overview", description: SITE_DESCRIPTION, nav: _renderNav(navGroups, "/overview"), main: '<div class="readme">' + readmeHtml + "</div>", siteUrl: siteUrl }),
     };
   }
 
@@ -386,7 +429,7 @@ function build(opts) {
     pages[pth] = {
       title: e.title,
       h1:    e.title,
-      html:  _shell({ title: e.title, nav: _renderNav(navGroups, pth), main: main.join("\n"), siteUrl: siteUrl }),
+      html:  _shell({ title: e.title, path: pth, description: _metaDescription(introSrc), nav: _renderNav(navGroups, pth), main: main.join("\n"), siteUrl: siteUrl }),
     };
   });
 

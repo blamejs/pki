@@ -184,4 +184,114 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.jose.sign : a JWS signature `openssl dgst` accepts ------------------
+  "pki.jose.sign": [
+    {
+      desc: "an ES256 Flattened JWS signature verifies under `openssl dgst` (raw R||S -> DER)",
+      run: async function (ctx) {
+        var subtle = ctx.pki.webcrypto.subtle;
+        var b = ctx.pki.asn1.build;
+        var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+        var jwk = await subtle.exportKey("jwk", kp.publicKey);
+        var spkiDer = Buffer.from(await subtle.exportKey("spki", kp.publicKey));
+        var jws = await ctx.pki.jose.sign({
+          protected: { alg: "ES256", nonce: "aGVsbG8", url: "https://ca/o", kid: "https://ca/acct/1" },
+          payload: Buffer.from("{}", "utf8"), key: kp.privateKey, jwk: jwk,
+        });
+        // The JWS ECDSA signature is raw R||S (RFC 7518 sec. 3.4); openssl dgst wants
+        // an ECDSA-Sig-Value SEQUENCE { r INTEGER, s INTEGER }.
+        var raw = Buffer.from(ctx.pki.jose.base64url.decode(jws.signature));
+        ctx.check("ES256 JWS signature is 64 raw bytes", raw.length === 64);
+        var derSig = b.sequence([
+          b.integer(BigInt("0x" + raw.slice(0, 32).toString("hex"))),
+          b.integer(BigInt("0x" + raw.slice(32, 64).toString("hex"))),
+        ]);
+        var signingInput = Buffer.from(jws.protected + "." + jws.payload, "ascii");
+        var pubPem = ctx.runOpenssl(["pkey", "-pubin", "-inform", "DER", "-in", ctx.tmpFile(spkiDer, "spki.der")]);
+        var pubPath = ctx.tmpFile(Buffer.from(pubPem, "utf8"), "pub.pem");
+        var dataPath = ctx.tmpFile(signingInput, "data.bin");
+        var sigPath = ctx.tmpFile(derSig, "sig.der");
+        try {
+          var out = ctx.runOpenssl(["dgst", "-sha256", "-verify", pubPath, "-signature", sigPath, dataPath], { allowNonZero: true });
+          ctx.check("openssl verifies our ES256 JWS signature over the signing input", out.code === 0 && /Verified OK/.test(out.stdout));
+          // Flip one payload byte -> openssl must REJECT (the signing input is bound).
+          var tamperedData = ctx.tmpFile(Buffer.concat([signingInput.slice(0, -1), Buffer.from([signingInput[signingInput.length - 1] ^ 0x01])]), "data2.bin");
+          try {
+            var bad = ctx.runOpenssl(["dgst", "-sha256", "-verify", pubPath, "-signature", sigPath, tamperedData], { allowNonZero: true });
+            ctx.check("openssl rejects the signature over tampered signing input", bad.code !== 0);
+          } finally { try { ctx.fs.unlinkSync(tamperedData); } catch (_e) { /* best-effort */ } }
+        } finally {
+          [pubPath, dataPath, sigPath].forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } });
+        }
+      },
+    },
+  ],
+
+  // ---- pki.acme.tlsAlpn01Extension : `openssl asn1parse` accepts our extension --
+  "pki.acme.tlsAlpn01Extension": [
+    {
+      desc: "the id-pe-acmeIdentifier extension DER is well-formed per `openssl asn1parse`",
+      run: async function (ctx) {
+        var subtle = ctx.pki.webcrypto.subtle;
+        var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+        var jwk = await subtle.exportKey("jwk", kp.publicKey);
+        var ext = await ctx.pki.acme.tlsAlpn01Extension("DGyRejmCefe7v4NfDGDKfA", jwk);
+        ctx.withTmp(ext, "acme-ext.der", function (p) {
+          var out = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", p]);
+          ctx.check("openssl asn1parse reads the extension as a SEQUENCE", /SEQUENCE/.test(out));
+          ctx.check("openssl asn1parse sees the critical BOOLEAN", /BOOLEAN\s*:\s*(TRUE|255)/.test(out));
+          ctx.check("openssl asn1parse sees the extnValue OCTET STRING", /OCTET STRING/.test(out));
+          // Recurse into the extnValue: the wrapped Authorization is a 32-octet OCTET STRING.
+          var m = /^\s*(\d+):.*OCTET STRING/m.exec(out);
+          if (m) {
+            var inner = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", p, "-strparse", m[1]], { allowNonZero: true });
+            ctx.check("the wrapped Authorization is a 32-byte OCTET STRING", inner.code === 0 && /OCTET STRING\s*\[HEX DUMP\]:[0-9A-F]{64}\b/.test(inner.stdout));
+          } else {
+            ctx.check("extnValue offset located for -strparse", false);
+          }
+        });
+      },
+    },
+  ],
+
+  // ---- pki.acme.ariCertId : the serial `openssl x509 -serial` reads back ------
+  "pki.acme.ariCertId": [
+    {
+      desc: "the RFC 9773 ARI serial agrees with `openssl x509 -serial`, sign-padding byte preserved",
+      run: function (ctx) {
+        var pki = ctx.pki;
+        var b = pki.asn1.build;
+        // Derive a certificate from the shipped fixture with a chosen high-bit serial
+        // and an injected authorityKeyIdentifier, so ariCertId has a real AKI to read.
+        // Built in-toolkit (not `openssl req`) so the cross-check does not depend on
+        // the host OpenSSL config's CA-extension section.
+        var fixturePem = ctx.fs.readFileSync(ctx.path.join(ctx.FIXTURES_DIR, "pkijs-selfsigned-ec.pem"));
+        var der = pki.schema.x509.pemDecode(fixturePem, "CERTIFICATE");
+        var cert = pki.asn1.decode(der);
+        var kids = cert.children[0].children.map(function (c) { return c.bytes; });
+        var keyId = Buffer.from("aabbccddeeff00112233445566778899aabbccdd", "hex");
+        kids[1] = b.integer(0xC0FFEEn);   // high bit set -> DER content octets 00 C0 FF EE
+        kids[7] = b.explicit(3, b.sequence([
+          b.sequence([b.oid(pki.oid.byName("authorityKeyIdentifier")),
+            b.octetString(b.sequence([b.contextPrimitive(0, keyId)]))]),
+        ]));
+        var akiCert = b.sequence([b.sequence(kids), cert.children[1].bytes, cert.children[2].bytes]);
+        var certId = pki.acme.ariCertId(akiCert);
+        ctx.check("ARI certID is two base64url halves", /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(certId));
+        var parsed = pki.acme.parseAriCertId(certId);
+        ctx.check("ARI keyIdentifier round-trips", parsed.keyIdentifier.equals(keyId));
+        ctx.check("the serial's DER sign-padding 00 octet is preserved", parsed.serial.length === 4 && parsed.serial[0] === 0x00);
+        // OpenSSL independently reads the serial off the same DER; the values agree
+        // once both are stripped of leading zeros (openssl prints the magnitude, our
+        // half carries the DER sign-padding byte).
+        ctx.withTmp(akiCert, "ari-cert.der", function (p) {
+          var o = ctx.runOpenssl(["x509", "-inform", "DER", "-in", p, "-noout", "-serial"]);
+          var opensslSerial = ((o.split("=")[1] || "").trim()).toLowerCase().replace(/^0+/, "");
+          var ourSerial = parsed.serial.toString("hex").toLowerCase().replace(/^0+/, "");
+          ctx.check("ARI serial agrees with `openssl x509 -serial`", ourSerial === "c0ffee" && ourSerial === opensslSerial);
+        });
+      },
+    },
+  ],
 };

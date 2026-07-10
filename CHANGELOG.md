@@ -4,6 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.25 — 2026-07-10
+
+ACME joins the toolkit: an RFC 8555 message layer over a new RFC 7515 JOSE surface.
+
+### Added
+
+- pki.jose — the RFC 7515 Flattened JWS and RFC 7638 JWK-thumbprint layer. jose.sign / jose.verify produce and check a Flattened JWS against one of three declarative profiles (ACME outer, EAB inner, keyChange inner) that carry the required and forbidden header rules as data, so sign and verify cannot diverge; jose.base64url is the strict RFC 4648 section 5 codec (a trailing '=', a '+' or '/', whitespace, or non-canonical trailing bits are rejected); jose.parseJson is a bounded recursive-descent reader that throws on a duplicate member at any nesting depth, on invalid UTF-8, and past the size or depth caps; jose.thumbprint is the RFC 7638 canonical SHA-256 thumbprint (RSA, EC, oct, OKP, and AKP member templates, optional members excluded).
+- pki.acme — the RFC 8555 / 8737 / 8738 / 9773 ACME message layer over pki.jose. acme.validate checks a directory, account, order, authorization, challenge, or renewalInfo object against its spec (closed status enums, conditional-required fields such as a pending order's expires, URL and RFC 3339 shapes, non-empty arrays; unknown fields are ignored, never reflected); acme.validateProblem checks an RFC 7807 problem document and its subproblems (a top-level identifier is rejected); acme.assertTransition enforces the three section 7.1.6 state machines; acme.identify classifies an object into exactly one kind.
+- ACME request builders: acme.newAccount (with a fail-closed mailto contact check) and acme.externalAccountBinding (an HMAC-only inner JWS over the account key); acme.newOrder (identifier validation with one leading wildcard label permitted for dns, and the RFC 9773 replaces field); acme.finalize, which parses the CSR with pki.schema.csr, requires its requested identifier set (SAN plus CN) to equal the order identifiers, and rejects a CSR whose public key is the account key (RFC 8555 section 11.1); acme.challengeResponse, acme.deactivate, acme.revokeCert (account-key or certificate-key signed, CRLReason range-checked), acme.keyChange (the section 7.3.5 nested JWS), and acme.postAsGet (an empty payload, distinct from an empty object).
+- ACME challenge computations: acme.keyAuthorization (token plus the account-key thumbprint), acme.http01, acme.dns01 (the _acme-challenge record with one wildcard label stripped), and the tls-alpn-01 pair acme.tlsAlpn01Extension / acme.verifyTlsAlpn01, which build and check the critical id-pe-acmeIdentifier extension (a 32-octet Authorization equal to the SHA-256 of the key authorization) together with a single-entry SubjectAltName.
+- ARI (RFC 9773): acme.ariCertId builds a certificate's renewal identifier from its authorityKeyIdentifier and serial content octets — the serial's leading sign-padding byte is preserved, so the identifier matches what a CA computes; acme.parseAriCertId decodes one back to its two halves; acme.validateRenewalInfo checks a suggestedWindow and rejects an inverted or zero-width window.
+- The error taxonomy gains JoseError (jose/*) and AcmeError (acme/*); the OID registry gains id-pe-acmeIdentifier (RFC 8737).
+- pkix.pemDecodeAll decodes an RFC 7468 multi-block PEM chain (CERTIFICATE label, no explanatory text between blocks, at least one block) beside the existing single-block pemDecode.
+- Fuzz targets jose-parse (the base64url and JSON codecs and the JWS profile walk) and acme-object (the resource validators, identify, and the ARI certID parser) join the per-PR and nightly fuzz matrices with seed corpora.
+
 ## v0.1.24 — 2026-07-10
 
 EST enrollment joins the toolkit: the RFC 8951 CSR-attributes parser and an RFC 7030 client-codec surface.
