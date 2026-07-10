@@ -106,6 +106,17 @@ function signerInfo() {
   return b.sequence([b.integer(1n), b.sequence([name, b.integer(1n)]), b.sequence([b.oid("2.16.840.1.101.3.4.2.1")]), b.sequence([b.oid("1.2.840.10045.4.3.2")]), b.octetString(Buffer.from([1, 2]))]);
 }
 
+// A minimal, structurally valid X.509 CRL (CertificateList): v1, no revoked list,
+// the inner + outer signature algorithms agreeing (crl.parse checks that).
+function validCrl() {
+  var tbs = b.sequence([
+    b.sequence([b.oid(ECDSA_SHA256)]),                                           // signature AlgId
+    b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("Test CA")])])]),    // issuer
+    b.utcTime(new Date("2026-01-01T00:00:00Z")),                                 // thisUpdate
+  ]);
+  return b.sequence([tbs, b.sequence([b.oid(ECDSA_SHA256)]), b.bitString(Buffer.from([0x00]), 0)]);
+}
+
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
 
 // ---- transfer codec (RFC 8951 sec. 3/3.1) ----------------------------
@@ -136,10 +147,15 @@ function testCertsOnly() {
   check("34. 3-cert certs-only parses", three.certificates.length === 3 && Buffer.isBuffer(three.certificates[0]));
   // 36. certs-only with NO certificates -> est/no-certificates.
   check("36. zero certificates rejected", code(function () { pki.est.parseCertsOnly(certsOnly(null)); }) === "est/no-certificates");
-  // 37. a CRL present in crls is accepted and surfaced (RFC 5272 MAY).
-  var crl = b.sequence([b.sequence([b.integer(1n)]), b.sequence([b.oid("1.2.840.10045.4.3.2")]), b.bitString(Buffer.from([1]), 0)]);
-  var withCrl = pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [crl] }));
+  // 37. a valid CRL present in crls is accepted and surfaced (RFC 5272 MAY).
+  var withCrl = pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [validCrl()] }));
   check("37. crl surfaced", Array.isArray(withCrl.crls) && withCrl.crls.length === 1);
+  // 37b. a [1] otherRevInfo RevocationInfoChoice is not a CRL -> est/bad-crl
+  //      (an otherRevInfo forces SignedData version 5, RFC 5652 sec. 5.1).
+  var otherRevInfo = b.contextConstructed(1, b.sequence([b.oid("1.3.6.1.5.5.7.16.2"), b.sequence([])]));
+  check("37b. otherRevInfo choice rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [otherRevInfo], version: 5 })); }) === "est/bad-crl");
+  // 37c. a universal SEQUENCE that is not a CertificateList -> est/bad-crl.
+  check("37c. non-CRL SEQUENCE rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { crls: [b.sequence([b.integer(1n)])] })); }) === "est/bad-crl");
   // 38. a SignerInfo present -> est/not-certs-only (P2).
   check("38. signerInfo present rejected", code(function () { pki.est.parseCertsOnly(certsOnly([REAL_CERT], { signers: [signerInfo()] })); }) === "est/not-certs-only");
   // 39. eContent present -> est/not-certs-only.
@@ -185,6 +201,10 @@ function testServerKeygen() {
   // 46c. a stray smime-type=server-generated-key on the wrong media type is not a key part.
   var body46c = multipart([{ ct: "text/plain; smime-type=server-generated-key", body: "AA==" }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   check("46c. smime-type on wrong media type rejected", code(function () { pki.est.parseServerKeygenResponse(body46c, ct, {}); }) === "est/bad-multipart");
+  // 46e. a smime-type-like substring inside another quoted parameter is NOT the
+  //      smime-type parameter -> the part is not dispatched as the encrypted key.
+  var body46e = multipart([{ ct: 'application/pkcs7-mime; name="; smime-type=server-generated-key"', body: "AA==" }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  check("46e. quoted smime-type substring not a key part", code(function () { pki.est.parseServerKeygenResponse(body46e, ct, { requestedEncryption: true }); }) === "est/bad-multipart");
   // 46d. a "--boundaryX" line is NOT an RFC 2046 delimiter -> it stays part body,
   //      not a split point (a raw-substring split would treat it as a boundary).
   var trick = "--bnd\r\nContent-Type: text/plain\r\n\r\nhello\r\n--bndX still body\r\nmore\r\n--bnd--\r\n";
