@@ -143,6 +143,13 @@ function testJsonReader() {
   check("8. invalid UTF-8 rejected", code(function () { pki.jose.parseJson(Buffer.from([0x7b, 0x22, 0x61, 0x22, 0x3a, 0x22, 0xff, 0x22, 0x7d])); }) === "jose/bad-json");
   // trailing content after the value rejected.
   check("8b. trailing content rejected", code(function () { pki.jose.parseJson('{"a":1} junk'); }) === "jose/bad-json");
+  // 8c. malformed JSON numbers (RFC 8259 grammar) rejected -- a lenient Number()
+  // would accept these, reintroducing a parser differential.
+  ["01", "1.", "1.e1", "-", "1e", "1e+", "00", "-01", ".5", "+1"].forEach(function (bad) {
+    check("8c. malformed number " + JSON.stringify(bad) + " rejected", code(function () { pki.jose.parseJson('{"n":' + bad + '}'); }) === "jose/bad-json");
+  });
+  // 8d. well-formed numbers still parse.
+  check("8d. valid numbers parse", pki.jose.parseJson('{"a":0,"b":-1.5,"c":1e10,"d":-1.5E+3,"e":0.5}').d === -1500);
 }
 
 async function run() {

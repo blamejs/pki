@@ -127,6 +127,13 @@ function testObjects() {
   check("47. processing challenge with error accepted", pki.acme.validate("challenge", Object.assign({}, CHALLENGE, { status: "processing", error: { type: "urn:ietf:params:acme:error:connection" } })).status === "processing");
   // unknown fields are tolerated, never reflected.
   check("47b. unknown field ignored", pki.acme.validate("order", Object.assign({}, ORDER, { futureField: 1 })).status === "pending");
+  // a wildcard dns identifier is legal in an ORDER (CA order resources carry them);
+  // the order validator must not reject the *. shape the authorization validator does.
+  check("47c. wildcard order identifier accepted", pki.acme.validate("order", Object.assign({}, ORDER, { identifiers: [{ type: "dns", value: "*.example.org" }] })).identifiers.length === 1);
+  check("47d. double-label wildcard order identifier rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { identifiers: [{ type: "dns", value: "*.*.example.org" }] })); }) === "acme/bad-identifier");
+  // an account contact is a URI, most commonly mailto: -- it must not be narrowed to http(s).
+  check("47e. account mailto contact accepted", pki.acme.validate("account", { status: "valid", orders: "https://ca/acct/1/orders", contact: ["mailto:admin@example.org"] }).status === "valid");
+  check("47f. account non-URI contact rejected", code(function () { pki.acme.validate("account", { status: "valid", orders: "https://ca/acct/1/orders", contact: ["not a uri"] }); }) === "acme/bad-account");
 }
 
 // ---- state machines (RFC 8555 sec. 7.1.6) ----------------------------
@@ -139,6 +146,11 @@ function testTransitions() {
   check("48e. challenge invalid->valid rejected", code(function () { pki.acme.assertTransition("challenge", "invalid", "valid"); }) === "acme/bad-transition");
   check("48f. authz deactivated->valid rejected", code(function () { pki.acme.assertTransition("authorization", "deactivated", "valid"); }) === "acme/bad-transition");
   check("48g. challenge processing retry (self) ok", code(function () { pki.acme.assertTransition("challenge", "processing", "processing"); }) === "NO-THROW");
+  // a terminal valid order/challenge must NOT regress to invalid (RFC 8555 sec. 7.1.6).
+  check("48h. order valid->invalid rejected (valid is terminal)", code(function () { pki.acme.assertTransition("order", "valid", "invalid"); }) === "acme/bad-transition");
+  check("48i. challenge valid->invalid rejected (valid is terminal)", code(function () { pki.acme.assertTransition("challenge", "valid", "invalid"); }) === "acme/bad-transition");
+  // a non-terminal state -> invalid stays legal (the table, not a blanket shortcut).
+  check("48j. order ready->invalid ok", code(function () { pki.acme.assertTransition("order", "ready", "invalid"); }) === "NO-THROW");
 }
 
 // ---- problem documents (RFC 8555 sec. 6.7) ---------------------------
@@ -224,6 +236,11 @@ async function testChallenges() {
   var ipCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([192, 168, 1, 1])], false)]);
   check("62a. ip identifier iPAddress SAN accepted", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "192.168.1.1" }); })) === "NO-THROW");
   check("62b. ip identifier with dNSName SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, { type: "ip", value: "192.168.1.1" }); })) === "acme/bad-tlsalpn");
+  // 62c. the iPAddress SAN VALUE must equal the requested ip -- a cert for one IP must
+  // not verify for a different requested IP (only the tag was checked before).
+  check("62c. mismatched iPAddress SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip", value: "203.0.113.10" }); })) === "acme/bad-tlsalpn");
+  var ip6Cert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([0x20, 0x01, 0x0d, 0xb8, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])], false)]);
+  check("62d. matching IPv6 iPAddress SAN accepted", (await acode(function () { return pki.acme.verifyTlsAlpn01(ip6Cert, TOKEN, jwk, { type: "ip", value: "2001:db8::1" }); })) === "NO-THROW");
   // 63. the acmeIdentifier OID row resolves.
   check("63. acmeIdentifier OID row", oid.name("1.3.6.1.5.5.7.1.31") === "acmeIdentifier");
 }
