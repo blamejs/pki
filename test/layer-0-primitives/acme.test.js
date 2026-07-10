@@ -104,6 +104,9 @@ function testObjects() {
   // 40. a directory missing a required resource rejects.
   var noNonce = Object.assign({}, DIRECTORY); delete noNonce.newNonce;
   check("40. directory missing newNonce rejected", code(function () { pki.acme.validate("directory", noNonce); }) === "acme/missing-field");
+  // URL fields are PARSED, not prefix-matched -- a malformed or hostless value is rejected.
+  check("40b. malformed directory URL rejected", code(function () { pki.acme.validate("directory", Object.assign({}, DIRECTORY, { newNonce: "https://[" })); }) === "acme/bad-directory");
+  check("40c. hostless directory URL rejected", code(function () { pki.acme.validate("directory", Object.assign({}, DIRECTORY, { newNonce: "http://" })); }) === "acme/bad-directory");
   // 41. an unrecognized order status rejects.
   check("41. order bad status rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { status: "complete" })); }) === "acme/bad-status");
   // 42. expires is required-when pending/valid; optional otherwise.
@@ -285,6 +288,7 @@ async function testBuilders() {
   check("65c. superset order rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: [{ type: "dns", value: "example.org" }, { type: "dns", value: "www.example.org" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
   var cnCsr = buildCsr({ spki: cert.spki, subject: cnSubject("cn.example") });
   check("65d. CN counted in the identifier set", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: cnCsr, identifiers: [{ type: "dns", value: "cn.example" }], accountJwk: acct.jwk })); })) === "NO-THROW");
+  check("65e. finalize with a malformed identifier fails closed (no TypeError)", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: [{ type: "dns" }], accountJwk: acct.jwk })); })) === "acme/bad-identifier");
 
   // 66. CSR public key == account key -> acme/key-reuse (sec. 11.1).
   var reuseCsr = buildCsr({ spki: acct.spki, san: ["example.org"] });
