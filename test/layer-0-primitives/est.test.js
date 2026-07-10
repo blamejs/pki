@@ -266,10 +266,23 @@ function testBuilders() {
 function testClassify() {
   // 56. 200 with the wrong content-type -> est/bad-content-type.
   check("56. 200 wrong content-type", code(function () { pki.est.classifyResponse(200, { "content-type": "text/html" }, Buffer.alloc(0), { op: "cacerts" }); }) === "est/bad-content-type");
+  // 56b. a look-alike type that only PREFIXES the required token -> rejected (exact token).
+  check("56b. content-type prefix look-alike rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mimeevil" }, Buffer.alloc(0), { op: "cacerts" }); }) === "est/bad-content-type");
+  // 56c. the exact token, bare or with parameters -> ok.
+  check("56c. exact content-type with params ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
+  check("56d. exact content-type bare ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
   // 57. 202 with Retry-After surfaced (seconds); missing Retry-After -> est/missing-retry-after.
   var r202 = pki.est.classifyResponse(202, { "retry-after": "120" }, Buffer.alloc(0), { op: "simpleenroll" });
   check("57. 202 retry-after surfaced bounded", r202.status === "retry" && r202.retryAfterSeconds === 120);
   check("57b. 202 missing retry-after", code(function () { pki.est.classifyResponse(202, {}, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/missing-retry-after");
+  // 57c. an HTTP-date Retry-After -> retryAfterDate (epoch ms); with opts.now -> bounded seconds.
+  var when = Date.parse("Wed, 01 Jan 2020 00:00:00 GMT");
+  var r57c = pki.est.classifyResponse(202, { "retry-after": "Wed, 01 Jan 2020 00:00:00 GMT" }, Buffer.alloc(0), { op: "simpleenroll", now: when - 120000 });
+  check("57c. HTTP-date retry-after -> date + bounded seconds", r57c.retryAfterDate === when && r57c.retryAfterSeconds === 120);
+  var r57d = pki.est.classifyResponse(202, { "retry-after": "Wed, 01 Jan 2020 00:00:00 GMT" }, Buffer.alloc(0), { op: "simpleenroll" });
+  check("57d. HTTP-date retry-after without now -> date, seconds null", r57d.retryAfterDate === when && r57d.retryAfterSeconds === null);
+  // 57e. an uninterpretable Retry-After -> est/bad-retry-after (no delay-less retry verdict).
+  check("57e. garbage retry-after rejected", code(function () { pki.est.classifyResponse(202, { "retry-after": "soon" }, Buffer.alloc(0), { op: "simpleenroll" }); }) === "est/bad-retry-after");
   // 58. 204/404 on csrattrs -> "none available" verdict; 204 on cacerts -> error.
   check("58. 204 csrattrs -> none-available", pki.est.classifyResponse(204, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
   check("58b. 404 csrattrs -> none-available", pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
