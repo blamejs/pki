@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.31 — 2026-07-11
+
+The DER format cohort and the JOSE surface graduate to stable.
+
+### Changed
+
+- pki.schema.pkcs12 / attrcert / crmf / cmp / csrattrs (parse, pemDecode, pemEncode), pki.schema.all and pki.schema.parse, and the pki.jose signing / verification / thumbprint / base64url / JSON surface graduate from experimental to stable.
+- The LTS-CALENDAR graduation criterion now states that a settled, well-tested format no mainstream tool implements graduates on the toolkit's own conformance-vector round-trip plus coverage-guided fuzzing, rather than on a harness oracle that does not exist.
+
 ## v0.1.30 — 2026-07-11
 
 Fail-closed hardening of the byte-input and text-decode boundaries.
