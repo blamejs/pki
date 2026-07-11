@@ -496,6 +496,21 @@ async function testCsvHeaderKeyed() {
   check("T16: unknown Trust Bits token -> trust/bad-csv",
     codeOf(function () { pki.trust.parseCcadbCsv(badBits); }) === "trust/bad-csv");
 
+  // T16b: the CURRENT CCADB vocabulary (the EKU-derived trust-bit names) maps to
+  // the same purposes as the legacy Mozilla-report labels.
+  var curBits = csvOf([CSV_HEADER, ["Test Root A", q("Server Authentication; Secure Email; Code Signing"), "", "", q(pemA)]]);
+  var curAnchor = pki.trust.parseCcadbCsv(curBits).anchors[0];
+  check("T16b: Server Authentication / Secure Email / Code Signing map to the purposes",
+    curAnchor.purposes.serverAuth === true && curAnchor.purposes.emailProtection === true && curAnchor.purposes.codeSigning === true);
+  // T16c: the KNOWN CCADB purposes the anchor model does not track are tolerated
+  // and grant nothing (a purpose is only ever granted by a recognized delegator
+  // token -- the fail-closed direction); a token outside the known universe
+  // still errors (T16 above), so vocabulary drift keeps surfacing.
+  var tolBits = csvOf([CSV_HEADER, ["Test Root A", q("Client Authentication; Time Stamping; Document Signing; OCSP Signing; Websites"), "", "", q(pemA)]]);
+  var tolAnchor = pki.trust.parseCcadbCsv(tolBits).anchors[0];
+  check("T16c: known unmapped CCADB purposes tolerated, grant nothing beyond the mapped token",
+    tolAnchor.purposes.serverAuth === true && tolAnchor.purposes.emailProtection === false && tolAnchor.purposes.codeSigning === false);
+
   // T16: an unparseable non-empty distrust date fails closed.
   var badDate = csvOf([CSV_HEADER, ["Test Root A", q("Websites"), "soon", "", q(pemA)]]);
   check("T16: unparseable distrust date -> trust/bad-csv",
