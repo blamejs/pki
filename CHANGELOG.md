@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.32 — 2026-07-11
+
+OCSP-backed revocation checking joins certification-path validation.
+
+### Added
+
+- pki.path.ocspChecker(responses) -> RevocationChecker builds an OCSP-backed revocation checker for pki.path.validate's revocationChecker option from a set of pre-fetched OCSP responses (DER Buffer, PEM string, or already-parsed). It matches the full CertID triple against the certificate under whichever hash algorithm the CertID declares, authorizes the responder (issuing CA or a CA-issued id-kp-OCSPSigning delegate), verifies the response signature over tbsResponseData, and enforces thisUpdate/nextUpdate currency, reporting good, revoked (with revocationReason), or unknown. A wrong-issuer CertID, an unauthorized responder, a stale, not-yet-valid, or nextUpdate-less response, a non-successful responseStatus, or any verification failure yields unknown, which the validator fails closed unless softFail is set. RFC 6960.
+
 ## v0.1.31 — 2026-07-11
 
 The DER format cohort and the JOSE surface graduate to stable.

@@ -892,6 +892,103 @@ function reasonCodeExt(n) { return ext("2.5.29.21", false, b.enumerated(BigInt(n
 // A CRL extension with an OID the checker does not understand, marked critical.
 function unknownCriticalCrlExt() { return ext("1.3.6.1.4.1.99999.42", true, b.octetString(Buffer.from([1]))); }
 
+// ---------------------------------------------------------------------------
+// mkOcsp — a REAL signed OCSPResponse, the INVERSE of pki.path.ocspChecker. It
+// computes each CertID's issuerNameHash/issuerKeyHash under the per-response
+// hash algorithm over the issuer Name DER + issuer key BIT STRING value (so the
+// checker's recomputation matches), assembles the ResponseData, signs it with
+// the responder key, and wraps it as an OCSPResponse (RFC 6960 sec. 4.2.1).
+// o = {
+//   responseStatus? : OCSPResponseStatus (default 0 successful; a non-zero code
+//                     emits a status-only response with no responseBytes),
+//   responderID     : { byName: <name spec> } | { byKeyOf: <spki Buffer> },
+//   signWith        : the responder's key alg (the issuer key for the direct model),
+//   producedAt?     : Date,
+//   certs?          : [ <cert DER Buffer> ]  embedded delegate certs,
+//   single          : [ { issuerName, issuerKeyAlg, serial,
+//                         status:"good"|"revoked"|"unknown", hashAlg?:"SHA-1"|"SHA-256"|"SHA-384",
+//                         thisUpdate?, nextUpdate?(null=omit), revocationTime?,
+//                         revocationReason?(CRLReason int) } ],
+//   mutateSig?      : fn(sigBuf)->sigBuf,
+// }
+// ---------------------------------------------------------------------------
+var OID_OCSP_BASIC = "1.3.6.1.5.5.7.48.1.1";
+var EKU_OCSP_SIGNING = "1.3.6.1.5.5.7.3.9";
+
+// The subjectPublicKey BIT STRING VALUE (excluding the unused-bits octet) of an
+// SPKI DER -- the exact bytes the CertID issuerKeyHash / byKey KeyHash hash over.
+function _spkiKeyValue(spkiDer) {
+  return pki.asn1.read.bitString(pki.asn1.decode(spkiDer).children[1]).bytes;
+}
+async function _digest(alg, buf) { return Buffer.from(await subtle.digest(alg, buf)); }
+function _certIdHashOid(alg) { return alg === "SHA-256" ? OID_SHA256 : (alg === "SHA-384" ? OID_SHA384 : OID_SHA1); }
+
+async function mkOcsp(o) {
+  if (o.responseStatus !== undefined && o.responseStatus !== 0) {
+    // Non-successful: an OCSPResponse carrying only the ENUMERATED status.
+    return b.sequence([b.enumerated(BigInt(o.responseStatus))]);
+  }
+  var signer = await ensureKeys(o.signWith);
+  var sa = signer.alg;
+
+  var ridNode;
+  if (o.responderID.byName) {
+    ridNode = b.explicit(1, nameDer(o.responderID.byName));               // byName [1] EXPLICIT Name
+  } else {
+    var kh = await _digest("SHA-1", _spkiKeyValue(o.responderID.byKeyOf)); // byKey [2] EXPLICIT KeyHash
+    ridNode = b.explicit(2, b.octetString(kh));
+  }
+
+  var srNodes = [];
+  for (var i = 0; i < o.single.length; i++) {
+    var sr = o.single[i];
+    var hAlg = sr.hashAlg || "SHA-1";
+    var issuerKeys = await ensureKeys(sr.issuerKeyAlg);
+    var nameHash = await _digest(hAlg, nameDer(sr.issuerName));
+    var keyHash = await _digest(hAlg, _spkiKeyValue(issuerKeys.spki));
+    var certId = b.sequence([
+      b.sequence([b.oid(_certIdHashOid(hAlg)), b.nullValue()]),
+      b.octetString(nameHash),
+      b.octetString(keyHash),
+      b.integer(BigInt(sr.serial)),
+    ]);
+    var statusNode;
+    if (sr.status === "revoked") {
+      var ri = [b.generalizedTime(sr.revocationTime || new Date("2026-06-01T00:00:00Z"))];
+      if (sr.revocationReason !== undefined && sr.revocationReason !== null) {
+        ri.push(b.explicit(0, b.enumerated(BigInt(sr.revocationReason))));  // revocationReason [0] EXPLICIT CRLReason
+      }
+      statusNode = b.contextConstructed(1, Buffer.concat(ri));              // revoked [1] IMPLICIT RevokedInfo
+    } else if (sr.status === "unknown") {
+      statusNode = b.contextPrimitive(2, Buffer.alloc(0));                  // unknown [2] IMPLICIT NULL
+    } else {
+      statusNode = b.contextPrimitive(0, Buffer.alloc(0));                  // good [0] IMPLICIT NULL
+    }
+    var srChildren = [certId, statusNode, b.generalizedTime(sr.thisUpdate || new Date("2027-01-01T00:00:00Z"))];
+    if (sr.nextUpdate !== null) {
+      srChildren.push(b.explicit(0, b.generalizedTime(sr.nextUpdate || new Date("2028-06-01T00:00:00Z"))));  // nextUpdate [0] EXPLICIT
+    }
+    srNodes.push(b.sequence(srChildren));
+  }
+
+  var responseData = b.sequence([
+    ridNode,
+    b.generalizedTime(o.producedAt || new Date("2027-01-01T00:00:00Z")),
+    b.sequence(srNodes),
+  ]);
+
+  var sig = Buffer.from(await subtle.sign(sa.sign, signer.privateKey, responseData));
+  if (sa.p1363) sig = p1363ToDer(sig, sa.p1363);
+  if (o.mutateSig) sig = o.mutateSig(sig);
+
+  var basicChildren = [responseData, o.sigAlgOverride || algIdDer(sa), b.bitString(sig, 0)];
+  if (o.certs && o.certs.length) {
+    basicChildren.push(b.explicit(0, b.sequence(o.certs.map(function (c) { return b.raw(c); }))));  // certs [0] EXPLICIT
+  }
+  var responseBytes = b.sequence([b.oid(OID_OCSP_BASIC), b.octetString(b.sequence(basicChildren))]);
+  return b.sequence([b.enumerated(0n), b.explicit(0, responseBytes)]);      // successful + responseBytes [0] EXPLICIT
+}
+
 async function testRevocation() {
   var anchor = await mkAnchor("ed25519", "Root");
   var LEAF_SERIAL = 7777n;
@@ -1999,6 +2096,189 @@ async function testInitialInputsAndTargetGates() {
 }
 
 // ---------------------------------------------------------------------------
+// OCSP revocation checking (pki.path.ocspChecker) — RFC 6960
+// ---------------------------------------------------------------------------
+
+// Integration axis: drive pki.path.validate with an ocspChecker over the leaf's
+// issuer (the trust anchor), so the verdict is observed on the shipped consumer.
+async function testOcspRevocation() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var leaf = await mkCert({ subject: "OcspLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 100n });
+  function goodSingle(extra) { return Object.assign({ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 100, status: "good" }, extra || {}); }
+  function ocspRun(resp, extra) {
+    return run([leaf], Object.assign({ time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker([resp]) }, extra || {}));
+  }
+  function undetermined(res) { return res.valid === false && failCodes(res).indexOf("path/revocation-undetermined") !== -1; }
+  function revoked(res) { return res.valid === false && failCodes(res).indexOf("path/revoked") !== -1; }
+
+  // O1 — issuer-direct, SHA-1 CertID, good (also proves the mkOcsp fixture builder).
+  var o1 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()] });
+  check("mkOcsp builds a parseable successful basic response", pki.schema.ocsp.parseResponse(o1).basicResponse.responses.length === 1);
+  check("O1 OCSP good (issuer-direct, SHA-1 CertID) -> valid", (await ocspRun(o1)).valid === true);
+
+  // O2 — the same under a SHA-256 CertID (hash-algorithm agnostic).
+  var o2 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ hashAlg: "SHA-256" })] });
+  check("O2 OCSP good (SHA-256 CertID) -> valid", (await ocspRun(o2)).valid === true);
+
+  // O5 — revoked.
+  var o5 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
+  check("O5 OCSP revoked -> path/revoked", revoked(await ocspRun(o5)));
+
+  // O7 — authoritative, current, verified, but certStatus unknown.
+  var o7 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "unknown" })] });
+  check("O7 OCSP unknown status -> undetermined (unknown is not good)", undetermined(await ocspRun(o7)));
+
+  // O11 — CertID serial matches but the issuer hashes are for a DIFFERENT issuer.
+  var o11 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ issuerName: "OtherCA", issuerKeyAlg: "ed25519i" })] });
+  check("O11 OCSP wrong-issuer CertID -> undetermined (cross-CA same-serial defense)", undetermined(await ocspRun(o11)));
+
+  // O12 — stale: nextUpdate already passed.
+  var o12 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ nextUpdate: new Date("2027-03-01T00:00:00Z") })] });
+  check("O12 OCSP stale (nextUpdate past) -> undetermined", undetermined(await ocspRun(o12)));
+
+  // O13 — not yet valid: thisUpdate in the future.
+  var o13 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ thisUpdate: new Date("2028-01-01T00:00:00Z") })] });
+  check("O13 OCSP thisUpdate future -> undetermined", undetermined(await ocspRun(o13)));
+
+  // O14 — no nextUpdate: no bounded validity, fail closed.
+  var o14 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ nextUpdate: null })] });
+  check("O14 OCSP no nextUpdate -> undetermined (fail-closed, replay defense)", undetermined(await ocspRun(o14)));
+
+  // O15a/b/c — non-successful responseStatus conveys no status.
+  var o15codes = [{ n: 1, name: "malformedRequest" }, { n: 3, name: "tryLater" }, { n: 6, name: "unauthorized" }];
+  for (var g = 0; g < o15codes.length; g++) {
+    var o15 = await mkOcsp({ responseStatus: o15codes[g].n });
+    check("O15 OCSP responseStatus " + o15codes[g].name + " -> undetermined", undetermined(await ocspRun(o15)));
+  }
+
+  // O16 — the response signature is mutated (tbs intact).
+  var o16 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()], mutateSig: function (s) { var c = Buffer.from(s); c[c.length - 1] ^= 0xff; return c; } });
+  check("O16 OCSP tampered signature -> undetermined", undetermined(await ocspRun(o16)));
+
+  // O17 — a future revocationTime under historical validation is not yet effective.
+  var o17 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationTime: new Date("2028-01-01T00:00:00Z"), revocationReason: 1 })] });
+  check("O17 historical mode, future revocationTime -> valid", (await ocspRun(o17, { historicalMode: true })).valid === true);
+  check("O17b present mode, future revocationTime -> path/revoked", revoked(await ocspRun(o17)));
+  var o17c = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationTime: new Date("2027-01-01T00:00:00Z"), revocationReason: 1 })] });
+  check("O17c historical mode, past revocationTime -> path/revoked", revoked(await ocspRun(o17c, { historicalMode: true })));
+
+  // O18 — empty bundle.
+  check("O18 ocspChecker([]) -> undetermined", undetermined(await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker([]) })));
+
+  // O19 — a successful, authoritative response that covers only other serials.
+  var o19 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ serial: 999 })] });
+  check("O19 OCSP response for other serials only -> undetermined", undetermined(await ocspRun(o19)));
+
+  // O20b — an unusable (bad-sig) response must not mask a revoking one under softFail.
+  var o20bad = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()], mutateSig: function (s) { var c = Buffer.from(s); c[c.length - 1] ^= 0xff; return c; } });
+  var o20rev = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
+  check("O20b unusable response does not mask a revoking one under softFail -> path/revoked",
+    revoked(await run([leaf], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.ocspChecker([o20bad, o20rev]) })));
+
+  // O22 — a non-basic responseType throws at construction (config-tier parity with crl.parse).
+  var nonBasic = b.sequence([b.enumerated(0n), b.explicit(0, b.sequence([b.oid("1.3.6.1.5.5.7.48.1.2"), b.octetString(Buffer.from([1]))]))]);
+  check("O22 non-basic responseType throws at construction", (await codeOf((async function () { return pki.path.ocspChecker([nonBasic]); })())) === "ocsp/unsupported-response-type");
+}
+
+// Standalone axis: drive ocspChecker(...).check(...) directly, where pki.path.validate
+// would mask the verdict (authorization edges) or cannot surface revocationReason.
+async function testOcspCheckerStandalone() {
+  var ctx = { time: T2027, historicalMode: false };
+  var caKeys = await ensureKeys("ed25519");
+  var caCert = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", serial: 1n }));
+  var leaf = pki.schema.x509.parse(await mkCert({ subject: "OcspLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 100n }));
+  var issuerArg = { workingPublicKey: caKeys.spki, workingIssuerName: caCert.subject, issuerCert: caCert };
+  function chk(resp, c) { return pki.path.ocspChecker([resp]).check(leaf, issuerArg, c || ctx); }
+  function goodSingle(extra) { return Object.assign({ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 100, status: "good" }, extra || {}); }
+
+  // O3 — responderID byKey = SHA-1 of the issuer key value.
+  var o3 = await mkOcsp({ responderID: { byKeyOf: caKeys.spki }, signWith: "ed25519", single: [goodSingle()] });
+  check("O3 OCSP byKey=issuer key -> good", (await chk(o3)).status === "good");
+
+  // O4 — delegated ECDSA-P256 responder issued by the CA with id-kp-OCSPSigning.
+  var delegate = await mkCert({ subject: "OcspResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 50n, extensions: [ekuExt([EKU_OCSP_SIGNING], false)] });
+  var o4 = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: [delegate], single: [goodSingle()] });
+  check("O4 delegated responder (ECDSA, id-kp-OCSPSigning) -> good", (await chk(o4)).status === "good");
+
+  // O4b — the same delegate identified byKey.
+  var p256Keys = await ensureKeys("p256");
+  var o4b = await mkOcsp({ responderID: { byKeyOf: p256Keys.spki }, signWith: "p256", certs: [delegate], single: [goodSingle()] });
+  check("O4b delegated responder byKey -> good", (await chk(o4b)).status === "good");
+
+  // O5 / O5b — revoked surfaces (or omits) the revocationReason.
+  var o5 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
+  var r5 = await chk(o5);
+  check("O5 OCSP revoked surfaces revocationReason", r5.status === "revoked" && r5.revocationReason === "keyCompromise");
+  var o5b = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked" })] });
+  var r5b = await chk(o5b);
+  check("O5b OCSP revoked without reason -> revoked, reason null", r5b.status === "revoked" && (r5b.revocationReason === null || r5b.revocationReason === undefined));
+
+  // O6 — revocation surfaces through the delegated model too.
+  var o6 = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: [delegate], single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
+  check("O6 delegated revoked -> revoked", (await chk(o6)).status === "revoked");
+
+  // O8 — delegate lacks id-kp-OCSPSigning (serverAuth only).
+  var badEku = await mkCert({ subject: "BadResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 51n, extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
+  var o8 = await mkOcsp({ responderID: { byName: "BadResponder" }, signWith: "p256", certs: [badEku], single: [goodSingle()] });
+  check("O8 delegate without id-kp-OCSPSigning -> unknown (never good)", (await chk(o8)).status === "unknown");
+
+  // O8b — delegate carries anyExtendedKeyUsage only.
+  var anyEku = await mkCert({ subject: "AnyResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 52n, extensions: [ekuExt([EKU_ANY], false)] });
+  var o8b = await mkOcsp({ responderID: { byName: "AnyResponder" }, signWith: "p256", certs: [anyEku], single: [goodSingle()] });
+  check("O8b delegate anyExtendedKeyUsage only -> unknown", (await chk(o8b)).status === "unknown");
+
+  // O9 — delegate not issued by the CA that issued the target.
+  var rogue = await mkCert({ subject: "RogueResponder", issuer: "OtherCA", signWith: "ed25519i", subjectKeys: "p256", serial: 53n, extensions: [ekuExt([EKU_OCSP_SIGNING], false)] });
+  var o9 = await mkOcsp({ responderID: { byName: "RogueResponder" }, signWith: "p256", certs: [rogue], single: [goodSingle()] });
+  check("O9 delegate not issued by the CA -> unknown", (await chk(o9)).status === "unknown");
+
+  // O10 — responderID matches neither the issuer nor any embedded cert.
+  var o10 = await mkOcsp({ responderID: { byName: "Nobody" }, signWith: "ed25519", single: [goodSingle()] });
+  check("O10 responderID matches no authorized responder -> unknown", (await chk(o10)).status === "unknown");
+
+  // O10b — responderID names the issuer but the response is signed by an impostor key.
+  var o10b = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519i", single: [goodSingle()] });
+  check("O10b responderID=issuer but impostor signature -> unknown", (await chk(o10b)).status === "unknown");
+
+  // O11b / O11c — both issuer hashes must match.
+  var o11b = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ issuerKeyAlg: "ed25519i" })] });
+  check("O11b issuerKeyHash mismatch -> unknown", (await chk(o11b)).status === "unknown");
+  var o11c = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ issuerName: "NotRoot" })] });
+  check("O11c issuerNameHash mismatch -> unknown", (await chk(o11c)).status === "unknown");
+
+  // O16b — a SHA-1 signature algorithm is rejected (distinct from the SHA-1 CertID policy).
+  var o16b = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()], sigAlgOverride: b.sequence([b.oid("1.2.840.113549.1.1.5"), b.nullValue()]) });
+  check("O16b SHA-1 signature algorithm -> unknown (CertID-hash policy != signature-hash policy)", (await chk(o16b)).status === "unknown");
+
+  // O20 — a revoked response outranks a good one, both orderings.
+  var oGood = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()] });
+  var oRev = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
+  check("O20 {good,revoked} -> revoked", (await pki.path.ocspChecker([oGood, oRev]).check(leaf, issuerArg, ctx)).status === "revoked");
+  check("O20 {revoked,good} -> revoked", (await pki.path.ocspChecker([oRev, oGood]).check(leaf, issuerArg, ctx)).status === "revoked");
+
+  // O21 — an authorized OCSPSigning delegate that is expired at the validation instant.
+  var expired = await mkCert({ subject: "ExpiredResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 54n, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: [ekuExt([EKU_OCSP_SIGNING], false)] });
+  var o21 = await mkOcsp({ responderID: { byName: "ExpiredResponder" }, signWith: "p256", certs: [expired], single: [goodSingle()] });
+  check("O21 expired delegate responder -> unknown", (await chk(o21)).status === "unknown");
+}
+
+// Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
+// (SHA-1 over the raw issuer Name DER, and over the subjectPublicKey BIT STRING
+// VALUE excluding the unused-bits octet -- RFC 6960 sec. 4.1.1) must agree with an
+// independent implementation. Reference values are from `openssl x509 -ocspid`
+// (OpenSSL 3.5.7) over the committed self-signed EC fixture; the issuerKeyHash
+// off-by-one that self-tests green but fails real OCSP interop is pinned here.
+async function testOcspCertIdInterop() {
+  var pem = require("fs").readFileSync(require("path").join(__dirname, "..", "fixtures", "pkijs-selfsigned-ec.pem"), "utf8");
+  var cert = pki.schema.x509.parse(pem);
+  var nameHash = Buffer.from(await subtle.digest("SHA-1", cert.subject.bytes)).toString("hex").toUpperCase();
+  var keyBits = pki.asn1.read.bitString(pki.asn1.decode(cert.subjectPublicKeyInfo.bytes).children[1]).bytes;
+  var keyHash = Buffer.from(await subtle.digest("SHA-1", keyBits)).toString("hex").toUpperCase();
+  check("OCSP issuerNameHash matches openssl -ocspid Subject OCSP hash", nameHash === "2BB4BD34D7178BC49FF1541DEAEDE9A63B5B7CF5");
+  check("OCSP issuerKeyHash matches openssl -ocspid Public key OCSP hash", keyHash === "839131BE3342B9D83E4A87E3CA7409EB5626D451");
+}
+
+// ---------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------
 
@@ -2011,6 +2291,9 @@ async function runSuite() {
   await testSignatureAndInputEdges();
   await testRevocation();
   await testCrlCheckerUnreadableExtensions();
+  await testOcspRevocation();
+  await testOcspCheckerStandalone();
+  await testOcspCertIdInterop();
   await testLeafRulesAndParams();
   await testRfc5280ConformanceMusts();
   await testInitialInputsAndTargetGates();

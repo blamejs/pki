@@ -1,0 +1,12 @@
+# Socket Security configuration — https://docs.socket.dev/docs/socket-yml
+version: 2
+
+issueRules:
+  # This toolkit is a parse-first PKI codec: zero runtime dependencies and no
+  # network surface (no fetch, socket, or child process anywhere in the tarball).
+  # The only URL-like strings in the published package are documentation examples
+  # using RFC 2606 / RFC 6761 reserved example domains (e.g. ca.example,
+  # blocked.example) inside JSDoc @example blocks and code comments — never a live
+  # endpoint. The low-severity "URL strings" alert on those is a false positive
+  # for a library that makes no network calls.
+  urlStrings: false

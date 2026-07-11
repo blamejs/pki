@@ -124,6 +124,18 @@ security-only patches after the next major releases.
   path with a typed reason code rather than passing. Post-quantum SLH-DSA
   signatures (all twelve FIPS 205 parameter sets) verify on this path over the
   exact signed bytes, alongside ML-DSA and the classical set.
+- **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
+  authoritative only when it is signed by an authorized responder — the issuing
+  CA directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in
+  its extendedKeyUsage (RFC 6960 §4.2.2.2). An ordinary leaf the CA issued, an
+  `anyExtendedKeyUsage` certificate, a certificate from a different CA, or an
+  expired responder cannot sign a status. The response must also bind to the
+  certificate under test through the full CertID triple, with `issuerNameHash`
+  and `issuerKeyHash` recomputed under the CertID's own hash algorithm, so a
+  `good` for one issuer's serial cannot be replayed to answer for another
+  issuer's same serial. A missing or passed `nextUpdate`, an unauthorized
+  responder, or any signature-verification failure yields an undetermined status
+  that fails the path closed.
 - **Algorithm-parameter confusion.** For the algorithms whose `parameters` field
   MUST be absent — ML-DSA, SLH-DSA, the RFC 8410 Edwards/Montgomery curves,
   ML-KEM (RFC 9936), and the HKDF identifiers (RFC 8619) — the single shared
