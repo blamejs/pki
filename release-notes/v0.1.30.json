@@ -1,0 +1,14 @@
+{
+  "version": "0.1.30",
+  "headline": "Fail-closed hardening of the byte-input and text-decode boundaries.",
+  "summary": "Two classes of input boundary are tightened. The EST transfer and multipart decoders now enforce their size cap on the raw byte length BEFORE the payload is decoded to a string: previously an oversized body was materialized in full and only then rejected, so a single crafted input could allocate a large string (and one above Node's maximum string length escaped as an untyped ERR_STRING_TOO_LONG) before the cap fired. An HTTP error body is now decoded only up to the prefix shown in the error message. Separately, pki.oid.fromDER joins every other DER boundary in failing closed with a typed error: a non-Buffer or a detached-backed input (a transferred / structuredClone'd view whose backing store is gone) is now a typed reject instead of a raw TypeError or a stray coercion of a string / number into bytes. No public API surface or error-code set changes.",
+  "sections": {
+    "Fixed": [
+      "The EST transfer and multipart-mixed decoders enforce their size cap on the raw byte length before decoding the payload to a string, and an HTTP error response body is decoded only up to the prefix shown in the message -- closing a single-input string-allocation amplification where an oversized body was materialized in full before the cap rejected it.",
+      "pki.oid.fromDER rejects a non-Buffer or detached-backed input with a typed oid/bad-input error instead of a raw TypeError."
+    ],
+    "Changed": [
+      "A detached-backed BufferSource (a transferred / structuredClone'd view) passed to any DER format parser -- pki.schema.x509 / crl / csr / pkcs8 / cms / pkcs12 -- fails closed with the format's typed bad-input error at the shared parse-input boundary rather than being decoded as an empty buffer."
+    ]
+  }
+}

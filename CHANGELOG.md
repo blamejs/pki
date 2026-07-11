@@ -4,7 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.29 — 2026-07-11
+## v0.1.30 — 2026-07-11
+
+Fail-closed hardening of the byte-input and text-decode boundaries.
+
+### Changed
+
+- A detached-backed BufferSource (a transferred / structuredClone'd view) passed to any DER format parser -- pki.schema.x509 / crl / csr / pkcs8 / cms / pkcs12 -- fails closed with the format's typed bad-input error at the shared parse-input boundary rather than being decoded as an empty buffer.
+
+### Fixed
+
+- The EST transfer and multipart-mixed decoders enforce their size cap on the raw byte length before decoding the payload to a string, and an HTTP error response body is decoded only up to the prefix shown in the message -- closing a single-input string-allocation amplification where an oversized body was materialized in full before the cap rejected it.
+- pki.oid.fromDER rejects a non-Buffer or detached-backed input with a typed oid/bad-input error instead of a raw TypeError.
+
+## v0.1.29 — 2026-07-10
 
 A detached-backed BufferSource now fails closed with a typed error at every byte-input boundary.
 

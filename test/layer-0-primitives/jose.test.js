@@ -169,6 +169,12 @@ function testJsonReader() {
     return Object.getPrototypeOf(r) === Object.prototype && r.polluted === undefined && Object.prototype.hasOwnProperty.call(r, "__proto__");
   })());
   check("5e. duplicate __proto__ member rejected", code(function () { pki.jose.parseJson('{"__proto__":1,"__proto__":2}'); }) === "jose/duplicate-member");
+  // 5f. a detached-backed Buffer reads as zero-length: fail closed typed here
+  // (the text guard re-views through the byte guard), not decode as empty.
+  check("5f. detached-backed Buffer rejected", code(function () {
+    var ab = new ArrayBuffer(8); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.jose.parseJson(b);
+  }) === "jose/bad-input");
   check("5f. duplicate __proto__ member at depth rejected", code(function () { pki.jose.parseJson('{"h":{"__proto__":1,"__proto__":2}}'); }) === "jose/duplicate-member");
   // 6. nesting one past the depth cap rejected.
   var deep = "[".repeat(C.LIMITS.JSON_MAX_DEPTH + 1) + "1" + "]".repeat(C.LIMITS.JSON_MAX_DEPTH + 1);

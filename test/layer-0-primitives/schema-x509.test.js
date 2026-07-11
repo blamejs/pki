@@ -94,6 +94,12 @@ function testPem() {
 function testRejects() {
   check("rejects empty SEQUENCE", code(function () { pki.schema.x509.parse(Buffer.from("3000", "hex")); }) === "x509/not-a-certificate");
   check("rejects non-buffer input", code(function () { pki.schema.x509.parse(42); }) === "x509/bad-input");
+  // A detached-backed input fails closed via the shared coerceToDer byte guard --
+  // the defence propagates to every DER format that composes it, not per-format.
+  check("rejects a detached-backed Buffer", code(function () {
+    var ab = new ArrayBuffer(4); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.schema.x509.parse(b);
+  }) === "x509/bad-input");
   check("rejects garbage DER", code(function () { pki.schema.x509.parse(Buffer.from("ffffffff", "hex")); }) !== "NO-THROW");
 }
 

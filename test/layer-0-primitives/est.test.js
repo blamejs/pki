@@ -134,6 +134,12 @@ function testTransferCodec() {
   check("31b. transferEncode round-trip", pki.est.transferDecode(pki.est.transferEncode(der)).equals(der));
   // 32. a hostile non-alphabet byte -> est/bad-base64 fail-closed.
   check("32. hostile byte rejected", code(function () { pki.est.transferDecode(b64.slice(0, 8) + "*" + b64.slice(9)); }) === "est/bad-base64");
+  // 32b. a detached-backed Buffer reads as zero-length: the text guard must fail
+  // closed typed here (matching the byte boundaries), not decode as empty.
+  check("32b. detached-backed Buffer rejected", code(function () {
+    var ab = new ArrayBuffer(8); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.est.transferDecode(b);
+  }) === "est/bad-input");
   // 32b. a non-canonical / truncated body (length 1 mod 4, e.g. "A") -> est/bad-base64,
   //      not a silently truncated decode.
   check("32b. truncated base64 rejected", code(function () { pki.est.transferDecode("A"); }) === "est/bad-base64");

@@ -148,9 +148,10 @@ var VALID_ALLOW_CLASSES = {
   "comment-block-coverage":        1,
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
-  "recursion-depth-ceiling-missing": 1,
+  "detached-view-buffer-not-via-guard": 1,
+  "constant-time-compare-not-via-guard": 1,
   "constant-time-compare-short-circuited": 1,
-  "detached-view-buffer-unguarded": 1,
+  "decode-maxdepth-not-via-guard": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -1762,32 +1763,11 @@ function testNoDuplicateCodeBlocks() {
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
     },
-    {
-      // Byte-input coercion guards: every input boundary that accepts a caller-
-      // supplied Buffer / Uint8Array coerces it to a Buffer VIEW through the same
-      // fail-closed re-view -- Buffer.from(x.buffer, x.byteOffset, x.byteLength)
-      // in a try/catch -- so a detached backing ArrayBuffer (a transferred /
-      // structuredClone'd view, which reads as zero-length and would otherwise be
-      // hashed / decoded as EMPTY) fails closed here instead of slipping through.
-      // The guarded re-view is deliberately IDENTICAL across every boundary so the
-      // detached-buffer defense cannot diverge, but each MUST throw its own
-      // module's typed fail-closed error (asn1/not-buffer, cbor/not-buffer,
-      // ct/bad-input, webcrypto/data, merkle/bad-input) -- the contract that keeps
-      // them per-module. A shared exported helper would leak onto the public
-      // pki.asn1 surface (index.js re-exports the whole codec object) and a new
-      // util module is barred, so extraction is blocked; divergence is instead
-      // guarded behaviorally -- each module has a RED vector asserting its typed
-      // code on a detached input. family-subset so any 3+ boundaries match.
-      files: [
-        "lib/asn1-der.js:_asBuffer",
-        "lib/cbor-det.js:_asBuffer",
-        "lib/ct.js:_toBuffer",
-        "lib/webcrypto.js:_toBuf",
-        "lib/merkle.js:_toBuffer",
-      ],
-      mode: "family-subset",
-      reason: "per-boundary byte-input coercion guards share one fail-closed detached-safe re-view (Buffer.from(x.buffer,byteOffset,byteLength) in try/catch) but each throws its own module's typed error; a shared helper would leak onto the public pki.asn1 surface, so the shape stays per-module with a per-module RED vector guarding against divergence.",
-    },
+    // The v0.1.29 byte-input coercion-guard cluster is gone: the five boundaries
+    // now delegate to lib/guard-bytes.js (guard.bytes.view / .source), so each
+    // per-module coercion is a one-line call with no shared shape to cluster.
+    // The detached-safe re-view lives in exactly one place, enforced by the
+    // detached-view-buffer-not-via-guard detector.
   ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;
@@ -2025,73 +2005,91 @@ function testNumberNarrowsUnboundedInteger() {
   _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
 }
 
-function testRecursionDepthCeilingMissing() {
-  // class: recursion-depth-ceiling-missing
-  // A recursive-descent decoder that threads an OPERATOR-tunable maxDepth into
-  // its own recursion but never clamps that knob against the stack-safe
-  // MAX_DECODE_DEPTH_CEILING overflows the native call stack (a raw RangeError,
-  // not a typed PkiError) the moment a caller raises maxDepth past the platform
-  // frame limit. Fires file-wide on a NEW decoder ANYWHERE in lib that (a) reads
-  // opts.maxDepth AND (b) self-recurses on `depth + 1` but (c) omits the ceiling
-  // token. Rename-proof: anchored on the public @opts name `maxDepth` and the
-  // shared ceiling constant, never on _decodeTLV / _decodeItem / _capOpt (all
-  // renameable — a rename that drops the ceiling makes both decoders fire, the
-  // safe direction, never silent-green). The third conjunct spares a schema
-  // module that merely FORWARDS opts.maxDepth into asn1.decode without owning
-  // any recursion (the ceiling lives in the callee, not the forwarder).
+function testDetachedViewBufferNotViaGuard() {
+  // class: detached-view-buffer-not-via-guard
+  // The detached-safe byte re-view -- Buffer.from(x.buffer, x.byteOffset,
+  // x.byteLength) -- is the guard-bytes choke point (guard.bytes.view / .source).
+  // It must live ONLY in lib/guard-bytes.js. A boundary that re-inlines the
+  // re-view skips the detached-buffer fail-OPEN defence: a transferred /
+  // structuredClone'd view reads zero-length and is silently processed as EMPTY
+  // (a digest / signature / parse of nothing). Fires on the re-view SHAPE in any
+  // lib file except guard-bytes.js. Rename-proof: anchored on the Buffer.from
+  // view API shape (a `.buffer` first-arg member + a `.byteOffset` arg), no
+  // symbol; does NOT match a charset decode Buffer.from(str, "base64").
+  var SHAPE = /Buffer\.from\(\s*([A-Za-z_$][\w$]*)\.buffer\s*,\s*\1\.byteOffset/;
   var bad = [];
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
-    var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
-    var readsKnob    = /\bopts\.maxDepth\b/.test(src);
-    var selfRecurses = /\bdepth\s*\+\s*1\b/.test(src);
-    var hasCeiling   = /MAX_DECODE_DEPTH_CEILING/.test(src);
-    if (readsKnob && selfRecurses && !hasCeiling) {
-      var lines = _lines(fs.readFileSync(f, "utf8"));
-      var anchor = 1;
-      for (var i = 0; i < lines.length; i++) {
-        if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
-        if (/\bopts\.maxDepth\b/.test(lines[i])) { anchor = i + 1; break; }
+    if (rel === "lib/guard-bytes.js") return;          // the one legitimate home
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      if (SHAPE.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "the detached-safe Buffer.from(x.buffer, x.byteOffset, ...) re-view must route through guard.bytes.view / .source (lib/guard-bytes.js), not be re-inlined — inlining skips the detached-buffer fail-open defence" });
       }
-      bad.push({ file: rel, line: anchor,
-        content: "reads opts.maxDepth and self-recurses on depth+1 without clamping it against constants.LIMITS.MAX_DECODE_DEPTH_CEILING — a raised maxDepth overflows the C stack (RangeError, not a typed PkiError); add the config-time ceiling check asn1-der/cbor-det decode carry" });
     }
   });
-  bad = _filterMarkers(bad, "recursion-depth-ceiling-missing");
-  _report("no recursive decoder threads an operator-tunable maxDepth without the stack-safe ceiling (codebase-wide)", bad);
+  bad = _filterMarkers(bad, "detached-view-buffer-not-via-guard");
+  _report("the detached-safe byte re-view lives only in guard-bytes (codebase-wide)", bad);
+}
+
+function testConstantTimeCompareNotViaGuard() {
+  // class: constant-time-compare-not-via-guard
+  // The constant-time byte comparison (node:crypto timingSafeEqual) is the
+  // guard-crypto choke point (guard.crypto.constantTimeEqual). It must live ONLY
+  // in lib/guard-crypto.js, where the public length gate and the equal-length
+  // compare are paired correctly. A verify path calling timingSafeEqual directly
+  // risks a length-mismatch RangeError or an inconsistent / short-circuited gate.
+  // Fires on a timingSafeEqual CALL in any lib file except guard-crypto.js.
+  // Anchored on the frozen node:crypto API symbol (the call form, not comment
+  // prose); does NOT match Buffer.compare (SET-OF / map-key ordering).
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (rel === "lib/guard-crypto.js") return;         // the one legitimate home
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      if (/\.timingSafeEqual\s*\(/.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "constant-time compare (timingSafeEqual) must route through guard.crypto.constantTimeEqual (lib/guard-crypto.js), not be called directly — the length gate and the compare belong in one place" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "constant-time-compare-not-via-guard");
+  _report("the constant-time compare lives only in guard-crypto (codebase-wide)", bad);
 }
 
 function testConstantTimeCompareShortCircuited() {
   // class: constant-time-compare-short-circuited
   // Two constant-time compares joined by && / || short-circuit the second: when
-  // the first is false the second timingSafeEqual never runs, reopening the
-  // timing side-channel the constant-time compare exists to close. Evaluate each
-  // into a var, THEN combine. Two-pass, file-scoped. PASS 1 derives the CT-token
-  // set = the frozen node:crypto `timingSafeEqual` PLUS the name of any local
-  // function whose body wraps it (recovers a `_ctEq`-style helper WITHOUT
-  // hardcoding its name — a naive `timingSafeEqual && timingSafeEqual` regex
-  // would MISS the real merkle bug, which combined `_ctEq(...)` calls). PASS 2
-  // fires on TWO CT-token CALLS joined by &&/|| inside one expression, bounded
-  // away from ; { } so a wrapper DEFINITION and two separate statements
-  // combining already-evaluated vars (var o = _eq(..); var n = _eq(..); o && n)
-  // do NOT match. Rename-proof (API symbol + body-resolved wrappers), fires on a
-  // new short-circuited pair anywhere in lib.
+  // the first is false the second compare never runs, reopening the timing
+  // side-channel the constant-time compare exists to close. Evaluate each into a
+  // var, THEN combine. This is DISTINCT from constant-time-compare-not-via-guard:
+  // that enforces the compare lives in guard-crypto; this catches short-circuiting
+  // the guard's CALLS at any consumer. Two-pass, file-scoped. PASS 1 derives the
+  // CT-token set = the frozen node:crypto `timingSafeEqual` PLUS the guard's
+  // exported `constantTimeEqual` PLUS the name of any local function whose body
+  // wraps either (recovers a `_ctEq`-style delegate WITHOUT hardcoding its name).
+  // PASS 2 fires on TWO CT-token CALLS joined by &&/|| inside one expression,
+  // bounded away from ; { } so a wrapper DEFINITION and two separate statements
+  // combining already-evaluated vars do NOT match.
   var bad = [];
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     var stripped = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
-    if (!/\btimingSafeEqual\b/.test(stripped)) return;
-    // PASS 1: CT-token set = timingSafeEqual + wrapper fn names.
-    var toks = { timingSafeEqual: true };
-    var wrapRe = /(?:function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)|(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*function\s*\([^)]*\))\s*\{[^{}]*timingSafeEqual/g;
+    if (!/\btimingSafeEqual\b/.test(stripped) && !/\bconstantTimeEqual\b/.test(stripped)) return;
+    // PASS 1: CT-token set = the two frozen compare names + wrapper fn names.
+    var toks = { timingSafeEqual: true, constantTimeEqual: true };
+    var wrapRe = /(?:function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)|(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*function\s*\([^)]*\))\s*\{[^{}]*(?:timingSafeEqual|constantTimeEqual)/g;
     var wm;
     while ((wm = wrapRe.exec(stripped))) { toks[wm[1] || wm[2]] = true; }
     var alt = Object.keys(toks).sort(function (a, b) { return b.length - a.length; })
       .map(function (t) { return t.replace(/[$]/g, "\\$&"); }).join("|");
     var pairRe = new RegExp("\\b(?:" + alt + ")\\s*\\([^;{}]*?\\)\\s*(?:&&|\\|\\|)\\s*[^;{}]*?\\b(?:" + alt + ")\\s*\\(");
-    // PASS 2 is line-scoped (like the number-narrows scan): skip comment lines,
-    // fire on the short-circuited pair. A determined multi-line split is out of
-    // scope — the class as it appears in real code is one expression per line.
+    // PASS 2 is line-scoped (skip comment lines); the class as it appears in real
+    // code is one expression per line.
     var lines = _lines(fs.readFileSync(f, "utf8"));
     for (var i = 0; i < lines.length; i++) {
       if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
@@ -2105,44 +2103,38 @@ function testConstantTimeCompareShortCircuited() {
   _report("no constant-time compare is short-circuited by &&/|| (codebase-wide)", bad);
 }
 
-function testDetachedViewBufferUnguarded() {
-  // class: detached-view-buffer-unguarded
-  // Buffer.from(x.buffer, x.byteOffset, x.byteLength) over a caller-supplied
-  // view throws a RAW TypeError when the backing ArrayBuffer is detached (a
-  // transferred / structuredClone'd view), escaping the toolkit's typed-PkiError
-  // fail-closed contract at an input boundary. Every such view-coercion must be
-  // wrapped in try/catch -> a typed error (see merkle _toBuffer, cbor _asBuffer,
-  // webcrypto _toBuf). Fires on a NEW coercion anywhere in lib that is not inside
-  // an open try block, scoped to the enclosing function (the try-openings minus
-  // try-closes seen from the function start down to the call line). Rename-proof:
-  // anchored on the Buffer.from(id.buffer, id.byteOffset) API shape + the
-  // try/catch keywords, no symbol dependence. Distinct from
-  // context-node-content-deref-no-primitive-reader (single-arg Buffer.from(_.content)).
-  var COERCE = /Buffer\.from\(\s*([A-Za-z_$][\w$]*)\.buffer\s*,\s*\1\.byteOffset/;
+function testDecodeMaxdepthNotViaGuard() {
+  // class: decode-maxdepth-not-via-guard
+  // A recursive-descent decoder that threads an OPERATOR-tunable maxDepth into
+  // its recursion must route the cap through guard.limits.depthCap, which refuses
+  // a maxDepth above the stack-safe ceiling (so a raised cap cannot overflow the
+  // native call stack into a raw RangeError). Fires file-wide on a decoder that
+  // (a) reads opts.maxDepth AND (b) self-recurses on `depth + 1` but (c) does NOT
+  // call guard.limits.depthCap -- whether it forgot the ceiling or re-inlined it
+  // (both leave the ceiling outside its single home). Rename-proof: anchored on
+  // the public @opts name `maxDepth`, the recursion shape, and the guard contract
+  // method `depthCap`. Spares a schema module that merely FORWARDS opts.maxDepth
+  // into asn1.decode without owning any recursion (the guard lives in the callee).
   var bad = [];
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
-    var lines = _lines(fs.readFileSync(f, "utf8"));
-    for (var i = 0; i < lines.length; i++) {
-      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
-      if (!COERCE.test(lines[i])) continue;
-      var callIndent = (lines[i].match(/^\s*/) || [""])[0].length;
-      var scopeStart = 0;
-      for (var b = i - 1; b >= 0; b--) {
-        var ind = (lines[b].match(/^\s*/) || [""])[0].length;
-        if (/\bfunction\b/.test(lines[b]) && ind <= callIndent) { scopeStart = b; break; }
+    var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
+    var readsKnob    = /\bopts\.maxDepth\b/.test(src);
+    var selfRecurses = /\bdepth\s*\+\s*1\b/.test(src);
+    var viaGuard     = /\.depthCap\s*\(/.test(src);
+    if (readsKnob && selfRecurses && !viaGuard) {
+      var lines = _lines(fs.readFileSync(f, "utf8"));
+      var anchor = 1;
+      for (var i = 0; i < lines.length; i++) {
+        if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+        if (/\bopts\.maxDepth\b/.test(lines[i])) { anchor = i + 1; break; }
       }
-      var scope = lines.slice(scopeStart, i + 1).join("\n");
-      var opens  = (scope.match(/\btry\s*\{/g) || []).length;
-      var closes = (scope.match(/\bcatch\b|\bfinally\b/g) || []).length;
-      if (opens - closes <= 0) {
-        bad.push({ file: rel, line: i + 1,
-          content: "Buffer.from(view.buffer, view.byteOffset, ...) outside a try throws a raw TypeError on a detached backing ArrayBuffer (a transferred / structuredClone'd view) instead of a typed PkiError — wrap the coercion and throw a domain/reason error (see merkle _toBuffer / cbor _asBuffer)" });
-      }
+      bad.push({ file: rel, line: anchor,
+        content: "reads opts.maxDepth and self-recurses on depth+1 without routing the cap through guard.limits.depthCap — a raised maxDepth would overflow the stack (RangeError); use guard.limits.depthCap so the stack-safe ceiling is enforced" });
     }
   });
-  bad = _filterMarkers(bad, "detached-view-buffer-unguarded");
-  _report("no detached-capable Buffer.from(view.buffer, ...) coercion outside a try (codebase-wide)", bad);
+  bad = _filterMarkers(bad, "decode-maxdepth-not-via-guard");
+  _report("every recursive decoder routes its maxDepth through guard.limits.depthCap (codebase-wide)", bad);
 }
 
 // ---------------------------------------------------------------------------
@@ -2169,9 +2161,10 @@ function run() {
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
-  testRecursionDepthCeilingMissing();
+  testDetachedViewBufferNotViaGuard();
+  testConstantTimeCompareNotViaGuard();
   testConstantTimeCompareShortCircuited();
-  testDetachedViewBufferUnguarded();
+  testDecodeMaxdepthNotViaGuard();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testNoUnusedUnderscoreFunctions();
