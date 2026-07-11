@@ -2331,6 +2331,19 @@ async function testOcspCheckerStandalone() {
   var malformedCrit = await mkCert({ subject: "MalformedResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 60n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt(), ext("2.5.29.32", true, b.integer(1n))] });
   var o29 = await mkOcsp({ responderID: { byName: "MalformedResponder" }, signWith: "p256", certs: [malformedCrit], single: [goodSingle()] });
   check("O29 delegate with malformed critical extension -> unknown", (await chk(o29)).status === "unknown");
+
+  // O30 -- a delegated responder that INHERITS its EC parameters from the issuing CA
+  // (its SPKI omits the namedCurve, same key algorithm, RFC 5280 sec. 4.1.2.7) must
+  // have them spliced before the response signature verify, else importKey has no
+  // namedCurve and a valid response reads unknown.
+  var ecCaKeys = await ensureKeys("p256");
+  var ecCa = pki.schema.x509.parse(await mkCert({ subject: "EcRoot", issuer: "EcRoot", signWith: "p256", serial: 3n }));
+  var ecLeaf = pki.schema.x509.parse(await mkCert({ subject: "EcOcspLeaf", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", serial: 101n }));
+  var ecIssuer = { workingPublicKey: ecCaKeys.spki, workingIssuerName: ecCa.subject, issuerCert: ecCa };
+  var respKeys = await ensureKeys("p256i");
+  var inheritDelegate = await mkCert({ subject: "InheritResponder", issuer: "EcRoot", signWith: "p256", spki: stripEcParams(respKeys.spki), serial: 61n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), kuExt([KU_DIGITAL_SIGNATURE]), nocheckExt()] });
+  var o30 = await mkOcsp({ responderID: { byName: "InheritResponder" }, signWith: "p256i", certs: [inheritDelegate], single: [{ issuerName: "EcRoot", issuerKeyAlg: "p256", serial: 101, status: "good" }] });
+  check("O30 delegate inheriting EC params from the CA -> good", (await pki.path.ocspChecker([o30]).check(ecLeaf, ecIssuer, ctx)).status === "good");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
