@@ -128,8 +128,13 @@ security-only patches after the next major releases.
   authoritative only when it is signed by an authorized responder — the issuing
   CA directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in
   its extendedKeyUsage (RFC 6960 §4.2.2.2). An ordinary leaf the CA issued, an
-  `anyExtendedKeyUsage` certificate, a certificate from a different CA, or an
-  expired responder cannot sign a status. The response must also bind to the
+  `anyExtendedKeyUsage` certificate, a certificate from a different CA, an expired
+  responder, or one whose keyUsage forbids digitalSignature cannot sign a status.
+  A delegated responder must also carry id-pkix-ocsp-nocheck (RFC 6960 §4.2.2.2.1)
+  — the CA's statement that it vouches for the responder for its certificate
+  lifetime — and any critical extension on the responder certificate must be
+  recognized and well-formed; otherwise the checker cannot confirm the responder
+  itself is unrevoked and fails closed, so a revoked responder cannot keep signing. The response must also bind to the
   certificate under test through the full CertID triple, with `issuerNameHash`
   and `issuerKeyHash` recomputed under the CertID's own hash algorithm, so a
   `good` for one issuer's serial cannot be replayed to answer for another

@@ -914,6 +914,11 @@ function unknownCriticalCrlExt() { return ext("1.3.6.1.4.1.99999.42", true, b.oc
 // ---------------------------------------------------------------------------
 var OID_OCSP_BASIC = "1.3.6.1.5.5.7.48.1.1";
 var EKU_OCSP_SIGNING = "1.3.6.1.5.5.7.3.9";
+var OID_OCSP_NOCHECK = "1.3.6.1.5.5.7.48.1.5";
+// id-pkix-ocsp-nocheck (RFC 6960 sec. 4.2.2.2.1): the CA vouches for the responder
+// for its certificate lifetime without a revocation check. A delegated responder
+// needs it (or a caller-supplied status) to be authorized.
+function nocheckExt() { return ext(OID_OCSP_NOCHECK, false, b.nullValue()); }
 
 // The subjectPublicKey BIT STRING VALUE (excluding the unused-bits octet) of an
 // SPKI DER -- the exact bytes the CertID issuerKeyHash / byKey KeyHash hash over.
@@ -2203,7 +2208,7 @@ async function testOcspCheckerStandalone() {
   check("O3 OCSP byKey=issuer key -> good", (await chk(o3)).status === "good");
 
   // O4 — delegated ECDSA-P256 responder issued by the CA with id-kp-OCSPSigning.
-  var delegate = await mkCert({ subject: "OcspResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 50n, extensions: [ekuExt([EKU_OCSP_SIGNING], false)] });
+  var delegate = await mkCert({ subject: "OcspResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 50n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
   var o4 = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: [delegate], single: [goodSingle()] });
   check("O4 delegated responder (ECDSA, id-kp-OCSPSigning) -> good", (await chk(o4)).status === "good");
 
@@ -2300,7 +2305,7 @@ async function testOcspCheckerStandalone() {
   var critDelegate = await mkCert({ subject: "CritResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 55n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), ext("1.3.6.1.4.1.99999.7", true, b.octetString(Buffer.from([1])))] });
   var o26 = await mkOcsp({ responderID: { byName: "CritResponder" }, signWith: "p256", certs: [critDelegate], single: [goodSingle()] });
   check("O26 delegate with unprocessed critical extension -> unknown", (await chk(o26)).status === "unknown");
-  var okDelegate = await mkCert({ subject: "NonCritResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 56n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), ext("1.3.6.1.4.1.99999.7", false, b.octetString(Buffer.from([1])))] });
+  var okDelegate = await mkCert({ subject: "NonCritResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 56n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt(), ext("1.3.6.1.4.1.99999.7", false, b.octetString(Buffer.from([1])))] });
   var o26ok = await mkOcsp({ responderID: { byName: "NonCritResponder" }, signWith: "p256", certs: [okDelegate], single: [goodSingle()] });
   check("O26 control: delegate with non-critical extension -> good", (await chk(o26ok)).status === "good");
 
@@ -2309,9 +2314,23 @@ async function testOcspCheckerStandalone() {
   var noSigDelegate = await mkCert({ subject: "NoSigResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 57n, extensions: [kuExt([KU_CRL_SIGN]), ekuExt([EKU_OCSP_SIGNING], false)] });
   var o27 = await mkOcsp({ responderID: { byName: "NoSigResponder" }, signWith: "p256", certs: [noSigDelegate], single: [goodSingle()] });
   check("O27 delegate keyUsage without digitalSignature -> unknown", (await chk(o27)).status === "unknown");
-  var sigDelegate = await mkCert({ subject: "SigResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 58n, extensions: [kuExt([KU_DIGITAL_SIGNATURE]), ekuExt([EKU_OCSP_SIGNING], false)] });
+  var sigDelegate = await mkCert({ subject: "SigResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 58n, extensions: [kuExt([KU_DIGITAL_SIGNATURE]), ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
   var o27ok = await mkOcsp({ responderID: { byName: "SigResponder" }, signWith: "p256", certs: [sigDelegate], single: [goodSingle()] });
   check("O27 control: delegate keyUsage with digitalSignature -> good", (await chk(o27ok)).status === "good");
+
+  // O28 -- a delegated responder WITHOUT id-pkix-ocsp-nocheck cannot be established
+  // as unrevoked by a transport-free checker, so it is not an authorized signer
+  // (RFC 6960 sec. 4.2.2.2.1) -- otherwise a revoked responder keeps signing "good".
+  var noNoCheck = await mkCert({ subject: "NoNoCheckResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 59n, extensions: [kuExt([KU_DIGITAL_SIGNATURE]), ekuExt([EKU_OCSP_SIGNING], false)] });
+  var o28 = await mkOcsp({ responderID: { byName: "NoNoCheckResponder" }, signWith: "p256", certs: [noNoCheck], single: [goodSingle()] });
+  check("O28 delegate without id-pkix-ocsp-nocheck -> unknown", (await chk(o28)).status === "unknown");
+
+  // O29 -- a delegate with a RECOGNIZED critical extension whose value is malformed
+  // must be rejected via critical-extension structure validation, exactly as the
+  // path validator rejects it (not merely the unknown-critical-OID filter).
+  var malformedCrit = await mkCert({ subject: "MalformedResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 60n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt(), ext("2.5.29.32", true, b.integer(1n))] });
+  var o29 = await mkOcsp({ responderID: { byName: "MalformedResponder" }, signWith: "p256", certs: [malformedCrit], single: [goodSingle()] });
+  check("O29 delegate with malformed critical extension -> unknown", (await chk(o29)).status === "unknown");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
