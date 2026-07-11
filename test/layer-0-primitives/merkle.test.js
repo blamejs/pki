@@ -133,6 +133,10 @@ function testRejects() {
   check("rej-cons-proof-too-long", code(function () { m.verifyConsistency({ oldSize: 4, newSize: 7, oldRoot: H(R4), newRoot: H(R7), proof: P([N456, N45]) }); }) === "merkle/bad-proof-length");
   // --- consistency, RETURN false (the append-only bypass legs) ---
   check("rej-cons-old-zero-wrongroot (false)", m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(flip(EMPTY)), newRoot: H(R7), proof: [] }) === false);
+  // empty-to-empty (newSize 0): BOTH roots must be the empty root -- a bogus
+  // newRoot must not pass (an empty-old proof binds newRoot only when newSize=0).
+  check("cons-empty-to-empty accepts both empty roots", m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(EMPTY), proof: [] }) === true);
+  check("rej-cons-empty-to-empty-wrongnewroot (false)", m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(flip(EMPTY)), proof: [] }) === false);
   check("rej-cons-wrong-oldroot non-pow2 (false)", m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(flip(R3)), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }) === false);
   check("rej-cons-wrong-oldroot POW2 (false) [load-bearing]", m.verifyConsistency({ oldSize: 4, newSize: 7, oldRoot: H(flip(R4)), newRoot: H(R7), proof: P([N456]) }) === false);
   check("rej-cons-wrong-newroot (false)", m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(flip(R7)), proof: P([L2, L3, R2, N456]) }) === false);
