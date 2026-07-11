@@ -89,11 +89,24 @@ function testPem() {
   var bundle = pki.schema.x509.pemEncode(Buffer.from([0x30, 0x00]), "PRIVATE KEY") + vectors.CERT_EC_PEM;
   check("label-less pemDecode rejects a foreign first block", code(function () { pki.schema.x509.pemDecode(bundle); }) === "pem/label-mismatch");
   check("pemDecode(text, null) takes the first block of any type", pki.schema.x509.pemDecode(bundle, null).equals(Buffer.from([0x30, 0x00])));
+  // A detached-backed PEM Buffer must fail closed as a typed PemError, not a raw
+  // TypeError -- the text guard re-views through the byte guard, which threads
+  // the raw failure as the cause (PemError carries withCause).
+  check("pemDecode rejects a detached-backed Buffer", code(function () {
+    var ab = new ArrayBuffer(8); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.schema.x509.pemDecode(b);
+  }) === "pem/bad-input");
 }
 
 function testRejects() {
   check("rejects empty SEQUENCE", code(function () { pki.schema.x509.parse(Buffer.from("3000", "hex")); }) === "x509/not-a-certificate");
   check("rejects non-buffer input", code(function () { pki.schema.x509.parse(42); }) === "x509/bad-input");
+  // A detached-backed input fails closed via the shared coerceToDer byte guard --
+  // the defence propagates to every DER format that composes it, not per-format.
+  check("rejects a detached-backed Buffer", code(function () {
+    var ab = new ArrayBuffer(4); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.schema.x509.parse(b);
+  }) === "x509/bad-input");
   check("rejects garbage DER", code(function () { pki.schema.x509.parse(Buffer.from("ffffffff", "hex")); }) !== "NO-THROW");
 }
 

@@ -134,6 +134,12 @@ function testTransferCodec() {
   check("31b. transferEncode round-trip", pki.est.transferDecode(pki.est.transferEncode(der)).equals(der));
   // 32. a hostile non-alphabet byte -> est/bad-base64 fail-closed.
   check("32. hostile byte rejected", code(function () { pki.est.transferDecode(b64.slice(0, 8) + "*" + b64.slice(9)); }) === "est/bad-base64");
+  // 32b. a detached-backed Buffer reads as zero-length: the text guard must fail
+  // closed typed here (matching the byte boundaries), not decode as empty.
+  check("32b. detached-backed Buffer rejected", code(function () {
+    var ab = new ArrayBuffer(8); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.est.transferDecode(b);
+  }) === "est/bad-input");
   // 32b. a non-canonical / truncated body (length 1 mod 4, e.g. "A") -> est/bad-base64,
   //      not a silently truncated decode.
   check("32b. truncated base64 rejected", code(function () { pki.est.transferDecode("A"); }) === "est/bad-base64");
@@ -389,6 +395,12 @@ function testClassify() {
   // 59. a 4xx text/plain body surfaced capped as the diagnostic on the typed error.
   var c59 = code(function () { pki.est.classifyResponse(400, { "content-type": "text/plain" }, Buffer.from("bad request details"), { op: "simpleenroll" }); });
   check("59. 4xx typed http-error", c59 === "est/http-error");
+  // 59b. a DETACHED-backed error body must not crash the message decode -- the
+  // bounded toString reads it as empty so the est/http-error verdict survives.
+  check("59b. 4xx with a detached body still yields est/http-error", code(function () {
+    var ab = new ArrayBuffer(16); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.est.classifyResponse(500, { "content-type": "text/plain" }, b, { op: "cacerts" });
+  }) === "est/http-error");
   // 60. fullcmc is a real path (paths() emits it) but its CMC response is deferred
   //     -> a precise est/fullcmc-not-supported, never a silently-accepted 200.
   check("60. fullcmc classification rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "fullcmc" }); }) === "est/fullcmc-not-supported");

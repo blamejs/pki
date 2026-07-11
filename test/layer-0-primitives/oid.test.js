@@ -78,6 +78,14 @@ function testDer() {
     var full = pki.oid.toDER(t[0]);
     check("toDER/fromDER round-trip " + t[0], pki.oid.fromDER(full) === t[0]);
   });
+  // fromDER routes its input through the shared byte guard: a non-Buffer and a
+  // detached-backed Buffer now fail closed as a typed OidError, not a raw
+  // TypeError or a Buffer.from coercion of a string/number into stray bytes.
+  check("fromDER non-buffer -> oid/bad-input", code(function () { pki.oid.fromDER("not der bytes"); }) === "oid/bad-input");
+  check("fromDER detached-backed Buffer -> oid/bad-input", code(function () {
+    var ab = new ArrayBuffer(4); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.oid.fromDER(b);
+  }) === "oid/bad-input");
 }
 
 // RFC 9909 §3 — the 12 Pure SLH-DSA parameter-set OIDs under sigAlgs

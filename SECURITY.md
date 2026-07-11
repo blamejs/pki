@@ -75,6 +75,15 @@ security-only patches after the next major releases.
   — an indefinite length, a non-minimal (preferred) argument, out-of-order or
   duplicate map keys, a non-shortest or non-canonical-NaN float, ill-formed UTF-8,
   or trailing bytes. There is no lenient mode.
+- **Single-input string-allocation amplification.** Every boundary that decodes
+  untrusted bytes to a string — PEM armor, a JOSE / ACME JSON document, an EST
+  transfer or multipart body — enforces its size cap on the raw byte length
+  BEFORE materializing the string, so an oversized input is rejected before it
+  allocates a full-size string (and a body above Node's maximum string length
+  fails typed rather than escaping as an untyped `ERR_STRING_TOO_LONG`). A
+  detached-backed input (a transferred / structuredClone'd view whose bytes are
+  gone, so it reads as zero-length) fails closed with a typed error at the byte
+  boundary instead of being processed as empty.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
