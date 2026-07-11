@@ -2011,13 +2011,27 @@ function testNumberNarrowsUnboundedInteger() {
 function _functionRegions(src) {
   var lines = _lines(src);
   var starts = [];
+  // A region begins at any named function -- a `function NAME(`, a `NAME = function`,
+  // OR a `NAME = (...) =>` / `NAME = arg =>` arrow (the assignment form; an inline
+  // anonymous arrow stays in its enclosing region, which is what the walk wants).
+  var ARROW = "=\\s*(?:async\\s+)?(?:\\([^)]*\\)|[A-Za-z_$][\\w$]*)\\s*=>";
+  var PATS = [
+    /^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/,
+    /^\s*(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b/,
+    /^\s*([A-Za-z_$][\w$.]*)\s*=\s*(?:async\s+)?function\b/,
+    new RegExp("^\\s*(?:var|const|let)\\s+([A-Za-z_$][\\w$]*)\\s*" + ARROW),
+    new RegExp("^\\s*([A-Za-z_$][\\w$.]*)\\s*" + ARROW),
+  ];
   for (var i = 0; i < lines.length; i++) {
-    var m = lines[i].match(/^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/) ||
-            lines[i].match(/^\s*(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b/) ||
-            lines[i].match(/^\s*([A-Za-z_$][\w$.]*)\s*=\s*(?:async\s+)?function\b/);
+    var m = null;
+    for (var pi = 0; pi < PATS.length; pi++) { m = lines[i].match(PATS[pi]); if (m) break; }
     if (m) starts.push({ name: m[1], line: i });
   }
   var out = [];
+  // A module-preamble region covers top-level code (requires, module-level const
+  // arrows) BEFORE the first function, so no line escapes the function-scoped walk.
+  var firstStart = starts.length ? starts[0].line : lines.length;
+  if (firstStart > 0) out.push({ name: "<module>", startLine: 1, body: lines.slice(0, firstStart).join("\n") });
   for (var k = 0; k < starts.length; k++) {
     var s = starts[k].line;
     var e = (k + 1 < starts.length) ? starts[k + 1].line : lines.length;
