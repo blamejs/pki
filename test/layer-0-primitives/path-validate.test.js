@@ -968,14 +968,21 @@ async function mkOcsp(o) {
     if (sr.nextUpdate !== null) {
       srChildren.push(b.explicit(0, b.generalizedTime(sr.nextUpdate || new Date("2028-06-01T00:00:00Z"))));  // nextUpdate [0] EXPLICIT
     }
+    if (sr.singleExtensions && sr.singleExtensions.length) {
+      srChildren.push(b.explicit(1, b.sequence(sr.singleExtensions)));  // singleExtensions [1] EXPLICIT
+    }
     srNodes.push(b.sequence(srChildren));
   }
 
-  var responseData = b.sequence([
+  var rdChildren = [
     ridNode,
     b.generalizedTime(o.producedAt || new Date("2027-01-01T00:00:00Z")),
     b.sequence(srNodes),
-  ]);
+  ];
+  if (o.responseExtensions && o.responseExtensions.length) {
+    rdChildren.push(b.explicit(1, b.sequence(o.responseExtensions)));  // responseExtensions [1] EXPLICIT
+  }
+  var responseData = b.sequence(rdChildren);
 
   var sig = Buffer.from(await subtle.sign(sa.sign, signer.privateKey, responseData));
   if (sa.p1363) sig = p1363ToDer(sig, sa.p1363);
@@ -2272,6 +2279,30 @@ async function testOcspCheckerStandalone() {
   var o23 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [{ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 100, status: "good" }] });
   check("O23 CertID over the issuer cert subject (RFC5280-equal, byte-different) -> good",
     (await pki.path.ocspChecker([o23]).check(leafLowerIssuer, issuerUpper, ctx)).status === "good");
+
+  // O24 — a matching SingleResponse carrying a CRITICAL singleExtension the checker
+  // does not implement is unusable (RFC 6960 sec. 4.4 / the critical-extension contract).
+  var critExt = ext("1.3.6.1.4.1.99999.7", true, b.octetString(Buffer.from([1])));
+  var nonCritExt = ext("1.3.6.1.4.1.99999.7", false, b.octetString(Buffer.from([1])));
+  var o24 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ singleExtensions: [critExt] })] });
+  check("O24 critical singleExtension -> unknown", (await chk(o24)).status === "unknown");
+  var o24ok = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ singleExtensions: [nonCritExt] })] });
+  check("O24 control: non-critical singleExtension -> good", (await chk(o24ok)).status === "good");
+
+  // O25 — a CRITICAL responseExtension makes the whole signed response unusable.
+  var o25 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", responseExtensions: [critExt], single: [goodSingle()] });
+  check("O25 critical responseExtension -> unknown", (await chk(o25)).status === "unknown");
+  var o25ok = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", responseExtensions: [nonCritExt], single: [goodSingle()] });
+  check("O25 control: non-critical responseExtension -> good", (await chk(o25ok)).status === "good");
+
+  // O26 — a delegate responder cert with an unprocessed CRITICAL extension is not an
+  // authorized signer (RFC 5280 sec. 6.1.4(o) critical-extension contract).
+  var critDelegate = await mkCert({ subject: "CritResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 55n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), ext("1.3.6.1.4.1.99999.7", true, b.octetString(Buffer.from([1])))] });
+  var o26 = await mkOcsp({ responderID: { byName: "CritResponder" }, signWith: "p256", certs: [critDelegate], single: [goodSingle()] });
+  check("O26 delegate with unprocessed critical extension -> unknown", (await chk(o26)).status === "unknown");
+  var okDelegate = await mkCert({ subject: "NonCritResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 56n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), ext("1.3.6.1.4.1.99999.7", false, b.octetString(Buffer.from([1])))] });
+  var o26ok = await mkOcsp({ responderID: { byName: "NonCritResponder" }, signWith: "p256", certs: [okDelegate], single: [goodSingle()] });
+  check("O26 control: delegate with non-critical extension -> good", (await chk(o26ok)).status === "good");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
