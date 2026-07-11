@@ -195,6 +195,12 @@ function testReadMismatch() {
 
 function testConfig() {
   check("rej-not-buffer", code(function () { pki.cbor.decode(123); }) === "cbor/not-buffer");
+  // A detached-backed view (transferred / structuredClone'd) must fail closed
+  // as a typed CborError, not a raw TypeError from Buffer.from in the byte walk.
+  check("rej-detached-view", code(function () {
+    var u = new Uint8Array([0]); structuredClone(u.buffer, { transfer: [u.buffer] });
+    pki.cbor.decode(u);
+  }) === "cbor/not-buffer");
   check("rej-bad-profile is a config-time TypeError",
     threw(function () { pki.cbor.decode(B("00"), { profile: "lenient" }); }) instanceof TypeError);
   check("bad maxBytes is a config-time TypeError",

@@ -25,6 +25,11 @@ async function testRandom() {
   check("randomUUID shape", /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(pki.webcrypto.randomUUID()));
   check("getRandomValues rejects >64KiB", (await code(async function () { pki.webcrypto.getRandomValues(new Uint8Array(65537)); })) === "webcrypto/data");
   check("getRandomValues rejects Float64Array", (await code(async function () { pki.webcrypto.getRandomValues(new Float64Array(4)); })) === "webcrypto/data");
+  // A detached-backed view must fail closed as a typed error, not a raw TypeError.
+  check("getRandomValues rejects a detached-backed view", (await code(async function () {
+    var u = new Uint8Array(8); structuredClone(u.buffer, { transfer: [u.buffer] });
+    pki.webcrypto.getRandomValues(u);
+  })) === "webcrypto/data");
 }
 
 async function testDigest() {
@@ -33,6 +38,17 @@ async function testDigest() {
   check("SHA-1(abc) [legacy compat]", hex(await subtle.digest("SHA-1", abc)) === "a9993e364706816aba3e25717850c26c9cd0d89d");
   check("SHA-512(abc) length", (await subtle.digest("SHA-512", abc)).byteLength === 64);
   check("SHA3-256(abc)", hex(await subtle.digest("SHA3-256", abc)) === "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532");
+  // _toBuf must surface a detached-backed BufferSource as a typed webcrypto/data
+  // error, not a raw TypeError from Buffer.from -- for both a view and a raw
+  // ArrayBuffer whose backing store was transferred away.
+  check("digest rejects a detached-backed view", (await code(async function () {
+    var u = new Uint8Array(8); structuredClone(u.buffer, { transfer: [u.buffer] });
+    await subtle.digest("SHA-256", u);
+  })) === "webcrypto/data");
+  check("digest rejects a detached ArrayBuffer", (await code(async function () {
+    var ab = new ArrayBuffer(8); structuredClone(ab, { transfer: [ab] });
+    await subtle.digest("SHA-256", ab);
+  })) === "webcrypto/data");
 }
 
 async function _signVerify(genAlg, signAlg, usages) {

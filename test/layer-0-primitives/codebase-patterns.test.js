@@ -148,6 +148,9 @@ var VALID_ALLOW_CLASSES = {
   "comment-block-coverage":        1,
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
+  "recursion-depth-ceiling-missing": 1,
+  "constant-time-compare-short-circuited": 1,
+  "detached-view-buffer-unguarded": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -633,42 +636,75 @@ function testWikiPortAgreesAcrossArtifacts() {
   _report("wiki port agrees across examples/wiki/Dockerfile + release-container.yml smoke step", bad);
 }
 
+// Extract the YAML job block (2-space-indented job key under `jobs:` through
+// the last line before the next job key) whose body matches namePattern.
+// Returns { key, lines } or null. Regex-lightweight, but anchored on the job's
+// structural boundary (its key indent), not a frozen line count.
+function _ymlJobBlock(yml, namePattern) {
+  var lines = _lines(yml);
+  var jobKeyRe = /^ {2}([A-Za-z0-9_.-]+):\s*$/;
+  var blocks = [];
+  var cur = null;
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].match(jobKeyRe);
+    if (m) {
+      if (cur) blocks.push(cur);
+      cur = { key: m[1], lines: [] };
+    }
+    if (cur) cur.lines.push(lines[i]);
+  }
+  if (cur) blocks.push(cur);
+  for (var b = 0; b < blocks.length; b++) {
+    if (namePattern.test(blocks[b].lines.join("\n"))) return blocks[b];
+  }
+  return null;
+}
+
 function testPublishPathRunsCiStaticGates() {
   // class: publish-path-missing-static-gate
   // The npm-publish workflow triggers on a `v*` tag push, INDEPENDENTLY of the
   // pull_request CI that runs the static-gate battery. A gate wired only into
   // ci.yml therefore does not guard the tarball the publish path packs: a tree
   // that fails a static gate can still be packed and published from a tag push.
-  // Every static correctness gate runs in BOTH the CI test job and the publish
-  // `validate` job before `npm pack`. This list is the frozen contract — adding
-  // a gate means adding it here and to both workflows, so the two paths can
-  // never silently diverge.
-  var GATES = [
-    "--max-warnings 0",
-    "node test/layer-0-primitives/codebase-patterns.test.js",
-    "node scripts/validate-source-comment-blocks.js",
-    "node scripts/check-api-snapshot.js",
-    "node scripts/check-status-lifecycle.js",
-    "node scripts/pin-all.js --check",
-  ];
+  // The gate set is DERIVED from ci.yml's static-gate job (not a frozen third
+  // copy that silently drifts): every `run:` command in the job whose name
+  // contains "Static gates" that is a correctness gate (an eslint invocation or
+  // a `node scripts/…` / `node test/…` — setup like `npm ci` excluded). Each
+  // derived gate must also appear in npm-publish.yml, so a gate added or renamed
+  // in CI but not mirrored to the publish path fires here. A missing / renamed
+  // workflow file or an unrecognizable static-gate job fails LOUDLY (a silent
+  // return would mask exactly the drift this guards).
   var ciPath = ".github/workflows/ci.yml";
   var pubPath = ".github/workflows/npm-publish.yml";
   var ci, pub;
-  try { ci = fs.readFileSync(path.join(REPO_ROOT, ciPath), "utf8"); } catch (_e) { return; }
-  try { pub = fs.readFileSync(path.join(REPO_ROOT, pubPath), "utf8"); } catch (_e) { return; }
+  try { ci = fs.readFileSync(path.join(REPO_ROOT, ciPath), "utf8"); }
+  catch (_e) { check("ci.yml present for the publish-gate cross-check", false); return; }
+  try { pub = fs.readFileSync(path.join(REPO_ROOT, pubPath), "utf8"); }
+  catch (_e) { check("npm-publish.yml present for the publish-gate cross-check", false); return; }
+
+  var job = _ymlJobBlock(ci, /name:\s*.*Static gates/i);
+  if (!job) { check("ci.yml has an identifiable 'Static gates' job to derive the gate set from", false); return; }
+
+  var isGate = function (cmd) { return /\beslint\b/.test(cmd) || /\bnode\s+(?:scripts|test)\//.test(cmd); };
+  var gates = [];
+  job.lines.forEach(function (ln) {
+    var rm = ln.match(/^\s*run:\s*(\S.*)$/);
+    if (!rm) return;
+    var cmd = rm[1].trim();
+    if (cmd === "|" || cmd === ">") return;            // block scalar — not a single-line gate
+    if (isGate(cmd) && gates.indexOf(cmd) === -1) gates.push(cmd);
+  });
+  if (gates.length === 0) { check("ci.yml static-gate job yields at least one derived gate command", false); return; }
+
   var bad = [];
-  GATES.forEach(function (g) {
-    if (ci.indexOf(g) === -1) {
-      bad.push({ file: ciPath, line: 1,
-        content: "static gate `" + g + "` is in the frozen contract but missing from the CI test job" });
-    }
+  gates.forEach(function (g) {
     if (pub.indexOf(g) === -1) {
       bad.push({ file: pubPath, line: 1,
-        content: "static gate `" + g + "` runs in ci.yml but NOT in the publish validate job — a tag-push publish would pack an ungated tree" });
+        content: "static gate `" + g + "` runs in ci.yml's static-gate job but NOT in npm-publish.yml — a tag-push publish would pack a tree this gate never checked" });
     }
   });
   bad = _filterMarkers(bad, "publish-path-missing-static-gate");
-  _report("publish validate job runs the full CI static-gate battery", bad);
+  _report("publish path runs every static gate derived from ci.yml (" + gates.length + " gates)", bad);
 }
 
 function testFuzzSeedCorpusZipNaming() {
@@ -984,8 +1020,18 @@ function testNoRemovedWebCryptoNamespace() {
   // PROSE (a docstring, README, ARCHITECTURE) is a documented path that no longer
   // resolves — exactly the bug class the doc-example gate cannot see (it only runs
   // @example CODE, not prose). Anchored on the exact removed token (case-sensitive, so
-  // pki.webcrypto is not matched).
-  var files = ["lib/webcrypto.js", "index.js", "README.md", "ARCHITECTURE.md", "SECURITY.md"];
+  // pki.webcrypto is not matched). The surface is DERIVED, not a frozen file list:
+  // every root-level `*.md` plus `index.js` plus every shipped `lib/**.js`, so a new
+  // doc (MIGRATING.md, a new lib docstring) that resurrects the dead path is caught.
+  // CHANGELOG.md is excluded — its record of the removal ("... pki.WebCrypto holder
+  // is removed") is the correct historical note, not a live broken path.
+  var rootMd = [];
+  try {
+    rootMd = fs.readdirSync(REPO_ROOT)
+      .filter(function (n) { return /\.md$/i.test(n) && n.toLowerCase() !== "changelog.md"; })
+      .map(function (n) { return n; });
+  } catch (_e) { /* best-effort */ }
+  var files = ["index.js"].concat(rootMd).concat(_libFiles().map(function (f) { return _relPath(f); }));
   var bad = [];
   files.forEach(function (rel) {
     var src;
@@ -1348,10 +1394,14 @@ var KNOWN_ANTIPATTERNS = [
   {
     id: "asn1-integer-cap-ignores-sign-pad",
     primitive: "the INTEGER length cap must allow the DER sign octet (cap + 1) — a positive INTEGER at the magnitude cap with its top bit set carries a leading 0x00, so a bare `> DER_MAX_INTEGER_BYTES` rejects legitimate key material",
-    regex: /c\.length > constants\.LIMITS\.DER_MAX_INTEGER_BYTES(?!\s*\+\s*1)/,
+    // Any identifier's `.length > DER_MAX_INTEGER_BYTES` with no `+ 1` sign-octet
+    // allowance — anchored on the frozen constant + the missing-`+ 1` lookahead,
+    // NOT the `c` local (a refactor to `body`/`magnitude` must not go silently
+    // green while dropping the sign pad).
+    regex: /\w+\.length > constants\.LIMITS\.DER_MAX_INTEGER_BYTES(?!\s*\+\s*1)/,
     skipCommentLines: true,
     allowlist: [],
-    reason: "A `c.length > DER_MAX_INTEGER_BYTES` cap with no `+ 1` for the DER sign octet rejects a positive INTEGER at the magnitude cap whose top bit is set (an RSA-131072 modulus). The cap bounds the magnitude; DER content may carry one leading 0x00 sign pad.",
+    reason: "A `<content>.length > DER_MAX_INTEGER_BYTES` cap with no `+ 1` for the DER sign octet rejects a positive INTEGER at the magnitude cap whose top bit is set (an RSA-131072 modulus). The cap bounds the magnitude; DER content may carry one leading 0x00 sign pad.",
   },
 
   // --- DER encoder/decoder canonical + range conformance (lib scope) ---
@@ -1949,6 +1999,126 @@ function testNumberNarrowsUnboundedInteger() {
   _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
 }
 
+function testRecursionDepthCeilingMissing() {
+  // class: recursion-depth-ceiling-missing
+  // A recursive-descent decoder that threads an OPERATOR-tunable maxDepth into
+  // its own recursion but never clamps that knob against the stack-safe
+  // MAX_DECODE_DEPTH_CEILING overflows the native call stack (a raw RangeError,
+  // not a typed PkiError) the moment a caller raises maxDepth past the platform
+  // frame limit. Fires file-wide on a NEW decoder ANYWHERE in lib that (a) reads
+  // opts.maxDepth AND (b) self-recurses on `depth + 1` but (c) omits the ceiling
+  // token. Rename-proof: anchored on the public @opts name `maxDepth` and the
+  // shared ceiling constant, never on _decodeTLV / _decodeItem / _capOpt (all
+  // renameable — a rename that drops the ceiling makes both decoders fire, the
+  // safe direction, never silent-green). The third conjunct spares a schema
+  // module that merely FORWARDS opts.maxDepth into asn1.decode without owning
+  // any recursion (the ceiling lives in the callee, not the forwarder).
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
+    var readsKnob    = /\bopts\.maxDepth\b/.test(src);
+    var selfRecurses = /\bdepth\s*\+\s*1\b/.test(src);
+    var hasCeiling   = /MAX_DECODE_DEPTH_CEILING/.test(src);
+    if (readsKnob && selfRecurses && !hasCeiling) {
+      var lines = _lines(fs.readFileSync(f, "utf8"));
+      var anchor = 1;
+      for (var i = 0; i < lines.length; i++) {
+        if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+        if (/\bopts\.maxDepth\b/.test(lines[i])) { anchor = i + 1; break; }
+      }
+      bad.push({ file: rel, line: anchor,
+        content: "reads opts.maxDepth and self-recurses on depth+1 without clamping it against constants.LIMITS.MAX_DECODE_DEPTH_CEILING — a raised maxDepth overflows the C stack (RangeError, not a typed PkiError); add the config-time ceiling check asn1-der/cbor-det decode carry" });
+    }
+  });
+  bad = _filterMarkers(bad, "recursion-depth-ceiling-missing");
+  _report("no recursive decoder threads an operator-tunable maxDepth without the stack-safe ceiling (codebase-wide)", bad);
+}
+
+function testConstantTimeCompareShortCircuited() {
+  // class: constant-time-compare-short-circuited
+  // Two constant-time compares joined by && / || short-circuit the second: when
+  // the first is false the second timingSafeEqual never runs, reopening the
+  // timing side-channel the constant-time compare exists to close. Evaluate each
+  // into a var, THEN combine. Two-pass, file-scoped. PASS 1 derives the CT-token
+  // set = the frozen node:crypto `timingSafeEqual` PLUS the name of any local
+  // function whose body wraps it (recovers a `_ctEq`-style helper WITHOUT
+  // hardcoding its name — a naive `timingSafeEqual && timingSafeEqual` regex
+  // would MISS the real merkle bug, which combined `_ctEq(...)` calls). PASS 2
+  // fires on TWO CT-token CALLS joined by &&/|| inside one expression, bounded
+  // away from ; { } so a wrapper DEFINITION and two separate statements
+  // combining already-evaluated vars (var o = _eq(..); var n = _eq(..); o && n)
+  // do NOT match. Rename-proof (API symbol + body-resolved wrappers), fires on a
+  // new short-circuited pair anywhere in lib.
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var stripped = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
+    if (!/\btimingSafeEqual\b/.test(stripped)) return;
+    // PASS 1: CT-token set = timingSafeEqual + wrapper fn names.
+    var toks = { timingSafeEqual: true };
+    var wrapRe = /(?:function\s+([A-Za-z_$][\w$]*)\s*\([^)]*\)|(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*function\s*\([^)]*\))\s*\{[^{}]*timingSafeEqual/g;
+    var wm;
+    while ((wm = wrapRe.exec(stripped))) { toks[wm[1] || wm[2]] = true; }
+    var alt = Object.keys(toks).sort(function (a, b) { return b.length - a.length; })
+      .map(function (t) { return t.replace(/[$]/g, "\\$&"); }).join("|");
+    var pairRe = new RegExp("\\b(?:" + alt + ")\\s*\\([^;{}]*?\\)\\s*(?:&&|\\|\\|)\\s*[^;{}]*?\\b(?:" + alt + ")\\s*\\(");
+    // PASS 2 is line-scoped (like the number-narrows scan): skip comment lines,
+    // fire on the short-circuited pair. A determined multi-line split is out of
+    // scope — the class as it appears in real code is one expression per line.
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      if (pairRe.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1,
+          content: "two constant-time compares joined by &&/|| short-circuit the second (a timing side-channel) — evaluate each into a var, then combine: " + lines[i].trim().slice(0, 80) });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "constant-time-compare-short-circuited");
+  _report("no constant-time compare is short-circuited by &&/|| (codebase-wide)", bad);
+}
+
+function testDetachedViewBufferUnguarded() {
+  // class: detached-view-buffer-unguarded
+  // Buffer.from(x.buffer, x.byteOffset, x.byteLength) over a caller-supplied
+  // view throws a RAW TypeError when the backing ArrayBuffer is detached (a
+  // transferred / structuredClone'd view), escaping the toolkit's typed-PkiError
+  // fail-closed contract at an input boundary. Every such view-coercion must be
+  // wrapped in try/catch -> a typed error (see merkle _toBuffer, cbor _asBuffer,
+  // webcrypto _toBuf). Fires on a NEW coercion anywhere in lib that is not inside
+  // an open try block, scoped to the enclosing function (the try-openings minus
+  // try-closes seen from the function start down to the call line). Rename-proof:
+  // anchored on the Buffer.from(id.buffer, id.byteOffset) API shape + the
+  // try/catch keywords, no symbol dependence. Distinct from
+  // context-node-content-deref-no-primitive-reader (single-arg Buffer.from(_.content)).
+  var COERCE = /Buffer\.from\(\s*([A-Za-z_$][\w$]*)\.buffer\s*,\s*\1\.byteOffset/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
+      if (!COERCE.test(lines[i])) continue;
+      var callIndent = (lines[i].match(/^\s*/) || [""])[0].length;
+      var scopeStart = 0;
+      for (var b = i - 1; b >= 0; b--) {
+        var ind = (lines[b].match(/^\s*/) || [""])[0].length;
+        if (/\bfunction\b/.test(lines[b]) && ind <= callIndent) { scopeStart = b; break; }
+      }
+      var scope = lines.slice(scopeStart, i + 1).join("\n");
+      var opens  = (scope.match(/\btry\s*\{/g) || []).length;
+      var closes = (scope.match(/\bcatch\b|\bfinally\b/g) || []).length;
+      if (opens - closes <= 0) {
+        bad.push({ file: rel, line: i + 1,
+          content: "Buffer.from(view.buffer, view.byteOffset, ...) outside a try throws a raw TypeError on a detached backing ArrayBuffer (a transferred / structuredClone'd view) instead of a typed PkiError — wrap the coercion and throw a domain/reason error (see merkle _toBuffer / cbor _asBuffer)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "detached-view-buffer-unguarded");
+  _report("no detached-capable Buffer.from(view.buffer, ...) coercion outside a try (codebase-wide)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -1973,6 +2143,9 @@ function run() {
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
+  testRecursionDepthCeilingMissing();
+  testConstantTimeCompareShortCircuited();
+  testDetachedViewBufferUnguarded();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testNoUnusedUnderscoreFunctions();
