@@ -2303,6 +2303,15 @@ async function testOcspCheckerStandalone() {
   var okDelegate = await mkCert({ subject: "NonCritResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 56n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), ext("1.3.6.1.4.1.99999.7", false, b.octetString(Buffer.from([1])))] });
   var o26ok = await mkOcsp({ responderID: { byName: "NonCritResponder" }, signWith: "p256", certs: [okDelegate], single: [goodSingle()] });
   check("O26 control: delegate with non-critical extension -> good", (await chk(o26ok)).status === "good");
+
+  // O27 — a delegate whose keyUsage does NOT permit digitalSignature cannot sign OCSP
+  // responses (RFC 5280 sec. 4.2.1.3), even bearing id-kp-OCSPSigning.
+  var noSigDelegate = await mkCert({ subject: "NoSigResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 57n, extensions: [kuExt([KU_CRL_SIGN]), ekuExt([EKU_OCSP_SIGNING], false)] });
+  var o27 = await mkOcsp({ responderID: { byName: "NoSigResponder" }, signWith: "p256", certs: [noSigDelegate], single: [goodSingle()] });
+  check("O27 delegate keyUsage without digitalSignature -> unknown", (await chk(o27)).status === "unknown");
+  var sigDelegate = await mkCert({ subject: "SigResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 58n, extensions: [kuExt([KU_DIGITAL_SIGNATURE]), ekuExt([EKU_OCSP_SIGNING], false)] });
+  var o27ok = await mkOcsp({ responderID: { byName: "SigResponder" }, signWith: "p256", certs: [sigDelegate], single: [goodSingle()] });
+  check("O27 control: delegate keyUsage with digitalSignature -> good", (await chk(o27ok)).status === "good");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
