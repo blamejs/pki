@@ -47,6 +47,9 @@
             "CBOR_MAX_DEPTH": {
               "kind": "number"
             },
+            "CBOR_MAX_ITEMS": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -615,6 +618,9 @@
               "kind": "number"
             },
             "CBOR_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "CBOR_MAX_ITEMS": {
               "kind": "number"
             },
             "DER_MAX_BYTES": {

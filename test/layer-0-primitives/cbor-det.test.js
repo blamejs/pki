@@ -216,6 +216,16 @@ function testConfig() {
     })());
   check("a maxDepth override up to the ceiling still decodes nested input",
     pki.cbor.decode(Buffer.concat([Buffer.alloc(100, 0x81), Buffer.from([0x00])]), { maxDepth: 200 }).majorType === 4);
+  // A high-fanout container that would allocate more nodes than the cap fails
+  // closed with cbor/too-many-items instead of exhausting memory; a small
+  // maxItems override exercises the same guard the default 1,000,000 cap applies
+  // to a multi-million-item bomb (e.g. an array declaring 16M one-byte elements).
+  check("an array exceeding maxItems throws too-many-items",
+    code(function () { pki.cbor.decode(B("83010203"), { maxItems: 2 }); }) === "cbor/too-many-items");
+  check("nested items also count toward the item cap",
+    code(function () { pki.cbor.decode(B("8181818100"), { maxItems: 3 }); }) === "cbor/too-many-items");
+  check("a container within the item cap decodes",
+    pki.cbor.decode(B("83010203"), { maxItems: 4 }).majorType === 4);
 }
 
 // Advertised-surface exercise: every public primitive is reachable by its
