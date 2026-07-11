@@ -197,11 +197,25 @@ function testJsonReader() {
   check("8d. valid numbers parse", pki.jose.parseJson('{"a":0,"b":-1.5,"c":1e10,"d":-1.5E+3,"e":0.5}').d === -1500);
 }
 
+function detach() { var ab = new ArrayBuffer(8); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] }); return b; }
+
+async function testEncodeBoundaryGuards() {
+  // The encode side must fail closed on a detached-backed Buffer (which reads as
+  // zero-length) rather than silently encoding / signing an EMPTY value.
+  check("base64url.encode rejects a detached Buffer", code(function () { pki.jose.base64url.encode(detach()); }) === "jose/bad-input");
+  var kp = await pki.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var err = null;
+  try { await pki.jose.sign({ protected: { alg: "ES256" }, payload: detach(), key: kp.privateKey }); }
+  catch (e) { err = e; }
+  check("sign rejects a detached payload (no silent empty POST-as-GET signature)", err && err.code === "jose/bad-input");
+}
+
 async function run() {
   testBase64url();
   testJsonReader();
   await testJws();
   await testThumbprint();
+  await testEncodeBoundaryGuards();
   console.log("CHECKS " + helpers.getChecks());
 }
 

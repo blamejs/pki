@@ -2214,6 +2214,62 @@ function testEveryGuardEnforced() {
 // Runner
 // ---------------------------------------------------------------------------
 
+function testBase64DecodeNotViaGuard() {
+  // class: base64-decode-not-via-guard
+  // A base64 / base64url decode of untrusted text must route through
+  // guard.encoding.base64 / .base64url. Node's Buffer.from(x, "base64"|"base64url")
+  // is LENIENT -- it silently drops the first invalid character (and everything
+  // after), accepts non-canonical trailing bits, and tolerates missing/extra
+  // padding -- so two distinct texts alias one byte string, or a malformed text
+  // decodes to a shorter, DIFFERENT value (CWE-172 / CWE-20; the wrong-key-material
+  // import class). The alphabet gate + canonical re-encode round-trip + size cap
+  // live ONLY in guard-encoding, so a bare Buffer.from base64 decode anywhere else
+  // re-inlines the fail-closed defence. (guard-shape-reinlined cannot enforce this:
+  // the discriminator is a STRING LITERAL its comment/literal strip removes; this
+  // detector scans source lines with only comment lines blanked, so the literal
+  // survives. The hex sibling stays behavioral -- Buffer.from(x,"hex") has legit
+  // non-decode uses -- see guard-encoding.js.)
+  var re = /Buffer\.from\([^,)]*,\s*"base64(?:url)?"\)/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (rel === "lib/guard-encoding.js") return;
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\*|\/\/|\/\*)/.test(lines[i])) continue;   // skip comment lines (the discriminator is a live literal)
+      if (re.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1, content: "function decodes base64 via a bare Buffer.from -- route it through guard.encoding.base64 / .base64url (the canonical, capped, fail-closed decode)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "base64-decode-not-via-guard");
+  _report("no lib file decodes base64/base64url via a bare lenient Buffer.from instead of guard.encoding", bad);
+}
+
+function testJsonParseNotViaGuard() {
+  // class: json-parse-not-via-guard
+  // JSON parsing of any input in lib must route through guard.json.parse. JSON.parse
+  // silently resolves a DUPLICATE member last-wins (the smuggling / parser-differential
+  // class, CWE-20 / CWE-436), caps neither size nor depth (CWE-770 / CWE-400), and over
+  // a Buffer substitutes U+FFFD for invalid UTF-8. The strict bounded reader lives ONLY
+  // in guard-json, so a bare JSON.parse anywhere in lib re-inlines the missing defence.
+  // JSON.parse is a builtin (rename-proof); the token is the whole detector.
+  var re = /JSON\.parse\s*\(/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (/^\s*(\*|\/\/|\/\*)/.test(lines[i])) continue;   // skip comment lines
+      if (re.test(lines[i])) {
+        bad.push({ file: rel, line: i + 1, content: "uses bare JSON.parse -- route it through guard.json.parse (bounded, fatal-UTF-8, duplicate-member-rejecting)" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "json-parse-not-via-guard");
+  _report("no lib file parses JSON via a bare JSON.parse instead of guard.json", bad);
+}
+
 function run() {
   _allViolations = [];
   testSourceHeaders();
@@ -2237,6 +2293,8 @@ function run() {
   testGuardShapeReinlined();
   testConstantTimeCompareShortCircuited();
   testEveryGuardEnforced();
+  testBase64DecodeNotViaGuard();
+  testJsonParseNotViaGuard();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testNoUnusedUnderscoreFunctions();

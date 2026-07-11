@@ -93,8 +93,24 @@ function testRejects() {
   }) === "asn1/too-deep");
   // Size cap.
   check("enforces size cap", code(function () { pki.asn1.decode(pki.asn1.build.octetString(Buffer.alloc(100)), { maxBytes: 10 }); }) === "asn1/too-large");
+  // Item cap: a dense run of tiny TLVs fans a small input into a huge eager node
+  // tree; the decoder ticks a counter per node and fails closed at the cap.
+  check("enforces item cap", code(function () {
+    var nulls = [];
+    for (var i = 0; i < 201; i++) nulls.push(pki.asn1.build.nullValue());
+    pki.asn1.decode(pki.asn1.build.sequence(nulls), { maxItems: 100 });
+  }) === "asn1/too-many-items");
+  check("item cap admits a small tree", (function () {
+    var d = pki.asn1.decode(pki.asn1.build.sequence([pki.asn1.build.nullValue(), pki.asn1.build.nullValue()]), { maxItems: 100 });
+    return d.children.length === 2;
+  })());
+  check("maxItems config-time rejects a bad value", code(function () { pki.asn1.decode(pki.asn1.build.nullValue(), { maxItems: 1.5 }); }) !== "NO-THROW");
   // OID first-arc bound.
   check("rejects OID first arc > 2", code(function () { pki.asn1.encodeOidContent("3.1.1"); }) === "oid/bad-arc");
+  // A leading-zero arc encodes to a DIFFERENT OID ("2.05.29.15" -> 2.5.29.15):
+  // the encoder must reject it as non-canonical, agreeing with oid.name (the
+  // string and DER forms of an OID must not disagree across the toolkit).
+  check("rejects OID leading-zero arc", code(function () { pki.asn1.encodeOidContent("2.05.29.15"); }) === "oid/bad-input");
 }
 
 function testIntegerAndOidCaps() {
@@ -213,6 +229,8 @@ function testBitStringUnusedBits() {
     code(function () { pki.asn1.build.bitString(Buffer.from([0xA0]), 3.5); }) === "asn1/bad-bit-string");
   check("build.bitString rejects a NaN unusedBits",
     code(function () { pki.asn1.build.bitString(Buffer.from([0xA0]), NaN); }) === "asn1/bad-bit-string");
+  check("build.bitString rejects an unusedBits above 7",
+    code(function () { pki.asn1.build.bitString(Buffer.from([0xA0]), 8); }) === "asn1/bad-bit-string");
   check("build.bitString still defaults an omitted unusedBits to 0",
     code(function () { pki.asn1.build.bitString(Buffer.from([0xA0])); }) === "NO-THROW");
 }

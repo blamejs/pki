@@ -23,6 +23,22 @@ var _tmpSeq = 0;
 
 function opensslBin() { return process.env.PKIJS_OPENSSL || "openssl"; }
 
+// OpenSSL honors the OPENSSL_CONF environment variable OVER the config compiled
+// into the binary (OPENSSLDIR). A machine-global OPENSSL_CONF left by a
+// DIFFERENT OpenSSL installation cross-contaminates the oracle: the on-PATH
+// binary then parses a config written for another major version — e.g. an
+// authorityKeyIdentifier option (`keyid:nonss`) a newer line defines but this
+// binary's v2i_AUTHORITY_KEYID rejects — and every `req -x509` fixture dies
+// before a certificate is generated. Spawn openssl with that variable stripped
+// so the binary reads its own matching config; an operator pinning a config on
+// purpose sets PKIJS_OPENSSL_CONF.
+function opensslEnv() {
+  var env = {};
+  Object.keys(process.env).forEach(function (k) { if (k !== "OPENSSL_CONF") env[k] = process.env[k]; });
+  if (process.env.PKIJS_OPENSSL_CONF) env.OPENSSL_CONF = process.env.PKIJS_OPENSSL_CONF;
+  return env;
+}
+
 // opensslSupports(pattern) — does the cross-checker's OpenSSL advertise a
 // signature algorithm matching `pattern` (case-insensitive)? Lets a fixture
 // skip a cross-check the oracle can't perform — e.g. ML-DSA / SLH-DSA need
@@ -31,7 +47,7 @@ function opensslBin() { return process.env.PKIJS_OPENSSL || "openssl"; }
 // fixture records a skip rather than failing.
 function opensslSupports(pattern) {
   try {
-    var rv = spawnSync(opensslBin(), ["list", "-signature-algorithms"], { encoding: "utf8" });
+    var rv = spawnSync(opensslBin(), ["list", "-signature-algorithms"], { encoding: "utf8", env: opensslEnv() });
     if (rv.status !== 0) return false;
     return new RegExp(pattern, "i").test(rv.stdout || "");
   } catch (_e) { return false; }
@@ -46,6 +62,7 @@ function runOpenssl(args, opts) {
   var rv = spawnSync(opensslBin(), args, {
     encoding: opts.input ? "buffer" : "utf8",
     input:    opts.input,
+    env:      opensslEnv(),
   });
   if (rv.error) throw new Error("openssl spawn failed: " + rv.error.message);
   if (opts.allowNonZero) {

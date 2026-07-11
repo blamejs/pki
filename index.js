@@ -40,6 +40,7 @@ var merkle    = require("./lib/merkle");
 var est        = require("./lib/est");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
+var trust      = require("./lib/trust");
 
 module.exports = {
   version:   constants.version,
@@ -87,6 +88,12 @@ module.exports = {
   // http-01 / dns-01 / tls-alpn-01 challenge math, and the ARI certID. A message
   // layer, not an HTTP client -- transport is the operator's to inject.
   acme:      acme,
+  // `trust` is Mozilla/NSS certdata.txt + CCADB CSV root-store ingestion --
+  // pki.trust.parseCertdata / parseCcadbCsv produce constraint-carrying trust
+  // anchors (per-purpose trust bits + per-purpose distrust-after dates the bare
+  // root list omits); pki.trust.anchor hands one to pki.path.validate. Offline:
+  // the operator supplies the text; no fetch.
+  trust:     trust,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.

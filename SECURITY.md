@@ -84,6 +84,21 @@ security-only patches after the next major releases.
   detached-backed input (a transferred / structuredClone'd view whose bytes are
   gone, so it reads as zero-length) fails closed with a typed error at the byte
   boundary instead of being processed as empty.
+- **Encoding malleability.** Every textual encoding an operator hands the
+  toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
+  transfer), hex, a JSON document, a dotted-decimal OID string — is decoded
+  strictly against its one canonical form: a padded or non-canonical base64url
+  `k`, a JSON document with a duplicate member at any depth, or an OID string
+  with a leading-zero arc (which encodes a DIFFERENT OID than the string names)
+  fails typed instead of aliasing a second spelling of the same value past a
+  verifier. JSON parsing is bounded in size and nesting and assigns `__proto__`
+  as an own property, never a prototype mutation.
+- **Decode-fanout and verify-fanout amplification.** A decoded input's element
+  count is capped independently of its byte size (`asn1/too-many-items`,
+  `cbor/*`, per-list PKCS#12 caps), and an OCSP response is capped in embedded
+  certificates before any pre-authentication signature work, so a small hostile
+  input cannot fan out into unbounded allocations or unbounded asymmetric-verify
+  work.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
@@ -91,6 +106,17 @@ security-only patches after the next major releases.
   fold), consistency reconstructs BOTH roots so a rewritten history is caught on
   the old-root leg, and the root comparison is constant-time. The only Boolean
   `false` is an honest root non-match; every malformed input throws.
+- **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
+  carries the root program's own constraints and `pki.path.validate` enforces
+  them: a leaf issued after the root's per-purpose distrust date, or a purpose
+  the root was never a trusted delegator for, fails closed. Trust metadata pairs
+  to its certificate by byte-exact issuer + serial and is cross-checked against
+  the parsed DER, so a crafted store cannot attach one root's permissions to
+  another. A partitioned CRL establishes non-revocation ONLY for the shard whose
+  issuing-distribution-point name corresponds byte-identically to the
+  certificate's own distribution point with no reason restriction — a
+  non-corresponding, reason-scoped, non-critical-IDP, or delta shard stays
+  revocation-only, and a listed serial reports revoked regardless.
 - **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
   blobs inside octet strings, where every re-decode would restart the depth cap
   from zero; the PKCS#12 parser carries one cross-decode budget over all of them

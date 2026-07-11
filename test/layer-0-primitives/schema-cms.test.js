@@ -833,6 +833,12 @@ function testAuthEnvelopedData() {
   check("authEnv: authAttrs decoded (no presence rules)", wa.authAttrs.length === 1);
   check("authEnv: authAttrsBytes raw [1] TLV", wa.authAttrsBytes[0] === 0xA1);
   check("authEnv: unauthAttrs decoded", wa.unauthAttrs.length === 1);
+  // A present content-type attribute whose value is not a valid OBJECT IDENTIFIER
+  // must surface the CMS typed verdict, not leak the raw asn1/* codec error -- the
+  // AuthEnvelopedData coherence path (RFC 5083 sec. 2.1) validates the value's full
+  // OID syntax like the SignedData / AuthenticatedData siblings.
+  check("authEnv: malformed content-type attr value rejected typed",
+    parseCode(aeCI({ authAttrs: [attribute(CT_ATTR, [b.integer(5n)])] })) === "cms/bad-content-type-attr");
   // GCM explicit ICVlen 16 + matching 16-byte mac.
   var g16 = parse(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, 16)), CT), mac: b.octetString(Buffer.alloc(16, 0x4D)) }));
   check("authEnv: GCM ICVlen 16 accepted", g16.aead.icvLen === 16 && g16.mac.length === 16);
