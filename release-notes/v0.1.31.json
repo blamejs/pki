@@ -1,0 +1,11 @@
+{
+  "version": "0.1.31",
+  "headline": "The DER format cohort and the JOSE surface graduate to stable.",
+  "summary": "A large batch of primitives that have been marked experimental while their return shapes settled are promoted to stable, so they are now covered by the stability contract and the LTS support window -- their signatures and return shapes will not change without a deprecation cycle. The graduation basis is stated per family: the governing RFCs are settled, and each primitive is proven by the toolkit's conformance-vector round-trip plus coverage-guided fuzzing. Where a mainstream implementation exists the integration harness cross-checks it (PKCS#12 against OpenSSL pkcs12, the JOSE signing surface against OpenSSL dgst); for the formats no mainstream tool emits -- RFC 5755 attribute certificates, RFC 4211 CRMF, RFC 9810 CMP, RFC 8951 CsrAttrs -- that own round-trip plus fuzzing is the basis, since an external harness oracle is unavailable. The LTS-CALENDAR graduation criterion is updated to state this explicitly. Still-hardening surfaces (path validation, the ACME message layer, the schema engine's encode direction, Certificate Transparency SCT verification) remain experimental with dated re-review decisions. No API surface, error-code set, or behavior changes -- only the documented stability status.",
+  "sections": {
+    "Changed": [
+      "pki.schema.pkcs12 / attrcert / crmf / cmp / csrattrs (parse, pemDecode, pemEncode), pki.schema.all and pki.schema.parse, and the pki.jose signing / verification / thumbprint / base64url / JSON surface graduate from experimental to stable.",
+      "The LTS-CALENDAR graduation criterion now states that a settled, well-tested format no mainstream tool implements graduates on the toolkit's own conformance-vector round-trip plus coverage-guided fuzzing, rather than on a harness oracle that does not exist."
+    ]
+  }
+}

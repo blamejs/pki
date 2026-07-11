@@ -148,10 +148,9 @@ var VALID_ALLOW_CLASSES = {
   "comment-block-coverage":        1,
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
-  "detached-view-buffer-not-via-guard": 1,
-  "constant-time-compare-not-via-guard": 1,
+  "guard-shape-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
-  "decode-maxdepth-not-via-guard": 1,
+  "guard-without-enforcement": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -2005,60 +2004,99 @@ function testNumberNarrowsUnboundedInteger() {
   _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
 }
 
-function testDetachedViewBufferNotViaGuard() {
-  // class: detached-view-buffer-not-via-guard
-  // The detached-safe byte re-view -- Buffer.from(x.buffer, x.byteOffset,
-  // x.byteLength) -- is the guard-bytes choke point (guard.bytes.view / .source).
-  // It must live ONLY in lib/guard-bytes.js. A boundary that re-inlines the
-  // re-view skips the detached-buffer fail-OPEN defence: a transferred /
-  // structuredClone'd view reads zero-length and is silently processed as EMPTY
-  // (a digest / signature / parse of nothing). Fires on the re-view SHAPE in any
-  // lib file except guard-bytes.js. Rename-proof: anchored on the Buffer.from
-  // view API shape (a `.buffer` first-arg member + a `.byteOffset` arg), no
-  // symbol; does NOT match a charset decode Buffer.from(str, "base64").
-  var SHAPE = /Buffer\.from\(\s*([A-Za-z_$][\w$]*)\.buffer\s*,\s*\1\.byteOffset/;
-  var bad = [];
-  _libFiles().forEach(function (f) {
-    var rel = _relPath(f);
-    if (rel === "lib/guard-bytes.js") return;          // the one legitimate home
-    var lines = _lines(fs.readFileSync(f, "utf8"));
-    for (var i = 0; i < lines.length; i++) {
-      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
-      if (SHAPE.test(lines[i])) {
-        bad.push({ file: rel, line: i + 1,
-          content: "the detached-safe Buffer.from(x.buffer, x.byteOffset, ...) re-view must route through guard.bytes.view / .source (lib/guard-bytes.js), not be re-inlined — inlining skips the detached-buffer fail-open defence" });
-      }
-    }
-  });
-  bad = _filterMarkers(bad, "detached-view-buffer-not-via-guard");
-  _report("the detached-safe byte re-view lives only in guard-bytes (codebase-wide)", bad);
+// Split a source file into top-level function regions [{ name, startLine, body }].
+// A region spans from one function declaration to the next; a nested closure is
+// lumped into its parent region -- a re-inline in a closure is still inside the
+// parent, which is what the guard-shape walk wants.
+function _functionRegions(src) {
+  var lines = _lines(src);
+  var starts = [];
+  for (var i = 0; i < lines.length; i++) {
+    var m = lines[i].match(/^\s*(?:async\s+)?function\s+([A-Za-z_$][\w$]*)\s*\(/) ||
+            lines[i].match(/^\s*(?:var|const|let)\s+([A-Za-z_$][\w$]*)\s*=\s*(?:async\s+)?function\b/) ||
+            lines[i].match(/^\s*([A-Za-z_$][\w$.]*)\s*=\s*(?:async\s+)?function\b/);
+    if (m) starts.push({ name: m[1], line: i });
+  }
+  var out = [];
+  for (var k = 0; k < starts.length; k++) {
+    var s = starts[k].line;
+    var e = (k + 1 < starts.length) ? starts[k + 1].line : lines.length;
+    out.push({ name: starts[k].name, startLine: s + 1, body: lines.slice(s, e).join("\n") });
+  }
+  return out;
 }
 
-function testConstantTimeCompareNotViaGuard() {
-  // class: constant-time-compare-not-via-guard
-  // The constant-time byte comparison (node:crypto timingSafeEqual) is the
-  // guard-crypto choke point (guard.crypto.constantTimeEqual). It must live ONLY
-  // in lib/guard-crypto.js, where the public length gate and the equal-length
-  // compare are paired correctly. A verify path calling timingSafeEqual directly
-  // risks a length-mismatch RangeError or an inconsistent / short-circuited gate.
-  // Fires on a timingSafeEqual CALL in any lib file except guard-crypto.js.
-  // Anchored on the frozen node:crypto API symbol (the call form, not comment
-  // prose); does NOT match Buffer.compare (SET-OF / map-key ordering).
-  var bad = [];
+function testGuardShapeReinlined() {
+  // class: guard-shape-reinlined
+  // Function-granular, DERIVED guard enforcement. Each shape-enforced guard
+  // declares its characteristic code pattern ON the guard function:
+  //   @guard-shape <regex>        -- a pattern the guard encapsulates (repeat = ALL must match)
+  //   @guard-via   <regex>        -- optional: a routing call; a match that ALSO has this ROUTES
+  //   @guard-scope function|file  -- default function; `file` for a cross-function vector
+  // This walks EVERY function (or file) of EVERY lib module and flags one that
+  // re-inlines a guard's shape instead of routing through the guard. The shape
+  // lives ON the guard (single source of truth -- it cannot drift from what the
+  // guard actually does), and a NEW guard that declares @guard-shape is enforced
+  // automatically, with no hand-written detector. Together with
+  // testEveryGuardEnforced (which requires the @enforced-by declaration), a guard
+  // can neither ship without enforcement nor let its enforcement drift from its
+  // implementation. This replaces the hand-written detached-view-buffer /
+  // constant-time-compare / decode-maxdepth detectors -- their shapes now live on
+  // guard-bytes.view, guard-crypto.constantTimeEqual, guard-limits.depthCap.
+  var guards = [];
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
-    if (rel === "lib/guard-crypto.js") return;         // the one legitimate home
+    if (!/^lib\/guard-[a-z-]+\.js$/.test(rel) || rel === "lib/guard-all.js") return;
     var lines = _lines(fs.readFileSync(f, "utf8"));
     for (var i = 0; i < lines.length; i++) {
-      if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
-      if (/\.timingSafeEqual\s*\(/.test(lines[i])) {
-        bad.push({ file: rel, line: i + 1,
-          content: "constant-time compare (timingSafeEqual) must route through guard.crypto.constantTimeEqual (lib/guard-crypto.js), not be called directly — the length gate and the compare belong in one place" });
+      var fm = lines[i].match(/^function\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (!fm) continue;
+      var shapes = [], via = null, scope = "function";
+      for (var b = i - 1; b >= 0 && /^\s*(?:\/\/|\*|\/\*)/.test(lines[b]); b--) {
+        var sm = lines[b].match(/@guard-shape\s+(.+?)\s*$/); if (sm) shapes.unshift(sm[1]);
+        var vm = lines[b].match(/@guard-via\s+(.+?)\s*$/);   if (vm) via = vm[1];
+        var cm = lines[b].match(/@guard-scope\s+(\w+)/);     if (cm) scope = cm[1];
+      }
+      if (shapes.length) {
+        var mod = rel.replace(/^lib\/guard-([a-z-]+)\.js$/, "$1");
+        guards.push({ module: rel, ref: "guard." + mod + "." + fm[1], shapes: shapes, via: via, scope: scope });
       }
     }
   });
-  bad = _filterMarkers(bad, "constant-time-compare-not-via-guard");
-  _report("the constant-time compare lives only in guard-crypto (codebase-wide)", bad);
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var src = fs.readFileSync(f, "utf8");
+    var fileBody = _stripCommentsAndLiterals(src);
+    var regions = null;
+    guards.forEach(function (g) {
+      if (g.module === rel) return;   // the guard's own module is the shape's home
+      function isHit(body) {
+        if (!g.shapes.every(function (s) { return new RegExp(s).test(body); })) return false;
+        if (g.via && new RegExp(g.via).test(body)) return false;   // routes through the guard
+        return true;
+      }
+      if (g.scope === "file") {
+        if (!isHit(fileBody)) return;
+        var lines = _lines(src), anchor = 1;
+        for (var i = 0; i < lines.length; i++) {
+          if (!/^\s*(\/\/|\*)/.test(lines[i]) && new RegExp(g.shapes[0]).test(lines[i])) { anchor = i + 1; break; }
+        }
+        bad.push({ file: rel, line: anchor,
+          content: "re-inlines the " + g.ref + " shape (file-scope vector) — route the pattern through " + g.ref });
+        return;
+      }
+      if (regions === null) regions = _functionRegions(src);
+      regions.forEach(function (r) {
+        if (isHit(_stripCommentsAndLiterals(r.body))) {
+          bad.push({ file: rel, line: r.startLine,
+            content: "function `" + r.name + "` re-inlines the " + g.ref + " shape — route it through " + g.ref + " (the one place its fail-closed defence lives)" });
+        }
+      });
+    });
+  });
+  bad = _filterMarkers(bad, "guard-shape-reinlined");
+  _report("no lib function re-inlines a guard shape instead of routing through the guard (function-granular, derived)", bad);
 }
 
 function testConstantTimeCompareShortCircuited() {
@@ -2103,38 +2141,59 @@ function testConstantTimeCompareShortCircuited() {
   _report("no constant-time compare is short-circuited by &&/|| (codebase-wide)", bad);
 }
 
-function testDecodeMaxdepthNotViaGuard() {
-  // class: decode-maxdepth-not-via-guard
-  // A recursive-descent decoder that threads an OPERATOR-tunable maxDepth into
-  // its recursion must route the cap through guard.limits.depthCap, which refuses
-  // a maxDepth above the stack-safe ceiling (so a raised cap cannot overflow the
-  // native call stack into a raw RangeError). Fires file-wide on a decoder that
-  // (a) reads opts.maxDepth AND (b) self-recurses on `depth + 1` but (c) does NOT
-  // call guard.limits.depthCap -- whether it forgot the ceiling or re-inlined it
-  // (both leave the ceiling outside its single home). Rename-proof: anchored on
-  // the public @opts name `maxDepth`, the recursion shape, and the guard contract
-  // method `depthCap`. Spares a schema module that merely FORWARDS opts.maxDepth
-  // into asn1.decode without owning any recursion (the guard lives in the callee).
+function testEveryGuardEnforced() {
+  // class: guard-without-enforcement
+  // Anti-drift META-check -- the guard-family analog of the @primitive comment-
+  // block gate. It WALKS every EXPORTED function of every lib/guard-*.js module
+  // (the orchestrator guard-all excepted) and requires each to declare, in its doc
+  // comment, HOW its shape is kept from being re-inlined at a boundary: either
+  //   @enforced-by <detector-class>          (a codebase-patterns enforcement detector), or
+  //   @enforced-by behavioral -- <reason>    (a RED vector is the guard; no rename-proof shape).
+  // A guard function with NO such tag is DRIFT: a fresh guard could ship whose
+  // shape a boundary re-inlines with nothing catching it. A NAMED detector-class
+  // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this
+  // file -- so the tag cannot reference a detector that does not exist. This is why
+  // adding guard-range / guard-name / ... cannot silently skip its enforcement.
+  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
   var bad = [];
-  _libFiles().forEach(function (f) {
+  var guardFiles = _libFiles().filter(function (f) {
     var rel = _relPath(f);
-    var src = _stripCommentsAndLiterals(fs.readFileSync(f, "utf8"));
-    var readsKnob    = /\bopts\.maxDepth\b/.test(src);
-    var selfRecurses = /\bdepth\s*\+\s*1\b/.test(src);
-    var viaGuard     = /\.depthCap\s*\(/.test(src);
-    if (readsKnob && selfRecurses && !viaGuard) {
-      var lines = _lines(fs.readFileSync(f, "utf8"));
-      var anchor = 1;
-      for (var i = 0; i < lines.length; i++) {
-        if (/^\s*(\/\/|\*)/.test(lines[i])) continue;
-        if (/\bopts\.maxDepth\b/.test(lines[i])) { anchor = i + 1; break; }
+    return /^lib\/guard-[a-z-]+\.js$/.test(rel) && rel !== "lib/guard-all.js";
+  });
+  guardFiles.forEach(function (f) {
+    var rel = _relPath(f);
+    var src = fs.readFileSync(f, "utf8");
+    var lines = _lines(src);
+    // Exported guard functions = the VALUES of module.exports = { key: fn, ... }.
+    var expBlock = src.match(/module\.exports\s*=\s*\{([\s\S]*?)\}/);
+    var exported = Object.create(null);
+    if (expBlock) {
+      var er = /[A-Za-z_$][\w$]*\s*:\s*([A-Za-z_$][\w$]*)/g, em;
+      while ((em = er.exec(expBlock[1]))) exported[em[1]] = true;
+    }
+    for (var i = 0; i < lines.length; i++) {
+      var m = lines[i].match(/^function\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (!m || !exported[m[1]]) continue;
+      var fn = m[1];
+      // Walk up the contiguous comment block for the @enforced-by tag.
+      var tag = null;
+      for (var b = i - 1; b >= 0 && /^\s*(?:\/\/|\*|\/\*)/.test(lines[b]); b--) {
+        var tm = lines[b].match(/@enforced-by\s+(\S+)/);
+        if (tm) { tag = tm[1]; break; }
       }
-      bad.push({ file: rel, line: anchor,
-        content: "reads opts.maxDepth and self-recurses on depth+1 without routing the cap through guard.limits.depthCap — a raised maxDepth would overflow the stack (RangeError); use guard.limits.depthCap so the stack-safe ceiling is enforced" });
+      if (!tag) {
+        bad.push({ file: rel, line: i + 1,
+          content: "guard function `" + fn + "` has no `@enforced-by` tag -- declare its codebase-patterns enforcement detector, or `@enforced-by behavioral -- <reason>` if a RED vector is the guard (no silent drift: a guard shape a boundary could re-inline must be caught somewhere)" });
+        continue;
+      }
+      if (tag !== "behavioral" && selfSrc.indexOf('_filterMarkers(bad, "' + tag + '")') === -1) {
+        bad.push({ file: rel, line: i + 1,
+          content: "guard function `" + fn + "` declares `@enforced-by " + tag + "` but no detector reporting that class exists in codebase-patterns.test.js -- a stale or typo'd enforcement reference" });
+      }
     }
   });
-  bad = _filterMarkers(bad, "decode-maxdepth-not-via-guard");
-  _report("every recursive decoder routes its maxDepth through guard.limits.depthCap (codebase-wide)", bad);
+  bad = _filterMarkers(bad, "guard-without-enforcement");
+  _report("every guard function declares its codebase-patterns enforcement (@enforced-by)", bad);
 }
 
 // ---------------------------------------------------------------------------
@@ -2161,10 +2220,9 @@ function run() {
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
-  testDetachedViewBufferNotViaGuard();
-  testConstantTimeCompareNotViaGuard();
+  testGuardShapeReinlined();
   testConstantTimeCompareShortCircuited();
-  testDecodeMaxdepthNotViaGuard();
+  testEveryGuardEnforced();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testNoUnusedUnderscoreFunctions();

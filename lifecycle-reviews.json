@@ -11,72 +11,6 @@
     "reviewedAt": "0.1.30",
     "reviewBy": "0.1.36"
   },
-  "pki.schema.attrcert.parse": {
-    "decision": "keep-experimental",
-    "reason": "The RFC 5755 attribute-certificate parser is not yet interop-proven — OpenSSL cannot emit RFC 5755 attribute certificates, so no independent oracle round-trips a structure it decodes — and its return shape is not frozen. It is part of the attribute-cert / CRMF / CMP format cohort the schema.all and schema.parse graduation waits on. Graduate once an independent implementation validates a structure it decodes.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.attrcert.pemDecode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the same attribute-certificate parser whose return shape is not yet frozen (no independent oracle emits RFC 5755 attribute certificates). Graduate alongside pki.schema.attrcert.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.attrcert.pemEncode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the same attribute-certificate parser whose return shape is not yet frozen (no independent oracle emits RFC 5755 attribute certificates). Graduate alongside pki.schema.attrcert.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.all": {
-    "decision": "keep-experimental",
-    "reason": "The format enumerator routes to the still-experimental attribute-cert, CRMF, and CMP parsers; marking it stable would freeze their return shapes and continued registration into a stable contract. Graduate once every routed format is stable.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.parse": {
-    "decision": "keep-experimental",
-    "reason": "The auto-routing dispatcher's stable contract would include the still-experimental attribute-cert, CRMF, and CMP return shapes it routes to, so an allowed change to any of those would break callers of a stable schema.parse. Graduate once every routed format is stable.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.crmf.parse": {
-    "decision": "keep-experimental",
-    "reason": "The RFC 4211 CertReqMessages parser is not yet interop-proven against an independent CRMF/CMP implementation in the integration harness (OpenSSL has no offline CRMF generator), so its return shape is not frozen. Part of the same format cohort schema.all / schema.parse graduation waits on. Graduate once an external implementation validates a request it decodes.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.crmf.pemDecode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the same CRMF parser whose return shape is not yet frozen (no cross-implementation interop round-trip in the harness). Graduate alongside pki.schema.crmf.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.crmf.pemEncode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the same CRMF parser whose return shape is not yet frozen (no cross-implementation interop round-trip in the harness). Graduate alongside pki.schema.crmf.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.cmp.parse": {
-    "decision": "keep-experimental",
-    "reason": "The RFC 9810 PKIMessage parser is not yet interop-proven — OpenSSL's cmp subcommand is client-only and needs a live server as the oracle peer, so no offline cross-check round-trips a message it decodes — and its 27-arm body return shape is not frozen. Part of the format cohort schema.all / schema.parse graduation waits on. Graduate once an independent implementation validates a message it decodes.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.cmp.pemDecode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the same CMP parser whose return shape is not yet frozen (no offline cross-implementation oracle). Graduate alongside pki.schema.cmp.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.cmp.pemEncode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the same CMP parser whose return shape is not yet frozen (no offline cross-implementation oracle). Graduate alongside pki.schema.cmp.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
   "pki.schema.engine.encode": {
     "decision": "keep-experimental",
     "reason": "The schema engine's encode direction backs the round-trip tests but has no external consumer that pins its API; the combinator surface is still absorbing new leaves. Graduate once the combinator set is settled and an operator-facing encode path depends on it.",
@@ -86,24 +20,6 @@
   "pki.schema.engine.embeddedDer": {
     "decision": "keep-experimental",
     "reason": "The embedded-DER leaf is part of the still-settling engine combinator surface; it has no external consumer pinning its return shape. Graduate alongside pki.schema.engine.encode once the leaf set is settled.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.pkcs12.parse": {
-    "decision": "keep-experimental",
-    "reason": "An OpenSSL `pkcs12 -export` round-trip now covers this parser in the integration harness, so its interop blocker is cleared; graduation is held for a deliberate batched stabilization pass with the rest of the format cohort (attribute-cert, CRMF, CMP) so schema.all / schema.parse can graduate together rather than piecemeal.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.pkcs12.pemDecode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the pkcs12 parser held for the batched format-cohort stabilization pass. Graduate alongside pki.schema.pkcs12.parse.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
-  },
-  "pki.schema.pkcs12.pemEncode": {
-    "decision": "keep-experimental",
-    "reason": "Rides the pkcs12 parser held for the batched format-cohort stabilization pass. Graduate alongside pki.schema.pkcs12.parse.",
     "reviewedAt": "0.1.30",
     "reviewBy": "0.1.36"
   },
@@ -173,10 +89,130 @@
     "reviewedAt": "0.1.30",
     "reviewBy": "0.1.36"
   },
-  "pki.schema.csrattrs.parse": {
+  "pki.acme.assertTransition": {
     "decision": "keep-experimental",
-    "reason": "The RFC 8951 CsrAttrs decoder is not yet interop-proven -- no OpenSSL/NSS oracle emits a CsrAttrs structure the harness round-trips (auto-interop flags this). Graduate once an interop fixture exercises it.",
-    "reviewedAt": "0.1.30",
-    "reviewBy": "0.1.36"
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.validateProblem": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.validate": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.identify": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.keyAuthorization": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.http01": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.dns01": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.tlsAlpn01Extension": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.verifyTlsAlpn01": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.postAsGet": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.newAccount": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.externalAccountBinding": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.newOrder": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.finalize": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.challengeResponse": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.deactivate": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.revokeCert": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.keyChange": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.ariCertId": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.parseAriCertId": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
+  },
+  "pki.acme.validateRenewalInfo": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
+    "reviewedAt": "0.1.31",
+    "reviewBy": "0.1.37"
   }
 }

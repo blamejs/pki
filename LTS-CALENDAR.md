@@ -34,7 +34,7 @@ Primitives documented `@status experimental` (shown as "experimental" on each wi
 
 `experimental → stable → deprecated → removed` is enforced by a release gate so a primitive can't sit `experimental` forever by inertia:
 
-- **Graduation criterion.** A primitive becomes `stable` once its governing standard is settled **and** it is interop-proven through the integration harness — not on a timer.
+- **Graduation criterion.** A primitive becomes `stable` once its governing standard is settled **and** its correctness is proven — through the integration harness against an independent implementation where one exists, or, for a format no mainstream tool implements (RFC 5755 attribute certificates, RFC 4211 CRMF, RFC 9810 CMP, RFC 8951 CsrAttrs), through the toolkit's own conformance-vector round-trip plus coverage-guided fuzzing, since an external harness oracle is unavailable. Requiring a harness oracle that does not exist would keep a settled, well-tested niche format experimental forever. The graduation basis is stated in the release notes. It is not a timer.
 - **The timer forces the decision.** After a primitive has shipped `experimental` for several releases, the gate requires an explicit call: either graduate it to `stable`, or record a dated `keep-experimental` decision (with a reason and a future re-review version) in `lifecycle-reviews.json`. Silence fails the release. This is the driver — a conscious decision is recorded every cycle.
 - **Deprecation is bounded.** A `deprecated` primitive must declare `@deprecated <remove-by-version>`; the gate fails once that version ships, so a deprecation is actually removed rather than lingering (Hard Rule #6: deprecation warnings ship ≥1 minor before removal).
 
