@@ -106,5 +106,29 @@
     "reason": "Reconstructs the RFC 6962 digitally-signed structure that an SCT signature covers; it is unverified against an independent CT verifier end-to-end, the same interop gap as pki.ct.parseSctList. Graduate alongside pki.ct.parseSctList.",
     "reviewedAt": "0.1.26",
     "reviewBy": "0.1.30"
+  },
+  "pki.schema.smime.parseSigningCertificate": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 5035 / RFC 8551 S/MIME ESS SigningCertificate decoder is not yet interop-proven: the openssl-cms oracle for the ESS signing-certificate attribute is available but no fixtures row is registered in the integration harness yet (auto-interop.test.js flags exactly this), so no independent implementation round-trips a structure it decodes. Graduate once an interop fixtures row exercises an ESS attribute through OpenSSL.",
+    "reviewedAt": "0.1.28",
+    "reviewBy": "0.1.34"
+  },
+  "pki.schema.smime.parseSigningCertificateV2": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 5035 ESS SigningCertificateV2 decoder rides the same not-yet-registered ESS interop fixtures row as pki.schema.smime.parseSigningCertificate. Graduate alongside it once the OpenSSL round-trip lands.",
+    "reviewedAt": "0.1.28",
+    "reviewBy": "0.1.34"
+  },
+  "pki.schema.smime.parseSmimeCapabilities": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8551 SMIMECapabilities decoder's return shape is part of the S/MIME ESS attribute cohort that is not yet independently interop-verified (no OpenSSL/NSS round-trip of the attribute in the harness). Graduate alongside the ESS interop fixtures row.",
+    "reviewedAt": "0.1.28",
+    "reviewBy": "0.1.34"
+  },
+  "pki.schema.smime.decodeAttribute": {
+    "decision": "keep-experimental",
+    "reason": "The OID-dispatch entry that routes a CMS attribute to the ESS / SMIMECapabilities decoders; its return shape is frozen only once those decoders are interop-proven. Graduate alongside the ESS interop fixtures row.",
+    "reviewedAt": "0.1.28",
+    "reviewBy": "0.1.34"
   }
 }

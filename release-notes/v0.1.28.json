@@ -1,0 +1,14 @@
+{
+  "version": "0.1.28",
+  "headline": "Merkle transparency proof verification joins the toolkit as pki.merkle.",
+  "summary": "pki.merkle is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core -- the primitive a static Certificate Transparency log client, a Merkle Tree Certificates relying party, and a sigstore / Rekor inclusion check all compose. It is pure verification over SHA-256 with no new cryptography: leafHash, nodeHash, and emptyRootHash build the tree hashes with the leaf (0x00) and node (0x01) domain-separation prefixes that stop the second-preimage swap, and verifyInclusion / verifyConsistency fold an audit or consistency proof and constant-time-compare the reconstructed root to a trusted checkpoint root. It is fail-closed: a malformed tree coordinate, an out-of-range index, an inverted consistency window, a wrong hash length, or a proof whose node count does not match the tree geometry throws a typed merkle/* error; the only Boolean result is the final root comparison, and a false from verifyInclusion means 'not proven present against this root', never 'validly absent'. verifyConsistency reconstructs both the old and the new root, so a proof that rebuilds a valid new root from a rewritten history is caught on the old-root leg. Tree coordinates are uint64, carried as BigInt so a large index is never narrowed. Hashing is synchronous; the module opens no network connection.",
+  "sections": {
+    "Added": [
+      "pki.merkle.leafHash / nodeHash / emptyRootHash -- the RFC 6962 / RFC 9162 tree hashes: a leaf is SHA-256(0x00 || entry), an interior node is SHA-256(0x01 || left || right), the empty tree is SHA-256(\"\"). The domain-separation prefixes are applied unconditionally.",
+      "pki.merkle.verifyInclusion({ leafIndex, treeSize, leafHash, proof, rootHash }) -- verify an RFC 6962 / RFC 9162 audit proof by folding the leaf up the audit path and constant-time-comparing the reconstructed root to a trusted root. Returns true only when the proof binds the leaf to the root.",
+      "pki.merkle.verifyConsistency({ oldSize, newSize, oldRoot, newRoot, proof }) -- verify an append-only consistency proof by reconstructing BOTH the old and the new root and constant-time-comparing each; the append-only guarantee lives in the old-root leg.",
+      "The error taxonomy gains MerkleError (merkle/*). A node-count ceiling (C.LIMITS.MERKLE_MAX_PROOF_NODES) rejects a pathologically long proof before any hashing; the precise per-proof guard is the geometry check in each verifier.",
+      "Fuzz target merkle-verify (both fold algorithms and the hash producers over adversarial coordinates, hashes, and proofs) joins the per-PR and nightly fuzz matrices with a seed corpus."
+    ]
+  }
+}

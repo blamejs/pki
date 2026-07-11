@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.27",
+  "packageVersion": "0.1.28",
   "surface": {
     "C": {
       "kind": "object",
@@ -66,6 +66,9 @@
               "kind": "number"
             },
             "MAX_DECODE_DEPTH_CEILING": {
+              "kind": "number"
+            },
+            "MERKLE_MAX_PROOF_NODES": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -641,6 +644,9 @@
             "MAX_DECODE_DEPTH_CEILING": {
               "kind": "number"
             },
+            "MERKLE_MAX_PROOF_NODES": {
+              "kind": "number"
+            },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
               "kind": "number"
             },
@@ -823,6 +829,10 @@
           "kind": "function",
           "arity": 3
         },
+        "MerkleError": {
+          "kind": "function",
+          "arity": 3
+        },
         "OcspError": {
           "kind": "function",
           "arity": 3
@@ -965,6 +975,31 @@
         "verify": {
           "kind": "function",
           "arity": 2
+        }
+      }
+    },
+    "merkle": {
+      "kind": "object",
+      "members": {
+        "emptyRootHash": {
+          "kind": "function",
+          "arity": 0
+        },
+        "leafHash": {
+          "kind": "function",
+          "arity": 1
+        },
+        "nodeHash": {
+          "kind": "function",
+          "arity": 2
+        },
+        "verifyConsistency": {
+          "kind": "function",
+          "arity": 1
+        },
+        "verifyInclusion": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -1501,6 +1536,11 @@
     "pki.jose.verify": "0.1.25",
     "pki.jose.sign": "0.1.25",
     "pki.jose.thumbprint": "0.1.25",
+    "pki.merkle.leafHash": "0.1.28",
+    "pki.merkle.nodeHash": "0.1.28",
+    "pki.merkle.emptyRootHash": "0.1.28",
+    "pki.merkle.verifyInclusion": "0.1.28",
+    "pki.merkle.verifyConsistency": "0.1.28",
     "pki.oid.name": "0.1.0",
     "pki.oid.register": "0.1.0",
     "pki.oid.registerFamily": "0.1.2",

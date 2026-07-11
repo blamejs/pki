@@ -36,6 +36,7 @@ var webcrypto = require("./lib/webcrypto");
 var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
+var merkle    = require("./lib/merkle");
 var est        = require("./lib/est");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
@@ -65,6 +66,12 @@ module.exports = {
   // SCT-list extension a certificate / OCSP response carries; the signature is
   // surfaced raw for external verification (pki.ct.reconstructSignedData).
   ct:        ct,
+  // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
+  // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
+  // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and
+  // verifyConsistency fold an audit / consistency proof and constant-time-
+  // compare to a checkpoint root. Pure sync hashing, fail-closed, transport-free.
+  merkle:    merkle,
   // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the
   // transport-agnostic client codecs (base64 transfer, multipart splitter),
   // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,
