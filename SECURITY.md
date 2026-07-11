@@ -69,6 +69,12 @@ security-only patches after the next major releases.
   where DER forbids them, and trailing bytes after the top-level value — with a
   typed `Asn1Error`. Malformed input is bounded work with a permanent verdict, not
   a stack overflow or a half-parsed object.
+- **Adversarial CBOR crashing the parser.** The `pki.cbor` decoder applies the
+  same posture to RFC 8949 core-deterministic CBOR: size, depth, and per-bignum
+  byte caps before the walk, and a typed `CborError` on every non-canonical shape
+  — an indefinite length, a non-minimal (preferred) argument, out-of-order or
+  duplicate map keys, a non-shortest or non-canonical-NaN float, ill-formed UTF-8,
+  or trailing bytes. There is no lenient mode.
 - **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
   blobs inside octet strings, where every re-decode would restart the depth cap
   from zero; the PKCS#12 parser carries one cross-decode budget over all of them

@@ -199,6 +199,7 @@ is callable today; nothing below is a stub.
 | Namespace | What it does |
 |---|---|
 | `pki.asn1` | Strict, bounded DER codec — `decode` (zero-copy node tree), `encode`, `build.*` canonical-DER value builders, `read.*` typed readers, `TAGS`, OID-content encode/decode |
+| `pki.cbor` | Strict, bounded RFC 8949 deterministic CBOR codec — `decode` (zero-copy node tree) + `read.*` typed leaf readers, fail-closed on every non-canonical shape (indefinite length, non-minimal argument, unsorted / duplicate map keys, non-shortest float, trailing bytes) |
 | `pki.oid` | Two-way OID ↔ name registry — `name`, `byName`, `register`, `toArcs`/`fromArcs`, `toDER`/`fromDER`; seeded with RFC 5280 + NIST PQC arcs |
 | `pki.webcrypto` | A W3C WebCrypto (`SubtleCrypto`) engine over `node:crypto` — `sign`/`verify`/`encrypt`/`decrypt`/`deriveBits`/`digest`/`generateKey`/`importKey`/`exportKey` across RSA, ECDSA, ECDH, Ed25519/Ed448, AES, HMAC, HKDF, PBKDF2, SHA — **and** post-quantum ML-DSA-44/65/87 and SLH-DSA signatures, plus ML-KEM-512/768/1024 key generation (KEM encapsulation on the roadmap). Zero-dependency, OpenSSL-interoperable |
 | `pki.schema` | The schema family — `parse` detects which PKI format DER / PEM encodes and routes to the right parser, `all` enumerates the registered formats, and the engine + per-format members are grouped here |

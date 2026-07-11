@@ -109,7 +109,7 @@ Path validation's fastest-growing consumers are attestation chains, and the Node
 
 ## Alternative encodings
 
-- **C509 CBOR certificates** — *Under design.* A CBOR encoding of the X.509 model the toolkit already parses, built on a new strict deterministic-CBOR codec (a sibling of the DER codec, same fail-closed discipline) that also opens COSE / CWT / EAT. draft-ietf-cose-cbor-encoded-cert; RFC 8949 §4.2.
+- **C509 CBOR certificates** — *Codec shipped; profile under design.* The strict deterministic-CBOR codec the profile builds on shipped as `pki.cbor` (RFC 8949 §4.2 core deterministic, a fail-closed sibling of the DER codec that also opens COSE / CWT / EAT). The C509 certificate profile itself — a CBOR encoding of the X.509 model the toolkit already parses — remains under design against draft-ietf-cose-cbor-encoded-cert.
 
 ## Assurance and interoperability
 

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.1.26",
+  "packageVersion": "0.1.27",
   "surface": {
     "C": {
       "kind": "object",
@@ -38,6 +38,18 @@
             "BER_MAX_STRING_NESTING": {
               "kind": "number"
             },
+            "CBOR_MAX_BIGUINT_BYTES": {
+              "kind": "number"
+            },
+            "CBOR_MAX_BYTES": {
+              "kind": "number"
+            },
+            "CBOR_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "CBOR_MAX_ITEMS": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -51,6 +63,9 @@
               "kind": "number"
             },
             "JSON_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "MAX_DECODE_DEPTH_CEILING": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -490,6 +505,76 @@
         }
       }
     },
+    "cbor": {
+      "kind": "object",
+      "members": {
+        "decode": {
+          "kind": "function",
+          "arity": 2
+        },
+        "read": {
+          "kind": "object",
+          "members": {
+            "array": {
+              "kind": "function",
+              "arity": 1
+            },
+            "biguint": {
+              "kind": "function",
+              "arity": 1
+            },
+            "boolean": {
+              "kind": "function",
+              "arity": 1
+            },
+            "byteString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "float": {
+              "kind": "function",
+              "arity": 1
+            },
+            "int": {
+              "kind": "function",
+              "arity": 1
+            },
+            "map": {
+              "kind": "function",
+              "arity": 1
+            },
+            "nint": {
+              "kind": "function",
+              "arity": 1
+            },
+            "nullValue": {
+              "kind": "function",
+              "arity": 1
+            },
+            "oid": {
+              "kind": "function",
+              "arity": 1
+            },
+            "textString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "time": {
+              "kind": "function",
+              "arity": 1
+            },
+            "uint": {
+              "kind": "function",
+              "arity": 1
+            },
+            "undefinedValue": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        }
+      }
+    },
     "constants": {
       "kind": "object",
       "members": {
@@ -526,6 +611,18 @@
             "BER_MAX_STRING_NESTING": {
               "kind": "number"
             },
+            "CBOR_MAX_BIGUINT_BYTES": {
+              "kind": "number"
+            },
+            "CBOR_MAX_BYTES": {
+              "kind": "number"
+            },
+            "CBOR_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "CBOR_MAX_ITEMS": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -539,6 +636,9 @@
               "kind": "number"
             },
             "JSON_MAX_DEPTH": {
+              "kind": "number"
+            },
+            "MAX_DECODE_DEPTH_CEILING": {
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
@@ -672,6 +772,10 @@
           "arity": 3
         },
         "AttrCertError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "CborError": {
           "kind": "function",
           "arity": 3
         },
@@ -1364,6 +1468,21 @@
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",
     "pki.asn1.build": "0.1.0",
+    "pki.cbor.decode": "0.1.27",
+    "pki.cbor.read.uint": "0.1.27",
+    "pki.cbor.read.nint": "0.1.27",
+    "pki.cbor.read.int": "0.1.27",
+    "pki.cbor.read.byteString": "0.1.27",
+    "pki.cbor.read.textString": "0.1.27",
+    "pki.cbor.read.array": "0.1.27",
+    "pki.cbor.read.map": "0.1.27",
+    "pki.cbor.read.boolean": "0.1.27",
+    "pki.cbor.read.nullValue": "0.1.27",
+    "pki.cbor.read.undefinedValue": "0.1.27",
+    "pki.cbor.read.float": "0.1.27",
+    "pki.cbor.read.biguint": "0.1.27",
+    "pki.cbor.read.time": "0.1.27",
+    "pki.cbor.read.oid": "0.1.27",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.ct.parseSctList": "0.1.20",
