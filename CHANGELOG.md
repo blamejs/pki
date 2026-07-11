@@ -6,12 +6,12 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.1.29 — 2026-07-11
 
-A detached-backed BufferSource now fails closed with a typed error across the CBOR and WebCrypto input paths.
+A detached-backed BufferSource now fails closed with a typed error at every byte-input boundary.
 
 ### Fixed
 
-- pki.cbor.decode now rejects a detached-backed Uint8Array (a transferred / structuredClone'd view) with a typed cbor/not-buffer error instead of a raw TypeError from the byte walk.
-- The pki.webcrypto digest / sign / verify input coercion and getRandomValues now reject a detached-backed BufferSource with a typed webcrypto/data error instead of a raw TypeError. The underlying byte-view failure is threaded as the error cause on both paths.
+- pki.webcrypto digest / sign / verify no longer silently process a detached-backed Buffer as EMPTY input (a fail-open where a transferred backing ArrayBuffer left the view zero-length); a detached BufferSource is now rejected with a typed webcrypto/data error, as is getRandomValues.
+- pki.asn1.decode, pki.cbor.decode, and pki.ct.parseSctList reject a detached-backed Buffer or view with a typed error (asn1/not-buffer, cbor/not-buffer, ct/bad-input) instead of a raw TypeError or a misleading truncated-input verdict. The underlying byte-view failure is threaded as the error cause.
 
 ## v0.1.28 — 2026-07-10
 

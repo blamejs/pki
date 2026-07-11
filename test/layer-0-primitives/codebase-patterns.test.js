@@ -1762,6 +1762,32 @@ function testNoDuplicateCodeBlocks() {
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
     },
+    {
+      // Byte-input coercion guards: every input boundary that accepts a caller-
+      // supplied Buffer / Uint8Array coerces it to a Buffer VIEW through the same
+      // fail-closed re-view -- Buffer.from(x.buffer, x.byteOffset, x.byteLength)
+      // in a try/catch -- so a detached backing ArrayBuffer (a transferred /
+      // structuredClone'd view, which reads as zero-length and would otherwise be
+      // hashed / decoded as EMPTY) fails closed here instead of slipping through.
+      // The guarded re-view is deliberately IDENTICAL across every boundary so the
+      // detached-buffer defense cannot diverge, but each MUST throw its own
+      // module's typed fail-closed error (asn1/not-buffer, cbor/not-buffer,
+      // ct/bad-input, webcrypto/data, merkle/bad-input) -- the contract that keeps
+      // them per-module. A shared exported helper would leak onto the public
+      // pki.asn1 surface (index.js re-exports the whole codec object) and a new
+      // util module is barred, so extraction is blocked; divergence is instead
+      // guarded behaviorally -- each module has a RED vector asserting its typed
+      // code on a detached input. family-subset so any 3+ boundaries match.
+      files: [
+        "lib/asn1-der.js:_asBuffer",
+        "lib/cbor-det.js:_asBuffer",
+        "lib/ct.js:_toBuffer",
+        "lib/webcrypto.js:_toBuf",
+        "lib/merkle.js:_toBuffer",
+      ],
+      mode: "family-subset",
+      reason: "per-boundary byte-input coercion guards share one fail-closed detached-safe re-view (Buffer.from(x.buffer,byteOffset,byteLength) in try/catch) but each throws its own module's typed error; a shared helper would leak onto the public pki.asn1 surface, so the shape stays per-module with a per-module RED vector guarding against divergence.",
+    },
   ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;
