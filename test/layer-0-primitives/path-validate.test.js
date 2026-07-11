@@ -2260,6 +2260,18 @@ async function testOcspCheckerStandalone() {
   var expired = await mkCert({ subject: "ExpiredResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 54n, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: [ekuExt([EKU_OCSP_SIGNING], false)] });
   var o21 = await mkOcsp({ responderID: { byName: "ExpiredResponder" }, signWith: "p256", certs: [expired], single: [goodSingle()] });
   check("O21 expired delegate responder -> unknown", (await chk(o21)).status === "unknown");
+
+  // O23 — the CertID issuerNameHash may be computed over the ISSUER CERTIFICATE's
+  // subject encoding rather than the checked cert's issuer field. Here the checked
+  // cert's issuer is "root" (lower-case) while the CA subject is "Root": RFC 5280
+  // sec. 7.1-equal (name chaining passes) but a different DER encoding. A response
+  // whose CertID hashes the CA subject "Root" must still match this cert.
+  var caUpper = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", serial: 2n }));
+  var leafLowerIssuer = pki.schema.x509.parse(await mkCert({ subject: "OcspLeaf", issuer: "root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 100n }));
+  var issuerUpper = { workingPublicKey: caKeys.spki, workingIssuerName: caUpper.subject, issuerCert: caUpper };
+  var o23 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [{ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 100, status: "good" }] });
+  check("O23 CertID over the issuer cert subject (RFC5280-equal, byte-different) -> good",
+    (await pki.path.ocspChecker([o23]).check(leafLowerIssuer, issuerUpper, ctx)).status === "good");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
