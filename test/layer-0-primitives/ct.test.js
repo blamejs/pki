@@ -109,6 +109,12 @@ function testAccept() {
 // ---- REJECT: the RFC 6962 §3.3 inner DER wrap ------------------------
 function testInnerWrap() {
   check("21. non-Buffer input -> ct/bad-input", code(function () { pki.ct.parseSctList(42); }) === "ct/bad-input");
+  // a detached-backed Buffer (backing ArrayBuffer transferred away) reads as
+  // zero-length: it must fail closed typed here, not slip through as empty bytes.
+  check("21b. detached-backed Buffer -> ct/bad-input", code(function () {
+    var ab = new ArrayBuffer(4); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.ct.parseSctList(b);
+  }) === "ct/bad-input");
   // a NULL, not an OCTET STRING
   check("22. inner not an OCTET STRING -> ct/bad-der", code(function () { pki.ct.parseSctList(Buffer.from([0x05, 0x00])); }) === "ct/bad-der");
   // raw TLS bytes (no DER wrap at all)

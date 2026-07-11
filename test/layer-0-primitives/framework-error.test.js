@@ -52,9 +52,10 @@ function testCodeShapeGuard() {
   catch (e) { swappedSub = e; }
   check("subclass with swapped (message, code) args throws at construction", swappedSub instanceof TypeError);
   // A third argument to a non-withCause class would previously be discarded
-  // silently — a cause the caller meant to thread must not vanish.
+  // silently — a cause the caller meant to thread must not vanish. ConstantsError
+  // is a config-time authoring error with no cause to thread.
   var extraArg = null;
-  try { new pki.errors.Asn1Error("asn1/truncated", "msg", new Error("cause")); }
+  try { new pki.errors.ConstantsError("constants/bad-scale", "msg", new Error("cause")); }
   catch (e) { extraArg = e; }
   check("non-withCause class rejects a third argument", extraArg instanceof TypeError);
   // Controls: both documented conventions still construct.

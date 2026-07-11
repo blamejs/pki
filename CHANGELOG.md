@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.28 — 2026-07-11
+## v0.1.29 — 2026-07-11
+
+A detached-backed BufferSource now fails closed with a typed error at every byte-input boundary.
+
+### Fixed
+
+- pki.webcrypto digest / sign / verify no longer silently process a detached-backed Buffer as EMPTY input (a fail-open where a transferred backing ArrayBuffer left the view zero-length); a detached BufferSource is now rejected with a typed webcrypto/data error, as is getRandomValues.
+- pki.asn1.decode, pki.cbor.decode, and pki.ct.parseSctList reject a detached-backed Buffer or view with a typed error (asn1/not-buffer, cbor/not-buffer, ct/bad-input) instead of a raw TypeError or a misleading truncated-input verdict. The underlying byte-view failure is threaded as the error cause.
+
+## v0.1.28 — 2026-07-10
 
 Merkle transparency proof verification joins the toolkit as pki.merkle.
 

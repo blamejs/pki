@@ -374,6 +374,13 @@ function testDecodeCapOptsValidated() {
     code(function () { pki.asn1.decode(b.nullValue(), { maxBytes: 16, maxDepth: 4 }); }) === "NO-THROW");
   check("decode with the default caps (opts omitted) still decodes",
     code(function () { pki.asn1.decode(b.nullValue()); }) === "NO-THROW");
+  // A detached-backed Buffer (backing ArrayBuffer transferred away) reads as
+  // zero-length: the input coercion must fail closed typed here rather than hand
+  // the walk an empty buffer (a misleading truncated-DER verdict on real input).
+  check("decode rejects a detached-backed Buffer as asn1/not-buffer", code(function () {
+    var ab = new ArrayBuffer(2); var buf = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.asn1.decode(buf);
+  }) === "asn1/not-buffer");
 }
 
 // encode validates the tag number the way encodeLength validates the length: a

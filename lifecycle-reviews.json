@@ -23,6 +23,12 @@
     "reviewedAt": "0.1.25",
     "reviewBy": "0.1.30"
   },
+  "pki.schema.attrcert.pemEncode": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same attribute-certificate parser whose return shape is not yet frozen (no independent oracle emits RFC 5755 attribute certificates). Graduate alongside pki.schema.attrcert.parse.",
+    "reviewedAt": "0.1.29",
+    "reviewBy": "0.1.30"
+  },
   "pki.schema.all": {
     "decision": "keep-experimental",
     "reason": "The format enumerator routes to the still-experimental attribute-cert, CRMF, and CMP parsers; marking it stable would freeze their return shapes and continued registration into a stable contract. Graduate once every routed format is stable.",
@@ -45,6 +51,12 @@
     "decision": "keep-experimental",
     "reason": "Rides the same CRMF parser whose return shape is not yet frozen (no cross-implementation interop round-trip in the harness). Graduate alongside pki.schema.crmf.parse.",
     "reviewedAt": "0.1.25",
+    "reviewBy": "0.1.30"
+  },
+  "pki.schema.crmf.pemEncode": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same CRMF parser whose return shape is not yet frozen (no cross-implementation interop round-trip in the harness). Graduate alongside pki.schema.crmf.parse.",
+    "reviewedAt": "0.1.29",
     "reviewBy": "0.1.30"
   },
   "pki.schema.cmp.parse": {
