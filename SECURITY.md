@@ -75,6 +75,13 @@ security-only patches after the next major releases.
   — an indefinite length, a non-minimal (preferred) argument, out-of-order or
   duplicate map keys, a non-shortest or non-canonical-NaN float, ill-formed UTF-8,
   or trailing bytes. There is no lenient mode.
+- **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
+  and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
+  domain-separation prefixes stop the second-preimage swap, a proof whose node
+  count does not match the tree geometry is a typed reject (never a best-effort
+  fold), consistency reconstructs BOTH roots so a rewritten history is caught on
+  the old-root leg, and the root comparison is constant-time. The only Boolean
+  `false` is an honest root non-match; every malformed input throws.
 - **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
   blobs inside octet strings, where every re-decode would restart the depth cap
   from zero; the PKCS#12 parser carries one cross-decode budget over all of them

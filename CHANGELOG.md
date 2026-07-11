@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.1.27 — 2026-07-11
+## v0.1.28 — 2026-07-11
+
+Merkle transparency proof verification joins the toolkit as pki.merkle.
+
+### Added
+
+- pki.merkle.leafHash / nodeHash / emptyRootHash -- the RFC 6962 / RFC 9162 tree hashes: a leaf is SHA-256(0x00 || entry), an interior node is SHA-256(0x01 || left || right), the empty tree is SHA-256(""). The domain-separation prefixes are applied unconditionally.
+- pki.merkle.verifyInclusion({ leafIndex, treeSize, leafHash, proof, rootHash }) -- verify an RFC 6962 / RFC 9162 audit proof by folding the leaf up the audit path and constant-time-comparing the reconstructed root to a trusted root. Returns true only when the proof binds the leaf to the root.
+- pki.merkle.verifyConsistency({ oldSize, newSize, oldRoot, newRoot, proof }) -- verify an append-only consistency proof by reconstructing BOTH the old and the new root and constant-time-comparing each; the append-only guarantee lives in the old-root leg.
+- The error taxonomy gains MerkleError (merkle/*). A node-count ceiling (C.LIMITS.MERKLE_MAX_PROOF_NODES) rejects a pathologically long proof before any hashing; the precise per-proof guard is the geometry check in each verifier.
+- Fuzz target merkle-verify (both fold algorithms and the hash producers over adversarial coordinates, hashes, and proofs) joins the per-PR and nightly fuzz matrices with a seed corpus.
+
+## v0.1.27 — 2026-07-10
 
 A strict deterministic-CBOR codec joins the toolkit as pki.cbor.
 
