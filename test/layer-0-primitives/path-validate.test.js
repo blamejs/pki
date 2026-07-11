@@ -2573,6 +2573,32 @@ async function testCrlDpIdpCorrespondence() {
   var rD18b = await run([leafDp], chk([crlD18b]));
   check("D18 non-[0]/[1] IDP DPN alternative -> shard skipped (undetermined)",
     rD18b.valid === false && failCodes(rD18b).indexOf("path/revocation-undetermined") !== -1);
+
+  // D19 -- cRLDistributionPoints is a PROCESSED extension (the checker consults
+  // it for the sec. 6.3.3 correspondence), so a CRITICAL instance (legal:
+  // sec. 4.2.1.13 is only a SHOULD-non-critical) is recognized, not rejected as
+  // an unrecognized critical extension.
+  var leafCritDp = await mkCert({ subject: "CritDpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [ext("2.5.29.31", true, b.sequence([distPoint(dpnFull([gnUri(URL1)]))]))] });
+  var rD19 = await run([leafCritDp], { time: T2027, trustAnchor: anchor });
+  check("D19 critical cRLDistributionPoints is recognized (processed)",
+    rD19.valid === true && failCodes(rD19).indexOf("path/unrecognized-critical-extension") === -1);
+  // D19b -- recognized means VALIDATED: a critical CDP whose value is malformed
+  // (an empty SEQUENCE violates SIZE 1..MAX) fails typed on the structural
+  // check, never passes the criticality gate unprocessed.
+  var leafBadCritDp = await mkCert({ subject: "BadCritDpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [ext("2.5.29.31", true, b.sequence([]))] });
+  var rD19b = await run([leafBadCritDp], { time: T2027, trustAnchor: anchor });
+  check("D19b malformed critical cRLDistributionPoints fails typed",
+    rD19b.valid === false && failCodes(rD19b).indexOf("path/bad-crl-distribution-points") !== -1);
+  // D19c -- freshestCRL stays OUT of the processed set: sec. 4.2.1.15 says the
+  // extension MUST be non-critical, and the validator does not consult it (no
+  // delta merge), so a critical instance keeps failing unrecognized-critical.
+  var leafCritFresh = await mkCert({ subject: "CritFreshLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [ext("2.5.29.46", true, b.sequence([distPoint(dpnFull([gnUri(URL2)]))]))] });
+  var rD19c = await run([leafCritFresh], { time: T2027, trustAnchor: anchor });
+  check("D19c critical freshestCRL still unrecognized-critical (MUST be non-critical)",
+    rD19c.valid === false && failCodes(rD19c).indexOf("path/unrecognized-critical-extension") !== -1);
 }
 
 async function runSuite() {
