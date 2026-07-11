@@ -49,6 +49,12 @@ async function testDigest() {
     var ab = new ArrayBuffer(8); structuredClone(ab, { transfer: [ab] });
     await subtle.digest("SHA-256", ab);
   })) === "webcrypto/data");
+  // A detached-backed BUFFER reads as zero-length: without the guard, digest
+  // would silently hash EMPTY (a fail-OPEN, not a throw). It must fail closed.
+  check("digest rejects a detached Buffer (fail-open guard)", (await code(async function () {
+    var ab = new ArrayBuffer(8); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    await subtle.digest("SHA-256", b);
+  })) === "webcrypto/data");
 }
 
 async function _signVerify(genAlg, signAlg, usages) {

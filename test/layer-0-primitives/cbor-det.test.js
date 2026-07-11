@@ -201,6 +201,12 @@ function testConfig() {
     var u = new Uint8Array([0]); structuredClone(u.buffer, { transfer: [u.buffer] });
     pki.cbor.decode(u);
   }) === "cbor/not-buffer");
+  // A detached-backed BUFFER (not just a view) must also fail closed — the
+  // Buffer arm has no as-is fast-path that would hand the walk empty bytes.
+  check("rej-detached-buffer", code(function () {
+    var ab = new ArrayBuffer(1); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
+    pki.cbor.decode(b);
+  }) === "cbor/not-buffer");
   check("rej-bad-profile is a config-time TypeError",
     threw(function () { pki.cbor.decode(B("00"), { profile: "lenient" }); }) instanceof TypeError);
   check("bad maxBytes is a config-time TypeError",
