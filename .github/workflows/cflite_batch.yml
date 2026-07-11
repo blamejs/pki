@@ -34,6 +34,7 @@ jobs:
       matrix:
         target:
           - asn1-der
+          - cbor-det-parse
           - x509-parse
           - cms-parse
           - ocsp-parse

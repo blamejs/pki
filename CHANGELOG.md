@@ -4,6 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.1.27 — 2026-07-11
+
+A strict deterministic-CBOR codec joins the toolkit as pki.cbor.
+
+### Added
+
+- pki.cbor.decode -- the RFC 8949 core-deterministic CBOR decoder. It returns a node carrying the major type, the argument (a lossless BigInt), zero-copy content / bytes views (the raw ranges an external verifier hashes), and children (array elements, ordered map key/value pairs, or a tag's one inner item). Every non-canonical shape fails closed with a stable cbor/* code; maxBytes, maxDepth, and a per-bignum byte cap bound the work before the walk; allowTrailing decodes the first item of a CBOR Sequence.
+- The read.* leaf readers over a decoded node: read.uint / read.nint / read.int (uniform BigInt), read.byteString (zero-copy Buffer), read.textString (strict UTF-8), read.array, read.map (ordered key/value node pairs), read.boolean / read.nullValue / read.undefinedValue, read.float (half / single / double), and the tagged forms read.biguint (RFC 8949 tag 2 unsigned bignum, minimality and byte cap enforced), read.time (RFC 8949 tag 1 epoch time, bounded to the valid Date range), and read.oid (RFC 9090 tag 111, decoded through the shared OID-content codec so a malformed body surfaces the existing oid/* codes).
+- The error taxonomy gains CborError (cbor/*). The decoder is profile-parameterized, so a future CTAP2 canonical profile is a data addition rather than a new code path.
+- Fuzz target cbor-det-parse (the decode head-well-formedness and minimal-argument checks, the map ordering / uniqueness verify, the shortest-float rule, the strict-UTF-8 gate, and the size / depth / bignum caps, in both whole-buffer and CBOR-Sequence modes) joins the per-PR and nightly fuzz matrices with a seed corpus.
+
+### Changed
+
+- pki.oid.paramsMustBeAbsent graduated from experimental to stable: its dotted-OID-to-boolean surface has been unchanged since 0.1.21 and is exercised end-to-end by the algorithm-identifier decoder every format shares.
+
 ## v0.1.26 — 2026-07-10
 
 Test-coverage measurement and the OpenSSF Best Practices badge.

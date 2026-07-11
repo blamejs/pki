@@ -30,6 +30,7 @@
 var constants = require("./lib/constants");
 var errors    = require("./lib/framework-error");
 var asn1      = require("./lib/asn1-der");
+var cbor      = require("./lib/cbor-det");
 var oid       = require("./lib/oid");
 var webcrypto = require("./lib/webcrypto");
 var schema    = require("./lib/schema-all");
@@ -47,6 +48,12 @@ module.exports = {
   errors:    errors,
   // `asn1` is the strict DER codec (decode/encode/build/read/TAGS).
   asn1:      asn1,
+  // `cbor` is the strict, fail-closed RFC 8949 deterministic CBOR codec
+  // (decode + read.* leaf readers), sibling to `asn1`. It rejects every
+  // non-deterministic shape -- indefinite length, a non-minimal argument,
+  // unsorted / duplicate map keys, a non-shortest float, trailing bytes --
+  // before it walks a byte, and surfaces zero-copy bytes / content views.
+  cbor:      cbor,
   oid:       oid,
   // `schema` is the family: the L2 structure-schema engine (schema.engine) and
   // the per-format parsers (schema.x509, ...) with detect-and-route schema.parse.

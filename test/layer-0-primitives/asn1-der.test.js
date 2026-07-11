@@ -364,6 +364,12 @@ function testDecodeCapOptsValidated() {
       try { pki.asn1.decode(b.nullValue(), { maxBytes: v }); return false; } catch (e) { return e instanceof TypeError; }
     })());
   });
+  // A maxDepth raised above the stack-safe recursion ceiling is refused at
+  // config time: the decoder is recursive descent, so a cap above the engine's
+  // native call-stack limit would let deeply nested input overflow with a raw
+  // RangeError instead of a typed verdict (the class shared with pki.cbor).
+  check("decode rejects a maxDepth above the stack-safe ceiling as a TypeError",
+    (function () { try { pki.asn1.decode(deep, { maxDepth: 1000000 }); return false; } catch (e) { return e instanceof TypeError; } })());
   check("decode with valid explicit caps still decodes",
     code(function () { pki.asn1.decode(b.nullValue(), { maxBytes: 16, maxDepth: 4 }); }) === "NO-THROW");
   check("decode with the default caps (opts omitted) still decodes",
