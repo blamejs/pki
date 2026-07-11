@@ -1,0 +1,2 @@
+{"kty":"oct","k":"AAAA","nested":{"arr":[1,2.5,-3e2,{"deep":true}],"nul":null},"esc":"aA
+\"b\""}

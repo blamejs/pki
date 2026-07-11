@@ -192,6 +192,10 @@ function testHolderVariants() {
   check("holder objectDigestInfo: type publicKey", m2.holder.objectDigestInfo.digestedObjectType.code === 0 && m2.holder.objectDigestInfo.digestedObjectType.name === "publicKey");
   check("holder objectDigestInfo: digestAlgorithm named", m2.holder.objectDigestInfo.digestAlgorithm.oid === DIGALG);
   check("holder objectDigestInfo: objectDigest raw bits", Buffer.isBuffer(m2.holder.objectDigestInfo.objectDigest.bytes));
+  // The objectDigest is a whole-octet digest; a non-octet-aligned BIT STRING is
+  // malformed (RFC 5755 sec. 4.1) and has no verify layer to catch it later.
+  check("holder objectDigestInfo: non-octet-aligned objectDigest rejected",
+    parseCode(attrCert({ holderNode: holder({ objectDigestInfo: { type: 0, digest: Buffer.from([0xab, 0xc8]), digestUnused: 3 } }) })) === "attrcert/bad-object-digest-info");
 }
 
 function testIssuerProfile() {

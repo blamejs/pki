@@ -480,7 +480,22 @@ async function testUnwrapJwkNotJson() {
   try { await subtle.unwrapKey("jwk", notJwk, kek, { name: "AES-CBC", iv: iv }, { name: "AES-GCM", length: 128 }, true, ["encrypt"]); }
   catch (e) { err = e; }
   check("unwrapKey (jwk) surfaces non-JSON plaintext as typed webcrypto/data",
-    err instanceof pki.errors.PkiError && err.code === "webcrypto/data" && err.cause instanceof SyntaxError);
+    err instanceof pki.errors.PkiError && err.code === "webcrypto/data");
+}
+
+async function testUnwrapJwkDuplicateMember() {
+  // The unwrapped JWK must be parsed STRICTLY: a smuggled duplicate member (which
+  // bare JSON.parse resolves last-wins) must reject, not import a JWK that differs
+  // from what a producer/verifier saw (the JSON parser-differential class).
+  var kek = await subtle.generateKey({ name: "AES-CBC", length: 256 }, true, ["encrypt", "decrypt", "wrapKey", "unwrapKey"]);
+  var iv = pki.webcrypto.getRandomValues(new Uint8Array(16));
+  var validK = Buffer.alloc(16, 3).toString("base64url");
+  var dupJwk = '{"kty":"oct","k":"' + validK + '","k":"' + Buffer.alloc(16, 9).toString("base64url") + '"}';
+  var wrapped = await subtle.encrypt({ name: "AES-CBC", iv: iv }, kek, Buffer.from(dupJwk));
+  var err = null;
+  try { await subtle.unwrapKey("jwk", wrapped, kek, { name: "AES-CBC", iv: iv }, { name: "HMAC", hash: "SHA-256" }, true, ["sign"]); }
+  catch (e) { err = e; }
+  check("unwrapKey (jwk) rejects a smuggled duplicate member", err instanceof pki.errors.PkiError && err.code === "webcrypto/data");
 }
 
 async function testSurface() {
@@ -490,6 +505,18 @@ async function testSurface() {
   check("the WebCrypto classes are reachable under pki.webcrypto", typeof pki.webcrypto.CryptoKey === "function" && pki.WebCrypto === undefined);
   var k = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
   check("unsupported algorithm throws not-supported", (await code(async function () { await subtle.sign({ name: "NOPE" }, k.privateKey, Buffer.from("x")); })) === "webcrypto/not-supported");
+}
+
+async function testJwkOctStrict() {
+  // JWK oct key material must decode STRICTLY: a missing / non-canonical / non-
+  // alphabet `k` must reject, never silently import WRONG key material (the lenient
+  // Buffer.from(String(undefined),"base64url") imported a bogus 6-byte key).
+  var hmacAlg = { name: "HMAC", hash: "SHA-256" };
+  var validK = Buffer.alloc(32, 7).toString("base64url");   // canonical unpadded base64url
+  check("jwk oct: canonical k imports", (await code(function () { return subtle.importKey("jwk", { kty: "oct", k: validK }, hmacAlg, false, ["sign"]); })) === "NO-THROW");
+  check("jwk oct: missing k rejects", (await code(function () { return subtle.importKey("jwk", { kty: "oct" }, hmacAlg, false, ["sign"]); })) === "webcrypto/data");
+  check("jwk oct: non-canonical k rejects", (await code(function () { return subtle.importKey("jwk", { kty: "oct", k: "QR" }, hmacAlg, false, ["sign"]); })) === "webcrypto/data");
+  check("jwk oct: padded/non-alphabet k rejects", (await code(function () { return subtle.importKey("jwk", { kty: "oct", k: "AAAA=" }, hmacAlg, false, ["sign"]); })) === "webcrypto/data");
 }
 
 async function run() {
@@ -514,6 +541,8 @@ async function run() {
   await testHmacDefaultLength();
   await testRsaPublicExponentValidation();
   await testUnwrapJwkNotJson();
+  await testUnwrapJwkDuplicateMember();
+  await testJwkOctStrict();
 }
 
 module.exports = { run: run };

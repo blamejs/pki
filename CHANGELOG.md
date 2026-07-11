@@ -4,6 +4,31 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.0 — 2026-07-11
+
+Trust-store ingestion, sharded-CRL revocation, and a hardened input-guard layer.
+
+### Added
+
+- pki.trust.parseCertdata(text) and pki.trust.parseCcadbCsv(text) parse the Mozilla/NSS certdata.txt object stream and the CCADB All Certificate Records CSV into one Anchor shape carrying the exact { name, publicKey, algorithm, parameters } fields pki.path.validate consumes, plus per-purpose distrustAfter dates, delegator purposes (only CKT_NSS_TRUSTED_DELEGATOR grants a purpose), subjectDer, label, and mozillaCaPolicy. Certificate and trust objects are paired by byte-exact issuer + serial (never adjacency) and cross-checked against the parsed DER, so metadata can never attach to the wrong root. pki.trust.anchor(entry, { purpose }) hands the anchor to validate, failing fast when the entry does not delegate the purpose. Malformed octal, an oversized block or file, an unrecognized trust value, an undecodable distrust date, or a mispaired object throws a typed trust/* error. Offline and pure: the caller supplies the text; nothing fetches.
+- pki.path.validate gains opts.checkPurpose plus trust-anchor constraint enforcement: with an anchor carrying distrustAfter / purposes metadata, a leaf whose notBefore is strictly after the anchor's distrust date for the checked purpose fails with path/distrusted-after (the boundary instant stays trusted, matching Mozilla's enforcement), and a purpose the anchor does not delegate fails with path/purpose-not-trusted. Anchors without the metadata validate exactly as before.
+- cRLDistributionPoints and freshestCRL certificate-extension decoders, and RFC 5280 sec. 6.3.3 distribution-point correspondence in pki.path.crlChecker: a partitioned CRL whose critical issuing-distribution-point shares an identically-encoded name with one of the certificate's distribution points, carries no reason restriction on either side, is current, and verifies now establishes a good status for its shard. A non-corresponding, reason-restricted, non-critical-IDP, delta, or unverifiable shard keeps failing closed to undetermined -- and a listed serial still reports revoked regardless of correspondence.
+- pki.asn1.decode and pki.cbor.decode accept a maxItems option (default C.LIMITS.DER_MAX_ITEMS) capping the total decoded elements, so a small dense input cannot fan out into an unbounded node tree (asn1/too-many-items). OCSP responses are capped at C.LIMITS.OCSP_MAX_CERTS embedded certificates (ocsp/too-many-certs), bounding the pre-authentication signature work an attacker-supplied response can demand.
+- Strict JWK oct key-material decoding: importKey / unwrapKey reject a JWK oct key whose k member is missing, empty, padded, or non-canonical base64url instead of importing a wrong or empty key, and JSON key unwrap rejects duplicate members at every depth so a smuggled second parameter can no longer resolve last-wins. Unwrapped JWK text is bounded (size, nesting depth, strict UTF-8).
+
+### Changed
+
+- OID string handling is canonical everywhere: pki.asn1.build.oid and pki.oid.toDER reject a leading-zero arc (previously accepted and silently encoded as a DIFFERENT OID -- "2.05.29.15" emitted the DER of 2.5.29.15), and pki.oid.toArcs / register now enforce the X.660 arc bounds on the string form (a root above 2, or a second arc above 39 under roots 0 and 1, can never be DER-encoded and now throws oid/bad-arc). Error codes consolidated with the canonical form: a one-arc or non-numeric-arc string throws oid/bad-input (previously oid/too-short and oid/bad-arc; oid/too-short is removed).
+- pki.jose and WebCrypto JWK unwrap JSON limits are enforced through one shared bounded reader; an unwrapped-key JSON parse failure reports the typed webcrypto/data error without a nested SyntaxError cause.
+
+### Fixed
+
+- Signing via pki.jose over a payload backed by a detached ArrayBuffer now fails closed with a typed error instead of silently signing an empty payload; PEM encoding and EST transfer encoding reject a detached or non-buffer input the same way.
+- EST server-side key generation rejects an EnvelopedData whose encryptedContent is present but zero-length (est/bad-key-part); previously only the fully absent form was rejected, so an empty ciphertext could reach the caller's decrypt step. The same shared check now backs the CRMF encrypted-key proof-of-possession and PKCS#12 paths.
+- An attribute certificate whose objectDigestInfo digest is not octet-aligned is rejected at parse (attrcert/bad-object-digest-info) instead of surfacing a bit-truncated digest.
+- A malformed content-type attribute value inside AuthEnvelopedData authenticated attributes surfaces cms/bad-content-type-attr instead of a raw asn1/* codec error.
+- pki.path.validate rejects fractional maxPathCerts / maxPolicyNodes values (path/bad-input) instead of silently tolerating them, and validates requiredEku / userInitialPolicySet entries as canonical OID strings at the entry point -- a leading-zero or out-of-bounds key could never match decoder output and now fails at boot instead of silently never matching.
+
 ## v0.1.32 — 2026-07-11
 
 OCSP-backed revocation checking joins certification-path validation.

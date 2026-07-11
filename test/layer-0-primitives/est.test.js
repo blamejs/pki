@@ -60,7 +60,8 @@ function envelopedKeyCI(o) {
   var rid = o.skid ? b.contextPrimitive(0, Buffer.from(o.skid)) : iasn;
   var ktri = b.sequence([b.integer(o.skid ? 2n : 0n), rid, algId(RSA_OID), b.octetString(Buffer.from([0xAA, 0xBB]))]);
   var eciChildren = [b.oid(o.innerType || ID_SIGNED_DATA), algId(AES256_CBC)];
-  if (!o.detached) eciChildren.push(b.contextPrimitive(0, Buffer.from([0x11, 0x22])));   // encryptedContent [0] (omitted = detached)
+  if (o.emptyContent) eciChildren.push(b.contextPrimitive(0, Buffer.alloc(0)));   // encryptedContent [0] present but zero-length
+  else if (!o.detached) eciChildren.push(b.contextPrimitive(0, Buffer.from([0x11, 0x22])));   // encryptedContent [0] (omitted = detached)
   var eci = b.sequence(eciChildren);
   var env = b.sequence([b.integer(o.skid ? 2n : 0n), b.set([ktri]), eci]);
   return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
@@ -132,6 +133,8 @@ function testTransferCodec() {
   check("31. bare base64 decodes", pki.est.transferDecode(b64).equals(der));
   // 31b. transferEncode round-trips (DER -> base64 -> DER).
   check("31b. transferEncode round-trip", pki.est.transferDecode(pki.est.transferEncode(der)).equals(der));
+  // 31c. transferEncode fails closed on a detached-backed Buffer (reads as zero-length).
+  check("31c. transferEncode rejects a detached Buffer", code(function () { var ab = new ArrayBuffer(3); var bb = Buffer.from(ab); structuredClone(ab, { transfer: [ab] }); pki.est.transferEncode(bb); }) === "est/bad-input");
   // 32. a hostile non-alphabet byte -> est/bad-base64 fail-closed.
   check("32. hostile byte rejected", code(function () { pki.est.transferDecode(b64.slice(0, 8) + "*" + b64.slice(9)); }) === "est/bad-base64");
   // 32b. a detached-backed Buffer reads as zero-length: the text guard must fail
@@ -247,6 +250,10 @@ function testServerKeygen() {
   // 48b3. a detached EnvelopedData (no encryptedContent) has no ciphertext -> est/bad-key-part.
   var body48b3 = multipart([{ ct: encPart, body: envelopedKeyCI({ detached: true }).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   check("48b3. detached EnvelopedData key rejected", code(function () { pki.est.parseServerKeygenResponse(body48b3, ct, { requestedEncryption: true }); }) === "est/bad-key-part");
+  // 48b4. a present-but-zero-length encryptedContent is as void as a detached one --
+  //       the shared cms.assertAttachedCiphertext rejects null OR empty (RFC 5652 sec. 6.1).
+  var body48b4 = multipart([{ ct: encPart, body: envelopedKeyCI({ emptyContent: true }).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
+  check("48b4. empty encryptedContent key rejected", code(function () { pki.est.parseServerKeygenResponse(body48b4, ct, { requestedEncryption: true }); }) === "est/bad-key-part");
   // 48c. the recipient key id matches the advertised decryptKeyID -> accepted.
   var kid = Buffer.from([0x33, 0x44]);
   var bodySkid = multipart([{ ct: encPart, body: envelopedKeyCI({ skid: kid }).toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);

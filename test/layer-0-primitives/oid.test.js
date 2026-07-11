@@ -62,6 +62,11 @@ function testRegister() {
 
 function testArcs() {
   check("toArcs", JSON.stringify(pki.oid.toArcs("2.5.4.3")) === JSON.stringify([2, 5, 4, 3]));
+  // The string OID path must enforce the same X.660 arc bounds the register /
+  // arc paths do -- a root above 2 (or a second arc >= 40 under roots 0/1) can
+  // never DER-encode, so toArcs must reject it, not silently return the arcs.
+  check("toArcs rejects a root arc above 2", code(function () { pki.oid.toArcs("9.9.9"); }) === "oid/bad-arc");
+  check("toArcs rejects second arc 40 under root 1", code(function () { pki.oid.toArcs("1.40.1"); }) === "oid/bad-arc");
   check("fromArcs", pki.oid.fromArcs([1, 2, 840, 113549]) === "1.2.840.113549");
   check("arc round-trip", pki.oid.fromArcs(pki.oid.toArcs("2.16.840.1.101.3.4.2.1")) === "2.16.840.1.101.3.4.2.1");
   check("fromArcs rejects short", code(function () { pki.oid.fromArcs([1]); }) === "oid/bad-input");

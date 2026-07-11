@@ -886,6 +886,20 @@ function idpVal(o) {
   return b.sequence(children);
 }
 function idpExt(o) { return ext("2.5.29.28", true, idpVal(o)); }
+// DistributionPointName fullName [0] { GeneralName... } (IMPLICIT GeneralNames).
+function dpnFull(gns) { return b.contextConstructed(0, Buffer.concat([].concat(gns))); }
+// DistributionPointName nameRelativeToCRLIssuer [1] { AttributeTypeAndValue... }
+// (IMPLICIT RelativeDistinguishedName — the [1] tag replaces the SET tag).
+function dpnRel(atvs) { return b.contextConstructed(1, Buffer.concat(atvs)); }
+// One DistributionPoint SEQUENCE { distributionPoint [0] EXPLICIT <DPN>, reasons [1]? }.
+function distPoint(dpn, reasonsBits) {
+  var kids = [b.contextConstructed(0, dpn)];
+  if (reasonsBits) kids.push(b.contextPrimitive(1, reasonsBits));
+  return b.sequence(kids);
+}
+// cRLDistributionPoints / freshestCRL certificate extensions (§4.2.1.13 / §4.2.1.15).
+function cdpExt(dps) { return ext("2.5.29.31", false, b.sequence(dps)); }
+function freshestExt(dps) { return ext("2.5.29.46", false, b.sequence(dps)); }
 function crlNumberExt(n) { return ext("2.5.29.20", false, b.integer(BigInt(n))); }
 // reasonCode CRL-entry extension (§5.3.1) — value is an ENUMERATED.
 function reasonCodeExt(n) { return ext("2.5.29.21", false, b.enumerated(BigInt(n))); }
@@ -1809,7 +1823,7 @@ async function testRfc5280ConformanceMusts() {
   var crlPartRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(9), idpExt({ onlySomeReasons: someReasonsB })] });
   var resPartRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlPartRev]) });
   check("reason-partitioned CRL listing the serial revokes even under softFail", resPartRev.valid === false && failCodes(resPartRev).indexOf("path/revoked") !== -1);
-  var dpNameScope = b.contextConstructed(0, b.contextConstructed(0, gnUri("http://crl.example/partition/1")));
+  var dpNameScope = dpnFull([gnUri("http://crl.example/partition/1")]);
   var crlDpRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(10), idpExt({ distributionPoint: dpNameScope })] });
   var resDpRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlDpRev]) });
   check("distributionPoint-scoped CRL listing the serial revokes even under softFail", resDpRev.valid === false && failCodes(resDpRev).indexOf("path/revoked") !== -1);
@@ -1920,7 +1934,7 @@ async function testRfc5280ConformanceMusts() {
 
   // a CRL scoped to a specific distributionPoint cannot be
   // confirmed in-scope for this cert -> not authoritative -> undetermined.
-  var dpName = b.contextConstructed(0, b.contextConstructed(0, gnUri("http://crl.example/partition/1")));
+  var dpName = dpnFull([gnUri("http://crl.example/partition/1")]);
   var crlDp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1), idpExt({ distributionPoint: dpName })] });
   var resC2 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDp]) });
   check("partitioned CRL (distributionPoint IDP) yields undetermined", resC2.valid === false && failCodes(resC2).indexOf("path/revocation-undetermined") !== -1);
@@ -2002,6 +2016,13 @@ async function testInitialInputsAndTargetGates() {
     (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: -5 }))) === "path/bad-input");
   check("non-numeric maxPolicyNodes throws path/bad-input",
     (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: "4096" }))) === "path/bad-input");
+  // A fractional count is not an integer node/cert budget -- it must fail closed
+  // like 0 / negative / non-numeric, not be silently tolerated (the shared
+  // guard.limits.cap integer floor the hand-rolled isFinite check had dropped).
+  check("fractional maxPolicyNodes throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: 1.5 }))) === "path/bad-input");
+  check("fractional maxPathCerts throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPathCerts: 1.5 }))) === "path/bad-input");
 
   // ---- userInitialPolicySet is entry-point-validated -------------------------
   // A raw string would be consulted via indexOf — a SUBSTRING match, not set
@@ -2012,6 +2033,13 @@ async function testInitialInputsAndTargetGates() {
     (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: [] }))) === "path/bad-input");
   check("non-string userInitialPolicySet element throws path/bad-input",
     (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: [42] }))) === "path/bad-input");
+  // A non-canonical OID key can never match the canonical decoder output it is
+  // compared against (a silent false-reject) -- so a leading-zero / non-dotted
+  // policy or EKU string fails closed at the entry point ("catch the typo at boot").
+  check("non-canonical userInitialPolicySet entry throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: ["1.3.6.1.4.1.99999.061"] }))) === "path/bad-input");
+  check("leading-zero requiredEku entry throws path/bad-input",
+    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, requiredEku: ["1.3.6.1.5.5.7.3.01"] }))) === "path/bad-input");
 
   // ---- 6.1.1(e) initial-any-policy-inhibit ----------------------------------
   // With the inhibit set, a cert-asserted anyPolicy is not expanded ((d)(2)
@@ -2344,6 +2372,11 @@ async function testOcspCheckerStandalone() {
   var inheritDelegate = await mkCert({ subject: "InheritResponder", issuer: "EcRoot", signWith: "p256", spki: stripEcParams(respKeys.spki), serial: 61n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), kuExt([KU_DIGITAL_SIGNATURE]), nocheckExt()] });
   var o30 = await mkOcsp({ responderID: { byName: "InheritResponder" }, signWith: "p256i", certs: [inheritDelegate], single: [{ issuerName: "EcRoot", issuerKeyAlg: "p256", serial: 101, status: "good" }] });
   check("O30 delegate inheriting EC params from the CA -> good", (await pki.path.ocspChecker([o30]).check(ecLeaf, ecIssuer, ctx)).status === "good");
+
+  // O31 -- a response embedding more than the cert cap fails closed at PARSE, so an
+  // attacker-crafted certs list cannot drive unbounded pre-auth delegate verifies.
+  var manyCerts = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: new Array(33).fill(delegate), single: [goodSingle()] });
+  check("O31 over-cap embedded certs rejected at parse", (await codeOf((async function () { return pki.path.ocspChecker([manyCerts]); })())) === "ocsp/too-many-certs");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
@@ -2366,6 +2399,182 @@ async function testOcspCertIdInterop() {
 // runner
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// Trust-anchor constraint contract (Do-FIRST): distrust-after + purpose (T19-T26)
+// ---------------------------------------------------------------------------
+async function testTrustAnchorConstraints() {
+  // Gated so a bare anchor / absent checkPurpose is byte-identical to today.
+  var anchor = await mkAnchor("ed25519", "Root");
+  var D = new Date("2026-06-01T00:00:00Z");
+  function leafAt(nb) { return mkCert({ subject: "Leaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", notBefore: nb }); }
+  function withMeta(extra) { var a = {}; Object.keys(anchor).forEach(function (k) { a[k] = anchor[k]; }); Object.keys(extra).forEach(function (k) { a[k] = extra[k]; }); return a; }
+  var BEFORE = new Date("2026-01-01T00:00:00Z"), AFTER = new Date("2026-06-01T00:00:01Z");
+
+  // Entry-point: a bad checkPurpose is rejected like requiredEku.
+  check("bad checkPurpose throws path/bad-input",
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor, checkPurpose: "bogusPurpose" }))) === "path/bad-input");
+
+  var taSA = withMeta({ distrustAfter: { serverAuth: D } });
+  // T19/T21 -- leaf notBefore one second AFTER distrustAfter -> distrusted (strict >).
+  var r19 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  check("T19 leaf after distrustAfter -> distrusted", r19.valid === false && failCodes(r19).indexOf("path/distrusted-after") !== -1);
+  // T20 -- boundary: notBefore EXACTLY == distrustAfter -> TRUSTED; one second before -> trusted.
+  var r20eq = await run([await leafAt(D)], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  check("T20 notBefore == distrustAfter -> trusted", r20eq.valid === true && failCodes(r20eq).indexOf("path/distrusted-after") === -1);
+  var r20lt = await run([await leafAt(new Date("2026-05-31T23:59:59Z"))], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  check("T20 notBefore before distrustAfter -> trusted", r20lt.valid === true);
+  // T22 -- purpose not a delegator purpose -> path/purpose-not-trusted.
+  var taNot = withMeta({ purposes: { serverAuth: false, emailProtection: false, codeSigning: false } });
+  var r22 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taNot, checkPurpose: "serverAuth" });
+  check("T22 purpose not trusted -> path/purpose-not-trusted", r22.valid === false && failCodes(r22).indexOf("path/purpose-not-trusted") !== -1);
+  // T23 -- delegator for the purpose + leaf before D -> valid.
+  var taOk = withMeta({ purposes: { serverAuth: true, emailProtection: false, codeSigning: false }, distrustAfter: { serverAuth: D } });
+  var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taOk, checkPurpose: "serverAuth" });
+  check("T23 delegator + before D -> valid", r23.valid === true);
+  // T24 -- bare anchor (no metadata), no checkPurpose -> identical to today (valid, no new checks).
+  var r24 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
+  check("T24 bare anchor preserved -> valid", r24.valid === true && failCodes(r24).indexOf("path/distrusted-after") === -1 && failCodes(r24).indexOf("path/purpose-not-trusted") === -1);
+  // T25 -- distrustAfter present but NO checkPurpose -> not applied (gated).
+  var r25 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA });
+  check("T25 distrustAfter without checkPurpose -> not applied", r25.valid === true);
+  // T26 -- checkPurpose emailProtection but only serverAuth distrust present -> unaffected.
+  var r26 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "emailProtection" });
+  check("T26 wrong-purpose distrust key -> unaffected", r26.valid === true);
+}
+
+// ---------------------------------------------------------------------------
+// CRL DistributionPoint<->IDP correspondence (RFC 5280 §6.3.3(b)(2)(i)) —
+// a full-scope-for-its-partition shard CRL can establish "good" (D1-D13, D18).
+// Monotone: the change only ADDS "good" for a corresponding + full-reason +
+// current + verified shard; it never removes a "revoked" and never says "good"
+// where the coarse interim reason mask is not all-reasons.
+// ---------------------------------------------------------------------------
+async function testCrlDpIdpCorrespondence() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var DSER = 4242n;
+  var URL1 = "http://crl.example/a.crl", URL2 = "http://crl.example/b.crl";
+  var someReasons = Buffer.from([0x06, 0x40]); // keyCompromise only
+  function chk(crls, extra) {
+    return Object.assign({ time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker(crls) }, extra || {});
+  }
+  var leafDp = await mkCert({ subject: "DpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: DSER,
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)]))])] });
+
+  // D1 — a corresponding, full-reason, current, verified shard establishes GOOD
+  // (the gap this closes: previously any IDP distributionPoint meant
+  // revocation-only, so a sharded CRL could never say "good").
+  var crlD1 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1), idpExt({ distributionPoint: dpnFull([gnUri(URL1)]) })] });
+  var rD1 = await run([leafDp], chk([crlD1]));
+  check("D1 corresponding full-reason shard establishes good", rD1.valid === true);
+
+  // D2 — a non-corresponding shard stays UNDETERMINED (never falsely good).
+  var crlD2 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2), idpExt({ distributionPoint: dpnFull([gnUri(URL2)]) })] });
+  var rD2 = await run([leafDp], chk([crlD2]));
+  check("D2 non-corresponding shard undetermined", rD2.valid === false && failCodes(rD2).indexOf("path/revocation-undetermined") !== -1);
+
+  // D3 — a corresponding shard LISTING the serial -> revoked (the good-path
+  // flip must not break the revoked path).
+  var crlD3 = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: DSER }], extensions: [crlNumberExt(3), idpExt({ distributionPoint: dpnFull([gnUri(URL1)]) })] });
+  var rD3 = await run([leafDp], chk([crlD3]));
+  check("D3 corresponding shard listing the serial revokes", rD3.valid === false && failCodes(rD3).indexOf("path/revoked") !== -1);
+
+  // D4 — a NON-corresponding shard listing the serial still revokes, even
+  // under softFail: serials are unique per issuer, so a listed serial is a
+  // genuine revocation (deliberate hardening beyond the RFC minimum).
+  var crlD4 = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: DSER }], extensions: [crlNumberExt(4), idpExt({ distributionPoint: dpnFull([gnUri(URL2)]) })] });
+  var rD4 = await run([leafDp], chk([crlD4], { softFail: true }));
+  check("D4 non-corresponding shard listing the serial revokes", rD4.valid === false && failCodes(rD4).indexOf("path/revoked") !== -1);
+
+  // D5 — corresponding + onlySomeReasons: revocation-only under the coarse
+  // rule (§6.3.3(d)(1)/(d)(2): the interim mask is below all-reasons).
+  var crlD5 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(5), idpExt({ distributionPoint: dpnFull([gnUri(URL1)]), onlySomeReasons: someReasons })] });
+  var rD5 = await run([leafDp], chk([crlD5]));
+  check("D5 corresponding + onlySomeReasons cannot establish good", rD5.valid === false && failCodes(rD5).indexOf("path/revocation-undetermined") !== -1);
+
+  // D6 — ...but a reason-scoped corresponding shard still reveals a revocation.
+  var crlD6 = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: DSER, exts: [reasonCodeExt(1)] }], extensions: [crlNumberExt(6), idpExt({ distributionPoint: dpnFull([gnUri(URL1)]), onlySomeReasons: someReasons })] });
+  var rD6 = await run([leafDp], chk([crlD6]));
+  check("D6 reason-scoped corresponding shard reveals a revocation", rD6.valid === false && failCodes(rD6).indexOf("path/revoked") !== -1);
+
+  // D7 — the CERT's matched DP carries `reasons`: §6.3.3(d)(3) sets the
+  // interim mask to the DP reasons — below all-reasons, so revocation-only.
+  var leafDpReasons = await mkCert({ subject: "DpLeafR", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)]), someReasons)])] });
+  var crlD7 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(7), idpExt({ distributionPoint: dpnFull([gnUri(URL1)]) })] });
+  var rD7 = await run([leafDpReasons], chk([crlD7]));
+  check("D7 cert DP reasons -> revocation-only", rD7.valid === false && failCodes(rD7).indexOf("path/revocation-undetermined") !== -1);
+
+  // D8 — nameRelativeToCRLIssuer on BOTH sides, byte-identical RDN -> GOOD
+  // (both fragments append to the same base DN: the checker already gates
+  // crl.issuer == cert.issuer and rejects indirect CRLs).
+  var relAtv = atv("2.5.4.3", "Shard1");
+  var leafRel = await mkCert({ subject: "RelLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [cdpExt([distPoint(dpnRel([relAtv]))])] });
+  var crlD8 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(8), idpExt({ distributionPoint: dpnRel([relAtv]) })] });
+  var rD8 = await run([leafRel], chk([crlD8]));
+  check("D8 identical-RDN correspondence establishes good", rD8.valid === true);
+
+  // D9 — MIXED DPN forms (fullName vs nameRelativeToCRLIssuer) never
+  // correspond: cross-form resolution against the issuer DN is not attempted
+  // (fail closed; deferred until an operator needs it).
+  var crlD9 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(9), idpExt({ distributionPoint: dpnRel([relAtv]) })] });
+  var rD9 = await run([leafDp], chk([crlD9]));
+  check("D9 mixed DPN forms undetermined", rD9.valid === false && failCodes(rD9).indexOf("path/revocation-undetermined") !== -1);
+
+  // D10a — a freshestCRL on the cert is decoded but INERT: it locates delta
+  // CRLs only (§5.2.6) and must not feed the correspondence.
+  var leafFreshest = await mkCert({ subject: "FrLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)]))]), freshestExt([distPoint(dpnFull([gnUri(URL2)]))])] });
+  var rD10a = await run([leafFreshest], chk([crlD1]));
+  check("D10a freshestCRL decode inert; corresponding shard still good", rD10a.valid === true);
+
+  // D10b — a CORRESPONDING delta still fails closed to undetermined (no
+  // base+delta merge; decoding freshestCRL/CDP must not enable a partial merge).
+  var crlD10b = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(10), idpExt({ distributionPoint: dpnFull([gnUri(URL1)]) }), ext("2.5.29.27", true, b.integer(1n))] });
+  var rD10b = await run([leafDp], chk([crlD10b]));
+  check("D10b corresponding delta stays undetermined", rD10b.valid === false && failCodes(rD10b).indexOf("path/revocation-undetermined") !== -1);
+
+  // D11 — behavior-preserving: a no-IDP full-scope CRL still establishes GOOD
+  // for a cert that HAS a CDP (§6.3.3's fallback: a CRL not specified in any
+  // DP is processed with an assumed DP naming the certificate issuer).
+  var crlD11 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(11)] });
+  var rD11 = await run([leafDp], chk([crlD11]));
+  check("D11 full no-IDP CRL still establishes good for a cert with a CDP", rD11.valid === true);
+
+  // D12 — (decision) a NON-critical IDP cannot vouch for its partition:
+  // §5.2.5 describes the IDP as "a critical CRL extension" (descriptive, not
+  // an imperative MUST), and a partition scope a non-supporting relying party
+  // would ignore is not a scope to build "good" on — deliberate fail-closed
+  // decision. The shard remains consultable for revocation.
+  var crlD12 = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(12), ext("2.5.29.28", false, idpVal({ distributionPoint: dpnFull([gnUri(URL1)]) }))] });
+  var rD12 = await run([leafDp], chk([crlD12]));
+  check("D12 non-critical IDP cannot establish good", rD12.valid === false && failCodes(rD12).indexOf("path/revocation-undetermined") !== -1);
+
+  // D13 — a malformed cert CDP (a DP with ONLY reasons violates "a
+  // DistributionPoint MUST NOT consist of only the reasons field") fails
+  // closed without crashing: DP-scoped shards stay revocation-only, the
+  // full-CRL path is unaffected.
+  var leafBadCdp = await mkCert({ subject: "BadCdpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    extensions: [ext("2.5.29.31", false, b.sequence([b.sequence([b.contextPrimitive(1, someReasons)])]))] });
+  var rD13a = await run([leafBadCdp], chk([crlD1]));
+  check("D13 malformed cert CDP: DP-scoped shard undetermined (no crash)", rD13a.valid === false && failCodes(rD13a).indexOf("path/revocation-undetermined") !== -1);
+  var rD13b = await run([leafBadCdp], chk([crlD11]));
+  check("D13 malformed cert CDP: full no-IDP CRL still good", rD13b.valid === true);
+
+  // D18 — a malformed DPN inside the IDP leaves the CRL's scope UNKNOWN: the
+  // shard is skipped as unusable, so it neither establishes good NOR reveals
+  // a revocation (contrast D4, where a WELL-FORMED non-corresponding shard is
+  // still consulted for revocation).
+  var crlD18a = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: DSER }], extensions: [crlNumberExt(13), idpExt({ distributionPoint: b.contextConstructed(0, Buffer.alloc(0)) })] });
+  var rD18a = await run([leafDp], chk([crlD18a]));
+  check("D18 empty-fullName IDP DPN -> shard skipped (undetermined, not revoked)",
+    rD18a.valid === false && failCodes(rD18a).indexOf("path/revocation-undetermined") !== -1 && failCodes(rD18a).indexOf("path/revoked") === -1);
+  var crlD18b = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(14), idpExt({ distributionPoint: b.contextConstructed(2, gnUri(URL1)) })] });
+  var rD18b = await run([leafDp], chk([crlD18b]));
+  check("D18 non-[0]/[1] IDP DPN alternative -> shard skipped (undetermined)",
+    rD18b.valid === false && failCodes(rD18b).indexOf("path/revocation-undetermined") !== -1);
+}
+
 async function runSuite() {
   await testAcceptChains();
   await testSelfIssuedAndConstraints();
@@ -2381,6 +2590,8 @@ async function runSuite() {
   await testLeafRulesAndParams();
   await testRfc5280ConformanceMusts();
   await testInitialInputsAndTargetGates();
+  await testTrustAnchorConstraints();
+  await testCrlDpIdpCorrespondence();
 }
 
 module.exports = { run: runSuite };

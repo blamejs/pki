@@ -230,6 +230,95 @@ function testNameAndKeyDecoders() {
 }
 
 // ---------------------------------------------------------------------------
+// cRLDistributionPoints / freshestCRL (RFC 5280 §4.2.1.13 / §4.2.1.15) —
+// one decoder, both OIDs; the DistributionPointName is surfaced through the
+// shared helper as the raw name encodings (the §5.2.5 "identical encoding"
+// correspondence key).
+// ---------------------------------------------------------------------------
+
+function gnUri(text) { return b.contextPrimitive(6, Buffer.from(text, "ascii")); }
+// DistributionPointName fullName [0] (IMPLICIT GeneralNames).
+function dpnFull(gns) { return b.contextConstructed(0, Buffer.concat([].concat(gns))); }
+// DistributionPointName nameRelativeToCRLIssuer [1] (IMPLICIT RelativeDistinguishedName).
+function dpnRel(atvs) { return b.contextConstructed(1, Buffer.concat(atvs)); }
+// DistributionPoint ::= SEQUENCE { distributionPoint [0] EXPLICIT <DPN>, reasons [1]? }
+function distPoint(dpn, reasonsBits) {
+  var kids = [b.contextConstructed(0, dpn)];
+  if (reasonsBits) kids.push(b.contextPrimitive(1, reasonsBits));
+  return b.sequence(kids);
+}
+
+function testCrlDistributionPoints() {
+  var OID_CDP = "2.5.29.31", OID_FRESHEST = "2.5.29.46";
+  var d = DEC.byOid[OID_CDP];
+  check("cdp decoder registered", typeof d === "function");
+  var URL1 = "http://crl.example/a.crl";
+  var gn1 = gnUri(URL1);
+  var someReasons = Buffer.from([0x06, 0x40]); // 6 unused bits, keyCompromise
+
+  // D16 — the raw-bytes contract: the INNER GeneralName encoding is surfaced,
+  // not the [0] fullName wrapper and not the [0] field wrapper (an
+  // off-by-one-tag surface would never match, or match too loosely).
+  var v = d(b.sequence([distPoint(dpnFull([gn1]))]));
+  check("D16 one DP decodes", Array.isArray(v) && v.length === 1);
+  check("D16 fullName kind", !!v[0].distributionPoint && v[0].distributionPoint.kind === "fullName");
+  check("D16 names[0] is the raw inner GeneralName encoding",
+    v[0].distributionPoint.names.length === 1 && Buffer.isBuffer(v[0].distributionPoint.names[0]) &&
+    v[0].distributionPoint.names[0].equals(gn1));
+  check("D16 reasons and cRLIssuer default null", v[0].reasons === null && v[0].cRLIssuer === null);
+
+  // nameRelativeToCRLIssuer surfaces its full [1]-tagged TLV.
+  var atv1 = b.sequence([b.oid("2.5.4.3"), b.utf8("Shard1")]);
+  var vr = d(b.sequence([distPoint(dpnRel([atv1]))]));
+  check("rdn DPN kind + raw [1] TLV bytes", vr[0].distributionPoint.kind === "rdn" &&
+    vr[0].distributionPoint.bytes.equals(dpnRel([atv1])));
+
+  // reasons surfaced raw when present alongside a name.
+  var vre = d(b.sequence([distPoint(dpnFull([gn1]), someReasons)]));
+  check("reasons surfaced as the raw BIT STRING",
+    !!vre[0].reasons && vre[0].reasons.unusedBits === 6 && vre[0].reasons.bytes.equals(Buffer.from([0x40])));
+
+  // cRLIssuer-only DP is legal ("either distributionPoint or cRLIssuer MUST be present").
+  var issuerGn = b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("CA")])])]));
+  var vc = d(b.sequence([b.sequence([b.contextConstructed(2, issuerGn)])]));
+  check("cRLIssuer-only DP decodes", vc[0].distributionPoint === null &&
+    !!vc[0].cRLIssuer && vc[0].cRLIssuer.names.length === 1);
+
+  // D14 — empty outer SEQUENCE violates SIZE (1..MAX).
+  check("D14 empty CRLDistributionPoints rejected (SIZE 1..MAX)",
+    code(function () { d(b.sequence([])); }) === "path/bad-crl-distribution-points");
+  // D15 — "a DistributionPoint MUST NOT consist of only the reasons field".
+  check("D15 reasons-only DistributionPoint rejected",
+    code(function () { d(b.sequence([b.sequence([b.contextPrimitive(1, someReasons)])])); }) === "path/bad-crl-distribution-points");
+  check("empty DistributionPoint rejected (distributionPoint or cRLIssuer MUST be present)",
+    code(function () { d(b.sequence([b.sequence([])])); }) === "path/bad-crl-distribution-points");
+  check("DPN alternative other than [0]/[1] rejected",
+    code(function () { d(b.sequence([distPoint(b.contextConstructed(2, gn1))])); }) === "path/bad-crl-distribution-points");
+  check("empty fullName rejected (GeneralNames SIZE 1..MAX)",
+    code(function () { d(b.sequence([distPoint(b.contextConstructed(0, Buffer.alloc(0)))])); }) === "path/bad-crl-distribution-points");
+  check("out-of-order DistributionPoint fields rejected ([1] before [0])",
+    code(function () { d(b.sequence([b.sequence([b.contextPrimitive(1, someReasons), b.contextConstructed(0, dpnFull([gn1]))])])); }) === "path/bad-crl-distribution-points");
+
+  // D17 — freshestCRL reuses the same decoder body (one codec, both OIDs).
+  var f = DEC.byOid[OID_FRESHEST];
+  check("D17 freshestCRL decoder registered", typeof f === "function");
+  var fv = f(b.sequence([distPoint(dpnFull([gn1]))]));
+  check("D17 freshestCRL yields the same shape for the same bytes",
+    fv.length === 1 && fv[0].distributionPoint.kind === "fullName" && fv[0].distributionPoint.names[0].equals(gn1));
+
+  // D18 (helper unit) — the shared distributionPointName rejects a malformed
+  // DPN fail-closed with the caller's code (the CRL checker routes this to
+  // its malformed-IDP skip, never an assumed-unrestricted scope).
+  check("D18u distributionPointName exported", typeof pkix.distributionPointName === "function");
+  check("D18u empty fullName rejected with the caller's code",
+    code(function () { pkix.distributionPointName(NS, asn1.decode(b.contextConstructed(0, Buffer.alloc(0))), "path/bad-idp"); }) === "path/bad-idp");
+  check("D18u non-[0]/[1] alternative rejected with the caller's code",
+    code(function () { pkix.distributionPointName(NS, asn1.decode(b.contextConstructed(2, gn1)), "path/bad-idp"); }) === "path/bad-idp");
+  check("D18u fullName surfaces raw inner GeneralName bytes",
+    pkix.distributionPointName(NS, asn1.decode(dpnFull([gn1])), "path/bad-idp").names[0].equals(gn1));
+}
+
+// ---------------------------------------------------------------------------
 // generalName decoded-value option — behavior-preserving for existing callers
 // ---------------------------------------------------------------------------
 
@@ -382,6 +471,10 @@ function testPemEncodeLabel() {
   check("pemEncode: trailing-space label rejected", encCode("CERT ") === "pem/bad-label");
   check("pemEncode: empty label rejected", encCode("") === "pem/bad-label");
   check("pemEncode: newline in label rejected", encCode("A\nB") === "pem/bad-label");
+  // The DER input is re-viewed through the byte guard: a string would silently
+  // utf8-armor into a bogus PEM, a detached-backed Buffer into an empty body.
+  check("pemEncode: string DER input rejected (no silent utf8 armor)", code(function () { pkix.pemEncode("not-der", "CERTIFICATE", PemError); }) === "pem/bad-input");
+  check("pemEncode: detached-backed Buffer rejected", code(function () { var ab = new ArrayBuffer(3); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] }); pkix.pemEncode(b, "CERTIFICATE", PemError); }) === "pem/bad-input");
   var der = Buffer.from([0x01, 0x02, 0x03]);
   check("pemEncode/pemDecode round-trip",
     pkix.pemDecode(pkix.pemEncode(der, "TEST BLOCK", PemError), "TEST BLOCK", PemError).equals(der));
@@ -448,6 +541,7 @@ function run() {
   testNameConstraints();
   testPolicyDecoders();
   testNameAndKeyDecoders();
+  testCrlDistributionPoints();
   testGeneralNameDecodedValue();
   testAlgParamsMustBeAbsent();
   testPemDecodeStrictness();

@@ -37,6 +37,13 @@ action wrapper, which does not support JavaScript targets.
 | `ct-parse.fuzz.js`       | `pki.schema.ct` SCT-list decoders                     |
 | `smime-parse.fuzz.js`    | `pki.schema.smime` attribute decoders                 |
 | `pkix-ext-parse.fuzz.js` | the shared PKIX extension decoders                    |
+| `cbor-det-parse.fuzz.js` | `pki.cbor.decode` + the `read.*` leaf readers         |
+| `jose-parse.fuzz.js`     | `pki.jose.parseJson` / `base64url.decode` + the JWS profile walk |
+| `acme-object.fuzz.js`    | the `pki.acme` resource-object validators             |
+| `merkle-verify.fuzz.js`  | `pki.merkle` inclusion / consistency verification     |
+| `trust-certdata.fuzz.js` | `pki.trust.parseCertdata` / `parseCcadbCsv` (NSS certdata + CCADB CSV text) |
+| `guard-json.fuzz.js`     | the strict bounded JSON reader, differential vs `JSON.parse` on every accept |
+| `guard-encoding.fuzz.js` | the strict base64url / base64 / hex decoders (two-sided canonicality oracle), the bounded text decode, and the canonical-OID assert vs the DER codec |
 
 Each harness exports a `fuzz(data)` function the engine drives with
 mutated bytes. The contract for every target is the same: decoding or

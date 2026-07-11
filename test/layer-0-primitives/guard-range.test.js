@@ -43,6 +43,13 @@ function testAuthoringBounds() {
     range.int(SAFE_MAX, 0n, SAFE_MAX, E, "x/bad", "f") === Number(SAFE_MAX));
   check("int: min == -(2^53-1) is authorable + narrows exactly",
     range.int(SAFE_MIN, SAFE_MIN, 0n, E, "x/bad", "f") === Number(SAFE_MIN));
+  // Non-BigInt bounds are an authoring fault: a NaN min/max compares false
+  // against every BigInt, silently disabling the range -- the guard would
+  // narrow ANY value. Reject at authoring time like the band checks above.
+  check("int: NaN bounds throw TypeError",
+    typeErr(function () { range.int(5n, NaN, NaN, E, "x/bad", "f"); }) === "TYPE");
+  check("int: Number bounds throw TypeError",
+    typeErr(function () { range.int(5n, 0, 10, E, "x/bad", "f"); }) === "TYPE");
 }
 
 function testParseReject() {
@@ -62,10 +69,26 @@ function testShapes() {
   check("positiveInt31: 1 accepted", range.positiveInt31(1n, E, "x/oob", "f") === 1);
 }
 
+function testUint64() {
+  var U64_MAX = 18446744073709551615n;   // 2^64 - 1
+  // BigInt in range is returned unchanged (never narrowed to a lossy Number).
+  check("uint64: a BigInt in range is returned as a BigInt", range.uint64(U64_MAX, E, "x/oob", "f") === U64_MAX);
+  check("uint64: zero accepted", range.uint64(0n, E, "x/oob", "f") === 0n);
+  // A non-negative safe-integer Number is widened to a BigInt.
+  check("uint64: a safe-integer Number widens to BigInt", range.uint64(42, E, "x/oob", "f") === 42n);
+  // Out of range / wrong kind -> the caller's typed PkiError.
+  check("uint64: 2^64 rejected", pkiCode(function () { range.uint64(U64_MAX + 1n, E, "x/oob", "f"); }) === "x/oob");
+  check("uint64: negative rejected", pkiCode(function () { range.uint64(-1n, E, "x/oob", "f"); }) === "x/oob");
+  check("uint64: a Number past 2^53 rejected (precision already lost)", pkiCode(function () { range.uint64(Number.MAX_SAFE_INTEGER + 2, E, "x/oob", "f"); }) === "x/oob");
+  check("uint64: a fractional Number rejected", pkiCode(function () { range.uint64(1.5, E, "x/oob", "f"); }) === "x/oob");
+  check("uint64: a string rejected", pkiCode(function () { range.uint64("1", E, "x/oob", "f"); }) === "x/oob");
+}
+
 function run() {
   testAuthoringBounds();
   testParseReject();
   testShapes();
+  testUint64();
 }
 
 module.exports = { run: run };
