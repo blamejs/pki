@@ -140,6 +140,9 @@ function run() {
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");
   check("inspect(garbage der) -> inspect/bad-certificate", codeOf(function () { pki.inspect.certificate(Buffer.from("not a cert")); }) === "inspect/bad-certificate");
   check("inspect(bad PEM) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate("-----BEGIN CERTIFICATE-----\nnotbase64!!\n-----END CERTIFICATE-----"); }) === "inspect/bad-input");
+  // A spoofed / partial object with only a tbsBytes property must throw the typed
+  // error, not a raw TypeError from the renderer dereferencing a missing field.
+  check("inspect({tbsBytes}) -> inspect/bad-input (not a raw TypeError)", codeOf(function () { pki.inspect.certificate({ tbsBytes: Buffer.alloc(0) }); }) === "inspect/bad-input");
 
   // --- Interop KAT: the decoded VALUES match the authoritative openssl decode
   // (any openssl version; value-level, not byte-exact). Skips if no openssl. ---
