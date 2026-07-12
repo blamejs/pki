@@ -76,8 +76,16 @@ function run() {
   check("inspect: rich-cert subject CN locatable for mutation", at > 2);
   var evilDer = Buffer.from(richDer); evilDer[at] = 0x0a;   // 'r' -> newline
   var e = pki.inspect.certificate(evilDer);
-  check("inspect: control byte in a DN value is escaped, not injected",
-    /Subject: CN=\\x0Aich\.blamejs\.test/.test(e) && e.indexOf("CN=\nich.blamejs.test") < 0);
+  check("inspect: control byte in a DN value is RFC 4514-escaped, not injected",
+    /Subject: CN=\\0Aich\.blamejs\.test/.test(e) && e.indexOf("CN=\nich.blamejs.test") < 0);
+
+  // A DN value that genuinely starts with '#' is surfaced by the parser with a leading
+  // '\' sentinel; inspect reuses the parser's already-escaped dn, so it must render
+  // single-escaped '\#...' -- NOT double-escaped '\\#...' by re-escaping the sentinel.
+  var hashDer = Buffer.from(richDer); hashDer[at] = 0x23;   // 'r' -> '#'
+  var h = pki.inspect.certificate(hashDer);
+  check("inspect: a DN value starting with '#' is single-escaped, not double",
+    /Subject: CN=\\#ich\.blamejs\.test/.test(h) && h.indexOf("CN=\\\\#ich") < 0);
 
   // Append a synthetic extension to the EC fixture's TBS and return a parseable
   // cert DER (parse is structural, so no re-signing is needed). Used to drive
@@ -135,6 +143,14 @@ function run() {
   ]));
   check("inspect: an RSA-PSS SPKI renders as an RSA key (modulus + exponent)",
     /Public Key Algorithm: rsassaPss/.test(pss) && /Modulus:/.test(pss) && /Exponent: 65537/.test(pss));
+
+  // A CRL distribution point that carries only cRLIssuer (an indirect CRL, no
+  // distributionPoint) must render the issuer GeneralNames, not a bare placeholder.
+  var crlIssuerDp = b.sequence([b.contextConstructed(2, b.contextPrimitive(6, Buffer.from("http://crl-issuer.test", "latin1")))]);
+  var ci = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")), b.octetString(b.sequence([crlIssuerDp]))])));
+  check("inspect: a cRLIssuer-only distribution point renders the issuer, not a placeholder",
+    /CRL Issuer:\n\s+URI:http:\/\/crl-issuer\.test/.test(ci) && ci.indexOf("(distribution point)") < 0);
 
   // --- Fail-closed input; a malformed extension does NOT sink the report ---
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");

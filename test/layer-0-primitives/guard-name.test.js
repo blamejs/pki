@@ -60,7 +60,10 @@ function testRenderEscaping() {
   check("DN plus escaped", name.escapeDnValue("a+b") === "a\\+b");
   check("DN leading '#' escaped", name.escapeDnValue("#x") === "\\#x");
   check("DN leading + trailing space escaped", name.escapeDnValue(" x ") === "\\ x\\ ");
-  check("DN value control byte escaped too", name.escapeDnValue("a" + NUL + "b") === "a\\x00b");
+  // RFC 4514 sec. 2.4 hex form: a NUL / control octet is '\' + two hex digits, so an
+  // embedded CR / LF in a DN value cannot forge a report line when the dn is displayed.
+  check("DN NUL -> \\00 (RFC 4514 hex)", name.escapeDnValue("a" + NUL + "b") === "a\\00b");
+  check("DN LF -> \\0A (RFC 4514 hex, no forged line)", name.escapeDnValue("a" + String.fromCharCode(10) + "b") === "a\\0Ab");
   check("clean DN value untouched", name.escapeDnValue("pkijs.com") === "pkijs.com");
 }
 

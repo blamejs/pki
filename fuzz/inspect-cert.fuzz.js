@@ -17,10 +17,19 @@
 var pki = require("..");
 
 module.exports.fuzz = function (data) {
+  // A Buffer is always treated as DER, so this covers the DER / already-parsed path.
   try {
     var out = pki.inspect.certificate(data);
     if (typeof out !== "string") throw new Error("inspect.certificate returned a non-string");
   } catch (e) {
     if (!(e instanceof pki.errors.PkiError)) throw e;
+  }
+  // The same bytes as a string exercise the documented PEM-string path -- x509.pemDecode
+  // and malformed-PEM handling -- which the Buffer path never reaches.
+  try {
+    var out2 = pki.inspect.certificate(data.toString("latin1"));
+    if (typeof out2 !== "string") throw new Error("inspect.certificate returned a non-string");
+  } catch (e2) {
+    if (!(e2 instanceof pki.errors.PkiError)) throw e2;
   }
 };
