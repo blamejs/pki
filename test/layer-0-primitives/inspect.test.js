@@ -79,24 +79,49 @@ function run() {
   check("inspect: control byte in a DN value is escaped, not injected",
     /Subject: CN=\\x0Aich\.blamejs\.test/.test(e) && e.indexOf("CN=\nich.blamejs.test") < 0);
 
-  // A standalone carriage return in a fallback-rendered extension value (an
-  // unrecognized OID whose value is a printable IA5String) must NOT reach the
-  // report raw -- a bare \r moves the terminal cursor back over prior output. Build
-  // a certificate carrying such an extension and confirm no raw CR survives.
+  // Append a synthetic extension to the EC fixture's TBS and return a parseable
+  // cert DER (parse is structural, so no re-signing is needed). Used to drive
+  // fallback rendering and the AKI issuer/serial form through the shipped path.
   var b = pki.asn1.build, A = pki.asn1;
   var baseDer = pki.schema.x509.pemDecode(ecPem, "CERTIFICATE");
   var baseCert = A.decode(baseDer), baseTbs = baseCert.children[0];
   var extIdx = baseTbs.children.findIndex(function (c) { return c.tagClass === "context" && c.tagNumber === 3; });
   var extList = baseTbs.children[extIdx].children[0].children.map(function (c) { return c.bytes; });
-  var crExt = b.sequence([b.oid("1.3.6.1.4.1.99999.7.7"), b.octetString(b.ia5("line-a\rline-b"))]);
-  var newExts = b.explicit(3, b.sequence(extList.concat([crExt])));
-  var crCertDer = b.sequence([
-    b.sequence(baseTbs.children.map(function (c, i) { return i === extIdx ? newExts : c.bytes; })),
-    baseCert.children[1].bytes, baseCert.children[2].bytes,
-  ]);
-  var cr = pki.inspect.certificate(crCertDer);
-  check("inspect: standalone CR in a fallback value is normalized, not raw",
-    /line-a\n\s+line-b/.test(cr) && cr.indexOf("\r") < 0);
+  function injectExt(extDer) {
+    return b.sequence([
+      b.sequence(baseTbs.children.map(function (c, i) {
+        return i === extIdx ? b.explicit(3, b.sequence(extList.concat([extDer]))) : c.bytes;
+      })),
+      baseCert.children[1].bytes, baseCert.children[2].bytes,
+    ]);
+  }
+
+  // A control byte (a bare \r) in a fallback-rendered extension value must NOT reach
+  // the report raw -- a bare \r moves the terminal cursor back over prior output. A
+  // value with any control byte is rejected as non-printable and hex-dumped instead.
+  var cr = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid("1.3.6.1.4.1.99999.7.7"), b.octetString(b.ia5("line-a\rline-b"))])));
+  check("inspect: control byte in a fallback value is hex-dumped, never raw",
+    cr.indexOf("\r") < 0 && cr.indexOf("line-a\rline-b") < 0 && /6c:69:6e:65:2d:61/.test(cr));
+
+  // The issuer+serial AKI form (no keyIdentifier) must render its real values, not
+  // "keyid:(none)". Build AKI = { [1] authorityCertIssuer dirName, [2] serial }.
+  var akiName = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("aki-ca")])])]);
+  var akiVal = b.sequence([b.contextConstructed(1, b.contextConstructed(4, akiName)), b.contextPrimitive(2, Buffer.from([0x42]))]);
+  var aki = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid(pki.oid.byName("authorityKeyIdentifier")), b.octetString(akiVal)])));
+  check("inspect: issuer/serial-only AKI renders its values, not keyid:(none)",
+    /DirName:CN=aki-ca/.test(aki) && /serial:0x42/.test(aki) && aki.indexOf("keyid:(none)") < 0);
+
+  // An RFC 4514 separator (a comma) in a DN attribute value must be escaped so it
+  // cannot masquerade as an extra RDN. Mutate the issuer CN "pkijs.com" (the first
+  // occurrence) so the '.' becomes a ',' in place; parse stays structural.
+  var commaDer = Buffer.from(baseDer);
+  var dot = commaDer.indexOf(Buffer.from("pkijs.com", "latin1")) + 5;   // the '.' in pkijs.com
+  commaDer[dot] = 0x2c;                                                 // '.' -> ','
+  var comma = pki.inspect.certificate(commaDer);
+  check("inspect: a comma in a DN value is RFC 4514-escaped, not a forged RDN",
+    /CN=pkijs\\,com/.test(comma) && !/CN=pkijs,com/.test(comma));
 
   // --- Fail-closed input; a malformed extension does NOT sink the report ---
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");
@@ -110,7 +135,11 @@ function run() {
   var derFile = path.join(os.tmpdir(), "pki-inspect-" + process.pid + ".der");
   fs.writeFileSync(derFile, ecDer);
   var ref;
-  try { ref = cp.execFileSync(ossl, ["x509", "-in", derFile, "-inform", "DER", "-text", "-noout"], { encoding: "utf8" }); }
+  // Pin -nameopt so the DN format is deterministic across OpenSSL versions (3.0
+  // prints "CN = x" with spaces around '='; 3.5+ prints "CN=x") -- otherwise this
+  // value-agreement check fails on runners with an older openssl though the render
+  // is correct. eqNorm below is a second line of defense on the same axis.
+  try { ref = cp.execFileSync(ossl, ["x509", "-in", derFile, "-inform", "DER", "-text", "-noout", "-nameopt", "RFC2253"], { encoding: "utf8" }); }
   catch (_e) { ref = ""; }
   fs.unlinkSync(derFile);
   // Every value my renderer prints for this cert must also appear in openssl's
