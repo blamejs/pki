@@ -180,6 +180,14 @@ function run() {
   var polC = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("policyConstraints")), b.octetString(b.sequence([b.contextPrimitive(0, Buffer.from([0x01]))]))])));
   check("inspect: policyConstraints renders requireExplicitPolicy", /Require Explicit Policy: 1/.test(polC));
 
+  // A certificate policy with a CPS qualifier must render the qualifier value, not
+  // drop it (which would make a qualified policy look unqualified).
+  var cps = b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.ia5("https://cps.example/policy")]);
+  var polQ = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.1.2"), b.sequence([cps])])]))])));
+  check("inspect: a certificate policy CPS qualifier renders its value, not dropped",
+    /https:\/\/cps\.example\/policy/.test(polQ));
+
   // Completeness gate (the schema-driven promise): every extension the shared decoders
   // can decode has a renderer, so a newly-decodable extension can't silently hex-dump.
   var pkixMod = require("../../lib/schema-pkix"), oidMod = require("../../lib/oid"), errMod = require("../../lib/framework-error");
