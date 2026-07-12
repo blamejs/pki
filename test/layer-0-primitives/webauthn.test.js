@@ -168,6 +168,9 @@ async function run() {
   // §8.2 -- a packed attStmt carrying a field outside its canonical {alg,sig,x5c} set is rejected.
   check("verify: packed attStmt with an unexpected field -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([packedLeaf].map(cBytes))], [cText("zz"), cInt(1)]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
+  // §8.2 -- an attStmt with a non-text-string field key is rejected (not silently skipped).
+  check("verify: packed attStmt with an integer key -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cInt(5), cInt(1)], [cText("alg"), cInt(-7)], [cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([packedLeaf].map(cBytes))]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
   // A malformed DER ECDSA signature (constructed r/s) must fail typed, not raw-throw.
   check("verify: packed with a constructed-child ECDSA sig -> webauthn/bad-signature",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3004300030 00".replace(/ /g, ""), "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
