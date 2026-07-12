@@ -79,6 +79,25 @@ function run() {
   check("inspect: control byte in a DN value is escaped, not injected",
     /Subject: CN=\\x0Aich\.blamejs\.test/.test(e) && e.indexOf("CN=\nich.blamejs.test") < 0);
 
+  // A standalone carriage return in a fallback-rendered extension value (an
+  // unrecognized OID whose value is a printable IA5String) must NOT reach the
+  // report raw -- a bare \r moves the terminal cursor back over prior output. Build
+  // a certificate carrying such an extension and confirm no raw CR survives.
+  var b = pki.asn1.build, A = pki.asn1;
+  var baseDer = pki.schema.x509.pemDecode(ecPem, "CERTIFICATE");
+  var baseCert = A.decode(baseDer), baseTbs = baseCert.children[0];
+  var extIdx = baseTbs.children.findIndex(function (c) { return c.tagClass === "context" && c.tagNumber === 3; });
+  var extList = baseTbs.children[extIdx].children[0].children.map(function (c) { return c.bytes; });
+  var crExt = b.sequence([b.oid("1.3.6.1.4.1.99999.7.7"), b.octetString(b.ia5("line-a\rline-b"))]);
+  var newExts = b.explicit(3, b.sequence(extList.concat([crExt])));
+  var crCertDer = b.sequence([
+    b.sequence(baseTbs.children.map(function (c, i) { return i === extIdx ? newExts : c.bytes; })),
+    baseCert.children[1].bytes, baseCert.children[2].bytes,
+  ]);
+  var cr = pki.inspect.certificate(crCertDer);
+  check("inspect: standalone CR in a fallback value is normalized, not raw",
+    /line-a\n\s+line-b/.test(cr) && cr.indexOf("\r") < 0);
+
   // --- Fail-closed input; a malformed extension does NOT sink the report ---
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");
   check("inspect(garbage der) -> inspect/bad-certificate", codeOf(function () { pki.inspect.certificate(Buffer.from("not a cert")); }) === "inspect/bad-certificate");
