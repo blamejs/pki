@@ -137,7 +137,7 @@ async function run() {
     for (var i = 0; i < att.attStmt.children.length; i++) { var k = att.attStmt.children[i][0]; if (k.majorType === 3 && pki.cbor.read.textString(k) === "x5c") x5cN = att.attStmt.children[i][1]; }
     return pki.cbor.read.byteString(x5cN.children[idx]);
   }
-  var packedLeaf = x5cDer("packed", 0), caCert = x5cDer("tpm", 1), appleLeaf = x5cDer("apple", 0);
+  var packedLeaf = x5cDer("packed", 0), caCert = x5cDer("tpm", 1), appleLeaf = x5cDer("apple", 0), androidLeaf = x5cDer("android_key", 0);
   var realAuthData = pki.webauthn.parseAttestationObject(attObj("packed")).authDataBytes;
   var credKey = pki.webauthn.parseAttestationObject(attObj("packed")).authData.credentialPublicKey;
   var packedHash = clientHash("packed");
@@ -151,6 +151,10 @@ async function run() {
   // §8.2.1 -- the packed leaf subject OU MUST be "Authenticator Attestation".
   check("verify: packed x5c leaf missing OU=Authenticator Attestation -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([appleLeaf], Buffer.alloc(8), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // §8.2.1 -- the packed leaf MUST carry a basicConstraints extension (the android
+  // leaf omits it), so an attestation leaf without one is rejected.
+  check("verify: packed x5c leaf with no basicConstraints -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([androidLeaf], Buffer.alloc(8), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
   // A malformed DER ECDSA signature (constructed r/s) must fail typed, not raw-throw.
   check("verify: packed with a constructed-child ECDSA sig -> webauthn/bad-signature",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3004300030 00".replace(/ /g, ""), "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
@@ -160,6 +164,9 @@ async function run() {
   // §6.1 -- trailing bytes after attestedCredentialData with the ED flag clear.
   check("parse: authData trailing bytes with ED clear -> webauthn/bad-auth-data",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.concat([realAuthData, Buffer.from([0x00])]))); }) === "webauthn/bad-auth-data");
+  // §6.1 -- the ED flag set with no (or malformed) extensions map is rejected.
+  check("parse: ED flag set with no extensions map -> webauthn/bad-auth-data",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ ed: true, coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }))); }) === "webauthn/bad-auth-data");
   // §6.5.1 / COSE sec. 7 -- the credential COSE key MUST carry alg (label 3).
   var ec2NoAlg = coseKey([cKV(1, cInt(2)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
   check("parse: COSE credential key missing alg (label 3) -> webauthn/bad-cose-key",
@@ -194,6 +201,21 @@ async function run() {
   // A zero-valued ECDSA signature integer is not a positive coordinate.
   check("verify: packed with a zero ECDSA signature integer -> webauthn/bad-signature",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3006020100020101", "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
+  // §8.3 -- a tpm pubArea with trailing bytes past the unique field is rejected.
+  check("verify: tpm pubArea with trailing bytes -> webauthn/bad-tpm", (await codeOfAsync(function () {
+    var att = pki.webauthn.parseAttestationObject(attObj("tpm"));
+    function fld(k) { for (var i = 0; i < att.attStmt.children.length; i++) { var kv = att.attStmt.children[i]; if (pki.cbor.read.textString(kv[0]) === k) return kv[1]; } return null; }
+    var x5c = fld("x5c").children.map(function (c) { return pki.cbor.read.byteString(c); });
+    var attStmt = [
+      [cText("ver"), cText(pki.cbor.read.textString(fld("ver")))],
+      [cText("alg"), cInt(Number(pki.cbor.read.int(fld("alg"))))],
+      [cText("sig"), cBytes(pki.cbor.read.byteString(fld("sig")))],
+      [cText("certInfo"), cBytes(pki.cbor.read.byteString(fld("certInfo")))],
+      [cText("pubArea"), cBytes(Buffer.concat([pki.cbor.read.byteString(fld("pubArea")), Buffer.from([0x00])]))],
+      [cText("x5c"), cArr(x5c.map(cBytes))],
+    ];
+    return pki.webauthn.verify(attObjOf("tpm", attStmt, att.authDataBytes), clientHash("tpm"));
+  })) === "webauthn/bad-tpm");
   // §8.7 -- the none format verifies with no statement (attestationType "None").
   var noneRes = await pki.webauthn.verify(attObjOf("none", [], realAuthData), packedHash);
   check("verify: none attestation verifies (attestationType None, empty trust path)",
