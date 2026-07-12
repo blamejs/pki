@@ -256,6 +256,9 @@ async function run() {
   // §8.7 -- a none attStmt that is not a map at all (here a uint) is rejected.
   check("verify: none attestation with a non-map attStmt -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-att-stmt");
+  // §6.5.4 -- an attestation object with an extra top-level key (non-canonical envelope) is rejected.
+  check("parse: attestation object with an extra top-level key -> webauthn/bad-attestation-object",
+    codeOf(function () { pki.webauthn.parseAttestationObject(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cMap([])], [cText("authData"), cBytes(realAuthData)], [cText("zextra"), cInt(1)]])); }) === "webauthn/bad-attestation-object");
   // A DER-negative ECDSA signature integer is not a valid coordinate.
   check("verify: packed with a negative ECDSA signature integer -> webauthn/bad-signature",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3006020180020101", "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
