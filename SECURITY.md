@@ -248,19 +248,23 @@ security-only patches after the next major releases.
   encoded equal to its DEFAULT as non-canonical DER, closing an
   encode-ambiguity a signature check would otherwise have to tolerate.
 - **Attestation-key substitution (WebAuthn).** `pki.webauthn.verify` binds every
-  attestation-statement signature to the credential being registered: the
-  attestation certificate's public key must equal the authenticatorData credential
-  public key (an unsigned-integer comparison for EC and RSA coordinates, so a
-  leading-zero re-encoding cannot desynchronize it, and a byte-exact comparison for a
-  fixed-width Ed25519 key), the tpm `pubArea` key must equal both the credential key
-  and the `certInfo` TPM Name it certifies, the apple nonce must equal the SHA-256
-  over `authenticatorData || clientDataHash`, and the android attestation-challenge
-  must equal the `clientDataHash` — so an attacker cannot pair a valid attestation
-  over one key with a different credential key. The attestation object and COSE keys
-  are decoded by the strict `pki.cbor` codec and the TPM structures by a
-  bounds-before-slice reader, and every failed check throws a typed `webauthn/*`
-  error — a signature that does not verify is a verdict, never a silent pass. RS1
-  (SHA-1) is accepted for verifying the legacy TPM authenticators that emit it, never
+  attestation to the credential being registered, by the mechanism each format
+  defines. For **packed** and **fido-u2f** the attestation signature covers the
+  `authenticatorData` (fido-u2f's signed `verificationData` embeds the credential
+  key explicitly), so a signature that verifies is a signature over that exact
+  credential key. For **android-key**, **apple**, and **tpm** the attestation
+  certificate — or, for tpm, the `pubArea` — public key is additionally required to
+  equal the credential public key: an unsigned-integer comparison for EC and RSA
+  coordinates (so a leading-zero re-encoding cannot desynchronize it) and a
+  byte-exact comparison for a fixed-width Ed25519 key, with the tpm `pubArea` key
+  also bound to the `certInfo` TPM Name it certifies. The apple nonce must equal the
+  SHA-256 over `authenticatorData || clientDataHash`, and the android
+  attestation-challenge must equal the `clientDataHash` — so an attacker cannot pair
+  a valid attestation over one key with a different credential. The attestation
+  object and COSE keys are decoded by the strict `pki.cbor` codec and the TPM
+  structures by a bounds-before-slice reader, and every failed check throws a typed
+  `webauthn/*` error — a signature that does not verify is a verdict, never a silent
+  pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that emit it, never
   for signing.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
