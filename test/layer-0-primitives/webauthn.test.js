@@ -192,6 +192,10 @@ async function run() {
   var ed448Bad = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(32, 7)))]);
   check("parse: OKP crv 7 with a 32-byte x -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448Bad }))); }) === "webauthn/bad-cose-key");
+  // §6.5.1 -- a credential key with an extra (non-canonical) parameter is rejected.
+  var ec2Extra = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y)), cKV(4, cInt(1))]);
+  check("parse: EC2 key with an extra parameter -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2Extra }))); }) === "webauthn/bad-cose-key");
   // §6.5.1 -- the COSE profile: an EC2 key declaring an EdDSA alg is inconsistent.
   var ec2WrongAlg = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-8)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
   check("parse: EC2 key with an EdDSA alg (profile mismatch) -> webauthn/bad-cose-key",
