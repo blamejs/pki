@@ -117,6 +117,13 @@ async function run() {
   var noSet = JSON.parse(JSON.stringify(BUNDLE));
   delete noSet.verificationMaterial.tlogEntries[0].inclusionPromise;
   check("checkpoint-only, no SET -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(noSet, TM)) === "sigstore/unattested-time");
+  // The inclusion-proof root MUST be checkpoint-signed: a valid SET alone does not
+  // attest the root the proof reconstructs, so a corrupted checkpoint rejects even
+  // with a valid SET (the reconstructed root would otherwise be attacker-supplied).
+  var noCheckpoint = JSON.parse(JSON.stringify(BUNDLE));
+  noCheckpoint.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope =
+    noCheckpoint.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope.replace(/wNI9aj/, "wNI9ZZ");
+  check("valid SET but unsigned checkpoint root -> sigstore/unsigned-root", await codeOf(pki.sigstore.verifyBundle(noCheckpoint, TM)) === "sigstore/unsigned-root");
 
   // --- Entry-binds-this-signature: tamper the Rekor entry's embedded signature so
   // it no longer matches the envelope -> reject (a valid inclusion proof for a
