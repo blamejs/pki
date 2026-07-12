@@ -152,6 +152,15 @@ function run() {
   check("inspect: a cRLIssuer-only distribution point renders the issuer, not a placeholder",
     /CRL Issuer:\n\s+URI:http:\/\/crl-issuer\.test/.test(ci) && ci.indexOf("(distribution point)") < 0);
 
+  // A CRL distribution point with a reasons BIT STRING must render the reason scope,
+  // not drop it (which would make a scoped revocation source look generally applicable).
+  var dpName = b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.test", "latin1"))));
+  var rsnDp = b.sequence([dpName, b.contextPrimitive(1, Buffer.from([0x05, 0x60]))]);   // reasons: keyCompromise, cACompromise
+  var rsn = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")), b.octetString(b.sequence([rsnDp]))])));
+  check("inspect: a CRL DP reasons BIT STRING renders the reason scope",
+    /Reasons: Key Compromise, CA Compromise/.test(rsn));
+
   // --- Fail-closed input; a malformed extension does NOT sink the report ---
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");
   check("inspect(garbage der) -> inspect/bad-certificate", codeOf(function () { pki.inspect.certificate(Buffer.from("not a cert")); }) === "inspect/bad-certificate");
