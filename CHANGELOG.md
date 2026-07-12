@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.4 — 2026-07-12
+
+Human-readable certificate inspection joins the toolkit as pki.inspect.
+
+### Added
+
+- pki.inspect.certificate(input) renders a certificate (a PEM string, a DER Buffer, or a pki.schema.x509.parse result) as a human-readable OpenSSL-x509-text-style report, composed over the strict X.509 parser, the shared RFC 5280 extension decoders, and the two-way OID registry. Standard extensions (basic constraints, key usage, extended key usage with purpose names, subject/issuer alternative names, subject and authority key identifiers, and more) decode to their content; an extension with no decoder is named from the registry and shown as its string or a hex dump. A value that is not a certificate, DER, or PEM throws inspect/bad-input; malformed certificate bytes throw inspect/bad-certificate; a malformed single extension never sinks the report. The error taxonomy gains InspectError (inspect/*). RFC 5280.
+
 ## v0.2.3 — 2026-07-12
 
 Offline Sigstore bundle verification joins the toolkit as pki.sigstore.

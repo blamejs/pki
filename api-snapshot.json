@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.3",
+  "packageVersion": "0.2.4",
   "surface": {
     "C": {
       "kind": "object",
@@ -877,6 +877,10 @@
           "kind": "function",
           "arity": 3
         },
+        "InspectError": {
+          "kind": "function",
+          "arity": 3
+        },
         "JoseError": {
           "kind": "function",
           "arity": 3
@@ -1089,6 +1093,15 @@
               }
             }
           }
+        }
+      }
+    },
+    "inspect": {
+      "kind": "object",
+      "members": {
+        "certificate": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -1736,6 +1749,7 @@
     "pki.hpke.setupR": "0.2.2",
     "pki.hpke.seal": "0.2.2",
     "pki.hpke.open": "0.2.2",
+    "pki.inspect.certificate": "0.2.4",
     "pki.jose.base64url.encode": "0.1.25",
     "pki.jose.base64url.decode": "0.1.25",
     "pki.jose.parseJson": "0.1.25",
