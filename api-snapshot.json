@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.1",
+  "packageVersion": "0.2.2",
   "surface": {
     "C": {
       "kind": "object",
@@ -873,6 +873,10 @@
           "kind": "function",
           "arity": 3
         },
+        "HpkeError": {
+          "kind": "function",
+          "arity": 3
+        },
         "JoseError": {
           "kind": "function",
           "arity": 3
@@ -993,6 +997,94 @@
         "transferEncode": {
           "kind": "function",
           "arity": 1
+        }
+      }
+    },
+    "hpke": {
+      "kind": "object",
+      "members": {
+        "open": {
+          "kind": "function",
+          "arity": 6
+        },
+        "seal": {
+          "kind": "function",
+          "arity": 5
+        },
+        "setupR": {
+          "kind": "function",
+          "arity": 4
+        },
+        "setupS": {
+          "kind": "function",
+          "arity": 3
+        },
+        "suites": {
+          "kind": "object",
+          "members": {
+            "AEAD": {
+              "kind": "object",
+              "members": {
+                "AES_128_GCM": {
+                  "kind": "number"
+                },
+                "AES_256_GCM": {
+                  "kind": "number"
+                },
+                "CHACHA20_POLY1305": {
+                  "kind": "number"
+                },
+                "EXPORT_ONLY": {
+                  "kind": "number"
+                }
+              }
+            },
+            "KDF": {
+              "kind": "object",
+              "members": {
+                "HKDF_SHA256": {
+                  "kind": "number"
+                },
+                "HKDF_SHA512": {
+                  "kind": "number"
+                }
+              }
+            },
+            "KEM": {
+              "kind": "object",
+              "members": {
+                "DHKEM_P256_HKDF_SHA256": {
+                  "kind": "number"
+                },
+                "DHKEM_P521_HKDF_SHA512": {
+                  "kind": "number"
+                },
+                "DHKEM_X25519_HKDF_SHA256": {
+                  "kind": "number"
+                },
+                "DHKEM_X448_HKDF_SHA512": {
+                  "kind": "number"
+                }
+              }
+            },
+            "MODE": {
+              "kind": "object",
+              "members": {
+                "AUTH": {
+                  "kind": "number"
+                },
+                "AUTH_PSK": {
+                  "kind": "number"
+                },
+                "BASE": {
+                  "kind": "number"
+                },
+                "PSK": {
+                  "kind": "number"
+                }
+              }
+            }
+          }
         }
       }
     },
@@ -1619,6 +1711,10 @@
     "pki.est.paths": "0.1.24",
     "pki.errors.PkiError": "0.1.0",
     "pki.errors.defineClass": "0.1.0",
+    "pki.hpke.setupS": "0.2.2",
+    "pki.hpke.setupR": "0.2.2",
+    "pki.hpke.seal": "0.2.2",
+    "pki.hpke.open": "0.2.2",
     "pki.jose.base64url.encode": "0.1.25",
     "pki.jose.base64url.decode": "0.1.25",
     "pki.jose.parseJson": "0.1.25",
