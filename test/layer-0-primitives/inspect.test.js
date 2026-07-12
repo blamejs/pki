@@ -102,7 +102,12 @@ function run() {
     "Certificate Sign, CRL Sign", "83:91:31:BE:33:42:B9:D8",       // SKI
     "DNS:pkijs.com",
   ];
-  var agree = ref ? mustAgree.every(function (v) { return ref.indexOf(v) >= 0 && t.indexOf(v) >= 0; }) : false;
+  // openssl's `x509 -text` prints DN attributes as "CN=x" (3.5+) or "CN = x"
+  // (3.0), so normalize whitespace around '=' before the value comparison -- this
+  // KAT is value-level, not byte-exact to any single openssl release.
+  function eqNorm(s) { return String(s).replace(/\s*=\s*/g, "="); }
+  var refN = eqNorm(ref), tN = eqNorm(t);
+  var agree = ref ? mustAgree.every(function (v) { var vn = eqNorm(v); return refN.indexOf(vn) >= 0 && tN.indexOf(vn) >= 0; }) : false;
   check("interop: pki.inspect values agree with openssl x509 -text (" + ossl.split(/[\\/]/).slice(-3).join("/") + ")", agree);
 }
 
