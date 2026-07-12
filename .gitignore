@@ -64,6 +64,8 @@ id_ed25519*
 !lib/vendor/*.crt
 !test/fixtures/*.pem
 !test/fixtures/*.crt
+!test/fixtures/**/*.pem
+!test/fixtures/**/*.crt
 
 # Backup / patch artifacts
 *.bak

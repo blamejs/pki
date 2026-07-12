@@ -44,6 +44,7 @@ var est        = require("./lib/est");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
 var trust      = require("./lib/trust");
+var inspect    = require("./lib/inspect");
 
 module.exports = {
   version:   constants.version,
@@ -110,6 +111,11 @@ module.exports = {
   // root list omits); pki.trust.anchor hands one to pki.path.validate. Offline:
   // the operator supplies the text; no fetch.
   trust:     trust,
+  // `inspect` is human-readable inspection -- pki.inspect.certificate(pem|der|parsed)
+  // renders an OpenSSL-familiar `x509 -text`-style report from the strict parser +
+  // OID registry, naming extension/algorithm OIDs OpenSSL shows only as raw bytes.
+  // Pure, no OpenSSL dependency; best-effort (a bad extension falls back to hex).
+  inspect:   inspect,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.

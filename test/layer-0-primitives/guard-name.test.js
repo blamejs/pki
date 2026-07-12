@@ -47,10 +47,31 @@ function testControlByteReject() {
   check("TAB is exempt and collapsed to a space", name.dnEqual([rdn(CN, "Root\tCA")], [rdn(CN, "Root CA")], E, "x/name", "dn") === true);
 }
 
+function testRenderEscaping() {
+  // escapeControlBytes: the render-side sibling -- a control byte a display must still
+  // show becomes \xHH (never a raw CR/LF/NUL that forges a report line); printable
+  // ASCII passes through unchanged.
+  check("control byte -> \\xHH (NUL, LF)", name.escapeControlBytes("a" + NUL + "b" + String.fromCharCode(10)) === "a\\x00b\\x0A");
+  check("printable ASCII passes through", name.escapeControlBytes("plain.text-123 (x)") === "plain.text-123 (x)");
+  check("DEL 0x7f is escaped", name.escapeControlBytes(String.fromCharCode(0x7f)) === "\\x7F");
+  // escapeDnValue (this IS the behavioral guard): RFC 4514 -- a separator inside a DN
+  // value is backslash-escaped so it cannot read as a second RDN in the report.
+  check("DN comma escaped, not a forged RDN", name.escapeDnValue("foo, CN=admin") === "foo\\, CN=admin");
+  check("DN plus escaped", name.escapeDnValue("a+b") === "a\\+b");
+  check("DN leading '#' escaped", name.escapeDnValue("#x") === "\\#x");
+  check("DN leading + trailing space escaped", name.escapeDnValue(" x ") === "\\ x\\ ");
+  // RFC 4514 sec. 2.4 hex form: a NUL / control octet is '\' + two hex digits, so an
+  // embedded CR / LF in a DN value cannot forge a report line when the dn is displayed.
+  check("DN NUL -> \\00 (RFC 4514 hex)", name.escapeDnValue("a" + NUL + "b") === "a\\00b");
+  check("DN LF -> \\0A (RFC 4514 hex, no forged line)", name.escapeDnValue("a" + String.fromCharCode(10) + "b") === "a\\0Ab");
+  check("clean DN value untouched", name.escapeDnValue("pkijs.com") === "pkijs.com");
+}
+
 function run() {
   testDnEqual();
   testRdnMultiset();
   testControlByteReject();
+  testRenderEscaping();
 }
 
 module.exports = { run: run };

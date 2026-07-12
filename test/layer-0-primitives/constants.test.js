@@ -54,11 +54,27 @@ function testMeta() {
   check("LIMITS.DER_MAX_DEPTH is a positive int", pki.C.LIMITS.DER_MAX_DEPTH > 0);
 }
 
+function testNamesFrozen() {
+  // NAMES is the parsers' legal-value allow-list (CRL_REASON / OCSP_STATUS /
+  // OBJECT_DIGEST_TYPE), so it MUST be immutable -- a caller cannot widen what the
+  // decoders accept by mutating the shared "display-only" table (fail-open bypass).
+  check("C.NAMES is frozen", Object.isFrozen(pki.C.NAMES));
+  check("C.NAMES.CRL_REASON (allow-list) is frozen", Object.isFrozen(pki.C.NAMES.CRL_REASON));
+  check("C.NAMES.OCSP_STATUS (allow-list) is frozen", Object.isFrozen(pki.C.NAMES.OCSP_STATUS));
+  // A mutation attempt does not widen the allow-list (strict-mode assignment throws;
+  // either way value 7 -- RFC-reserved -- stays absent).
+  var had7 = Object.prototype.hasOwnProperty.call(pki.C.NAMES.CRL_REASON, "7");
+  code(function () { pki.C.NAMES.CRL_REASON["7"] = "unused"; });
+  check("a frozen allow-list rejects an added RFC-reserved value",
+    !had7 && !Object.prototype.hasOwnProperty.call(pki.C.NAMES.CRL_REASON, "7"));
+}
+
 function run() {
   testTime();
   testBytes();
   testThrows();
   testMeta();
+  testNamesFrozen();
 }
 
 module.exports = { run: run };
