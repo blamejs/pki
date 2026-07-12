@@ -102,6 +102,14 @@ function testMalformed() {
   var sigOts = sig.readUInt32BE(4);
   var tinyMismatch = Buffer.alloc(8); tinyMismatch.writeUInt32BE(0, 0); tinyMismatch.writeUInt32BE(sigOts === 4 ? 3 : 4, 4);
   check("8-byte blob with a mismatched OTS typecode -> false (RFC Alg 6a step 2c)", pki.shbs.verifyLms(pub, msg, tinyMismatch) === false);
+  // HSS consistency: an LMS signature inside an HSS blob whose typecode is
+  // mutated must be a verification FAILURE (false), exactly as verifyLms treats
+  // it -- NOT a throw. The HSS parser sizes each level's signature by the
+  // AUTHORITATIVE public key, so a mismatch reaches _lmsVerify's step-2c check.
+  var hss = readFixture("rfc8554-appF.json")[0];
+  var hp = hx(hss.publicKeyHex), hm = hx(hss.messageHex), hs = Buffer.from(hx(hss.signatureHex));
+  hs.writeUInt32BE(hs.readUInt32BE(8) === 4 ? 3 : 4, 8);   // sig[0] OTS typecode (bytes 8-11)
+  check("HSS signature with a mutated inner LMS typecode -> false", pki.shbs.verify(hp, hm, hs) === false);
 }
 
 // -- OID registry + params-absent seed ---------------------------------------
