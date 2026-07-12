@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.1 — 2026-07-12
+
+Stateful hash-based signature verification (HSS/LMS) joins the toolkit as pki.shbs.
+
+### Added
+
+- pki.shbs.verify(publicKey, message, signature) verifies an HSS (Hierarchical Signature System) signature -- the wire form RFC 9802 (X.509) and RFC 9708 (CMS) carry for id-alg-hss-lms-hashsig -- returning true only if every level of the hierarchy verifies. pki.shbs.verifyLms(publicKey, message, signature) verifies a single-tree LMS signature (the component HSS composes, and a standalone algorithm). Both take the raw octet blobs the parsers surface (a certificate's subjectPublicKeyInfo.publicKey.bytes, tbsBytes, and signatureValue.bytes); a malformed blob -- bad length, an unknown or unapproved typecode, truncation, a typecode the public key does not commit to -- throws a typed ShbsError, and a well-formed but wrong signature returns false. RFC 8554 / RFC 9802 / RFC 9708 / NIST SP 800-208.
+- The OID registry gains id-alg-hss-lms-hashsig (1.2.840.113549.1.9.16.3.17), id-alg-xmss-hashsig, and id-alg-xmssmt-hashsig, all with parameters MUST be absent (RFC 9802 sec. 4) -- a stateful-hash-signature AlgorithmIdentifier carrying any parameters now fails closed at the shared algorithm-identifier gate, inherited by every format the toolkit parses. The error taxonomy gains ShbsError (shbs/*).
+
+### Changed
+
+- XMSS / XMSS^MT verification and automatic HSS/LMS verification inside pki.path.validate are not in this release -- see the roadmap. The former awaits an authoritative interoperability test vector (RFC 8391 ships none and NIST ACVP does not yet cover XMSS); the latter awaits a real HSS-signed certificate to prove the certification-path wiring end to end. Operators verify today by handing the raw certificate / CMS blobs to pki.shbs.verify directly.
+
 ## v0.2.0 — 2026-07-11
 
 Trust-store ingestion, sharded-CRL revocation, and a hardened input-guard layer.

@@ -44,6 +44,7 @@ action wrapper, which does not support JavaScript targets.
 | `trust-certdata.fuzz.js` | `pki.trust.parseCertdata` / `parseCcadbCsv` (NSS certdata + CCADB CSV text) |
 | `guard-json.fuzz.js`     | the strict bounded JSON reader, differential vs `JSON.parse` on every accept |
 | `guard-encoding.fuzz.js` | the strict base64url / base64 / hex decoders (two-sided canonicality oracle), the bounded text decode, and the canonical-OID assert vs the DER codec |
+| `shbs-verify.fuzz.js`    | `pki.shbs.verify` / `verifyLms` (HSS/LMS verification over hostile public-key / message / signature blobs) |
 
 Each harness exports a `fuzz(data)` function the engine drives with
 mutated bytes. The contract for every target is the same: decoding or

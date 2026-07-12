@@ -99,6 +99,18 @@ security-only patches after the next major releases.
   certificates before any pre-authentication signature work, so a small hostile
   input cannot fan out into unbounded allocations or unbounded asymmetric-verify
   work.
+- **Stateful-signature key reuse and downgrade.** `pki.shbs` verifies HSS/LMS
+  signatures (RFC 8554) but deliberately NEVER signs: stateful hash-based signing
+  requires a one-time-key index whose state must advance atomically across every
+  signature and every restart, and a single reuse can leak enough material to
+  forge, so SP 800-208 confines signing to hardware. Verification is pure
+  public-input hashing (no secret, no side-channel), the public key is the sole
+  authority for every parameter set (a signature whose typecode disagrees with
+  the key cannot verify against it -- a downgrade defense), an HSS hierarchy
+  accepts only if EVERY level verifies, and every field length is bounds-checked
+  before it is read; an unapproved or unknown typecode, a truncated blob, or a
+  hostile level count fails closed with a typed error rather than an unbounded
+  loop or an out-of-bounds read.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
