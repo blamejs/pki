@@ -262,34 +262,42 @@ reintroduce the bug class it prevents. Adding a format is a schema declaration
 plus a documentation comment block, not new parse logic.
 
 ```
-┌─ Detect + route ────────────────────────────────────────────────────────┐
-│  pki.schema.parse — inspect the DER root, route to the matching sibling │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ Detect + route ─────────────────────────────────────────────────────────┐
+│ pki.schema.parse — inspect the DER root, route to the matching sibling   │
+└──────────────────────────────────────────────────────────────────────────┘
                                      │
- ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   Format
- │  x509  │ │  crl   │ │  csr   │ │ pkcs8  │   parsers
- └────────┘ └────────┘ └────────┘ └────────┘   (siblings)
  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
- │  cms   │ │  ocsp  │ │  tsp   │ │attrcert│
+ │  x509  │ │  crl   │ │  csr   │ │ pkcs8  │
  └────────┘ └────────┘ └────────┘ └────────┘
-                                     │  every sibling composes ↓
-┌─ Shared structure ──────────────────────────────────────────────────────┐
-│  pki.schema.engine — walk + combinators (positional reads, tag order,   │
-│  SET-OF uniqueness, arity, typed errors) · the PKIX sub-schemas —       │
-│  AlgorithmIdentifier · Name · Extension · a bounded version reader —    │
-│  and the one coerce → decode → walk parse-entry (PEM cap + DER wrap).   │
-└─────────────────────────────────────────────────────────────────────────┘
+ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+ │  cms   │ │  ocsp  │ │  tsp   │ │  crmf  │
+ └────────┘ └────────┘ └────────┘ └────────┘
+ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+ │ pkcs12 │ │  cmp   │ │ smime  │ │attrcert│
+ └────────┘ └────────┘ └────────┘ └────────┘
+                                     │  routed DER format parsers (siblings)
+┌─ Protocols · trust · supply chain  (reached by explicit call) ───────────┐
+│ pki.path RFC 5280 · pki.trust anchors · pki.ct SCTs · pki.hpke RFC 9180  │
+│ pki.shbs HSS/LMS · pki.merkle RFC 9162 · pki.sigstore npm provenance     │
+│ pki.jose · pki.acme · pki.est — compose the layers below directly.       │
+└──────────────────────────────────────────────────────────────────────────┘
+                                     │  every module composes ↓
+┌─ Shared structure ───────────────────────────────────────────────────────┐
+│ pki.schema.engine — walk + combinators (positional reads, tag order,     │
+│ SET-OF uniqueness, typed errors) · the PKIX sub-schemas · and the        │
+│ guard family (guard-*) — one fail-closed choke point per CVE class.      │
+└──────────────────────────────────────────────────────────────────────────┘
                                      │  built on ↓
-┌─ Foundation ────────────────────────────────────────────────────────────┐
-│  pki.asn1 — strict, bounded DER codec · pki.oid — two-way, PQC-seeded   │
-│  OID registry · pki.errors — the PkiError domain/reason taxonomy ·      │
-│  pki.C — version-stable LIMITS + scale constants.                       │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ Foundation ─────────────────────────────────────────────────────────────┐
+│ pki.asn1 — strict bounded DER codec · pki.cbor — deterministic CBOR ·    │
+│ pki.oid — two-way PQC-seeded registry · pki.errors — PkiError taxonomy   │
+│ · pki.C — version-stable LIMITS + scale constants.                       │
+└──────────────────────────────────────────────────────────────────────────┘
 
-┌─ Crypto ────────────────────────────────────────────────────────────────┐
-│  pki.webcrypto ──▶ node:crypto — a W3C SubtleCrypto engine: the         │
-│  classical set + post-quantum ML-DSA / SLH-DSA + ML-KEM key generation. │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ Crypto ─────────────────────────────────────────────────────────────────┐
+│ pki.webcrypto ─▶ node:crypto — a W3C SubtleCrypto engine: the            │
+│ classical set + post-quantum ML-DSA / SLH-DSA + ML-KEM key generation.   │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Foundation.** The strict, bounded DER codec (`pki.asn1`), the two-way OID
@@ -303,11 +311,23 @@ bounded version reader, and the single coerce → decode → walk parse-entry th
 every format's `parse` is bound to. Because input coercion, the PEM size cap, and
 the DER-decode wrapping live here once, a format cannot diverge on a guard.
 
-**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, `tsp`, and `attrcert` are siblings:
-each is a schema declaration composed from the shared pieces, emitting its own
-typed `domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
+**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, `tsp`, `attrcert`,
+`crmf`, `pkcs12`, `cmp`, `smime`, and `csrattrs` are siblings: each is a schema
+declaration composed from the shared pieces, emitting its own typed
+`domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
 detect-and-routes to the matching sibling; the detectors are mutually exclusive by
 construction, so routing is unambiguous regardless of registration order.
+
+**Protocols, trust, and supply chain.** Above the format parsers sit the domain
+modules reached by explicit call rather than DER routing: `pki.path` (RFC 5280
+path validation), `pki.trust` (trust anchors), `pki.ct` (Certificate Transparency
+SCTs), `pki.hpke` (RFC 9180), `pki.shbs` (HSS/LMS stateful hash signatures),
+`pki.merkle` (RFC 9162 transparency proofs), `pki.sigstore` (offline npm-provenance
+verification), and the `jose` / `acme` / `est` enrollment surfaces. Each composes
+the shared structure, foundation, and crypto layers directly. Alongside the schema
+engine, the fail-closed **guard family** (`guard-*`) centralizes each CVE-class
+defense — detached-buffer re-view, resource caps, constant-time compares,
+canonical-DN comparison — as one choke point a format cannot re-inline.
 
 **Crypto.** `pki.webcrypto` is a W3C `SubtleCrypto` engine over `node:crypto`,
 carrying the classical suite plus post-quantum ML-DSA / SLH-DSA signatures and
