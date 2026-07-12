@@ -24,20 +24,20 @@ var TRUST = JSON.parse(fs.readFileSync(path.join(FX, "trusted-root.json"), "utf8
 // Extract the caller trust material from the public-good trusted_root.json: the
 // Fulcio CA cert chains (DER) and the Rekor log public keys (SPKI DER + keyId).
 function trustMaterial() {
+  // Pass the trusted_root validFor windows through VERBATIM (ISO-8601 strings) --
+  // the toolkit must parse them; a caller pins trust material as it comes.
   var fulcioRoots = [];
   (TRUST.certificateAuthorities || []).forEach(function (ca) {
-    var vf = ca.validFor ? { start: ca.validFor.start ? Date.parse(ca.validFor.start) : null, end: ca.validFor.end ? Date.parse(ca.validFor.end) : null } : undefined;
     ((ca.certChain && ca.certChain.certificates) || []).forEach(function (c) {
-      fulcioRoots.push({ der: Buffer.from(c.rawBytes, "base64"), validFor: vf });
+      fulcioRoots.push({ der: Buffer.from(c.rawBytes, "base64"), validFor: ca.validFor });
     });
   });
   var rekorKeys = (TRUST.tlogs || []).map(function (t) {
-    var vf = t.publicKey && t.publicKey.validFor;
     return {
       keyId: Buffer.from((t.logId && t.logId.keyId) || "", "base64"),
       spki: Buffer.from((t.publicKey && t.publicKey.rawBytes) || "", "base64"),
       keyDetails: t.publicKey && t.publicKey.keyDetails,
-      validFor: vf ? { start: vf.start ? Date.parse(vf.start) : null, end: vf.end ? Date.parse(vf.end) : null } : undefined,
+      validFor: t.publicKey && t.publicKey.validFor,
     };
   });
   return { fulcioRoots: fulcioRoots, rekorKeys: rekorKeys };
