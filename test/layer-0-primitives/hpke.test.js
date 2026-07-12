@@ -91,6 +91,22 @@ function testRobustness() {
   // The serialized private-key form is { skm, pkm }; a bare buffer must fail
   // closed as a typed error, never a raw node createPublicKey throw.
   check("raw private-key buffer -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), Buffer.alloc(32), {}); }) === "hpke/bad-key");
+  // Auth modes require the sender's key; its absence must be a clear typed error
+  // (RFC 9180 sec. 5.1.3), never a raw throw out of the key-import path.
+  check("auth setupS without senderKey -> hpke/auth-key-required", codeOf(function () { pki.hpke.setupS(IDS, kp.publicKey, { mode: S.MODE.AUTH }); }) === "hpke/auth-key-required");
+  check("auth setupR without senderPublicKey -> hpke/auth-key-required", codeOf(function () { var o = pki.hpke.setupS(IDS, kp.publicKey, {}); return pki.hpke.setupR(IDS, o.enc, kp.privateKey, { mode: S.MODE.AUTH }); }) === "hpke/auth-key-required");
+  // A missing / undefined recipient public key must fail closed as a typed error.
+  check("undefined recipient public key -> hpke/bad-key", codeOf(function () { pki.hpke.setupS(IDS, undefined, {}); }) === "hpke/bad-key");
+  // A missing / non-object suiteIds must fail closed, not throw a raw TypeError.
+  check("undefined suiteIds -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS(undefined, kp.publicKey, {}); }) === "hpke/unknown-suite");
+  check("null suiteIds (setupR) -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupR(null, Buffer.alloc(32, 0), kp.privateKey, {}); }) === "hpke/unknown-suite");
+  // A suiteIds missing a member (undefined code point) must report unknown-suite,
+  // not crash the error path formatting an undefined id.
+  check("suiteIds missing aead -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: IDS.kem, kdf: IDS.kdf }, kp.publicKey, {}); }) === "hpke/unknown-suite");
+  // export length must be a non-negative integer: a negative / fractional / NaN
+  // length must fail closed, never silently return empty or throw raw.
+  check("export negative length -> hpke/export-length", codeOf(function () { pki.hpke.setupS(IDS, kp.publicKey, {}).context.export(Buffer.alloc(0), -1); }) === "hpke/export-length");
+  check("export fractional length -> hpke/export-length", codeOf(function () { pki.hpke.setupS(IDS, kp.publicKey, {}).context.export(Buffer.alloc(0), 1.5); }) === "hpke/export-length");
   // Role separation (RFC 9180 sec. 5.2): a sender and recipient derive the SAME
   // key + base_nonce, so a recipient must never seal (it would reuse the sender's
   // nonce) and a sender must never open. ContextS.seal / ContextR.open only.
