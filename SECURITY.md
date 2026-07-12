@@ -354,6 +354,13 @@ Provenance binds the tarball bytes to a build; it does not by itself prove the
 source is clean. Pair it with the signed-tag check above so both the source side
 and the build side are covered.
 
+The same provenance bundle can be verified offline with the toolkit itself —
+`pki.sigstore.verifyBundle` checks the DSSE signature, the Fulcio chain as of the
+Rekor log time, the RFC 9162 inclusion proof against a Rekor-signed root, and the
+in-toto SLSA subject digest, against trust material you pin (the Fulcio CA roots
+and Rekor log keys), with no dependency tree of its own. Confirm a returned
+`subjects[].digest` matches the tarball you install.
+
 ### SBOM
 
 Each release ships a CycloneDX SBOM (`sbom.cdx.json`). Because the toolkit

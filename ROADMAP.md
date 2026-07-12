@@ -105,7 +105,7 @@ Certificate lifecycle management is absent from the toolkit this library replace
 Path validation's fastest-growing consumers are attestation chains, and the Node ecosystem has no native, zero-dependency layer for any of them.
 
 - **WebAuthn / passkey attestation** — *Under design.* Trust evaluation of the attestation statement formats (packed, tpm, android-key, apple, fido-u2f), the Android key-attestation ASN.1 extension, and the FIDO metadata roots — the layer under the ceremony libraries. W3C WebAuthn Level 3.
-- **Sigstore / provenance verification** — *Under design.* A zero-dependency verifier for signed provenance — DSSE envelopes, the Fulcio certificate chain through the toolkit's own path validator, embedded SCTs through the CT surface, and Rekor inclusion proofs through the Merkle-proof core — so npm/SLSA provenance verifies with no dependency tree of its own.
+- **Sigstore / provenance verification** — *Shipped (offline bundle verification).* `pki.sigstore.verifyBundle` verifies a Sigstore bundle (the `npm publish --provenance` artifact) offline against caller-pinned trust: the DSSE signature over its PAE under the Fulcio leaf key, the ephemeral Fulcio chain validated as of the Rekor log time through the toolkit's own path validator, the RFC 9162 inclusion proof folded to a Rekor-signed root through the Merkle-proof core, the log entry bound to this exact signature, and the in-toto SLSA subject digest — with no dependency tree of its own. The sigstore TUF trust-root client, Rekor v2 tiled logs, the `message_signature` arm, and embedded-SCT verification remain *Planned* (each re-openable behind a caller opt-in).
 
 ## Alternative encodings
 

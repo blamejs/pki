@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.2.2 — 2026-07-12
+## v0.2.3 — 2026-07-12
+
+Offline Sigstore bundle verification joins the toolkit as pki.sigstore.
+
+### Added
+
+- pki.sigstore.verifyBundle(bundle, opts) verifies a Sigstore bundle offline against caller-supplied trust material (opts.fulcioRoots, the Fulcio CA certificates; opts.rekorKeys, the Rekor log public keys; optional opts.identity policy and opts.time). It returns { verified: true, payload, statement, subjects, predicateType, predicate, identity, integratedTime } on success -- payload being the raw verified envelope bytes, never a re-serialization -- and throws a typed sigstore/* error on any leg's failure. pki.sigstore.parseBundle(input) decodes and structurally validates a bundle (object, JSON string, or Buffer) fail-closed. pki.sigstore.pae(payloadType, payloadBytes) builds the DSSE Pre-Authentication Encoding a signature covers. DSSE / Sigstore bundle v0.3 / RFC 9162 / SLSA provenance v1.
+- The OID registry gains the Fulcio (Sigstore) certificate-extension arc 1.3.6.1.4.1.57264.1.* (the OIDC issuer, build-signer and source-repository identity claims), honoring the raw-string-vs-DER-UTF8String encoding split by member. The error taxonomy gains SigstoreError (sigstore/*): a malformed or oversize bundle (sigstore/bad-bundle), an unknown media type (sigstore/bad-bundle-version), an unsupported content arm (sigstore/unsupported-content), a DSSE signature that does not verify under the Fulcio leaf key (sigstore/dsse-verify-failed), an inclusion proof that does not reconstruct the tree root (sigstore/inclusion-proof-mismatch) or is malformed (sigstore/bad-inclusion-proof), a tree root not attested by the Rekor key (sigstore/unsigned-root), a Fulcio chain that does not terminate at a caller-supplied trust anchor (sigstore/chain-incomplete) or fails validation as of the log time (sigstore/chain-invalid), an undecodable certificate identity (sigstore/bad-certificate), a malformed transparency-log entry (sigstore/bad-tlog-entry), a log entry that does not bind this signature (sigstore/entry-mismatch), an identity that fails the caller policy (sigstore/identity-mismatch), and a payload that is not the expected in-toto SLSA statement (sigstore/bad-statement).
+
+## v0.2.2 — 2026-07-11
 
 Hybrid Public Key Encryption (RFC 9180) joins the toolkit as pki.hpke.
 
