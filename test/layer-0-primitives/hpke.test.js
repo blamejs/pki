@@ -91,6 +91,13 @@ function testRobustness() {
   // The serialized private-key form is { skm, pkm }; a bare buffer must fail
   // closed as a typed error, never a raw node createPublicKey throw.
   check("raw private-key buffer -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), Buffer.alloc(32), {}); }) === "hpke/bad-key");
+  // Role separation (RFC 9180 sec. 5.2): a sender and recipient derive the SAME
+  // key + base_nonce, so a recipient must never seal (it would reuse the sender's
+  // nonce) and a sender must never open. ContextS.seal / ContextR.open only.
+  var sCtx = pki.hpke.setupS(IDS, kp.publicKey, {});
+  var rCtx = pki.hpke.setupR(IDS, sCtx.enc, kp.privateKey, {});
+  check("recipient context seal -> hpke/wrong-role", codeOf(function () { rCtx.seal(Buffer.alloc(0), Buffer.from("x")); }) === "hpke/wrong-role");
+  check("sender context open -> hpke/wrong-role", codeOf(function () { sCtx.context.open(Buffer.alloc(0), Buffer.alloc(20)); }) === "hpke/wrong-role");
   // Export-only AEAD 0xFFFF: seal throws, export works.
   var exp = pki.hpke.setupS({ kem: IDS.kem, kdf: IDS.kdf, aead: S.AEAD.EXPORT_ONLY }, kp.publicKey, {});
   check("export-only seal -> hpke/export-only", codeOf(function () { exp.context.seal(Buffer.alloc(0), Buffer.from("x")); }) === "hpke/export-only");
