@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.0",
+  "packageVersion": "0.2.1",
   "surface": {
     "C": {
       "kind": "object",
@@ -60,6 +60,9 @@
               "kind": "number"
             },
             "DER_MAX_ITEMS": {
+              "kind": "number"
+            },
+            "HSS_MAX_LEVELS": {
               "kind": "number"
             },
             "JSON_MAX_BYTES": {
@@ -659,6 +662,9 @@
             "DER_MAX_ITEMS": {
               "kind": "number"
             },
+            "HSS_MAX_LEVELS": {
+              "kind": "number"
+            },
             "JSON_MAX_BYTES": {
               "kind": "number"
             },
@@ -904,6 +910,10 @@
           "arity": 2
         },
         "SchemaError": {
+          "kind": "function",
+          "arity": 3
+        },
+        "ShbsError": {
           "kind": "function",
           "arity": 3
         },
@@ -1498,6 +1508,19 @@
         }
       }
     },
+    "shbs": {
+      "kind": "object",
+      "members": {
+        "verify": {
+          "kind": "function",
+          "arity": 3
+        },
+        "verifyLms": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
     "trust": {
       "kind": "object",
       "members": {
@@ -1662,6 +1685,8 @@
     "pki.schema.x509.pemDecode": "0.1.7",
     "pki.schema.x509.pemEncode": "0.1.7",
     "pki.schema.x509.parse": "0.1.7",
+    "pki.shbs.verify": "0.2.1",
+    "pki.shbs.verifyLms": "0.2.1",
     "pki.trust.parseCertdata": "0.2.0",
     "pki.trust.parseCcadbCsv": "0.2.0",
     "pki.trust.anchor": "0.2.0",

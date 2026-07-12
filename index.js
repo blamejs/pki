@@ -37,6 +37,7 @@ var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
 var merkle    = require("./lib/merkle");
+var shbs      = require("./lib/shbs");
 var est        = require("./lib/est");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
@@ -73,6 +74,11 @@ module.exports = {
   // verifyConsistency fold an audit / consistency proof and constant-time-
   // compare to a checkpoint root. Pure sync hashing, fail-closed, transport-free.
   merkle:    merkle,
+  // `shbs` verifies stateful hash-based signatures -- HSS/LMS (RFC 8554),
+  // carried by RFC 9802 (X.509) and RFC 9708 (CMS), profiled by NIST SP 800-208.
+  // VERIFY ONLY by design: stateful signing requires atomic one-time-key index
+  // state that belongs in an HSM, so this module never mints a signature.
+  shbs:      shbs,
   // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the
   // transport-agnostic client codecs (base64 transfer, multipart splitter),
   // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,
