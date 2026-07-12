@@ -84,6 +84,13 @@ function testRobustness() {
   // no test vector proves.
   check("P-384 KEM 0x0011 -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: 0x0011, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
   check("HKDF-SHA384 KDF 0x0002 -> hpke/unknown-suite", codeOf(function () { pki.hpke.setupS({ kem: IDS.kem, kdf: 0x0002, aead: S.AEAD.AES_128_GCM }, kp.publicKey, {}); }) === "hpke/unknown-suite");
+  // An unknown mode must be rejected, not silently key-scheduled with a bad mode
+  // byte (RFC 9180 sec. 5.1 defines exactly base / psk / auth / auth-psk).
+  check("unknown mode (setupS) -> hpke/unknown-mode", codeOf(function () { pki.hpke.setupS(IDS, kp.publicKey, { mode: 7 }); }) === "hpke/unknown-mode");
+  check("unknown mode (setupR) -> hpke/unknown-mode", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), kp.privateKey, { mode: 7 }); }) === "hpke/unknown-mode");
+  // The serialized private-key form is { skm, pkm }; a bare buffer must fail
+  // closed as a typed error, never a raw node createPublicKey throw.
+  check("raw private-key buffer -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), Buffer.alloc(32), {}); }) === "hpke/bad-key");
   // Export-only AEAD 0xFFFF: seal throws, export works.
   var exp = pki.hpke.setupS({ kem: IDS.kem, kdf: IDS.kdf, aead: S.AEAD.EXPORT_ONLY }, kp.publicKey, {});
   check("export-only seal -> hpke/export-only", codeOf(function () { exp.context.seal(Buffer.alloc(0), Buffer.from("x")); }) === "hpke/export-only");
