@@ -105,6 +105,14 @@ async function run() {
   delete ipn.inclusionPromise;
   check("unsigned tree root -> sigstore/unsigned-root", await codeOf(pki.sigstore.verifyBundle(noRoot, TM)) === "sigstore/unsigned-root");
 
+  // --- Attested time: the integratedTime that dates the ephemeral Fulcio cert is
+  // signed by the SET, never by the checkpoint (which signs only the tree root).
+  // A bundle with a valid checkpoint but no verifiable SET cannot establish a
+  // Rekor-attested time and must reject (the RFC 3161 alternative is deferred). ---
+  var noSet = JSON.parse(JSON.stringify(BUNDLE));
+  delete noSet.verificationMaterial.tlogEntries[0].inclusionPromise;
+  check("checkpoint-only, no SET -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(noSet, TM)) === "sigstore/unattested-time");
+
   // --- Entry-binds-this-signature: tamper the Rekor entry's embedded signature so
   // it no longer matches the envelope -> reject (a valid inclusion proof for a
   // DIFFERENT entry is not evidence for this signature). ---
@@ -145,9 +153,11 @@ async function run() {
   var nullEntry = JSON.parse(JSON.stringify(BUNDLE));
   nullEntry.verificationMaterial.tlogEntries = [null];
   check("tlogEntries[null] -> typed sigstore error", (await codeOf(pki.sigstore.verifyBundle(nullEntry, TM))).indexOf("sigstore/") === 0);
+  // A tampered integratedTime is caught by the SET, which signs it -- the rebuilt
+  // canonical JSON no longer matches Rekor's signature (never a leaked constants error).
   var badTime = JSON.parse(JSON.stringify(BUNDLE));
   badTime.verificationMaterial.tlogEntries[0].integratedTime = {};
-  check("integratedTime non-numeric -> sigstore/bad-tlog-entry (not a leaked constants error)", await codeOf(pki.sigstore.verifyBundle(badTime, TM)) === "sigstore/bad-tlog-entry");
+  check("tampered integratedTime -> rejected via the SET (sigstore/*, not a raw/leaked error)", (await codeOf(pki.sigstore.verifyBundle(badTime, TM))).indexOf("sigstore/") === 0);
 
   // --- Input coercion: a non-object bundle is a config-time TypeError ---
   check("verifyBundle(non-object) -> TypeError", await (pki.sigstore.verifyBundle(42, TM).then(function () { return "NO"; }, function (e) { return e instanceof TypeError ? "TypeError" : (e.code || "other"); })) === "TypeError");
