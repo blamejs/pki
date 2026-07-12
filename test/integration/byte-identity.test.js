@@ -82,9 +82,12 @@ var GENERATORS = {
   },
   pkcs8: function () {
     return withTmps(function (mk) {
-      var out = mk(null, "pk8.der");
-      ctx.runOpenssl(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256",
-        "-outform", "DER", "-out", out]);
+      // `genpkey -algorithm EC` emits a traditional SEC1 EC key on some OpenSSL
+      // builds and a PKCS#8 PrivateKeyInfo on others; convert explicitly so the
+      // sample is unambiguously the PKCS#8 the registry parses, on every version.
+      var key = mk(null, "key.pem"), out = mk(null, "pk8.der");
+      ctx.runOpenssl(["genpkey", "-algorithm", "EC", "-pkeyopt", "ec_paramgen_curve:P-256", "-out", key]);
+      ctx.runOpenssl(["pkcs8", "-topk8", "-nocrypt", "-in", key, "-outform", "DER", "-out", out]);
       return ctx.fs.readFileSync(out);
     });
   },
