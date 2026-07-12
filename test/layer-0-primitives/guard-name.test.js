@@ -47,10 +47,28 @@ function testControlByteReject() {
   check("TAB is exempt and collapsed to a space", name.dnEqual([rdn(CN, "Root\tCA")], [rdn(CN, "Root CA")], E, "x/name", "dn") === true);
 }
 
+function testRenderEscaping() {
+  // escapeControlBytes: the render-side sibling -- a control byte a display must still
+  // show becomes \xHH (never a raw CR/LF/NUL that forges a report line); printable
+  // ASCII passes through unchanged.
+  check("control byte -> \\xHH (NUL, LF)", name.escapeControlBytes("a" + NUL + "b" + String.fromCharCode(10)) === "a\\x00b\\x0A");
+  check("printable ASCII passes through", name.escapeControlBytes("plain.text-123 (x)") === "plain.text-123 (x)");
+  check("DEL 0x7f is escaped", name.escapeControlBytes(String.fromCharCode(0x7f)) === "\\x7F");
+  // escapeDnValue (this IS the behavioral guard): RFC 4514 -- a separator inside a DN
+  // value is backslash-escaped so it cannot read as a second RDN in the report.
+  check("DN comma escaped, not a forged RDN", name.escapeDnValue("foo, CN=admin") === "foo\\, CN=admin");
+  check("DN plus escaped", name.escapeDnValue("a+b") === "a\\+b");
+  check("DN leading '#' escaped", name.escapeDnValue("#x") === "\\#x");
+  check("DN leading + trailing space escaped", name.escapeDnValue(" x ") === "\\ x\\ ");
+  check("DN value control byte escaped too", name.escapeDnValue("a" + NUL + "b") === "a\\x00b");
+  check("clean DN value untouched", name.escapeDnValue("pkijs.com") === "pkijs.com");
+}
+
 function run() {
   testDnEqual();
   testRdnMultiset();
   testControlByteReject();
+  testRenderEscaping();
 }
 
 module.exports = { run: run };

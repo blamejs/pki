@@ -123,6 +123,19 @@ function run() {
   check("inspect: a comma in a DN value is RFC 4514-escaped, not a forged RDN",
     /CN=pkijs\\,com/.test(comma) && !/CN=pkijs,com/.test(comma));
 
+  // An RSA-PSS SPKI (id-RSASSA-PSS) carries the same RSAPublicKey as rsaEncryption,
+  // so it must render as modulus + exponent, not the raw-bytes fallback. Swap the EC
+  // fixture's SPKI (the SEQUENCE just before the [3] extensions) for a synthetic
+  // rsassaPss key; parse is structural, so the cert stays parseable.
+  var rsaPub = b.sequence([b.integer(BigInt("0x" + "c3".repeat(16))), b.integer(65537n)]);
+  var pssSpki = b.sequence([b.sequence([b.oid(pki.oid.byName("rsassaPss")), b.nullValue()]), b.bitString(rsaPub)]);
+  var pss = pki.inspect.certificate(b.sequence([
+    b.sequence(baseTbs.children.map(function (c, i) { return i === extIdx - 1 ? pssSpki : c.bytes; })),
+    baseCert.children[1].bytes, baseCert.children[2].bytes,
+  ]));
+  check("inspect: an RSA-PSS SPKI renders as an RSA key (modulus + exponent)",
+    /Public Key Algorithm: rsassaPss/.test(pss) && /Modulus:/.test(pss) && /Exponent: 65537/.test(pss));
+
   // --- Fail-closed input; a malformed extension does NOT sink the report ---
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");
   check("inspect(garbage der) -> inspect/bad-certificate", codeOf(function () { pki.inspect.certificate(Buffer.from("not a cert")); }) === "inspect/bad-certificate");

@@ -124,6 +124,400 @@
             }
           }
         },
+        "NAMES": {
+          "kind": "object",
+          "members": {
+            "ALGORITHM": {
+              "kind": "object",
+              "members": {
+                "ML-DSA-44": {
+                  "kind": "string"
+                },
+                "ML-DSA-65": {
+                  "kind": "string"
+                },
+                "ML-DSA-87": {
+                  "kind": "string"
+                },
+                "ML-KEM-1024": {
+                  "kind": "string"
+                },
+                "ML-KEM-512": {
+                  "kind": "string"
+                },
+                "ML-KEM-768": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-128f": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-128s": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-192s": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-256s": {
+                  "kind": "string"
+                },
+                "ecPublicKey": {
+                  "kind": "string"
+                },
+                "ed25519": {
+                  "kind": "string"
+                },
+                "ed448": {
+                  "kind": "string"
+                },
+                "rsaEncryption": {
+                  "kind": "string"
+                },
+                "rsaesOaep": {
+                  "kind": "string"
+                },
+                "rsassaPss": {
+                  "kind": "string"
+                },
+                "x25519": {
+                  "kind": "string"
+                },
+                "x448": {
+                  "kind": "string"
+                }
+              }
+            },
+            "CRL_REASON": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "4": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                },
+                "8": {
+                  "kind": "string"
+                },
+                "9": {
+                  "kind": "string"
+                },
+                "10": {
+                  "kind": "string"
+                }
+              }
+            },
+            "DN_SHORT": {
+              "kind": "object",
+              "members": {
+                "businessCategory": {
+                  "kind": "string"
+                },
+                "commonName": {
+                  "kind": "string"
+                },
+                "countryName": {
+                  "kind": "string"
+                },
+                "distinguishedNameQualifier": {
+                  "kind": "string"
+                },
+                "domainComponent": {
+                  "kind": "string"
+                },
+                "emailAddress": {
+                  "kind": "string"
+                },
+                "generationQualifier": {
+                  "kind": "string"
+                },
+                "givenName": {
+                  "kind": "string"
+                },
+                "initials": {
+                  "kind": "string"
+                },
+                "jurisdictionCountryName": {
+                  "kind": "string"
+                },
+                "jurisdictionLocalityName": {
+                  "kind": "string"
+                },
+                "jurisdictionStateOrProvinceName": {
+                  "kind": "string"
+                },
+                "localityName": {
+                  "kind": "string"
+                },
+                "name": {
+                  "kind": "string"
+                },
+                "organizationIdentifier": {
+                  "kind": "string"
+                },
+                "organizationName": {
+                  "kind": "string"
+                },
+                "organizationalUnitName": {
+                  "kind": "string"
+                },
+                "postalCode": {
+                  "kind": "string"
+                },
+                "pseudonym": {
+                  "kind": "string"
+                },
+                "serialNumber": {
+                  "kind": "string"
+                },
+                "stateOrProvinceName": {
+                  "kind": "string"
+                },
+                "streetAddress": {
+                  "kind": "string"
+                },
+                "surname": {
+                  "kind": "string"
+                },
+                "title": {
+                  "kind": "string"
+                },
+                "userId": {
+                  "kind": "string"
+                }
+              }
+            },
+            "EXTENSION": {
+              "kind": "object",
+              "members": {
+                "authorityInfoAccess": {
+                  "kind": "string"
+                },
+                "authorityKeyIdentifier": {
+                  "kind": "string"
+                },
+                "basicConstraints": {
+                  "kind": "string"
+                },
+                "cRLDistributionPoints": {
+                  "kind": "string"
+                },
+                "cRLNumber": {
+                  "kind": "string"
+                },
+                "cRLReason": {
+                  "kind": "string"
+                },
+                "certificateIssuer": {
+                  "kind": "string"
+                },
+                "certificatePolicies": {
+                  "kind": "string"
+                },
+                "deltaCRLIndicator": {
+                  "kind": "string"
+                },
+                "extKeyUsage": {
+                  "kind": "string"
+                },
+                "freshestCRL": {
+                  "kind": "string"
+                },
+                "inhibitAnyPolicy": {
+                  "kind": "string"
+                },
+                "invalidityDate": {
+                  "kind": "string"
+                },
+                "issuerAltName": {
+                  "kind": "string"
+                },
+                "issuingDistributionPoint": {
+                  "kind": "string"
+                },
+                "keyUsage": {
+                  "kind": "string"
+                },
+                "nameConstraints": {
+                  "kind": "string"
+                },
+                "policyConstraints": {
+                  "kind": "string"
+                },
+                "policyMappings": {
+                  "kind": "string"
+                },
+                "signedCertificateTimestampList": {
+                  "kind": "string"
+                },
+                "subjectAltName": {
+                  "kind": "string"
+                },
+                "subjectInfoAccess": {
+                  "kind": "string"
+                },
+                "subjectKeyIdentifier": {
+                  "kind": "string"
+                }
+              }
+            },
+            "EXT_KEY_USAGE": {
+              "kind": "object",
+              "members": {
+                "anyExtendedKeyUsage": {
+                  "kind": "string"
+                },
+                "clientAuth": {
+                  "kind": "string"
+                },
+                "codeSigning": {
+                  "kind": "string"
+                },
+                "emailProtection": {
+                  "kind": "string"
+                },
+                "ocspSigning": {
+                  "kind": "string"
+                },
+                "serverAuth": {
+                  "kind": "string"
+                },
+                "timeStamping": {
+                  "kind": "string"
+                }
+              }
+            },
+            "GENERAL_NAME": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "4": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                },
+                "7": {
+                  "kind": "string"
+                },
+                "8": {
+                  "kind": "string"
+                }
+              }
+            },
+            "KEY_USAGE": {
+              "kind": "object",
+              "members": {
+                "cRLSign": {
+                  "kind": "string"
+                },
+                "dataEncipherment": {
+                  "kind": "string"
+                },
+                "decipherOnly": {
+                  "kind": "string"
+                },
+                "digitalSignature": {
+                  "kind": "string"
+                },
+                "encipherOnly": {
+                  "kind": "string"
+                },
+                "keyAgreement": {
+                  "kind": "string"
+                },
+                "keyCertSign": {
+                  "kind": "string"
+                },
+                "keyEncipherment": {
+                  "kind": "string"
+                },
+                "nonRepudiation": {
+                  "kind": "string"
+                }
+              }
+            },
+            "NIST_CURVE": {
+              "kind": "object",
+              "members": {
+                "prime256v1": {
+                  "kind": "string"
+                },
+                "secp384r1": {
+                  "kind": "string"
+                },
+                "secp521r1": {
+                  "kind": "string"
+                }
+              }
+            },
+            "OBJECT_DIGEST_TYPE": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                }
+              }
+            },
+            "OCSP_STATUS": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                }
+              }
+            }
+          }
+        },
         "TIME": {
           "kind": "object",
           "members": {
@@ -721,6 +1115,400 @@
             },
             "TRUST_MAX_OCTAL_BYTES": {
               "kind": "number"
+            }
+          }
+        },
+        "NAMES": {
+          "kind": "object",
+          "members": {
+            "ALGORITHM": {
+              "kind": "object",
+              "members": {
+                "ML-DSA-44": {
+                  "kind": "string"
+                },
+                "ML-DSA-65": {
+                  "kind": "string"
+                },
+                "ML-DSA-87": {
+                  "kind": "string"
+                },
+                "ML-KEM-1024": {
+                  "kind": "string"
+                },
+                "ML-KEM-512": {
+                  "kind": "string"
+                },
+                "ML-KEM-768": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-128f": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-128s": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-192s": {
+                  "kind": "string"
+                },
+                "SLH-DSA-SHA2-256s": {
+                  "kind": "string"
+                },
+                "ecPublicKey": {
+                  "kind": "string"
+                },
+                "ed25519": {
+                  "kind": "string"
+                },
+                "ed448": {
+                  "kind": "string"
+                },
+                "rsaEncryption": {
+                  "kind": "string"
+                },
+                "rsaesOaep": {
+                  "kind": "string"
+                },
+                "rsassaPss": {
+                  "kind": "string"
+                },
+                "x25519": {
+                  "kind": "string"
+                },
+                "x448": {
+                  "kind": "string"
+                }
+              }
+            },
+            "CRL_REASON": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "4": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                },
+                "8": {
+                  "kind": "string"
+                },
+                "9": {
+                  "kind": "string"
+                },
+                "10": {
+                  "kind": "string"
+                }
+              }
+            },
+            "DN_SHORT": {
+              "kind": "object",
+              "members": {
+                "businessCategory": {
+                  "kind": "string"
+                },
+                "commonName": {
+                  "kind": "string"
+                },
+                "countryName": {
+                  "kind": "string"
+                },
+                "distinguishedNameQualifier": {
+                  "kind": "string"
+                },
+                "domainComponent": {
+                  "kind": "string"
+                },
+                "emailAddress": {
+                  "kind": "string"
+                },
+                "generationQualifier": {
+                  "kind": "string"
+                },
+                "givenName": {
+                  "kind": "string"
+                },
+                "initials": {
+                  "kind": "string"
+                },
+                "jurisdictionCountryName": {
+                  "kind": "string"
+                },
+                "jurisdictionLocalityName": {
+                  "kind": "string"
+                },
+                "jurisdictionStateOrProvinceName": {
+                  "kind": "string"
+                },
+                "localityName": {
+                  "kind": "string"
+                },
+                "name": {
+                  "kind": "string"
+                },
+                "organizationIdentifier": {
+                  "kind": "string"
+                },
+                "organizationName": {
+                  "kind": "string"
+                },
+                "organizationalUnitName": {
+                  "kind": "string"
+                },
+                "postalCode": {
+                  "kind": "string"
+                },
+                "pseudonym": {
+                  "kind": "string"
+                },
+                "serialNumber": {
+                  "kind": "string"
+                },
+                "stateOrProvinceName": {
+                  "kind": "string"
+                },
+                "streetAddress": {
+                  "kind": "string"
+                },
+                "surname": {
+                  "kind": "string"
+                },
+                "title": {
+                  "kind": "string"
+                },
+                "userId": {
+                  "kind": "string"
+                }
+              }
+            },
+            "EXTENSION": {
+              "kind": "object",
+              "members": {
+                "authorityInfoAccess": {
+                  "kind": "string"
+                },
+                "authorityKeyIdentifier": {
+                  "kind": "string"
+                },
+                "basicConstraints": {
+                  "kind": "string"
+                },
+                "cRLDistributionPoints": {
+                  "kind": "string"
+                },
+                "cRLNumber": {
+                  "kind": "string"
+                },
+                "cRLReason": {
+                  "kind": "string"
+                },
+                "certificateIssuer": {
+                  "kind": "string"
+                },
+                "certificatePolicies": {
+                  "kind": "string"
+                },
+                "deltaCRLIndicator": {
+                  "kind": "string"
+                },
+                "extKeyUsage": {
+                  "kind": "string"
+                },
+                "freshestCRL": {
+                  "kind": "string"
+                },
+                "inhibitAnyPolicy": {
+                  "kind": "string"
+                },
+                "invalidityDate": {
+                  "kind": "string"
+                },
+                "issuerAltName": {
+                  "kind": "string"
+                },
+                "issuingDistributionPoint": {
+                  "kind": "string"
+                },
+                "keyUsage": {
+                  "kind": "string"
+                },
+                "nameConstraints": {
+                  "kind": "string"
+                },
+                "policyConstraints": {
+                  "kind": "string"
+                },
+                "policyMappings": {
+                  "kind": "string"
+                },
+                "signedCertificateTimestampList": {
+                  "kind": "string"
+                },
+                "subjectAltName": {
+                  "kind": "string"
+                },
+                "subjectInfoAccess": {
+                  "kind": "string"
+                },
+                "subjectKeyIdentifier": {
+                  "kind": "string"
+                }
+              }
+            },
+            "EXT_KEY_USAGE": {
+              "kind": "object",
+              "members": {
+                "anyExtendedKeyUsage": {
+                  "kind": "string"
+                },
+                "clientAuth": {
+                  "kind": "string"
+                },
+                "codeSigning": {
+                  "kind": "string"
+                },
+                "emailProtection": {
+                  "kind": "string"
+                },
+                "ocspSigning": {
+                  "kind": "string"
+                },
+                "serverAuth": {
+                  "kind": "string"
+                },
+                "timeStamping": {
+                  "kind": "string"
+                }
+              }
+            },
+            "GENERAL_NAME": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "4": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                },
+                "7": {
+                  "kind": "string"
+                },
+                "8": {
+                  "kind": "string"
+                }
+              }
+            },
+            "KEY_USAGE": {
+              "kind": "object",
+              "members": {
+                "cRLSign": {
+                  "kind": "string"
+                },
+                "dataEncipherment": {
+                  "kind": "string"
+                },
+                "decipherOnly": {
+                  "kind": "string"
+                },
+                "digitalSignature": {
+                  "kind": "string"
+                },
+                "encipherOnly": {
+                  "kind": "string"
+                },
+                "keyAgreement": {
+                  "kind": "string"
+                },
+                "keyCertSign": {
+                  "kind": "string"
+                },
+                "keyEncipherment": {
+                  "kind": "string"
+                },
+                "nonRepudiation": {
+                  "kind": "string"
+                }
+              }
+            },
+            "NIST_CURVE": {
+              "kind": "object",
+              "members": {
+                "prime256v1": {
+                  "kind": "string"
+                },
+                "secp384r1": {
+                  "kind": "string"
+                },
+                "secp521r1": {
+                  "kind": "string"
+                }
+              }
+            },
+            "OBJECT_DIGEST_TYPE": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                }
+              }
+            },
+            "OCSP_STATUS": {
+              "kind": "object",
+              "members": {
+                "0": {
+                  "kind": "string"
+                },
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                }
+              }
             }
           }
         },
