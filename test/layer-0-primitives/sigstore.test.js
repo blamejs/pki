@@ -194,6 +194,16 @@ async function run() {
   check("matching predicateType pin -> verified", vpred && vpred.verified === true);
   check("wrong predicateType pin -> sigstore/predicate-mismatch", await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ predicateType: "https://example/sbom" }, TM))) === "sigstore/predicate-mismatch");
 
+  // --- The Rekor dsse entry MUST carry its verifier certificate (bound to the
+  // leaf); an entry with the verifier stripped is rejected, not accepted on the
+  // signature match alone. ---
+  var noVerifier = JSON.parse(JSON.stringify(BUNDLE));
+  var nvte = noVerifier.verificationMaterial.tlogEntries[0];
+  var nvbody = JSON.parse(Buffer.from(nvte.canonicalizedBody, "base64").toString("utf8"));
+  delete nvbody.spec.signatures[0].verifier;
+  nvte.canonicalizedBody = Buffer.from(JSON.stringify(nvbody)).toString("base64");
+  check("Rekor entry without a verifier cert -> sigstore/bad-tlog-entry", await codeOf(pki.sigstore.verifyBundle(noVerifier, TM)) === "sigstore/bad-tlog-entry");
+
   // --- A caller may pin only the Fulcio ROOT while the intermediate rides in the
   // bundle chain: the caller cert anchors and the bundle intermediate is a path
   // link. Identify the root (self-issued) and intermediate among the trust certs. ---
