@@ -172,6 +172,28 @@ async function run() {
   var unknownKty = coseKey([cKV(1, cInt(9)), cKV(3, cInt(-7))]);
   check("parse: unknown COSE key kty -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: unknownKty }))); }) === "webauthn/bad-cose-key");
+  // §6.5.1 -- an EC2 P-256 (crv 1) key whose x/y are not 32 bytes is malformed.
+  var ec2ShortX = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(Buffer.alloc(5))), cKV(-3, cBytes(credKey.y))]);
+  check("parse: EC2 P-256 key with a wrong-length x -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2ShortX }))); }) === "webauthn/bad-cose-key");
+  // §8.3 -- a tpm certInfo with trailing bytes past the attested structure is rejected.
+  check("verify: tpm certInfo with trailing bytes -> webauthn/bad-tpm", (await codeOfAsync(function () {
+    var att = pki.webauthn.parseAttestationObject(attObj("tpm"));
+    function fld(k) { for (var i = 0; i < att.attStmt.children.length; i++) { var kv = att.attStmt.children[i]; if (pki.cbor.read.textString(kv[0]) === k) return kv[1]; } return null; }
+    var x5c = fld("x5c").children.map(function (c) { return pki.cbor.read.byteString(c); });
+    var attStmt = [
+      [cText("ver"), cText(pki.cbor.read.textString(fld("ver")))],
+      [cText("alg"), cInt(Number(pki.cbor.read.int(fld("alg"))))],
+      [cText("sig"), cBytes(pki.cbor.read.byteString(fld("sig")))],
+      [cText("certInfo"), cBytes(Buffer.concat([pki.cbor.read.byteString(fld("certInfo")), Buffer.from([0x00])]))],
+      [cText("pubArea"), cBytes(pki.cbor.read.byteString(fld("pubArea")))],
+      [cText("x5c"), cArr(x5c.map(cBytes))],
+    ];
+    return pki.webauthn.verify(attObjOf("tpm", attStmt, att.authDataBytes), clientHash("tpm"));
+  })) === "webauthn/bad-tpm");
+  // A zero-valued ECDSA signature integer is not a positive coordinate.
+  check("verify: packed with a zero ECDSA signature integer -> webauthn/bad-signature",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3006020100020101", "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
   // §8.7 -- the none format verifies with no statement (attestationType "None").
   var noneRes = await pki.webauthn.verify(attObjOf("none", [], realAuthData), packedHash);
   check("verify: none attestation verifies (attestationType None, empty trust path)",
