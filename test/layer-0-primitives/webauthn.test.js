@@ -183,6 +183,18 @@ async function run() {
   var unknownKty = coseKey([cKV(1, cInt(9)), cKV(3, cInt(-7))]);
   check("parse: unknown COSE key kty -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: unknownKty }))); }) === "webauthn/bad-cose-key");
+  // §6.5.1 / RFC 9052 -- Ed448 (OKP crv 7, 57-byte x) is a valid credential key type.
+  var ed448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57, 7)))]);
+  var ed448Parsed = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448 })));
+  check("parse: Ed448 (OKP crv 7, 57-byte x) credential key accepted",
+    ed448Parsed.authData.credentialPublicKey.kty === 1 && ed448Parsed.authData.credentialPublicKey.crv === 7);
+  // an OKP key whose x length does not match its curve is rejected.
+  var ed448Bad = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(32, 7)))]);
+  check("parse: OKP crv 7 with a 32-byte x -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448Bad }))); }) === "webauthn/bad-cose-key");
+  // A malformed attStmt field (alg not an integer) is a webauthn/bad-att-stmt, not a leaked cbor/*.
+  check("verify: packed attStmt alg not an integer -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cText("nope")], [cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([packedLeaf].map(cBytes))]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
   // §6.5.1 -- an EC2 P-256 (crv 1) key whose x/y are not 32 bytes is malformed.
   var ec2ShortX = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(Buffer.alloc(5))), cKV(-3, cBytes(credKey.y))]);
   check("parse: EC2 P-256 key with a wrong-length x -> webauthn/bad-cose-key",
