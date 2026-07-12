@@ -103,6 +103,12 @@ async function run() {
     check("verify: " + fmt + " reports its attestation type", typeof res.attestationType === "string" && res.attestationType.length > 0);
     check("verify: " + fmt + " surfaces a non-empty trust path", Array.isArray(res.trustPath) && res.trustPath.length >= 1);
   }
+  // trustPath is in pki.path.validate order (anchor-adjacent first, leaf last): the
+  // tpm x5c is [AIK(empty subject), root], so the reversed trustPath ends with the
+  // empty-subject AIK leaf.
+  var tpmRes = await pki.webauthn.verify(attObj("tpm"), clientHash("tpm"), {});
+  check("verify: tpm trustPath is anchor->leaf ordered (leaf/AIK last)",
+    tpmRes.trustPath.length === 2 && tpmRes.trustPath[tpmRes.trustPath.length - 1].subject.rdns.length === 0 && tpmRes.trustPath[0].subject.rdns.length > 0);
 
   // A tampered clientDataHash breaks every format's binding (signature or nonce).
   for (var bfmt of ["tpm", "apple", "fido_u2f", "android_key"]) {
