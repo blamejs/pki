@@ -39,6 +39,7 @@ var ct        = require("./lib/ct");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
+var sigstore  = require("./lib/sigstore");
 var est        = require("./lib/est");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
@@ -84,6 +85,10 @@ module.exports = {
   // schedule + AEAD context construction behind TLS ECH / MLS / OHTTP. Pure
   // composition over node:crypto; the classical DHKEM suites, all four modes.
   hpke:      hpke,
+  // `sigstore` verifies a Sigstore bundle (the npm --provenance artifact): a
+  // keyless Fulcio signature over a DSSE-wrapped in-toto SLSA attestation with a
+  // Rekor inclusion proof -- offline, zero-dep, against caller-pinned trust.
+  sigstore:  sigstore,
   // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the
   // transport-agnostic client codecs (base64 transfer, multipart splitter),
   // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,

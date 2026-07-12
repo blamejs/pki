@@ -226,6 +226,7 @@ is callable today; nothing below is a stub.
 | `pki.trust` | Mozilla / CCADB trust-store ingestion — `parseCertdata` reads the NSS `certdata.txt` object stream and `parseCcadbCsv` the CCADB CSV export into one identical constraint-carrying anchor shape: the per-purpose trust bits (only `CKT_NSS_TRUSTED_DELEGATOR` grants) and the per-purpose distrust-after dates the bare root list omits. Certificate and trust objects pair by byte-exact issuer + serial (never adjacency) and are cross-checked against the parsed DER, so metadata can never attach to the wrong root; `anchor()` hands an entry to `pki.path.validate({ trustAnchor, checkPurpose })`. Offline, fail-closed, bounded — `parseCertdata`, `parseCcadbCsv`, `anchor` |
 | `pki.shbs` | Stateful hash-based signature **verification** — HSS/LMS (RFC 8554), carried in X.509 by RFC 9802 and CMS by RFC 9708, profiled by NIST SP 800-208 (CNSA 2.0 firmware signing). `verify` checks an HSS signature (every level must pass) and `verifyLms` a single-tree LMS, over the raw public-key / signature blobs the parsers already surface. Pure public-input SHA-256 / SHAKE256 hashing, a data-driven typecode registry, bounds-before-slice reads; a malformed blob throws a typed `ShbsError`, a well-formed-but-wrong signature returns `false`. **Verify only by design** — stateful signing needs atomic one-time-key state that belongs in an HSM — `verify`, `verifyLms` |
 | `pki.hpke` | Hybrid Public Key Encryption (RFC 9180) — the encrypt-to-a-public-key primitive behind TLS ECH, MLS, and OHTTP. `setupS`/`setupR` establish a sender/recipient context (KEM encapsulation + HKDF key schedule); the context's `seal`/`open` AEAD-encrypt with a sequence-counter nonce and `export` derives further secrets; `seal`/`open` are single-shot wrappers. DHKEM (P-256, P-521, X25519, X448) × HKDF-SHA256/SHA512 × AES-GCM/ChaCha20Poly1305/export-only × all four modes, proven against the RFC 9180 Appendix A vectors. DHKEM(P-384) and HKDF-SHA384 are RFC-registered but Appendix A ships no vector for them, so they fail closed until an authoritative KAT exists. Pure composition over `node:crypto`; ML-KEM / X-Wing are a registry data-row extension pending stable drafts — `suites`, `setupS`, `setupR`, `seal`, `open` |
+| `pki.sigstore` | Offline verifier for a Sigstore bundle — the exact artifact `npm publish --provenance` produces and the registry serves. `verifyBundle` composes five fail-closed legs against caller-pinned trust (Fulcio CA roots + Rekor log keys, never trusted from the bundle): the DSSE signature over its PAE preimage under the Fulcio leaf key; the ephemeral Fulcio certificate chain, validated as of the Rekor log time; the RFC 9162 inclusion proof folded to a Rekor-signed tree root; the log entry bound to this exact signature; and the in-toto SLSA subject digest the caller confirms against the published artifact. Zero runtime deps — reuses the X.509 parser, RFC 5280 path validator, and Merkle verifier; the net-new codecs are the DSSE PAE byte-builder and a fail-closed JSON reader. `pae`, `parseBundle`, `verifyBundle` |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
 | `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError` / `TspError` / `AttrCertError` / `CrmfError` / `Pkcs12Error` / `CmpError` / `PathError` / `CtError` / `JoseError` / `AcmeError`, each carrying a stable `code` in `domain/reason` form |
 | `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
@@ -261,34 +262,42 @@ reintroduce the bug class it prevents. Adding a format is a schema declaration
 plus a documentation comment block, not new parse logic.
 
 ```
-┌─ Detect + route ────────────────────────────────────────────────────────┐
-│  pki.schema.parse — inspect the DER root, route to the matching sibling │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ Detect + route ─────────────────────────────────────────────────────────┐
+│ pki.schema.parse — inspect the DER root, route to the matching sibling   │
+└──────────────────────────────────────────────────────────────────────────┘
                                      │
- ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐   Format
- │  x509  │ │  crl   │ │  csr   │ │ pkcs8  │   parsers
- └────────┘ └────────┘ └────────┘ └────────┘   (siblings)
  ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
- │  cms   │ │  ocsp  │ │  tsp   │ │attrcert│
+ │  x509  │ │  crl   │ │  csr   │ │ pkcs8  │
  └────────┘ └────────┘ └────────┘ └────────┘
-                                     │  every sibling composes ↓
-┌─ Shared structure ──────────────────────────────────────────────────────┐
-│  pki.schema.engine — walk + combinators (positional reads, tag order,   │
-│  SET-OF uniqueness, arity, typed errors) · the PKIX sub-schemas —       │
-│  AlgorithmIdentifier · Name · Extension · a bounded version reader —    │
-│  and the one coerce → decode → walk parse-entry (PEM cap + DER wrap).   │
-└─────────────────────────────────────────────────────────────────────────┘
+ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+ │  cms   │ │  ocsp  │ │  tsp   │ │  crmf  │
+ └────────┘ └────────┘ └────────┘ └────────┘
+ ┌────────┐ ┌────────┐ ┌────────┐ ┌────────┐
+ │ pkcs12 │ │  cmp   │ │ smime  │ │attrcert│
+ └────────┘ └────────┘ └────────┘ └────────┘
+                                     │  routed DER format parsers (siblings)
+┌─ Protocols · trust · supply chain  (reached by explicit call) ───────────┐
+│ pki.path RFC 5280 · pki.trust anchors · pki.ct SCTs · pki.hpke RFC 9180  │
+│ pki.shbs HSS/LMS · pki.merkle RFC 9162 · pki.sigstore npm provenance     │
+│ pki.jose · pki.acme · pki.est — compose the layers below directly.       │
+└──────────────────────────────────────────────────────────────────────────┘
+                                     │  every module composes ↓
+┌─ Shared structure ───────────────────────────────────────────────────────┐
+│ pki.schema.engine — walk + combinators (positional reads, tag order,     │
+│ SET-OF uniqueness, typed errors) · the PKIX sub-schemas · and the        │
+│ guard family (guard-*) — one fail-closed choke point per CVE class.      │
+└──────────────────────────────────────────────────────────────────────────┘
                                      │  built on ↓
-┌─ Foundation ────────────────────────────────────────────────────────────┐
-│  pki.asn1 — strict, bounded DER codec · pki.oid — two-way, PQC-seeded   │
-│  OID registry · pki.errors — the PkiError domain/reason taxonomy ·      │
-│  pki.C — version-stable LIMITS + scale constants.                       │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ Foundation ─────────────────────────────────────────────────────────────┐
+│ pki.asn1 — strict bounded DER codec · pki.cbor — deterministic CBOR ·    │
+│ pki.oid — two-way PQC-seeded registry · pki.errors — PkiError taxonomy   │
+│ · pki.C — version-stable LIMITS + scale constants.                       │
+└──────────────────────────────────────────────────────────────────────────┘
 
-┌─ Crypto ────────────────────────────────────────────────────────────────┐
-│  pki.webcrypto ──▶ node:crypto — a W3C SubtleCrypto engine: the         │
-│  classical set + post-quantum ML-DSA / SLH-DSA + ML-KEM key generation. │
-└─────────────────────────────────────────────────────────────────────────┘
+┌─ Crypto ─────────────────────────────────────────────────────────────────┐
+│ pki.webcrypto ─▶ node:crypto — a W3C SubtleCrypto engine: the            │
+│ classical set + post-quantum ML-DSA / SLH-DSA + ML-KEM key generation.   │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 **Foundation.** The strict, bounded DER codec (`pki.asn1`), the two-way OID
@@ -302,11 +311,23 @@ bounded version reader, and the single coerce → decode → walk parse-entry th
 every format's `parse` is bound to. Because input coercion, the PEM size cap, and
 the DER-decode wrapping live here once, a format cannot diverge on a guard.
 
-**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, `tsp`, and `attrcert` are siblings:
-each is a schema declaration composed from the shared pieces, emitting its own
-typed `domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
+**Format parsers.** `x509`, `crl`, `csr`, `pkcs8`, `cms`, `ocsp`, `tsp`, `attrcert`,
+`crmf`, `pkcs12`, `cmp`, `smime`, and `csrattrs` are siblings: each is a schema
+declaration composed from the shared pieces, emitting its own typed
+`domain/reason` error codes. `pki.schema.parse` inspects a decoded root and
 detect-and-routes to the matching sibling; the detectors are mutually exclusive by
 construction, so routing is unambiguous regardless of registration order.
+
+**Protocols, trust, and supply chain.** Above the format parsers sit the domain
+modules reached by explicit call rather than DER routing: `pki.path` (RFC 5280
+path validation), `pki.trust` (trust anchors), `pki.ct` (Certificate Transparency
+SCTs), `pki.hpke` (RFC 9180), `pki.shbs` (HSS/LMS stateful hash signatures),
+`pki.merkle` (RFC 9162 transparency proofs), `pki.sigstore` (offline npm-provenance
+verification), and the `jose` / `acme` / `est` enrollment surfaces. Each composes
+the shared structure, foundation, and crypto layers directly. Alongside the schema
+engine, the fail-closed **guard family** (`guard-*`) centralizes each CVE-class
+defense — detached-buffer re-view, resource caps, constant-time compares,
+canonical-DN comparison — as one choke point a format cannot re-inline.
 
 **Crypto.** `pki.webcrypto` is a W3C `SubtleCrypto` engine over `node:crypto`,
 carrying the classical suite plus post-quantum ML-DSA / SLH-DSA signatures and

@@ -109,6 +109,16 @@ var csrattrsDer = b.sequence([b.oid("1.2.840.113549.1.9.7"), b.sequence([b.oid("
 // r.certificates): SignedData v1, id-data no eContent, one cert, empty signerInfos.
 var caCertsDer = b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.sequence([b.integer(1n), b.set([]), b.sequence([b.oid(DATA)]), b.contextConstructed(0, certDer), b.set([])]))]);
 
+// pki.sigstore fixtures: a REAL npm provenance bundle + the public-good sigstore
+// trust material, so verifyBundle's example runs the actual end-to-end verify.
+var sigstoreBundle = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "sigstore", "npm-provenance-bundle.json"), "utf8"));
+var sigstoreTrustRoot = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "sigstore", "trusted-root.json"), "utf8"));
+var sigstoreTrust = {
+  fulcioRoots: [],
+  rekorKeys: (sigstoreTrustRoot.tlogs || []).map(function (t) { return { keyId: Buffer.from((t.logId && t.logId.keyId) || "", "base64"), spki: Buffer.from((t.publicKey && t.publicKey.rawBytes) || "", "base64") }; }),
+};
+(sigstoreTrustRoot.certificateAuthorities || []).forEach(function (ca) { ((ca.certChain && ca.certChain.certificates) || []).forEach(function (c) { sigstoreTrust.fulcioRoots.push(Buffer.from(c.rawBytes, "base64")); }); });
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -155,6 +165,9 @@ function fixturesFor(tag) {
     nonce: "aGVsbG8", url: "https://ca/o", orderUrl: "https://ca/o/1", challUrl: "https://ca/chall/1",
     authzUrl: "https://ca/authz/1", kid: "https://ca/acct/1",
     certDer: certDer, csrDer: csrDer, identifiers: [{ type: "dns", value: "example.org" }],
+    // pki.sigstore: a real bundle + trust material so verifyBundle's example runs
+    // the full offline verification path.
+    bundle: sigstoreBundle, sigstoreTrust: sigstoreTrust,
   };
 }
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples

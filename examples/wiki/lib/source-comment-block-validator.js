@@ -88,6 +88,13 @@ var SPEC_PATTERNS = [
   new RegExp("^PKCS#\\d+" + _SPEC_OPT + "$"),
   new RegExp("^W3C \\S.*$"),
   new RegExp("^CA/Browser Forum\\b.*$"),
+  // Supply-chain / attestation normative references (not IETF RFCs): DSSE
+  // (secure-systems-lab/dsse), the Sigstore bundle (sigstore/protobuf-specs),
+  // SLSA provenance (slsa.dev), and the in-toto attestation framework.
+  new RegExp("^DSSE" + _SPEC_OPT + "$"),
+  new RegExp("^Sigstore(?: bundle)?(?: v\\d+\\.\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^SLSA(?: provenance)?(?: v\\d+)?" + _SPEC_OPT + "$"),
+  new RegExp("^in-toto(?:\\s+\\S.*)?$"),
   new RegExp("^(?:SemVer|semver\\.org)\\b.*$"),
   new RegExp("^internal(?:\\s+\\([^)]*\\))?$"),
 ];
