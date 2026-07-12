@@ -161,6 +161,22 @@ function run() {
   check("inspect: a CRL DP reasons BIT STRING renders the reason scope",
     /Reasons: Key Compromise, CA Compromise/.test(rsn));
 
+  // The policy / CT extensions decode to structured values -- render them, not a hex dump.
+  var inhibit = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("inhibitAnyPolicy")), b.octetString(b.integer(3n))])));
+  check("inspect: inhibitAnyPolicy renders its skip count", /Inhibit Any Policy Skip Certs: 3/.test(inhibit));
+  var poison = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("precertificatePoison")), b.octetString(b.nullValue())])));
+  check("inspect: precertificatePoison renders a marker, not a hex dump", /Precertificate Poison/.test(poison));
+  var polC = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("policyConstraints")), b.octetString(b.sequence([b.contextPrimitive(0, Buffer.from([0x01]))]))])));
+  check("inspect: policyConstraints renders requireExplicitPolicy", /Require Explicit Policy: 1/.test(polC));
+
+  // Completeness gate (the schema-driven promise): every extension the shared decoders
+  // can decode has a renderer, so a newly-decodable extension can't silently hex-dump.
+  var pkixMod = require("../../lib/schema-pkix"), oidMod = require("../../lib/oid"), errMod = require("../../lib/framework-error");
+  var decNS = pkixMod.makeNS("inspect-test", errMod.InspectError, oidMod);
+  var decodable = Object.keys(pkixMod.certExtensionDecoders(decNS).byOid).map(function (o) { return oidMod.name(o); });
+  var unrendered = decodable.filter(function (n) { return pki.inspect.renderedExtensions.indexOf(n) < 0; });
+  check("inspect: every decoder-decodable extension has a renderer (no hex-dump drift): " + (unrendered.join(",") || "none"), unrendered.length === 0);
+
   // --- Fail-closed input; a malformed extension does NOT sink the report ---
   check("inspect(42) -> inspect/bad-input", codeOf(function () { pki.inspect.certificate(42); }) === "inspect/bad-input");
   check("inspect(garbage der) -> inspect/bad-certificate", codeOf(function () { pki.inspect.certificate(Buffer.from("not a cert")); }) === "inspect/bad-certificate");

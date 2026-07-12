@@ -361,6 +361,9 @@
                 "policyMappings": {
                   "kind": "string"
                 },
+                "precertificatePoison": {
+                  "kind": "string"
+                },
                 "signedCertificateTimestampList": {
                   "kind": "string"
                 },
@@ -512,6 +515,35 @@
                   "kind": "string"
                 },
                 "6": {
+                  "kind": "string"
+                }
+              }
+            },
+            "REASON_FLAGS": {
+              "kind": "object",
+              "members": {
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "4": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                },
+                "7": {
+                  "kind": "string"
+                },
+                "8": {
                   "kind": "string"
                 }
               }
@@ -1355,6 +1387,9 @@
                 "policyMappings": {
                   "kind": "string"
                 },
+                "precertificatePoison": {
+                  "kind": "string"
+                },
                 "signedCertificateTimestampList": {
                   "kind": "string"
                 },
@@ -1506,6 +1541,35 @@
                   "kind": "string"
                 },
                 "6": {
+                  "kind": "string"
+                }
+              }
+            },
+            "REASON_FLAGS": {
+              "kind": "object",
+              "members": {
+                "1": {
+                  "kind": "string"
+                },
+                "2": {
+                  "kind": "string"
+                },
+                "3": {
+                  "kind": "string"
+                },
+                "4": {
+                  "kind": "string"
+                },
+                "5": {
+                  "kind": "string"
+                },
+                "6": {
+                  "kind": "string"
+                },
+                "7": {
+                  "kind": "string"
+                },
+                "8": {
                   "kind": "string"
                 }
               }
@@ -1890,6 +1954,10 @@
         "certificate": {
           "kind": "function",
           "arity": 1
+        },
+        "renderedExtensions": {
+          "kind": "array",
+          "length": 16
         }
       }
     },
