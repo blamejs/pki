@@ -163,6 +163,19 @@ async function run() {
   var narrowKeys = TM.rekorKeys.map(function (k) { return Object.assign({}, k, { validFor: { start: 0, end: 1 } }); });
   check("Rekor key outside its validFor window -> rejected", (await codeOf(pki.sigstore.verifyBundle(BUNDLE, { fulcioRoots: TM.fulcioRoots, rekorKeys: narrowKeys }))).indexOf("sigstore/") === 0);
 
+  // --- A malformed leaf certificate fails closed as a typed sigstore/*, never a
+  // raw certificate/* leak from the X.509 parser boundary. ---
+  var badLeaf = JSON.parse(JSON.stringify(BUNDLE));
+  badLeaf.verificationMaterial.certificate.rawBytes = Buffer.from("not a certificate").toString("base64");
+  check("malformed leaf certificate -> sigstore/bad-certificate", await codeOf(pki.sigstore.verifyBundle(badLeaf, TM)) === "sigstore/bad-certificate");
+
+  // --- Multiple transparency-log entries: a leading malformed / non-binding entry
+  // must not sink the verify when a later entry fully verifies. ---
+  var multiEntry = JSON.parse(JSON.stringify(BUNDLE));
+  multiEntry.verificationMaterial.tlogEntries = [{ notAnEntry: true }].concat(multiEntry.verificationMaterial.tlogEntries);
+  var me = await pki.sigstore.verifyBundle(multiEntry, TM);
+  check("verify succeeds via a later tlog entry when the first is malformed", me && me.verified === true);
+
   // --- A message_signature content arm (non-DSSE) is a recognize-and-defer. ---
   check("message_signature arm -> sigstore/unsupported-content", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); delete b.dsseEnvelope; b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "" }, signature: "" }; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/unsupported-content"; } })());
 
