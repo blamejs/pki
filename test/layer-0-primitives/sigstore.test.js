@@ -26,8 +26,9 @@ var TRUST = JSON.parse(fs.readFileSync(path.join(FX, "trusted-root.json"), "utf8
 function trustMaterial() {
   var fulcioRoots = [];
   (TRUST.certificateAuthorities || []).forEach(function (ca) {
+    var vf = ca.validFor ? { start: ca.validFor.start ? Date.parse(ca.validFor.start) : null, end: ca.validFor.end ? Date.parse(ca.validFor.end) : null } : undefined;
     ((ca.certChain && ca.certChain.certificates) || []).forEach(function (c) {
-      fulcioRoots.push(Buffer.from(c.rawBytes, "base64"));
+      fulcioRoots.push({ der: Buffer.from(c.rawBytes, "base64"), validFor: vf });
     });
   });
   var rekorKeys = (TRUST.tlogs || []).map(function (t) {
@@ -142,7 +143,7 @@ async function run() {
   // attacker ships a self-signed chain and verifies against their own root). ---
   var selfAnchored = JSON.parse(JSON.stringify(BUNDLE));
   var leafB64 = selfAnchored.verificationMaterial.certificate.rawBytes;
-  var caChain = TM.fulcioRoots.map(function (d) { return { rawBytes: d.toString("base64") }; });
+  var caChain = TM.fulcioRoots.map(function (d) { return { rawBytes: d.der.toString("base64") }; });
   delete selfAnchored.verificationMaterial.certificate;
   selfAnchored.verificationMaterial.x509CertificateChain = { certificates: [{ rawBytes: leafB64 }].concat(caChain) };
   check("bundle-supplied chain + empty caller trust -> rejected",
@@ -153,7 +154,7 @@ async function run() {
   var wrongVerifier = JSON.parse(JSON.stringify(BUNDLE));
   var wte = wrongVerifier.verificationMaterial.tlogEntries[0];
   var wbody = JSON.parse(Buffer.from(wte.canonicalizedBody, "base64").toString("utf8"));
-  var otherPem = "-----BEGIN CERTIFICATE-----\n" + TM.fulcioRoots[0].toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END CERTIFICATE-----\n";
+  var otherPem = "-----BEGIN CERTIFICATE-----\n" + TM.fulcioRoots[0].der.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END CERTIFICATE-----\n";
   wbody.spec.signatures[0].verifier = Buffer.from(otherPem).toString("base64");
   wte.canonicalizedBody = Buffer.from(JSON.stringify(wbody)).toString("base64");
   check("Rekor entry verifier != leaf cert -> sigstore/entry-mismatch", await codeOf(pki.sigstore.verifyBundle(wrongVerifier, TM)) === "sigstore/entry-mismatch");
@@ -175,6 +176,23 @@ async function run() {
   multiEntry.verificationMaterial.tlogEntries = [{ notAnEntry: true }].concat(multiEntry.verificationMaterial.tlogEntries);
   var me = await pki.sigstore.verifyBundle(multiEntry, TM);
   check("verify succeeds via a later tlog entry when the first is malformed", me && me.verified === true);
+
+  // --- Fulcio CA validFor: an anchor whose trust-root validity window does not
+  // contain the log time must not be used (a rotated-out CA). ---
+  var expiredCA = TM.fulcioRoots.map(function (r) { return { der: r.der, validFor: { start: 0, end: 1 } }; });
+  check("Fulcio anchor outside its validFor window -> sigstore/chain-incomplete", await codeOf(pki.sigstore.verifyBundle(BUNDLE, { fulcioRoots: expiredCA, rekorKeys: TM.rekorKeys })) === "sigstore/chain-incomplete");
+
+  // --- Multiple caller anchors sharing a subject DN (the trusted_root carries
+  // several Fulcio CA rotations) must all be tried, not just the last stored. ---
+  var dupAnchors = TM.fulcioRoots.concat(TM.fulcioRoots);
+  var dup = await pki.sigstore.verifyBundle(BUNDLE, { fulcioRoots: dupAnchors, rekorKeys: TM.rekorKeys });
+  check("duplicate same-DN anchors still verify (all candidates tried)", dup && dup.verified === true);
+
+  // --- Predicate pinning: opts.predicateType enforces the attestation kind, so a
+  // non-SLSA in-toto statement is not accepted as the expected provenance. ---
+  var vpred = await pki.sigstore.verifyBundle(BUNDLE, Object.assign({ predicateType: "https://slsa.dev/provenance/v1" }, TM));
+  check("matching predicateType pin -> verified", vpred && vpred.verified === true);
+  check("wrong predicateType pin -> sigstore/predicate-mismatch", await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ predicateType: "https://example/sbom" }, TM))) === "sigstore/predicate-mismatch");
 
   // --- A message_signature content arm (non-DSSE) is a recognize-and-defer. ---
   check("message_signature arm -> sigstore/unsupported-content", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); delete b.dsseEnvelope; b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "" }, signature: "" }; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/unsupported-content"; } })());
