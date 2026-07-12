@@ -179,6 +179,12 @@ async function run() {
   // §8.7 -- a non-empty none attStmt is rejected.
   check("verify: none attestation with a non-empty attStmt -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("none", [[cText("x"), cInt(1)]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
+  // §8.7 -- a none attStmt that is not a map at all (here a uint) is rejected.
+  check("verify: none attestation with a non-map attStmt -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-att-stmt");
+  // A DER-negative ECDSA signature integer is not a valid coordinate.
+  check("verify: packed with a negative ECDSA signature integer -> webauthn/bad-signature",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3006020180020101", "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
   // §8.6 -- fido-u2f x5c MUST contain exactly one certificate.
   check("verify: fido-u2f x5c with two certificates -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("fido-u2f", [[cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([packedLeaf, appleLeaf].map(cBytes))]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
