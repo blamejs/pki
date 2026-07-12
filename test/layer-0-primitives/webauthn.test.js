@@ -43,13 +43,10 @@ function cMap(pairs) {  // canonical: entries sorted by encoded-key bytes (RFC 8
   e.forEach(function (p) { out.push(p[0], p[1]); });
   return Buffer.concat(out);
 }
-// A COSE_Key EC2 map (kty 2); pass alg=null to OMIT label 3 (an invalid credential key).
-function coseEc2(x, y, alg) {
-  var pairs = [[cInt(1), cInt(2)]];
-  if (alg !== null) pairs.push([cInt(3), cInt(alg === undefined ? -7 : alg)]);
-  pairs.push([cInt(-1), cInt(1)], [cInt(-2), cBytes(x)], [cInt(-3), cBytes(y)]);
-  return cMap(pairs);
-}
+// A COSE_Key EC2 map (kty 2) from a chosen set of entries -- callers build the exact
+// (possibly malformed) key a vector needs; `cKV(label, valueBuf)` is one entry.
+function cKV(label, valueBuf) { return [cInt(label), valueBuf]; }
+function coseKey(entries) { return cMap(entries); }
 // authenticatorData with a chosen flag set + attestedCredentialData (RFC WebAuthn 6.1).
 function buildAuthData(o) {
   o = o || {};
@@ -164,8 +161,17 @@ async function run() {
   check("parse: authData trailing bytes with ED clear -> webauthn/bad-auth-data",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.concat([realAuthData, Buffer.from([0x00])]))); }) === "webauthn/bad-auth-data");
   // §6.5.1 / COSE sec. 7 -- the credential COSE key MUST carry alg (label 3).
+  var ec2NoAlg = coseKey([cKV(1, cInt(2)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
   check("parse: COSE credential key missing alg (label 3) -> webauthn/bad-cose-key",
-    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: coseEc2(credKey.x, credKey.y, null) }))); }) === "webauthn/bad-cose-key");
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2NoAlg }))); }) === "webauthn/bad-cose-key");
+  // §6.5.1 -- an incomplete EC2 key (alg present, y omitted) is rejected at decode.
+  var ec2NoY = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x))]);
+  check("parse: incomplete EC2 COSE key (no y) -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2NoY }))); }) === "webauthn/bad-cose-key");
+  // §6.5.1 -- an unknown kty is rejected at decode, not surfaced as a materialess key.
+  var unknownKty = coseKey([cKV(1, cInt(9)), cKV(3, cInt(-7))]);
+  check("parse: unknown COSE key kty -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: unknownKty }))); }) === "webauthn/bad-cose-key");
   // §8.7 -- the none format verifies with no statement (attestationType "None").
   var noneRes = await pki.webauthn.verify(attObjOf("none", [], realAuthData), packedHash);
   check("verify: none attestation verifies (attestationType None, empty trust path)",
