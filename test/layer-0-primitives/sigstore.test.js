@@ -31,10 +31,12 @@ function trustMaterial() {
     });
   });
   var rekorKeys = (TRUST.tlogs || []).map(function (t) {
+    var vf = t.publicKey && t.publicKey.validFor;
     return {
       keyId: Buffer.from((t.logId && t.logId.keyId) || "", "base64"),
       spki: Buffer.from((t.publicKey && t.publicKey.rawBytes) || "", "base64"),
       keyDetails: t.publicKey && t.publicKey.keyDetails,
+      validFor: vf ? { start: vf.start ? Date.parse(vf.start) : null, end: vf.end ? Date.parse(vf.end) : null } : undefined,
     };
   });
   return { fulcioRoots: fulcioRoots, rekorKeys: rekorKeys };
@@ -59,6 +61,9 @@ async function run() {
   check("parseBundle accepts the real v0.3 bundle", parsed && parsed.mediaType.indexOf("v0.3") >= 0 && !!parsed.dsseEnvelope);
   check("parseBundle rejects a non-object", await codeOf(Promise.resolve().then(function () { return pki.sigstore.parseBundle("not json"); })) === "sigstore/bad-bundle" || (function () { try { pki.sigstore.parseBundle(42); return false; } catch (e) { return e.code === "sigstore/bad-bundle"; } })());
   check("parseBundle rejects an unknown media type", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); b.mediaType = "application/x.bogus"; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-bundle-version"; } })());
+  // An unsupported bundle version (a v0.x we do not actually verify) must reject,
+  // recognize-and-defer, not be accepted by an over-broad media-type match.
+  check("parseBundle rejects an unsupported bundle version", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); b.mediaType = "application/vnd.dev.sigstore.bundle.v0.9+json"; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-bundle-version"; } })());
 
   // --- Full verify against the real trust root -> a structured verified verdict ---
   var v = await pki.sigstore.verifyBundle(BUNDLE, TM);
@@ -135,6 +140,21 @@ async function run() {
   selfAnchored.verificationMaterial.x509CertificateChain = { certificates: [{ rawBytes: leafB64 }].concat(caChain) };
   check("bundle-supplied chain + empty caller trust -> rejected",
     (await codeOf(pki.sigstore.verifyBundle(selfAnchored, { fulcioRoots: [], rekorKeys: TM.rekorKeys }))).indexOf("sigstore/") === 0);
+
+  // --- The Rekor entry must be bound to THIS leaf cert: a valid inclusion proof
+  // whose embedded verifier certificate is a DIFFERENT cert must reject. ---
+  var wrongVerifier = JSON.parse(JSON.stringify(BUNDLE));
+  var wte = wrongVerifier.verificationMaterial.tlogEntries[0];
+  var wbody = JSON.parse(Buffer.from(wte.canonicalizedBody, "base64").toString("utf8"));
+  var otherPem = "-----BEGIN CERTIFICATE-----\n" + TM.fulcioRoots[0].toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END CERTIFICATE-----\n";
+  wbody.spec.signatures[0].verifier = Buffer.from(otherPem).toString("base64");
+  wte.canonicalizedBody = Buffer.from(JSON.stringify(wbody)).toString("base64");
+  check("Rekor entry verifier != leaf cert -> sigstore/entry-mismatch", await codeOf(pki.sigstore.verifyBundle(wrongVerifier, TM)) === "sigstore/entry-mismatch");
+
+  // --- Trust-root validity windows: a Rekor key whose validFor window does not
+  // contain the entry's integratedTime must not be used (a rotated-out key). ---
+  var narrowKeys = TM.rekorKeys.map(function (k) { return Object.assign({}, k, { validFor: { start: 0, end: 1 } }); });
+  check("Rekor key outside its validFor window -> rejected", (await codeOf(pki.sigstore.verifyBundle(BUNDLE, { fulcioRoots: TM.fulcioRoots, rekorKeys: narrowKeys }))).indexOf("sigstore/") === 0);
 
   // --- A message_signature content arm (non-DSSE) is a recognize-and-defer. ---
   check("message_signature arm -> sigstore/unsupported-content", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); delete b.dsseEnvelope; b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "" }, signature: "" }; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/unsupported-content"; } })());
