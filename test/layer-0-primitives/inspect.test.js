@@ -144,6 +144,17 @@ function run() {
   check("inspect: an RSA-PSS SPKI renders as an RSA key (modulus + exponent)",
     /Public Key Algorithm: rsassaPss/.test(pss) && /Modulus:/.test(pss) && /Exponent: 65537/.test(pss));
 
+  // An RSA modulus whose top byte is < 0x80 has no DER sign octet: inspect must report
+  // its true bit length (127, not 128) and omit the '00:' pad, matching openssl.
+  var loMod = BigInt("0x7f" + "c3".repeat(15));   // 16 bytes, top bit clear
+  var loSpki = b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(b.sequence([b.integer(loMod), b.integer(65537n)]))]);
+  var lo = pki.inspect.certificate(b.sequence([
+    b.sequence(baseTbs.children.map(function (c, i) { return i === extIdx - 1 ? loSpki : c.bytes; })),
+    baseCert.children[1].bytes, baseCert.children[2].bytes,
+  ]));
+  check("inspect: an RSA modulus < 0x80 reports true bits and no sign padding",
+    /Public-Key: \(127 bit\)/.test(lo) && /Modulus:\n\s+7f:c3/.test(lo));
+
   // A CRL distribution point that carries only cRLIssuer (an indirect CRL, no
   // distributionPoint) must render the issuer GeneralNames, not a bare placeholder.
   var crlIssuerDp = b.sequence([b.contextConstructed(2, b.contextPrimitive(6, Buffer.from("http://crl-issuer.test", "latin1")))]);
