@@ -95,6 +95,13 @@ function testMalformed() {
   // (return INVALID). Take a valid signature and set q past the tree height.
   var badQ = Buffer.from(sig); badQ.writeUInt32BE(0xFFFFFFFF, 0);
   check("exact-length signature with q >= 2^h -> false", pki.shbs.verifyLms(pub, msg, badQ) === false);
+  // RFC 8554 Algorithm 6a step 2c: the typecode is checked BEFORE the length, so
+  // a mismatched OTS typecode is INVALID (false) even for an 8-byte blob too
+  // short to be a complete signature -- never re-sized by the mismatched typecode
+  // (which would reject a legitimate typecode-mutation vector as malformed).
+  var sigOts = sig.readUInt32BE(4);
+  var tinyMismatch = Buffer.alloc(8); tinyMismatch.writeUInt32BE(0, 0); tinyMismatch.writeUInt32BE(sigOts === 4 ? 3 : 4, 4);
+  check("8-byte blob with a mismatched OTS typecode -> false (RFC Alg 6a step 2c)", pki.shbs.verifyLms(pub, msg, tinyMismatch) === false);
 }
 
 // -- OID registry + params-absent seed ---------------------------------------
