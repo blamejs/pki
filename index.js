@@ -38,6 +38,7 @@ var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
+var hpke      = require("./lib/hpke");
 var est        = require("./lib/est");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
@@ -79,6 +80,10 @@ module.exports = {
   // VERIFY ONLY by design: stateful signing requires atomic one-time-key index
   // state that belongs in an HSM, so this module never mints a signature.
   shbs:      shbs,
+  // `hpke` is RFC 9180 Hybrid Public Key Encryption -- the KEM + HKDF key
+  // schedule + AEAD context construction behind TLS ECH / MLS / OHTTP. Pure
+  // composition over node:crypto; the classical DHKEM suites, all four modes.
+  hpke:      hpke,
   // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the
   // transport-agnostic client codecs (base64 transfer, multipart splitter),
   // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,
