@@ -31,7 +31,11 @@ var TRUST_ROOT = JSON.parse(fs.readFileSync(path.join(FX, "trusted-root.json"), 
 var TRUST = { fulcioRoots: [], rekorKeys: (TRUST_ROOT.tlogs || []).map(function (t) { return { keyId: Buffer.from((t.logId && t.logId.keyId) || "", "base64"), spki: Buffer.from((t.publicKey && t.publicKey.rawBytes) || "", "base64") }; }) };
 (TRUST_ROOT.certificateAuthorities || []).forEach(function (ca) { ((ca.certChain && ca.certChain.certificates) || []).forEach(function (c) { TRUST.fulcioRoots.push(Buffer.from(c.rawBytes, "base64")); }); });
 
-function isPki(e) { return e instanceof pki.errors.PkiError || e instanceof TypeError; }
+// Only a typed PkiError is an acceptable outcome. A raw TypeError (a null/wrong-
+// type field dereferenced) is a finding, NOT whitelisted -- the harness feeds a
+// Buffer / a structural bundle object, never a config-time non-object, so a
+// TypeError here means malformed input escaped the fail-closed contract.
+function isPki(e) { return e instanceof pki.errors.PkiError; }
 
 module.exports.fuzz = async function (data) {
   // Target A -- the JSON bundle reader on raw hostile bytes.
