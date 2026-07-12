@@ -50,7 +50,7 @@ function coseKey(entries) { return cMap(entries); }
 // authenticatorData with a chosen flag set + attestedCredentialData (RFC WebAuthn 6.1).
 function buildAuthData(o) {
   o = o || {};
-  var flags = (o.at === false ? 0 : 0x40) | (o.ed ? 0x80 : 0) | 0x01;   // UP always
+  var flags = (o.at === false ? 0 : 0x40) | (o.ed ? 0x80 : 0) | (o.bs ? 0x10 : 0) | (o.be ? 0x08 : 0) | 0x01;   // UP always
   var parts = [Buffer.concat([Buffer.alloc(32, 1), Buffer.from([flags]), Buffer.alloc(4)])];
   if (o.at !== false) {
     var credId = o.credId || Buffer.alloc(16, 3);
@@ -174,6 +174,9 @@ async function run() {
   // §6.1 -- trailing bytes after attestedCredentialData with the ED flag clear.
   check("parse: authData trailing bytes with ED clear -> webauthn/bad-auth-data",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.concat([realAuthData, Buffer.from([0x00])]))); }) === "webauthn/bad-auth-data");
+  // §6.1 -- Backup State (BS) set without Backup Eligibility (BE) is an invalid flag combination.
+  check("parse: authData BS set without BE -> webauthn/bad-auth-data",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ bs: true, be: false, coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }))); }) === "webauthn/bad-auth-data");
   // §6.1 -- the ED flag set with no (or malformed) extensions map is rejected.
   check("parse: ED flag set with no extensions map -> webauthn/bad-auth-data",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ ed: true, coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }))); }) === "webauthn/bad-auth-data");
