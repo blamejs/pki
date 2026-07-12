@@ -194,6 +194,24 @@ async function run() {
   check("matching predicateType pin -> verified", vpred && vpred.verified === true);
   check("wrong predicateType pin -> sigstore/predicate-mismatch", await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ predicateType: "https://example/sbom" }, TM))) === "sigstore/predicate-mismatch");
 
+  // --- A caller may pin only the Fulcio ROOT while the intermediate rides in the
+  // bundle chain: the caller cert anchors and the bundle intermediate is a path
+  // link. Identify the root (self-issued) and intermediate among the trust certs. ---
+  var parsedRoots = TM.fulcioRoots.map(function (r) { return { der: r.der, cert: pki.schema.x509.parse(r.der) }; });
+  var leafCert = pki.schema.x509.parse(Buffer.from(BUNDLE.verificationMaterial.certificate.rawBytes, "base64"));
+  var interCert = parsedRoots.filter(function (p) { return p.cert.subject.dn === leafCert.issuer.dn; })[0];
+  // The trust set carries multiple self-signed roots sharing a DN (CA rotations);
+  // pin all of them so the verifier picks the one that actually signed the chain.
+  var rootCerts = parsedRoots.filter(function (p) { return p.cert.subject.dn === p.cert.issuer.dn; });
+  if (interCert && rootCerts.length) {
+    var rootOnly = JSON.parse(JSON.stringify(BUNDLE));
+    var lb = rootOnly.verificationMaterial.certificate.rawBytes;
+    delete rootOnly.verificationMaterial.certificate;
+    rootOnly.verificationMaterial.x509CertificateChain = { certificates: [{ rawBytes: lb }, { rawBytes: interCert.der.toString("base64") }] };
+    var ro = await pki.sigstore.verifyBundle(rootOnly, { fulcioRoots: rootCerts.map(function (p) { return { der: p.der }; }), rekorKeys: TM.rekorKeys });
+    check("caller pins only the roots + bundle carries the intermediate -> verifies", ro && ro.verified === true);
+  }
+
   // --- A message_signature content arm (non-DSSE) is a recognize-and-defer. ---
   check("message_signature arm -> sigstore/unsupported-content", (function () { var b = JSON.parse(JSON.stringify(BUNDLE)); delete b.dsseEnvelope; b.messageSignature = { messageDigest: { algorithm: "SHA2_256", digest: "" }, signature: "" }; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/unsupported-content"; } })());
 
