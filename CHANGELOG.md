@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.5 — 2026-07-12
+
+WebAuthn / passkey attestation verification joins the toolkit as pki.webauthn.
+
+### Added
+
+- pki.webauthn.parseAttestationObject(bytes) structurally decodes a WebAuthn attestation object (the CBOR { fmt, attStmt, authData }) and its authenticatorData over the strict pki.cbor codec, returning the format id, the decoded rpIdHash / flags / signCount, the attested credential data (aaguid, credentialId, and the decoded COSE credentialPublicKey), and the raw authenticatorData bytes a signature covers. Malformed input throws webauthn/bad-attestation-object. W3C WebAuthn Level 3.
+- pki.webauthn.verify(attestationObject, clientDataHash, opts) verifies a WebAuthn attestation statement -- packed, tpm, android-key, apple, fido-u2f, or none -- checking the attestation signature over authenticatorData || clientDataHash and each format's structural bindings (the x5c leaf key, the apple nonce, the tpm certInfo Name / extraData over the pubArea, the android KeyDescription, the fido-u2f verificationData), binding each attestation certificate key to the credential public key, and enforcing each format's certificate requirements (a packed leaf's Authenticator Attestation subject and non-CA basic constraints, a tpm AIK's empty subject and non-CA constraints). It resolves the attestation type and trust path or throws a typed webauthn/* error; a signature that does not verify is a webauthn/verify-failed verdict, never a silent pass. The error taxonomy gains WebauthnError (webauthn/*). W3C WebAuthn Level 3, RFC 9052.
+- The OID registry gains the FIDO id-fido-gen-ce-aaguid, Android key-attestation, Apple anonymous-attestation, and TCG TPM (AIK key purpose, tpmManufacturer / tpmModel / tpmVersion) arcs that WebAuthn attestation certificates carry.
+
+### Changed
+
+- The bounded big-endian byte cursor under pki.ct's TLS-vector decoding is extracted to a shared engine primitive so the packed big-endian TPM structures in pki.webauthn read through the same bounds-before-slice cursor -- one definition of the length-checked read, carrying each caller's typed error domain.
+
 ## v0.2.4 — 2026-07-12
 
 Human-readable certificate inspection joins the toolkit as pki.inspect.

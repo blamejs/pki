@@ -247,6 +247,19 @@ security-only patches after the next major releases.
   or trusts a certificate — and it rejects a `SigningCertificateV2` hash algorithm
   encoded equal to its DEFAULT as non-canonical DER, closing an
   encode-ambiguity a signature check would otherwise have to tolerate.
+- **Attestation-key substitution (WebAuthn).** `pki.webauthn.verify` binds every
+  attestation-statement signature to the credential being registered: the
+  attestation certificate's public key must equal the authenticatorData credential
+  public key (an unsigned-integer comparison, so a leading-zero re-encoding cannot
+  desynchronize it), the tpm `pubArea` key must equal both the credential key and
+  the `certInfo` TPM Name it certifies, and the apple nonce and android
+  attestation-challenge must equal the SHA-256 over `authenticatorData ||
+  clientDataHash` — so an attacker cannot pair a valid attestation over one key with
+  a different credential key. The attestation object and COSE keys are decoded by the
+  strict `pki.cbor` codec and the TPM structures by a bounds-before-slice reader, and
+  every failed check throws a typed `webauthn/*` error — a signature that does not
+  verify is a verdict, never a silent pass. RS1 (SHA-1) is accepted for verifying the
+  legacy TPM authenticators that emit it, never for signing.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,
