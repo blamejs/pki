@@ -137,7 +137,7 @@ async function run() {
     for (var i = 0; i < att.attStmt.children.length; i++) { var k = att.attStmt.children[i][0]; if (k.majorType === 3 && pki.cbor.read.textString(k) === "x5c") x5cN = att.attStmt.children[i][1]; }
     return pki.cbor.read.byteString(x5cN.children[idx]);
   }
-  var packedLeaf = x5cDer("packed", 0), caCert = x5cDer("tpm", 1), appleLeaf = x5cDer("apple", 0), androidLeaf = x5cDer("android_key", 0);
+  var packedLeaf = x5cDer("packed", 0), caCert = x5cDer("tpm", 1), appleLeaf = x5cDer("apple", 0), androidLeaf = x5cDer("android_key", 0), tpmAik = x5cDer("tpm", 0);
   var realAuthData = pki.webauthn.parseAttestationObject(attObj("packed")).authDataBytes;
   var credKey = pki.webauthn.parseAttestationObject(attObj("packed")).authData.credentialPublicKey;
   var packedHash = clientHash("packed");
@@ -155,6 +155,10 @@ async function run() {
   // leaf omits it), so an attestation leaf without one is rejected.
   check("verify: packed x5c leaf with no basicConstraints -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([androidLeaf], Buffer.alloc(8), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // §8.2.1 -- the packed leaf subject MUST set C/O/OU/CN (the tpm AIK is v3 + non-CA
+  // but has an empty subject), so a leaf missing those fields is rejected.
+  check("verify: packed x5c leaf with an empty subject (no C/O/CN) -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([tpmAik], Buffer.alloc(8), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
   // A malformed DER ECDSA signature (constructed r/s) must fail typed, not raw-throw.
   check("verify: packed with a constructed-child ECDSA sig -> webauthn/bad-signature",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([packedLeaf], Buffer.from("3004300030 00".replace(/ /g, ""), "hex"), realAuthData), packedHash); })) === "webauthn/bad-signature");
