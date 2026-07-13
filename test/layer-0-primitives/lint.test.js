@@ -146,6 +146,9 @@ function run() {
   check("a conformant TLS cert has no cabf-tls error", pki.lint.certificate(tlsCert).findings.every(function (f) { return f.source !== "cabf-tls" || (f.severity !== "error" && f.severity !== "fatal"); }));
   check("a TLS cert with no SAN -> san-missing (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("example.com"), exts: [eku(["serverAuth"]), aki()] })), "lint/cabf-tls/san-missing"));
+  // A SAN that is present but does not decode (or carries no names) is not usable -> missing.
+  check("a present-but-undecodable SAN is treated as missing -> san-missing",
+    has(pki.lint.certificate(makeCert({ subject: dnCN("example.com"), validity: VALID_OK, exts: [eku(["serverAuth"]), ext("subjectAltName", false, b.integer(5n)), aki()] })), "lint/cabf-tls/san-missing"));
   check("a CN not present as a dNSName SAN -> cn-not-in-san (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("notlisted.example"), exts: [eku(["serverAuth"]), san([dnsName("other.example")], false), aki()] })), "lint/cabf-tls/cn-not-in-san"));
   // dNSNames are case-insensitive: a CN differing from its SAN only in case is NOT a finding.
@@ -288,6 +291,9 @@ function run() {
   var noExpSpki = b.sequence([rsaHdr, b.bitString(b.sequence([b.integer((1n << 2047n) | 1n)]), 0)]);
   check("an RSA key missing the exponent -> weak-key (fail-closed)",
     has(pki.lint.certificate(tlsKeyCert(noExpSpki)), "lint/cabf-tls/weak-key"));
+  // An RSAES-OAEP key also carries an RSAPublicKey, so a weak one is weighed by weak-key.
+  var oaepSpki = b.sequence([b.sequence([b.oid(oid.byName("rsaesOaep")), b.nullValue()]), b.bitString(b.sequence([b.integer((1n << 1023n) | 1n), b.integer(65537n)]), 0)]);
+  check("a weak RSAES-OAEP key -> weak-key (error)", has(pki.lint.certificate(tlsKeyCert(oaepSpki)), "lint/cabf-tls/weak-key"));
 
   // unknown-critical-extension is registry-driven: a critical extension the OID registry
   // RECOGNIZES (e.g. policyMappings) is NOT flagged; only an unregistered OID is.
