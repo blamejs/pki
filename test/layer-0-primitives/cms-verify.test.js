@@ -286,51 +286,97 @@ async function testTampered() {
   check("tampered content (no-attrs) -> invalid", r2.valid === false && r2.signers[0].ok === false);
 }
 
-// ---- malformed signed attributes ----
-async function testBadSignedAttrs() {
-  var md = oidMessageDigest();
-  // a valid content-type but no message-digest attribute at all.
-  var p1 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p1.signerInfos[0].signedAttrs = p1.signerInfos[0].signedAttrs.filter(function (a) { return a.type !== md; });
-  await rejects("signedAttrs without message-digest", function () { return pki.cms.verify(p1); }, "cms/bad-signed-attrs");
-
-  // a message-digest attribute carrying more than one value.
-  var p1b = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p1b.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === md) a.values = [a.values[0], a.values[0]]; });
-  await rejects("message-digest with two values", function () { return pki.cms.verify(p1b); }, "cms/bad-signed-attrs");
-
-  // a message-digest attribute whose value is not an OCTET STRING.
-  var p2 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p2.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === md) a.values[0] = b.integer(5); });
-  await rejects("message-digest value not an OCTET STRING", function () { return pki.cms.verify(p2); }, "cms/bad-signed-attrs");
-}
 function oidMessageDigest() { return pki.oid.byName("messageDigest"); }
 function oidContentType() { return pki.oid.byName("contentType"); }
 
+// The checks decode the SignedAttributes from signedAttrsBytes (the verified preimage), so a
+// malformed-attribute vector is crafted as those bytes, not as the parsed si.signedAttrs.
+// id-data is rsa-attached's eContentType; a matching content-type lets the message-digest
+// checks be reached.
+var DATA_OID = "1.2.840.113549.1.7.1";
+function _attr(typeOid, values) { return b.sequence([b.oid(typeOid), b.set(values)]); }
+function _ctAttr(o) { return _attr(oidContentType(), [b.oid(o || DATA_OID)]); }
+function _mdAttr() { return _attr(oidMessageDigest(), [b.octetString(Buffer.alloc(32))]); }
+function _withSignedAttrs(attrs) {
+  var setOf = Buffer.from(b.set(attrs));
+  setOf[0] = 0xA0;   // the on-wire [0] IMPLICIT tag verify re-tags back to a SET OF
+  var p = pki.schema.cms.parse(fx("rsa-attached.p7s"));
+  p.signerInfos[0].signedAttrsBytes = setOf;
+  return p;
+}
+
+// ---- malformed signed attributes (crafted into the signed bytes) ----
+async function testBadSignedAttrs() {
+  // the SET OF carries something that is not an Attribute SEQUENCE.
+  await rejects("a signed Attribute that is not a SEQUENCE", function () { return pki.cms.verify(_withSignedAttrs([b.integer(5)])); }, "cms/bad-signed-attrs");
+  // an Attribute whose type slot is not an OBJECT IDENTIFIER.
+  await rejects("a signed Attribute type not an OID", function () { return pki.cms.verify(_withSignedAttrs([b.sequence([b.integer(5), b.set([b.oid(DATA_OID)])])])); }, "cms/bad-signed-attrs");
+  // an Attribute whose values field is not a SET OF.
+  await rejects("a signed Attribute values not a SET", function () { return pki.cms.verify(_withSignedAttrs([b.sequence([b.oid(oidContentType()), b.oid(DATA_OID)])])); }, "cms/bad-signed-attrs");
+
+  // a valid content-type but no message-digest attribute at all.
+  await rejects("signedAttrs without message-digest", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr()])); }, "cms/bad-signed-attrs");
+  // a message-digest attribute carrying more than one value.
+  await rejects("message-digest with two values", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.octetString(Buffer.alloc(32)), b.octetString(Buffer.alloc(32))])])); }, "cms/bad-signed-attrs");
+  // a message-digest attribute whose value is not an OCTET STRING.
+  await rejects("message-digest value not an OCTET STRING", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.integer(5)])])); }, "cms/bad-signed-attrs");
+}
+
 // ---- content-type signed attribute (RFC 5652 sec. 5.3) ----
 async function testContentType() {
-  // a content-type attribute whose OID does not equal the eContentType.
-  var p1 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  var ct = oidContentType();
-  p1.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === ct) a.values[0] = b.oid("1.2.840.113549.1.7.2"); });
-  var r1 = await pki.cms.verify(p1);
+  // a content-type attribute whose OID does not equal the eContentType -> a verdict, not a throw.
+  var r1 = await pki.cms.verify(_withSignedAttrs([_ctAttr("1.2.840.113549.1.7.2"), _mdAttr()]));
   check("content-type != eContentType -> invalid", r1.valid === false);
   check("content-type mismatch -> content-type-mismatch code", r1.signers[0].code === "cms/content-type-mismatch");
 
   // no content-type attribute at all.
-  var p2 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p2.signerInfos[0].signedAttrs = p2.signerInfos[0].signedAttrs.filter(function (a) { return a.type !== ct; });
-  await rejects("signedAttrs without content-type", function () { return pki.cms.verify(p2); }, "cms/bad-signed-attrs");
-
+  await rejects("signedAttrs without content-type", function () { return pki.cms.verify(_withSignedAttrs([_mdAttr()])); }, "cms/bad-signed-attrs");
   // a content-type attribute whose value is not an OBJECT IDENTIFIER.
-  var p3 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p3.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === ct) a.values[0] = b.integer(5); });
-  await rejects("content-type value not an OBJECT IDENTIFIER", function () { return pki.cms.verify(p3); }, "cms/bad-signed-attrs");
-
+  await rejects("content-type value not an OBJECT IDENTIFIER", function () { return pki.cms.verify(_withSignedAttrs([_attr(oidContentType(), [b.integer(5)]), _mdAttr()])); }, "cms/bad-signed-attrs");
   // a content-type attribute carrying more than one value.
-  var p4 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p4.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === ct) a.values = [a.values[0], a.values[0]]; });
-  await rejects("content-type with two values", function () { return pki.cms.verify(p4); }, "cms/bad-signed-attrs");
+  await rejects("content-type with two values", function () { return pki.cms.verify(_withSignedAttrs([_attr(oidContentType(), [b.oid(DATA_OID), b.oid(DATA_OID)]), _mdAttr()])); }, "cms/bad-signed-attrs");
+}
+
+// ---- the checked attributes must be the signed attributes (no parsed-object desync) ----
+async function testSignedAttrsBinding() {
+  var crypto = require("node:crypto");
+  // Forgery attempt on the documented parsed-object path: mutate the parsed messageDigest
+  // attribute to match attacker-chosen content while leaving signedAttrsBytes (the bytes the
+  // signature actually covers) intact. Deriving the checked attributes from the signed bytes
+  // -- not the mutable parsed si.signedAttrs -- must defeat this.
+  var p = pki.schema.cms.parse(fx("rsa-detached.p7s"));
+  var attacker = Buffer.from("attacker-chosen content that was never signed");
+  var mdOid = oidMessageDigest();
+  var forged = crypto.createHash("sha256").update(attacker).digest();
+  p.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === mdOid) a.values[0] = b.octetString(forged); });
+  var r = await pki.cms.verify(p, { content: attacker });
+  check("mutated parsed messageDigest cannot forge a valid verdict", r.valid === false);
+
+  // Likewise a mutated parsed content-type attribute must not change the verdict.
+  var p2 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
+  p2.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === oidContentType()) a.values[0] = b.oid("1.2.840.113549.1.7.2"); });
+  var r2 = await pki.cms.verify(p2);
+  check("mutated parsed content-type does not change the verdict", r2.valid === true);
+}
+
+// ---- EdDSA signer keys must be validated on-curve and full-order before verify ----
+async function testEdPointValidation() {
+  // node/OpenSSL imports a low-order (e.g. all-zeroes) Ed25519 SPKI without complaint and such
+  // a key can verify a forged signature; the point MUST be rejected before verify.
+  var p = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
+  var cert = Buffer.from(p.certificates[0].bytes);
+  var pat = Buffer.from([0x2B, 0x65, 0x70, 0x03, 0x21, 0x00]);   // Ed25519 OID tail + BIT STRING(33) + 0 unused bits
+  var i = cert.indexOf(pat);
+  check("Ed25519 SPKI point located in the signer cert", i >= 0);
+  cert.fill(0x00, i + pat.length, i + pat.length + 32);   // all-zeroes: a low-order point on the curve
+  p.certificates[0].bytes = cert;
+  await rejects("Ed25519 low-order signer point rejected before verify", function () { return pki.cms.verify(p); }, "cms/bad-signature");
+
+  // the Ed448 curve selector: relabel the signer as Ed448 -- the Ed25519-sized point is not a
+  // valid Ed448 point, so it is rejected before verify.
+  var p448 = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
+  p448.signerInfos[0].signatureAlgorithm.name = "Ed448";
+  await rejects("Ed448-labelled signer with a non-Ed448 point", function () { return pki.cms.verify(p448); }, "cms/bad-signature");
 }
 
 // ---- config-time misuse throws typed cms/bad-input ----
@@ -353,6 +399,8 @@ async function run() {
   await testTampered();
   await testBadSignedAttrs();
   await testContentType();
+  await testSignedAttrsBinding();
+  await testEdPointValidation();
   await testBadInput();
 }
 

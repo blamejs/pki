@@ -307,9 +307,15 @@ security-only patches after the next major releases.
   as one made over the content. Each parameter comes from the structure that owns it —
   the content digest from the digestAlgorithm, the signature scheme from the signer's
   own key algorithm — so a signer cannot claim one algorithm while the key implies
-  another. A false verdict or an unresolved parameter is a fail-closed `cms/*` outcome,
-  never a silent pass; the signer certificate is located but deliberately not chained to
-  a trust anchor, which remains the caller's explicit `pki.path.validate` step.
+  another. Those signed attributes are decoded from the exact bytes the signature covers,
+  not from a parsed representation a caller could mutate independently, so a supplied
+  parsed object cannot desynchronize the checked attributes from the verified preimage.
+  An EdDSA signer key is validated on-curve and full-order before verification — a
+  low-order Ed25519/Ed448 point, which `node:crypto` imports without complaint and which
+  can verify a forged signature, is rejected. A false verdict or an unresolved parameter
+  is a fail-closed `cms/*` outcome, never a silent pass; the signer certificate is located
+  but deliberately not chained to a trust anchor, which remains the caller's explicit
+  `pki.path.validate` step.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,
