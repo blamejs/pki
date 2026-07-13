@@ -911,6 +911,26 @@ async function run() {
   await testAsymImportCarriesLabel();
   await testRsaObjectHash();
   await testCryptoKeyConstructor();
+  await testMldsaContext();
+}
+
+// ML-DSA (FIPS 204) context: sign and verify honor an optional context octet string
+// symmetrically (the composite-signature construction passes the composite domain as the
+// ML-DSA context). A signature made with a context verifies ONLY under the same context.
+async function testMldsaContext() {
+  var kp = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
+  var msg = new Uint8Array([1, 2, 3, 4]);
+  var ctx = new Uint8Array([9, 8, 7]);
+  var sig = await subtle.sign({ name: "ML-DSA-65", context: ctx }, kp.privateKey, msg);
+  check("ML-DSA sign+verify round-trips under the same context",
+    (await subtle.verify({ name: "ML-DSA-65", context: ctx }, kp.publicKey, sig, msg)) === true);
+  check("ML-DSA a context signature does NOT verify without the context",
+    (await subtle.verify({ name: "ML-DSA-65" }, kp.publicKey, sig, msg)) === false);
+  check("ML-DSA a context signature does NOT verify under a different context",
+    (await subtle.verify({ name: "ML-DSA-65", context: new Uint8Array([1]) }, kp.publicKey, sig, msg)) === false);
+  var sig0 = await subtle.sign({ name: "ML-DSA-65" }, kp.privateKey, msg);
+  check("ML-DSA a no-context signature round-trips without a context",
+    (await subtle.verify({ name: "ML-DSA-65" }, kp.publicKey, sig0, msg)) === true);
 }
 
 module.exports = { run: run };
