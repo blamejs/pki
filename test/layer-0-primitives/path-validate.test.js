@@ -2784,6 +2784,20 @@ async function testCoverageEdges() {
       return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
     })();
   });
+  // 1466 the cRLIssuer directoryName carries an embedded control byte, so the RFC 5280 sec. 7.1
+  // DN comparison (dnEqual, via guard.name) REJECTS it and crlIssuerNamesIssuer swallows the
+  // fault to false: a malformed indirect-CRL issuer name never corresponds, its DP is excluded,
+  // and the shard cannot establish non-revocation (fail closed to undetermined). Drives the
+  // crlIssuerNamesIssuer catch explicitly, distinct from the valid-mismatch path above.
+  await cap("1466 cert DP cRLIssuer is a control-byte directoryName -> excluded, revocation-only", async function () {
+    return (async function () {
+      var badCrlIssuer = nameDer([b.set([atv("2.5.4.3", "R" + String.fromCharCode(1) + "oot")])]);
+      var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(badCrlIssuer))]);
+      var leafCi = await mkCert({ subject: "CrlIssuerCtrlByteLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5103n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
+      var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(34), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
+      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+    })();
+  });
 
   // ---- OCSP checker fail-closed edges (standalone check surface) --------------
   var caKeys = await ensureKeys("ed25519");
@@ -2902,6 +2916,7 @@ async function testCoverageEdges() {
     "1594 critical unknown CRL-entry extension -> unusable": { code: RUND },
     "1439 cert DP cRLIssuer names another party -> revocation-only": { code: RUND },
     "1438 cert DP without distributionPoint (cRLIssuer only) -> revocation-only": { code: RUND },
+    "1466 cert DP cRLIssuer is a control-byte directoryName -> excluded, revocation-only": { code: RUND },
     "1932 ocspChecker() no-arg -> undetermined": { code: RUND },
     "1962 non-successful OCSP response -> undetermined": { code: RUND },
     "1948 unreadable issuer key -> unknown": { status: UNK },
