@@ -394,5 +394,23 @@
     "reason": "The single-shot open over an HPKE recipient context; its surface tracks the still-experimental pki.hpke.setupR KEM registry. Graduate alongside pki.hpke.setupR.",
     "reviewedAt": "0.2.8",
     "reviewBy": "0.3.0"
+  },
+  "pki.sigstore.verifyBundle": {
+    "decision": "keep-experimental",
+    "reason": "The offline Sigstore-bundle verifier is proven against a real npm-provenance bundle, but the Sigstore bundle media type and the trusted-root format are still versioning upstream, so the accepted bundle shape is not yet frozen. Graduate once the bundle format version is settled and a second independent bundle source is cross-checked.",
+    "reviewedAt": "0.2.9",
+    "reviewBy": "0.3.0"
+  },
+  "pki.sigstore.parseBundle": {
+    "decision": "keep-experimental",
+    "reason": "The bundle reader that backs pki.sigstore.verifyBundle; its return shape tracks the still-versioning Sigstore bundle media type. Graduate alongside pki.sigstore.verifyBundle.",
+    "reviewedAt": "0.2.9",
+    "reviewBy": "0.3.0"
+  },
+  "pki.sigstore.pae": {
+    "decision": "keep-experimental",
+    "reason": "The DSSE pre-authentication-encoding helper exposed for the Sigstore verify surface; it graduates with the rest of pki.sigstore once the bundle format is frozen.",
+    "reviewedAt": "0.2.9",
+    "reviewBy": "0.3.0"
   }
 }
