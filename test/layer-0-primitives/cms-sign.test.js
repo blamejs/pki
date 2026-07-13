@@ -49,6 +49,9 @@ async function testAlgorithms() {
   // a non-default digest (SHA-384) for RSA and ECDSA round-trips.
   var r384 = await pki.cms.verify(await pki.cms.sign(CONTENT, Object.assign(makeSigner("rsa"), { digestAlgorithm: "sha384" })));
   check("RSA + SHA-384 digest -> verifies", r384.valid === true);
+  // an id-RSASSA-PSS signer certificate (a PSS-restricted RSA key) signs with RSASSA-PSS.
+  var rpssKey = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("rsa-pss")));
+  check("id-RSASSA-PSS signer cert -> signs+verifies (PSS)", rpssKey.valid === true);
 }
 
 // ---- content modes: attached / detached ----
@@ -149,6 +152,8 @@ async function testBadInput() {
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
   // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).
   await rejects("signedAttributes:false with a non-data eContentType", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { eContentType: "tSTInfo", signedAttributes: false }); }, "cms/bad-input");
+  // an additional signed attribute that duplicates a built-in type is rejected (RFC 5652 sec. 5.3).
+  await rejects("a duplicated signed-attribute type", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { additionalSignedAttributes: [{ type: "messageDigest", values: [pki.asn1.build.octetString(Buffer.alloc(32))] }] }); }, "cms/bad-input");
   await rejects("signer without a cert", function () { return pki.cms.sign(CONTENT, { key: s.key }); }, "cms/bad-input");
   await rejects("signer cert a bad type", function () { return pki.cms.sign(CONTENT, { cert: 12345, key: s.key }); }, "cms/bad-input");
   await rejects("signer key a bad type", function () { return pki.cms.sign(CONTENT, { cert: s.cert, key: 12345 }); }, "cms/bad-input");

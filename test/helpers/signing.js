@@ -37,6 +37,7 @@ function makeSigner(alg, opts) {
   var kp;
   switch (alg) {
     case "rsa": kp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }); break;
+    case "rsa-pss": kp = crypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048 }); break;   // SPKI OID is id-RSASSA-PSS
     case "ec-p256": kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }); break;
     case "ec-p384": kp = crypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" }); break;
     case "ec-p521": kp = crypto.generateKeyPairSync("ec", { namedCurve: "secp521r1" }); break;

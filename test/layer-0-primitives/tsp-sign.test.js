@@ -97,6 +97,7 @@ async function testBadInput() {
   await rejects("imprint without a hashAlgorithm", function () { return pki.tsp.sign({ hashedMessage: Buffer.alloc(32) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("imprint with an unsupported hash", function () { return pki.tsp.sign({ hashAlgorithm: "md5", hashedMessage: Buffer.alloc(16) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("imprint hashedMessage not a Buffer", function () { return pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: "x" }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/bad-input");
+  await rejects("imprint hashedMessage wrong length for the hash", function () { return pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(16) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("no policy", function () { return pki.tsp.sign(imprint("sha256"), tsa, { serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("policy not a string", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: 123, serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("no serialNumber", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3" }); }, "tsp/bad-input");
