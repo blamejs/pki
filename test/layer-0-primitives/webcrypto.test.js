@@ -712,6 +712,12 @@ async function testNodeErrorTyping() {
   var edPkcs8 = nodeCrypto.generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" });
   check("importKey: an Ed25519 pkcs8 under {name:RSA-PSS} rejected (webcrypto/data)",
     (await code(async function () { await subtle.importKey("pkcs8", edPkcs8, { name: "RSA-PSS", hash: "SHA-256" }, true, ["sign"]); })) === "webcrypto/data");
+  // The PQC families import the same key-is-authority rule: an RSA key under a PQC name
+  // (ML-DSA / SLH-DSA) is a DataError, not a mislabeled PQC key that would then run RSA.
+  check("importKey: an RSA pkcs8 under {name:ML-DSA-44} rejected (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("pkcs8", rsaPkcs8, { name: "ML-DSA-44" }, true, ["sign"]); })) === "webcrypto/data");
+  check("importKey: an RSA spki under {name:SLH-DSA-SHA2-128s} rejected (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("spki", rsaSpki, { name: "SLH-DSA-SHA2-128s" }, true, ["verify"]); })) === "webcrypto/data");
 
   // AES-KW wrap/unwrap of a non-8-multiple length -> typed OperationError, not a raw throw.
   var kwKey = await subtle.importKey("raw", new Uint8Array(16), { name: "AES-KW" }, false, ["wrapKey", "unwrapKey"]);
