@@ -22,6 +22,7 @@ var SPEC = {
 };
 function p(input) { return json.parse(input, TestError, SPEC); }
 function codeOf(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
+var BS = String.fromCharCode(92); // JSON escape lead-in, built at runtime to keep source ASCII-clean
 
 function testParse() {
   check("object parses", p('{"a":1,"b":[2,3]}').b[1] === 3);
@@ -69,11 +70,52 @@ function testAuthoringBounds() {
   check("maxDepth above the stack-safe ceiling throws TypeError", typeErr(function () { json.parse("[1]", TestError, spec({ maxDepth: 100000 })); }) === "TYPE");
 }
 
+function testGrammarErrors() {
+  // value() reaching end-of-input: an empty or whitespace-only document has no
+  // value token and must be rejected, not silently return undefined.
+  check("empty input rejected", codeOf(function () { p(""); }) === "x/bad-json");
+  check("whitespace-only input rejected", codeOf(function () { p("   "); }) === "x/bad-json");
+  // An object key must be a quoted string.
+  check("numeric object key rejected", codeOf(function () { p("{1:2}"); }) === "x/bad-json");
+  check("unquoted object key rejected", codeOf(function () { p("{a:1}"); }) === "x/bad-json");
+  // The key/value separator must be ':'.
+  check("missing ':' after key rejected", codeOf(function () { p('{"a" 1}'); }) === "x/bad-json");
+  // A member must be followed by ',' or '}'.
+  check("missing ',' between members rejected", codeOf(function () { p('{"a":1 "b":2}'); }) === "x/bad-json");
+  // An array element must be followed by ',' or ']'.
+  check("missing ',' between elements rejected", codeOf(function () { p("[1 2]"); }) === "x/bad-json");
+  // A string with no closing quote.
+  check("unterminated string rejected", codeOf(function () { p(String.fromCharCode(34) + "abc"); }) === "x/bad-json");
+  // A backslash as the final byte (dangling escape) must not read past the end.
+  check("dangling escape rejected", codeOf(function () { p(String.fromCharCode(34) + "abc" + BS); }) === "x/bad-json");
+}
+
+function testStringEscapes() {
+  // Each RFC 8259 two-character escape decodes to its single control/literal char.
+  check("escaped quote decodes", p('"' + BS + '""') === String.fromCharCode(34));
+  check("escaped backslash decodes", p('"' + BS + BS + '"') === BS);
+  check("escaped solidus decodes", p('"' + BS + '/"') === "/");
+  check("escaped backspace decodes", p('"' + BS + 'b"').charCodeAt(0) === 8);
+  check("escaped formfeed decodes", p('"' + BS + 'f"').charCodeAt(0) === 12);
+  check("escaped carriage-return decodes", p('"' + BS + 'r"').charCodeAt(0) === 13);
+  check("escaped tab decodes", p('"' + BS + 't"').charCodeAt(0) === 9);
+}
+
+function testNumberOverflow() {
+  // A token that satisfies the RFC 8259 number grammar but overflows IEEE-754 to
+  // Infinity must fail closed -- never be returned as a non-finite value.
+  check("overflow exponent rejected", codeOf(function () { p("1e400"); }) === "x/bad-json");
+  check("negative overflow exponent rejected", codeOf(function () { p("-1e400"); }) === "x/bad-json");
+}
+
 function run() {
   testParse();
   testStrict();
   testBounds();
   testAuthoringBounds();
+  testGrammarErrors();
+  testStringEscapes();
+  testNumberOverflow();
 }
 
 module.exports = { run: run };

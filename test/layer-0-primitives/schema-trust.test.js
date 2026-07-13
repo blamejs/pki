@@ -721,6 +721,313 @@ async function testDedup() {
 }
 
 // ---------------------------------------------------------------------------
+// Lexer fail-closed edges: per-type value grammar, duplicate attrs, unknown
+// value types, the block-count ceiling, and the final-block flush at EOF.
+// ---------------------------------------------------------------------------
+
+async function testLexerEdges() {
+  var fx = await fixtures();
+
+  // A duplicate attribute within one object block.
+  check("duplicate attribute in one block -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_TOKEN CK_BBOOL CK_TRUE\nCKA_TOKEN CK_BBOOL CK_FALSE"])); }) === "trust/bad-block");
+
+  // A MULTILINE_OCTAL attribute carrying an unexpected inline value.
+  check("MULTILINE_OCTAL with an inline value -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_VALUE MULTILINE_OCTAL \\060"])); }) === "trust/bad-block");
+
+  // CK_BBOOL that is neither CK_TRUE nor CK_FALSE, and one with no value token.
+  check("CK_BBOOL with a bogus value -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_TOKEN CK_BBOOL MAYBE"])); }) === "trust/bad-block");
+  check("CK_BBOOL with no value token -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_TOKEN CK_BBOOL"])); }) === "trust/bad-block");
+
+  // UTF8 with a present-but-unquoted value, and UTF8 with no value token.
+  check("UTF8 with an unquoted value -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_LABEL UTF8 unquoted"])); }) === "trust/bad-block");
+  check("UTF8 with no value token -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_LABEL UTF8"])); }) === "trust/bad-block");
+
+  // CK_TRUST with no value token, and CK_TRUST carrying two tokens.
+  check("CK_TRUST with no value token -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_TRUST_SERVER_AUTH CK_TRUST"])); }) === "trust/bad-block");
+  check("CK_TRUST with two tokens -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_TRUST_SERVER_AUTH CK_TRUST CKT_A CKT_B"])); }) === "trust/bad-block");
+
+  // CK_OBJECT_CLASS / CK_CERTIFICATE_TYPE with no single-token value.
+  check("CK_OBJECT_CLASS with no value token -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata(["CKA_CLASS CK_OBJECT_CLASS"])); }) === "trust/bad-block");
+  check("CK_CERTIFICATE_TYPE with two tokens -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_CERTIFICATE_TYPE CK_CERTIFICATE_TYPE A B"])); }) === "trust/bad-block");
+
+  // An unrecognized attribute value TYPE cannot be lexed safely -> fail closed.
+  check("an unrecognized attribute type -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_FOO BOGUSTYPE bar"])); }) === "trust/bad-block");
+
+  // The block-count DoS ceiling is refused BEFORE lexing the next block.
+  var many = "BEGINDATA\n\n" +
+    new Array(pki.C.LIMITS.TRUST_MAX_OBJECTS + 1).fill("CKA_TOKEN CK_BBOOL CK_TRUE").join("\n\n") + "\n";
+  check("certdata object count over LIMITS.TRUST_MAX_OBJECTS -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(many); }) === "trust/bad-block");
+
+  // A final object block with no trailing blank line / newline is still flushed
+  // -- never a silently dropped last root.
+  var noTrail = "BEGINDATA\n\n" + certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer });
+  var outNoTrail = pki.trust.parseCertdata(noTrail);
+  check("a final block with no trailing newline is flushed -> one anchor",
+    outNoTrail.anchors.length === 1 && outNoTrail.anchors[0].label === "Test Root A");
+}
+
+// ---------------------------------------------------------------------------
+// Certificate-object semantics: required attrs, distrust-after typing, serial
+// INTEGER shape, subject/label/policy typing, missing/mistyped CKA_CLASS.
+// ---------------------------------------------------------------------------
+
+async function testCertSemanticEdges() {
+  var fx = await fixtures();
+
+  // A cert object missing its CKA_VALUE MULTILINE_OCTAL attribute.
+  check("cert object missing CKA_VALUE -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\n" +
+      attrOctal("CKA_ISSUER", fx.rootA.issuer.bytes) + "\n" +
+      attrOctal("CKA_SERIAL_NUMBER", serialTlv(fx.rootA))])); }) === "trust/bad-block");
+
+  // A cert object whose CKA_ISSUER is present but not MULTILINE_OCTAL.
+  check("cert object with a non-octal CKA_ISSUER -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\nCKA_ISSUER UTF8 \"x\"\n" +
+      attrOctal("CKA_SERIAL_NUMBER", serialTlv(fx.rootA)) + "\n" +
+      attrOctal("CKA_VALUE", fx.rootADer)])); }) === "trust/bad-block");
+
+  // CKA_NSS_SERVER_DISTRUST_AFTER as CK_BBOOL CK_TRUE (only CK_FALSE allowed).
+  check("CKA_NSS_SERVER_DISTRUST_AFTER CK_BBOOL CK_TRUE -> trust/bad-distrust-after",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer }) +
+      "\nCKA_NSS_SERVER_DISTRUST_AFTER CK_BBOOL CK_TRUE"])); }) === "trust/bad-distrust-after");
+
+  // CKA_NSS_SERVER_DISTRUST_AFTER as a wrong type (neither CK_BBOOL nor octal).
+  check("CKA_NSS_SERVER_DISTRUST_AFTER as UTF8 -> trust/bad-distrust-after",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer }) +
+      "\nCKA_NSS_SERVER_DISTRUST_AFTER UTF8 \"x\""])); }) === "trust/bad-distrust-after");
+
+  // CKA_SERIAL_NUMBER whose bytes are not a DER INTEGER (issuer still agrees).
+  check("CKA_SERIAL_NUMBER not a DER INTEGER -> trust/pairing-mismatch",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer, serial: b.octetString(Buffer.from([0x2a])) })])); }) === "trust/pairing-mismatch");
+
+  // CKA_SUBJECT present but disagreeing with the certificate's subject DER.
+  check("CKA_SUBJECT disagrees with the parsed subject -> trust/pairing-mismatch",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer, subject: fx.rootB.subject.bytes })])); }) === "trust/pairing-mismatch");
+
+  // CKA_LABEL present as a non-UTF8 type.
+  check("CKA_LABEL as a non-UTF8 type -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS CK_OBJECT_CLASS CKO_CERTIFICATE\n" + attrOctal("CKA_LABEL", ascii("x")) + "\n" +
+      attrOctal("CKA_ISSUER", fx.rootA.issuer.bytes) + "\n" +
+      attrOctal("CKA_SERIAL_NUMBER", serialTlv(fx.rootA)) + "\n" +
+      attrOctal("CKA_VALUE", fx.rootADer)])); }) === "trust/bad-block");
+
+  // CKA_NSS_MOZILLA_CA_POLICY present as a non-CK_BBOOL type.
+  check("CKA_NSS_MOZILLA_CA_POLICY as a non-CK_BBOOL type -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer }) +
+      "\nCKA_NSS_MOZILLA_CA_POLICY UTF8 \"x\""])); }) === "trust/bad-block");
+
+  // An object block with no CKA_CLASS at all.
+  check("object block missing CKA_CLASS -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_TOKEN CK_BBOOL CK_TRUE\nCKA_LABEL UTF8 \"x\""])); }) === "trust/bad-block");
+
+  // CKA_CLASS present but not typed CK_OBJECT_CLASS.
+  check("CKA_CLASS not typed CK_OBJECT_CLASS -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([
+      "CKA_CLASS UTF8 \"CKO_CERTIFICATE\""])); }) === "trust/bad-block");
+}
+
+// ---------------------------------------------------------------------------
+// Trust-object edges: absent purpose attrs stay untrusted; a purpose attr with
+// a non-CK_TRUST type fails closed.
+// ---------------------------------------------------------------------------
+
+async function testTrustEntryEdges() {
+  var fx = await fixtures();
+  var certBlk = certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer });
+
+  // A trust object omitting two of the three purpose attributes: the absent
+  // bits stay untrusted (fail-closed), the present delegator grants its purpose.
+  var partialTrust = "CKA_CLASS CK_OBJECT_CLASS CKO_NSS_TRUST\n" +
+    attrOctal("CKA_ISSUER", fx.rootA.issuer.bytes) + "\n" +
+    attrOctal("CKA_SERIAL_NUMBER", serialTlv(fx.rootA)) + "\n" +
+    "CKA_TRUST_EMAIL_PROTECTION CK_TRUST CKT_NSS_TRUSTED_DELEGATOR";
+  var aPartial = pki.trust.parseCertdata(certdata([certBlk, partialTrust])).anchors[0];
+  check("a trust object missing purpose attrs -> absent bits untrusted, present one granted",
+    aPartial.purposes.emailProtection === true &&
+    aPartial.purposes.serverAuth === false && aPartial.purposes.codeSigning === false);
+
+  // A purpose attribute present with a non-CK_TRUST type.
+  var trustWrongType = "CKA_CLASS CK_OBJECT_CLASS CKO_NSS_TRUST\n" +
+    attrOctal("CKA_ISSUER", fx.rootA.issuer.bytes) + "\n" +
+    attrOctal("CKA_SERIAL_NUMBER", serialTlv(fx.rootA)) + "\n" +
+    "CKA_TRUST_SERVER_AUTH CK_BBOOL CK_TRUE";
+  check("a purpose attribute typed CK_BBOOL instead of CK_TRUST -> trust/bad-block",
+    codeOf(function () { pki.trust.parseCertdata(certdata([certBlk, trustWrongType])); }) === "trust/bad-block");
+}
+
+// ---------------------------------------------------------------------------
+// Duplicate-identity and dedup conflicts: two cert objects for one identity
+// disagreeing on metadata, and two dedup-colliding anchors disagreeing.
+// ---------------------------------------------------------------------------
+
+async function testDuplicateAndDedupConflicts() {
+  var fx = await fixtures();
+
+  // Two certificate objects sharing one (issuer, serial) but disagreeing on the
+  // distrust-after date are an ambiguous/forged identity -> fail closed.
+  var certDist = certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer, server: "270601235959Z", email: "FALSE" });
+  var certNoDist = certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer, server: "FALSE", email: "FALSE" });
+  check("two cert objects, same identity, different distrust-after -> trust/pairing-mismatch",
+    codeOf(function () { pki.trust.parseCertdata(certdata([certDist, certNoDist])); }) === "trust/pairing-mismatch");
+
+  // Two CCADB rows for the SAME certificate (byte-identical subject + key) that
+  // disagree on the purpose bits are ambiguous -> fail closed at dedup.
+  var pemA = pki.schema.x509.pemEncode(fx.rootADer, "CERTIFICATE");
+  var conflictCsv = csvOf([
+    CSV_HEADER,
+    ["Test Root A", q("Websites"), "", "", q(pemA)],
+    ["Test Root A", q("Email"), "", "", q(pemA)],
+  ]);
+  check("two CCADB rows for one root disagreeing on trust bits -> trust/pairing-mismatch",
+    codeOf(function () { pki.trust.parseCcadbCsv(conflictCsv); }) === "trust/pairing-mismatch");
+}
+
+// ---------------------------------------------------------------------------
+// CSV lexer bounds + RFC 4180 framing: field / row ceilings, quote placement.
+// ---------------------------------------------------------------------------
+
+async function testCsvLexBounds() {
+  // A single field over LIMITS.TRUST_MAX_CSV_FIELD_BYTES is refused as it fills.
+  var bigField = new Array(pki.C.LIMITS.TRUST_MAX_CSV_FIELD_BYTES + 2).join("a");
+  check("a CSV field over LIMITS.TRUST_MAX_CSV_FIELD_BYTES -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv(bigField + "\n"); }) === "trust/bad-csv");
+
+  // Row count over LIMITS.TRUST_MAX_CSV_ROWS is refused as the ceiling is hit.
+  var manyRows = new Array(pki.C.LIMITS.TRUST_MAX_CSV_ROWS + 2).join("a\n");
+  check("CSV row count over LIMITS.TRUST_MAX_CSV_ROWS -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv(manyRows); }) === "trust/bad-csv");
+
+  // A quote opening mid-field violates RFC 4180 field framing.
+  check("a quote opening mid-field -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv("ab\"cd\r\n"); }) === "trust/bad-csv");
+
+  // Content after a closing quote violates RFC 4180.
+  check("content after a closing quote -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv("\"ab\"cd\r\n"); }) === "trust/bad-csv");
+}
+
+// ---------------------------------------------------------------------------
+// CSV semantics: header row presence, duplicate non-required columns, row-width
+// agreement, empty tokens, single-digit + calendar-invalid dates, S/MIME date,
+// empty label, single-quote-wrapped and empty PEM cells.
+// ---------------------------------------------------------------------------
+
+async function testCsvSemanticEdges() {
+  var fx = await fixtures();
+  var pemA = pki.schema.x509.pemEncode(fx.rootADer, "CERTIFICATE");
+
+  // An empty CSV (no rows at all) has no header row.
+  check("empty CSV input -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv(""); }) === "trust/bad-csv");
+
+  // A duplicate NON-required column is tolerated (only required dups fail).
+  var dupExtra = csvOf([
+    CSV_HEADER.concat(["Extra", "Extra"]),
+    ["Test Root A", q("Websites"), "", "", q(pemA), "x", "y"],
+  ]);
+  check("a duplicate non-required column is tolerated",
+    pki.trust.parseCcadbCsv(dupExtra).anchors.length === 1);
+
+  // A data row whose field count disagrees with the header.
+  var shortRow = "Common Name or Certificate Name,Trust Bits,Distrust for TLS After Date," +
+    "Distrust for S/MIME After Date,PEM Info\r\nA,B,C,D\r\n";
+  check("a data row with the wrong field count -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv(shortRow); }) === "trust/bad-csv");
+
+  // An empty Trust Bits token (Websites;;Email) is skipped; the real bits stand.
+  var emptyTok = pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["Test Root A", q("Websites;;Email"), "", "", q(pemA)]])).anchors[0];
+  check("an empty Trust Bits token is skipped, real bits granted",
+    emptyTok.purposes.serverAuth === true && emptyTok.purposes.emailProtection === true && emptyTok.purposes.codeSigning === false);
+
+  // A single-digit month/day date zero-pads to the same end-of-day instant.
+  var singleDigit = pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["Test Root A", q("Websites"), "2027.6.1", "", q(pemA)]])).anchors[0];
+  check("a single-digit Y-M-D date zero-pads to end-of-day UTC",
+    singleDigit.distrustAfter.serverAuth.getTime() === Date.UTC(2027, 5, 1, 23, 59, 59));
+
+  // A syntactically-valid but calendar-invalid date (month 13) fails closed
+  // through the strict time reader.
+  check("a calendar-invalid distrust date (month 13) -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["Test Root A", q("Websites"), "2027.13.01", "", q(pemA)]])); }) === "trust/bad-csv");
+
+  // The S/MIME distrust column populates emailProtection independently of TLS.
+  var smime = pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["Test Root A", q("Email"), "", "2028.01.15", q(pemA)]])).anchors[0];
+  check("Distrust for S/MIME After Date -> distrustAfter.emailProtection (TLS absent)",
+    smime.distrustAfter.emailProtection instanceof Date &&
+    smime.distrustAfter.emailProtection.getTime() === Date.UTC(2028, 0, 15, 23, 59, 59) &&
+    !("serverAuth" in smime.distrustAfter));
+
+  // An empty Common Name cell -> label null (never the empty string).
+  var emptyName = pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["", q("Websites"), "", "", q(pemA)]])).anchors[0];
+  check("an empty Common Name cell -> label null", emptyName.label === null);
+
+  // A PEM Info cell wrapped in one layer of single quotes is unwrapped.
+  var quotedPem = pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["Test Root A", q("Websites"), "", "", q("'" + pemA + "'")]])).anchors[0];
+  check("a single-quote-wrapped PEM Info cell parses to the certificate",
+    quotedPem.publicKey.equals(fx.rootA.subjectPublicKeyInfo.bytes));
+
+  // An empty PEM Info cell fails closed.
+  check("an empty PEM Info cell -> trust/bad-csv",
+    codeOf(function () { pki.trust.parseCcadbCsv(csvOf([CSV_HEADER, ["Test Root A", q("Websites"), "", "", ""]])); }) === "trust/bad-csv");
+}
+
+// ---------------------------------------------------------------------------
+// anchor() defensive defaults: no-opts call, and a minimally-shaped entry that
+// omits parameters / distrustAfter / purposes (fail-closed fill-ins).
+// ---------------------------------------------------------------------------
+
+async function testAnchorDefensiveDefaults() {
+  var fx = await fixtures();
+  var entry = pki.trust.parseCertdata(certdata([
+    certBlock({ label: "Test Root A", cert: fx.rootA, der: fx.rootADer })])).anchors[0];
+
+  // anchor(entry) with no opts argument returns the validate hand-off shape.
+  var a = pki.trust.anchor(entry);
+  check("anchor(entry) with no opts returns the validate hand-off shape",
+    a.name === entry.name && a.publicKey.equals(entry.publicKey) && a.algorithm === entry.algorithm);
+
+  // A minimally-shaped entry (no parameters / distrustAfter / purposes) fills
+  // the fail-closed defaults: parameters null, distrustAfter {}, purposes all false.
+  var minimal = { name: entry.name, publicKey: entry.publicKey, algorithm: entry.algorithm };
+  var am = pki.trust.anchor(minimal);
+  check("anchor() defaults a missing parameters to null", am.parameters === null);
+  check("anchor() defaults a missing distrustAfter to {}",
+    am.distrustAfter && typeof am.distrustAfter === "object" && Object.keys(am.distrustAfter).length === 0);
+  check("anchor() defaults missing purposes to all-false",
+    am.purposes.serverAuth === false && am.purposes.emailProtection === false && am.purposes.codeSigning === false);
+}
+
+// ---------------------------------------------------------------------------
 
 async function run() {
   await testCertdataPairing();
@@ -733,6 +1040,13 @@ async function run() {
   await testCsvQuoting();
   await testRealCertdataSlice();
   await testDedup();
+  await testLexerEdges();
+  await testCertSemanticEdges();
+  await testTrustEntryEdges();
+  await testDuplicateAndDedupConflicts();
+  await testCsvLexBounds();
+  await testCsvSemanticEdges();
+  await testAnchorDefensiveDefaults();
 }
 
 module.exports = { run: run };

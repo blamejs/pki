@@ -127,6 +127,14 @@ security-only patches after the next major releases.
   canonical CTAP2 parameter set, and an ECDSA attestation signature a
   minimally-encoded DER `ECDSA-Sig-Value` — a non-minimal, negative, zero, or
   over-size `r`/`s` is a typed reject, never normalized-and-accepted.
+- **WebCrypto import algorithm confusion + raw cipher faults.** `pki.webcrypto`
+  derives an imported asymmetric key's type from the key material, not the
+  caller's claim: an RSA key imported under an Ed25519 / ECDSA / RSA-PSS name is a
+  `webcrypto/data` reject, so a mislabeled `CryptoKey` cannot later sign or verify
+  under the wrong scheme. Every AES cipher fault fails closed with a typed
+  `webcrypto/operation` — a tampered AES-GCM authentication tag, bad AES-CBC
+  padding, a non-conforming AES-KW wrap length — rather than leaking a raw Node
+  exception across the API boundary.
 - **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
   carries the root program's own constraints and `pki.path.validate` enforces
   them: a leaf issued after the root's per-purpose distrust date, or a purpose

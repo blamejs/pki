@@ -131,9 +131,52 @@ function testRobustness() {
   check("low-order enc point -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), kp.privateKey, {}); }) === "hpke/bad-key");
 }
 
+function testAdversarialBranches() {
+  var crypto = require("crypto");
+  var kp = crypto.generateKeyPairSync("x25519");
+  var ecKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var P256 = { kem: S.KEM.DHKEM_P256_HKDF_SHA256, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_128_GCM };
+  // Fresh-ephemeral EC path (no injected eph): DHKEM(P-256) key generation +
+  // SerializePublicKey (0x04 || x || y) + on-curve import must round-trip, so a
+  // KeyObject recipient (public for setupS, private for setupR) also serializes.
+  var ecOut = pki.hpke.seal(P256, ecKp.publicKey, {}, Buffer.from("aad"), Buffer.from("p256-msg"));
+  check("P-256 fresh-ephemeral round-trip", pki.hpke.open(P256, ecOut.enc, ecKp.privateKey, {}, Buffer.from("aad"), ecOut.ct).toString() === "p256-msg");
+  // A serialized EC public key of the right length but not an uncompressed 0x04
+  // point must fail closed (RFC 9180 sec. 7.1.4), never be imported.
+  check("P-256 non-0x04 point -> hpke/bad-key", codeOf(function () { pki.hpke.setupS(P256, Buffer.alloc(65), {}); }) === "hpke/bad-key");
+  // A 0x04-tagged EC point whose coordinates are not on the curve: node's key
+  // import raises a raw error that must be surfaced as a typed hpke/bad-key.
+  var offCurve = Buffer.alloc(65); offCurve[0] = 0x04;
+  check("P-256 off-curve 0x04 point -> hpke/bad-key", codeOf(function () { pki.hpke.setupS(P256, offCurve, {}); }) === "hpke/bad-key");
+  // A serialized private key whose scalar is the wrong length yields malformed
+  // PKCS#8 DER: node's createPrivateKey raises a raw error that must surface typed.
+  check("short X25519 private scalar -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), { skm: Buffer.alloc(16), pkm: Buffer.alloc(32) }, {}); }) === "hpke/bad-key");
+  // A non-buffer, non-{skm,pkm} value handed as the recipient private key must
+  // fail closed as a typed error, never let node's createPublicKey throw raw.
+  check("plain-object private key -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(IDS, Buffer.alloc(32, 0), {}, {}); }) === "hpke/bad-key");
+  // ...and likewise for a non-buffer, non-{pkm} recipient public key.
+  check("plain-object public key -> hpke/bad-key", codeOf(function () { pki.hpke.setupS(IDS, {}, {}); }) === "hpke/bad-key");
+  // Export length is bounded by RFC 5869 (255*Nh); a request past it fails closed
+  // BEFORE any allocation, never truncates or returns short output. Nh=32 (SHA256).
+  var ctxE = pki.hpke.setupS(IDS, kp.publicKey, {}).context;
+  check("export length > 255*Nh -> hpke/export-length", codeOf(function () { ctxE.export(Buffer.alloc(0), 255 * 32 + 1); }) === "hpke/export-length");
+  // A RECIPIENT context for an export-only AEAD must refuse open (role check first,
+  // then export-only): the export-only guard must hold on the recipient side too.
+  var expIds = { kem: IDS.kem, kdf: IDS.kdf, aead: S.AEAD.EXPORT_ONLY };
+  var exS = pki.hpke.setupS(expIds, kp.publicKey, {});
+  var exR = pki.hpke.setupR(expIds, exS.enc, kp.privateKey, {});
+  check("export-only recipient open -> hpke/export-only", codeOf(function () { exR.open(Buffer.alloc(0), Buffer.alloc(20)); }) === "hpke/export-only");
+  // A ciphertext shorter than the AEAD tag on a recipient context must fail closed
+  // as hpke/open-failed, never index a negative-length tag subarray.
+  var sc = pki.hpke.setupS(IDS, kp.publicKey, {});
+  var rc = pki.hpke.setupR(IDS, sc.enc, kp.privateKey, {});
+  check("recipient open ct shorter than tag -> hpke/open-failed", codeOf(function () { rc.open(Buffer.alloc(0), Buffer.alloc(5)); }) === "hpke/open-failed");
+}
+
 function run() {
   testKat();
   testRobustness();
+  testAdversarialBranches();
 }
 
 module.exports = { run: run };

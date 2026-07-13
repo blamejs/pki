@@ -255,11 +255,104 @@ function testRouting() {
   check("28. matches false on pkcs8", csrattrsLib.matches(pki.asn1.decode(pk8)) === false);
 }
 
+// ---- Adversarial / edge branches (key-type, template, ExtensionTemplate) ----
+function testEdgeBranches() {
+  // 30. a key-type hint value that is not the expected leaf type is re-thrown as a
+  //     typed key-type fault (never a raw asn1 leaf error leaking out): an
+  //     ecPublicKey singleton that is an INTEGER, an rsaEncryption singleton OID.
+  check("30. ecPublicKey non-OID value rejected", parseCode(csrattrs([attr(EC_PUBLIC_KEY, [b.integer(5n)])])) === "csrattrs/bad-key-type-attr");
+  check("31. rsaEncryption non-INTEGER value rejected", parseCode(csrattrs([attr(RSA_ENCRYPTION, [b.oid(SECP384R1)])])) === "csrattrs/bad-key-type-attr");
+  // 32. rsaEncryption key size out of the 1..65536-bit bound -> fail closed BEFORE
+  //     the Number() narrow (both sides of the range guard).
+  check("32. rsaEncryption key size 0 rejected", parseCode(csrattrs([attr(RSA_ENCRYPTION, [b.integer(0n)])])) === "csrattrs/bad-key-type-attr");
+  check("33. rsaEncryption key size > 65536 rejected", parseCode(csrattrs([attr(RSA_ENCRYPTION, [b.integer(70000n)])])) === "csrattrs/bad-key-type-attr");
+  // 34. the boundary 65536 is IN range (accepted, not an off-by-one reject).
+  check("34. rsaEncryption key size 65536 accepted", parse(csrattrs([attr(RSA_ENCRYPTION, [b.integer(65536n)])])).items[0].keySize === 65536);
+
+  // 35. a bare OID with no registry name resolves name -> null (not a fault).
+  var bareUnknown = parse(csrattrs([b.oid("1.3.99.1.2")]));
+  check("35. bare unknown OID name null", bareUnknown.items[0].kind === "oid" && bareUnknown.items[0].name === null);
+
+  // 36. an Attribute SEQUENCE whose first child is not an OID has no readable type
+  //     OID -> the attribute walk fails closed on the type leaf (asn1/unexpected-tag),
+  //     never silently accepted with a null type.
+  check("36. attr SEQUENCE non-OID first child rejected", parseCode(csrattrs([b.sequence([b.integer(1n), b.set([])])])) === "asn1/unexpected-tag");
+
+  // 37. a top-level certificationRequestInfoTemplate attribute whose values SET holds
+  //     two templates -> exactly-one fault (never last-one-wins).
+  var t1 = template({});
+  var t2 = template({ subject: nameTemplate([b.set([singleAttrTemplate(CN)])]) });
+  check("37. template attr two values rejected", parseCode(csrattrs([attr(TEMPLATE, [t1, t2])])) === "csrattrs/bad-template");
+
+  // 38. a template inner id-ExtensionReq whose values SET holds two Extensions ->
+  //     exactly-one fault (the inner-attribute MUST, RFC 9908 sec. 3.2).
+  var twoExtVals = attr(EXTENSION_REQUEST, [extensions([ext(BASIC_CONSTRAINTS)]), extensions([ext(SUBJECT_ALT_NAME)])]);
+  check("38. template inner id-ExtensionReq two values rejected", parseCode(csrattrs([templateAttr({ attributesBody: twoExtVals })])) === "csrattrs/bad-template-attrs");
+
+  // 39. a template carrying TWO id-aa-extensionReqTemplate attributes -> at-most-one
+  //     fault (RFC 9908 sec. 3.4), not a silent concat.
+  var tplA = attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate(BASIC_CONSTRAINTS)])]);
+  var tplB = attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate(SUBJECT_ALT_NAME)])]);
+  var twoTplBody = Buffer.concat([tplA, tplB].sort(Buffer.compare));
+  check("39. template two extensionReqTemplate rejected", parseCode(csrattrs([templateAttr({ attributesBody: twoTplBody })])) === "csrattrs/bad-template-attrs");
+}
+
+// ---- ExtensionTemplate + SingleAttributeTemplate + SPKI-template branches ----
+function testTemplateInnerBranches() {
+  // 40. an ExtensionTemplate carrying an explicit critical TRUE + an extnValue +
+  //     an UNKNOWN extnID surfaces critical:true, a raw value Buffer, and name:null
+  //     (the boolean-present, value-present, and unresolved-name branches).
+  var richTpl = attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate("1.3.99.5.5", true, Buffer.from([0x30, 0x00]))])]);
+  var t40 = parse(csrattrs([templateAttr({ attributesBody: richTpl })])).items[0].template;
+  check("40. ExtensionTemplate critical TRUE surfaced", t40.extensionTemplates[0].critical === true);
+  check("40. ExtensionTemplate extnValue surfaced raw", Buffer.isBuffer(t40.extensionTemplates[0].value));
+  check("40. ExtensionTemplate unknown extnID name null", t40.extensionTemplates[0].name === null);
+
+  // 41. an ExtensionTemplate with an explicit critical FALSE is non-DER (BOOLEAN
+  //     DEFAULT FALSE) -> fail closed.
+  var falseCrit = attr(EXT_REQ_TEMPLATE, [extReqTemplate([extTemplate(SUBJECT_ALT_NAME, false, Buffer.from([0x30, 0x00]))])]);
+  check("41. ExtensionTemplate explicit critical FALSE rejected", parseCode(csrattrs([templateAttr({ attributesBody: falseCrit })])) === "csrattrs/bad-extension-template");
+
+  // 42. an ExtensionTemplate of {extnID, extnValue, extnValue} (a trailing element,
+  //     no critical) -> unexpected-trailing fault, never a silent drop.
+  var trailingTpl = b.sequence([b.oid(SUBJECT_ALT_NAME), b.octetString(Buffer.from([0x30, 0x00])), b.octetString(Buffer.from([0x30, 0x00]))]);
+  var trailingBody = attr(EXT_REQ_TEMPLATE, [extReqTemplate([trailingTpl])]);
+  check("42. ExtensionTemplate trailing element rejected", parseCode(csrattrs([templateAttr({ attributesBody: trailingBody })])) === "csrattrs/bad-extension-template");
+
+  // 43. a value-PRESENT SingleAttributeTemplate surfaces value as raw bytes (the
+  //     present branch; test 7 covers the value-absent -> null branch).
+  var subjWithVal = nameTemplate([b.set([singleAttrTemplate(CN, b.integer(5n))])]);
+  var t43 = parse(csrattrs([templateAttr({ subject: subjWithVal })])).items[0].template;
+  check("43. SingleAttributeTemplate value present -> raw bytes", Buffer.isBuffer(t43.subject[0][0].value) && t43.subject[0][0].name === "commonName");
+
+  // 44. a SubjectPublicKeyInfoTemplate with NO placeholder key surfaces
+  //     placeholderKey:null (the absent branch; test 7 covers the present branch).
+  var t44 = parse(csrattrs([templateAttr({ subjectPKInfo: spkiTemplate(RSA_ENCRYPTION) })])).items[0].template;
+  check("44. SPKI template no placeholder key -> null", t44.subjectPKInfo.algorithm.oid === RSA_ENCRYPTION && t44.subjectPKInfo.placeholderKey === null);
+}
+
+// ---- matches(): structural detector arms -----------------------------
+function testMatchesArms() {
+  // 45. a bare-OID child is accepted by the detector's OID arm; a following
+  //     well-formed Attribute keeps the whole root a CsrAttrs (the continue arm).
+  var mixed = csrattrs([b.oid(RSA_ENCRYPTION), attr(RSA_ENCRYPTION, [b.integer(1n)])]);
+  check("45. matches true: bare OID + Attribute", csrattrsLib.matches(pki.asn1.decode(mixed)) === true);
+  // 46. an Attribute-arm child whose first element is not an OID -> not a CsrAttrs.
+  var badFirst = b.sequence([b.sequence([b.integer(1n), b.set([])])]);
+  check("46. matches false: attr first child not OID", csrattrsLib.matches(pki.asn1.decode(badFirst)) === false);
+  // 47. an Attribute-arm child whose second element is not a SET -> not a CsrAttrs.
+  var badSecond = b.sequence([b.sequence([b.oid(RSA_ENCRYPTION), b.integer(1n)])]);
+  check("47. matches false: attr second child not SET", csrattrsLib.matches(pki.asn1.decode(badSecond)) === false);
+}
+
 function run() {
   testAccept();
   testRejectStructure();
   testRejectSemantics();
   testRouting();
+  testEdgeBranches();
+  testTemplateInnerBranches();
+  testMatchesArms();
 }
 
 module.exports = { run: run };

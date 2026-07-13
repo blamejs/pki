@@ -358,5 +358,17 @@
     "reason": "Constructs the trust anchor that pki.path.validate consumes; its constraint surface tracks the still-experimental pki.path.validate. Graduate alongside pki.path.validate once the path-validation surface has stabilized and is interop-proven.",
     "reviewedAt": "0.2.6",
     "reviewBy": "0.3.0"
+  },
+  "pki.shbs.verify": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8554 LMS/HSS verify surface is standard-settled, but it is not yet interop-proven end-to-end: no HSS certificate fixture drives an accept/reject through pki.path.validate's auto-verify row, so the algorithm-identifier dispatch it would expose is not frozen. Graduate once an HSS signature fixture cross-checks against an independent LMS verifier in the integration harness.",
+    "reviewedAt": "0.2.7",
+    "reviewBy": "0.3.0"
+  },
+  "pki.shbs.verifyLms": {
+    "decision": "keep-experimental",
+    "reason": "The single-tree LMS verify entry point backs pki.shbs.verify's HSS layer and shares its not-yet-interop-proven status. Graduate alongside pki.shbs.verify once an independent LMS verifier cross-checks a signature it accepts.",
+    "reviewedAt": "0.2.7",
+    "reviewBy": "0.3.0"
   }
 }

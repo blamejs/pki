@@ -89,13 +89,17 @@ function render(md, opts) {
     if (fence) {
       flushAll();
       var marker = fence[2].charAt(0);
+      // Fence info string -> a language class for the syntax highlighter
+      // ("```js" -> class="language-js"); a bare fence stays classless.
+      var langMatch = /^[A-Za-z0-9+-]+/.exec(fence[3].trim());
+      var langCls = langMatch ? ' class="language-' + esc(langMatch[0].toLowerCase()) + '"' : "";
       var buf = [];
       i++;
       for (; i < lines.length; i++) {
         if (new RegExp("^\\s*" + marker + "{3,}\\s*$").test(lines[i])) break;
         buf.push(lines[i]);
       }
-      out.push("<pre><code>" + esc(buf.join("\n")) + "</code></pre>");
+      out.push("<pre><code" + langCls + ">" + esc(buf.join("\n")) + "</code></pre>");
       continue;
     }
 
@@ -133,7 +137,15 @@ function render(md, opts) {
     if (h) {
       flushAll();
       var lvl = h[1].length;
-      out.push("<h" + lvl + ">" + _inline(h[2].trim(), opts) + "</h" + lvl + ">");
+      // GitHub-compatible heading id (lowercase, punctuation stripped,
+      // spaces to dashes) so the source's own #anchor links keep working
+      // in the wiki render.
+      var hid = h[2].trim().toLowerCase()
+        .replace(/`/g, "")
+        .replace(/[^a-z0-9 -]/g, "")
+        .replace(/ /g, "-");
+      var idAttr = hid ? ' id="' + esc(hid) + '"' : "";
+      out.push("<h" + lvl + idAttr + ">" + _inline(h[2].trim(), opts) + "</h" + lvl + ">");
       continue;
     }
 

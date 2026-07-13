@@ -247,6 +247,127 @@ async function run() {
 
   // --- Input coercion: a non-object bundle is a config-time TypeError ---
   check("verifyBundle(non-object) -> TypeError", await (pki.sigstore.verifyBundle(42, TM).then(function () { return "NO"; }, function (e) { return e instanceof TypeError ? "TypeError" : (e.code || "other"); })) === "TypeError");
+
+  // ===========================================================================
+  // Adversarial edge / malformed-input coverage: every reject below drives the
+  // shipped consumer path (parseBundle / verifyBundle / pae) with a hostile or
+  // structurally-degenerate input and pins the exact fail-closed typed verdict.
+  // ===========================================================================
+  var cl = function () { return JSON.parse(JSON.stringify(BUNDLE)); };
+
+  // --- parseBundle input-shape rejects (each is a distinct fail-closed arm) ---
+  check("parseBundle(42) -> sigstore/bad-bundle", (function () { try { pki.sigstore.parseBundle(42); return false; } catch (e) { return e.code === "sigstore/bad-bundle"; } })());
+  check("parseBundle(null) -> sigstore/bad-bundle", (function () { try { pki.sigstore.parseBundle(null); return false; } catch (e) { return e.code === "sigstore/bad-bundle"; } })());
+  check("parseBundle([]) (array) -> sigstore/bad-bundle", (function () { try { pki.sigstore.parseBundle([]); return false; } catch (e) { return e.code === "sigstore/bad-bundle"; } })());
+  check("parseBundle without mediaType -> sigstore/bad-bundle-version (none)", (function () { var b = cl(); delete b.mediaType; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-bundle-version"; } })());
+  check("parseBundle missing verificationMaterial -> sigstore/bad-bundle", (function () { var b = cl(); delete b.verificationMaterial; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-bundle"; } })());
+  check("parseBundle missing dsseEnvelope (no messageSignature) -> sigstore/bad-bundle", (function () { var b = cl(); delete b.dsseEnvelope; try { pki.sigstore.parseBundle(b); return false; } catch (e) { return e.code === "sigstore/bad-bundle"; } })());
+
+  // --- pae: a non-string payloadType is a config-time TypeError; a string /
+  // null body coerces (LEN is always over the decoded body byte length). ---
+  check("pae(non-string type) -> TypeError", (function () { try { pki.sigstore.pae(123, Buffer.from("x")); return false; } catch (e) { return e instanceof TypeError; } })());
+  check("pae coerces a string body (LEN over decoded bytes)", pki.sigstore.pae("t", "hi").equals(Buffer.from("DSSEv1 1 t 2 hi", "ascii")));
+  check("pae coerces a null body to empty", pki.sigstore.pae("t", null).equals(Buffer.from("DSSEv1 1 t 0 ", "ascii")));
+
+  // --- base64 canonicality: a non-canonical re-encoding is an encoding-
+  // malleability reject; a URL-safe (base64url) encoding of the SAME bytes is
+  // accepted and still verifies end-to-end. ---
+  var nonCanon = cl(); nonCanon.verificationMaterial.certificate.rawBytes = "QR==";
+  check("non-canonical base64 leaf -> sigstore/bad-bundle", await codeOf(pki.sigstore.verifyBundle(nonCanon, TM)) === "sigstore/bad-bundle");
+  var urlLeaf = cl();
+  urlLeaf.verificationMaterial.certificate.rawBytes = urlLeaf.verificationMaterial.certificate.rawBytes.replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  var uv = await pki.sigstore.verifyBundle(urlLeaf, TM);
+  check("URL-safe base64 leaf (identical bytes) still verifies", uv && uv.verified === true);
+
+  // --- Rekor SET selection: a non-string logId.keyId is a malformed bundle; a
+  // well-formed keyId that matches no caller Rekor key leaves the log time
+  // unattested (the SET, not the checkpoint, signs integratedTime). ---
+  var kidNum = cl(); kidNum.verificationMaterial.tlogEntries[0].logId.keyId = 123;
+  check("non-string logId.keyId -> sigstore/bad-bundle", await codeOf(pki.sigstore.verifyBundle(kidNum, TM)) === "sigstore/bad-bundle");
+  var kidBad = cl(); kidBad.verificationMaterial.tlogEntries[0].logId.keyId = Buffer.alloc(32, 7).toString("base64");
+  check("logId.keyId matching no Rekor key -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(kidBad, TM)) === "sigstore/unattested-time");
+  var setNum = cl(); setNum.verificationMaterial.tlogEntries[0].inclusionPromise.signedEntryTimestamp = 123;
+  check("non-string signedEntryTimestamp -> sigstore/unattested-time", await codeOf(pki.sigstore.verifyBundle(setNum, TM)) === "sigstore/unattested-time");
+
+  // --- Checkpoint (C2SP signed note) parse: no separator, a root line that
+  // disagrees with the inclusion-proof root, and a too-short signature blob that
+  // is skipped while the real signature still verifies. ---
+  var noSep = cl(); noSep.verificationMaterial.tlogEntries[0].inclusionProof.checkpoint.envelope = "no-separator-here";
+  check("checkpoint with no note/signature separator -> sigstore/bad-checkpoint", await codeOf(pki.sigstore.verifyBundle(noSep, TM)) === "sigstore/bad-checkpoint");
+  var cpRoot = cl();
+  var cpip = cpRoot.verificationMaterial.tlogEntries[0].inclusionProof;
+  var cplines = cpip.checkpoint.envelope.split("\n"); cplines[2] = Buffer.alloc(32).toString("base64"); cpip.checkpoint.envelope = cplines.join("\n");
+  check("checkpoint root != inclusion-proof root -> sigstore/inclusion-proof-mismatch", await codeOf(pki.sigstore.verifyBundle(cpRoot, TM)) === "sigstore/inclusion-proof-mismatch");
+  var shortSig = cl();
+  var ssip = shortSig.verificationMaterial.tlogEntries[0].inclusionProof;
+  ssip.checkpoint.envelope = ssip.checkpoint.envelope.replace("\n\n", "\n\n" + String.fromCharCode(0x2014) + " x AAAA\n");
+  var ssv = await pki.sigstore.verifyBundle(shortSig, TM);
+  check("a too-short checkpoint signature line is skipped, the real one verifies", ssv && ssv.verified === true);
+
+  // --- Rekor entry binding (_bindEntry): a non-dsse kind, a missing payloadHash,
+  // a payloadHash that disagrees with the envelope payload, and a verifier field
+  // that is not a decodable certificate each fail closed. ---
+  var kindBad = cl();
+  (function () { var te = kindBad.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); bo.kind = "hashedrekord"; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
+  check("non-dsse Rekor entry kind -> sigstore/unsupported-content", await codeOf(pki.sigstore.verifyBundle(kindBad, TM)) === "sigstore/unsupported-content");
+  var phMiss = cl();
+  (function () { var te = phMiss.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); delete bo.spec.payloadHash; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
+  check("Rekor dsse entry missing payloadHash -> sigstore/bad-tlog-entry", await codeOf(pki.sigstore.verifyBundle(phMiss, TM)) === "sigstore/bad-tlog-entry");
+  var phBad = cl();
+  (function () { var te = phBad.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); bo.spec.payloadHash.value = "00"; te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
+  check("Rekor entry payloadHash != envelope payload -> sigstore/entry-mismatch", await codeOf(pki.sigstore.verifyBundle(phBad, TM)) === "sigstore/entry-mismatch");
+  var vg = cl();
+  (function () { var te = vg.verificationMaterial.tlogEntries[0]; var bo = JSON.parse(Buffer.from(te.canonicalizedBody, "base64").toString("utf8")); bo.spec.signatures[0].verifier = Buffer.from("not a pem cert").toString("base64"); te.canonicalizedBody = Buffer.from(JSON.stringify(bo)).toString("base64"); })();
+  check("Rekor entry verifier not a decodable certificate -> sigstore/bad-tlog-entry", await codeOf(pki.sigstore.verifyBundle(vg, TM)) === "sigstore/bad-tlog-entry");
+
+  // --- Inclusion-proof fold: a non-numeric logIndex makes the Merkle fold throw;
+  // the fault is re-typed to a sigstore/* verdict, never a raw leak. ---
+  var mli = cl(); mli.verificationMaterial.tlogEntries[0].inclusionProof.logIndex = "not-a-number";
+  check("non-numeric inclusionProof.logIndex -> sigstore/bad-inclusion-proof", await codeOf(pki.sigstore.verifyBundle(mli, TM)) === "sigstore/bad-inclusion-proof");
+
+  // --- fulcioRoots normalization: an element that is neither a Buffer nor a
+  // { der | rawBytes } object is a config-time bad-input; a bare DER Buffer
+  // (no wrapper) is accepted and verifies. ---
+  check("fulcioRoots element without der/rawBytes -> sigstore/bad-input", await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: [{ foo: 1 }], rekorKeys: TM.rekorKeys })) === "sigstore/bad-input");
+  var rawRoots = await pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots.map(function (r) { return r.der; }), rekorKeys: TM.rekorKeys });
+  check("bare DER Buffer fulcioRoots (no wrapper) still verify", rawRoots && rawRoots.verified === true);
+
+  // --- Missing material: no Fulcio certificate at all, no transparency-log
+  // entries, and a non-array tlogEntries each fail closed. ---
+  var noCert = cl(); delete noCert.verificationMaterial.certificate;
+  check("bundle with no Fulcio certificate -> sigstore/bad-bundle", await codeOf(pki.sigstore.verifyBundle(noCert, TM)) === "sigstore/bad-bundle");
+  var noTlog = cl(); delete noTlog.verificationMaterial.tlogEntries;
+  check("keyless bundle without tlogEntries -> sigstore/bad-bundle", await codeOf(pki.sigstore.verifyBundle(noTlog, TM)) === "sigstore/bad-bundle");
+  var badTlog = cl(); badTlog.verificationMaterial.tlogEntries = "nope";
+  check("non-array tlogEntries -> sigstore/bad-bundle", await codeOf(pki.sigstore.verifyBundle(badTlog, TM)) === "sigstore/bad-bundle");
+
+  // --- verifyBundle with no opts falls back to empty trust material and fails
+  // closed (never accepts on missing trust). ---
+  check("verifyBundle without opts fails closed (empty trust)", (await codeOf(pki.sigstore.verifyBundle(cl()))).indexOf("sigstore/") === 0);
+
+  // --- Identity policy: the OIDC issuer and the source-repository URI each gate
+  // independently; a mismatch rejects, the correct source URI accepts. ---
+  check("identity issuer mismatch -> sigstore/identity-mismatch", await codeOf(pki.sigstore.verifyBundle(cl(), Object.assign({ identity: { issuer: "https://evil.example" } }, TM))) === "sigstore/identity-mismatch");
+  check("identity sourceRepositoryURI mismatch -> sigstore/identity-mismatch", await codeOf(pki.sigstore.verifyBundle(cl(), Object.assign({ identity: { sourceRepositoryURI: "https://evil.example" } }, TM))) === "sigstore/identity-mismatch");
+  var srcOk = await pki.sigstore.verifyBundle(cl(), Object.assign({ identity: { sourceRepositoryURI: "https://github.com/blamejs/pki" } }, TM));
+  check("identity sourceRepositoryURI match -> verified", srcOk && srcOk.verified === true);
+
+  // --- Trust-material faults: a Rekor key with an unparseable SPKI is a typed
+  // bad-key; the leaf cert pinned as the sole anchor yields no path. ---
+  check("malformed Rekor key SPKI -> sigstore/bad-key", await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: TM.rekorKeys.map(function (k) { return Object.assign({}, k, { spki: Buffer.from("garbage") }); }) })) === "sigstore/bad-key");
+  var leafDerX = Buffer.from(BUNDLE.verificationMaterial.certificate.rawBytes, "base64");
+  check("leaf cert pinned as the only anchor (no path) -> sigstore/chain-incomplete", await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: [{ der: leafDerX }], rekorKeys: TM.rekorKeys })) === "sigstore/chain-incomplete");
+
+  // --- validFor bound parsing (_toMs): a present-but-unparseable window bound
+  // (NaN / non-ISO string / object / invalid Date) fails closed rather than
+  // silently disabling the window; a valid Date-instance window is honored. ---
+  var keyWin = function (vf) { return TM.rekorKeys.map(function (k) { return Object.assign({}, k, { validFor: vf }); }); };
+  check("Rekor key validFor start=NaN fails closed", (await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: NaN }) }))).indexOf("sigstore/") === 0);
+  check("Rekor key validFor start=non-ISO string fails closed", (await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: "not-a-date" }) }))).indexOf("sigstore/") === 0);
+  check("Rekor key validFor start=object fails closed", (await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: {} }) }))).indexOf("sigstore/") === 0);
+  check("Rekor key validFor start=invalid Date fails closed", (await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: new Date("nope") }) }))).indexOf("sigstore/") === 0);
+  var dateWin = await pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: new Date(0), end: new Date("2100-01-01T00:00:00Z") }) });
+  check("Rekor key validFor as Date instances (in window) verifies", dateWin && dateWin.verified === true);
 }
 
 module.exports = { run: run };

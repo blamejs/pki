@@ -2601,6 +2601,344 @@ async function testCrlDpIdpCorrespondence() {
     rD19c.valid === false && failCodes(rD19c).indexOf("path/unrecognized-critical-extension") !== -1);
 }
 
+// ---------------------------------------------------------------------------
+// Adversarial coverage edges -- each vector drives a fail-closed / malformed /
+// out-of-range branch of the shipped pki.path surface that the accept/reject
+// suites above do not reach: signature-algorithm-parameter resolution faults
+// (RSASSA-PSS + the fixed-shape check), the algorithm-confusion key read, the
+// ECDSA DER->P1363 bridge rejections, the RFC 5280 sec. 4.2.1.10 name-form
+// comparison edges (malformed mailbox / multi-"@" URI authority / IP length
+// mismatch / directoryName prefix), the entry-point 6.1.1 seed + option
+// validation, every prepareNext / 6.1.5-wrapup extension-decode fault, and the
+// CRL / OCSP checker fail-closed skips (unusable IDP, critical CRL-entry
+// extension, delegated-responder disqualifications).
+var PSS_OID = "1.2.840.113549.1.1.10";
+function _hashSeq(o) { return b.sequence([b.oid(o), b.nullValue()]); }
+function _mgfSeq(inner) { return b.sequence([b.oid(OID_MGF1), _hashSeq(inner)]); }
+
+async function testCoverageEdges() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var anchorEc = await mkAnchor("p256", "EcRoot");
+  var R = [];
+  async function cap(label, fn) {
+    try {
+      var res = await fn();
+      if (res && typeof res.valid === "boolean") R.push({ label: label, valid: res.valid, codes: failCodes(res) });
+      else if (res && typeof res.status === "string") R.push({ label: label, status: res.status });
+      else R.push({ label: label, ret: String(res) });
+    } catch (e) { R.push({ label: label, threw: (e && e.code) || (e && e.name) || String(e) }); }
+  }
+
+  // ---- RSASSA-PSS parameter resolution (a signatureAlgorithm bypass surface) --
+  async function pssLeaf(paramsChild, subj) {
+    var alg = paramsChild ? b.sequence([b.oid(PSS_OID), paramsChild]) : b.sequence([b.oid(PSS_OID)]);
+    return run([await mkCert({ subject: subj, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: alg })], { time: T2027, trustAnchor: anchor });
+  }
+  await cap("206 PSS absent parameters", async function () { return pssLeaf(null, "Pss206"); });
+  await cap("213 PSS param field not context-tagged", async function () { return pssLeaf(b.sequence([b.integer(1n)]), "Pss213"); });
+  await cap("245 PSS mgf present but no hashAlgorithm", async function () { return pssLeaf(b.sequence([b.explicit(1, _mgfSeq(OID_SHA256))]), "Pss245"); });
+  await cap("248 PSS mask-gen OID not mgf1", async function () { return pssLeaf(b.sequence([b.explicit(0, _hashSeq(OID_SHA256)), b.explicit(1, b.sequence([b.oid("1.2.840.113549.1.1.9"), _hashSeq(OID_SHA256)]))]), "Pss248"); });
+  await cap("249 PSS mgf1 without inner hash", async function () { return pssLeaf(b.sequence([b.explicit(0, _hashSeq(OID_SHA256)), b.explicit(1, b.sequence([b.oid(OID_MGF1)]))]), "Pss249"); });
+  await cap("239+252 PSS trailerField != 1", async function () { return pssLeaf(b.sequence([b.explicit(0, _hashSeq(OID_SHA256)), b.explicit(1, _mgfSeq(OID_SHA256)), b.explicit(3, b.integer(2n))]), "Pss252"); });
+
+  // ---- fixed-shape signatureAlgorithm parameters (RFC 4055 / 5758 / 8410) -----
+  await cap("267 RSA PKCS1 with absent params", async function () {
+    return run([await mkCert({ subject: "P267", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.113549.1.1.11")]) })], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("268 Ed25519 with present params", async function () {
+    return run([await mkCert({ subject: "P268", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.3.101.112"), b.nullValue()]) })], { time: T2027, trustAnchor: anchor });
+  });
+
+  // ---- 284 algorithm-confusion issuer-key read fault (one-shot sameKeyOid) ----
+  await cap("284 malformed issuer SPKI for a sameKeyOid alg", async function () {
+    var badAnchor = { name: anchor.name, publicKey: Buffer.from([0x30, 0x00]), algorithm: "1.3.101.112" };
+    return (async function () {
+      var leaf = await mkCert({ subject: "Akm284", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+      return run([leaf], { time: T2027, trustAnchor: badAnchor });
+    })();
+  });
+
+  // ---- ECDSA DER->P1363 bridge rejections ------------------------------------
+  await cap("298 ECDSA signature not a DER SEQUENCE", async function () {
+    return run([await mkCert({ subject: "Ec298", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", mutateSig: function () { return Buffer.from([0xff, 0x01, 0x02]); } })], { time: T2027, trustAnchor: anchorEc });
+  });
+  await cap("299 ECDSA signature not two INTEGERs", async function () {
+    return run([await mkCert({ subject: "Ec299", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", mutateSig: function () { return b.sequence([b.integer(1n)]); } })], { time: T2027, trustAnchor: anchorEc });
+  });
+
+  // ---- RFC 5280 sec. 4.2.1.10 name-form comparison edges ----------------------
+  async function ncCase(permitted, excluded, leafSanGns, leafSubject) {
+    var inter = await mkCert({ subject: "NcI", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(permitted, excluded)]) });
+    var leaf = await mkCert({ subject: leafSubject || "NcL", issuer: "NcI", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: leafSanGns ? [sanExt(leafSanGns)] : [] });
+    return run([inter, leaf], { time: T2027, trustAnchor: anchor });
+  }
+  await cap("401+544 rfc822 SAN without '@' vs host constraint", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("noatsign")]); });
+  await cap("418 rfc822 SAN without '@' vs full-mailbox constraint", async function () { return ncCase([gnEmail("user@example.com")], null, [gnEmail("noat")]); });
+  await cap("426 rfc822 SAN with empty host", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("user@")]); });
+  await cap("441 empty dNSName permitted seed matches all", async function () {
+    var leaf = await mkCert({ subject: "Empty441", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("anything.example")])] });
+    return run([leaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 2, base: "" }] });
+  });
+  await cap("442 leading-dot dNSName permitted matches subdomain", async function () { return ncCase([gnDns(".example.com")], null, [gnDns("www.example.com")]); });
+  await cap("488 URI SAN multi-'@' authority", async function () { return ncCase([gnUri("example.com")], null, [gnUri("http://a@b@evil.example/")]); });
+  await cap("496 IPv4 constraint vs IPv6 SAN length mismatch", async function () { return ncCase([gnIp([192, 168, 0, 0, 255, 255, 0, 0])], null, [gnIp([32, 1, 13, 184, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1])]); });
+  await cap("523 directoryName constraint longer than subject", async function () { return ncCase([gnDirectoryName(nameDer([b.set([atv("2.5.4.3", "A")]), b.set([atv("2.5.4.11", "OU1")])]))], null, null, "SingleCN523"); });
+  await cap("525 directoryName constraint RDN mismatch", async function () { return ncCase([gnDirectoryName(nameDer("ConstraintCN"))], null, null, "DifferentCN525"); });
+
+  // ---- 6.1.1(b,c) subtree-seed base validation (isSubtreeBaseValid) -----------
+  var plainLeaf = await mkCert({ subject: "SeedLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  var seedName2 = pki.schema.x509.parse(await mkCert({ subject: "Seed668", issuer: "Seed668", signWith: "ed25519" })).subject;
+  var leaf668 = await mkCert({ subject: [b.set([atv("2.5.4.3", "Seed668")]), b.set([atv("2.5.4.11", "Unit")])], issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  await cap("666 iPAddress seed 8-octet base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 7, base: Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]) }] }); });
+  await cap("666 iPAddress seed 4-octet base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 7, base: Buffer.from([10, 0, 0, 0]) }] }); });
+  await cap("668 directoryName seed Name base accepted", async function () { return run([leaf668], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 4, base: seedName2 }] }); });
+  await cap("668 directoryName seed non-Name base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 4, base: {} }] }); });
+  await cap("669 registeredID seed base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 8, base: "1.2.3.4" }] }); });
+  await cap("669 default-form seed undefined base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 5 }] }); });
+
+  // ---- 838 malformed extendedKeyUsage under requiredEku ----------------------
+  await cap("838 malformed EKU with requiredEku", async function () {
+    return run([await mkCert({ subject: "Eku838", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.37", false, b.integer(1n))] })], { time: T2027, trustAnchor: anchor, requiredEku: ["1.3.6.1.5.5.7.3.1"] });
+  });
+
+  // ---- prepareNext extension-decode faults on an intermediate (i != n) -------
+  async function interCase(interExts) {
+    var inter = await mkCert({ subject: "MInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: interExts });
+    var leaf = await mkCert({ subject: "MLeaf", issuer: "MInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+    return run([inter, leaf], { time: T2027, trustAnchor: anchor });
+  }
+  await cap("860 intermediate malformed policyMappings", async function () { return interCase(caExts([ext("2.5.29.33", false, b.integer(5n))])); });
+  await cap("889 intermediate malformed policyConstraints", async function () { return interCase(caExts([ext("2.5.29.36", true, b.integer(5n))])); });
+  await cap("893 intermediate policyConstraints requireExplicitPolicy clamps", async function () {
+    return (async function () {
+      var inter = await mkCert({ subject: "PcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([pcExt({ requireExplicitPolicy: 0 }), cpExt(["1.3.6.1.4.1.99999.1"])]) });
+      var leaf = await mkCert({ subject: "PcLeaf", issuer: "PcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt(["1.3.6.1.4.1.99999.1"])] });
+      return run([inter, leaf], { time: T2027, trustAnchor: anchor });
+    })();
+  });
+  await cap("898 intermediate malformed inhibitAnyPolicy", async function () { return interCase(caExts([ext("2.5.29.54", true, b.sequence([]))])); });
+  await cap("906 intermediate malformed basicConstraints", async function () { return interCase([kuExt([KU_KEY_CERT_SIGN]), ext("2.5.29.19", true, b.integer(5n))]); });
+  await cap("926 intermediate malformed keyUsage", async function () { return interCase([bcExt(true), ext("2.5.29.15", true, b.sequence([]))]); });
+
+  // ---- 6.1.5 wrap-up extension-decode faults on the target cert (i == n) -----
+  await cap("1234 target malformed policyConstraints", async function () { return run([await mkCert({ subject: "T1234", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", true, b.integer(5n))] })], { time: T2027, trustAnchor: anchor }); });
+  await cap("1246 target malformed policyMappings", async function () { return run([await mkCert({ subject: "T1246", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.33", false, b.integer(5n))] })], { time: T2027, trustAnchor: anchor }); });
+  await cap("1256 target malformed nameConstraints", async function () { return run([await mkCert({ subject: "T1256", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.30", true, b.integer(5n))] })], { time: T2027, trustAnchor: anchor }); });
+  await cap("1260 target malformed inhibitAnyPolicy", async function () { return run([await mkCert({ subject: "T1260", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.54", true, b.sequence([]))] })], { time: T2027, trustAnchor: anchor }); });
+
+  // ---- validate() entry-point validation -------------------------------------
+  var e1Leaf = await mkCert({ subject: "E1", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  await cap("1055+1062+1065 no opts + DER path element", async function () { return pki.path.validate([e1Leaf]); });
+  await cap("1056 non-array path", async function () { return pki.path.validate("nope", { time: T2027, trustAnchor: anchor }); });
+  await cap("1102 requiredEku non-string entry", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, requiredEku: [123] }); });
+  await cap("1119 checkPurpose non-string", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: 123 }); });
+  var directLeaf = await mkCert({ subject: "DirectCP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  await cap("1122 checkPurpose dotted OID normalized", async function () { return run([directLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: "1.3.6.1.5.5.7.3.1" }); });
+
+  // ---- verifier / revocationChecker that throw -------------------------------
+  await cap("1160 custom verifier throws", async function () { return run([directLeaf], { time: T2027, trustAnchor: anchor, verifier: { verify: function () { throw new Error("boom"); } } }); });
+  await cap("1198 revocationChecker throws", async function () { return run([directLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: { check: function () { throw new Error("boom"); } } }); });
+
+  // ---- 1179 name chaining over a control-byte issuer DN ----------------------
+  await cap("1179 control-byte issuer DN fails name chaining", async function () {
+    var badIssuer = [b.set([atv("2.5.4.3", "Bad" + String.fromCharCode(1) + "CA")])];
+    return (async function () {
+      var leaf = await mkCert({ subject: "CtrlLeaf", issuer: badIssuer, signWith: "ed25519", subjectKeys: "ed25519leaf" });
+      return run([leaf], { time: T2027, trustAnchor: anchor });
+    })();
+  });
+
+  // ---- CRL checker fail-closed edges -----------------------------------------
+  var crlLeaf = await mkCert({ subject: "CrlEdgeLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5001n, extensions: [cdpExt([distPoint(dpnFull([gnUri("http://crl.example/a")]))])] });
+  await cap("1393 IDP distributionPoint wrapping two DPNs", async function () {
+    var crl2 = mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(30), idpExt({ distributionPoint: Buffer.concat([dpnFull([gnUri("http://crl.example/a")]), dpnFull([gnUri("http://crl.example/b")])]) })] });
+    return (async function () { return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([await crl2]) }); })();
+  });
+  await cap("1498 crlChecker() no-arg -> undetermined", async function () { return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker() }); });
+  await cap("1498 crlChecker with pre-parsed CRL -> revoked", async function () {
+    return (async function () {
+      var parsedCrl = pki.schema.crl.parse(await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 5001n }] }));
+      return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([parsedCrl]) });
+    })();
+  });
+  await cap("1594 critical unknown CRL-entry extension -> unusable", async function () {
+    return (async function () {
+      var crlE = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 5001n, exts: [ext("1.3.6.1.4.1.99999.55", true, b.octetString(Buffer.from([1])))] }], extensions: [crlNumberExt(31)] });
+      return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlE]) });
+    })();
+  });
+  // 1438/1439 cert DistributionPoint cRLIssuer gating (correspondingCertDp)
+  await cap("1439 cert DP cRLIssuer names another party -> revocation-only", async function () {
+    return (async function () {
+      var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(nameDer("OtherCA")))]);
+      var leafCi = await mkCert({ subject: "CrlIssuerLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5101n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
+      var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(32), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
+      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+    })();
+  });
+  await cap("1438 cert DP without distributionPoint (cRLIssuer only) -> revocation-only", async function () {
+    return (async function () {
+      var dp = b.sequence([b.contextConstructed(2, gnDirectoryName(nameDer("Root")))]);
+      var leafCi = await mkCert({ subject: "CrlIssuerOnlyLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5102n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
+      var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(33), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
+      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+    })();
+  });
+  // 1466 the cRLIssuer directoryName carries an embedded control byte, so the RFC 5280 sec. 7.1
+  // DN comparison (dnEqual, via guard.name) REJECTS it and crlIssuerNamesIssuer swallows the
+  // fault to false: a malformed indirect-CRL issuer name never corresponds, its DP is excluded,
+  // and the shard cannot establish non-revocation (fail closed to undetermined). Drives the
+  // crlIssuerNamesIssuer catch explicitly, distinct from the valid-mismatch path above.
+  await cap("1466 cert DP cRLIssuer is a control-byte directoryName -> excluded, revocation-only", async function () {
+    return (async function () {
+      var badCrlIssuer = nameDer([b.set([atv("2.5.4.3", "R" + String.fromCharCode(1) + "oot")])]);
+      var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(badCrlIssuer))]);
+      var leafCi = await mkCert({ subject: "CrlIssuerCtrlByteLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5103n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
+      var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(34), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
+      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+    })();
+  });
+
+  // ---- OCSP checker fail-closed edges (standalone check surface) --------------
+  var caKeys = await ensureKeys("ed25519");
+  var caCert = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", serial: 1n }));
+  var ocspLeaf = pki.schema.x509.parse(await mkCert({ subject: "OcspEdgeLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 700n }));
+  var issuerArg = { workingPublicKey: caKeys.spki, workingIssuerName: caCert.subject, issuerCert: caCert };
+  var octx = { time: T2027, historicalMode: false };
+  function goodSingle700(extra) { return Object.assign({ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 700, status: "good" }, extra || {}); }
+  var delegateOk = await mkCert({ subject: "OcspResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 50n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
+
+  await cap("1932 ocspChecker() no-arg -> undetermined", async function () { return run([e1Leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker() }); });
+  await cap("1962 non-successful OCSP response -> undetermined", async function () {
+    return (async function () {
+      var o = await mkOcsp({ responseStatus: 3 });
+      return run([e1Leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker([o]) });
+    })();
+  });
+  await cap("1948 unreadable issuer key -> unknown", async function () {
+    return (async function () {
+      var o = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle700()] });
+      return pki.path.ocspChecker([o]).check(ocspLeaf, { workingPublicKey: Buffer.from([0x30, 0x00]), workingIssuerName: caCert.subject, issuerCert: null }, octx);
+    })();
+  });
+  await cap("1853 garbage embedded responder cert -> unknown", async function () {
+    return (async function () {
+      var o = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: [b.sequence([b.integer(1n)])], single: [goodSingle700()] });
+      return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+    })();
+  });
+  await cap("1859 responder cert does not identify responderID -> unknown", async function () {
+    return (async function () {
+      var o = await mkOcsp({ responderID: { byName: "SomeoneElse" }, signWith: "p256", certs: [delegateOk], single: [goodSingle700()] });
+      return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+    })();
+  });
+  await cap("1866 delegate signature does not verify -> unknown", async function () {
+    return (async function () {
+      var d = await mkCert({ subject: "SigFailResp", issuer: "Root", signWith: "ed25519i", subjectKeys: "p256", serial: 701n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
+      var o = await mkOcsp({ responderID: { byName: "SigFailResp" }, signWith: "p256", certs: [d], single: [goodSingle700()] });
+      return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+    })();
+  });
+  await cap("1872 delegate malformed EKU -> unknown", async function () {
+    return (async function () {
+      var d = await mkCert({ subject: "BadEkuResp", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 702n, extensions: [ext("2.5.29.37", false, b.integer(1n)), nocheckExt()] });
+      var o = await mkOcsp({ responderID: { byName: "BadEkuResp" }, signWith: "p256", certs: [d], single: [goodSingle700()] });
+      return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+    })();
+  });
+  await cap("1879 delegate malformed keyUsage -> unknown", async function () {
+    return (async function () {
+      var d = await mkCert({ subject: "BadKuResp", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 703n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), ext("2.5.29.15", false, b.sequence([])), nocheckExt()] });
+      var o = await mkOcsp({ responderID: { byName: "BadKuResp" }, signWith: "p256", certs: [d], single: [goodSingle700()] });
+      return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+    })();
+  });
+
+  // Each scenario's fail-closed verdict, asserted against the shipped surface.
+  // `code` = valid===false AND the per-check code is present; `valid` = a clean
+  // accept; `throw` = an entry-point typed rejection; `status` = the standalone
+  // revocation-checker verdict. 268 is guarded upstream by the x509 parser (an
+  // EdDSA signatureAlgorithm carrying parameters never reaches resolveDescriptor).
+  var UA = "path/unsupported-algorithm", NCU = "path/name-constraint-unsupported",
+      NCNP = "path/name-constraint-not-permitted", BADPOL = "path/bad-policy",
+      RUND = "path/revocation-undetermined", BADSIG = "path/bad-signature",
+      BADIN = "path/bad-input", UNK = "unknown";
+  var EXPECT = {
+    "206 PSS absent parameters": { code: UA },
+    "213 PSS param field not context-tagged": { code: UA },
+    "245 PSS mgf present but no hashAlgorithm": { code: UA },
+    "248 PSS mask-gen OID not mgf1": { code: UA },
+    "249 PSS mgf1 without inner hash": { code: UA },
+    "239+252 PSS trailerField != 1": { code: UA },
+    "267 RSA PKCS1 with absent params": { code: UA },
+    "268 Ed25519 with present params": { throw: "x509/bad-algorithm-parameters" },
+    "284 malformed issuer SPKI for a sameKeyOid alg": { code: "path/algorithm-mismatch" },
+    "298 ECDSA signature not a DER SEQUENCE": { code: BADSIG },
+    "299 ECDSA signature not two INTEGERs": { code: BADSIG },
+    "401+544 rfc822 SAN without '@' vs host constraint": { code: NCU },
+    "418 rfc822 SAN without '@' vs full-mailbox constraint": { code: NCU },
+    "426 rfc822 SAN with empty host": { code: NCU },
+    "441 empty dNSName permitted seed matches all": { valid: true },
+    "442 leading-dot dNSName permitted matches subdomain": { valid: true },
+    "488 URI SAN multi-'@' authority": { code: NCU },
+    "496 IPv4 constraint vs IPv6 SAN length mismatch": { code: NCNP },
+    "523 directoryName constraint longer than subject": { code: NCNP },
+    "525 directoryName constraint RDN mismatch": { code: NCNP },
+    "666 iPAddress seed 8-octet base accepted": { valid: true },
+    "666 iPAddress seed 4-octet base rejected": { throw: BADIN },
+    "668 directoryName seed Name base accepted": { valid: true },
+    "668 directoryName seed non-Name base rejected": { throw: BADIN },
+    "669 registeredID seed base accepted": { valid: true },
+    "669 default-form seed undefined base rejected": { throw: BADIN },
+    "838 malformed EKU with requiredEku": { code: "path/bad-extension-value" },
+    "860 intermediate malformed policyMappings": { code: BADPOL },
+    "889 intermediate malformed policyConstraints": { code: BADPOL },
+    "893 intermediate policyConstraints requireExplicitPolicy clamps": { valid: true },
+    "898 intermediate malformed inhibitAnyPolicy": { code: BADPOL },
+    "906 intermediate malformed basicConstraints": { code: "path/bad-basic-constraints" },
+    "926 intermediate malformed keyUsage": { code: "path/bad-key-usage" },
+    "1234 target malformed policyConstraints": { code: BADPOL },
+    "1246 target malformed policyMappings": { code: BADPOL },
+    "1256 target malformed nameConstraints": { code: "path/bad-name-constraints" },
+    "1260 target malformed inhibitAnyPolicy": { code: BADPOL },
+    "1055+1062+1065 no opts + DER path element": { throw: BADIN },
+    "1056 non-array path": { throw: BADIN },
+    "1102 requiredEku non-string entry": { throw: BADIN },
+    "1119 checkPurpose non-string": { throw: BADIN },
+    "1122 checkPurpose dotted OID normalized": { valid: true },
+    "1160 custom verifier throws": { code: BADSIG },
+    "1198 revocationChecker throws": { code: RUND },
+    "1179 control-byte issuer DN fails name chaining": { code: "path/name-chaining" },
+    "1393 IDP distributionPoint wrapping two DPNs": { code: RUND },
+    "1498 crlChecker() no-arg -> undetermined": { code: RUND },
+    "1498 crlChecker with pre-parsed CRL -> revoked": { code: "path/revoked" },
+    "1594 critical unknown CRL-entry extension -> unusable": { code: RUND },
+    "1439 cert DP cRLIssuer names another party -> revocation-only": { code: RUND },
+    "1438 cert DP without distributionPoint (cRLIssuer only) -> revocation-only": { code: RUND },
+    "1466 cert DP cRLIssuer is a control-byte directoryName -> excluded, revocation-only": { code: RUND },
+    "1932 ocspChecker() no-arg -> undetermined": { code: RUND },
+    "1962 non-successful OCSP response -> undetermined": { code: RUND },
+    "1948 unreadable issuer key -> unknown": { status: UNK },
+    "1853 garbage embedded responder cert -> unknown": { status: UNK },
+    "1859 responder cert does not identify responderID -> unknown": { status: UNK },
+    "1866 delegate signature does not verify -> unknown": { status: UNK },
+    "1872 delegate malformed EKU -> unknown": { status: UNK },
+    "1879 delegate malformed keyUsage -> unknown": { status: UNK },
+  };
+  check("coverage-edges: every scenario has an expectation", R.length === Object.keys(EXPECT).length);
+  R.forEach(function (r) {
+    var exp = EXPECT[r.label] || {};
+    var ok;
+    if (exp.valid === true) ok = r.valid === true;
+    else if (exp.code) ok = r.valid === false && (r.codes || []).indexOf(exp.code) !== -1;
+    else if (exp.throw) ok = r.threw === exp.throw;
+    else if (exp.status) ok = r.status === exp.status;
+    else ok = false;
+    check("path-edge: " + r.label, ok === true);
+  });
+}
+
 async function runSuite() {
   await testAcceptChains();
   await testSelfIssuedAndConstraints();
@@ -2618,6 +2956,7 @@ async function runSuite() {
   await testInitialInputsAndTargetGates();
   await testTrustAnchorConstraints();
   await testCrlDpIdpCorrespondence();
+  await testCoverageEdges();
 }
 
 module.exports = { run: runSuite };

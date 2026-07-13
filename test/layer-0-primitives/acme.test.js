@@ -48,9 +48,24 @@ function acmeIdExt(digest, critical) {
   children.push(b.octetString(b.octetString(digest)));
   return b.sequence(children);
 }
+// An acmeIdentifier extension whose extnValue wraps arbitrary inner DER -- drives
+// the malformed-Authorization reject path in _readAcmeIdentifier (non-OCTET-STRING).
+function acmeIdExtRaw(innerDer, critical) {
+  var children = [b.oid(oid.byName("acmeIdentifier"))];
+  if (critical) children.push(b.boolean(true));
+  children.push(b.octetString(innerDer));
+  return b.sequence(children);
+}
 // An authorityKeyIdentifier extension carrying `keyId` (a [0] IMPLICIT keyIdentifier).
 function akiExt(keyId) {
   var akiValue = b.sequence([b.contextPrimitive(0, keyId)]);
+  return b.sequence([b.oid(oid.byName("authorityKeyIdentifier")), b.octetString(akiValue)]);
+}
+// An AKI carrying authorityCertIssuer [1] + authorityCertSerialNumber [2] but NO
+// keyIdentifier [0]: it decodes cleanly, so ariCertId must reject it on the missing
+// keyIdentifier itself (not merely on a decoder-level shape error).
+function akiExtNoKeyId() {
+  var akiValue = b.sequence([b.contextConstructed(1, b.contextPrimitive(2, Buffer.from("ca.example", "ascii"))), b.contextPrimitive(2, Buffer.from([0x2a]))]);
   return b.sequence([b.oid(oid.byName("authorityKeyIdentifier")), b.octetString(akiValue)]);
 }
 // A cert derived from REAL_CERT with its serialNumber (child 1) and/or [3]
@@ -162,6 +177,19 @@ function testObjects() {
   // an authorization's challenges are each validated as a challenge, not just "an object".
   check("47m. authz with a malformed challenge rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { challenges: [{ type: "http-01" }] })); }) === "acme/missing-field");
   check("47n. authz with a bad-status challenge rejected", code(function () { pki.acme.validate("authorization", Object.assign({}, AUTHZ, { challenges: [{ type: "http-01", url: "https://ca/c", status: "bogus" }] })); }) === "acme/bad-status");
+  // a non-string value in an RFC 3339 field is rejected (a numeric expiry never reaches a Date compare).
+  check("81a. non-string expires rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { expires: 5 })); }) === "acme/bad-order");
+  // a non-string plain string field, a non-object object field, and a non-boolean boolean field are each rejected.
+  check("81b. non-string replaces rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { replaces: 5 })); }) === "acme/bad-order");
+  check("81c. non-object error field rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { error: 5 })); }) === "acme/bad-order");
+  check("81d. non-boolean account termsOfServiceAgreed rejected", code(function () { pki.acme.validate("account", { status: "valid", termsOfServiceAgreed: "yes" }); }) === "acme/bad-account");
+  // a URL-typed array element that is not a URL string is rejected element-wise.
+  check("81e. authorizations with a non-URL element rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { authorizations: ["not-a-url"] })); }) === "acme/bad-order");
+  // a valid numeric zone offset is accepted; an out-of-range offset MINUTE (>59) is rejected.
+  check("81f. numeric zone offset accepted", pki.acme.validate("order", Object.assign({}, ORDER, { notBefore: "2026-01-01T00:00:00+05:30" })).status === "pending");
+  check("81g. out-of-range offset minute rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { notBefore: "2026-01-01T00:00:00+00:60" })); }) === "acme/bad-order");
+  // a non-array value in an array-typed field is rejected (before any element walk).
+  check("81h. non-array identifiers rejected", code(function () { pki.acme.validate("order", Object.assign({}, ORDER, { identifiers: "example.org" })); }) === "acme/bad-order");
 }
 
 // ---- state machines (RFC 8555 sec. 7.1.6) ----------------------------
@@ -181,6 +209,8 @@ function testTransitions() {
   check("48j. order ready->invalid ok", code(function () { pki.acme.assertTransition("order", "ready", "invalid"); }) === "NO-THROW");
   // a synchronous CA may issue immediately: ready -> valid without a visible processing (RFC 8555 sec. 7.1.6).
   check("48k. order ready->valid ok (synchronous issuance)", code(function () { pki.acme.assertTransition("order", "ready", "valid"); }) === "NO-THROW");
+  // an unknown resource kind has no transition table -- fail closed, never accept the edge.
+  check("48l. assertTransition unknown kind rejected", code(function () { pki.acme.assertTransition("account", "valid", "revoked"); }) === "acme/bad-input");
 }
 
 // ---- problem documents (RFC 8555 sec. 6.7) ---------------------------
@@ -197,6 +227,11 @@ function testProblem() {
   check("50b. validateProblem accepts a bare problem document", pki.acme.validateProblem({ type: "urn:ietf:params:acme:error:malformed", detail: "x" }).detail === "x");
   // a subproblem identifier MAY be a wildcard (a rejectedIdentifier for a wildcard order).
   check("50c. wildcard subproblem identifier accepted", pki.acme.validateProblem({ type: "urn:ietf:params:acme:error:compound", subproblems: [{ type: "urn:ietf:params:acme:error:rejectedIdentifier", identifier: { type: "dns", value: "*.example.org" } }] }).subproblems.length === 1);
+  // a non-object problem document, and a non-array subproblems member, each fail closed.
+  check("50d. non-object problem document rejected", code(function () { pki.acme.validateProblem(5); }) === "acme/bad-problem");
+  check("50e. non-array subproblems rejected", code(function () { pki.acme.validateProblem({ type: "urn:ietf:params:acme:error:compound", subproblems: "x" }); }) === "acme/bad-problem");
+  // an unknown object kind routed through validate() fails closed with a typed fault.
+  check("50f. validate unknown kind rejected", code(function () { pki.acme.validate("bogus", {}); }) === "acme/bad-input");
 }
 
 // ---- identifiers (RFC 8555 sec. 7.1.4 / RFC 8738) --------------------
@@ -217,6 +252,22 @@ function testIdentifiers() {
   check("54c. IPv6 canonical accepted", ip("2001:db8::1").status === "pending");
   check("54d. IPv4 canonical accepted", ip("192.168.1.1").status === "pending");
   check("54e. IPv6 uppercase rejected", code(function () { ip("2001:DB8::1"); }) === "acme/bad-identifier");
+  // an identifier missing its value (or not an object) fails closed, never a raw TypeError.
+  check("55a. identifier missing value rejected", code(function () { pki.acme.validate("authorization", { identifier: { type: "dns" }, status: "pending", challenges: [{ type: "http-01", url: "https://ca/c", status: "pending", token: "DGyRejmCefe7v4NfDGDKfA" }] }); }) === "acme/bad-identifier");
+  // an empty dns value and an over-253-character dns value are each rejected.
+  check("55b. empty dns value rejected", code(function () { dns(""); }) === "acme/bad-identifier");
+  var over253 = new Array(64).join("a") + "." + new Array(64).join("a") + "." + new Array(64).join("a") + "." + new Array(64).join("a");
+  check("55c. over-253-character dns name rejected", code(function () { dns(over253); }) === "acme/bad-identifier");
+  // an ip value that is neither IPv4 nor IPv6 textual form is rejected.
+  check("55d. non-address ip value rejected", code(function () { ip("hello"); }) === "acme/bad-identifier");
+  // IPv6 canonicalization fails closed on: two "::" runs, a wrong group count, a bad hex
+  // group, and a "::" that would compress zero groups (fill < 1).
+  check("55e. IPv6 with two :: runs rejected", code(function () { ip("2001::db8::1"); }) === "acme/bad-identifier");
+  check("55f. IPv6 wrong group count rejected", code(function () { ip("1:2:3"); }) === "acme/bad-identifier");
+  check("55g. IPv6 non-hex group rejected", code(function () { ip("2001:db8::x"); }) === "acme/bad-identifier");
+  check("55h. IPv6 :: with nothing to compress rejected", code(function () { ip("1:2:3:4:5:6:7:8::"); }) === "acme/bad-identifier");
+  // a fully-expanded IPv6 with no compressible zero run round-trips and is accepted.
+  check("55i. IPv6 with no zero-run accepted", ip("2001:db8:1:2:3:4:5:6").status === "pending");
 }
 
 // ---- identify mutual exclusion (RFC 8555 dispatch) -------------------
@@ -229,6 +280,14 @@ function testIdentify() {
   // a DER structure (a Buffer / non-object) identifies as unknown, never routes.
   check("80b. DER buffer -> unknown", pki.acme.identify(Buffer.from([0x30, 0x03])) === "unknown");
   check("80c. plain object -> unknown", pki.acme.identify({ hello: 1 }) === "unknown");
+  // a non-object (null / primitive) identifies as unknown, never a kind.
+  check("80d. null -> unknown", pki.acme.identify(null) === "unknown");
+  check("80e. number -> unknown", pki.acme.identify(5) === "unknown");
+  // the account discriminator resolves on ANY of orders / contact / termsOfServiceAgreed.
+  check("80f. status+contact -> account", pki.acme.identify({ status: "valid", contact: ["mailto:a@b.example"] }) === "account");
+  check("80g. status+termsOfServiceAgreed -> account", pki.acme.identify({ status: "valid", termsOfServiceAgreed: true }) === "account");
+  // a bare status with no account marker is not an account.
+  check("80h. status alone -> unknown", pki.acme.identify({ status: "valid" }) === "unknown");
 }
 
 // ---- challenge computations (RFC 8555 sec. 8 / 8737 / 8738) ----------
@@ -288,6 +347,26 @@ async function testChallenges() {
   check("62f. ip identifier with no value fails closed (no TypeError)", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "ip" }); })) === "acme/bad-identifier");
   // 63. the acmeIdentifier OID row resolves.
   check("63. acmeIdentifier OID row", oid.name("1.3.6.1.5.5.7.1.31") === "acmeIdentifier");
+  // dns01 requires a domain string -- a non-string fails closed (no raw TypeError).
+  check("63b. dns01 non-string domain rejected", (await acode(function () { return pki.acme.dns01(TOKEN, jwk, 123); })) === "acme/bad-identifier");
+  // a same-length (32-byte) but WRONG Authorization digest is rejected (not just a length check).
+  var wrongDigestCert = makeValidationCert([acmeIdExt(Buffer.alloc(32, 7), true), sanExt([dnsName("pkijs.com")], false)]);
+  check("63c. wrong 32-byte Authorization digest rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(wrongDigestCert, TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
+  // a validation cert with the acmeIdentifier but no SubjectAltName is rejected.
+  check("63d. missing SubjectAltName rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(makeValidationCert([acmeIdExt(digest32, true)]), TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
+  // a missing / typeless identifier argument fails closed with a typed input fault.
+  check("63e. null identifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, null); })) === "acme/bad-input");
+  check("63f. identifier with no type rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, {}); })) === "acme/bad-input");
+  // a dns identifier whose SAN entry is an iPAddress (wrong tag) is rejected.
+  check("63g. dns identifier vs iPAddress SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(ipCert, TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
+  // an unsupported identifier type (neither dns nor ip) is rejected.
+  check("63h. unsupported identifier type rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(goodCert, TOKEN, jwk, { type: "email", value: "a@b" }); })) === "acme/bad-tlsalpn");
+  // a malformed acmeIdentifier extnValue (inner DER is not an OCTET STRING) is rejected.
+  var malformedAuthCert = makeValidationCert([acmeIdExtRaw(b.integer(5n), true), sanExt([dnsName("pkijs.com")], false)]);
+  check("63i. malformed acmeIdentifier extnValue rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(malformedAuthCert, TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
+  // a wrong-length iPAddress SAN is rejected by the SAN decoder (fail closed before the compare).
+  var badIpLenCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([1, 2, 3])], false)]);
+  check("63j. wrong-length iPAddress SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(badIpLenCert, TOKEN, jwk, { type: "ip", value: "192.168.1.1" }); })) === "acme/bad-extension-value");
 }
 
 // ---- request builders (RFC 8555 sec. 7.x) ----------------------------
@@ -402,6 +481,59 @@ async function testBuilders() {
   check("33b. postAsGet ignores a leftover jwk and requires kid", (await acode(function () { return pki.acme.postAsGet({ key: acct.key, alg: "ES256", nonce: base.nonce, url: kid, jwk: acct.jwk }); })) === "jose/bad-header");
   var pag2 = await pki.acme.postAsGet(Object.assign({}, base, { url: kid, jwk: acct.jwk }));
   check("33c. postAsGet with kid+jwk still emits a kid-only header", !("jwk" in b64uJson(pag2.protected)) && b64uJson(pag2.protected).kid === kid);
+
+  // ---- builder input-guard coverage (fail closed on missing / malformed options) ----
+  // the request-options builders require an options object; a bare call fails closed.
+  check("90a. postAsGet with no options rejected", (await acode(function () { return pki.acme.postAsGet(); })) === "acme/bad-input");
+  check("90b. challengeResponse with no options rejected", (await acode(function () { return pki.acme.challengeResponse(); })) === "acme/bad-input");
+  check("90c. revokeCert with no options rejected", (await acode(function () { return pki.acme.revokeCert({}); })) === "acme/bad-input");
+  check("90d. finalize with no CSR rejected", (await acode(function () { return pki.acme.finalize({}); })) === "acme/bad-input");
+  check("90e. finalize with a non-Buffer CSR rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: "not-a-buffer" })); })) === "acme/bad-input");
+  check("90f. keyChange with no options rejected", (await acode(function () { return pki.acme.keyChange(); })) === "acme/bad-input");
+
+  // challengeResponse: a non-object payload is rejected; a custom-type payload object is accepted.
+  check("91a. challengeResponse non-object payload rejected", (await acode(function () { return pki.acme.challengeResponse(Object.assign({}, base, { url: "https://ca/chall/1", payload: 5 })); })) === "acme/bad-input");
+  check("91b. challengeResponse custom payload object accepted", (await acode(function () { return pki.acme.challengeResponse(Object.assign({}, base, { url: "https://ca/chall/1", payload: { keyAuthorization: "x" } })); })) === "NO-THROW");
+
+  // newAccount: a non-array contact, a mailto with no addr-spec (@ count != 1), a non-object
+  // externalAccountBinding are each rejected; onlyReturnExisting: true is accepted.
+  check("92a. newAccount non-array contact rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: "mailto:a@b.com" }); })) === "acme/bad-contact");
+  check("92b. newAccount mailto with no addr-spec rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, contact: ["mailto:noatsign"] }); })) === "acme/bad-contact");
+  check("92c. newAccount non-object externalAccountBinding rejected", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, externalAccountBinding: 5 }); })) === "acme/bad-input");
+  check("92d. newAccount onlyReturnExisting true accepted", (await acode(function () { return pki.acme.newAccount({ key: acct.key, alg: "ES256", nonce: base.nonce, url: base.url, jwk: acct.jwk, onlyReturnExisting: true }); })) === "NO-THROW");
+
+  // externalAccountBinding requires the account jwk and the CA-issued kid.
+  var macKey2 = Buffer.from("0123456789abcdef0123456789abcdef", "ascii");
+  check("93a. EAB without accountJwk rejected", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey2, kid: "k", url: base.url }); })) === "acme/bad-input");
+  check("93b. EAB without kid rejected", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey2, url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
+
+  // finalize identifier-array guard + order-ip-set comparison.
+  check("94a. finalize empty identifiers array rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: [] })); })) === "acme/bad-input");
+  check("94b. finalize order-ip vs dns-only CSR mismatch", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: [{ type: "ip", value: "192.168.1.1" }] })); })) === "acme/csr-identifier-mismatch");
+
+  // finalize derives the account SPKI across key types (RSA / OKP), and fails closed on
+  // an unsupported key type or an unimportable JWK.
+  var edKp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  var edJwk = await subtle.exportKey("jwk", edKp.publicKey);
+  check("95a. finalize with an OKP (Ed25519) account JWK accepted", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: edJwk })); })) === "NO-THROW");
+  var rsaKp = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var rsaJwk = await subtle.exportKey("jwk", rsaKp.publicKey);
+  check("95b. finalize with an RSA account JWK accepted", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: rsaJwk })); })) === "NO-THROW");
+  check("95c. finalize with an unsupported account key type rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: { kty: "OCT" } })); })) === "acme/bad-key");
+  check("95d. finalize with an unimportable account JWK rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: { kty: "EC", crv: "P-256" } })); })) === "acme/bad-key");
+
+  // newOrder: empty identifiers, a non-string replaces, and a malformed notBefore each fail closed;
+  // a non-leading wildcard is rejected; a valid ip identifier + notBefore/notAfter are accepted.
+  check("96a. newOrder with no identifiers rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o" })); })) === "acme/bad-order");
+  check("96b. newOrder non-string replaces rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }], replaces: 5 })); })) === "acme/bad-order");
+  check("96c. newOrder malformed notBefore rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }], notBefore: "not-a-date" })); })) === "acme/bad-order");
+  check("96d. newOrder non-leading wildcard rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "ex*ample.org" }] })); })) === "acme/bad-identifier");
+  check("96e. newOrder ip identifier + notBefore/notAfter accepted", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "ip", value: "192.168.1.1" }], notBefore: "2026-01-01T00:00:00Z", notAfter: "2026-02-01T00:00:00Z" })); })) === "NO-THROW");
+
+  // keyChange requires the account URL and the new account public JWK.
+  var nk2 = await ecKeyPair();
+  check("97a. keyChange without account URL rejected", (await acode(function () { return pki.acme.keyChange({ key: acct.key, alg: "ES256", kid: kid, oldKey: acct.jwk, newKey: nk2.key, newJwk: nk2.jwk, newAlg: "ES256", nonce: base.nonce, url: "https://ca/k" }); })) === "acme/bad-input");
+  check("97b. keyChange without newJwk rejected", (await acode(function () { return pki.acme.keyChange({ key: acct.key, alg: "ES256", kid: kid, account: kid, oldKey: acct.jwk, newKey: nk2.key, newAlg: "ES256", nonce: base.nonce, url: "https://ca/k" }); })) === "acme/bad-input");
 }
 
 // ---- ARI (RFC 9773) --------------------------------------------------
@@ -440,6 +572,11 @@ function testAri() {
   check("74c. non-object renewalInfo throws a typed acme fault", code(function () { pki.acme.validate("renewalInfo", "notanobject"); }).indexOf("acme/") === 0);
   check("74d. mistyped suggestedWindow throws a typed acme fault", code(function () { pki.acme.validate("renewalInfo", { suggestedWindow: 5 }); }).indexOf("acme/") === 0);
   check("74e. validateRenewalInfo on a non-object throws a typed acme fault", code(function () { pki.acme.validateRenewalInfo(42); }).indexOf("acme/") === 0);
+  // ariCertId requires a Buffer; parseAriCertId requires a string -- each fails closed.
+  check("75a. ariCertId on a non-Buffer rejected", code(function () { pki.acme.ariCertId("not-a-buffer"); }) === "acme/bad-input");
+  check("75b. parseAriCertId on a non-string rejected", code(function () { pki.acme.parseAriCertId(5); }) === "acme/bad-certid");
+  // an AKI that decodes cleanly but carries NO keyIdentifier ([1]+[2] only) is rejected.
+  check("75c. ariCertId on an AKI without a keyIdentifier rejected", code(function () { pki.acme.ariCertId(makeCert({ exts: [akiExtNoKeyId()] })); }) === "acme/bad-certid");
 }
 
 // ---- FORMATS non-registration (dispatch) -----------------------------

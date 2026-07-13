@@ -1,0 +1,24 @@
+{
+  "prism": {
+    "package": "prismjs",
+    "version": "1.30.0",
+    "license": "MIT",
+    "homepage": "https://prismjs.com",
+    "usedFor": "Syntax highlighting of the wiki's code blocks (javascript/js, bash/sh). Client-side only; never ships in the @blamejs/pki package.",
+    "files": {
+      "prism.js": {
+        "sha256": "a1ab925b786c653d5a4ae493141531b964778dc5ec95003342670664c6e816d3",
+        "concatenationOf": [
+          "https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-core.min.js",
+          "https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-clike.min.js",
+          "https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-javascript.min.js",
+          "https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/components/prism-bash.min.js"
+        ]
+      },
+      "prism.css": {
+        "sha256": "1b15fe2971998a048aebb60f26f6eed76122071db9ef3b995abd003224f52a98",
+        "source": "https://cdnjs.cloudflare.com/ajax/libs/prism/1.30.0/themes/prism-tomorrow.min.css"
+      }
+    }
+  }
+}

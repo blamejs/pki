@@ -889,6 +889,75 @@ function testContentTypeDiscriminator() {
   check("contentType is the dotted OID", parse(cms({})).contentType === ID_SIGNED_DATA);
 }
 
+// ---- adversarial / edge branches: §11 attribute-value multiplicity, AEAD
+// parameter faults (RFC 5084), the KeyAgreeRecipientIdentifier arms, an
+// AuthenticatedData v0 carrying originatorInfo, the orchestrator non-match, and
+// the assertAttachedCiphertext per-profile opt-in --------------------------------
+function testAeadAndAttrEdgeCases() {
+  var cmsLib = require("../../lib/schema-cms.js");
+
+  // a duplicate message-digest signed attribute (distinct values, same type) -> reject (§5.3).
+  check("duplicate message-digest attr rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([1]), messageDigestAttr([2, 2])] })]) })) === "cms/duplicate-message-digest");
+  // a multi-valued message-digest attribute -> reject (§11.2 single-valued).
+  check("multi-valued message-digest attr rejected",
+    parseCode(cms({ signers: b.set([signerInfo({ signedAttrs: [contentTypeAttr(ID_DATA), attribute(MD_ATTR, [b.octetString(Buffer.from([1])), b.octetString(Buffer.from([2]))])] })]) })) === "cms/bad-message-digest-attr");
+
+  // an AES-CCM content-encryption algorithm with NO parameters -> reject (RFC 5084 §3.1).
+  check("AEAD CCM absent parameters rejected",
+    parseCode(aeCI({ eci: eciP(ID_DATA, algId(ID_AES256_CCM), CT) })) === "cms/bad-aead-params");
+  // a GCM zero-length aes-nonce -> reject (a non-empty nonce is the structural floor).
+  check("AEAD GCM empty nonce rejected",
+    parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(0)), CT) })) === "cms/bad-aead-params");
+  // the aes-ICVlen field is present but not an INTEGER -> reject.
+  check("AEAD ICVlen not an INTEGER rejected",
+    parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, b.sequence([b.octetString(Buffer.alloc(12, 0x11)), b.octetString(Buffer.from([16]))])), CT) })) === "cms/bad-aead-params");
+  // the aes-ICVlen INTEGER is out of the 0..16 pre-narrow bound -> reject (both ends).
+  check("AEAD ICVlen 17 (over) rejected",
+    parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, 17)), CT), mac: b.octetString(Buffer.alloc(12, 0x4D)) })) === "cms/bad-aead-params");
+  check("AEAD ICVlen -1 (under) rejected",
+    parseCode(aeCI({ eci: eciP(ID_DATA, algIdP(ID_AES256_GCM, aeadParams(12, -1)), CT) })) === "cms/bad-aead-params");
+
+  // KeyAgreeRecipientIdentifier: a RecipientEncryptedKey whose rid is an
+  // issuerAndSerialNumber (the untagged arm), not the rKeyId [0] arm (§6.2.2).
+  var mIas = parse(envCI({ version: 2, recips: [kari({ reks: [recipEncKey({ rid: iasn("RekR", 1) })] })] }));
+  check("kari RecipientEncryptedKey iasn rid arm",
+    mIas.recipientInfos[0].recipientEncryptedKeys[0].ridType === "issuerAndSerialNumber" &&
+    typeof mIas.recipientInfos[0].recipientEncryptedKeys[0].rid.serialNumberHex === "string");
+  // OriginatorIdentifierOrKey: the subjectKeyIdentifier [0] originator arm (RFC 5753 §3.1.1).
+  var mSkid = parse(envCI({ version: 2, recips: [kari({ originator: skid([0x11, 0x22]) })] }));
+  check("kari subjectKeyIdentifier originator arm",
+    mSkid.recipientInfos[0].originator.form === "subjectKeyIdentifier" &&
+    Buffer.isBuffer(mSkid.recipientInfos[0].originator.value) &&
+    mSkid.recipientInfos[0].originator.value.equals(Buffer.from([0x11, 0x22])));
+
+  // AuthenticatedData §9.1 version 0: originatorInfo present but carrying only a
+  // plain Certificate (no v2AttrCert [2] / other [3] / other-crl [1]) stays v0.
+  var mAd = parse(adCI({ version: 0, originatorInfo: originatorInfo({ certs: [b.sequence([b.integer(1n)])] }) }));
+  check("authData originatorInfo plain cert -> v0", mAd.version === 0 && mAd.originatorInfo.certs.length === 1);
+  var mAdExt = parse(adCI({ version: 0, originatorInfo: originatorInfo({ certs: [b.contextConstructed(0, name("Ext"))] }) }));
+  check("authData originatorInfo extendedCertificate [0] -> v0", mAdExt.version === 0);
+
+  // orchestrator: a 2-child SEQUENCE leading with an OID whose second child is NOT
+  // a content [0] wrapper is not CMS (matches -> false) and matches no format.
+  check("orchestrator OID+INTEGER pair is not CMS",
+    code(function () { pki.schema.parse(b.sequence([b.oid("1.2.3"), b.integer(5n)])); }) === "schema/unknown-format");
+  check("orchestrator OID + [0] primitive is not CMS",
+    code(function () { pki.schema.parse(b.sequence([b.oid("1.2.3"), b.contextPrimitive(0, Buffer.from([1]))])); }) === "schema/unknown-format");
+
+  // assertAttachedCiphertext (per-profile opt-in): a detached / empty / missing
+  // encryptedContent fails closed; a non-empty ciphertext returns the eci (CWE-20).
+  function E(c, msg) { var e = new Error(msg); e.code = c; return e; }
+  check("assertAttachedCiphertext detached rejected",
+    code(function () { cmsLib.assertAttachedCiphertext({ encryptedContent: null }, E, "cms/test-detached", "payload"); }) === "cms/test-detached");
+  check("assertAttachedCiphertext empty ciphertext rejected",
+    code(function () { cmsLib.assertAttachedCiphertext({ encryptedContent: Buffer.alloc(0) }, E, "cms/test-detached", "payload"); }) === "cms/test-detached");
+  check("assertAttachedCiphertext missing eci rejected",
+    code(function () { cmsLib.assertAttachedCiphertext(null, E, "cms/test-detached", "payload"); }) === "cms/test-detached");
+  var okEci = cmsLib.assertAttachedCiphertext({ encryptedContent: Buffer.from([1, 2, 3]) }, E, "cms/test-detached", "payload");
+  check("assertAttachedCiphertext non-empty returns eci", !!okEci && okEci.encryptedContent.length === 3);
+}
+
 function run() {
   testAccept();
   testEnvelope();
@@ -911,6 +980,7 @@ function run() {
   testAuthenticatedData();
   testAuthEnvelopedData();
   testContentTypeDiscriminator();
+  testAeadAndAttrEdgeCases();
 }
 
 module.exports = { run: run };
