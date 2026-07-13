@@ -126,6 +126,11 @@ function _b64u(s) { var x = String(s).replace(/-/g, "+").replace(/_/g, "/"); whi
 var webauthnAttObj = _b64u(webauthnKat.formats.packed.attestationObject);
 var webauthnClientHash = require("node:crypto").createHash("sha256").update(_b64u(webauthnKat.formats.packed.clientDataJSON)).digest();
 
+// pki.cms fixtures: a REAL detached SignedData + its external content, so verify's
+// example runs the actual RFC 5652 sec. 5.4 preimage + signature verification.
+var cmsDetachedDer = fs.readFileSync(path.join(__dirname, "..", "fixtures", "cms", "rsa-detached.p7s"));
+var cmsDetachedContent = Buffer.from("hello CMS SignedData verification");
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -178,6 +183,9 @@ function fixturesFor(tag) {
     // pki.webauthn: a real packed attestation + its clientDataHash so the parse
     // and verify examples run the actual decode + attestation-statement verify.
     attestationObject: webauthnAttObj, clientDataHash: webauthnClientHash,
+    // pki.cms: a real detached SignedData + its external content so verify's example
+    // runs the full parse + message-digest + signature verification path.
+    p7sDer: cmsDetachedDer, detachedBytes: cmsDetachedContent,
   };
 }
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples

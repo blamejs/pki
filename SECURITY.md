@@ -297,6 +297,19 @@ security-only patches after the next major releases.
   `webauthn/*` error — a signature that does not verify is a verdict, never a silent
   pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that emit it, never
   for signing.
+- **CMS SignedData preimage substitution.** `pki.cms.verify` checks a SignedData
+  signature over the exact bytes RFC 5652 §5.4 defines, never a re-derived copy. When
+  signed attributes are present, the message-digest attribute must equal the digest of
+  the content *and* the signature is verified over the DER re-encoding of the
+  SignedAttributes (the on-wire `[0]` implicit tag replaced by the universal SET OF the
+  standard requires) — so an attacker can neither swap the content out from under a set
+  of signed attributes nor strip the attributes and present a signature made over them
+  as one made over the content. Each parameter comes from the structure that owns it —
+  the content digest from the digestAlgorithm, the signature scheme from the signer's
+  own key algorithm — so a signer cannot claim one algorithm while the key implies
+  another. A false verdict or an unresolved parameter is a fail-closed `cms/*` outcome,
+  never a silent pass; the signer certificate is located but deliberately not chained to
+  a trust anchor, which remains the caller's explicit `pki.path.validate` step.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,
