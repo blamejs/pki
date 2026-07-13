@@ -107,6 +107,30 @@ function buildCsr(o) {
   ]);
   return b.sequence([cri, b.sequence([b.oid(ECDSA_SHA256)]), b.bitString(Buffer.from([0x00]), 0)]);
 }
+// A subject whose only RDN is a non-CN attribute (organizationName) -- the CN
+// collector must walk it and NOT count it, so the CSR identifier set stays SAN-only.
+function orgSubject(o) { return b.sequence([b.set([b.sequence([b.oid(oid.byName("organizationName")), b.utf8(o)])])]); }
+// A PKCS#9 challengePassword attribute -- a RECOGNIZED but non-extensionRequest
+// attribute the identifier collector must skip (aggregate only extensionRequests).
+function challengePwAttr(v) { return b.sequence([b.oid(oid.byName("challengePassword")), b.set([b.utf8(v)])]); }
+// An extensionRequest whose Extensions carries a SAN of dNSNames PLUS a non-SAN
+// extension (basicConstraints) -- the collector must skip the non-SAN extension.
+function extReqWithBasicConstraints(dnsNames) {
+  var bc = b.sequence([b.oid(oid.byName("basicConstraints")), b.octetString(b.sequence([]))]);
+  return b.sequence([b.oid(oid.byName("extensionRequest")), b.set([b.sequence([sanExtension(dnsNames), bc])])]);
+}
+// An extensionRequest whose SAN carries a single iPAddress GeneralName (tag 7).
+function ipSanExtReqAttr(ipBytesArr) {
+  var san = b.sequence([b.oid(oid.byName("subjectAltName")), b.octetString(b.sequence([b.contextPrimitive(7, Buffer.from(ipBytesArr))]))]);
+  return b.sequence([b.oid(oid.byName("extensionRequest")), b.set([b.sequence([san])])]);
+}
+// Build a CSR from a subject + an arbitrary list of raw attribute TLVs (DER SET-OF ordered).
+function buildCsrAttrs(o) {
+  var attrTlvs = (o.attrs || []).slice().sort(Buffer.compare);
+  var attrList = attrTlvs.length ? Buffer.concat(attrTlvs) : Buffer.alloc(0);
+  var cri = b.sequence([b.integer(0n), o.subject || b.sequence([]), o.spki, b.contextConstructed(0, attrList)]);
+  return b.sequence([cri, b.sequence([b.oid(ECDSA_SHA256)]), b.bitString(Buffer.from([0x00]), 0)]);
+}
 async function ecKeyPair() {
   var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
   return { key: kp.privateKey, jwk: await subtle.exportKey("jwk", kp.publicKey), spki: Buffer.from(await subtle.exportKey("spki", kp.publicKey)) };
@@ -268,6 +292,13 @@ function testIdentifiers() {
   check("55h. IPv6 :: with nothing to compress rejected", code(function () { ip("1:2:3:4:5:6:7:8::"); }) === "acme/bad-identifier");
   // a fully-expanded IPv6 with no compressible zero run round-trips and is accepted.
   check("55i. IPv6 with no zero-run accepted", ip("2001:db8:1:2:3:4:5:6").status === "pending");
+  // a label that PASSES the generic LDH check but is not a well-formed xn-- A-label is
+  // rejected -- a bare "xn--" fails LDH first, so "xn---a" is needed to reach the
+  // ACE-specific check (a hyphen where the ACE payload's first char must be alnum).
+  check("55j. LDH-valid but malformed xn-- A-label rejected", code(function () { dns("xn---a.example"); }) === "acme/bad-identifier");
+  // a leading "::" IPv6 (loopback ::1) canonicalizes with an EMPTY left half and is
+  // accepted -- the left of the "::" split is "" (falsy), taking the empty-groups path.
+  check("55k. leading :: IPv6 (::1) accepted", ip("::1").status === "pending");
 }
 
 // ---- identify mutual exclusion (RFC 8555 dispatch) -------------------
@@ -367,6 +398,9 @@ async function testChallenges() {
   // a wrong-length iPAddress SAN is rejected by the SAN decoder (fail closed before the compare).
   var badIpLenCert = makeValidationCert([acmeIdExt(digest32, true), sanExt([ipName([1, 2, 3])], false)]);
   check("63j. wrong-length iPAddress SAN rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(badIpLenCert, TOKEN, jwk, { type: "ip", value: "192.168.1.1" }); })) === "acme/bad-extension-value");
+  // a validation cert that HAS extensions but carries no acmeIdentifier is rejected on the
+  // missing-extension path (distinct from a cert with no extensions at all).
+  check("63k. cert with extensions but no acmeIdentifier rejected", (await acode(function () { return pki.acme.verifyTlsAlpn01(makeValidationCert([sanExt([dnsName("pkijs.com")], false)]), TOKEN, jwk, { type: "dns", value: "pkijs.com" }); })) === "acme/bad-tlsalpn");
 }
 
 // ---- request builders (RFC 8555 sec. 7.x) ----------------------------
@@ -398,6 +432,21 @@ async function testBuilders() {
   var twoCnCsr = buildCsr({ spki: cert.spki, subject: twoCnSubject("cn1.example", "cn2.example") });
   check("65h. finalize counts every subject CN", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoCnCsr, identifiers: [{ type: "dns", value: "cn1.example" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
 
+  // 65i. a subject RDN that is NOT a commonName (organizationName) is walked but not counted,
+  // so the CSR identifier set stays SAN-only and still matches the order identifiers.
+  var orgCsr = buildCsrAttrs({ spki: cert.spki, subject: orgSubject("Acme"), attrs: [extensionRequestAttr(["example.org"])] });
+  check("65i. non-CN subject RDN not counted in the identifier set", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: orgCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "NO-THROW");
+  // 65j. a non-extensionRequest attribute (challengePassword) is skipped by the collector.
+  var cpCsr = buildCsrAttrs({ spki: cert.spki, attrs: [extensionRequestAttr(["example.org"]), challengePwAttr("secret")] });
+  check("65j. a challengePassword attribute is ignored by the identifier collector", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: cpCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "NO-THROW");
+  // 65k. a non-SAN extension inside the extensionRequest (basicConstraints) is skipped.
+  var bcCsr = buildCsrAttrs({ spki: cert.spki, attrs: [extReqWithBasicConstraints(["example.org"])] });
+  check("65k. a non-SAN extension in the extensionRequest is ignored", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: bcCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "NO-THROW");
+  // 65l. an iPAddress SAN in the CSR is canonicalized and matched against an order ip identifier.
+  var ipSanCsr = buildCsrAttrs({ spki: cert.spki, attrs: [ipSanExtReqAttr([192, 168, 1, 1])] });
+  check("65l. an iPAddress SAN matches an order ip identifier", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: ipSanCsr, identifiers: [{ type: "ip", value: "192.168.1.1" }], accountJwk: acct.jwk })); })) === "NO-THROW");
+  check("65m. an iPAddress-SAN CSR mismatched against a dns order rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: ipSanCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
+
   // 66. CSR public key == account key -> acme/key-reuse (sec. 11.1).
   var reuseCsr = buildCsr({ spki: acct.spki, san: ["example.org"] });
   check("66. finalize account-key-reuse rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: reuseCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "acme/key-reuse");
@@ -412,6 +461,14 @@ async function testBuilders() {
   check("67c. EAB header: HS256, kid, url==outer, no nonce", eabHdr.alg === "HS256" && eabHdr.kid === "mac-kid-1" && eabHdr.url === base.url && !("nonce" in eabHdr));
   check("67d. EAB rejects a signature alg", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acct.jwk, alg: "ES256" }); })) === "acme/bad-input");
   check("67d2. EAB rejects a non-key macKey (fail closed, no raw TypeError)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: "notakey", kid: "k", url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
+  // a non-Buffer object that is not a secret CryptoKey (e.g. a public key) is rejected on the
+  // key.type check; a null macKey is rejected on the falsy-key check -- both fail closed.
+  check("67d4. EAB rejects a non-secret CryptoKey macKey", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: { type: "public" }, kid: "k", url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
+  check("67d5. EAB rejects a null macKey", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: null, kid: "k", url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
+  // a pre-imported HMAC secret CryptoKey is accepted (the non-Buffer, secret-key path) and verifies.
+  var hmacCryptoKey = await subtle.importKey("raw", Buffer.from("0123456789abcdef0123456789abcdef", "ascii"), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  var eabCk = await pki.acme.externalAccountBinding({ macKey: hmacCryptoKey, kid: "mac-kid-ck", url: base.url, accountJwk: acct.jwk });
+  check("67p. EAB accepts a secret HMAC CryptoKey macKey", (await acode(function () { return pki.jose.verify(eabCk, { profile: "eab-inner", key: { kty: "oct", k: pki.jose.base64url.encode(Buffer.from("0123456789abcdef0123456789abcdef", "ascii")) } }); })) === "NO-THROW");
   var acctPrivJwk = await subtle.exportKey("jwk", acct.key);   // carries the private `d`
   check("67d3. EAB rejects a private account jwk (no key leak in the payload)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acctPrivJwk }); })) === "jose/private-key-material");
   check("67e. EAB inner refused by the outer profile (no HS* outside EAB)", (await acode(function () { return pki.jose.verify(eab, { profile: "acme-outer", key: macJwk }); })) !== "NO-THROW");
@@ -490,6 +547,9 @@ async function testBuilders() {
   check("90d. finalize with no CSR rejected", (await acode(function () { return pki.acme.finalize({}); })) === "acme/bad-input");
   check("90e. finalize with a non-Buffer CSR rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: "not-a-buffer" })); })) === "acme/bad-input");
   check("90f. keyChange with no options rejected", (await acode(function () { return pki.acme.keyChange(); })) === "acme/bad-input");
+  // an options object present but missing the signing key fails closed at the shared signer
+  // (opts.key required) -- a kid-signed builder must never emit a keyless JWS.
+  check("90g. postAsGet without a signing key rejected", (await acode(function () { return pki.acme.postAsGet({ alg: "ES256", nonce: base.nonce, url: kid, kid: kid }); })) === "acme/bad-input");
 
   // challengeResponse: a non-object payload is rejected; a custom-type payload object is accepted.
   check("91a. challengeResponse non-object payload rejected", (await acode(function () { return pki.acme.challengeResponse(Object.assign({}, base, { url: "https://ca/chall/1", payload: 5 })); })) === "acme/bad-input");
@@ -521,6 +581,11 @@ async function testBuilders() {
   check("95b. finalize with an RSA account JWK accepted", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: rsaJwk })); })) === "NO-THROW");
   check("95c. finalize with an unsupported account key type rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: { kty: "OCT" } })); })) === "acme/bad-key");
   check("95d. finalize with an unimportable account JWK rejected", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: { kty: "EC", crv: "P-256" } })); })) === "acme/bad-key");
+  // an AKP (ML-DSA) account JWK derives its SubjectPublicKeyInfo through the AKP registry row
+  // (name := jwk.alg), so a PQC account key is a first-class account-key-reuse subject.
+  var akpKp = await subtle.generateKey({ name: "ML-DSA-65" }, true, ["sign", "verify"]);
+  var akpJwk = await subtle.exportKey("jwk", akpKp.publicKey);
+  check("95e. finalize with an AKP (ML-DSA-65) account JWK accepted", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, accountJwk: akpJwk })); })) === "NO-THROW");
 
   // newOrder: empty identifiers, a non-string replaces, and a malformed notBefore each fail closed;
   // a non-leading wildcard is rejected; a valid ip identifier + notBefore/notAfter are accepted.
@@ -529,6 +594,10 @@ async function testBuilders() {
   check("96c. newOrder malformed notBefore rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }], notBefore: "not-a-date" })); })) === "acme/bad-order");
   check("96d. newOrder non-leading wildcard rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "ex*ample.org" }] })); })) === "acme/bad-identifier");
   check("96e. newOrder ip identifier + notBefore/notAfter accepted", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "ip", value: "192.168.1.1" }], notBefore: "2026-01-01T00:00:00Z", notAfter: "2026-02-01T00:00:00Z" })); })) === "NO-THROW");
+  // an ip identifier has no wildcard form (RFC 8738); a "*" in an ip value fails closed.
+  check("96f. newOrder ip identifier with a wildcard rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "ip", value: "192.168.*.1" }] })); })) === "acme/bad-identifier");
+  // a malformed notAfter (present but not RFC 3339) fails closed, matching the notBefore guard.
+  check("96g. newOrder malformed notAfter rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }], notAfter: "not-a-date" })); })) === "acme/bad-order");
 
   // keyChange requires the account URL and the new account public JWK.
   var nk2 = await ecKeyPair();

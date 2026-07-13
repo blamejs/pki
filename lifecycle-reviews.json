@@ -370,5 +370,29 @@
     "reason": "The single-tree LMS verify entry point backs pki.shbs.verify's HSS layer and shares its not-yet-interop-proven status. Graduate alongside pki.shbs.verify once an independent LMS verifier cross-checks a signature it accepts.",
     "reviewedAt": "0.2.7",
     "reviewBy": "0.3.0"
+  },
+  "pki.hpke.setupS": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 9180 base HPKE construction is standard-settled and proven against the Appendix A known-answer vectors, but the KEM registry is deliberately shaped to admit the ML-KEM and X-Wing PQ-hybrid KEMs as data-row additions once their HPKE bindings stabilize, which may extend the sender-context surface. Graduate once the post-quantum KEM set is settled.",
+    "reviewedAt": "0.2.8",
+    "reviewBy": "0.3.0"
+  },
+  "pki.hpke.setupR": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same RFC 9180 KEM registry as pki.hpke.setupS and the same pending post-quantum KEM additions. Graduate alongside pki.hpke.setupS.",
+    "reviewedAt": "0.2.8",
+    "reviewBy": "0.3.0"
+  },
+  "pki.hpke.seal": {
+    "decision": "keep-experimental",
+    "reason": "The single-shot seal over an HPKE sender context; its surface tracks the still-experimental pki.hpke.setupS KEM registry. Graduate alongside pki.hpke.setupS once the post-quantum KEM set is settled.",
+    "reviewedAt": "0.2.8",
+    "reviewBy": "0.3.0"
+  },
+  "pki.hpke.open": {
+    "decision": "keep-experimental",
+    "reason": "The single-shot open over an HPKE recipient context; its surface tracks the still-experimental pki.hpke.setupR KEM registry. Graduate alongside pki.hpke.setupR.",
+    "reviewedAt": "0.2.8",
+    "reviewBy": "0.3.0"
   }
 }

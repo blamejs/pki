@@ -592,6 +592,35 @@ function testCoverageBranches() {
   //      requests no extensions -> est/reenroll-san-mismatch against the SAN-bearing cert.
   var cpAttr = b.sequence([b.oid(CHALLENGE_PW), b.set([b.printable("secret")])]);
   check("70b. reenroll CSR non-extReq attribute -> san-mismatch", code(function () { pki.est.reenrollGuard(REAL_CERT, csrWithAttr(cpAttr)); }) === "est/reenroll-san-mismatch");
+  // 71. a re-enroll where the OLD cert has no SubjectAltName AND the new CSR
+  //     requests none: both-absent is a match (RFC 7030 sec. 4.2.2), returning
+  //     subjectAltName null -- the only path taking the SAN comparison's both-null
+  //     arm. The no-SAN cert is REAL_CERT rebuilt with its SAN extension removed.
+  var extField = tbs.children[7];                                     // [3] EXPLICIT SEQUENCE OF Extension
+  var keptExts = extField.children[0].children
+    .filter(function (e) { return pki.asn1.read.oid(e.children[0]) !== SAN_OID; })
+    .map(function (e) { return e.bytes; });
+  var noSanTbs = b.sequence([tbs.children[0].bytes, tbs.children[1].bytes, tbs.children[2].bytes, tbs.children[3].bytes, tbs.children[4].bytes, subjectDer, spkiDer, b.contextConstructed(3, b.sequence(keptExts))]);
+  var certNode = pki.asn1.decode(REAL_CERT);
+  var noSanCert = b.sequence([noSanTbs, certNode.children[1].bytes, certNode.children[2].bytes]);
+  var noSanCsr = b.sequence([b.sequence([b.integer(0n), subjectDer, spkiDer, b.contextConstructed(0, Buffer.alloc(0))]), algId(ECDSA_SHA256), b.bitString(Buffer.from([1, 2, 3]), 0)]);
+  var reNoSan = pki.est.reenrollGuard(noSanCert, noSanCsr);
+  check("71. reenroll with no SAN on either side accepted", reNoSan.subjectAltName === null && reNoSan.subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
+  // 72. expectedRecipientIssuerSerial.serialNumber given as a plain Number (not a
+  //     BigInt) is coerced via BigInt(...) before the equality -- a matching serial
+  //     still matches (encBody's issuerAndSerial recipient names serial 9), and a
+  //     different Number still fails closed.
+  var recipDn = b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]);
+  check("72. number serialNumber coerced + matched", !!pki.est.parseServerKeygenResponse(encBody, CT, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: recipDn, serialNumber: 9 } }).encryptedKey);
+  check("72b. number serialNumber mismatch rejected", code(function () { pki.est.parseServerKeygenResponse(encBody, CT, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: recipDn, serialNumber: 42 } }); }) === "est/recipient-mismatch");
+  // 73. a 200 response for an op with a required content-type but NO content-type
+  //     header at all: the ct defaults to "" and fails the gate est/bad-content-type,
+  //     never a silent ok on a missing header.
+  check("73. 200 missing content-type header rejected", code(function () { pki.est.classifyResponse(200, {}, Buffer.alloc(0), { op: "cacerts" }); }) === "est/bad-content-type");
+  // 74. asymmetricDecryptKeyIdentifierAttr with a valid Buffer builds the attribute
+  //     carrying id-aa-asymmDecryptKeyID (only its reject path was covered before).
+  var adk = pki.est.asymmetricDecryptKeyIdentifierAttr(Buffer.from([9, 8, 7]));
+  check("74. asymmetricDecryptKeyIdentifier attr", pki.asn1.read.oid(pki.asn1.decode(adk).children[0]) === "1.2.840.113549.1.9.16.2.54");
 }
 
 function run() {

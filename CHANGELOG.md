@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.8 — 2026-07-13
+
+pki.webcrypto rejects an AES key of invalid length at import instead of deferring the failure to first use.
+
+### Fixed
+
+- pki.webcrypto.subtle.importKey now rejects a raw or JWK AES key whose length is not 128, 192, or 256 bits as a webcrypto/data DataError at import, rather than returning a CryptoKey that only fails at first use. Covers AES-GCM, AES-CBC, AES-CTR, and AES-KW; HMAC, HKDF, and PBKDF2 keys are unaffected.
+- The README capability table and the documentation site render the certificate-inspection entry correctly: an inline code span containing pipe characters no longer breaks the surrounding table into misaligned columns.
+
 ## v0.2.7 — 2026-07-13
 
 pki.webcrypto rejects an imported key whose type disagrees with its algorithm, and reports every cipher fault as a typed error.

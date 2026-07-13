@@ -64,7 +64,12 @@ function _inline(text, opts) {
 
 function _splitRow(line) {
   var t = line.trim().replace(/^\|/, "").replace(/\|$/, "");
-  return t.split("|").map(function (c) { return c.trim(); });
+  // Split on UNESCAPED pipes only: a `\|` is a literal pipe in the cell content
+  // (GFM sec. 4.10, e.g. an inline `f(a \| b)` code span), not a column
+  // delimiter. Then unescape it so the cell renders the pipe. A naive
+  // split("|") would shatter such a cell into phantom columns and leak the
+  // backslash, mangling the whole table.
+  return t.split(/(?<!\\)\|/).map(function (c) { return c.replace(/\\\|/g, "|").trim(); });
 }
 
 function render(md, opts) {

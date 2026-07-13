@@ -111,6 +111,12 @@ async function run() {
     var overview = await _get(port, "/overview");
     check("GET /overview -> 200", overview.status === 200);
     check("overview renders the README table (What ships)", overview.body.indexOf("<table>") !== -1);
+    // A table cell whose inline code carries an escaped pipe (`certificate(pem \| der \| parsed)`)
+    // must render as ONE cell with the pipe as content -- a naive split("|") would shatter it
+    // into phantom columns, mangling the whole table with a wide blank gap.
+    check("overview renders an escaped-pipe code span intact (not shattered)",
+      overview.body.indexOf("certificate(pem | der | parsed)") !== -1);
+    check("overview leaks no stray table-escape backslash", overview.body.indexOf("(pem \\|") === -1);
     check("overview renders fenced code", overview.body.indexOf("<pre><code>") !== -1);
     check("overview rewrites the logo asset to the wiki route", overview.body.indexOf('src="/pkijs-logo.png"') !== -1);
     check("overview rewrites a repo-relative .md link to GitHub", overview.body.indexOf("github.com/blamejs/pki/blob/main/ROADMAP.md") !== -1);
@@ -176,6 +182,13 @@ async function run() {
     check("CSP carries no unsafe-inline", homeCsp.indexOf("unsafe-inline") === -1);
     check("CSP style-src is self only", homeCsp.indexOf("style-src 'self';") !== -1);
     check("CSP admits the page's JSON-LD by hash", /script-src 'self' 'sha256-[A-Za-z0-9+/=]+'/.test(homeCsp));
+    // img-src must admit every README badge host, including OpenSSF Best Practices
+    // (bestpractices.dev), or the /overview page shows a broken badge image.
+    check("CSP img-src admits the OpenSSF Best Practices badge host", homeCsp.indexOf("https://www.bestpractices.dev") !== -1);
+    // permissions-policy carries no deprecated interest-cohort token (FLoC is retired;
+    // the token now only draws a console warning).
+    check("permissions-policy drops the deprecated interest-cohort token",
+      String(home.headers["permissions-policy"]).indexOf("interest-cohort") === -1);
     check("home carries WebSite JSON-LD", home.body.indexOf('"@type":"WebSite"') !== -1);
 
     // ---- Conditional GET: If-None-Match answers 304 with no body ----

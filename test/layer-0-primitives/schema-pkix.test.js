@@ -401,6 +401,24 @@ function testAlgParamsMustBeAbsent() {
     code(function () { schema.walk(IMPL, asn1.decode(slhImpl), NS); }) === "path/bad-algorithm-parameters");
 }
 
+// The params-must-be-absent rejection renders the OID's friendly name when it
+// has one; for an OID a (custom/partial) registry marks params-absent but does
+// NOT name, the message falls back to the raw dotted OID -- the reject is still
+// the typed <prefix>/bad-algorithm-parameters verdict, never the literal
+// "undefined" a nameless lookup would otherwise splice in.
+function testAlgParamsAbsentNamelessOid() {
+  var namelessOid = { paramsMustBeAbsent: function () { return true; }, name: function () { return undefined; }, byName: oid.byName };
+  var FNS = pkix.makeNS("path", errors.PathError, namelessOid);
+  var ALG = pkix.algorithmIdentifier(FNS);
+  var withParams = b.sequence([b.oid("1.2.3.4"), b.nullValue()]);
+  var err = null;
+  try { schema.walk(ALG, asn1.decode(withParams), FNS); }
+  catch (e) { err = e; }
+  check("alg params-must-be-absent, nameless OID: rejects and renders the dotted OID (not 'undefined')",
+    !!err && err.code === "path/bad-algorithm-parameters" &&
+    err.message.indexOf("1.2.3.4") !== -1 && err.message.indexOf("undefined") === -1);
+}
+
 // ---------------------------------------------------------------------------
 // pemDecode strictness (RFC 7468 sec. 3; RFC 4648 sec. 3.5 canonical base64)
 // ---------------------------------------------------------------------------
@@ -565,6 +583,13 @@ function testCoerceAndDecodeRoot() {
   // length is rejected by the strict DER decoder).
   check("decodeRoot: undecodable DER -> <prefix>/bad-der",
     code(function () { pkix.decodeRoot(Buffer.from([0x30, 0x80, 0x00, 0x00]), { ErrorClass: errors.PathError, prefix: "path", what: "test" }); }) === "path/bad-der");
+  // With `what` omitted the message falls back to the "input" label (the default
+  // subject noun) while the typed <prefix>/bad-der verdict is unchanged.
+  var eNoWhat = null;
+  try { pkix.decodeRoot(Buffer.from([0x30, 0x80, 0x00, 0x00]), { ErrorClass: errors.PathError, prefix: "path" }); }
+  catch (e) { eNoWhat = e; }
+  check("decodeRoot: omitted `what` falls back to the \"input\" label, still <prefix>/bad-der",
+    !!eNoWhat && eNoWhat.code === "path/bad-der" && /^input DER did not decode:/.test(eNoWhat.message));
 }
 
 // ---------------------------------------------------------------------------
@@ -792,6 +817,7 @@ function run() {
   testCrlDistributionPoints();
   testGeneralNameDecodedValue();
   testAlgParamsMustBeAbsent();
+  testAlgParamsAbsentNamelessOid();
   testPemDecodeStrictness();
   testPemDecodeAll();
   testPemEncodeLabel();

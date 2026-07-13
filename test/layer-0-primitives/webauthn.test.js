@@ -551,6 +551,80 @@ async function run() {
   var ed4Res = await pki.webauthn.verify(_ed4Att, packedHash);
   check("verify: a valid Ed448 self-attestation verifies (Self)",
     ed4Res.verified === true && ed4Res.fmt === "packed" && ed4Res.attestationType === "Self");
+
+  // ---- authenticatorData bounded reader: the sub-37-byte + ED-happy paths -----------
+  // sec. 6.1 -- a well-formed attestation object whose authData byte string is under the
+  // 37-byte minimum is rejected by the bounded reader's length gate (a valid CBOR envelope,
+  // so the length check -- not the CBOR decode -- is the rejecting step).
+  check("parse: a <37-byte authData -> webauthn/bad-auth-data (minimum-length gate)",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.alloc(10))); }) === "webauthn/bad-auth-data");
+  // sec. 6.1 -- with the ED flag set and the remainder a single well-formed CBOR map,
+  // authenticatorData parses and surfaces the raw extensions bytes (an empty map 0xa0 is a
+  // valid extensions block). This is the ED-set happy path (the reject arms are pinned above).
+  var _edFlagCose = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
+  var _edFlagParsed = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ ed: true, coseKey: _edFlagCose, trailing: Buffer.from([0xa0]) })));
+  check("parse: ED flag set with a valid CBOR-map extensions block surfaces the raw extensions",
+    _edFlagParsed.authData.flags.ed === true && Buffer.isBuffer(_edFlagParsed.authData.extensions));
+
+  // ---- apple leaf certificate-key comparison: RSA + OKP arms (WebAuthn 8.8 item 30) --
+  // An RSA credential key + an apple leaf whose SPKI carries a MALFORMED RSAPublicKey drives
+  // the RSA arm of the certificate-key == credential-key check: the leaf key material is
+  // decoded (an undecodable body; a non-{INTEGER,INTEGER} SEQUENCE) and, either way, cannot
+  // equal the credential key -> webauthn/key-mismatch (fail-closed, never a raw throw).
+  var _rsaKp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var _rsaJwk = _rsaKp.publicKey.export({ format: "jwk" });
+  var _rsaCose = coseKey([cKV(1, cInt(3)), cKV(3, cInt(-257)), cKV(-1, cBytes(Buffer.from(_rsaJwk.n, "base64url"))), cKV(-2, cBytes(Buffer.from(_rsaJwk.e, "base64url")))]);
+  var _rsaAuth = buildAuthData({ coseKey: _rsaCose });
+  var _rsaNonce = nonceExtFor(_rsaAuth, packedHash);
+  function _rsaSpki(bodyNode) { return _B.sequence([_B.sequence([_B.oid(_oidName("rsaEncryption")), _B.nullValue()]), _B.bitString(bodyNode)]); }
+  check("verify: apple leaf RSA key with an undecodable key body -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_rsaSpki(Buffer.from([0x01])), _rsaNonce), _rsaAuth), packedHash); })) === "webauthn/key-mismatch");
+  check("verify: apple leaf RSA key that is not SEQUENCE{modulus, exponent} -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_rsaSpki(_B.sequence([_B.integer(5n)])), _rsaNonce), _rsaAuth), packedHash); })) === "webauthn/key-mismatch");
+  // An OKP (Ed25519) credential key + an apple leaf carrying the SAME Ed25519 SPKI verifies
+  // (AnonCA); a DIFFERENT Ed25519 leaf key is a key-mismatch. Drives the kty===1 (OKP) arm of
+  // the certificate-key == credential-key comparison (a fixed-width byte-exact compare).
+  var _okpKp = crypto.generateKeyPairSync("ed25519");
+  var _okpX = Buffer.from(_okpKp.publicKey.export({ format: "jwk" }).x, "base64url");
+  var _okpCose = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(6)), cKV(-2, cBytes(_okpX))]);
+  var _okpAuth = buildAuthData({ coseKey: _okpCose });
+  var _okpNonce = nonceExtFor(_okpAuth, packedHash);
+  var _okpMatch = await pki.webauthn.verify(appleAtt(appleCert(_B.raw(_okpKp.publicKey.export({ format: "der", type: "spki" })), _okpNonce), _okpAuth), packedHash);
+  check("verify: apple leaf OKP key equal to the OKP credential key verifies (AnonCA)",
+    _okpMatch.verified === true && _okpMatch.fmt === "apple" && _okpMatch.attestationType === "AnonCA");
+  var _okpOtherSpki = crypto.generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" });
+  check("verify: apple leaf OKP key different from the OKP credential key -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_B.raw(_okpOtherSpki), _okpNonce), _okpAuth), packedHash); })) === "webauthn/key-mismatch");
+
+  // ---- tpm pubArea nameAlg + the TPM Name binding (WebAuthn 8.3) ---------------------
+  // Rebuild the real tpm KAT with ONLY the pubArea bytes altered. The AIK signs certInfo, not
+  // pubArea, and the key material lives in `unique` (the pubArea tail), so these edits keep
+  // the pubArea-key == credential-key binding and fail at the Name step instead.
+  function _tpmWithPubArea(newPub) {
+    var att = pki.webauthn.parseAttestationObject(attObj("tpm"));
+    var x5c = tpmField("x5c").children.map(function (c) { return pki.cbor.read.byteString(c); });
+    return attObjOf("tpm", [
+      [cText("ver"), cText("2.0")],
+      [cText("alg"), cInt(Number(pki.cbor.read.int(tpmField("alg"))))],
+      [cText("sig"), cBytes(pki.cbor.read.byteString(tpmField("sig")))],
+      [cText("certInfo"), cBytes(pki.cbor.read.byteString(tpmField("certInfo")))],
+      [cText("pubArea"), cBytes(newPub)],
+      [cText("x5c"), cArr(x5c.map(cBytes))],
+    ], att.authDataBytes);
+  }
+  var _realPub = pki.cbor.read.byteString(tpmField("pubArea"));
+  // pubArea nameAlg (bytes 2..4) set to TPM_ALG_NULL (0x0010), which carries no digest
+  // mapping: the TPM Name step refuses it before hashing pubArea (WebAuthn 8.3).
+  var _pubBadNameAlg = Buffer.from(_realPub); _pubBadNameAlg.writeUInt16BE(0x0010, 2);
+  check("verify: tpm pubArea with an unsupported nameAlg -> webauthn/bad-tpm",
+    (await codeOfAsync(function () { return pki.webauthn.verify(_tpmWithPubArea(_pubBadNameAlg), clientHash("tpm")); })) === "webauthn/bad-tpm");
+  // Flip an objectAttributes byte: the key material (in `unique`) is unchanged so the pubArea
+  // still binds to the credential key AND the certInfo.extraData check still holds, but
+  // H(pubArea) changes, so the certInfo attested Name no longer equals nameAlg || H(pubArea)
+  // (WebAuthn 8.3) -> webauthn/verify-failed.
+  var _pubPerturbed = Buffer.from(_realPub); _pubPerturbed[4] = _pubPerturbed[4] ^ 0x01;
+  check("verify: tpm certInfo attested Name != nameAlg||H(pubArea) -> webauthn/verify-failed",
+    (await codeOfAsync(function () { return pki.webauthn.verify(_tpmWithPubArea(_pubPerturbed), clientHash("tpm")); })) === "webauthn/verify-failed");
 }
 
 module.exports = { run: run };

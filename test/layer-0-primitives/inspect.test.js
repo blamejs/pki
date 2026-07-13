@@ -382,6 +382,43 @@ function run() {
   check("inspect: an absent signature value omits the Signature Value block",
     pki.inspect.certificate(mkParsed({ signatureValue: null })).indexOf("Signature Value:") < 0);
 
+  // An ecPublicKey SPKI whose algorithm carries NO curve parameters: decoding the
+  // absent parameters throws internally and is caught, so no curve name is resolved
+  // and the bit length is derived from the point -- no ASN1 OID line, no crash. (The
+  // unknown-curve vector above passes a valid-but-unregistered OID, which decodes
+  // without throwing; this drives the catch itself via genuinely absent parameters.)
+  var ecNoParams = pki.inspect.certificate(mkParsed({ subjectPublicKeyInfo: { algorithm: { name: "ecPublicKey" }, publicKey: Buffer.alloc(65, 0x04) } }));
+  check("inspect: an ecPublicKey with no curve parameters derives bits from the point",
+    /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(256 bit\)/.test(ecNoParams) && ecNoParams.indexOf("ASN1 OID:") < 0);
+
+  // An ecPublicKey with no public key at all (absent parameters + null key) renders a
+  // (0 bit) length and omits the pub block rather than dereferencing a missing point.
+  var ecNullPub = pki.inspect.certificate(mkParsed({ subjectPublicKeyInfo: { algorithm: { name: "ecPublicKey" }, publicKey: null } }));
+  check("inspect: an ecPublicKey with no public key renders (0 bit), no pub block",
+    /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(0 bit\)/.test(ecNullPub) && ecNullPub.indexOf("pub:") < 0);
+
+  // A basicConstraints with cA absent (BOOLEAN DEFAULT FALSE) renders CA:FALSE, not
+  // TRUE -- the fixture's own CA:TRUE constraints only exercise the TRUE arm.
+  check("inspect: basicConstraints with cA absent renders CA:FALSE",
+    /X509v3 Basic Constraints[^\n]*\n\s+CA:FALSE/.test(
+      pki.inspect.certificate(replaceExt("basicConstraints", b.sequence([b.oid(pki.oid.byName("basicConstraints")), b.octetString(b.sequence([]))])))));
+
+  // A policyConstraints carrying inhibitPolicyMapping [1] renders that line (the
+  // requireExplicitPolicy-only vector above exercises only the [0] field).
+  check("inspect: policyConstraints renders inhibitPolicyMapping",
+    /Inhibit Policy Mapping: 2/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("policyConstraints")), b.octetString(b.sequence([b.contextPrimitive(1, Buffer.from([0x02]))]))])))));
+
+  // A CRL DP fullName carrying a directoryName [4] entry -- one of the choices _gnRaw
+  // leaves as best-effort hex rather than one of its named DNS/URI/email/IP forms
+  // (the IP-in-fullName vector above covers the [7] named case). It must render as
+  // colon-hex, never leaking a raw DN byte that could inject a report line.
+  var dpDirName = b.sequence([b.contextConstructed(0, b.contextConstructed(0,
+    b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("fn-dir")])])]))))]);
+  var fnDir = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")), b.octetString(b.sequence([dpDirName]))])));
+  check("inspect: a CRL DP fullName directoryName renders best-effort hex, never raw",
+    /Full Name:\n\s+a4:13:30:11/.test(fnDir) && fnDir.indexOf("fn-dir") < 0);
+
   // --- Interop KAT: the decoded VALUES match the authoritative openssl decode
   // (any openssl version; value-level, not byte-exact). Skips if no openssl. ---
   var ossl = findOpenssl();

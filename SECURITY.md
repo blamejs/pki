@@ -134,7 +134,9 @@ security-only patches after the next major releases.
   under the wrong scheme. Every AES cipher fault fails closed with a typed
   `webcrypto/operation` — a tampered AES-GCM authentication tag, bad AES-CBC
   padding, a non-conforming AES-KW wrap length — rather than leaking a raw Node
-  exception across the API boundary.
+  exception across the API boundary. A raw or JWK AES key of an invalid length
+  (not 128, 192, or 256 bits) is rejected as a `webcrypto/data` DataError at
+  import, closing the gap where the failure was deferred to first use.
 - **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
   carries the root program's own constraints and `pki.path.validate` enforces
   them: a leaf issued after the root's per-purpose distrust date, or a purpose
