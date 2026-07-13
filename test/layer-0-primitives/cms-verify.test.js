@@ -219,19 +219,30 @@ async function testRsaPssParams() {
   check("RSA-PSS rebuilt standard params -> valid", ok1.valid === true);
   var ok2 = await pki.cms.verify(withPss(pssParams({ trailer: 1 })));
   check("RSA-PSS explicit trailerField 1 -> valid", ok2.valid === true);
+  // A real OpenSSL PSS SignedData signed with the ASN.1 DEFAULT saltLength (20, so the [2]
+  // field is omitted) verifies -- the default/declared salt length is honored, not pinned to
+  // the hash length.
+  var salt20 = await pki.cms.verify(fx("rsapss-salt20.p7s"));
+  check("RSA-PSS default (absent) saltLength honored -> valid", salt20.valid === true);
+  // A declared salt length that does not match how the signature was produced is HONORED
+  // (passed to WebCrypto) -- so it is a crypto verdict, false with no structural code, not a
+  // fail-closed unsupported rejection.
+  var wrongSalt = await pki.cms.verify(withPss(pssParams({ salt: 48 })));
+  check("RSA-PSS declared salt honored (mismatch -> crypto false)", wrongSalt.valid === false && wrongSalt.signers[0].ok === false && !wrongSalt.signers[0].code);
+  // A negative saltLength maps to OpenSSL's RSA_PSS_SALTLEN magic (AUTO accepts any salt) and
+  // is rejected fail-closed.
+  await rejects("RSA-PSS negative saltLength", function () { return pki.cms.verify(withPss(pssParams({ salt: -1 }))); }, "cms/unsupported-algorithm");
 
-  // Every deviation from the supported profile is a fail-closed unsupported-algorithm verdict,
-  // never verified under WebCrypto's own defaults.
+  // Every deviation from the supported PROFILE (hash / MGF / trailer) is a fail-closed
+  // unsupported-algorithm verdict, never verified under WebCrypto's own defaults.
   var cases = [
     ["absent params (rejected SHA-1 defaults)", null],
     ["non-SEQUENCE params", b.integer(5)],
     ["undecodable params", Buffer.from([0x30, 0x0a])],
     ["no hashAlgorithm field", pssParams({ noHash: true })],
     ["no maskGenAlgorithm field", pssParams({ noMgf: true })],
-    ["no saltLength field", pssParams({ noSalt: true })],
     ["unsupported hash (SHA-1)", pssParams({ hashOid: pki.oid.byName("sha1") })],
     ["hash AlgorithmIdentifier with non-NULL params", pssParams({ hashNonNull: true })],
-    ["saltLength != hash length", pssParams({ salt: 48 })],
     ["MGF not a SEQUENCE", pssParams({ mgfNotSeq: true })],
     ["MGF not MGF1", pssParams({ mgfOid: pki.oid.byName("sha256") })],
     ["MGF1 hash != signature hash", pssParams({ mgfHashOid: pki.oid.byName("sha384") })],
