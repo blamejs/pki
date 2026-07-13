@@ -104,7 +104,11 @@ async function testBadInput() {
   await rejects("TSA cert a bad type", function () { return pki.tsp.sign(imprint("sha256"), { cert: 123, key: tsa.key }, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("TSA cert a non-CERTIFICATE PEM", function () { return pki.tsp.sign(imprint("sha256"), { cert: "-----BEGIN X-----\nAA\n-----END X-----", key: tsa.key }, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("unsupported certHashAlgorithm", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, certHashAlgorithm: "md5" }); }, "tsp/unsupported-algorithm");
-  await rejects("Accuracy micros out of range", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { micros: -1 } }); }, "tsp/bad-input");
+  // Accuracy millis/micros MUST be 1..999 (RFC 3161 sec. 2.4.2); seconds must be non-negative.
+  await rejects("Accuracy micros below 1", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { micros: -1 } }); }, "tsp/bad-input");
+  await rejects("Accuracy millis above 999", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { millis: 1000 } }); }, "tsp/bad-input");
+  await rejects("Accuracy millis zero", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { millis: 0 } }); }, "tsp/bad-input");
+  await rejects("Accuracy seconds negative", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { seconds: -1 } }); }, "tsp/bad-input");
   await rejects("no options at all", function () { return pki.tsp.sign(imprint("sha256"), tsa); }, "tsp/bad-input");
   await rejects("a null messageImprint", function () { return pki.tsp.sign(null, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
 }

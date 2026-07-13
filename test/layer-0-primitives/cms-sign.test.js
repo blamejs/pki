@@ -147,6 +147,8 @@ async function testBadInput() {
   await rejects("options not an object", function () { return pki.cms.sign(CONTENT, s, "nope"); }, "cms/bad-input");
   await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
+  // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).
+  await rejects("signedAttributes:false with a non-data eContentType", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { eContentType: "tSTInfo", signedAttributes: false }); }, "cms/bad-input");
   await rejects("signer without a cert", function () { return pki.cms.sign(CONTENT, { key: s.key }); }, "cms/bad-input");
   await rejects("signer cert a bad type", function () { return pki.cms.sign(CONTENT, { cert: 12345, key: s.key }); }, "cms/bad-input");
   await rejects("signer key a bad type", function () { return pki.cms.sign(CONTENT, { cert: s.cert, key: 12345 }); }, "cms/bad-input");
