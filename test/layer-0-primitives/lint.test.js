@@ -148,6 +148,10 @@ function run() {
   // it is skipped -- not false-flagged against the dNSName list.
   check("an IP-literal CN does NOT flag cn-not-in-san",
     !has(pki.lint.certificate(makeCert({ subject: dnCN("192.0.2.1"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("example.com")], false), aki()] })), "lint/cabf-tls/cn-not-in-san"));
+  // A colon-bearing CN that is NOT a valid IPv6 literal ("api:443") is not an IP, so it is
+  // checked as a hostname against the SAN dNSNames -> cn-not-in-san fires (not skipped).
+  check("a non-IP colon CN (api:443) is checked, not skipped -> cn-not-in-san",
+    has(pki.lint.certificate(makeCert({ subject: dnCN("api:443"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("other.example")], false), aki()] })), "lint/cabf-tls/cn-not-in-san"));
   check("a dNSName with an underscore -> dnsname-bad-syntax (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("bad_host.example"), exts: [eku(["serverAuth"]), san([dnsName("bad_host.example")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
   // eku-missing-serverauth only fires under an EXPLICIT cabf-tls profile selection.
@@ -223,6 +227,10 @@ function run() {
     has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName(".example.com")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
   check("a dNSName with an internal empty label -> dnsname-bad-syntax",
     has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("a..b.example")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
+  check("a dNSName with a non-LDH character -> dnsname-bad-syntax",
+    has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("exa$mple.com")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
+  check("a leftmost-wildcard dNSName is well-formed (not flagged)",
+    !has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("*.example.com")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
   // A serial whose value has its high bit set carries a DER 0x00 sign pad; the octet COUNT
   // must strip it, so a 20-value-octet serial does NOT trip serial-too-long (covers the strip).
   var SERIAL_20_HIGHBIT = b.integer(BigInt("0x80" + "00".repeat(19)));
@@ -257,6 +265,16 @@ function run() {
   var badModulusSpki = b.sequence([rsaNode.children[0].bytes, b.bitString(Buffer.from([0xde, 0xad, 0xbe, 0xef]), 0)]);
   check("an RSA key with an unreadable modulus -> weak-key (fail-closed)",
     has(pki.lint.certificate(tlsKeyCert(badModulusSpki)), "lint/cabf-tls/weak-key"));
+  // A negative RSA modulus (a high-bit key mis-encoded without a sign pad) is malformed --
+  // it must fail closed, not be sized by absolute value into a passing >= 2048.
+  var rsaHdr = rsaNode.children[0].bytes;
+  var negModSpki = b.sequence([rsaHdr, b.bitString(b.sequence([b.integer(-(1n << 2047n)), b.integer(65537n)]), 0)]);
+  check("a negative RSA modulus -> weak-key (not abs-valued into a pass)",
+    has(pki.lint.certificate(tlsKeyCert(negModSpki)), "lint/cabf-tls/weak-key"));
+  // An RSAPublicKey missing the exponent is malformed -> weak-key.
+  var noExpSpki = b.sequence([rsaHdr, b.bitString(b.sequence([b.integer((1n << 2047n) | 1n)]), 0)]);
+  check("an RSA key missing the exponent -> weak-key (fail-closed)",
+    has(pki.lint.certificate(tlsKeyCert(noExpSpki)), "lint/cabf-tls/weak-key"));
 
   // unknown-critical-extension is registry-driven: a critical extension the OID registry
   // RECOGNIZES (e.g. policyMappings) is NOT flagged; only an unregistered OID is.
