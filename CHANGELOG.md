@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.12 — 2026-07-13
+
+pki.ct.verifySct verifies a Signed Certificate Timestamp's signature against a Certificate Transparency log's public key.
+
+### Added
+
+- pki.ct.verifySct(entry, sct, logPublicKey) verifies a Signed Certificate Timestamp's signature against a CT log's public key (RFC 6962 section 3.2), composing pki.ct.reconstructSignedData, the shared ECDSA-Sig-Value conformance gate, and pki.webcrypto. Resolves true/false on the cryptographic verdict; throws a typed CtError on a structural fault.
+
 ## v0.2.11 — 2026-07-13
 
 The pki command-line tool gains inspect, lint, convert, and verify -- front-ends over the certificate inspector, the linter, the PEM codecs, and RFC 5280 path validation.

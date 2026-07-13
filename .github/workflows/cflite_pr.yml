@@ -53,6 +53,7 @@ jobs:
           - pkcs12-parse
           - cmp-parse
           - ct-parse
+          - ct-verify
           - merkle-verify
           - smime-parse
           - pkix-ext-parse
