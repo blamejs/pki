@@ -74,9 +74,12 @@ function readDer(file) {
   var bytes = readFileBytes(file);
   try { pki.asn1.decode(bytes); return { der: bytes, label: null }; }
   catch (_derErr) { /* not a single well-formed DER structure -- try PEM */ }
-  var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(bytes.toString("latin1"));
+  // Match the library's PEM grammar exactly (an uppercase A-Z0-9 label, and ONLY CR/LF/TAB/
+  // space ignored in the body -- not every JS whitespace), so convert is not a looser
+  // validation path than the codecs it composes.
+  var m = /-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(bytes.toString("latin1"));
   if (!m) return fail(file + ": input is neither a well-formed DER structure nor a PEM block");
-  var b64 = m[2].replace(/[\s]+/g, "");
+  var b64 = m[2].replace(/[\r\n\t ]+/g, "");
   // Enforce CANONICAL base64 (RFC 4648 sec. 3.5), matching the library's fail-closed PEM
   // policy: Node's decoder silently drops invalid characters and tolerates non-canonical
   // trailing pad bits. Gate alphabet/length, then require that re-encoding reproduces the body.
@@ -163,6 +166,9 @@ function cmdConvert(args) {
   try { pki.asn1.decode(input.der); } catch (e) { return fail("input is not well-formed DER: " + (e.code || e.message)); }
   if (to === "der") { process.stdout.write(input.der); return; }
   var label = args.label || input.label || "CERTIFICATE";
+  // The armor label must be re-readable by the library's PEM grammar (uppercase A-Z0-9 words,
+  // single spaces) -- reject a lowercase/invalid label rather than emit an unparseable file.
+  if (!/^[A-Z0-9]+( [A-Z0-9]+)*$/.test(label)) return fail("convert: --label must be an uppercase A-Z0-9 label with single spaces (RFC 7468)");
   var b64 = input.der.toString("base64").replace(/(.{1,64})/g, "$1\n");
   process.stdout.write("-----BEGIN " + label + "-----\n" + b64 + "-----END " + label + "-----\n");
 }

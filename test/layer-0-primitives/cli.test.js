@@ -146,6 +146,13 @@ function run() {
     var nonCanon = path.join(tmp, "noncanon.pem");
     fs.writeFileSync(nonCanon, "-----BEGIN CERTIFICATE-----\nAB==\n-----END CERTIFICATE-----\n");
     check("pki convert rejects non-canonical PEM base64 (non-zero exit)", cli(["convert", nonCanon, "--to", "der"]).status !== 0);
+    // A form-feed in the PEM body is not library-ignored whitespace (only CR/LF/TAB/space
+    // are), so convert must reject it -- it composes the PEM codecs, not a looser path.
+    var ffPem = path.join(tmp, "ff.pem");
+    fs.writeFileSync(ffPem, "-----BEGIN CERTIFICATE-----\nMIIB" + String.fromCharCode(12) + "AA==\n-----END CERTIFICATE-----\n");
+    check("pki convert rejects a form-feed in the PEM body (non-zero exit)", cli(["convert", ffPem, "--to", "der"]).status !== 0);
+    // A lowercase / invalid --label is rejected rather than emitted into an unparseable file.
+    check("pki convert rejects a lowercase --label (non-zero exit)", cli(["convert", derPath, "--to", "pem", "--label", "certificate"]).status !== 0);
 
     // ---- verify ----
     var vOk = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--time", "2030-01-01T00:00:00Z"]);
