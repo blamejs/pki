@@ -158,6 +158,7 @@ function ocspRequest(o) {
 function rawCert() { return b.sequence([b.oid("1.2.3"), b.integer(1n)]); }
 
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); } }
+function errOf(fn) { try { fn(); return null; } catch (e) { return e; } }
 function parseReqCode(der) { return code(function () { pki.schema.ocsp.parseRequest(der); }); }
 function parseRespCode(der) { return code(function () { pki.schema.ocsp.parseResponse(der); }); }
 function parseReq(der) { return pki.schema.ocsp.parseRequest(der); }
@@ -209,6 +210,21 @@ function testAcceptRequest() {
   // 4f. requestorName as directoryName [4] EXPLICIT Name (a valid constructed GeneralName) -> accept.
   check("4f. directoryName requestorName accepted",
     parseReqCode(ocspRequest({ tbs: tbsRequest({ requestorName: b.explicit(4, name("Requestor CA")) }), optionalSignature: signature({}) }).der) === "NO-THROW");
+
+  // 4j. per-Request singleRequestExtensions [0] EXPLICIT Extensions (RFC 6960 sec. 4.1.1)
+  //     -- the Request-level extension surface, distinct from the tbs-level
+  //     requestExtensions [2]. The same nonce syntax rule is applied here, so the
+  //     decoded nonce is surfaced on the Request's own extension list.
+  var sreqExt = ocspRequest({ tbs: tbsRequest({ requestList: [request({ singleRequestExtensions: extensions([nonceExt([1, 2, 3])]) })] }) });
+  var msreqExt = parseReq(sreqExt.der);
+  check("4j. Request singleRequestExtensions nonce named",
+    Array.isArray(msreqExt.requestList[0].singleRequestExtensions) && msreqExt.requestList[0].singleRequestExtensions[0].name === "ocspNonce");
+  check("4j. Request singleRequestExtensions nonce decoded bytes surfaced",
+    msreqExt.requestList[0].singleRequestExtensions[0].nonce.equals(Buffer.from([1, 2, 3])));
+  // 4k. the nonce syntax rule binds the singleRequestExtensions surface too: a
+  //     non-OCTET-STRING nonce payload placed there is still rejected (no surface dodge).
+  check("4k. malformed nonce in singleRequestExtensions rejected",
+    parseReqCode(ocspRequest({ tbs: tbsRequest({ requestList: [request({ singleRequestExtensions: extensions([nonceExtRaw(b.integer(5n))]) })] }) }).der) === "ocsp/bad-nonce");
 
   // The pem surface: pemDecode returns the exact DER inside the armor and
   // enforces the requested label.
@@ -348,6 +364,14 @@ function testNonceSyntax() {
   check("44c. 128-octet nonce accepted (the RFC 9654 upper bound)", parseReqCode(reqWithNonce(nonceExt(new Array(128).fill(7)))) === "NO-THROW");
   // The extnValue content must itself be a primitive OCTET STRING.
   check("44d. non-OCTET-STRING nonce payload rejected", parseReqCode(reqWithNonce(nonceExtRaw(b.integer(5n)))) === "ocsp/bad-nonce");
+  // 44g. the nonce extnValue content is not decodable DER at all (an OCTET STRING
+  //      TLV whose declared length overruns its buffer). This reaches the decode
+  //      wrapper's catch -- a distinct path from the OCTET-STRING tag check above --
+  //      which reports ocsp/bad-nonce naming the decode failure, never swallowing it.
+  var undecodableNonce = nonceExtRaw(Buffer.from([0x04, 0x05])); // OCTET STRING, length 5, zero content
+  check("44g. undecodable nonce payload rejected", parseReqCode(reqWithNonce(undecodableNonce)) === "ocsp/bad-nonce");
+  var undecodableErr = errOf(function () { parseReq(reqWithNonce(undecodableNonce)); });
+  check("44g. undecodable nonce reports the decode-failure reason", undecodableErr !== null && /did not decode/.test(undecodableErr.message));
   // The same syntax rule binds the response side (responseExtensions carry the
   // server's echoed nonce) and single-response extensions.
   var badRespNonce = basicOcspResponse(basicResponse({ tbs: responseData({ responseExtensions: extensions([nonceExtRaw(b.integer(5n))]) }) }));
@@ -392,6 +416,32 @@ function testDispatch() {
   var multi = ocspResponse({ status: 4, responseBytes: responseBytes(ID_PKIX_OCSP_BASIC, basicResponse({ tbs: responseData({ responderID: b.contextConstructed(3, name("X")) }) }).der) });
   var c43 = parseRespCode(multi);
   check("43. multi-defect fail-closed (typed reject)", c43 !== "NO-THROW" && c43.indexOf("RAW:") !== 0);
+
+  // 45. DETECTOR EXCLUSIVITY (matchesResponse): the ocsp-response detector accepts a
+  //     SEQUENCE of 1-2 that LEADS WITH an ENUMERATED, but a 2-child variant whose
+  //     second child is not the [0] EXPLICIT responseBytes wrapper is NOT an
+  //     OCSPResponse -- it falls through to schema/unknown-format, never mis-routed.
+  check("45a. ENUMERATED-led 2-child with non-[0] second child not routed to ocsp",
+    code(function () { pki.schema.parse(b.sequence([b.enumerated(0), b.integer(1n)])); }) === "schema/unknown-format");
+  //     ...while the 1-child form (a non-successful status with no responseBytes) still
+  //     routes to ocsp-response through the orchestrator.
+  var bareStatus = pki.schema.parse(b.sequence([b.enumerated(3)]));
+  check("45b. bare ENUMERATED status (1 child) routes to ocsp-response",
+    bareStatus && bareStatus.responseStatus.name === "tryLater" && bareStatus.responseBytes === null);
+
+  // 46. DETECTOR EXCLUSIVITY (matchesRequest): the ocsp-request detector accepts a
+  //     SEQUENCE of 1-2 whose first child is the tbsRequest SEQUENCE, but a 2-child
+  //     variant whose second child is not the [0] EXPLICIT signature wrapper is NOT an
+  //     OCSPRequest -- it falls through to schema/unknown-format.
+  check("46. SEQUENCE-led 2-child with non-[0] second child not routed to ocsp",
+    code(function () { pki.schema.parse(b.sequence([b.sequence([b.oid("1.2.3")]), b.integer(1n)])); }) === "schema/unknown-format");
+  //     ...and a genuine SIGNED request (2-child, second child IS the [0] EXPLICIT
+  //     signature) routes to ocsp-request -- the detector confirms the wrapper rather
+  //     than rejecting the two-child form outright.
+  var signedReq = ocspRequest({ tbs: tbsRequest({ requestorName: rfc822("ocsp@ca.example") }), optionalSignature: signature({}) });
+  var routedSigned = pki.schema.parse(signedReq.der);
+  check("46b. signed request (2 children) routes to ocsp-request",
+    routedSigned && Array.isArray(routedSigned.requestList) && routedSigned.optionalSignature !== null);
 }
 
 // ---- REJECT — EXPLICIT-wrapper / position / codec-leaf edges ---------

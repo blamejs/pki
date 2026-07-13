@@ -470,6 +470,37 @@ function testWalkers() {
   }) === "crmf/bad-version");
 }
 
+// ---- branch coverage: Name/validity/POP/control edge arms -----------
+function testBranchCoverage() {
+  // Empty IMPLICIT issuer [3]: a [tag]-constructed node with ZERO children is a
+  // valid empty RDNSequence (an empty DN), taken by the length===0 arm — distinct
+  // from the SET-led IMPLICIT and single-SEQUENCE EXPLICIT arms.
+  var emptyIssuer = certTemplate({ issuerNode: b.contextConstructed(3, Buffer.alloc(0)), subject: "s", publicKey: { alg: RSA_ENC } });
+  var iss = parse(one({ certReq: { templateNode: emptyIssuer } })).messages[0].certReq.certTemplate.issuer;
+  check("empty IMPLICIT issuer [3] -> empty RDNSequence (dn '')", iss !== null && iss.dn === "" && iss.rdns.length === 0);
+
+  // issuer [3] constructed but the first inner element is neither a universal SET
+  // (IMPLICIT arm) nor a single universal SEQUENCE (EXPLICIT arm): fails closed.
+  check("issuer [3] wrapping a universal INTEGER child rejected", parseCode(one({ certReq: { templateNode: certTemplate({ issuerNode: b.contextConstructed(3, b.integer(1)) }) } })) === "crmf/bad-name");
+  check("issuer [3] wrapping two universal SEQUENCE children rejected", parseCode(one({ certReq: { templateNode: certTemplate({ issuerNode: b.contextConstructed(3, Buffer.concat([rdnSeq("a"), rdnSeq("b")])) }) } })) === "crmf/bad-name");
+
+  // OptionalValidity with exactly one of the two times present (§5 requires >=1):
+  // the absent side surfaces null (each ternary's false arm).
+  var nbOnly = parse(one({ certReq: { templateNode: certTemplate({ validity: { nb: "2026-01-01T00:00:00Z" }, subject: "s", publicKey: { alg: RSA_ENC } }) } })).messages[0].certReq.certTemplate.validity;
+  check("validity notBefore-only -> notAfter null", nbOnly.notBefore instanceof Date && nbOnly.notAfter === null);
+  var naOnly = parse(one({ certReq: { templateNode: certTemplate({ validity: { na: "2027-01-01T00:00:00Z" }, subject: "s", publicKey: { alg: RSA_ENC } }) } })).messages[0].certReq.certTemplate.validity;
+  check("validity notAfter-only -> notBefore null", naOnly.notBefore === null && naOnly.notAfter instanceof Date);
+
+  // subsequentMessage [1] whose content is not a well-formed INTEGER (non-minimal
+  // encoding) is rejected by the integer read, not the {0,1} range check.
+  check("subsequentMessage [1] non-minimal INTEGER content rejected", parseCode(one({ popo: popoKeyEnc(b.contextPrimitive(1, Buffer.from([0x00, 0x00]))) })) === "crmf/bad-popo");
+
+  // A control / regInfo AttributeTypeAndValue with an UNREGISTERED type OID
+  // surfaces name === null (the oid-registry lookup returns undefined).
+  var unk = parse(one({ certReq: { controls: [control("1.2.3.4.5.6.7", b.octetString(Buffer.from([0x01])))] } })).messages[0].certReq.controls[0];
+  check("control with an unknown OID -> name null, raw value surfaced", unk.name === null && unk.type === "1.2.3.4.5.6.7" && Buffer.isBuffer(unk.value));
+}
+
 // ---- runner ----------------------------------------------------------
 testAcceptMinimal();
 testWalkers();
@@ -492,6 +523,7 @@ testRejectPositionSize();
 testDispatch();
 testEncodeRoundTrip();
 testInputCoercion();
+testBranchCoverage();
 
 if (require.main === module) console.log("CHECKS " + helpers.getChecks());
 module.exports = {};

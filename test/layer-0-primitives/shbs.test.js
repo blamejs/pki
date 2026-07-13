@@ -112,6 +112,47 @@ function testMalformed() {
   check("HSS signature with a mutated inner LMS typecode -> false", pki.shbs.verify(hp, hm, hs) === false);
 }
 
+// -- structural bounds: each fail-closed length/typecode guard reached on the
+//    SHIPPED consumer path, asserting the typed verdict (never a raw throw) ----
+function testStructuralBounds() {
+  var v = readFixture("acvp-lms-sigver.json");
+  var good = v.filter(function (t) { return t.testPassed; })[0];
+  var pub = hx(good.publicKey), msg = hx(good.message), sig = hx(good.signature);
+
+  // A valid LMS typecode paired with an UNKNOWN LM-OTS typecode (bytes 4..7):
+  // the OTS typecode is a second registry authority, so an unrecognized value is
+  // shbs/unsupported-parameter-set -- resolved AFTER the LMS typecode, so this
+  // is a distinct guard from the unknown-LMS-typecode case above.
+  var badOtsPub = Buffer.from(pub); badOtsPub.writeUInt32BE(0x000000FF, 4);
+  check("LMS public key with unknown LM-OTS typecode -> shbs/unsupported-parameter-set",
+    codeOf(function () { pki.shbs.verifyLms(badOtsPub, msg, sig); }) === "shbs/unsupported-parameter-set");
+
+  // Valid typecodes but a wrong TOTAL length (one byte short of the exact 24+m):
+  // the LMS public-key exact-length gate -> shbs/bad-public-key.
+  var shortPub = pub.subarray(0, pub.length - 1);
+  check("LMS public key of wrong exact length -> shbs/bad-public-key",
+    codeOf(function () { pki.shbs.verifyLms(shortPub, msg, sig); }) === "shbs/bad-public-key");
+
+  // An LMS signature shorter than 8 bytes cannot hold q + the OTS typecode; the
+  // length precheck fails closed -> shbs/bad-signature (before any field read).
+  check("LMS signature shorter than 8 bytes -> shbs/bad-signature",
+    codeOf(function () { pki.shbs.verifyLms(pub, msg, sig.subarray(0, 4)); }) === "shbs/bad-signature");
+
+  // An HSS public key shorter than 4 bytes cannot hold the level count L; the
+  // top-level HSS precheck fails closed -> shbs/bad-public-key.
+  check("HSS public key shorter than 4 bytes -> shbs/bad-public-key",
+    codeOf(function () { pki.shbs.verify(Buffer.alloc(3), msg, sig); }) === "shbs/bad-public-key");
+
+  // A multi-level HSS (L=2) whose top LMS key is under 8 bytes: the per-level
+  // signature-length computation fails closed -> shbs/bad-public-key, never a
+  // raw RangeError from an unbounded read of a truncated inner key. Nspk+1 == L
+  // clears the level-count gate so control reaches the length computation.
+  var pubL2 = Buffer.alloc(8); pubL2.writeUInt32BE(2, 0);   // L=2, then a 4-byte top LMS key
+  var sigN1 = Buffer.alloc(4); sigN1.writeUInt32BE(1, 0);   // Nspk=1 (Nspk+1 == L)
+  check("HSS top-level LMS key under 8 bytes -> shbs/bad-public-key",
+    codeOf(function () { pki.shbs.verify(pubL2, msg, sigN1); }) === "shbs/bad-public-key");
+}
+
 // -- OID registry + params-absent seed ---------------------------------------
 function testOid() {
   check("id-alg-hss-lms-hashsig round-trips", pki.oid.byName("id-alg-hss-lms-hashsig") === "1.2.840.113549.1.9.16.3.17"
@@ -127,6 +168,7 @@ function run() {
   testRfcAppendixF();
   testAcvpLmsSigVer();
   testMalformed();
+  testStructuralBounds();
 }
 
 module.exports = { run: run };
