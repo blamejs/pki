@@ -474,6 +474,15 @@ async function testVerifySct() {
   // A negative RSA modulus is malformed -- fail closed, not sized by absolute value.
   var negRsa = b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(b.sequence([b.integer(-(1n << 2047n)), b.integer(65537n)]), 0)]);
   check("90. verifySct rejects a negative RSA modulus (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, negRsa); })) === "ct/bad-input");
+  // A small (e=1) or even RSA public exponent makes RSASSA-PKCS1-v1_5 forgeable -> rejected.
+  var rsaOid = pki.oid.byName("rsaEncryption"), bigMod = b.integer((1n << 2047n) | 1n);
+  var e1Rsa = b.sequence([b.sequence([b.oid(rsaOid), b.nullValue()]), b.bitString(b.sequence([bigMod, b.integer(1n)]), 0)]);
+  check("91. verifySct rejects a forgeable RSA exponent e=1 (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, e1Rsa); })) === "ct/bad-input");
+  var eEvenRsa = b.sequence([b.sequence([b.oid(rsaOid), b.nullValue()]), b.bitString(b.sequence([bigMod, b.integer(4n)]), 0)]);
+  check("92. verifySct rejects an even RSA exponent (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, eEvenRsa); })) === "ct/bad-input");
+  // A well-formed RSA key with a missing exponent (1-element RSAPublicKey) -> bad-input.
+  var noExpRsa = b.sequence([b.sequence([b.oid(rsaOid), b.nullValue()]), b.bitString(b.sequence([bigMod]), 0)]);
+  check("93. verifySct rejects an RSAPublicKey missing its exponent (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, noExpRsa); })) === "ct/bad-input");
 }
 
 async function run() {
