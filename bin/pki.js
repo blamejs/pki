@@ -47,30 +47,27 @@ function parseArgs(argv) {
 }
 
 // Read a DER/PEM file and return its DER bytes (+ the PEM label when the input was PEM).
-// A PEM armor is stripped generically (any label) so the four format-agnostic commands do
-// not need to know the structure; a raw DER file is returned as-is.
+// Detection is DER-first and unambiguous: a well-formed DER file decodes as one TLV, while
+// a PEM file is ASCII text that never does -- so this cannot misclassify a DER value whose
+// CONTENT contains the PEM marker or leading-whitespace bytes, nor miss a PEM that carries a
+// BOM / explanatory preamble before its armor. A raw DER file is returned as-is; a PEM armor
+// is stripped generically (any label) so the format-agnostic commands need not know the type.
 function readInput(file) {
   var bytes;
   try { bytes = fs.readFileSync(file); } catch (e) { fail("cannot read " + file + ": " + e.message); }
-  var text = bytes.toString("latin1");
-  // Detect PEM only at the file BOUNDARY (armor at the start, after optional whitespace):
-  // binary DER begins with a tag byte, never "-----BEGIN", so a DER value that merely
-  // CONTAINS that ASCII marker (an OCTET STRING / DN string) is not misread as PEM.
-  if (/^\s*-----BEGIN /.test(text)) {
-    var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(text);
-    if (!m) fail(file + ": malformed PEM (no matching BEGIN/END block)");
-    var b64 = m[2].replace(/[\s]+/g, "");
-    // Enforce CANONICAL base64 (RFC 4648 sec. 3.5), matching the library's fail-closed PEM
-    // policy: Node's decoder silently drops invalid characters, stops at the first bad byte,
-    // and tolerates non-canonical trailing pad bits. Gate the alphabet/length first, then
-    // require that re-encoding the decoded bytes reproduces the exact body -- so a body that
-    // is not valid canonical base64 fails here rather than yielding partial/garbage DER.
-    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) fail(file + ": malformed PEM base64");
-    var der = Buffer.from(b64, "base64");
-    if (der.toString("base64") !== b64) fail(file + ": non-canonical PEM base64");
-    return { der: der, label: m[1] };
-  }
-  return { der: bytes, label: null };
+  try { pki.asn1.decode(bytes); return { der: bytes, label: null }; }
+  catch (_derErr) { /* not a single well-formed DER structure -- try PEM */ }
+  var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(bytes.toString("latin1"));
+  if (!m) fail(file + ": input is neither a well-formed DER structure nor a PEM block");
+  var b64 = m[2].replace(/[\s]+/g, "");
+  // Enforce CANONICAL base64 (RFC 4648 sec. 3.5), matching the library's fail-closed PEM
+  // policy: Node's decoder silently drops invalid characters, stops at the first bad byte,
+  // and tolerates non-canonical trailing pad bits. Gate the alphabet/length first, then
+  // require that re-encoding the decoded bytes reproduces the exact body.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) fail(file + ": malformed PEM base64");
+  var der = Buffer.from(b64, "base64");
+  if (der.toString("base64") !== b64) fail(file + ": non-canonical PEM base64");
+  return { der: der, label: m[1] };
 }
 
 function cmdVersion() {

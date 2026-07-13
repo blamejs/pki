@@ -114,6 +114,20 @@ function run() {
     var markerOut = cliBuf(["convert", markerPath, "--to", "der"]);
     check("pki convert treats DER containing the PEM marker as DER (boundary-anchored detection)",
       markerOut.status === 0 && Buffer.compare(markerOut.stdout, markerDer) === 0);
+    // A DER value whose LEADING bytes are whitespace in latin1 (a UTF8String, tag 0x0c =
+    // form-feed; length byte 0x20 = space) and whose content starts with the marker is still
+    // DER -- DER-first detection decodes it rather than misreading it as malformed PEM.
+    var wsLeadDer = asn1.build.utf8("-----BEGIN CERTIFICATE-----XXXXX");
+    var wsPath = path.join(tmp, "wslead.der");
+    fs.writeFileSync(wsPath, wsLeadDer);
+    var wsOut = cliBuf(["convert", wsPath, "--to", "der"]);
+    check("pki convert treats a whitespace-leading DER value as DER, not malformed PEM",
+      wsOut.status === 0 && Buffer.compare(wsOut.stdout, wsLeadDer) === 0);
+    // A PEM carrying a BOM / explanatory preamble before its armor is still recognized as PEM.
+    var bomPem = path.join(tmp, "bom.pem");
+    fs.writeFileSync(bomPem, String.fromCharCode(0xFEFF) + "explanatory preamble line\n" + fs.readFileSync(FIXTURE, "utf8"));
+    check("pki convert recognizes a PEM with a BOM/preamble before the armor",
+      cli(["convert", bomPem, "--to", "der"]).status === 0);
     // A PEM with a non-base64 body is rejected, not decoded loosely into garbage.
     var badPem = path.join(tmp, "bad.pem");
     fs.writeFileSync(badPem, "-----BEGIN CERTIFICATE-----\n!!! not base64 !!!\n-----END CERTIFICATE-----\n");
