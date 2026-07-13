@@ -294,4 +294,41 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.cms.sign : a SignedData we produce verifies under `openssl cms` --------
+  "pki.cms.sign": [
+    {
+      desc: "a SignedData we sign verifies under `openssl cms -verify` (attached + detached); openssl REJECTS a tampered copy",
+      run: async function (ctx) {
+        var signer = require("../helpers/signing").makeSigner("ec-p256");
+        var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
+        var content = Buffer.from("pki.cms.sign cross-implementation content");
+        var contentPath = ctx.tmpFile(content, "content.bin");
+        var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
+        var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl cms -verify accepts our attached SignedData", a.code === 0);
+        var det = ctx.tmpFile(await ctx.pki.cms.sign(content, signer, { detached: true }), "det.der");
+        var d = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", det, "-content", contentPath, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl cms -verify accepts our detached SignedData over the content", d.code === 0);
+        var wrong = ctx.tmpFile(Buffer.from("an entirely different content"), "wrong.bin");
+        var t = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", det, "-content", wrong, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl rejects our detached signature over tampered content", t.code !== 0);
+      },
+    },
+  ],
+
+  // ---- pki.tsp.sign : an RFC 3161 timestamp token we create verifies under openssl --
+  "pki.tsp.sign": [
+    {
+      desc: "a timestamp token we create verifies its CMS signature under `openssl cms -verify`",
+      run: async function (ctx) {
+        var signer = require("../helpers/signing").makeSigner("ec-p256");
+        var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
+        var imprint = { hashAlgorithm: "sha256", hashedMessage: require("node:crypto").createHash("sha256").update("timestamped document").digest() };
+        var token = ctx.tmpFile(await ctx.pki.tsp.sign(imprint, signer, { policy: "1.3.6.1.4.1.1", serialNumber: 1, nonce: 42 }), "token.der");
+        var r = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", token, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl cms -verify accepts our timestamp token's signature", r.code === 0);
+      },
+    },
+  ],
 };

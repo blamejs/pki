@@ -131,6 +131,11 @@ var webauthnClientHash = require("node:crypto").createHash("sha256").update(_b64
 var cmsDetachedDer = fs.readFileSync(path.join(__dirname, "..", "fixtures", "cms", "rsa-detached.p7s"));
 var cmsDetachedContent = Buffer.from("hello CMS SignedData verification");
 
+// pki.cms.sign / pki.tsp.sign fixtures: a runtime signer (keypair + minimal cert, since a
+// private key cannot be committed) + a message digest, so the signing examples run for real.
+var signFixtureSigner = require("../helpers/signing").makeSigner("ec-p256");
+var cmsSha256Digest = require("node:crypto").createHash("sha256").update("hello").digest();
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -186,6 +191,8 @@ function fixturesFor(tag) {
     // pki.cms: a real detached SignedData + its external content so verify's example
     // runs the full parse + message-digest + signature verification path.
     p7sDer: cmsDetachedDer, detachedBytes: cmsDetachedContent,
+    // pki.cms.sign / pki.tsp.sign: a real signer certificate + PKCS#8 key + a digest.
+    signerCertDer: signFixtureSigner.cert, signerKeyPkcs8: signFixtureSigner.key, sha256Digest: cmsSha256Digest,
   };
 }
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples

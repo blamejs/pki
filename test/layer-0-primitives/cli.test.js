@@ -164,6 +164,26 @@ function run() {
     // make --time parse as new Date(true) = a real 1970 timestamp).
     check("pki rejects a value-taking flag with no value (non-zero exit)",
       cli(["verify", FIXTURE, "--time", "--anchor", FIXTURE]).status !== 0);
+
+    // ---- sign (pki.cms.sign) ----
+    var signer = require("../helpers/signing").makeSigner("ec-p256");
+    var certPath = path.join(tmp, "signer-cert.pem");
+    var keyPath = path.join(tmp, "signer-key.pem");
+    var contentPath = path.join(tmp, "to-sign.txt");
+    fs.writeFileSync(certPath, pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"));
+    fs.writeFileSync(keyPath, signer.keyObject.export({ format: "pem", type: "pkcs8" }));
+    fs.writeFileSync(contentPath, "content signed through the pki CLI");
+    var signed = cliBuf(["sign", contentPath, "--cert", certPath, "--key", keyPath]);
+    check("pki sign exits 0", signed.status === 0);
+    var parsedSigned = pki.schema.cms.parse(signed.stdout);
+    check("pki sign emits a single-signer SignedData embedding the content",
+      parsedSigned.signerInfos.length === 1 && parsedSigned.encapContentInfo.eContent != null);
+    // --pem emits a CMS PEM block; --detached omits the embedded content.
+    var signedPem = cli(["sign", contentPath, "--cert", certPath, "--key", keyPath, "--pem", "--detached"]);
+    check("pki sign --pem --detached emits a detached CMS PEM", signedPem.status === 0 &&
+      signedPem.stdout.indexOf("-----BEGIN CMS-----") === 0 &&
+      pki.schema.cms.parse(signedPem.stdout).encapContentInfo.eContent == null);
+    check("pki sign without --key is a usage error (non-zero exit)", cli(["sign", contentPath, "--cert", certPath]).status !== 0);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

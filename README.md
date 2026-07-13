@@ -221,7 +221,8 @@ is callable today; nothing below is a stub.
 | `pki.schema.smime` | Decode S/MIME ESS signed-attribute values (RFC 5035 / RFC 8551) — `parseSigningCertificate` / `parseSigningCertificateV2` bind a signature to its signing certificate (cert hash, hash algorithm, issuer `GeneralNames` + serial), `parseSmimeCapabilities` decodes the ordered capability list, and `decodeAttribute` OID-dispatches a CMS attribute (enforcing the single-value rule, recognize-and-defer for unknown types). A companion decoder for CMS signed attributes, not an auto-routed format, fail-closed — `parseSigningCertificate`, `parseSigningCertificateV2`, `parseSmimeCapabilities`, `decodeAttribute` |
 | `pki.schema.engine` | The declarative ASN.1 structure-schema engine every format parser composes — `walk` / `encode` / `embeddedDer` plus the schema combinators |
 | `pki.path` | RFC 5280 §6 certification-path validation — `validate` runs the §6.1 state machine (signature chaining across RSA, ECDSA, EdDSA, ML-DSA, SLH-DSA and hybrid composite ML-DSA signatures — a composite is accepted only when **both** its post-quantum and traditional components verify; validity windows, name chaining, basic constraints and path length, key usage, name constraints, the certificate-policy tree) over an ordered path and a trust anchor, returning a structured verdict with per-check reason codes, and enforces a `pki.trust` anchor's per-purpose distrust-after dates and delegator purposes via `checkPurpose`; `crlChecker` supplies CRL-based revocation — including partitioned/sharded CRLs, whose §6.3.3 Distribution Point ↔ IDP correspondence lets a corresponding full-reason shard establish non-revocation — and `ocspChecker` supplies OCSP-based revocation (RFC 6960 — CertID binding, responder authorization, signature, currency) over the same pluggable hook. Pure and re-entrant, fail-closed — `validate`, `crlChecker`, `ocspChecker` |
-| `pki.cms` | RFC 5652 §5 CMS SignedData signature verification — `verify(input, opts)` parses a SignedData over the strict `pki.schema.cms` codec, locates each SignerInfo's signer certificate by its issuerAndSerialNumber or subjectKeyIdentifier, and checks the signature over the exact §5.4 preimage: when signed attributes are present it confirms the message-digest attribute equals the content digest and verifies over the DER re-encoding of the SignedAttributes (the on-wire `[0]` tag replaced by a universal SET OF), otherwise directly over the content. Attached and detached content, single and multiple signers, RSA / RSASSA-PSS / ECDSA / EdDSA. Returns a per-signer verdict with the matched signer certificate; it does not chain that certificate to a trust anchor — that is the caller's step through `pki.path.validate`. Fail-closed with typed `cms/*` errors — `verify` |
+| `pki.cms` | RFC 5652 §5 CMS SignedData signing + signature verification — `sign(content, signers, opts)` produces a SignedData (attached or detached, one or many signers, RSA / RSASSA-PSS / ECDSA / EdDSA); it builds the signed attributes (content-type, message-digest, signing-time) as canonical DER, signs the exact §5.4 preimage, and emits a DER `Buffer` or PEM. `verify(input, opts)` parses a SignedData over the strict `pki.schema.cms` codec, locates each SignerInfo's signer certificate by its issuerAndSerialNumber or subjectKeyIdentifier, and checks the signature over the exact §5.4 preimage: when signed attributes are present it confirms the message-digest attribute equals the content digest and verifies over the DER re-encoding of the SignedAttributes (the on-wire `[0]` tag replaced by a universal SET OF), otherwise directly over the content. It returns a per-signer verdict with the matched signer certificate; it does not chain that certificate to a trust anchor — that is the caller's step through `pki.path.validate`. Fail-closed with typed `cms/*` errors — `sign`, `verify` |
+| `pki.tsp` | RFC 3161 timestamp token creation — `sign(messageImprint, tsa, opts)` produces a TimeStampToken: a CMS SignedData (over `pki.cms.sign`) whose content is a `TSTInfo` carrying the timestamped message imprint, the TSA policy, a serial number, and `genTime` (with optional accuracy / nonce / ordering), plus the RFC 3161 §2.4.2 signing-certificate attribute binding the token to the TSA certificate. The producing side of `pki.schema.tsp.parseToken`; SHA-2 imprints, and any `pki.cms.sign` TSA key — `sign` |
 | `pki.ct` | RFC 6962 Certificate Transparency SCTs — `parseSctList` decodes the `SignedCertificateTimestampList` a certificate or OCSP response carries in the SCT extension (a TLS-presentation-language payload inside the §3.3 double DER wrap) into per-SCT log id, exact `timestamp` (BigInt), named signature algorithm, and raw signature; `reconstructSignedData` rebuilds the exact `digitally-signed` preimage; `verifySct` verifies an SCT signature against a log's public key by reconstructing the signed data, routing an ECDSA signature through the strict DER-conformance gate, and verifying through the crypto engine — resolving true or false, and throwing a typed error on a structural fault. Structure decoded, crypto fail-closed — `parseSctList`, `reconstructSignedData`, `verifySct` |
 | `pki.merkle` | RFC 6962 / RFC 9162 Merkle-tree proof verification — `leafHash` / `nodeHash` / `emptyRootHash` build the domain-separated (0x00 leaf / 0x01 node) SHA-256 tree hashes; `verifyInclusion` folds an audit proof back to a root and `verifyConsistency` reconstructs both the old and new root (the append-only guarantee), each constant-time-compared to a trusted checkpoint root. Fail-closed on bad geometry, sync hashing, transport-free — `leafHash`, `nodeHash`, `emptyRootHash`, `verifyInclusion`, `verifyConsistency` |
 | `pki.trust` | Mozilla / CCADB trust-store ingestion — `parseCertdata` reads the NSS `certdata.txt` object stream and `parseCcadbCsv` the CCADB CSV export into one identical constraint-carrying anchor shape: the per-purpose trust bits (only `CKT_NSS_TRUSTED_DELEGATOR` grants) and the per-purpose distrust-after dates the bare root list omits. Certificate and trust objects pair by byte-exact issuer + serial (never adjacency) and are cross-checked against the parsed DER, so metadata can never attach to the wrong root; `anchor()` hands an entry to `pki.path.validate({ trustAnchor, checkPurpose })`. Offline, fail-closed, bounded — `parseCertdata`, `parseCcadbCsv`, `anchor` |
@@ -233,12 +234,12 @@ is callable today; nothing below is a stub.
 | `pki.lint` | Certificate linting — the zlint / pkilint of JavaScript. `certificate(pem \| der \| parsed, opts)` walks a parsed certificate and emits graded, advisory findings — each with a stable id, a severity (`fatal` > `error` > `warn` > `notice`), a source, a spec-clause citation, and a message — against the RFC 5280 profile plus a representative CA/Browser Forum TLS BR subset (serial sign/size, validity ordering + the the SC081v3 reducing validity schedule, keyCertSign coherence, unknown critical extensions, empty-subject SAN, SKI/AKI presence, SAN required + CN-in-SAN, dNSName syntax, serverAuth EKU, weak keys). Unlike every other entry the DATA path never throws: hostile bytes return a `fatal` `lint/unparseable` finding (with the strict parser's code) so a whole directory lints without a try/catch; only config-time misuse throws a typed `LintError`. `certificate`, `rules`, `profiles` |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
 | `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError` / `TspError` / `AttrCertError` / `CrmfError` / `Pkcs12Error` / `CmpError` / `PathError` / `CtError` / `JoseError` / `AcmeError` / `WebauthnError` / `LintError`, each carrying a stable `code` in `domain/reason` form |
-| `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>`, `pki inspect <cert>`, `pki lint <cert>`, `pki convert <file> --to der\|pem`, `pki verify <cert>... --anchor <cert>` |
+| `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>`, `pki inspect <cert>`, `pki lint <cert>`, `pki convert <file> --to der\|pem`, `pki verify <cert>... --anchor <cert>`, `pki sign <file> --cert <c> --key <k>` |
 
 ### CLI
 
 ```sh
-pki version                              # @blamejs/pki v0.1.0
+pki version                              # the installed @blamejs/pki version
 pki oid 1.2.840.113549.1.1.11           # sha256WithRSAEncryption
 pki oid sha256                           # 2.16.840.1.101.3.4.2.1
 pki parse cert.pem                       # structured JSON summary of a certificate
@@ -247,12 +248,15 @@ pki lint cert.pem                        # graded conformance findings; exit 1 o
 pki lint cert.pem --json --profile cabf-tls
 pki convert cert.pem --to der > cert.der # transcode between PEM and DER (round-trips)
 pki verify leaf.pem --anchor root.pem --time 2026-01-01T00:00:00Z   # RFC 5280 path validation
+pki sign msg.txt --cert signer.pem --key signer-key.pem --out msg.p7s   # CMS SignedData (pki.cms.sign)
+pki sign msg.txt --cert signer.pem --key signer-key.pem --detached --pem # detached, PEM to stdout
 ```
 
-`inspect`/`lint`/`convert`/`verify` are thin front-ends over `pki.inspect`, `pki.lint`, the
-per-format PEM codecs, and `pki.path.validate` — the CLI never does anything the library
-API can't. `lint` exits non-zero when any `error`/`fatal` finding is present; `verify` exits
-non-zero when the path does not validate.
+`inspect`/`lint`/`convert`/`verify`/`sign` are thin front-ends over `pki.inspect`, `pki.lint`, the
+per-format PEM codecs, `pki.path.validate`, and `pki.cms.sign` — the CLI never does anything the
+library API can't. `lint` exits non-zero when any `error`/`fatal` finding is present; `verify`
+exits non-zero when the path does not validate; `sign` reads a PKCS#8 DER/PEM private key and its
+certificate and writes a DER (or `--pem`) SignedData to `--out` or stdout.
 
 ### What's coming
 
@@ -338,7 +342,8 @@ path validation), `pki.trust` (trust anchors), `pki.ct` (Certificate Transparenc
 SCTs), `pki.hpke` (RFC 9180), `pki.shbs` (HSS/LMS stateful hash signatures),
 `pki.merkle` (RFC 9162 transparency proofs), `pki.sigstore` (offline npm-provenance
 verification), `pki.webauthn` (WebAuthn / passkey attestation verification),
-`pki.cms` (RFC 5652 SignedData signature verification), and the
+`pki.cms` (RFC 5652 SignedData signing + signature verification), `pki.tsp` (RFC 3161
+timestamp token creation), and the
 `jose` / `acme` / `est` enrollment surfaces. Each composes
 the shared structure, foundation, and crypto layers directly. Alongside the schema
 engine, the fail-closed **guard family** (`guard-*`) centralizes each CVE-class
