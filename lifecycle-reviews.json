@@ -340,5 +340,23 @@
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
     "reviewedAt": "0.2.5",
     "reviewBy": "0.3.0"
+  },
+  "pki.trust.parseCertdata": {
+    "decision": "keep-experimental",
+    "reason": "The NSS certdata.txt trust-store parser's return shape (per-anchor trust bits + distrust metadata) is still absorbing fields as new root-program constraints are modeled; it has no external consumer pinning the object shape. Graduate once the anchor metadata surface is settled and cross-checked against an independent trust-store reader.",
+    "reviewedAt": "0.2.6",
+    "reviewBy": "0.3.0"
+  },
+  "pki.trust.parseCcadbCsv": {
+    "decision": "keep-experimental",
+    "reason": "The CCADB CSV trust-store parser shares the anchor metadata surface with pki.trust.parseCertdata and the same not-yet-frozen return shape. Graduate alongside it.",
+    "reviewedAt": "0.2.6",
+    "reviewBy": "0.3.0"
+  },
+  "pki.trust.anchor": {
+    "decision": "keep-experimental",
+    "reason": "Constructs the trust anchor that pki.path.validate consumes; its constraint surface tracks the still-experimental pki.path.validate. Graduate alongside pki.path.validate once the path-validation surface has stabilized and is interop-proven.",
+    "reviewedAt": "0.2.6",
+    "reviewBy": "0.3.0"
   }
 }
