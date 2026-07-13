@@ -42,6 +42,9 @@ function run() {
   check("expandIpv6Hex expands a trailing-:: address", ip.expandIpv6Hex("fe80::") === "fe800000000000000000000000000000");
   check("expandIpv6Hex expands :: (all zeros)", ip.expandIpv6Hex("::") === "00000000000000000000000000000000");
   check("expandIpv6Hex rejects too many groups with a ::", ip.expandIpv6Hex("1:2:3:4:5:6:7:8::9") === null);
+  // A "::" that compresses ZERO groups is invalid (RFC 4291 sec. 2.2) -- net.isIP rejects it.
+  check("expandIpv6Hex rejects a :: compressing zero groups", ip.expandIpv6Hex("1:2:3:4:5:6:7::8") === null);
+  check("expandIpv6Hex accepts a :: compressing one group", ip.expandIpv6Hex("1:2:3:4:5:6::8") !== null);
 
   // --- isIpLiteral: IPv4 OR IPv6 ---
   check("isIpLiteral accepts IPv4", ip.isIpLiteral("192.0.2.1") === true);
