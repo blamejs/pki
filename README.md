@@ -232,7 +232,7 @@ is callable today; nothing below is a stub.
 | `pki.lint` | Certificate linting — the zlint / pkilint of JavaScript. `certificate(pem \| der \| parsed, opts)` walks a parsed certificate and emits graded, advisory findings — each with a stable id, a severity (`fatal` > `error` > `warn` > `notice`), a source, a spec-clause citation, and a message — against the RFC 5280 profile plus a representative CA/Browser Forum TLS BR subset (serial sign/size, validity ordering + the the SC081v3 reducing validity schedule, keyCertSign coherence, unknown critical extensions, empty-subject SAN, SKI/AKI presence, SAN required + CN-in-SAN, dNSName syntax, serverAuth EKU, weak keys). Unlike every other entry the DATA path never throws: hostile bytes return a `fatal` `lint/unparseable` finding (with the strict parser's code) so a whole directory lints without a try/catch; only config-time misuse throws a typed `LintError`. `certificate`, `rules`, `profiles` |
 | `pki.C` / `pki.constants` | Version-stable constants — functional scale helpers (`C.TIME.*`, `C.BYTES.*`), codec `LIMITS`, `version` |
 | `pki.errors` | The `PkiError` taxonomy — `defineClass` plus `ConstantsError` / `Asn1Error` / `OidError` / `PemError` / `CertificateError` / `CrlError` / `CsrError` / `Pkcs8Error` / `CmsError` / `OcspError` / `TspError` / `AttrCertError` / `CrmfError` / `Pkcs12Error` / `CmpError` / `PathError` / `CtError` / `JoseError` / `AcmeError` / `WebauthnError` / `LintError`, each carrying a stable `code` in `domain/reason` form |
-| `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>` |
+| `pki` CLI | `pki version`, `pki oid <dotted\|name>`, `pki parse <cert>`, `pki inspect <cert>`, `pki lint <cert>`, `pki convert <file> --to der\|pem`, `pki verify <cert>... --anchor <cert>` |
 
 ### CLI
 
@@ -241,7 +241,17 @@ pki version                              # @blamejs/pki v0.1.0
 pki oid 1.2.840.113549.1.1.11           # sha256WithRSAEncryption
 pki oid sha256                           # 2.16.840.1.101.3.4.2.1
 pki parse cert.pem                       # structured JSON summary of a certificate
+pki inspect cert.pem                     # openssl x509 -text style report (pki.inspect)
+pki lint cert.pem                        # graded conformance findings; exit 1 on an error
+pki lint cert.pem --json --profile cabf-tls
+pki convert cert.pem --to der > cert.der # transcode between PEM and DER (round-trips)
+pki verify leaf.pem --anchor root.pem --time 2026-01-01T00:00:00Z   # RFC 5280 path validation
 ```
+
+`inspect`/`lint`/`convert`/`verify` are thin front-ends over `pki.inspect`, `pki.lint`, the
+per-format PEM codecs, and `pki.path.validate` — the CLI never does anything the library
+API can't. `lint` exits non-zero when any `error`/`fatal` finding is present; `verify` exits
+non-zero when the path does not validate.
 
 ### What's coming
 
