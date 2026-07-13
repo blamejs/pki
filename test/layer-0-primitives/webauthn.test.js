@@ -114,6 +114,26 @@ async function run() {
   check("verify: tpm trustPath is anchor->leaf ordered (leaf/AIK last)",
     tpmRes.trustPath.length === 2 && tpmRes.trustPath[tpmRes.trustPath.length - 1].subject.rdns.length === 0 && tpmRes.trustPath[0].subject.rdns.length > 0);
 
+  // A tpm attestation signed under a fully-specified ECDSA alg (RFC 9864 ESP256 = -9) must
+  // reach the certInfo.extraData digest step: -9 needs a COSE_ALG_HASH mapping, or it is
+  // wrongly rejected as webauthn/unsupported-algorithm before the signature is evaluated.
+  // Rebuild the tpm KAT with alg -9 (its sig/certInfo no longer correspond, so it fails at
+  // extraData -- but NOT as unsupported-algorithm, which is the regression this pins).
+  var tpmDec = pki.cbor.decode(attObj("tpm"));
+  var _ck = function (node, key) { for (var i = 0; i < node.children.length; i++) { var k = node.children[i][0]; if (k.majorType === 3 && pki.cbor.read.textString(k) === key) return node.children[i][1]; } return null; };
+  var tpmAs = _ck(tpmDec, "attStmt");
+  var tpmAlg9 = attObjOf("tpm", [
+    [cText("ver"), cText("2.0")],
+    [cText("alg"), cInt(-9)],
+    [cText("sig"), cBytes(pki.cbor.read.byteString(_ck(tpmAs, "sig")))],
+    [cText("certInfo"), cBytes(pki.cbor.read.byteString(_ck(tpmAs, "certInfo")))],
+    [cText("pubArea"), cBytes(pki.cbor.read.byteString(_ck(tpmAs, "pubArea")))],
+    [cText("x5c"), cArr(_ck(tpmAs, "x5c").children.map(function (c) { return cBytes(pki.cbor.read.byteString(c)); }))],
+  ], pki.cbor.read.byteString(_ck(tpmDec, "authData")));
+  var tpmCode9 = await codeOfAsync(function () { return pki.webauthn.verify(tpmAlg9, clientHash("tpm"), {}); });
+  check("verify: a fully-specified ECDSA alg (-9) in a tpm attestation reaches the extraData step (not unsupported-algorithm)",
+    tpmCode9 !== "webauthn/unsupported-algorithm" && /^webauthn\//.test(tpmCode9));
+
   // --- W3C WebAuthn Level 3 official test vectors ---------------------------------
   // Every spec-published vector verifies to its expected format + attestation type +
   // credential-key algorithm. This is the authoritative cross-implementation oracle:
