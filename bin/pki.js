@@ -60,12 +60,15 @@ function readInput(file) {
     var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(text);
     if (!m) fail(file + ": malformed PEM (no matching BEGIN/END block)");
     var b64 = m[2].replace(/[\s]+/g, "");
-    // Validate canonical base64 BEFORE decoding: Node's base64 decoder silently drops
-    // invalid characters and stops at the first bad byte, so a malformed body would decode
-    // to partial/garbage DER instead of failing. Reject anything that is not the base64
-    // alphabet with correct terminal padding and a multiple-of-four length.
+    // Enforce CANONICAL base64 (RFC 4648 sec. 3.5), matching the library's fail-closed PEM
+    // policy: Node's decoder silently drops invalid characters, stops at the first bad byte,
+    // and tolerates non-canonical trailing pad bits. Gate the alphabet/length first, then
+    // require that re-encoding the decoded bytes reproduces the exact body -- so a body that
+    // is not valid canonical base64 fails here rather than yielding partial/garbage DER.
     if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) fail(file + ": malformed PEM base64");
-    return { der: Buffer.from(b64, "base64"), label: m[1] };
+    var der = Buffer.from(b64, "base64");
+    if (der.toString("base64") !== b64) fail(file + ": non-canonical PEM base64");
+    return { der: der, label: m[1] };
   }
   return { der: bytes, label: null };
 }

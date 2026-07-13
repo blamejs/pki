@@ -118,6 +118,11 @@ function run() {
     var badPem = path.join(tmp, "bad.pem");
     fs.writeFileSync(badPem, "-----BEGIN CERTIFICATE-----\n!!! not base64 !!!\n-----END CERTIFICATE-----\n");
     check("pki convert rejects a PEM with a non-base64 body (non-zero exit)", cli(["convert", badPem, "--to", "der"]).status !== 0);
+    // A body that is alphabet-valid but NON-CANONICAL (trailing pad bits set, e.g. "AB==")
+    // is rejected too -- the CLI matches the library's fail-closed canonical PEM policy.
+    var nonCanon = path.join(tmp, "noncanon.pem");
+    fs.writeFileSync(nonCanon, "-----BEGIN CERTIFICATE-----\nAB==\n-----END CERTIFICATE-----\n");
+    check("pki convert rejects non-canonical PEM base64 (non-zero exit)", cli(["convert", nonCanon, "--to", "der"]).status !== 0);
 
     // ---- verify ----
     var vOk = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--time", "2030-01-01T00:00:00Z"]);
