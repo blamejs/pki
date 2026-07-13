@@ -148,7 +148,37 @@ async function testMalformedCandidateCerts() {
   // path cannot resolve a curve and reports the fail-closed unsupported-algorithm verdict.
   var parsed = pki.schema.cms.parse(fx("ec-attached.p7s"));
   parsed.certificates[0].bytes = corruptEcParams(parsed.certificates[0].bytes);
-  await rejects("signer cert with undecodable EC params", function () { return pki.cms.verify(parsed); }, "cms/unsupported-algorithm");
+  var rec = await pki.cms.verify(parsed);
+  check("signer cert with undecodable EC params -> unsupported verdict", rec.valid === false && rec.signers[0].code === "cms/unsupported-algorithm");
+
+  // an EC signer whose point WebCrypto rejects at import (an invalid uncompressed-point prefix):
+  // the engine error is wrapped as a fail-closed cms/verify-error verdict, not leaked raw.
+  var pe = pki.schema.cms.parse(fx("ec-attached.p7s"));
+  var ec = Buffer.from(pe.certificates[0].bytes);
+  var pt = Buffer.from([0x42, 0x00, 0x04]);   // P-256 SPKI BIT STRING: len 66, 0 unused, 0x04 prefix
+  var j = ec.indexOf(pt);
+  check("EC point prefix located", j >= 0);
+  ec[j + 2] = 0xFF;   // 0x04 uncompressed prefix -> an invalid point encoding
+  pe.certificates[0].bytes = ec;
+  var re = await pki.cms.verify(pe);
+  check("EC signer with an invalid point -> verify-error verdict", re.valid === false && re.signers[0].code === "cms/verify-error");
+}
+
+// A colliding candidate certificate (same signer identifier, different key) placed before the
+// real signer must not hide it -- every matching candidate is tried until one verifies.
+async function testCollidingSignerCert() {
+  var p = pki.schema.cms.parse(fx("rsa-attached.p7s"));
+  var real = p.certificates[0].bytes;
+  var cert = pki.schema.x509.parse(real);
+  var spki = cert.subjectPublicKeyInfo.bytes;
+  var off = real.indexOf(spki);
+  check("signer SPKI located in the cert", off >= 0);
+  var collide = Buffer.from(real);
+  var at = off + spki.length - 8;   // deep in the RSA modulus (past issuer/serial, still valid DER)
+  collide[at] = collide[at] ^ 0xff;   // same issuer+serial, a different (non-verifying) key
+  p.certificates = [{ bytes: collide }, p.certificates[0]];
+  var r = await pki.cms.verify(p);
+  check("colliding signer cert before the real one -> still valid", r.valid === true);
 }
 
 // ---- input forms: DER Buffer (covered above), PEM string, parsed object ----
@@ -165,7 +195,8 @@ async function testInputForms() {
 // ---- unsupported algorithm: unregistered curve + bogus alg names ----
 async function testUnsupportedAlgorithm() {
   // an EC signer cert on a curve outside the P-256/384/521 set the engine imports.
-  await rejects("secp256k1 signer", function () { return pki.cms.verify(fx("ec-secp256k1.p7s")); }, "cms/unsupported-algorithm");
+  var rsk = await pki.cms.verify(fx("ec-secp256k1.p7s"));
+  check("secp256k1 signer -> unsupported verdict", rsk.valid === false && rsk.signers[0].code === "cms/unsupported-algorithm");
 
   // an unknown signatureAlgorithm is a per-signer verdict, not a throw.
   var p1 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
@@ -409,13 +440,15 @@ async function testEdPointValidation() {
   check("Ed25519 SPKI point located in the signer cert", i >= 0);
   cert.fill(0x00, i + pat.length, i + pat.length + 32);   // all-zeroes: a low-order point on the curve
   p.certificates[0].bytes = cert;
-  await rejects("Ed25519 low-order signer point rejected before verify", function () { return pki.cms.verify(p); }, "cms/bad-signature");
+  var red = await pki.cms.verify(p);
+  check("Ed25519 low-order signer point rejected before verify", red.valid === false && red.signers[0].code === "cms/bad-signature");
 
   // the Ed448 curve selector: relabel the signer as Ed448 -- the Ed25519-sized point is not a
   // valid Ed448 point, so it is rejected before verify.
   var p448 = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
   p448.signerInfos[0].signatureAlgorithm.name = "Ed448";
-  await rejects("Ed448-labelled signer with a non-Ed448 point", function () { return pki.cms.verify(p448); }, "cms/bad-signature");
+  var r448 = await pki.cms.verify(p448);
+  check("Ed448-labelled signer with a non-Ed448 point", r448.valid === false && r448.signers[0].code === "cms/bad-signature");
 }
 
 // ---- config-time misuse throws typed cms/bad-input ----
@@ -432,6 +465,7 @@ async function run() {
   await testDetached();
   await testCertLocation();
   await testMalformedCandidateCerts();
+  await testCollidingSignerCert();
   await testInputForms();
   await testUnsupportedAlgorithm();
   await testRsaPssParams();
