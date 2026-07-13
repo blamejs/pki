@@ -144,6 +144,10 @@ function run() {
   // dNSNames are case-insensitive: a CN differing from its SAN only in case is NOT a finding.
   check("a CN matching a SAN case-insensitively does NOT flag cn-not-in-san",
     !has(pki.lint.certificate(makeCert({ subject: dnCN("Example.COM"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("example.com")], false), aki()] })), "lint/cabf-tls/cn-not-in-san"));
+  // An IP-literal CN is validated against an iPAddress SAN (out of this subset's scope), so
+  // it is skipped -- not false-flagged against the dNSName list.
+  check("an IP-literal CN does NOT flag cn-not-in-san",
+    !has(pki.lint.certificate(makeCert({ subject: dnCN("192.0.2.1"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("example.com")], false), aki()] })), "lint/cabf-tls/cn-not-in-san"));
   check("a dNSName with an underscore -> dnsname-bad-syntax (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("bad_host.example"), exts: [eku(["serverAuth"]), san([dnsName("bad_host.example")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
   // eku-missing-serverauth only fires under an EXPLICIT cabf-tls profile selection.
@@ -259,6 +263,18 @@ function run() {
   var pmVal = b.sequence([b.sequence([b.oid("2.5.29.32.0"), b.oid("2.5.29.32.0")])]);
   check("a critical but RECOGNIZED extension (policyMappings) is NOT unknown-critical",
     !has(pki.lint.certificate(makeCert({ exts: [ext("policyMappings", true, pmVal)] })), "lint/rfc5280/unknown-critical-extension"));
+  // A critical extension carrying a NON-extension OID (an algorithm OID the name registry
+  // resolves) is still unknown-critical -- recognition is scoped to extension OIDs.
+  check("a critical extension with an algorithm OID is still unknown-critical",
+    has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("sha256"), true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
+
+  // A CA certificate is NOT a TLS server (leaf) cert even with a serverAuth EKU: the
+  // default profile must NOT apply the CABF leaf rules (e.g. san-missing) to it.
+  var caWithServerAuth = makeCert({ subject: dnCN("Intermediate CA"), exts: [basicConstraints(true, null, true), keyUsage([5], true), eku(["serverAuth"]), ski(), aki()] });
+  var caReport = pki.lint.certificate(caWithServerAuth);
+  check("a CA with a serverAuth EKU does NOT get the CABF leaf san-missing rule",
+    !has(caReport, "lint/cabf-tls/san-missing") && !caReport.findings.some(function (f) { return f.source === "cabf-tls"; }));
+  check("but an EXPLICIT cabf-tls profile still lints a CA as a server cert", has(pki.lint.certificate(caWithServerAuth, { profile: "cabf-tls" }), "lint/cabf-tls/san-missing"));
 
   // ---- registry introspection ----
   check("pki.lint.rules('bad-profile') throws lint/unknown-profile", throwsCode(function () { pki.lint.rules("does-not-exist"); }) === "lint/unknown-profile");
