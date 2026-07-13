@@ -70,6 +70,7 @@ jobs:
           - shbs-verify
           - hpke-open
           - sigstore-verify
+          - composite-verify
           - inspect-cert
           - webauthn-parse
     steps:

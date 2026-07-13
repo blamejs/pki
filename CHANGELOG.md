@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.9 — 2026-07-13
+
+Certification-path validation verifies composite ML-DSA signatures, accepting a certificate only when both its post-quantum and traditional components verify.
+
+### Added
+
+- pki.path.validate verifies composite ML-DSA certificate signatures (draft-ietf-lamps-pq-composite-sigs): a post-quantum ML-DSA paired with a traditional RSA / ECDSA / EdDSA, accepted only when BOTH components verify over the domain-separated message representative -- an all-components-must-verify rule (an OR would be a downgrade). The same combinator verifies a composite-signed CRL or OCSP response. Proven against the draft's official known-answer test vectors.
+- The 18 composite algorithm identifiers (1.3.6.1.5.5.7.6.37-54) are registered in the OID registry and their AlgorithmIdentifier parameters-absent requirement is enforced across every format that carries a signature algorithm.
+
 ## v0.2.8 — 2026-07-13
 
 pki.webcrypto rejects an AES key of invalid length at import instead of deferring the failure to first use.
