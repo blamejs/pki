@@ -458,6 +458,22 @@ async function testVerifySct() {
   // raw asn1/* error leaking out of the verifier.
   var noAlgOid = b.sequence([b.sequence([b.integer(5n)]), dummyPoint]);
   check("85. verifySct wraps a non-OID SPKI algorithm identifier (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, noAlgOid); })) === "ct/bad-input");
+  // RFC 6962 sec. 2.1.4 constrains an SCT to SHA-256 + (P-256 ECDSA | RSA): an off-profile
+  // hash or EC curve a conformant log never uses is rejected, not accepted defensively.
+  check("86. verifySct rejects a non-SHA-256 SCT hash (ct/unsupported-algorithm)", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signatureAlgorithm: { hash: 5, hashName: "sha384", signature: 3, signatureName: "ecdsa" } }), ecSpki); })) === "ct/unsupported-algorithm");
+  var p384 = crypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" }).publicKey.export({ format: "der", type: "spki" });
+  check("87. verifySct rejects a non-P-256 ECDSA log key (ct/unsupported-algorithm)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, p384); })) === "ct/unsupported-algorithm");
+  // RFC 6962 sec. 2.1.4 requires an RSA log key of at least 2048 bits.
+  var rsa1024 = crypto.generateKeyPairSync("rsa", { modulusLength: 1024 });
+  var rsa1024Sct = sctFor("sha256", 4, "rsa", null, 1);
+  rsa1024Sct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData(rsaEntry, rsa1024Sct), rsa1024.privateKey);
+  check("88. verifySct rejects an RSA log key below 2048 bits (ct/unsupported-algorithm)", (await vres(function () { return pki.ct.verifySct(rsaEntry, rsa1024Sct, rsa1024.publicKey.export({ format: "der", type: "spki" })); })) === "ct/unsupported-algorithm");
+  // A malformed RSAPublicKey in the log SPKI -> typed ct/bad-input.
+  var badRsa = b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(Buffer.from([0xde, 0xad]), 0)]);
+  check("89. verifySct wraps a malformed RSA log key SPKI (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, badRsa); })) === "ct/bad-input");
+  // A negative RSA modulus is malformed -- fail closed, not sized by absolute value.
+  var negRsa = b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(b.sequence([b.integer(-(1n << 2047n)), b.integer(65537n)]), 0)]);
+  check("90. verifySct rejects a negative RSA modulus (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, negRsa); })) === "ct/bad-input");
 }
 
 async function run() {
