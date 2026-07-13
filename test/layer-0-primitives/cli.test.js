@@ -114,6 +114,10 @@ function run() {
     var markerOut = cliBuf(["convert", markerPath, "--to", "der"]);
     check("pki convert treats DER containing the PEM marker as DER (boundary-anchored detection)",
       markerOut.status === 0 && Buffer.compare(markerOut.stdout, markerDer) === 0);
+    // A PEM with a non-base64 body is rejected, not decoded loosely into garbage.
+    var badPem = path.join(tmp, "bad.pem");
+    fs.writeFileSync(badPem, "-----BEGIN CERTIFICATE-----\n!!! not base64 !!!\n-----END CERTIFICATE-----\n");
+    check("pki convert rejects a PEM with a non-base64 body (non-zero exit)", cli(["convert", badPem, "--to", "der"]).status !== 0);
 
     // ---- verify ----
     var vOk = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--time", "2030-01-01T00:00:00Z"]);

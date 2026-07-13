@@ -59,7 +59,13 @@ function readInput(file) {
   if (/^\s*-----BEGIN /.test(text)) {
     var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(text);
     if (!m) fail(file + ": malformed PEM (no matching BEGIN/END block)");
-    return { der: Buffer.from(m[2].replace(/[\s]+/g, ""), "base64"), label: m[1] };
+    var b64 = m[2].replace(/[\s]+/g, "");
+    // Validate canonical base64 BEFORE decoding: Node's base64 decoder silently drops
+    // invalid characters and stops at the first bad byte, so a malformed body would decode
+    // to partial/garbage DER instead of failing. Reject anything that is not the base64
+    // alphabet with correct terminal padding and a multiple-of-four length.
+    if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) fail(file + ": malformed PEM base64");
+    return { der: Buffer.from(b64, "base64"), label: m[1] };
   }
   return { der: bytes, label: null };
 }
