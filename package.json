@@ -1,6 +1,6 @@
 {
   "name": "@blamejs/pki",
-  "version": "0.2.5",
+  "version": "0.2.6",
   "description": "Pure-JavaScript PKI toolkit that owns its stack — X.509, ASN.1/DER, CMS, PQC-first.",
   "license": "Apache-2.0",
   "author": "blamejs contributors",
@@ -66,6 +66,8 @@
     "fuzz": "npm ci --prefix fuzz && npx --prefix fuzz jazzer fuzz/asn1-der.fuzz.js -- -max_total_time=60",
     "gates": "node test/layer-0-primitives/codebase-patterns.test.js && node scripts/validate-source-comment-blocks.js && node scripts/check-api-snapshot.js",
     "coverage": "c8 --include=lib/** --include=index.js --reporter=text-summary --reporter=lcov node test/smoke.js",
+    "check:swallows": "node scripts/check-swallow-coverage.js",
+    "coverage:gated": "npm run coverage && npm run check:swallows",
     "prepack": "node scripts/check-pack-against-gitignore.js",
     "check:vendor-currency": "node scripts/check-vendor-currency.js"
   },

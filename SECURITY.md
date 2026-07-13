@@ -118,6 +118,15 @@ security-only patches after the next major releases.
   fold), consistency reconstructs BOTH roots so a rewritten history is caught on
   the old-root leg, and the root comparison is constant-time. The only Boolean
   `false` is an honest root non-match; every malformed input throws.
+- **WebAuthn credential-key confusion.** `pki.webauthn` binds a credential COSE
+  key to its declared algorithm and curve (an EdDSA key claiming ES256, or the
+  legacy `-8` identifier carrying Ed448 rather than Ed25519, is rejected), and
+  validates the public-key point on its curve so an off-curve or identity point
+  fails closed at decode instead of reaching a verify step where an invalid-curve
+  attack could apply. The EC point must be uncompressed, the COSE key exactly its
+  canonical CTAP2 parameter set, and an ECDSA attestation signature a
+  minimally-encoded DER `ECDSA-Sig-Value` — a non-minimal, negative, zero, or
+  over-size `r`/`s` is a typed reject, never normalized-and-accepted.
 - **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
   carries the root program's own constraints and `pki.path.validate` enforces
   them: a leaf issued after the root's per-purpose distrust date, or a purpose

@@ -18,6 +18,10 @@ var fs = require("fs");
 var path = require("path");
 
 var KAT = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "webauthn", "py-webauthn-kat.json"), "utf8"));
+// The W3C WebAuthn Level 3 official test-vector suite (spec sec. Test Vectors): every
+// defined format + algorithm, incl. ES384/ES512, Ed25519 (-8) and Ed448 (fully-specified
+// -53). clientDataHash = SHA-256(clientDataJSON).
+var SPEC = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "webauthn", "webauthn-l3-spec-kat.json"), "utf8"));
 function b64u(s) { var b = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "="; return Buffer.from(b, "base64"); }
 function attObj(fmt) { return b64u(KAT.formats[fmt].attestationObject); }
 function clientHash(fmt) { return crypto.createHash("sha256").update(b64u(KAT.formats[fmt].clientDataJSON)).digest(); }
@@ -109,6 +113,26 @@ async function run() {
   var tpmRes = await pki.webauthn.verify(attObj("tpm"), clientHash("tpm"), {});
   check("verify: tpm trustPath is anchor->leaf ordered (leaf/AIK last)",
     tpmRes.trustPath.length === 2 && tpmRes.trustPath[tpmRes.trustPath.length - 1].subject.rdns.length === 0 && tpmRes.trustPath[0].subject.rdns.length > 0);
+
+  // --- W3C WebAuthn Level 3 official test vectors ---------------------------------
+  // Every spec-published vector verifies to its expected format + attestation type +
+  // credential-key algorithm. This is the authoritative cross-implementation oracle:
+  // it proves the full ES256/ES384/ES512/RS256/Ed25519 set AND Ed448 (fully-specified
+  // COSE alg -53, the only WebAuthn path to Ed448) verify end-to-end over a real signature.
+  for (var sv of SPEC.pass) {
+    var cdh = crypto.createHash("sha256").update(Buffer.from(sv.clientDataJSON, "hex")).digest();
+    var sr = await pki.webauthn.verify(Buffer.from(sv.attestationObject, "hex"), cdh, {});
+    check("spec KAT: " + sv.name + " verifies (" + sv.expect.fmt + "/" + sv.expect.attestationType + "/alg " + sv.expect.alg + ")",
+      sr.verified === true && sr.fmt === sv.expect.fmt && sr.attestationType === sv.expect.attestationType &&
+      sr.credentialPublicKey.alg === sv.expect.alg);
+  }
+  // The spec's android-key vector carries EMPTY authorization lists, so it does not
+  // satisfy WebAuthn 8.4.1's origin==GENERATED / purpose==SIGN MUSTs: a structural /
+  // signature vector, correctly rejected by the full verifier (fail-closed, typed).
+  for (var nv of SPEC.negative) {
+    check("spec KAT (negative): " + nv.name + " -> " + nv.expectCode,
+      (await codeOfAsync((function (o, c) { return function () { return pki.webauthn.verify(Buffer.from(o, "hex"), Buffer.from(c, "hex").length ? crypto.createHash("sha256").update(Buffer.from(c, "hex")).digest() : Buffer.alloc(32), {}); }; })(nv.attestationObject, nv.clientDataJSON))) === nv.expectCode);
+  }
 
   // A tampered clientDataHash breaks every format's binding (signature or nonce).
   for (var bfmt of ["tpm", "apple", "fido_u2f", "android_key"]) {
@@ -209,15 +233,32 @@ async function run() {
   var ktyText = coseKey([cKV(1, cText("two")), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
   check("parse: COSE key with a non-integer kty -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ktyText }))); }) === "webauthn/bad-cose-key");
-  // §6.5.1 / RFC 9052 -- Ed448 (OKP crv 7, 57-byte x) is a valid credential key type.
-  var ed448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57, 7)))]);
+  // WebAuthn alg identifier / RFC 9864 -- Ed448 is the fully-specified alg -53 (OKP crv 7,
+  // 57-byte x); it is the ONLY WebAuthn path to Ed448 (-8 is Ed25519 only).
+  var ed448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57, 7)))]);
   var ed448Parsed = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448 })));
-  check("parse: Ed448 (OKP crv 7, 57-byte x) credential key accepted",
-    ed448Parsed.authData.credentialPublicKey.kty === 1 && ed448Parsed.authData.credentialPublicKey.crv === 7);
+  check("parse: Ed448 (fully-specified alg -53, OKP crv 7, 57-byte x) credential key accepted",
+    ed448Parsed.authData.credentialPublicKey.kty === 1 && ed448Parsed.authData.credentialPublicKey.crv === 7 && ed448Parsed.authData.credentialPublicKey.alg === -53);
   // an OKP key whose x length does not match its curve is rejected.
-  var ed448Bad = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(32, 7)))]);
+  var ed448Bad = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(32, 7)))]);
   check("parse: OKP crv 7 with a 32-byte x -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448Bad }))); }) === "webauthn/bad-cose-key");
+  // WebAuthn alg identifier -- alg -8 (EdDSA) MUST specify crv 6 (Ed25519); an -8 key
+  // claiming crv 7 (Ed448) is a profile violation (Ed448 must use -53).
+  var eddsaCrv7 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57, 7)))]);
+  check("parse: alg -8 with crv 7 (Ed448) -> webauthn/bad-cose-key (must be Ed25519)",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: eddsaCrv7 }))); }) === "webauthn/bad-cose-key");
+  // ON-CURVE (WebAuthn sec. alg identifier) -- an EC2 credential key whose point is not
+  // on its curve is rejected: the SPKI fails to import (OpenSSL validates the point).
+  var offY = Buffer.from(credKey.y); offY[10] = offY[10] ^ 0xff;
+  var ec2OffCurve = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(offY))]);
+  check("parse: off-curve EC2 credential key -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2OffCurve }))); }) === "webauthn/bad-cose-key");
+  // COMPRESSED (WebAuthn sec. alg identifier) -- an EC2 key with a boolean (sign-bit) y is
+  // the compressed point form, forbidden for WebAuthn credential keys (CBOR true = 0xf5).
+  var ec2Compressed = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, Buffer.from([0xf5]))]);
+  check("parse: EC2 credential key with a compressed (boolean) y -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2Compressed }))); }) === "webauthn/bad-cose-key");
   // §6.5.1 -- a credential key with an extra (non-canonical) parameter is rejected.
   var ec2Extra = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y)), cKV(4, cInt(1))]);
   check("parse: EC2 key with an extra parameter -> webauthn/bad-cose-key",

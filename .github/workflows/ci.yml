@@ -59,10 +59,17 @@ jobs:
         # install (it keys on the `ci` verb, not a name@version specifier).
         run: npm ci --no-audit --no-fund
 
-      - name: Run smoke
+      - name: Run smoke (under c8 coverage)
         env:
           SMOKE_PARALLEL: "4"
-        run: node test/smoke.js
+        run: npm run coverage
+
+      - name: Execution-traced swallow gate
+        # Every lib swallow (a catch that returns a value instead of re-throwing) MUST be
+        # exercised by the suite -- c8 line coverage of the catch body is live proof it
+        # runs fail-closed -- or carry an allow:swallow-unverified marker. Reads the lcov
+        # the coverage step just wrote; no fail-open verify/parse slips through unverified.
+        run: node scripts/check-swallow-coverage.js
 
   static-gates:
     name: Static gates (eslint + patterns + comment blocks + api snapshot)
