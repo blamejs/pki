@@ -45,6 +45,7 @@ var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
 var trust      = require("./lib/trust");
 var inspect    = require("./lib/inspect");
+var webauthn   = require("./lib/webauthn");
 
 module.exports = {
   version:   constants.version,
@@ -116,6 +117,14 @@ module.exports = {
   // OID registry, naming extension/algorithm OIDs OpenSSL shows only as raw bytes.
   // Pure, no OpenSSL dependency; best-effort (a bad extension falls back to hex).
   inspect:   inspect,
+  // `webauthn` verifies a W3C WebAuthn / passkey attestation -- pki.webauthn.verify
+  // checks the attestation-statement signature + each format's structural bindings
+  // (packed / tpm / android-key / apple / fido-u2f / none) and surfaces the x5c chain
+  // for the caller to anchor to a pinned root via pki.path.validate; it does not
+  // itself chain to a trust anchor. parseAttestationObject structurally decodes the
+  // attestation object + authenticatorData + COSE key over the strict pki.cbor codec.
+  // A verifier, not a ceremony client; fail-closed.
+  webauthn:  webauthn,
   // A ready W3C Crypto instance (globalThis.crypto shape) with the classes for
   // constructing more attached under the same namespace (pki.webcrypto.CryptoKey,
   // .SubtleCrypto, .Crypto, .WebCryptoError). PQC-first, classical-capable, zero-dep.

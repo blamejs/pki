@@ -119,6 +119,13 @@ var sigstoreTrust = {
 };
 (sigstoreTrustRoot.certificateAuthorities || []).forEach(function (ca) { ((ca.certChain && ca.certChain.certificates) || []).forEach(function (c) { sigstoreTrust.fulcioRoots.push(Buffer.from(c.rawBytes, "base64")); }); });
 
+// pki.webauthn fixtures: a REAL packed attestation + its clientDataHash, so
+// parseAttestationObject's and verify's examples run the actual decode + verify.
+var webauthnKat = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "webauthn", "py-webauthn-kat.json"), "utf8"));
+function _b64u(s) { var x = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (x.length % 4) x += "="; return Buffer.from(x, "base64"); }
+var webauthnAttObj = _b64u(webauthnKat.formats.packed.attestationObject);
+var webauthnClientHash = require("node:crypto").createHash("sha256").update(_b64u(webauthnKat.formats.packed.clientDataJSON)).digest();
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -168,6 +175,9 @@ function fixturesFor(tag) {
     // pki.sigstore: a real bundle + trust material so verifyBundle's example runs
     // the full offline verification path.
     bundle: sigstoreBundle, sigstoreTrust: sigstoreTrust,
+    // pki.webauthn: a real packed attestation + its clientDataHash so the parse
+    // and verify examples run the actual decode + attestation-statement verify.
+    attestationObject: webauthnAttObj, clientDataHash: webauthnClientHash,
   };
 }
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples
