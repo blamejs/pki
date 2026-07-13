@@ -88,11 +88,11 @@ async function run() {
   //    a real composite-signed leaf against a crafted trust-anchor SPKI whose OID
   //    matches (passing the key<->sig binding) but whose key body is malformed.
   var b = pki.asn1.build;
-  var leaf = pki.schema.x509.parse(Buffer.from(v.x5c, "base64"));
+  var mleaf = pki.schema.x509.parse(Buffer.from(v.x5c, "base64"));
   var algSeq = b.sequence([b.oid(pki.oid.byName("id-MLDSA65-ECDSA-P256-SHA512"))]);
-  function anchorSpki(spki) { return { name: leaf.subject, publicKey: spki, algorithm: leaf.subjectPublicKeyInfo.algorithm }; }
+  function anchorSpki(spki) { return { name: mleaf.subject, publicKey: spki, algorithm: mleaf.subjectPublicKeyInfo.algorithm }; }
   async function sigWithAnchor(spki) {
-    return sigCheck(await pki.path.validate([leaf], { time: T, trustAnchor: anchorSpki(spki) }));
+    return sigCheck(await pki.path.validate([mleaf], { time: T, trustAnchor: anchorSpki(spki) }));
   }
   // A composite subjectPublicKey BIT STRING with a non-zero unused-bit count.
   check("composite: anchor SPKI with unused bits fails closed",
@@ -103,6 +103,25 @@ async function run() {
   // A subjectPublicKey that is not a BIT STRING (an OCTET STRING) -- the decode throws.
   check("composite: anchor SPKI whose key is not a BIT STRING fails closed",
     (await sigWithAnchor(b.sequence([algSeq, b.octetString(Buffer.alloc(2100))]))) === false);
+
+  // 5. Composite keyUsage gate (draft sec. 5.2): a composite-keyed cert's keyUsage MUST be
+  //    signature-only. Mutate a KAT cert's keyUsage bits in place (same length preserves the
+  //    DER framing; the mutation breaks the self-signature, but the keyUsage check runs
+  //    independently, so we assert the compositeKeyUsage verdict, not the signature).
+  function kuVerdict(res) { var ch = res.results[0].checks.find(function (x) { return x.name === "compositeKeyUsage"; }); return ch ? ch.ok : null; }
+  var kuVec = KAT.tests.find(function (x) { return x.tcId === "id-MLDSA44-ECDSA-P256-SHA256"; });
+  var kuDer = Buffer.from(kuVec.x5c, "base64");
+  var kuBytes = pki.schema.x509.parse(kuDer).extensions.find(function (e) { return e.oid === pki.oid.byName("keyUsage"); }).value; // 03 02 07 80 = digitalSignature
+  var kuOff = kuDer.indexOf(kuBytes);
+  async function kuValidate(hex) {
+    var d = Buffer.from(kuDer); Buffer.from(hex, "hex").copy(d, kuOff);
+    var c = pki.schema.x509.parse(d);
+    return kuVerdict(await pki.path.validate([c], { time: T, trustAnchor: { name: c.subject, publicKey: c.subjectPublicKeyInfo.bytes, algorithm: c.subjectPublicKeyInfo.algorithm } }));
+  }
+  check("composite keyUsage: digitalSignature-only accepted (baseline)", (await kuValidate("03020780")) === true);
+  check("composite keyUsage: keyEncipherment-only rejected (sec. 5.2 forbidden bit)", (await kuValidate("03020520")) === false);
+  check("composite keyUsage: dual-usage keyCertSign+keyEncipherment rejected (sec. 5.2)", (await kuValidate("03020224")) === false);
+  check("composite keyUsage: a malformed (non-minimal) keyUsage fails closed", (await kuValidate("03020700")) === false);
 }
 
 module.exports = { run: run };
