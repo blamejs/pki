@@ -15,6 +15,7 @@
 
 var fs = require("fs");
 var path = require("path");
+var crypto = require("crypto");
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
@@ -122,6 +123,40 @@ async function run() {
   check("composite keyUsage: keyEncipherment-only rejected (sec. 5.2 forbidden bit)", (await kuValidate("03020520")) === false);
   check("composite keyUsage: dual-usage keyCertSign+keyEncipherment rejected (sec. 5.2)", (await kuValidate("03020224")) === false);
   check("composite keyUsage: a malformed (non-minimal) keyUsage fails closed", (await kuValidate("03020700")) === false);
+
+  // 6. Component encoding/size gates (draft sec. 5.1). Build an anchor with the REAL
+  //    ML-DSA half of a KAT key (so the ML-DSA component still verifies the leaf) but a
+  //    DOWNGRADED / non-conforming traditional half -- the reject then isolates the
+  //    traditional gate, not an ML-DSA failure.
+  function realMldsaHalf(vec, pkLen) {
+    var c = pki.schema.x509.parse(Buffer.from(vec.x5c, "base64"));
+    var keyBytes = pki.asn1.read.bitString(pki.asn1.decode(c.subjectPublicKeyInfo.bytes).children[1]).bytes;
+    return keyBytes.subarray(0, pkLen);
+  }
+  async function verifyWithCompositeKey(vec, name, keyBytes) {
+    var leaf = pki.schema.x509.parse(Buffer.from(vec.x5c, "base64"));
+    var spki = b.sequence([b.sequence([b.oid(pki.oid.byName(name))]), b.bitString(keyBytes, 0)]);
+    return sigCheck(await pki.path.validate([leaf], { time: T, trustAnchor: { name: leaf.subject, publicKey: spki, algorithm: leaf.subjectPublicKeyInfo.algorithm } }));
+  }
+  // A 1024-bit RSA component under the RSA-2048 arm (real ML-DSA-44 half) -> rejected.
+  var rsaVec = KAT.tests.find(function (x) { return x.tcId === "id-MLDSA44-RSA2048-PSS-SHA256"; });
+  var rsa1024 = crypto.generateKeyPairSync("rsa", { modulusLength: 1024 }).publicKey.export({ format: "der", type: "pkcs1" });
+  check("composite: a 1024-bit RSA component under the RSA-2048 arm is rejected (size downgrade)",
+    (await verifyWithCompositeKey(rsaVec, "id-MLDSA44-RSA2048-PSS-SHA256", Buffer.concat([realMldsaHalf(rsaVec, 1312), rsa1024]))) === false);
+  // A correctly-sized (2048-bit) but wrong-key RSA component still rejects (the size gate
+  // passes, the signature verify fails) -- confirms the gate is not the only rejecter.
+  var rsa2048 = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "pkcs1" });
+  check("composite: a 2048-bit but wrong RSA key is rejected (signature fails after the size gate)",
+    (await verifyWithCompositeKey(rsaVec, "id-MLDSA44-RSA2048-PSS-SHA256", Buffer.concat([realMldsaHalf(rsaVec, 1312), rsa2048]))) === false);
+  // A traditional half that is not a decodable RSAPublicKey -> the modulus read throws and
+  // the component fails closed (never an unguarded exception).
+  check("composite: a malformed RSA component (not an RSAPublicKey) is rejected",
+    (await verifyWithCompositeKey(rsaVec, "id-MLDSA44-RSA2048-PSS-SHA256", Buffer.concat([realMldsaHalf(rsaVec, 1312), Buffer.from([1, 2, 3])]))) === false);
+  // A compressed EC point (0x02 prefix) under an arm requiring uncompressed -> rejected.
+  var ecVec = KAT.tests.find(function (x) { return x.tcId === "id-MLDSA65-ECDSA-P256-SHA512"; });
+  var compressedPoint = Buffer.concat([Buffer.from([0x02]), Buffer.alloc(32, 0x01)]);
+  check("composite: a compressed EC point is rejected (draft sec. 5.1 uncompressed-only)",
+    (await verifyWithCompositeKey(ecVec, "id-MLDSA65-ECDSA-P256-SHA512", Buffer.concat([realMldsaHalf(ecVec, 1952), compressedPoint]))) === false);
 }
 
 module.exports = { run: run };
