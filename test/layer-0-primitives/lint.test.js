@@ -217,6 +217,16 @@ function run() {
   var rsa2048 = require("crypto").generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" });
   check("a conformant RSA-2048 key does NOT trip weak-key",
     !has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: rsa2048, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/weak-key"));
+  // An RSASSA-PSS key is also weighed by modulus size (it carries an RSAPublicKey SPKI).
+  var rsaPss1024 = require("crypto").generateKeyPairSync("rsa-pss", { modulusLength: 1024 }).publicKey.export({ format: "der", type: "spki" });
+  check("a weak RSASSA-PSS key -> weak-key (error)",
+    has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: rsaPss1024, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/weak-key"));
+
+  // unknown-critical-extension is registry-driven: a critical extension the OID registry
+  // RECOGNIZES (e.g. policyMappings) is NOT flagged; only an unregistered OID is.
+  var pmVal = b.sequence([b.sequence([b.oid("2.5.29.32.0"), b.oid("2.5.29.32.0")])]);
+  check("a critical but RECOGNIZED extension (policyMappings) is NOT unknown-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [ext("policyMappings", true, pmVal)] })), "lint/rfc5280/unknown-critical-extension"));
 
   // ---- registry introspection ----
   check("pki.lint.rules('bad-profile') throws lint/unknown-profile", throwsCode(function () { pki.lint.rules("does-not-exist"); }) === "lint/unknown-profile");
