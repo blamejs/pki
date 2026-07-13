@@ -53,7 +53,10 @@ function readInput(file) {
   var bytes;
   try { bytes = fs.readFileSync(file); } catch (e) { fail("cannot read " + file + ": " + e.message); }
   var text = bytes.toString("latin1");
-  if (/-----BEGIN /.test(text)) {
+  // Detect PEM only at the file BOUNDARY (armor at the start, after optional whitespace):
+  // binary DER begins with a tag byte, never "-----BEGIN", so a DER value that merely
+  // CONTAINS that ASCII marker (an OCTET STRING / DN string) is not misread as PEM.
+  if (/^\s*-----BEGIN /.test(text)) {
     var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(text);
     if (!m) fail(file + ": malformed PEM (no matching BEGIN/END block)");
     return { der: Buffer.from(m[2].replace(/[\s]+/g, ""), "base64"), label: m[1] };
@@ -124,7 +127,9 @@ function cmdLint(args) {
     });
     process.stdout.write("\n" + (report.findings.length || "no") + " finding(s); worst: " + (report.worst || "pass") + "\n");
   }
-  process.exit((report.counts.error || report.counts.fatal) ? 1 : 0);
+  // Set the exit CODE and let Node drain — process.exit() can truncate a buffered stdout
+  // write to a pipe before it flushes.
+  process.exitCode = (report.counts.error || report.counts.fatal) ? 1 : 0;
 }
 
 // pki convert <file> --to der|pem -- transcode between DER and PEM. The input encoding is
@@ -164,7 +169,7 @@ function cmdVerify(args) {
         (r.checks || []).forEach(function (c) { if (c.ok === false) process.stdout.write("  cert[" + i + "] " + c.code + "\n"); });
       });
     }
-    process.exit(res.valid ? 0 : 1);
+    process.exitCode = res.valid ? 0 : 1;   // let Node flush stdout before it exits
   }, function (e) { return fail(e.code + ": " + e.message); });
 }
 

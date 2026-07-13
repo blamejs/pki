@@ -106,6 +106,14 @@ function run() {
     check("pki convert round-trips DER->PEM->DER byte-identically", Buffer.compare(back.stdout, toDer.stdout) === 0);
     check("pki convert honors an explicit --label", /-----BEGIN X509 CRL-----/.test(cli(["convert", derPath, "--to", "pem", "--label", "X509 CRL"]).stdout));
     check("pki convert rejects an unknown --to target (non-zero exit)", cli(["convert", FIXTURE, "--to", "xml"]).status !== 0);
+    // A raw DER value whose CONTENT contains the ASCII PEM marker must be treated as DER,
+    // not misdetected as PEM (armor detection is anchored at the file boundary).
+    var markerDer = asn1.build.octetString(Buffer.from("-----BEGIN CERTIFICATE-----\nQUFB\n-----END CERTIFICATE-----", "ascii"));
+    var markerPath = path.join(tmp, "marker.der");
+    fs.writeFileSync(markerPath, markerDer);
+    var markerOut = cliBuf(["convert", markerPath, "--to", "der"]);
+    check("pki convert treats DER containing the PEM marker as DER (boundary-anchored detection)",
+      markerOut.status === 0 && Buffer.compare(markerOut.stdout, markerDer) === 0);
 
     // ---- verify ----
     var vOk = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--time", "2030-01-01T00:00:00Z"]);
