@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.10 — 2026-07-13
+
+Certificate linting arrives as pki.lint -- graded, advisory conformance findings against the RFC 5280 profile and a representative CA/Browser Forum TLS Baseline Requirements subset.
+
+### Added
+
+- pki.lint.certificate(input, opts) lints a certificate against the RFC 5280 profile and a representative CA/Browser Forum TLS BR subset, returning a report of graded advisory findings (id, severity, source, spec citation, message). The data path never throws -- malformed input becomes a fatal lint/unparseable finding rather than an exception -- so a corpus lints without per-file error handling; only config-time misuse raises a typed LintError.
+- pki.lint.rules(profile) and pki.lint.profiles() enumerate the rule registry and the available profiles (rfc5280, cabf-tls) so findings are traceable to a stable id and a spec clause.
+
 ## v0.2.9 — 2026-07-13
 
 Certification-path validation verifies composite ML-DSA signatures, accepting a certificate only when both its post-quantum and traditional components verify.

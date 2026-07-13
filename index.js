@@ -45,6 +45,7 @@ var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
 var trust      = require("./lib/trust");
 var inspect    = require("./lib/inspect");
+var lint       = require("./lib/lint");
 var webauthn   = require("./lib/webauthn");
 
 module.exports = {
@@ -117,6 +118,7 @@ module.exports = {
   // OID registry, naming extension/algorithm OIDs OpenSSL shows only as raw bytes.
   // Pure, no OpenSSL dependency; best-effort (a bad extension falls back to hex).
   inspect:   inspect,
+  lint:      lint,
   // `webauthn` verifies a W3C WebAuthn / passkey attestation -- pki.webauthn.verify
   // checks the attestation-statement signature + each format's structural bindings
   // (packed / tpm / android-key / apple / fido-u2f / none) and surfaces the x5c chain
