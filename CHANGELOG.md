@@ -8,6 +8,10 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 pki.webcrypto rejects an imported key whose type disagrees with its algorithm, and reports every cipher fault as a typed error.
 
+### Changed
+
+- The pkijs.com documentation site is regenerated with content-hashed CSS/JS under a strict Content-Security-Policy, an in-memory search endpoint, a browsable reference of every error class and code, symbol autocomplete, and concept guides. Documentation only -- the published package is unchanged.
+
 ### Fixed
 
 - pki.webcrypto.subtle.importKey now validates that an imported asymmetric key's actual type matches the requested algorithm (an RSA key imported under an Ed25519, ECDSA, or RSA-PSS name is rejected as webcrypto/data), closing an algorithm-confusion path where a mislabeled CryptoKey could later be used under the wrong signature scheme. The EC import path already derived and checked the curve; this extends the same key-is-authority rule to RSA and the Edwards/Montgomery curves.

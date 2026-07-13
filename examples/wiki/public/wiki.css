@@ -1,0 +1,142 @@
+/* SPDX-License-Identifier: Apache-2.0 */
+/* pkijs.com stylesheet. Served content-hashed (see lib/assets.js) so the
+   markup can carry a strict style-src 'self' CSP with no inline styles. */
+
+:root{--bg:#0d1117;--panel:#161b22;--ink:#e6edf3;--muted:#9da7b3;--accent:#7c5cff;--accent2:#26c6da;--line:#232a34;--code:#0b0f14}
+*{box-sizing:border-box}html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--ink);font:16px/1.6 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+a{color:var(--accent2);text-decoration:none}a:hover{text-decoration:underline}
+
+/* Accessibility: keyboard users get a first-in-DOM jump past the sidebar. */
+.skip-link{position:absolute;left:-9999px;top:0}
+.skip-link:focus{left:12px;top:12px;z-index:20;background:var(--accent);color:#fff;padding:8px 14px;border-radius:8px;text-decoration:none}
+.visually-hidden{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+.wrap{display:flex;min-height:100vh;align-items:stretch}
+
+/* ---- Sidebar ---- */
+aside.side{width:260px;flex:0 0 260px;background:var(--panel);border-right:1px solid var(--line);padding:20px 16px;overflow-y:auto}
+aside.side .brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:18px;margin-bottom:14px;color:var(--ink)}
+aside.side .brand img{width:28px;height:28px;border-radius:6px}
+aside.side ul{list-style:none;margin:0 0 8px;padding:0}
+aside.side li{margin:2px 0}
+aside.side ul a{display:block;padding:4px 8px;border-radius:6px;color:var(--ink)}
+aside.side ul a:hover{background:#1f2733;text-decoration:none}
+aside.side ul a[aria-current=page]{background:#1f2733;color:var(--accent2)}
+details.navgrp{margin:6px 0}
+details.navgrp>summary{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:10px 0 6px;cursor:pointer;list-style:none;user-select:none}
+details.navgrp>summary::-webkit-details-marker{display:none}
+details.navgrp>summary::before{content:"\25B8";display:inline-block;width:14px;color:var(--muted);font-size:10px}
+details.navgrp[open]>summary::before{content:"\25BE"}
+.side-foot{margin-top:18px;border-top:1px solid var(--line);padding-top:12px;font-size:13px;color:var(--muted)}
+.side-foot a{color:var(--muted)}
+
+/* ---- Sidebar search ---- */
+.side-search{margin:0 0 12px}
+.side-search input,.sym-search input{width:100%;background:var(--bg);border:1px solid var(--line);border-radius:8px;color:var(--ink);padding:6px 10px;font:13px/1.5 inherit}
+.side-search input:focus,.sym-search input:focus{outline:none;border-color:var(--accent)}
+.side-search input::placeholder,.sym-search input::placeholder{color:var(--muted)}
+.sym-search{position:relative;margin:0 0 12px}
+.sym-results{list-style:none;margin:4px 0 0;padding:4px;border:1px solid var(--line);border-radius:8px;background:var(--bg);max-height:320px;overflow-y:auto}
+.sym-results[hidden]{display:none}
+.sym-results li{margin:0}
+.sym-results a{display:block;padding:5px 8px;border-radius:6px;color:var(--ink);font:12px/1.45 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace}
+.sym-results a .sym-page{display:block;color:var(--muted);font:11px/1.4 -apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif}
+.sym-results li.is-active a,.sym-results a:hover{background:#1f2733;text-decoration:none}
+
+/* ---- Main column ---- */
+main{flex:1 1 auto;max-width:900px;margin:0 auto;padding:36px 40px;min-width:0}
+h1{font-size:34px;margin:0 0 8px;letter-spacing:-.01em}
+main>.intro{color:var(--muted);font-size:18px;margin:0 0 28px;max-width:70ch}
+h2{font-size:22px;margin:34px 0 6px;border-bottom:1px solid var(--line);padding-bottom:6px}
+h2 a{color:var(--ink)}
+h3.sub{font-size:13px;text-transform:uppercase;letter-spacing:.06em;color:var(--muted);margin:18px 0 6px}
+code{background:var(--code);border:1px solid var(--line);border-radius:4px;padding:1px 5px;font:13px/1.5 'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;color:#d6d3ff}
+pre.code{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:10px 0;position:relative}
+pre.code code{background:none;border:none;padding:0;color:#cfe3ff}
+.badges{margin:6px 0 14px;display:flex;gap:6px;flex-wrap:wrap}
+.badge{font-size:11px;padding:2px 8px;border-radius:999px;border:1px solid var(--line);color:var(--muted)}
+.badge-status{text-transform:uppercase;letter-spacing:.05em}
+.badge-stable{color:#3fb950;border-color:#233b28}
+.badge-experimental{color:#d29922;border-color:#3b3320}
+.badge-deprecated{color:#f85149;border-color:#3b2323}
+.badge-since{color:var(--accent2)}.badge-compliance{color:var(--accent)}
+.primitive{margin-bottom:10px}.related{color:var(--muted);font-size:14px}
+.refs{list-style:none;margin:6px 0 4px;padding:0;font-size:14px}.refs li{margin:2px 0;color:var(--muted)}
+.ref-kind{display:inline-block;min-width:64px;font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--accent)}
+
+/* ---- Copy-to-clipboard button on code blocks (attached by wiki.js) ---- */
+.copy-btn{position:absolute;top:8px;right:8px;background:var(--panel);border:1px solid var(--line);border-radius:6px;color:var(--muted);font:11px/1 inherit;padding:5px 9px;cursor:pointer;opacity:0;transition:opacity .12s}
+pre.code:hover .copy-btn,.copy-btn:focus{opacity:1}
+.copy-btn.is-done{color:#3fb950;border-color:#233b28;opacity:1}
+
+/* ---- Landing page ---- */
+.hero{display:flex;align-items:center;gap:22px;margin:6px 0 18px}
+.hero img{width:96px;height:96px;border-radius:18px;box-shadow:0 8px 40px rgba(124,92,255,.25)}
+.hero h1{font-size:40px;margin:0}.hero .tag{color:var(--muted);font-size:18px;margin-top:4px}
+.pills{display:flex;gap:8px;flex-wrap:wrap;margin:0 0 22px}
+.pill{font-size:12px;padding:3px 12px;border-radius:999px;border:1px solid var(--line);color:var(--muted);background:var(--panel)}
+.cards{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:16px;margin:22px 0}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;transition:border-color .15s}
+.card:hover{border-color:var(--accent)}.card h3{margin:0 0 6px;font-size:17px}.card p{margin:0;color:var(--muted);font-size:14px}
+.callout{background:var(--panel);border:1px solid var(--line);border-left:3px solid var(--accent2);border-radius:8px;padding:12px 16px;margin:16px 0;font-size:15px}
+.callout .callout-label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--accent2);margin-bottom:4px}
+.callout-tip{border-left-color:#3fb950}
+.callout-tip .callout-label{color:#3fb950}
+.tenets{margin:8px 0 8px;padding-left:22px}
+.tenets li{margin:6px 0}
+.tenets li strong{color:var(--ink)}
+footer{color:var(--muted);font-size:13px;margin-top:48px;border-top:1px solid var(--line);padding-top:16px}
+
+/* ---- Reference / search-result tables ---- */
+.ref-table{border-collapse:collapse;width:100%;margin:12px 0 22px;font-size:14px;display:block;overflow-x:auto}
+.ref-table th,.ref-table td{border:1px solid var(--line);padding:6px 11px;text-align:left;vertical-align:top}
+.ref-table th{background:var(--panel);white-space:nowrap}
+.ref-table td code{white-space:nowrap}
+mark{background:#3b2f66;color:var(--ink);border-radius:3px;padding:0 2px}
+.search-hit{margin:0 0 22px}
+.search-hit h2{border-bottom:none;margin:0 0 2px;font-size:18px}
+.search-hit .hit-path{color:var(--muted);font-size:13px}
+.search-hit .hit-excerpt{color:var(--muted);font-size:14px;margin:4px 0 0}
+
+/* ---- On-this-page rail (built by wiki.js; absent without JS) ---- */
+aside.toc-rail{width:220px;flex:0 0 220px;padding:36px 18px 36px 0;position:sticky;top:0;align-self:flex-start;max-height:100vh;overflow-y:auto;display:none}
+.toc-rail .toc-title{font-size:12px;letter-spacing:.08em;text-transform:uppercase;color:var(--muted);margin:0 0 8px}
+.toc-rail ul{list-style:none;margin:0;padding:0}
+.toc-rail li{margin:0}
+.toc-rail a{display:block;padding:3px 8px;border-left:2px solid var(--line);color:var(--muted);font-size:13px;border-radius:0 6px 6px 0}
+.toc-rail a:hover{color:var(--ink);text-decoration:none}
+.toc-rail a.is-active{color:var(--accent2);border-left-color:var(--accent2)}
+@media(min-width:1280px){aside.toc-rail{display:block}}
+
+/* ---- README overview page ---- */
+.readme{max-width:none}.readme div[align=center]{text-align:center;margin-bottom:20px}
+.readme img{max-width:100%;vertical-align:middle}.readme div[align=center] img[width]{margin-bottom:10px}
+.readme a img{margin:2px}
+.readme table{border-collapse:collapse;width:100%;margin:16px 0;font-size:14px;display:block;overflow-x:auto}
+.readme th,.readme td{border:1px solid var(--line);padding:6px 11px;text-align:left;vertical-align:top}
+.readme th{background:var(--panel);white-space:nowrap}
+.readme pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto;margin:12px 0;position:relative}
+.readme pre code{background:none;border:none;padding:0;color:#cfe3ff;font-size:13px}
+.readme hr{border:none;border-top:1px solid var(--line);margin:26px 0}
+.readme h2{margin-top:30px}.readme ul{padding-left:22px}.readme li{margin:4px 0}
+
+/* ---- Prism harmonization: token colors come from the vendored theme;
+   backgrounds, borders, and fonts stay the site's own. ---- */
+code[class*=language-],pre[class*=language-]{background:transparent;text-shadow:none;font-family:'SFMono-Regular',Consolas,'Liberation Mono',Menlo,monospace;font-size:13px}
+pre.code code[class*=language-]{color:#cfe3ff}
+.readme pre code[class*=language-]{color:#cfe3ff}
+
+@media(max-width:720px){
+  .wrap{flex-direction:column}
+  aside.side{width:auto;flex:none;border-right:none;border-bottom:1px solid var(--line)}
+  main{padding:24px 18px}
+}
+@media print{
+  aside.side,aside.toc-rail,.copy-btn,.skip-link{display:none}
+  body{background:#fff;color:#000}
+  a{color:#000;text-decoration:underline}
+}
+@media(prefers-reduced-motion:reduce){
+  *{transition:none!important;scroll-behavior:auto!important}
+}
