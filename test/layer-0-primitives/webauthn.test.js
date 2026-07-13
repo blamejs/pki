@@ -50,7 +50,7 @@ function coseKey(entries) { return cMap(entries); }
 // authenticatorData with a chosen flag set + attestedCredentialData (RFC WebAuthn 6.1).
 function buildAuthData(o) {
   o = o || {};
-  var flags = (o.at === false ? 0 : 0x40) | (o.ed ? 0x80 : 0) | (o.bs ? 0x10 : 0) | (o.be ? 0x08 : 0) | 0x01;   // UP always
+  var flags = (o.at === false ? 0 : 0x40) | (o.ed ? 0x80 : 0) | (o.bs ? 0x10 : 0) | (o.be ? 0x08 : 0) | (o.rfu ? 0x02 : 0) | 0x01;   // UP always
   var parts = [Buffer.concat([Buffer.alloc(32, 1), Buffer.from([flags]), Buffer.alloc(4)])];
   if (o.at !== false) {
     var credId = o.credId || Buffer.alloc(16, 3);
@@ -183,6 +183,9 @@ async function run() {
   // §6.1 -- Backup State (BS) set without Backup Eligibility (BE) is an invalid flag combination.
   check("parse: authData BS set without BE -> webauthn/bad-auth-data",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ bs: true, be: false, coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }))); }) === "webauthn/bad-auth-data");
+  // §6.1 -- a set reserved (RFU) flag bit is rejected.
+  check("parse: authData with a reserved flag bit set -> webauthn/bad-auth-data",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ rfu: true, coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }))); }) === "webauthn/bad-auth-data");
   // §6.1 -- the ED flag set with no (or malformed) extensions map is rejected.
   check("parse: ED flag set with no extensions map -> webauthn/bad-auth-data",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ ed: true, coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }))); }) === "webauthn/bad-auth-data");
@@ -198,6 +201,14 @@ async function run() {
   var unknownKty = coseKey([cKV(1, cInt(9)), cKV(3, cInt(-7))]);
   check("parse: unknown COSE key kty -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: unknownKty }))); }) === "webauthn/bad-cose-key");
+  // §6.5.1 -- a wrong-typed COSE label (x as an integer, kty as text) is a typed
+  // webauthn/bad-cose-key, not a leaked cbor/* codec fault.
+  var ec2IntX = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cInt(99)), cKV(-3, cBytes(credKey.y))]);
+  check("parse: EC2 key with x as an integer -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ec2IntX }))); }) === "webauthn/bad-cose-key");
+  var ktyText = coseKey([cKV(1, cText("two")), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
+  check("parse: COSE key with a non-integer kty -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ktyText }))); }) === "webauthn/bad-cose-key");
   // §6.5.1 / RFC 9052 -- Ed448 (OKP crv 7, 57-byte x) is a valid credential key type.
   var ed448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57, 7)))]);
   var ed448Parsed = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448 })));
