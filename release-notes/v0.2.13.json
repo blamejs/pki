@@ -1,0 +1,10 @@
+{
+  "version": "0.2.13",
+  "headline": "The certificate linter validates IP-literal common names with a strict in-house checker instead of node:net, so the toolkit pulls in no networking module.",
+  "summary": "pki.lint's commonName-in-subjectAltName check classifies an IP-literal common name (skipping it, since an IP is matched against an iPAddress SAN rather than a dNSName) with a new strict, self-contained IP validator rather than node:net's isIP. The published toolkit therefore requires no networking module -- reinforcing the zero-runtime-dependency, no-network posture -- while the validator is more complete: a per-octet-bounded IPv4 dotted quad and the full RFC 4291 IPv6 textual form, including the IPv4-mapped and dual-stack tail (::ffff:1.2.3.4) the previous approach handled only through node:net. The shared lib/ip-utils helper is internal (no operator-facing surface) and covers the same classification node:net does across the vector set.",
+  "sections": {
+    "Changed": [
+      "pki.lint validates an IP-literal common name with a strict in-house IPv4/IPv6 checker (lib/ip-utils) instead of node:net, so the toolkit needs no networking module; the validator now also recognizes IPv4-mapped and dual-stack IPv6 literals."
+    ]
+  }
+}
