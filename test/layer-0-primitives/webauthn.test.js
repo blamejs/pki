@@ -205,6 +205,29 @@ async function run() {
   // leaf omits it), so an attestation leaf without one is rejected.
   check("verify: packed x5c leaf with no basicConstraints -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([androidLeaf], Buffer.alloc(8), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // An all-zeroes Ed25519 attestation-cert key MUST NOT pass statement-signature
+  // verification: node/OpenSSL imports it and verifies a trivial (all-zero) signature, so a
+  // packed Ed attestation could otherwise pass without the attestation private key. The OKP
+  // point is validated (RFC 8032 decode + cofactor) before verify, for the CERT key too.
+  var _B = pki.asn1.build;
+  function _atv(o, v) { return _B.set([_B.sequence([_B.oid(pki.oid.byName(o)), _B.utf8(v)])]); }
+  function _dn(cn) { return _B.sequence([_atv("countryName", "US"), _atv("organizationName", "WA Test"), _atv("organizationalUnitName", "Authenticator Attestation"), _atv("commonName", cn)]); }
+  var edZeroCert = _B.sequence([
+    _B.sequence([_B.explicit(0, _B.integer(2n)), _B.integer(0x1234n), _B.sequence([_B.oid(pki.oid.byName("Ed25519"))]), _dn("I"),
+      _B.sequence([_B.utcTime(new Date("2024-01-01T00:00:00Z")), _B.utcTime(new Date("2030-01-01T00:00:00Z"))]), _dn("L"),
+      _B.sequence([_B.sequence([_B.oid(pki.oid.byName("Ed25519"))]), _B.bitString(Buffer.alloc(32))]),
+      _B.explicit(3, _B.sequence([_B.sequence([_B.oid(pki.oid.byName("basicConstraints")), _B.boolean(true), _B.octetString(_B.sequence([]))])]))]),
+    _B.sequence([_B.oid(pki.oid.byName("Ed25519"))]), _B.bitString(Buffer.alloc(64)),
+  ]);
+  var edZeroAtt = attObjOf("packed", [[cText("alg"), cInt(-8)], [cText("sig"), cBytes(Buffer.alloc(64))], [cText("x5c"), cArr([edZeroCert].map(cBytes))]], realAuthData);
+  check("verify: packed x5c with an all-zeroes Ed25519 attestation-cert key -> webauthn/bad-signature",
+    (await codeOfAsync(function () { return pki.webauthn.verify(edZeroAtt, packedHash); })) === "webauthn/bad-signature");
+  // WebAuthn 8.6 -- a fido-u2f credential public key MUST be alg -7 (ES256); an ESP256 (-9)
+  // key, though the same P-256 curve, is not a valid fido-u2f credential.
+  var u2fEsp256 = attObjOf("fido-u2f", [[cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([x5cDer("fido_u2f", 0)].map(cBytes))]],
+    buildAuthData({ coseKey: coseKey([cKV(1, cInt(2)), cKV(3, cInt(-9)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]) }));
+  check("verify: fido-u2f with an ESP256 (-9) credential key -> webauthn/bad-att-stmt (must be -7)",
+    (await codeOfAsync(function () { return pki.webauthn.verify(u2fEsp256, Buffer.alloc(32)); })) === "webauthn/bad-att-stmt");
   // §8.2.1 -- the packed leaf subject MUST set C/O/OU/CN (the tpm AIK is v3 + non-CA
   // but has an empty subject), so a leaf missing those fields is rejected.
   check("verify: packed x5c leaf with an empty subject (no C/O/CN) -> webauthn/bad-att-cert",
