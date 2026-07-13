@@ -4,6 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.11 — 2026-07-13
+
+The pki command-line tool gains inspect, lint, convert, and verify -- front-ends over the certificate inspector, the linter, the PEM codecs, and RFC 5280 path validation.
+
+### Added
+
+- pki inspect <cert> renders a certificate as an openssl x509 -text style report (composes pki.inspect.certificate).
+- pki lint <cert> [--profile <name>] [--severity <floor>] [--json] lints a certificate against the RFC 5280 and CABF TLS profiles, exiting non-zero when an error or fatal finding is present (composes pki.lint.certificate).
+- pki convert <file> --to der|pem [--label <label>] transcodes between DER and PEM with auto-detected input encoding and byte-exact round-tripping.
+- pki verify <cert>... --anchor <cert> [--time <ISO>] validates an ordered certification path against a trust anchor per RFC 5280 section 6.1 (composes pki.path.validate), exiting non-zero and naming the failing check on rejection.
+
 ## v0.2.10 — 2026-07-13
 
 Certificate linting arrives as pki.lint -- graded, advisory conformance findings against the RFC 5280 profile and a representative CA/Browser Forum TLS Baseline Requirements subset.

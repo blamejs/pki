@@ -1,0 +1,13 @@
+{
+  "version": "0.2.11",
+  "headline": "The pki command-line tool gains inspect, lint, convert, and verify -- front-ends over the certificate inspector, the linter, the PEM codecs, and RFC 5280 path validation.",
+  "summary": "The bundled `pki` CLI grows from version/oid/parse into an openssl-style toolbox over the library surface. `pki inspect <cert>` renders a certificate as text, the pure-JS equivalent of `openssl x509 -text`. `pki lint <cert>` runs the conformance linter and prints one line per finding, exiting non-zero when any error or fatal finding is present (with `--profile`, `--severity`, and `--json`). `pki convert <file> --to der|pem` transcodes a certificate or any DER structure between DER and PEM, auto-detecting the input encoding and round-tripping byte-for-byte (`--label` sets the PEM armor). `pki verify <cert>... --anchor <cert>` validates an ordered certification path against a trust anchor per RFC 5280 section 6.1, exiting non-zero and naming the failing check when the path does not validate. Each command is a thin composition over pki.inspect, pki.lint, the per-format PEM codecs, and pki.path.validate -- it validates its arguments at the entry point and does nothing the library API cannot.",
+  "sections": {
+    "Added": [
+      "pki inspect <cert> renders a certificate as an openssl x509 -text style report (composes pki.inspect.certificate).",
+      "pki lint <cert> [--profile <name>] [--severity <floor>] [--json] lints a certificate against the RFC 5280 and CABF TLS profiles, exiting non-zero when an error or fatal finding is present (composes pki.lint.certificate).",
+      "pki convert <file> --to der|pem [--label <label>] transcodes between DER and PEM with auto-detected input encoding and byte-exact round-tripping.",
+      "pki verify <cert>... --anchor <cert> [--time <ISO>] validates an ordered certification path against a trust anchor per RFC 5280 section 6.1 (composes pki.path.validate), exiting non-zero and naming the failing check on rejection."
+    ]
+  }
+}

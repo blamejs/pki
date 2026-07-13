@@ -1,4 +1,16 @@
 {
+  "pki.webauthn.parseAttestationObject": {
+    "decision": "keep-experimental",
+    "reason": "The attestation-object surface is hardened and covers the WebAuthn attestation-statement formats, but the format set is still growing and the aaguid->root binding via FIDO MDS is the caller's step rather than an in-toolkit surface. Graduate once the attestation-format coverage and the metadata-service trust-anchor binding are settled.",
+    "reviewedAt": "0.2.11",
+    "reviewBy": "0.3.0"
+  },
+  "pki.webauthn.verify": {
+    "decision": "keep-experimental",
+    "reason": "The attestation verifier's surface (opts, the returned trust path) tracks the still-growing attestation-format set and defers the trust-path-to-anchor chaining to the caller (pki.path.validate + FIDO MDS). Graduate alongside pki.webauthn.parseAttestationObject.",
+    "reviewedAt": "0.2.11",
+    "reviewBy": "0.3.0"
+  },
   "pki.path.validate": {
     "decision": "keep-experimental",
     "reason": "The RFC 5280 §6 path-validation surface is broad and still hardening, and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
