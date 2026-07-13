@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.13",
+  "packageVersion": "0.2.14",
   "surface": {
     "C": {
       "kind": "object",
@@ -1025,6 +1025,15 @@
               "arity": 1
             }
           }
+        }
+      }
+    },
+    "cms": {
+      "kind": "object",
+      "members": {
+        "verify": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -2632,6 +2641,7 @@
     "pki.cbor.read.biguint": "0.1.27",
     "pki.cbor.read.time": "0.1.27",
     "pki.cbor.read.oid": "0.1.27",
+    "pki.cms.verify": "0.2.14",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.ct.parseSctList": "0.1.20",

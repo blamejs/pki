@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.14 — 2026-07-13
+
+CMS SignedData signature verification arrives as pki.cms.verify -- verifying a signed message (S/MIME, timestamps, code signing) over the exact RFC 5652 preimage, for attached and detached content, one or many signers, across RSA, RSASSA-PSS, ECDSA, and EdDSA.
+
+### Added
+
+- pki.cms.verify(input, opts) verifies a CMS SignedData signature (RFC 5652 section 5) for attached and detached content, single and multiple signers, across RSA, RSASSA-PSS, ECDSA, and EdDSA. It accepts a PEM string, a DER Buffer, or a parsed pki.schema.cms object; opts.content supplies the external content for a detached signature and opts.certs supplies additional signer certificates. Each signer is located by its issuerAndSerialNumber or subjectKeyIdentifier and its signature checked over the exact RFC 5652 section 5.4 preimage -- the message-digest attribute bound to the content digest and the signature verified over the SignedAttributes re-encoding when signed attributes are present, otherwise over the content directly. Returns { valid, signers } with a per-signer verdict and the matched certificate; a false verdict or a structural fault is a fail-closed cms/* outcome.
+
 ## v0.2.13 — 2026-07-13
 
 The certificate linter validates IP-literal common names with a strict in-house checker instead of node:net, so the toolkit pulls in no networking module.
