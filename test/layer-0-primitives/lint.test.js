@@ -231,6 +231,12 @@ function run() {
     has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("exa$mple.com")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
   check("a leftmost-wildcard dNSName is well-formed (not flagged)",
     !has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("*.example.com")], false), aki()] })), "lint/cabf-tls/dnsname-bad-syntax"));
+  function dnsCert(name) { return makeCert({ subject: dnCN("x.example"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName(name)], false), aki()] }); }
+  check("a bare wildcard dNSName -> dnsname-bad-syntax", has(pki.lint.certificate(dnsCert("*")), "lint/cabf-tls/dnsname-bad-syntax"));
+  check("a label beginning with a hyphen -> dnsname-bad-syntax", has(pki.lint.certificate(dnsCert("-bad.example")), "lint/cabf-tls/dnsname-bad-syntax"));
+  check("a label ending with a hyphen -> dnsname-bad-syntax", has(pki.lint.certificate(dnsCert("bad-.example")), "lint/cabf-tls/dnsname-bad-syntax"));
+  check("a label over 63 octets -> dnsname-bad-syntax", has(pki.lint.certificate(dnsCert(new Array(65).join("a") + ".example")), "lint/cabf-tls/dnsname-bad-syntax"));
+  check("a dNSName over 253 octets -> dnsname-bad-syntax", has(pki.lint.certificate(dnsCert([1, 2, 3, 4].map(function () { return new Array(64).join("a"); }).join("."))), "lint/cabf-tls/dnsname-bad-syntax"));
   // A serial whose value has its high bit set carries a DER 0x00 sign pad; the octet COUNT
   // must strip it, so a 20-value-octet serial does NOT trip serial-too-long (covers the strip).
   var SERIAL_20_HIGHBIT = b.integer(BigInt("0x80" + "00".repeat(19)));
