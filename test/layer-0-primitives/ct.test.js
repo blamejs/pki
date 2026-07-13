@@ -454,6 +454,10 @@ async function testVerifySct() {
   // not import -> the import/verify seam maps it to a typed ct/verify-error, not a raw fault.
   var badPoint = b.sequence([b.sequence([b.oid(ecPub), b.oid(pki.oid.byName("prime256v1"))]), b.bitString(Buffer.alloc(65, 0), 0)]);
   check("84. verifySct maps an unimportable log key to ct/verify-error", (await vres(function () { return pki.ct.verifySct(entry, ecSct, badPoint); })) === "ct/verify-error");
+  // An SPKI whose AlgorithmIdentifier does not lead with an OID -> typed ct/bad-input, not a
+  // raw asn1/* error leaking out of the verifier.
+  var noAlgOid = b.sequence([b.sequence([b.integer(5n)]), dummyPoint]);
+  check("85. verifySct wraps a non-OID SPKI algorithm identifier (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, noAlgOid); })) === "ct/bad-input");
 }
 
 async function run() {
