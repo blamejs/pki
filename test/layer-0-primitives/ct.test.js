@@ -381,7 +381,82 @@ function testKnownAnswerVector() {
   check("66. SCT[1] DER ECDSA signature surfaced raw", s1.signature.length === 71 && s1.signature[0] === 0x30);
 }
 
-function run() {
+// ---- verifySct: verify an SCT signature against a log key (RFC 6962 sec. 3.2) ----
+// Round-trip KAT: sign a reconstructed preimage with a generated log key (real node crypto),
+// then assert verifySct accepts it and rejects every corruption -- the log-signature-forgery
+// defense the SCT surface exists for.
+var crypto = require("crypto");
+async function vres(fn) { try { return await fn(); } catch (e) { return (e && e.code) || String(e); } }
+async function testVerifySct() {
+  var certDer = pki.schema.x509.pemDecode(helpers.vectors.CERT_EC_PEM, "CERTIFICATE");
+  var entry = { entryType: 0, leafCert: certDer };
+  function sctFor(hashName, hash, signatureName, signature, signature2) {
+    return { version: 0, timestamp: 1700000000000n, signatureAlgorithm: { hash: hash, hashName: hashName, signature: signature2, signatureName: signatureName }, signature: signature, extensions: Buffer.alloc(0) };
+  }
+  async function signedSct(privKey, hashName, hash, sigName, sigCode) {
+    var sct = sctFor(hashName, hash, sigName, null, sigCode);
+    sct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData(entry, sct), privKey);
+    return sct;
+  }
+  // ECDSA (P-256) round-trip.
+  var ec = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecSpki = ec.publicKey.export({ format: "der", type: "spki" });
+  var ecSct = await signedSct(ec.privateKey, "sha256", 4, "ecdsa", 3);
+  check("67. verifySct accepts a valid ECDSA SCT", (await vres(function () { return pki.ct.verifySct(entry, ecSct, ecSpki); })) === true);
+  var corrupt = Buffer.from(ecSct.signature); corrupt[corrupt.length - 1] ^= 0xff;
+  check("68. verifySct rejects a corrupted signature (false, not throw)", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signature: corrupt }), ecSpki); })) === false);
+  var ec2 = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  check("69. verifySct rejects the wrong log key", (await vres(function () { return pki.ct.verifySct(entry, ecSct, ec2.publicKey.export({ format: "der", type: "spki" })); })) === false);
+  // A different entry than the one signed reconstructs a different preimage -> reject.
+  check("70. verifySct rejects an SCT bound to a different entry", (await vres(function () { return pki.ct.verifySct({ entryType: 1, tbsCertificate: certDer, issuerKeyHash: Buffer.alloc(32, 7) }, ecSct, ecSpki); })) === false);
+
+  // RSA round-trip (precert entry type 1).
+  var rsa = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaEntry = { entryType: 1, tbsCertificate: certDer, issuerKeyHash: Buffer.alloc(32, 9) };
+  var rsaSct = sctFor("sha256", 4, "rsa", null, 1);
+  rsaSct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData(rsaEntry, rsaSct), rsa.privateKey);
+  var rsaSpki = rsa.publicKey.export({ format: "der", type: "spki" });
+  check("71. verifySct accepts a valid RSA SCT over a precert entry", (await vres(function () { return pki.ct.verifySct(rsaEntry, rsaSct, rsaSpki); })) === true);
+
+  // Structural fail-closed vectors (throw, not a false verdict).
+  // A NON-MINIMAL DER ECDSA-Sig-Value -- SEQUENCE { r = INTEGER 00 01 (redundant sign octet),
+  // s = INTEGER 01 } -- is rejected by the shared validator-sig conformance gate before verify.
+  var nonMinimal = Buffer.from([0x30, 0x07, 0x02, 0x02, 0x00, 0x01, 0x02, 0x01, 0x01]);
+  check("72. verifySct rejects a non-minimal DER ECDSA signature (ct/bad-signature)", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signature: nonMinimal }), ecSpki); })) === "ct/bad-signature");
+  // An SCT declaring ECDSA but a log key that is RSA -> typed bad-input, not a silent false.
+  check("73. verifySct rejects an ECDSA SCT against an RSA log key (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, rsaSpki); })) === "ct/bad-input");
+  // An unsupported hash / signature algorithm -> typed unsupported-algorithm.
+  check("74. verifySct rejects an unsupported hash algorithm", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signatureAlgorithm: { hash: 2, hashName: "sha1", signature: 3, signatureName: "ecdsa" } }), ecSpki); })) === "ct/unsupported-algorithm");
+  check("75. verifySct rejects an unsupported signature algorithm", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 2, signatureName: "dsa" } }), ecSpki); })) === "ct/unsupported-algorithm");
+  // A malformed log key (not an SPKI) -> typed bad-input.
+  check("76. verifySct rejects an undecodable log public key (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, Buffer.from([0x30, 0x82, 0xff, 0xff])); })) === "ct/bad-input");
+  check("76b. verifySct rejects a decodable non-SPKI log key (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, b.integer(5n)); })) === "ct/bad-input");
+  // An EC log key SPKI missing its named-curve parameters, or carrying non-OID params.
+  var ecPub = pki.oid.byName("ecPublicKey"), dummyPoint = b.bitString(Buffer.alloc(65, 4), 0);
+  var noParams = b.sequence([b.sequence([b.oid(ecPub)]), dummyPoint]);
+  check("77. verifySct rejects an EC log key missing curve params (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, noParams); })) === "ct/bad-input");
+  var badParams = b.sequence([b.sequence([b.oid(ecPub), b.integer(5n)]), dummyPoint]);
+  check("78. verifySct rejects an EC log key with non-OID curve params (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, badParams); })) === "ct/bad-input");
+  // An EC log key on a non-approved curve (secp256k1) -> unsupported.
+  var k256 = crypto.generateKeyPairSync("ec", { namedCurve: "secp256k1" }).publicKey.export({ format: "der", type: "spki" });
+  check("79. verifySct rejects an unsupported log EC curve (ct/unsupported-algorithm)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, k256); })) === "ct/unsupported-algorithm");
+  // An SCT declaring RSA but an EC log key -> bad-input.
+  check("80. verifySct rejects an RSA SCT against an EC log key (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(rsaEntry, rsaSct, ecSpki); })) === "ct/bad-input");
+  // An SCT with no signatureAlgorithm block -> the hash check fails unsupported.
+  check("81. verifySct rejects an SCT with no signatureAlgorithm (ct/unsupported-algorithm)", (await vres(function () { return pki.ct.verifySct(entry, { version: 0, timestamp: 1700000000000n, extensions: Buffer.alloc(0) }, ecSpki); })) === "ct/unsupported-algorithm");
+  // logId binding (RFC 6962 sec. 3.2): an SCT names its log by SHA-256(SPKI). When present,
+  // it must match the key it is verified against.
+  var sha256 = function (buf) { return crypto.createHash("sha256").update(buf).digest(); };
+  var ecSctId = Object.assign({}, ecSct, { logId: sha256(ecSpki) });
+  check("82. verifySct accepts an SCT whose logId matches the log key", (await vres(function () { return pki.ct.verifySct(entry, ecSctId, ecSpki); })) === true);
+  check("83. verifySct rejects an SCT whose logId does not match the log key (ct/log-id-mismatch)", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { logId: Buffer.alloc(32, 0xaa) }), ecSpki); })) === "ct/log-id-mismatch");
+  // A structurally-valid EC SPKI (ecPublicKey + a P-256 curve OID) whose public point does
+  // not import -> the import/verify seam maps it to a typed ct/verify-error, not a raw fault.
+  var badPoint = b.sequence([b.sequence([b.oid(ecPub), b.oid(pki.oid.byName("prime256v1"))]), b.bitString(Buffer.alloc(65, 0), 0)]);
+  check("84. verifySct maps an unimportable log key to ct/verify-error", (await vres(function () { return pki.ct.verifySct(entry, ecSct, badPoint); })) === "ct/verify-error");
+}
+
+async function run() {
   testAccept();
   testInnerWrap();
   testListFraming();
@@ -392,6 +467,7 @@ function run() {
   testExtensionDecoderRegistry();
   testNotASchemaFormat();
   testKnownAnswerVector();
+  await testVerifySct();
 }
 
 module.exports = { run: run };

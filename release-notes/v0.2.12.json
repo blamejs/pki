@@ -1,0 +1,10 @@
+{
+  "version": "0.2.12",
+  "headline": "pki.ct.verifySct verifies a Signed Certificate Timestamp's signature against a Certificate Transparency log's public key.",
+  "summary": "pki.ct grows from parsing an SCT list to verifying an SCT. pki.ct.verifySct(entry, sct, logPublicKey) reconstructs the exact signed data for the log entry the SCT covers, imports the log's public key, and verifies the SCT signature per RFC 6962 section 3.2 -- resolving true on a valid signature and false on a cryptographic mismatch, and throwing a typed CtError on a structural fault (a malformed entry or SCT, an unusable log key, or an unsupported hash/signature algorithm). An ECDSA signature is routed through the toolkit's shared strict DER ECDSA-Sig-Value conformance gate (primitive, minimally-encoded, positive, curve-bounded r and s) before conversion to the raw form the crypto engine verifies, so a non-conformant signature encoding is rejected rather than normalized; an RSA signature verifies directly. The verifier reads the curve from the log key's SubjectPublicKeyInfo and supports the NIST P-256 ECDSA and RSA keys RFC 6962 mandates.",
+  "sections": {
+    "Added": [
+      "pki.ct.verifySct(entry, sct, logPublicKey) verifies a Signed Certificate Timestamp's signature against a CT log's public key (RFC 6962 section 3.2), composing pki.ct.reconstructSignedData, the shared ECDSA-Sig-Value conformance gate, and pki.webcrypto. Resolves true/false on the cryptographic verdict; throws a typed CtError on a structural fault."
+    ]
+  }
+}
