@@ -266,6 +266,34 @@ async function testRsaPssParams() {
   }
 }
 
+// ---- signatureAlgorithm parameters shape (RFC 5754): NULL for RSA, absent for ECDSA/EdDSA ----
+async function testAlgParams() {
+  function withParams(fixture, params) {
+    var p = pki.schema.cms.parse(fx(fixture));
+    p.signerInfos[0].signatureAlgorithm.parameters = params;
+    return p;
+  }
+  var un = "cms/unsupported-algorithm";
+  // RSA PKCS#1 v1.5: parameters MUST be a DER NULL -- absent or non-NULL fails closed.
+  var r1 = await pki.cms.verify(withParams("rsa-attached.p7s", null));
+  check("rsaEncryption with absent params -> unsupported", r1.valid === false && r1.signers[0].code === un);
+  var r1b = await pki.cms.verify(withParams("rsa-attached.p7s", b.integer(0)));
+  check("rsaEncryption with non-NULL params -> unsupported", r1b.valid === false && r1b.signers[0].code === un);
+  // ECDSA: parameters MUST be absent -- a present (even NULL) parameter fails closed.
+  var r2 = await pki.cms.verify(withParams("ec-attached.p7s", b.nullValue()));
+  check("ecdsaWithSHA256 with present params -> unsupported", r2.valid === false && r2.signers[0].code === un);
+  // EdDSA: parameters MUST be absent.
+  var r3 = await pki.cms.verify(withParams("ed25519-attached.p7s", b.nullValue()));
+  check("Ed25519 with present params -> unsupported", r3.valid === false && r3.signers[0].code === un);
+
+  // digestAlgorithm parameters (RFC 5754 sec. 2): absent and NULL both accepted (the KATs use
+  // both); a present non-NULL is malformed and fails closed.
+  var d = pki.schema.cms.parse(fx("rsa-attached.p7s"));
+  d.signerInfos[0].digestAlgorithm.parameters = b.integer(0);
+  var rd = await pki.cms.verify(d);
+  check("digestAlgorithm with non-NULL params -> unsupported", rd.valid === false && rd.signers[0].code === un);
+}
+
 // ---- tampered: a valid structure over the wrong bytes never reads verified ----
 async function testTampered() {
   // flip a signature byte (signedAttrs case): messageDigest still matches, crypto verdict false.
@@ -396,6 +424,7 @@ async function run() {
   await testInputForms();
   await testUnsupportedAlgorithm();
   await testRsaPssParams();
+  await testAlgParams();
   await testTampered();
   await testBadSignedAttrs();
   await testContentType();
