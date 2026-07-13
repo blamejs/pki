@@ -75,10 +75,14 @@ function findSwallows(rel, src) {
     var body = stripped.slice(bodyStart, bodyEnd);
     var startLine = stripped.slice(0, m.index).split("\n").length;
     var endLine = stripped.slice(0, bodyEnd).split("\n").length;
-    // A re-throw (a `throw`, or a returned rejected promise) propagates -> fail-closed.
-    var reThrows = /\bthrow\b/.test(body) && !/\breturn\s+(?!Promise\.reject)/.test(body);
-    var rejectsOnly = /return\s+Promise\.reject\b/.test(body) && !/\breturn\s+(?!Promise\.reject)/.test(body);
-    if (reThrows || rejectsOnly) continue;   // safe: propagates the fault
+    // A catch that propagates the fault is fail-closed, not a swallow. It propagates via a
+    // literal `throw`, a returned rejected promise, or a call to the schema `fail(...)`
+    // throw-helper (the `fail(msg, cause?)` convention always throws the caller's typed code).
+    var noValueReturn = !/\breturn\s+(?!Promise\.reject)/.test(body);
+    var reThrows = /\bthrow\b/.test(body) && noValueReturn;
+    var rejectsOnly = /return\s+Promise\.reject\b/.test(body) && noValueReturn;
+    var throwsViaHelper = /\bfail\s*\(/.test(body) && noValueReturn;
+    if (reThrows || rejectsOnly || throwsViaHelper) continue;   // safe: propagates the fault
     // Otherwise it is a swallow: it must be exercised (covered) or explicitly marked.
     out.push({ startLine: startLine, endLine: endLine, param: m[1].trim() });
   }
@@ -110,9 +114,19 @@ function main() {
     var fileCov = cov[rel] || {};
     findSwallows(rel, src).forEach(function (sw) {
       swallowCount++;
-      // Covered iff any body line carries a non-zero hit.
+      // Covered iff a line that belongs ONLY to the catch body carries a non-zero hit. A line
+      // shared with the `try` opener (a single-line `try { ... } catch (e) { ... }`) is
+      // EXCLUDED: c8 records a hit for it on the successful try path even when the catch never
+      // runs, so counting it would false-pass an untested swallow. A single-line try/catch thus
+      // has no catch-only line and must re-throw, reformat the catch body onto its own line, or
+      // carry a marker -- proving the catch executed needs a line the try cannot reach.
       var covered = false;
-      for (var ln = sw.startLine; ln <= sw.endLine; ln++) { if (fileCov[ln] > 0) { covered = true; break; } }
+      for (var ln = sw.startLine; ln <= sw.endLine; ln++) {
+        var t = srcLines[ln - 1] || "";
+        var tryAt = t.search(/\btry\b\s*\{/), catchAt = t.indexOf("catch");
+        if (tryAt !== -1 && catchAt !== -1 && tryAt < catchAt) continue;   // single-line try+catch: ambiguous
+        if (fileCov[ln] > 0) { covered = true; break; }
+      }
       if (covered) { coveredCount++; return; }
       if (isMarked(srcLines, sw.startLine, sw.endLine)) { markedCount++; return; }
       bad.push({ file: rel, line: sw.startLine, param: sw.param });
