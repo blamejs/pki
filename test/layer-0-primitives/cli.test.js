@@ -91,6 +91,15 @@ function run() {
     var lintProf = cli(["lint", FIXTURE, "--profile", "does-not-exist"]);
     check("pki lint rejects an unknown profile (config error, non-zero exit)",
       lintProf.status !== 0 && /unknown-profile/.test(lintProf.stderr));
+    // The linter's never-throw survey is preserved at the CLI: garbage bytes become a fatal
+    // lint/unparseable finding (stable JSON), not a CLI hard-fail before the report.
+    var garbage = path.join(tmp, "garbage.bin");
+    fs.writeFileSync(garbage, Buffer.from([0xff, 0xff, 0x99, 0x01, 0x02]));
+    var lintGarbage = cli(["lint", garbage, "--json"]);
+    check("pki lint reports malformed input as a fatal finding, not a CLI error", (function () {
+      var j = JSON.parse(lintGarbage.stdout);
+      return lintGarbage.status === 1 && j.worst === "fatal" && j.findings[0].id === "lint/unparseable";
+    })());
 
     // ---- convert ----
     var toDer = cliBuf(["convert", FIXTURE, "--to", "der"]);
@@ -144,6 +153,10 @@ function run() {
     var vBad = cli(["verify", FIXTURE, "--anchor", FIXTURE, "--time", "1990-01-01T00:00:00Z"]);
     check("pki verify rejects a path outside the validity window (non-zero exit)", vBad.status === 1 && /invalid/.test(vBad.stdout));
     check("pki verify requires an --anchor (non-zero exit)", cli(["verify", FIXTURE]).status !== 0);
+    // A value-taking flag with no value is a usage error, not a silent `true` (which would
+    // make --time parse as new Date(true) = a real 1970 timestamp).
+    check("pki rejects a value-taking flag with no value (non-zero exit)",
+      cli(["verify", FIXTURE, "--time", "--anchor", FIXTURE]).status !== 0);
   } finally {
     fs.rmSync(tmp, { recursive: true, force: true });
   }

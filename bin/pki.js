@@ -30,43 +30,59 @@ function fail(msg) {
   process.exit(1);
 }
 
-// Minimal flag parser: collects `--flag value` / `--flag` (boolean) into `opts`, the rest
-// into `_` (positionals). No clustering, no `=`; a flag with no following value is boolean.
-var BOOLEAN_FLAGS = { json: 1 };
+// Minimal flag parser: `--flag value` for value-taking flags, `--flag` for booleans, the
+// rest are positionals in `_`. A value-taking flag whose value is absent or is itself another
+// flag is a usage error (never silently coerced to `true`, which would make e.g. `--time`
+// parse as `new Date(true)` = a real 1970 timestamp). No clustering, no `=value`.
+var VALUE_FLAGS = { to: 1, profile: 1, severity: 1, label: 1, anchor: 1, time: 1 };
 function parseArgs(argv) {
   var out = { _: [] };
   for (var i = 0; i < argv.length; i++) {
     var a = argv[i];
     if (a.indexOf("--") === 0) {
       var key = a.slice(2);
-      if (BOOLEAN_FLAGS[key] || i + 1 >= argv.length || argv[i + 1].indexOf("--") === 0) { out[key] = true; }
-      else { out[key] = argv[++i]; }
+      if (VALUE_FLAGS[key]) {
+        if (i + 1 >= argv.length || argv[i + 1].indexOf("--") === 0) fail("--" + key + " requires a value");
+        out[key] = argv[++i];
+      } else { out[key] = true; }
     } else { out._.push(a); }
   }
   return out;
 }
 
-// Read a DER/PEM file and return its DER bytes (+ the PEM label when the input was PEM).
-// Detection is DER-first and unambiguous: a well-formed DER file decodes as one TLV, while
-// a PEM file is ASCII text that never does -- so this cannot misclassify a DER value whose
-// CONTENT contains the PEM marker or leading-whitespace bytes, nor miss a PEM that carries a
-// BOM / explanatory preamble before its armor. A raw DER file is returned as-is; a PEM armor
-// is stripped generically (any label) so the format-agnostic commands need not know the type.
-function readInput(file) {
-  var bytes;
-  try { bytes = fs.readFileSync(file); } catch (e) { fail("cannot read " + file + ": " + e.message); }
+function readFileBytes(file) {
+  try { return fs.readFileSync(file); } catch (e) { return fail("cannot read " + file + ": " + e.message); }
+}
+
+// For the library entry points (parse / inspect / lint / verify) that accept EITHER a DER
+// Buffer or a PEM string and own the decode + error handling: hand a Buffer when the bytes
+// are a well-formed DER structure, otherwise the text so the library pemDecodes it (and
+// applies its own canonical-base64 policy). This defers ALL error handling to the library,
+// which is what preserves the linter's never-throw survey -- malformed bytes become a fatal
+// lint/unparseable finding rather than a CLI hard-fail. DER-first is unambiguous (a PEM file
+// is ASCII text and never decodes as one DER TLV).
+function readForLib(file) {
+  var bytes = readFileBytes(file);
+  try { pki.asn1.decode(bytes); return bytes; }
+  catch (_derErr) { return bytes.toString("latin1"); }   // not DER -- let the library pemDecode / report it
+}
+
+// For `convert`, which transcodes RAW bytes and bypasses the library parse: extract DER
+// explicitly (a well-formed DER file as-is, or a canonical PEM body), failing on anything
+// else. Returns { der, label } where `label` is the PEM armor when the input was PEM.
+function readDer(file) {
+  var bytes = readFileBytes(file);
   try { pki.asn1.decode(bytes); return { der: bytes, label: null }; }
   catch (_derErr) { /* not a single well-formed DER structure -- try PEM */ }
   var m = /-----BEGIN ([A-Za-z0-9 ]+)-----([\s\S]*?)-----END \1-----/.exec(bytes.toString("latin1"));
-  if (!m) fail(file + ": input is neither a well-formed DER structure nor a PEM block");
+  if (!m) return fail(file + ": input is neither a well-formed DER structure nor a PEM block");
   var b64 = m[2].replace(/[\s]+/g, "");
   // Enforce CANONICAL base64 (RFC 4648 sec. 3.5), matching the library's fail-closed PEM
-  // policy: Node's decoder silently drops invalid characters, stops at the first bad byte,
-  // and tolerates non-canonical trailing pad bits. Gate the alphabet/length first, then
-  // require that re-encoding the decoded bytes reproduces the exact body.
-  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) fail(file + ": malformed PEM base64");
+  // policy: Node's decoder silently drops invalid characters and tolerates non-canonical
+  // trailing pad bits. Gate alphabet/length, then require that re-encoding reproduces the body.
+  if (!/^[A-Za-z0-9+/]*={0,2}$/.test(b64) || b64.length % 4 !== 0) return fail(file + ": malformed PEM base64");
   var der = Buffer.from(b64, "base64");
-  if (der.toString("base64") !== b64) fail(file + ": non-canonical PEM base64");
+  if (der.toString("base64") !== b64) return fail(file + ": non-canonical PEM base64");
   return { der: der, label: m[1] };
 }
 
@@ -89,7 +105,7 @@ function cmdOid(arg) {
 function cmdParse(file) {
   if (!file) fail("usage: pki parse <cert.pem|cert.der>");
   var cert;
-  try { cert = pki.schema.x509.parse(readInput(file).der); } catch (e) { return fail(e.code + ": " + e.message); }
+  try { cert = pki.schema.x509.parse(readForLib(file)); } catch (e) { return fail(e.code + ": " + e.message); }
   var view = {
     version:            cert.version,
     serialNumber:       cert.serialNumberHex,
@@ -108,7 +124,7 @@ function cmdParse(file) {
 // the pure-JS equivalent of `openssl x509 -text`.
 function cmdInspect(file) {
   if (!file) fail("usage: pki inspect <cert.pem|cert.der>");
-  try { process.stdout.write(pki.inspect.certificate(readInput(file).der)); }
+  try { process.stdout.write(pki.inspect.certificate(readForLib(file))); }
   catch (e) { return fail(e.code + ": " + e.message); }
 }
 
@@ -119,11 +135,10 @@ function pad(s, n) { while (s.length < n) s += " "; return s; }
 function cmdLint(args) {
   var file = args._[0];
   if (!file) fail("usage: pki lint <cert> [--profile <name>] [--severity <floor>] [--json]");
-  var der = readInput(file).der;
   var report;
   // Config-time misuse (unknown profile / bad severity) throws a typed LintError; the data
   // path never throws (malformed bytes become a fatal lint/unparseable finding).
-  try { report = pki.lint.certificate(der, { profile: args.profile, severity: args.severity }); }
+  try { report = pki.lint.certificate(readForLib(file), { profile: args.profile, severity: args.severity }); }
   catch (e) { return fail(e.code + ": " + e.message); }
   if (args.json) {
     process.stdout.write(JSON.stringify(report, null, 2) + "\n");
@@ -144,7 +159,7 @@ function cmdConvert(args) {
   var file = args._[0], to = args.to;
   if (!file) fail("usage: pki convert <file> --to der|pem [--label LABEL]");
   if (to !== "der" && to !== "pem") fail("convert: --to must be 'der' or 'pem'");
-  var input = readInput(file);
+  var input = readDer(file);
   try { pki.asn1.decode(input.der); } catch (e) { return fail("input is not well-formed DER: " + (e.code || e.message)); }
   if (to === "der") { process.stdout.write(input.der); return; }
   var label = args.label || input.label || "CERTIFICATE";
@@ -158,9 +173,9 @@ function cmdVerify(args) {
   var certFiles = args._, anchorFile = args.anchor;
   if (!certFiles.length || !anchorFile) fail("usage: pki verify <cert>... --anchor <anchor-cert> [--time ISO]");
   var certs, anchor;
-  try { certs = certFiles.map(function (f) { return pki.schema.x509.parse(readInput(f).der); }); }
+  try { certs = certFiles.map(function (f) { return pki.schema.x509.parse(readForLib(f)); }); }
   catch (e) { return fail("cannot parse a path certificate: " + (e.code || e.message)); }
-  try { anchor = pki.schema.x509.parse(readInput(anchorFile).der); }
+  try { anchor = pki.schema.x509.parse(readForLib(anchorFile)); }
   catch (e2) { return fail("cannot parse the anchor certificate: " + (e2.code || e2.message)); }
   var time = args.time ? new Date(args.time) : new Date();
   if (isNaN(time.getTime())) fail("verify: --time must be an ISO-8601 date");
