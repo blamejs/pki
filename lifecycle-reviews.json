@@ -412,5 +412,29 @@
     "reason": "The DSSE pre-authentication-encoding helper exposed for the Sigstore verify surface; it graduates with the rest of pki.sigstore once the bundle format is frozen.",
     "reviewedAt": "0.2.9",
     "reviewBy": "0.3.0"
+  },
+  "pki.inspect.certificate": {
+    "decision": "keep-experimental",
+    "reason": "The rendered report is intentionally OpenSSL-familiar rather than a byte-frozen format (OpenSSL releases disagree), so the output contract is not yet pinned, and the inspection surface is still growing (CRL / CSR / CMS inspection is Targeted). Graduate once the full inspect surface lands and the rendered-output contract is frozen.",
+    "reviewedAt": "0.2.10",
+    "reviewBy": "0.3.0"
+  },
+  "pki.lint.certificate": {
+    "decision": "keep-experimental",
+    "reason": "The finding-id surface is frozen in the api-snapshot, but the rule COVERAGE is a representative v1 subset (the full CABF TLS corpus, the S/MIME BR profile, and the CRL / OCSP profiles are Targeted). Graduate once the rule corpus is broadened and cross-checked against a reference linter (zlint / pkilint).",
+    "reviewedAt": "0.2.10",
+    "reviewBy": "0.3.0"
+  },
+  "pki.lint.rules": {
+    "decision": "keep-experimental",
+    "reason": "Registry introspection for pki.lint.certificate; its shape tracks the still-expanding rule set. Graduate alongside pki.lint.certificate.",
+    "reviewedAt": "0.2.10",
+    "reviewBy": "0.3.0"
+  },
+  "pki.lint.profiles": {
+    "decision": "keep-experimental",
+    "reason": "Enumerates the lint profile names; the profile set will grow as the CABF / S/MIME / CRL / OCSP corpora land. Graduate alongside pki.lint.certificate.",
+    "reviewedAt": "0.2.10",
+    "reviewBy": "0.3.0"
   }
 }

@@ -1773,6 +1773,16 @@ function testNoDuplicateCodeBlocks() {
     // per-module coercion is a one-line call with no shared shape to cluster.
     // The detached-safe re-view lives in exactly one place, enforced by the
     // detached-view-buffer-not-via-guard detector.
+    {
+      // The extension-consuming modules each compose the SHARED RFC 5280 extension
+      // decoder table the same way at the top of the file: `var NS = pkix.makeNS(prefix,
+      // ErrorClass, oid); var EXT_DECODERS = pkix.certExtensionDecoders(NS).byOid;` --
+      // under their own namespace prefix + error class. The decoders + makeNS already
+      // live in pkix (composed identically by path-validate); the two-line header repeats
+      // in shape without being extractable (each binds a different prefix/error class).
+      files: ["lib/inspect.js:<top>", "lib/lint.js:<top>", "lib/webauthn.js:<top>"],
+      reason: "inspect/lint/webauthn each compose pkix.certExtensionDecoders under their own makeNS namespace; the decoder table lives in pkix, the header composition is not further extractable.",
+    },
   ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;
