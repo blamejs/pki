@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.13 — 2026-07-13
+
+The certificate linter validates IP-literal common names with a strict in-house checker instead of node:net, so the toolkit pulls in no networking module.
+
+### Changed
+
+- pki.lint validates an IP-literal common name with a strict in-house IPv4/IPv6 checker (lib/ip-utils) instead of node:net, so the toolkit needs no networking module; the validator now also recognizes IPv4-mapped and dual-stack IPv6 literals.
+
 ## v0.2.12 — 2026-07-13
 
 pki.ct.verifySct verifies a Signed Certificate Timestamp's signature against a Certificate Transparency log's public key.
