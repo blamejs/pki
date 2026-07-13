@@ -152,6 +152,20 @@ function run() {
   // A >398-day validity on a TLS cert (issued after the rule's effective date) -> too-long.
   check("a TLS cert with a >398-day validity -> validity-too-long (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/validity-too-long"));
+  // The SC081v3 reducing schedule: a cert issued on/after 2026-03-15 is held to 200 days,
+  // so a 250-day validity there fails though it would pass under the earlier 398-day ceiling.
+  function vwin(fromIso, days) { var nb = new Date(fromIso); return b.sequence([b.utcTime(nb), b.utcTime(new Date(nb.getTime() + days * 86400000))]); }
+  function tlsWith(validity) { return makeCert({ subject: dnCN("x.example"), validity: validity, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] }); }
+  check("a 250-day cert issued after 2026-03-15 -> validity-too-long (200-day tier)",
+    has(pki.lint.certificate(tlsWith(vwin("2026-04-01T00:00:00Z", 250))), "lint/cabf-tls/validity-too-long"));
+  check("a 150-day cert issued after 2026-03-15 passes the 200-day tier",
+    !has(pki.lint.certificate(tlsWith(vwin("2026-04-01T00:00:00Z", 150))), "lint/cabf-tls/validity-too-long"));
+  check("a 300-day cert issued before 2026-03-15 passes (still the 398-day tier)",
+    !has(pki.lint.certificate(tlsWith(vwin("2026-01-01T00:00:00Z", 300))), "lint/cabf-tls/validity-too-long"));
+  check("a 150-day cert issued after 2027-03-15 -> validity-too-long (100-day tier)",
+    has(pki.lint.certificate(tlsWith(vwin("2027-04-01T00:00:00Z", 150))), "lint/cabf-tls/validity-too-long"));
+  check("a 60-day cert issued after 2029-03-15 -> validity-too-long (47-day tier)",
+    has(pki.lint.certificate(tlsWith(vwin("2029-04-01T00:00:00Z", 60))), "lint/cabf-tls/validity-too-long"));
   // An RSA-1024 key -> weak-key. Splice a real RSA-1024 SPKI (crypto.generateKeyPairSync).
   var rsa1024 = require("crypto").generateKeyPairSync("rsa", { modulusLength: 1024 }).publicKey.export({ format: "der", type: "spki" });
   check("an RSA-1024 subject key -> weak-key (error)",
@@ -221,6 +235,12 @@ function run() {
   var rsaPss1024 = require("crypto").generateKeyPairSync("rsa-pss", { modulusLength: 1024 }).publicKey.export({ format: "der", type: "spki" });
   check("a weak RSASSA-PSS key -> weak-key (error)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: rsaPss1024, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/weak-key"));
+
+  // weak-key is scoped to RSA size + EC curve: another key type (Ed25519) is out of scope
+  // and does NOT fire weak-key (key-TYPE approval for TLS is a separate future rule).
+  var ed25519 = require("crypto").generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" });
+  check("an Ed25519 key does NOT trip weak-key (out of the size/curve scope)",
+    !has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: ed25519, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/weak-key"));
 
   // unknown-critical-extension is registry-driven: a critical extension the OID registry
   // RECOGNIZES (e.g. policyMappings) is NOT flagged; only an unregistered OID is.
