@@ -156,6 +156,34 @@ function testParamsMustBeAbsent() {
   check("paramsMustBeAbsent of an unknown OID -> false", pki.oid.paramsMustBeAbsent("1.2.3.4.5.6.7.8") === false);
 }
 
+// Config-time argument validation (three-tier model: bad input at the
+// registration/lookup boundary THROWS so an operator catches the typo at boot).
+function testConfigTimeValidation() {
+  // byName demands a non-empty string.
+  check("byName rejects a non-string", code(function () { pki.oid.byName(123); }) === "oid/bad-input");
+  check("byName rejects an empty string", code(function () { pki.oid.byName(""); }) === "oid/bad-input");
+  // register demands a non-empty string NAME (the dotted OID is validated separately).
+  check("register rejects a non-string name", code(function () { pki.oid.register("1.3.6.1.4.1.99999.301", 42); }) === "oid/bad-input");
+  // registerFamily argument validation.
+  check("registerFamily rejects a non-array base", code(function () { pki.oid.registerFamily("1.3.6", { x: 1 }); }) === "oid/bad-input");
+  check("registerFamily rejects a base with a non-arc component", code(function () { pki.oid.registerFamily([1, "x"], { y: 1 }); }) === "oid/bad-input");
+  check("registerFamily rejects non-object members", code(function () { pki.oid.registerFamily([1, 3, 6], null); }) === "oid/bad-input");
+  check("registerFamily rejects an empty-string member name", code(function () { pki.oid.registerFamily([1, 3, 6, 1, 4, 1, 77777], { "": 1 }); }) === "oid/bad-input");
+  // registerFamily assembles the arcs then enforces X.660 encodability ON them
+  // (a distinct path from register's dotted-string check): a base whose root arc
+  // exceeds 2, or -- under roots 0/1 -- whose second arc reaches 40.
+  check("registerFamily rejects a root arc above 2 (assembled)", code(function () { pki.oid.registerFamily([9, 1], { z: 1 }); }) === "oid/bad-arc");
+  check("registerFamily rejects a second arc 40 under root 1 (assembled)", code(function () { pki.oid.registerFamily([1, 40], { z: 1 }); }) === "oid/bad-arc");
+  // ...with the base arcs supplied as BigInt (the already-bigint branch of the
+  // arc-coercion; a UUID-based OID under root 2 uses BigInt arcs).
+  check("registerFamily accepts a BigInt base + leaf", code(function () { pki.oid.registerFamily([2n, 25n], { bigBaseName: 7n }); }) === "NO-THROW");
+  check("registerFamily(BigInt base) resolves forward", pki.oid.name("2.25.7") === "bigBaseName");
+  // toArcs keeps an arc above 2^53 as a BigInt (a Number would lose precision).
+  var arcs = pki.oid.toArcs("2.25.340282366920938463463374607431768211456");
+  check("toArcs keeps an unsafe (>2^53) arc as BigInt",
+    typeof arcs[2] === "bigint" && arcs[2] === 340282366920938463463374607431768211456n);
+}
+
 function run() {
   testRegistry();
   testRegister();
@@ -163,6 +191,7 @@ function run() {
   testDer();
   testSlhDsa();
   testParamsMustBeAbsent();
+  testConfigTimeValidation();
 }
 
 module.exports = { run: run };

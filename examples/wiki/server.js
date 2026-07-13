@@ -48,11 +48,11 @@ var STATIC_ASSETS = {
 // anywhere; the only inline <script> is each page's JSON-LD block, admitted
 // by its sha256 hash (per page, passed to _csp below). The img-src allows
 // the README status badges (shields.io, GitHub Actions, OpenSSF Scorecard,
-// SLSA) to load as images.
+// OpenSSF Best Practices, SLSA) to load as images.
 function _csp(scriptHashes) {
   var script = "'self'" + (scriptHashes && scriptHashes.length ? " " + scriptHashes.join(" ") : "");
   return "default-src 'self'; " +
-    "img-src 'self' data: https://img.shields.io https://github.com https://api.securityscorecards.dev https://slsa.dev; " +
+    "img-src 'self' data: https://img.shields.io https://github.com https://api.securityscorecards.dev https://www.bestpractices.dev https://slsa.dev; " +
     "style-src 'self'; " +
     "script-src " + script + "; " +
     "font-src 'self'; " +
@@ -70,7 +70,7 @@ var SECURITY_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
   "x-frame-options": "DENY",
-  "permissions-policy": "geolocation=(), microphone=(), camera=(), interest-cohort=()",
+  "permissions-policy": "geolocation=(), microphone=(), camera=()",
 };
 
 function _withSecurity(headers) {

@@ -72,6 +72,9 @@ function testRejects() {
   check("rejects non-minimal length", code(function () { pki.asn1.decode(Buffer.from("02810100", "hex")); }) === "asn1/non-minimal-length");
   // Non-minimal INTEGER: 02 02 00 01 (leading zero not needed).
   check("rejects non-minimal integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("02020001", "hex"))); }) === "asn1/non-minimal-integer");
+  // Non-minimal NEGATIVE INTEGER: 02 02 FF 80 -- a leading 0xFF is redundant when the next
+  // octet's high bit is already set (-128 is minimally 02 01 80). X.690 sec. 8.3.2.
+  check("rejects non-minimal negative integer", code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from("0202ff80", "hex"))); }) === "asn1/non-minimal-integer");
   // read.integer is strict on the tag: ENUMERATED shares INTEGER's content
   // encoding but is a distinct universal type, so an INTEGER-pinned field encoded
   // as ENUMERATED (and vice-versa) is a tag mismatch, never silently coerced.

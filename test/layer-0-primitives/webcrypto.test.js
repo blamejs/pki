@@ -735,6 +735,140 @@ async function testNodeErrorTyping() {
     (await code(async function () { await subtle.decrypt({ name: "AES-GCM", iv: iv }, gcmKey, ctBuf); })) === "webcrypto/operation");
 }
 
+// AES-GCM decrypt: a ciphertext shorter than the authentication tag it must carry
+// is an OperationError, caught BEFORE the subarray split (a negative-length split
+// would otherwise clamp and hand node a malformed tag). Covers the length gate for
+// both the default 128-bit tag and an explicit shorter tagLength.
+async function testAesGcmShortCiphertext() {
+  var key = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  var iv = pki.webcrypto.getRandomValues(new Uint8Array(12));
+  check("AES-GCM decrypt rejects a ciphertext shorter than the 128-bit tag",
+    (await code(async function () { await subtle.decrypt({ name: "AES-GCM", iv: iv }, key, new Uint8Array(4)); })) === "webcrypto/operation");
+  // With an explicit 96-bit tagLength the gate moves to 12 bytes; a 10-byte input is still short.
+  check("AES-GCM decrypt rejects a ciphertext shorter than an explicit 96-bit tag",
+    (await code(async function () { await subtle.decrypt({ name: "AES-GCM", iv: iv, tagLength: 96 }, key, new Uint8Array(10)); })) === "webcrypto/operation");
+  // A ciphertext of exactly the tag length (empty plaintext + full tag) is NOT short --
+  // it must reach the cipher and fail on the (unauthenticatable) tag, not the length gate.
+  check("AES-GCM decrypt of a tag-length-only ciphertext reaches the cipher (bad tag)",
+    (await code(async function () { await subtle.decrypt({ name: "AES-GCM", iv: iv }, key, new Uint8Array(16)); })) === "webcrypto/operation");
+}
+
+// AES-KW wrap: when the node cipher construction itself faults (a wrapping key whose
+// exported length is not a valid AES size, so "aes<len>-wrap" is not a cipher), the
+// failure is a typed OperationError, never a raw node throw crossing the public API.
+// A 160-bit raw AES-KW key reaches the wrap cipher (its serialized target passes the
+// RFC 3394 length gate) and faults at createCipheriv.
+async function testAesImportLength() {
+  // A raw or JWK-oct AES key whose length is not 128/192/256 bits is a DataError AT IMPORT
+  // (W3C WebCrypto), never a CryptoKey that would only fault at first use -- where node
+  // builds an invalid "aes-160-*" cipher name. Every AES algorithm + the JWK oct path.
+  var bad = new Uint8Array(20); // 160 bits
+  check("importKey raw: a 160-bit AES-GCM key rejected at import (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("raw", bad, { name: "AES-GCM" }, true, ["encrypt"]); })) === "webcrypto/data");
+  check("importKey raw: a 160-bit AES-CBC key rejected at import (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("raw", bad, { name: "AES-CBC" }, true, ["encrypt"]); })) === "webcrypto/data");
+  check("importKey raw: a 160-bit AES-CTR key rejected at import (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("raw", bad, { name: "AES-CTR" }, true, ["encrypt"]); })) === "webcrypto/data");
+  check("importKey raw: a 160-bit AES-KW key rejected at import (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("raw", bad, { name: "AES-KW" }, true, ["wrapKey"]); })) === "webcrypto/data");
+  // The JWK oct path enforces the same length gate.
+  check("importKey jwk-oct: a 160-bit AES-GCM key rejected at import (webcrypto/data)",
+    (await code(async function () {
+      await subtle.importKey("jwk", { kty: "oct", k: Buffer.from(bad).toString("base64url") }, { name: "AES-GCM" }, true, ["encrypt"]);
+    })) === "webcrypto/data");
+  // An HMAC raw key carries no length restriction (a 160-bit HMAC key is legal).
+  check("importKey raw: a 160-bit HMAC key still imports (no AES length gate)",
+    (await code(async function () { await subtle.importKey("raw", bad, { name: "HMAC", hash: "SHA-256" }, true, ["sign"]); })) === "NO-THROW");
+  // A conforming 128-bit AES key still imports.
+  check("importKey raw: a 128-bit AES-GCM key still imports",
+    (await code(async function () { await subtle.importKey("raw", new Uint8Array(16), { name: "AES-GCM" }, true, ["encrypt"]); })) === "NO-THROW");
+}
+
+// AES-KW unwrap: a wrapped input of VALID length (multiple of 8, >= 24) whose RFC 3394
+// integrity block fails inside final() is a typed OperationError -- the first point a
+// tampered wrapped key can be noticed. The length gate at the top cannot catch this
+// (the length is legal); only the integrity check inside the cipher does.
+async function testAesKwUnwrapIntegrity() {
+  var kek = await subtle.generateKey({ name: "AES-KW", length: 256 }, true, ["wrapKey", "unwrapKey"]);
+  var target = await subtle.generateKey({ name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  var wrapped = Buffer.from(await subtle.wrapKey("raw", target, kek, { name: "AES-KW" }));
+  check("AES-KW wrapped length is legal (24 bytes for a 16-byte key)", wrapped.length === 24 && wrapped.length % 8 === 0);
+  // Flip the last byte: length stays legal, the integrity check must fail.
+  var tampered = Buffer.from(wrapped); tampered[tampered.length - 1] = tampered[tampered.length - 1] ^ 0xff;
+  check("AES-KW unwrap of a tampered (valid-length) wrapped key -> webcrypto/operation",
+    (await code(async function () { await subtle.unwrapKey("raw", tampered, kek, { name: "AES-KW" }, { name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]); })) === "webcrypto/operation");
+}
+
+// raw import/export for the X448 OKP family: a raw X448 public point keeps its X448
+// label (the last arm of the OKP curve dispatch) and agrees on the same shared secret
+// as the original peer key -- the X25519 arm is exercised elsewhere; this pins X448.
+async function testX448RawImportExport() {
+  var x2 = await subtle.generateKey({ name: "X448" }, true, ["deriveBits"]);
+  var raw = await subtle.exportKey("raw", x2.publicKey);
+  check("raw X448 public export is the 56-byte point", raw.byteLength === 56);
+  var xpub = await subtle.importKey("raw", raw, { name: "X448" }, true, []);
+  check("raw X448 import is labeled X448", xpub.algorithm.name === "X448");
+  var x1 = await subtle.generateKey({ name: "X448" }, true, ["deriveBits"]);
+  check("raw X448 import derives the same secret as the original peer key",
+    hex(await subtle.deriveBits({ name: "X448", public: xpub }, x1.privateKey, 448)) ===
+    hex(await subtle.deriveBits({ name: "X448", public: x2.publicKey }, x1.privateKey, 448)));
+}
+
+// spki import of an algorithm with no EC/RSA/EdDSA-specific label rule (X25519 / X448 /
+// the ML-DSA PQC family) carries the algorithm name straight through _algFromImport's
+// final return, after the key-type-is-authority check passes.
+async function testAsymImportCarriesLabel() {
+  var x = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  var xspki = await subtle.exportKey("spki", x.publicKey);
+  var ximp = await subtle.importKey("spki", xspki, { name: "X25519" }, true, []);
+  check("spki import of X25519 carries the X25519 label", ximp.algorithm.name === "X25519" && ximp.type === "public");
+
+  var ml = await subtle.generateKey({ name: "ML-DSA-44" }, true, ["sign", "verify"]);
+  var mlspki = await subtle.exportKey("spki", ml.publicKey);
+  var mlimp = await subtle.importKey("spki", mlspki, { name: "ML-DSA-44" }, true, ["verify"]);
+  var data = Buffer.from("ml-dsa spki import verifies");
+  var sig = await subtle.sign({ name: "ML-DSA-44" }, ml.privateKey, data);
+  check("spki import of ML-DSA-44 carries the label and verifies",
+    mlimp.algorithm.name === "ML-DSA-44" && (await subtle.verify({ name: "ML-DSA-44" }, mlimp, sig, data)) === true);
+}
+
+// An RSA key descriptor whose hash is given as an OBJECT (`{ name: "SHA-256" }`) rather
+// than a string flows through _hashObj's object arm: the stored algorithm.hash must be
+// the normalized `{ name }` form, and the key must sign + verify under the resolved hash.
+async function testRsaObjectHash() {
+  var pss = await subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, hash: { name: "SHA-256" } }, true, ["sign", "verify"]);
+  check("generateKey RSA-PSS accepts an object hash and stores { name }",
+    pss.publicKey.algorithm.hash && pss.publicKey.algorithm.hash.name === "SHA-256");
+  var data = Buffer.from("rsa object-hash sign/verify");
+  var sig = await subtle.sign({ name: "RSA-PSS", saltLength: 32 }, pss.privateKey, data);
+  check("RSA-PSS key minted from an object hash verifies",
+    (await subtle.verify({ name: "RSA-PSS", saltLength: 32 }, pss.publicKey, sig, data)) === true);
+  // The same object-hash arm on the import path (spki, RSA -> _algFromImport).
+  var spki = await subtle.exportKey("spki", pss.publicKey);
+  var imp = await subtle.importKey("spki", spki, { name: "RSA-PSS", hash: { name: "SHA-256" } }, true, ["verify"]);
+  check("importKey spki RSA with an object hash stores { name }",
+    imp.algorithm.hash && imp.algorithm.hash.name === "SHA-256");
+}
+
+// The public pki.webcrypto.CryptoKey constructor: an omitted usages argument yields an
+// empty (own, non-shared) usage array, and the handle is stored non-enumerably.
+async function testCryptoKeyConstructor() {
+  var ck = new pki.webcrypto.CryptoKey("public", true, { name: "Ed25519" }, undefined, null);
+  check("CryptoKey with no usages defaults to an empty usage array",
+    Array.isArray(ck.usages) && ck.usages.length === 0);
+  check("CryptoKey stores type / extractable / algorithm as given",
+    ck.type === "public" && ck.extractable === true && ck.algorithm.name === "Ed25519");
+  check("CryptoKey._handle is non-enumerable",
+    Object.keys(ck).indexOf("_handle") === -1 && Object.prototype.hasOwnProperty.call(ck, "_handle"));
+  // A provided usages array is COPIED (slice), not aliased -- mutating the source
+  // must not change the key's own set.
+  var src = ["sign"];
+  var ck2 = new pki.webcrypto.CryptoKey("private", false, { name: "Ed25519" }, src, null);
+  src.push("verify");
+  check("CryptoKey copies the usages array (no alias to the caller's)",
+    ck2.usages.length === 1 && ck2.usages[0] === "sign");
+}
+
 async function run() {
   await testSurface();
   await testNodeErrorTyping();
@@ -770,6 +904,13 @@ async function run() {
   await testImportKeyEdges();
   await testExportKeyEdges();
   await testHkdfInfoAndDeriveKeyKdfLength();
+  await testAesGcmShortCiphertext();
+  await testAesImportLength();
+  await testAesKwUnwrapIntegrity();
+  await testX448RawImportExport();
+  await testAsymImportCarriesLabel();
+  await testRsaObjectHash();
+  await testCryptoKeyConstructor();
 }
 
 module.exports = { run: run };

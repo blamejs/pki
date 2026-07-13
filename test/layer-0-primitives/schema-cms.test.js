@@ -958,6 +958,33 @@ function testAeadAndAttrEdgeCases() {
   check("assertAttachedCiphertext non-empty returns eci", !!okEci && okEci.encryptedContent.length === 3);
 }
 
+// ---- fail-closed branches on the walkSignedData BER consumer path + the
+// assertAttachedCiphertext default label -----------------------------------
+function testCmsFailClosedBranches() {
+  var cmsLib = require("../../lib/schema-cms.js");
+
+  // A countersignature attribute value MUST be DER even inside a BER envelope
+  // (RFC 5652 sec. 11.4). walkSignedData (the PKCS#12 public-key-integrity path)
+  // walks a BER-decoded SignedData whose unsignedAttrs values are captured raw;
+  // a countersignature value carrying an indefinite-length (BER) TLV must be
+  // rejected when it is strictly re-decoded, never walked as if it were DER.
+  var indefCsValue = Buffer.concat([Buffer.from([0x30, 0x80]), b.integer(1n), Buffer.from([0x00, 0x00])]);
+  var siCs = signerInfo({ unsignedAttrs: [attribute(CS_ATTR, [indefCsValue])] });
+  var nCs = pki.asn1.decode(signedData({ signers: b.set([siCs]) }), { ber: true });
+  check("ber walkSignedData: BER (indefinite) countersignature value rejected",
+    code(function () { cmsLib.walkSignedData(nCs); }) === "cms/bad-countersignature");
+
+  // assertAttachedCiphertext with NO label falls back to the default
+  // "encrypted content" phrasing in its fail-closed message (per-profile
+  // opt-in, CWE-20 — a detached/empty ciphertext is verification-of-nothing).
+  function E(c, msg) { var e = new Error(msg); e.code = c; return e; }
+  var noLabel = null;
+  try { cmsLib.assertAttachedCiphertext({ encryptedContent: null }, E, "cms/test-detached"); }
+  catch (e) { noLabel = e; }
+  check("assertAttachedCiphertext default label rejects detached",
+    !!noLabel && noLabel.code === "cms/test-detached" && /^encrypted content must carry/.test(noLabel.message));
+}
+
 function run() {
   testAccept();
   testEnvelope();
@@ -981,6 +1008,7 @@ function run() {
   testAuthEnvelopedData();
   testContentTypeDiscriminator();
   testAeadAndAttrEdgeCases();
+  testCmsFailClosedBranches();
 }
 
 module.exports = { run: run };

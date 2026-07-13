@@ -966,7 +966,7 @@ async function mkOcsp(o) {
     var nameHash = await _digest(hAlg, nameDer(sr.issuerName));
     var keyHash = await _digest(hAlg, _spkiKeyValue(issuerKeys.spki));
     var certId = b.sequence([
-      b.sequence([b.oid(_certIdHashOid(hAlg)), b.nullValue()]),
+      b.sequence([b.oid(sr.hashOidOverride || _certIdHashOid(hAlg)), b.nullValue()]),
       b.octetString(nameHash),
       b.octetString(keyHash),
       b.integer(BigInt(sr.serial)),
@@ -2616,6 +2616,18 @@ var PSS_OID = "1.2.840.113549.1.1.10";
 function _hashSeq(o) { return b.sequence([b.oid(o), b.nullValue()]); }
 function _mgfSeq(inner) { return b.sequence([b.oid(OID_MGF1), _hashSeq(inner)]); }
 
+// Re-wrap a signed certificate/CRL DER so its signature BIT STRING declares a
+// NON-zero unused-bits count (not octet-aligned). The signature bytes are already
+// going to fail verification; clearing the last content bit keeps the BIT STRING
+// valid DER (unused bits must be zero) so the parser accepts it and the
+// guard.crypto.isOctetAligned fail-closed check is what rejects it.
+function reSignUnaligned(der) {
+  var n = pki.asn1.decode(der);
+  var body = Buffer.from(pki.asn1.read.bitString(n.children[2]).bytes);
+  body[body.length - 1] &= 0xfe;
+  return b.sequence([b.raw(n.children[0].bytes), b.raw(n.children[1].bytes), b.bitString(body, 1)]);
+}
+
 async function testCoverageEdges() {
   var anchor = await mkAnchor("ed25519", "Root");
   var anchorEc = await mkAnchor("p256", "EcRoot");
@@ -2855,6 +2867,108 @@ async function testCoverageEdges() {
     })();
   });
 
+  // ---- 268b ECDSA signatureAlgorithm carrying a (forbidden) NULL parameters ---
+  // Unlike the EdDSA 268 case (the x509 parser rejects EdDSA-with-parameters
+  // first), an ECDSA signatureAlgorithm with a spurious NULL survives parsing and
+  // reaches resolveDescriptor, which rejects the "absent"-shaped algorithm.
+  await cap("268b ECDSA sigAlg with NULL params", async function () {
+    return run([await mkCert({ subject: "Ecdsa268b", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.10045.4.3.2"), b.nullValue()]) })], { time: T2027, trustAnchor: anchorEc });
+  });
+
+  // ---- 488 URI SAN with a SINGLE-'@' authority (userinfo stripped to host) -----
+  // The existing 488 case is a MULTI-'@' authority (uriHost fails closed before
+  // the slice); this drives the single-'@' branch that strips the userinfo.
+  await cap("488b URI SAN single-'@' authority within a URI subtree", async function () { return ncCase([gnUri("host.example.com")], null, [gnUri("http://user@host.example.com/")]); });
+
+  // ---- 665/666 subtree-seed base validation for the string + Uint8Array forms --
+  await cap("665 rfc822Name (tag 1) string seed accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 1, base: "user@host.example" }] }); });
+  await cap("665 URI (tag 6) string seed accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 6, base: "host.example" }] }); });
+  await cap("666 iPAddress seed base as a plain Uint8Array accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 7, base: new Uint8Array([10, 0, 0, 0, 255, 0, 0, 0]) }] }); });
+
+  // ---- 812 a certificate whose own SPKI carries explicit key parameters --------
+  // An EC subject key SPKI states its namedCurve as AlgorithmIdentifier
+  // parameters, so updateWorkingKey copies them rather than inheriting/clearing.
+  await cap("812 EC subject-key parameters copied into the working key", async function () { return run([await mkCert({ subject: "EcKeyLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 812n })], { time: T2027, trustAnchor: anchor }); });
+
+  // ---- 1124 checkPurpose is a canonical dotted OID with no registered name -----
+  await cap("1124 unregistered dotted checkPurpose kept as the dotted OID", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: "1.3.6.1.4.1.99999.77" }); });
+
+  // ---- 1462 cert DistributionPoint cRLIssuer names a NON-directoryName ---------
+  // crlIssuerNamesIssuer skips any cRLIssuer GeneralName that is not a
+  // directoryName [4]; with no directoryName the DP never corresponds -> the
+  // shard is consulted for revocation only (fail closed to undetermined).
+  await cap("1462 cert DP cRLIssuer is a URI (not directoryName) -> revocation-only", async function () {
+    var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnUri("http://other.example/"))]);
+    var leafCi = await mkCert({ subject: "CrlIssuerUriLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5110n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
+    var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(40), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
+    return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+  });
+
+  // ---- 1465 cert DP cRLIssuer directoryName EQUALS the issuer, DP corresponds --
+  // The cRLIssuer names the certificate issuer AND the DP names match the shard's
+  // IDP: the shard is authoritative and, listing no revocation, establishes good.
+  await cap("1465 cert DP cRLIssuer names the issuer + DP corresponds -> good", async function () {
+    var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(nameDer("Root")))]);
+    var leafCi = await mkCert({ subject: "CrlIssuerRootLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5111n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
+    var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(41), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
+    return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+  });
+
+  // ---- 1744 a CRL whose signature BIT STRING is not octet-aligned -------------
+  await cap("1744 CRL non-octet-aligned signature -> undetermined", async function () {
+    var crlUn = reSignUnaligned(await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9999n }] }));
+    return run([e1Leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlUn]) });
+  });
+
+  // ---- 1783+1788 delegate key inherits nothing (EC-no-params key, Ed25519 CA) --
+  // The delegate omits its EC parameters but the issuing CA is Ed25519, so the
+  // issuer cannot supply EC parameters (issuer OID != key OID): ocspResponderSpki
+  // returns the (incomplete) SPKI unchanged and the response verify fails closed.
+  await cap("1783+1788 delegate EC-no-params key under an Ed25519 CA -> unknown", async function () {
+    var respKeys = await ensureKeys("p256i");
+    var d = await mkCert({ subject: "InheritEdResp", issuer: "Root", signWith: "ed25519", spki: stripEcParams(respKeys.spki), serial: 721n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), kuExt([KU_DIGITAL_SIGNATURE]), nocheckExt()] });
+    var o = await mkOcsp({ responderID: { byName: "InheritEdResp" }, signWith: "p256i", certs: [d], single: [goodSingle700()] });
+    return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+  });
+
+  // ---- 1823 a SingleResponse CertID naming an unsupported hash algorithm -------
+  await cap("1823 CertID with an unsupported hash OID -> unknown", async function () {
+    var o = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle700({ hashOidOverride: "1.3.6.1.4.1.99999.99" })] });
+    return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+  });
+
+  // ---- 1847+1858 responderID byName is a control-byte DN (dnEqual throws) ------
+  // The RFC 5280 sec. 7.1 comparison rejects an embedded control byte; the throw is
+  // swallowed to "no match" both against the issuer (1847) and each embedded cert
+  // (1858), so no authorized responder is resolved.
+  await cap("1847+1858 control-byte responderID byName -> unknown", async function () {
+    var badRid = [b.set([atv("2.5.4.3", "R" + String.fromCharCode(1) + "oot")])];
+    var o = await mkOcsp({ responderID: { byName: badRid }, signWith: "ed25519", certs: [delegateOk], single: [goodSingle700()] });
+    return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+  });
+
+  // ---- 1863 embedded delegate whose ISSUER DN carries a control byte ----------
+  // The delegate identifies the responderID, but dnEqual(delegate.issuer, issuer)
+  // throws on the control byte, so the candidate is skipped (fail closed).
+  await cap("1863 delegate control-byte issuer DN -> unknown", async function () {
+    var badIssuer = [b.set([atv("2.5.4.3", "R" + String.fromCharCode(1) + "oot")])];
+    var d = await mkCert({ subject: "CtrlIssuerResp", issuer: badIssuer, signWith: "ed25519", subjectKeys: "p256", serial: 722n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
+    var o = await mkOcsp({ responderID: { byName: "CtrlIssuerResp" }, signWith: "p256", certs: [d], single: [goodSingle700()] });
+    return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+  });
+
+  // ---- 1865 embedded delegate cert with a non-octet-aligned signature ---------
+  await cap("1865 embedded delegate non-octet-aligned signature -> unknown", async function () {
+    var o = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: [reSignUnaligned(delegateOk)], single: [goodSingle700()] });
+    return pki.path.ocspChecker([o]).check(ocspLeaf, issuerArg, octx);
+  });
+
+  // ---- 1932 ocspChecker consumes an ALREADY-PARSED response object ------------
+  await cap("1932 already-parsed OCSP response consumed as-is -> good", async function () {
+    var parsedResp = pki.schema.ocsp.parseResponse(await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle700()] }));
+    return pki.path.ocspChecker([parsedResp]).check(ocspLeaf, issuerArg, octx);
+  });
+
   // Each scenario's fail-closed verdict, asserted against the shipped surface.
   // `code` = valid===false AND the per-check code is present; `valid` = a clean
   // accept; `throw` = an entry-point typed rejection; `status` = the standalone
@@ -2925,6 +3039,22 @@ async function testCoverageEdges() {
     "1866 delegate signature does not verify -> unknown": { status: UNK },
     "1872 delegate malformed EKU -> unknown": { status: UNK },
     "1879 delegate malformed keyUsage -> unknown": { status: UNK },
+    "268b ECDSA sigAlg with NULL params": { code: UA },
+    "488b URI SAN single-'@' authority within a URI subtree": { valid: true },
+    "665 rfc822Name (tag 1) string seed accepted": { valid: true },
+    "665 URI (tag 6) string seed accepted": { valid: true },
+    "666 iPAddress seed base as a plain Uint8Array accepted": { valid: true },
+    "812 EC subject-key parameters copied into the working key": { valid: true },
+    "1124 unregistered dotted checkPurpose kept as the dotted OID": { valid: true },
+    "1462 cert DP cRLIssuer is a URI (not directoryName) -> revocation-only": { code: RUND },
+    "1465 cert DP cRLIssuer names the issuer + DP corresponds -> good": { valid: true },
+    "1744 CRL non-octet-aligned signature -> undetermined": { code: RUND },
+    "1783+1788 delegate EC-no-params key under an Ed25519 CA -> unknown": { status: UNK },
+    "1823 CertID with an unsupported hash OID -> unknown": { status: UNK },
+    "1847+1858 control-byte responderID byName -> unknown": { status: UNK },
+    "1863 delegate control-byte issuer DN -> unknown": { status: UNK },
+    "1865 embedded delegate non-octet-aligned signature -> unknown": { status: UNK },
+    "1932 already-parsed OCSP response consumed as-is -> good": { status: "good" },
   };
   check("coverage-edges: every scenario has an expectation", R.length === Object.keys(EXPECT).length);
   R.forEach(function (r) {

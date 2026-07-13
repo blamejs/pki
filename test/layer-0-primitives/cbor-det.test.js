@@ -240,6 +240,62 @@ function testConfig() {
     pki.cbor.decode(B("83010203"), { maxItems: 4 }).majorType === 4);
 }
 
+// ---- Edge branches: valid-simple head, non-float/non-null/non-undefined
+// simple readers, and the tag-1 time sign / out-of-range legs ----
+
+function testEdgeBranches() {
+  var d = pki.cbor.decode;
+  var r = pki.cbor.read;
+
+  // A simple value in [32,255] is validly encoded in the f8 (one-argument-byte)
+  // form; only values < 32 must use the immediate head. f820 (simple 32)
+  // decodes successfully rather than tripping cbor/reserved-simple.
+  check("acc-simple-32-f8-form", (function () {
+    var n = d(B("f820"));
+    return n.majorType === 7 && n.ai === 24 && n.argument === 32n;
+  })());
+  check("acc-simple-255-f8-form", (function () {
+    var n = d(B("f8ff"));
+    return n.majorType === 7 && n.ai === 24 && n.argument === 255n;
+  })());
+
+  // read.nullValue / read.undefinedValue / read.float on a simple-value node
+  // that is major 7 but the WRONG simple value throws cbor/bad-simple (the
+  // ai-mismatch leg, distinct from the cbor/unexpected-major wrong-type leg).
+  check("read.nullValue on false(f4) -> bad-simple",
+    code(function () { r.nullValue(d(B("f4"))); }) === "cbor/bad-simple");
+  check("read.nullValue on undefined(f7) -> bad-simple",
+    code(function () { r.nullValue(d(B("f7"))); }) === "cbor/bad-simple");
+  check("read.undefinedValue on null(f6) -> bad-simple",
+    code(function () { r.undefinedValue(d(B("f6"))); }) === "cbor/bad-simple");
+  check("read.undefinedValue on true(f5) -> bad-simple",
+    code(function () { r.undefinedValue(d(B("f5"))); }) === "cbor/bad-simple");
+  check("read.float on false(f4) -> bad-simple",
+    code(function () { r.float(d(B("f4"))); }) === "cbor/bad-simple");
+  check("read.float on null(f6) -> bad-simple",
+    code(function () { r.float(d(B("f6"))); }) === "cbor/bad-simple");
+
+  // read.time over a tag-1 NEGATIVE integer (major 1): the sign leg the
+  // acc-time positive vector never exercises. c120 wraps -1 -> Date at -1000ms.
+  check("read.time tag1-negative in range", r.time(d(B("c120"))).getTime() === -1000);
+  check("read.time tag1-negative -100", r.time(d(B("c13863"))).getTime() === -100000);
+
+  // Epoch out of the ECMAScript Date window fails closed with cbor/bad-time,
+  // BEFORE the BigInt is narrowed to a Number -- both signs of the bound:
+  //   positive: tag 1 wrapping 8_640_000_000_001 (one second past the ceiling)
+  //   negative: tag 1 wrapping -8_640_000_000_001 (one second past the floor)
+  check("read.time above the epoch ceiling -> bad-time",
+    code(function () { r.time(d(B("c11b000007dba8218001"))); }) === "cbor/bad-time");
+  check("read.time below the epoch floor -> bad-time",
+    code(function () { r.time(d(B("c13b000007dba8218000"))); }) === "cbor/bad-time");
+  // The inclusive boundary (exactly the ceiling / floor) still decodes to a
+  // valid Date, so the out-of-range guard is a strict past-the-edge reject.
+  check("read.time at the exact epoch ceiling is accepted",
+    r.time(d(B("c11b000007dba8218000"))).getTime() === 8640000000000000);
+  check("read.time at the exact epoch floor is accepted",
+    r.time(d(B("c13b000007dba8217fff"))).getTime() === -8640000000000000);
+}
+
 // Advertised-surface exercise: every public primitive is reachable by its
 // full documented path (also what the doc-examples surface gate checks for).
 function testSurface() {
@@ -267,6 +323,7 @@ function run() {
   testReaderRejects();
   testReadMismatch();
   testConfig();
+  testEdgeBranches();
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -130,6 +130,39 @@ function run() {
       { kty: 2, n: Buffer.from("c0ffee", "hex"), e: Buffer.from("010001", "hex") }, E, MCODE, PCODE);
   }) === MCODE);
 
+  // A wrong COSE kty for an ECC pubArea (kty 3) -> mismatch (line 112, the kty arm).
+  check("pubKeyEqualsCose ECC: wrong COSE kty -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(ep, { kty: 3, crv: 1, x: Buffer.from("aabb", "hex"), y: Buffer.from("ccdd", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+  // A y-coordinate mismatch (x matches) -> mismatch (line 112, the y arm).
+  check("pubKeyEqualsCose ECC: y mismatch -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(ep, { kty: 2, crv: 1, x: Buffer.from("aabb", "hex"), y: Buffer.from("9999", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+  // An absent COSE x-coordinate is compared as empty, never accepted-on-missing -> mismatch.
+  check("pubKeyEqualsCose ECC: absent COSE x -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(ep, { kty: 2, crv: 1, y: Buffer.from("ccdd", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+  // x matches but the COSE y-coordinate is absent: the y comparison IS reached (x did not
+  // short-circuit) and the absent y defaults to empty -> mismatch (never accept-on-missing).
+  check("pubKeyEqualsCose ECC: matching x, absent COSE y -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(ep, { kty: 2, crv: 1, x: Buffer.from("aabb", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+  // An exponent mismatch (modulus matches, kty stays 3) -> mismatch (line 122, the e arm).
+  check("pubKeyEqualsCose RSA: exponent mismatch -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(tpm.parsePubArea(rsaPubArea({ exponent: 65537 }), E, PCODE),
+      { kty: 3, n: Buffer.from("c0ffee", "hex"), e: Buffer.from("03", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+  // An absent COSE exponent is compared as empty -> mismatch (never accept-on-missing).
+  check("pubKeyEqualsCose RSA: absent COSE e -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(tpm.parsePubArea(rsaPubArea({ exponent: 65537 }), E, PCODE),
+      { kty: 3, n: Buffer.from("c0ffee", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+  // An absent COSE modulus (kty stays 3) defaults to empty at the first comparison -> mismatch.
+  check("pubKeyEqualsCose RSA: absent COSE n -> mismatch code", code(function () {
+    tpm.pubKeyEqualsCose(tpm.parsePubArea(rsaPubArea({ exponent: 65537 }), E, PCODE),
+      { kty: 3, e: Buffer.from("010001", "hex") }, E, MCODE, PCODE);
+  }) === MCODE);
+
   // ---- pubKeyEqualsCose: unsupported pubArea key type (line 127) ----
   // A pub whose type is neither ECC nor RSA reaches the fail-closed default rather than any
   // accept path (defensive: parsePubArea already rejects such types upstream).

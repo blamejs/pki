@@ -16,6 +16,8 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var fs = require("fs");
 var path = require("path");
+var crypto = require("crypto");
+var merkle = require("../../lib/merkle");
 
 var FX = path.join(__dirname, "..", "fixtures", "sigstore");
 var BUNDLE = JSON.parse(fs.readFileSync(path.join(FX, "npm-provenance-bundle.json"), "utf8"));
@@ -44,6 +46,103 @@ function trustMaterial() {
 }
 
 function codeOf(p) { return p.then(function () { return "NO-THROW"; }, function (e) { return e.code || e.message; }); }
+
+// ---------------------------------------------------------------------------
+// A fully-synthetic Sigstore bundle: a self-issued Fulcio CA + a caller-held
+// Rekor log key + a single-leaf Merkle tree. Every signature is real (node
+// crypto over the exact bytes each leg hashes), so verifyBundle runs all five
+// legs genuinely. The real dogfood bundle's leaf certificate and DSSE payload
+// are cryptographically pinned by the Rekor entry/checkpoint/SET, so the
+// Fulcio-identity and in-toto-statement legs can only be exercised on a bundle
+// whose Fulcio CA and Rekor key the test holds. The builder takes the SAN
+// GeneralNames, the DSSE payloadType, and the in-toto payload so each identity
+// / statement branch can be driven through the shipped verifyBundle entry point.
+// ---------------------------------------------------------------------------
+var B = pki.asn1.build;
+function synOid(name) { return B.oid(pki.oid.byName(name)); }
+function synAtv(name, val) { return B.sequence([synOid(name), B.utf8(val)]); }
+function synName(cn) { return B.sequence([B.set([synAtv("commonName", cn)])]); }
+function synExt(name, critical, valueDer) {
+  var ch = [synOid(name)];
+  if (critical) ch.push(B.boolean(true));
+  ch.push(B.octetString(valueDer));
+  return B.sequence(ch);
+}
+function synKuVal(bits) {
+  var maxBit = Math.max.apply(null, bits);
+  var buf = Buffer.alloc((maxBit >> 3) + 1);
+  bits.forEach(function (p) { buf[p >> 3] |= (0x80 >> (p & 7)); });
+  return B.bitString(buf, 7 - (maxBit & 7));
+}
+function gnUriDer(text) { return B.contextPrimitive(6, Buffer.from(text, "ascii")); }
+var SYN_ALGID = B.sequence([synOid("ecdsaWithSHA256")]);
+function synCert(o) {
+  var spkiDer = o.subjectKey.export({ format: "der", type: "spki" });
+  var tbsChildren = [B.explicit(0, B.integer(2n)), B.integer(o.serial), SYN_ALGID, synName(o.issuer),
+    B.sequence([B.utcTime(o.notBefore), B.utcTime(o.notAfter)]), synName(o.subject), B.raw(spkiDer)];
+  if (o.extensions && o.extensions.length) tbsChildren.push(B.explicit(3, B.sequence(o.extensions)));
+  var tbs = B.sequence(tbsChildren);
+  var sig = crypto.sign("sha256", tbs, { key: o.signerKey, dsaEncoding: "der" });
+  return B.sequence([tbs, SYN_ALGID, B.bitString(sig, 0)]);
+}
+function synPem(der) { return "-----BEGIN CERTIFICATE-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END CERTIFICATE-----\n"; }
+function buildSynBundle(opts) {
+  opts = opts || {};
+  var rootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var leafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var rekorKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2030-01-01T00:00:00Z");
+  var integratedTime = Math.floor(new Date("2027-06-01T00:00:00Z").getTime() / 1000);
+  var rootDer = synCert({ serial: 1n, issuer: "syn-root", subject: "syn-root", notBefore: NB, notAfter: NA,
+    subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey, extensions: [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))] });
+  var san = opts.san || [gnUriDer("https://github.com/synthetic/repo")];
+  var leafDer = synCert({ serial: 2n, issuer: opts.leafIssuer || "syn-root", subject: "syn-leaf", notBefore: NB, notAfter: NA,
+    subjectKey: leafKp.publicKey, signerKey: rootKp.privateKey,
+    extensions: [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])), synExt("subjectAltName", false, B.sequence(san))] });
+  var payloadType = opts.payloadType || "application/vnd.in-toto+json";
+  var payloadObj = opts.payload !== undefined ? opts.payload
+    : { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }], predicate: {} };
+  var payload = Buffer.from(JSON.stringify(payloadObj));
+  var derSig = crypto.sign("sha256", pki.sigstore.pae(payloadType, payload), { key: leafKp.privateKey, dsaEncoding: "der" });
+  var env = { payload: payload.toString("base64"), payloadType: payloadType, signatures: [{ sig: derSig.toString("base64") }] };
+  var body = { apiVersion: "0.0.1", kind: "dsse", spec: { signatures: [{ signature: derSig.toString("base64"), verifier: Buffer.from(synPem(leafDer)).toString("base64") }],
+    payloadHash: { algorithm: "sha256", value: crypto.createHash("sha256").update(payload).digest("hex") } } };
+  var canonBuf = Buffer.from(JSON.stringify(body));
+  var rootHash = merkle.leafHash(canonBuf);          // single-leaf tree: root == leaf hash
+  var rekorSpki = rekorKp.publicKey.export({ format: "der", type: "spki" });
+  var keyId = crypto.createHash("sha256").update(rekorSpki).digest();
+  var logIndex = 1234;
+  var cpBody = Buffer.from("rekor.local\n1\n" + rootHash.toString("base64") + "\n", "utf8");
+  var cpSig = crypto.sign("sha256", cpBody, { key: rekorKp.privateKey, dsaEncoding: "der" });
+  var cpBlob = Buffer.concat([keyId.subarray(0, 4), cpSig]);
+  var cpEnvelope = cpBody.toString("utf8") + "\n" + String.fromCharCode(0x2014) + " rekor.local " + cpBlob.toString("base64") + "\n";
+  var setCanon = JSON.stringify({ body: canonBuf.toString("base64"), integratedTime: integratedTime, logID: keyId.toString("hex"), logIndex: logIndex });
+  var setSig = crypto.sign("sha256", Buffer.from(setCanon, "utf8"), { key: rekorKp.privateKey, dsaEncoding: "der" });
+  var te = { logId: { keyId: keyId.toString("base64") }, integratedTime: integratedTime, logIndex: logIndex,
+    inclusionPromise: { signedEntryTimestamp: setSig.toString("base64") },
+    inclusionProof: { logIndex: 0, treeSize: 1, hashes: [], rootHash: rootHash.toString("base64"), checkpoint: { envelope: cpEnvelope } },
+    canonicalizedBody: canonBuf.toString("base64") };
+  // extraChain rides in the bundle x509CertificateChain (path steps only, never a
+  // terminal anchor) so the chain-building walk can be driven with a cyclic or an
+  // over-deep DN graph -- the leaf stays cert[0].
+  var vmat = { tlogEntries: [te] };
+  if (opts.extraChain && opts.extraChain.length) {
+    vmat.x509CertificateChain = { certificates: [{ rawBytes: leafDer.toString("base64") }].concat(opts.extraChain.map(function (d) { return { rawBytes: d.toString("base64") }; })) };
+  } else {
+    vmat.certificate = { rawBytes: leafDer.toString("base64") };
+  }
+  var bundle = { mediaType: "application/vnd.dev.sigstore.bundle.v0.3+json", verificationMaterial: vmat, dsseEnvelope: env };
+  return { bundle: bundle, trust: { fulcioRoots: [{ der: rootDer }], rekorKeys: [{ keyId: keyId, spki: rekorSpki }] } };
+}
+
+// A structurally-parseable intermediate with the given subject/issuer DNs (a
+// throwaway self-key; the chain-building walk inspects only DN linkage, never the
+// signature, for these cases). Used to build cyclic / over-deep DN graphs.
+function synChainCert(subject, issuer) {
+  var kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  return synCert({ serial: 9n, issuer: issuer, subject: subject, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
+    subjectKey: kp.publicKey, signerKey: kp.privateKey, extensions: [synExt("basicConstraints", true, B.sequence([B.boolean(true)]))] });
+}
 
 async function run() {
   var TM = trustMaterial();
@@ -368,6 +467,107 @@ async function run() {
   check("Rekor key validFor start=invalid Date fails closed", (await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: new Date("nope") }) }))).indexOf("sigstore/") === 0);
   var dateWin = await pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: keyWin({ start: new Date(0), end: new Date("2100-01-01T00:00:00Z") }) });
   check("Rekor key validFor as Date instances (in window) verifies", dateWin && dateWin.verified === true);
+
+  // ===========================================================================
+  // _rawVerify algorithm dispatch, SET keyId absence, and the path-validation
+  // throw arm -- driven on the REAL bundle with crafted trust material.
+  // ===========================================================================
+
+  // A Rekor key selected for the checkpoint (its keyId's first four bytes equal
+  // the checkpoint keyhint) but of a key TYPE/curve other than the log's drives
+  // the _rawVerify hash / EdDSA dispatch; the signature cannot verify, so the
+  // reconstructed tree root is unattested and the bundle fails closed.
+  var logIdBuf = Buffer.from(BUNDLE.verificationMaterial.tlogEntries[0].logId.keyId, "base64");
+  function spkiOf(kind, opt) { return crypto.generateKeyPairSync(kind, opt).publicKey.export({ format: "der", type: "spki" }); }
+  function injectRekorKey(spkiDer) { return { keyId: logIdBuf, spki: spkiDer }; }
+  check("Ed25519 Rekor key dispatch (checkpoint) -> sigstore/unsigned-root",
+    await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: [injectRekorKey(spkiOf("ed25519"))].concat(TM.rekorKeys) })) === "sigstore/unsigned-root");
+  check("secp384r1 Rekor key dispatch (SHA-384) -> sigstore/unsigned-root",
+    await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: [injectRekorKey(spkiOf("ec", { namedCurve: "secp384r1" }))].concat(TM.rekorKeys) })) === "sigstore/unsigned-root");
+  check("secp521r1 Rekor key dispatch (SHA-512) -> sigstore/unsigned-root",
+    await codeOf(pki.sigstore.verifyBundle(cl(), { fulcioRoots: TM.fulcioRoots, rekorKeys: [injectRekorKey(spkiOf("ec", { namedCurve: "secp521r1" }))].concat(TM.rekorKeys) })) === "sigstore/unsigned-root");
+
+  // A tlog entry with no logId leaves the SET selector with a null keyId. The SET
+  // (not the checkpoint) signs integratedTime, so no SET verifies -> the log time
+  // is unattested and cannot date the ephemeral Fulcio certificate.
+  var noLogId = cl(); delete noLogId.verificationMaterial.tlogEntries[0].logId;
+  check("tlog entry without logId (SET keyId null) -> sigstore/unattested-time",
+    await codeOf(pki.sigstore.verifyBundle(noLogId, TM)) === "sigstore/unattested-time");
+
+  // A bundle intermediate whose embedded ECDSA signature is not a DER SEQUENCE
+  // makes the path validator THROW; the fault is caught and re-typed to
+  // sigstore/chain-invalid rather than leaking a raw path/* error.
+  var ptv = TM.fulcioRoots.map(function (r) { return { der: r.der, cert: pki.schema.x509.parse(r.der) }; });
+  var lp = pki.schema.x509.parse(Buffer.from(BUNDLE.verificationMaterial.certificate.rawBytes, "base64"));
+  var interP = ptv.filter(function (p) { return p.cert.subject.dn === lp.issuer.dn && p.cert.subject.dn !== p.cert.issuer.dn; })[0];
+  var selfRoots = ptv.filter(function (p) { return p.cert.subject.dn === p.cert.issuer.dn; });
+  if (interP && selfRoots.length) {
+    var interDer = Buffer.from(interP.der);
+    var sigBs = pki.asn1.decode(interDer).children[2];      // signatureValue BIT STRING
+    interDer[sigBs.contentStart + 1] = 0x00;                // clobber the inner ECDSA SEQUENCE tag (after the unused-bits octet)
+    var badChain = cl();
+    var leafRaw = badChain.verificationMaterial.certificate.rawBytes;
+    delete badChain.verificationMaterial.certificate;
+    badChain.verificationMaterial.x509CertificateChain = { certificates: [{ rawBytes: leafRaw }, { rawBytes: interDer.toString("base64") }] };
+    check("bundle intermediate with a non-DER signature -> sigstore/chain-invalid",
+      await codeOf(pki.sigstore.verifyBundle(badChain, { fulcioRoots: selfRoots.map(function (p) { return { der: p.der }; }), rekorKeys: TM.rekorKeys })) === "sigstore/chain-invalid");
+  }
+
+  // ===========================================================================
+  // Synthetic-bundle legs: Fulcio identity + in-toto statement. These run only
+  // after the crypto legs pass, so they are exercised on a bundle whose Fulcio CA
+  // and Rekor key the test holds (buildSynBundle above).
+  // ===========================================================================
+  var synGood = buildSynBundle({});
+  var sv = await pki.sigstore.verifyBundle(synGood.bundle, synGood.trust);
+  check("synthetic bundle (self-issued trust) fully verifies", sv && sv.verified === true && sv.identity.san.type === "uri");
+
+  // A Fulcio machine identity carried as an otherName SAN ([0] { type-id, [0]
+  // EXPLICIT value }) is decoded and surfaced with its type-id.
+  var synOther = buildSynBundle({ san: [B.contextConstructed(0, Buffer.concat([B.oid("1.3.6.1.4.1.57264.1.7"), B.explicit(0, B.utf8("https://machine/id"))]))] });
+  var svo = await pki.sigstore.verifyBundle(synOther.bundle, synOther.trust);
+  check("synthetic otherName SAN -> identity.san.type === otherName",
+    svo && svo.identity.san && svo.identity.san.type === "otherName" && svo.identity.san.value === "https://machine/id");
+
+  // A Fulcio certificate binds exactly one identity: two SAN entries fail closed
+  // (a mis-issued cert cannot smuggle a second identity past a caller policy).
+  var synMulti = buildSynBundle({ san: [gnUriDer("https://a/1"), gnUriDer("https://a/2")] });
+  check("synthetic multi-identity SAN -> sigstore/bad-certificate",
+    await codeOf(pki.sigstore.verifyBundle(synMulti.bundle, synMulti.trust)) === "sigstore/bad-certificate");
+
+  // A SAN carrying only a directoryName (no rfc822/dNS/URI machine identity)
+  // surfaces a null SAN rather than throwing; a caller identity policy still
+  // gates against the null value.
+  var synDir = buildSynBundle({ san: [B.contextConstructed(4, B.sequence([B.set([B.sequence([synOid("commonName"), B.utf8("dir")])])]))] });
+  var svd = await pki.sigstore.verifyBundle(synDir.bundle, synDir.trust);
+  check("synthetic directoryName-only SAN -> identity.san is null", svd && svd.verified === true && svd.identity.san === null);
+
+  // in-toto statement leg: a non-in-toto payloadType, a wrong statement _type, and
+  // an empty subject each fail closed with sigstore/bad-statement.
+  var synBadPt = buildSynBundle({ payloadType: "application/x.other" });
+  check("synthetic non-in-toto payloadType -> sigstore/bad-statement",
+    await codeOf(pki.sigstore.verifyBundle(synBadPt.bundle, synBadPt.trust)) === "sigstore/bad-statement");
+  var synBadType = buildSynBundle({ payload: { _type: "https://in-toto.io/Statement/v0.9", subject: [{ name: "x" }] } });
+  check("synthetic wrong statement _type -> sigstore/bad-statement",
+    await codeOf(pki.sigstore.verifyBundle(synBadType.bundle, synBadType.trust)) === "sigstore/bad-statement");
+  var synNoSubj = buildSynBundle({ payload: { _type: "https://in-toto.io/Statement/v1", predicateType: "x", subject: [] } });
+  check("synthetic empty statement subject -> sigstore/bad-statement",
+    await codeOf(pki.sigstore.verifyBundle(synNoSubj.bundle, synNoSubj.trust)) === "sigstore/bad-statement");
+
+  // Chain-building termination: a bundle intermediate whose issuer cycles back to
+  // its own (already-visited) subject must not loop; the walk finds no anchor path
+  // and the chain is incomplete rather than hanging.
+  var synCycle = buildSynBundle({ leafIssuer: "cycle-ca", extraChain: [synChainCert("cycle-ca", "cycle-ca")] });
+  check("synthetic cyclic intermediate graph -> sigstore/chain-incomplete",
+    await codeOf(pki.sigstore.verifyBundle(synCycle.bundle, synCycle.trust)) === "sigstore/chain-incomplete");
+
+  // Chain-building depth cap: a linear DN chain longer than the walk's step bound
+  // that never reaches a caller anchor is abandoned (no path), not walked forever.
+  var deep = [];
+  for (var di = 1; di <= 17; di++) { deep.push(synChainCert("depth-" + di, "depth-" + (di + 1))); }
+  var synDeep = buildSynBundle({ leafIssuer: "depth-1", extraChain: deep });
+  check("synthetic over-deep DN chain -> sigstore/chain-incomplete",
+    await codeOf(pki.sigstore.verifyBundle(synDeep.bundle, synDeep.trust)) === "sigstore/chain-incomplete");
 }
 
 module.exports = { run: run };
