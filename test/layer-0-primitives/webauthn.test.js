@@ -254,11 +254,22 @@ async function run() {
   check("parse: COSE key with a non-integer kty -> webauthn/bad-cose-key",
     codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ktyText }))); }) === "webauthn/bad-cose-key");
   // WebAuthn alg identifier / RFC 9864 -- Ed448 is the fully-specified alg -53 (OKP crv 7,
-  // 57-byte x); it is the ONLY WebAuthn path to Ed448 (-8 is Ed25519 only).
-  var ed448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57, 7)))]);
+  // 57-byte x); it is the ONLY WebAuthn path to Ed448 (-8 is Ed25519 only). A real Ed448
+  // point is required: the OKP on-curve + full-order check rejects a bogus 57-byte string.
+  var realEd448X = Buffer.from(crypto.generateKeyPairSync("ed448").publicKey.export({ format: "jwk" }).x, "base64url");
+  var ed448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(realEd448X))]);
   var ed448Parsed = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: ed448 })));
-  check("parse: Ed448 (fully-specified alg -53, OKP crv 7, 57-byte x) credential key accepted",
+  check("parse: Ed448 (fully-specified alg -53, OKP crv 7, real point) credential key accepted",
     ed448Parsed.authData.credentialPublicKey.kty === 1 && ed448Parsed.authData.credentialPublicKey.crv === 7 && ed448Parsed.authData.credentialPublicKey.alg === -53);
+  // OKP ON-CURVE: an OKP credential key whose point is not a valid, full-order Edwards point
+  // (e.g. the all-zeroes low-order point, which node/OpenSSL imports and would even verify a
+  // trivial signature) is rejected -- RFC 8032 decode + the cofactor check.
+  var okpZero25519 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(6)), cKV(-2, cBytes(Buffer.alloc(32)))]);
+  check("parse: all-zeroes Ed25519 OKP credential key -> webauthn/bad-cose-key (low-order point)",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: okpZero25519 }))); }) === "webauthn/bad-cose-key");
+  var okpZero448 = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(57)))]);
+  check("parse: all-zeroes Ed448 OKP credential key -> webauthn/bad-cose-key (off-curve/low-order)",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: okpZero448 }))); }) === "webauthn/bad-cose-key");
   // an OKP key whose x length does not match its curve is rejected.
   var ed448Bad = coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(Buffer.alloc(32, 7)))]);
   check("parse: OKP crv 7 with a 32-byte x -> webauthn/bad-cose-key",
