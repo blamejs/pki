@@ -241,6 +241,18 @@ function run() {
   var ed25519 = require("crypto").generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" });
   check("an Ed25519 key does NOT trip weak-key (out of the size/curve scope)",
     !has(pki.lint.certificate(makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: ed25519, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] })), "lint/cabf-tls/weak-key"));
+  function tlsKeyCert(spki) { return makeCert({ subject: dnCN("x.example"), validity: VALID_OK, spki: spki, exts: [eku(["serverAuth"]), san([dnsName("x.example")], false), aki()] }); }
+  // Fail-closed: an EC key with EXPLICIT (non-named-curve) parameters is not on an approved
+  // curve -> weak-key. Swap a real P-256 SPKI's curve OID for an explicit-params SEQUENCE.
+  var ecNode = asn1.decode(require("crypto").generateKeyPairSync("ec", { namedCurve: "P-256" }).publicKey.export({ format: "der", type: "spki" }));
+  var explicitParamsSpki = b.sequence([b.sequence([b.oid(oid.byName("ecPublicKey")), b.sequence([b.integer(1n)])]), ecNode.children[1].bytes]);
+  check("an EC key with explicit (non-named) parameters -> weak-key (fail-closed)",
+    has(pki.lint.certificate(tlsKeyCert(explicitParamsSpki)), "lint/cabf-tls/weak-key"));
+  // Fail-closed: an RSA SPKI whose publicKey is not a decodable RSAPublicKey -> weak-key.
+  var rsaNode = asn1.decode(require("crypto").generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }));
+  var badModulusSpki = b.sequence([rsaNode.children[0].bytes, b.bitString(Buffer.from([0xde, 0xad, 0xbe, 0xef]), 0)]);
+  check("an RSA key with an unreadable modulus -> weak-key (fail-closed)",
+    has(pki.lint.certificate(tlsKeyCert(badModulusSpki)), "lint/cabf-tls/weak-key"));
 
   // unknown-critical-extension is registry-driven: a critical extension the OID registry
   // RECOGNIZES (e.g. policyMappings) is NOT flagged; only an unregistered OID is.
