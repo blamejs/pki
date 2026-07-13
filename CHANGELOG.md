@@ -4,6 +4,25 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.6 — 2026-07-13
+
+WebAuthn attestation verification covers Ed448 and the RFC 9864 fully-specified COSE algorithms, and hardens credential-key conformance.
+
+### Added
+
+- pki.webauthn now verifies the RFC 9864 fully-specified COSE algorithm identifiers a WebAuthn relying party may receive: ESP256 (-9), ESP384 (-51), ESP512 (-52), Ed25519 (-19), and Ed448 (-53). Ed448 (-53) is the only WebAuthn path to Ed448, so an Ed448 credential now verifies rather than erroring as an unsupported algorithm.
+- The verifier is now checked against the official W3C WebAuthn Level 3 test-vector suite -- every published vector across ES256 / ES384 / ES512 / RS256 / Ed25519 / Ed448 and the packed / self / tpm / apple / fido-u2f / none formats -- as an independent cross-implementation oracle.
+
+### Changed
+
+- A WebAuthn credential key with COSE alg -8 (EdDSA) now requires curve Ed25519 (crv 6), matching the WebAuthn algorithm-identifier profile; an -8 key claiming Ed448 (crv 7) is rejected -- Ed448 is carried under the fully-specified identifier -53 instead.
+- An EC2 credential key must use the uncompressed point form; the compressed sign-bit y encoding is rejected for WebAuthn credential keys.
+
+### Fixed
+
+- The WebAuthn credential public-key point is now validated on its curve, so an off-curve or identity EC/Edwards point fails closed at decode rather than being carried into a later verify step.
+- An ECDSA attestation signature is now enforced as a minimally-encoded DER ECDSA-Sig-Value (X.690): a non-minimal, negative, zero, or over-size r/s coordinate is rejected as malformed instead of being stripped and accepted.
+
 ## v0.2.5 — 2026-07-12
 
 WebAuthn / passkey attestation verification joins the toolkit as pki.webauthn.

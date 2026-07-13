@@ -151,6 +151,12 @@ var VALID_ALLOW_CLASSES = {
   "guard-shape-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
   "guard-without-enforcement": 1,
+  "validator-shape-reinlined": 1,
+  "validator-without-enforcement": 1,
+  "inline-structure-validator": 1,
+  // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
+  // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
+  "swallow-unverified": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -2210,6 +2216,169 @@ function testEveryGuardEnforced() {
   _report("every guard function declares its codebase-patterns enforcement (@enforced-by)", bad);
 }
 
+function testValidatorShapeReinlined() {
+  // class: validator-shape-reinlined
+  // The validator-family analog of guard-shape-reinlined (Layer A). Where a guard owns
+  // a CVE-class fail-closed defence once, a VALIDATOR owns a decoded TYPE's COMPLETE
+  // conformance rule set once (the COSE credential key, the attestation-cert profile,
+  // the TPM pubArea). Each validator function declares its characteristic validation
+  // shape ON the function:
+  //   @validator-shape <regex>       -- a pattern the validator encapsulates (repeat = ALL match)
+  //   @validator-via   <regex>       -- optional: a routing call; a match that ALSO has this ROUTES
+  //   @validator-scope function|file -- default function; `file` for a cross-function vector
+  // This walks EVERY function (or file) of EVERY lib module and flags one that re-inlines
+  // a validator's shape instead of routing through the validator. The shape lives ON the
+  // validator (single source of truth -- it cannot drift from what the validator does),
+  // and a NEW validator that declares @validator-shape is enforced automatically. This is
+  // the structural cure for the drift that leaks a spec MUST out one review round at a
+  // time: a not-yet-written format module that re-derives COSE-key validation inline is
+  // flagged the moment it lands, before a reviewer has to find the gap.
+  var validators = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (!/^lib\/validator-[a-z-]+\.js$/.test(rel) || rel === "lib/validator-all.js") return;
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      var fm = lines[i].match(/^function\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (!fm) continue;
+      var shapes = [], via = null, scope = "function";
+      for (var b = i - 1; b >= 0 && /^\s*(?:\/\/|\*|\/\*)/.test(lines[b]); b--) {
+        var sm = lines[b].match(/@validator-shape\s+(.+?)\s*$/); if (sm) shapes.unshift(sm[1]);
+        var vm = lines[b].match(/@validator-via\s+(.+?)\s*$/);   if (vm) via = vm[1];
+        var cm = lines[b].match(/@validator-scope\s+(\w+)/);     if (cm) scope = cm[1];
+      }
+      if (shapes.length) {
+        var mod = rel.replace(/^lib\/validator-([a-z-]+)\.js$/, "$1");
+        validators.push({ module: rel, ref: "validator." + mod + "." + fm[1], shapes: shapes, via: via, scope: scope });
+      }
+    }
+  });
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var src = fs.readFileSync(f, "utf8");
+    var fileBody = _stripCommentsAndLiterals(src);
+    var regions = null;
+    validators.forEach(function (g) {
+      if (g.module === rel) return;   // the validator's own module is the shape's home
+      function isHit(body) {
+        if (!g.shapes.every(function (s) { return new RegExp(s).test(body); })) return false;
+        if (g.via && new RegExp(g.via).test(body)) return false;   // routes through the validator
+        return true;
+      }
+      if (g.scope === "file") {
+        if (!isHit(fileBody)) return;
+        var lines = _lines(src), anchor = 1;
+        for (var i = 0; i < lines.length; i++) {
+          if (!/^\s*(\/\/|\*)/.test(lines[i]) && new RegExp(g.shapes[0]).test(lines[i])) { anchor = i + 1; break; }
+        }
+        bad.push({ file: rel, line: anchor,
+          content: "re-inlines the " + g.ref + " shape (file-scope vector) — route the pattern through " + g.ref });
+        return;
+      }
+      if (regions === null) regions = _functionRegions(src);
+      regions.forEach(function (r) {
+        if (isHit(_stripCommentsAndLiterals(r.body))) {
+          bad.push({ file: rel, line: r.startLine,
+            content: "function `" + r.name + "` re-inlines the " + g.ref + " shape — route it through " + g.ref + " (the one place its type's conformance rule set lives)" });
+        }
+      });
+    });
+  });
+  bad = _filterMarkers(bad, "validator-shape-reinlined");
+  _report("no lib function re-inlines a validator shape instead of routing through the validator (function-granular, derived)", bad);
+}
+
+function testEveryValidatorEnforced() {
+  // class: validator-without-enforcement
+  // The validator-family analog of testEveryGuardEnforced. It WALKS every EXPORTED
+  // function of every lib/validator-*.js module (the orchestrator validator-all excepted)
+  // and requires each to declare, in its doc comment, HOW its shape is kept from being
+  // re-inlined at a boundary: either
+  //   @enforced-by <detector-class>          (a codebase-patterns enforcement detector), or
+  //   @enforced-by behavioral -- <reason>    (a RED vector is the validator; no rename-proof shape).
+  // A validator function with NO such tag is DRIFT: a fresh validator could ship whose
+  // rule set a boundary re-derives inline with nothing catching it. A NAMED detector-class
+  // must be REAL -- reported by a `_filterMarkers(bad, "<class>")` detector in this file.
+  var selfSrc = fs.readFileSync(path.join(REPO_ROOT, "test/layer-0-primitives/codebase-patterns.test.js"), "utf8");
+  var bad = [];
+  var validatorFiles = _libFiles().filter(function (f) {
+    var rel = _relPath(f);
+    return /^lib\/validator-[a-z-]+\.js$/.test(rel) && rel !== "lib/validator-all.js";
+  });
+  validatorFiles.forEach(function (f) {
+    var rel = _relPath(f);
+    var src = fs.readFileSync(f, "utf8");
+    var lines = _lines(src);
+    var expBlock = src.match(/module\.exports\s*=\s*\{([\s\S]*?)\}/);
+    var exported = Object.create(null);
+    if (expBlock) {
+      var er = /[A-Za-z_$][\w$]*\s*:\s*([A-Za-z_$][\w$]*)/g, em;
+      while ((em = er.exec(expBlock[1]))) exported[em[1]] = true;
+    }
+    for (var i = 0; i < lines.length; i++) {
+      var m = lines[i].match(/^function\s+([A-Za-z_$][\w$]*)\s*\(/);
+      if (!m || !exported[m[1]]) continue;
+      var fn = m[1];
+      var tag = null;
+      for (var b = i - 1; b >= 0 && /^\s*(?:\/\/|\*|\/\*)/.test(lines[b]); b--) {
+        var tm = lines[b].match(/@enforced-by\s+(\S+)/);
+        if (tm) { tag = tm[1]; break; }
+      }
+      if (!tag) {
+        bad.push({ file: rel, line: i + 1,
+          content: "validator function `" + fn + "` has no `@enforced-by` tag -- declare its codebase-patterns enforcement detector, or `@enforced-by behavioral -- <reason>` if a RED vector is the validator (no silent drift: a type rule set a boundary could re-inline must be caught somewhere)" });
+        continue;
+      }
+      if (tag !== "behavioral" && selfSrc.indexOf('_filterMarkers(bad, "' + tag + '")') === -1) {
+        bad.push({ file: rel, line: i + 1,
+          content: "validator function `" + fn + "` declares `@enforced-by " + tag + "` but no detector reporting that class exists in codebase-patterns.test.js -- a stale or typo'd enforcement reference" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "validator-without-enforcement");
+  _report("every validator function declares its codebase-patterns enforcement (@enforced-by)", bad);
+}
+
+function testInlineStructureValidatorCluster() {
+  // class: inline-structure-validator
+  // Layer B of the validator/guard family: a HARD gate on the shape a validator exists to
+  // absorb -- a lib function that hand-rolls a binary-structure reader (`new ByteReader(`)
+  // AND runs a dense cluster of field-validation throws inline. That shape is precisely what
+  // validator-tpm's parsePubArea/parseCertInfo were BEFORE extraction: a decode-and-densely-
+  // validate of one wire structure, sitting in a format module rather than in a single home.
+  // When it recurs -- a NEW hand-rolled TPM/CBOR/TLS structure reader in a file no reviewer
+  // has seen -- this fires, forcing the author to extract it to a validator-* (a decoded
+  // TYPE's rule set) or guard-* (a fail-closed shape), or to justify keeping it inline with
+  // an `allow:inline-structure-validator <reason>` marker.
+  //
+  // The trigger is `new ByteReader(` (a stable exported class -- rename-proof) PLUS >= 5
+  // throws in the SAME function, scoped away from guard-*/validator-* (the extraction homes)
+  // and byte-reader.js (the class itself). It is silent on the whole clean tree today: every
+  // binary-reader structure validator already lives in a validator-*, and every schema-*
+  // build callback validates through the schema engine, not a hand-rolled reader. Layer A
+  // (validator-shape-reinlined) covers the COMPLEMENTARY drift -- re-inlining a KNOWN
+  // validator's cbor/asn1 shape; together they close both extraction shapes.
+  var THROW_THRESHOLD = 5;
+  var EXCLUDE = /^lib\/guard-[a-z-]+\.js$|^lib\/validator-[a-z-]+\.js$|^lib\/byte-reader\.js$/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (EXCLUDE.test(rel)) return;
+    var src = fs.readFileSync(f, "utf8");
+    _functionRegions(src).forEach(function (r) {
+      var body = _stripCommentsAndLiterals(r.body);
+      if (!/new\s+ByteReader\s*\(/.test(body)) return;
+      var throws = (body.match(/\bthrow\b/g) || []).length;
+      if (throws < THROW_THRESHOLD) return;
+      bad.push({ file: rel, line: r.startLine,
+        content: "function `" + r.name + "` hand-rolls a binary-structure reader (new ByteReader) with " + throws + " inline field-validation throws -- extract the decode+validate into a validator-* (the type's rule set) or guard-* (a fail-closed shape), or mark `allow:inline-structure-validator <reason>` if it must stay inline" });
+    });
+  });
+  bad = _filterMarkers(bad, "inline-structure-validator");
+  _report("no lib function hand-rolls a binary-structure reader with a dense inline validation cluster (should be a validator/guard)", bad);
+}
+
 // ---------------------------------------------------------------------------
 // Runner
 // ---------------------------------------------------------------------------
@@ -2293,6 +2462,9 @@ function run() {
   testGuardShapeReinlined();
   testConstantTimeCompareShortCircuited();
   testEveryGuardEnforced();
+  testValidatorShapeReinlined();
+  testEveryValidatorEnforced();
+  testInlineStructureValidatorCluster();
   testBase64DecodeNotViaGuard();
   testJsonParseNotViaGuard();
   testNoRemovedWebCryptoNamespace();
