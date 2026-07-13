@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.2.6 — 2026-07-13
+## v0.2.7 — 2026-07-13
+
+pki.webcrypto rejects an imported key whose type disagrees with its algorithm, and reports every cipher fault as a typed error.
+
+### Fixed
+
+- pki.webcrypto.subtle.importKey now validates that an imported asymmetric key's actual type matches the requested algorithm (an RSA key imported under an Ed25519, ECDSA, or RSA-PSS name is rejected as webcrypto/data), closing an algorithm-confusion path where a mislabeled CryptoKey could later be used under the wrong signature scheme. The EC import path already derived and checked the curve; this extends the same key-is-authority rule to RSA and the Edwards/Montgomery curves.
+- pki.webcrypto AES cipher faults now fail closed with a typed webcrypto/operation error instead of a raw Node exception: a decrypt of a tampered AES-GCM ciphertext (failed authentication tag), bad AES-CBC padding, a non-8-byte-multiple AES-KW wrap/unwrap length, and a malformed cipher parameter all surface as a WebCryptoError, so a caller catching pki.errors.PkiError sees a typed verdict rather than a bare Node error crossing the API boundary.
+
+## v0.2.6 — 2026-07-12
 
 WebAuthn attestation verification covers Ed448 and the RFC 9864 fully-specified COSE algorithms, and hardens credential-key conformance.
 

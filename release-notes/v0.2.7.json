@@ -1,0 +1,11 @@
+{
+  "version": "0.2.7",
+  "headline": "pki.webcrypto rejects an imported key whose type disagrees with its algorithm, and reports every cipher fault as a typed error.",
+  "summary": "Two hardening fixes to the pki.webcrypto SubtleCrypto surface. First, importKey now derives an asymmetric key's type from the key material and rejects a mismatch with the requested algorithm: an RSA key imported as {name: \"Ed25519\"}, or an Ed25519 key imported as an RSA-PSS key, is a DataError rather than a CryptoKey that is mislabeled and would then sign or verify under the wrong scheme (an algorithm-confusion class the EC import path already guarded via the curve). Second, every AES cipher fault now surfaces as a typed WebCryptoError instead of a raw Node error crossing the public API: a decrypt of a tampered AES-GCM ciphertext (a failed authentication tag), bad AES-CBC padding, a non-conforming AES-KW key-wrap length, and a malformed cipher parameter all fail closed with webcrypto/operation. The verdict on adversarial input is a typed PkiError, as everywhere else in the toolkit -- a caller catching pki.errors.PkiError no longer sees a bare Node exception leak through.",
+  "sections": {
+    "Fixed": [
+      "pki.webcrypto.subtle.importKey now validates that an imported asymmetric key's actual type matches the requested algorithm (an RSA key imported under an Ed25519, ECDSA, or RSA-PSS name is rejected as webcrypto/data), closing an algorithm-confusion path where a mislabeled CryptoKey could later be used under the wrong signature scheme. The EC import path already derived and checked the curve; this extends the same key-is-authority rule to RSA and the Edwards/Montgomery curves.",
+      "pki.webcrypto AES cipher faults now fail closed with a typed webcrypto/operation error instead of a raw Node exception: a decrypt of a tampered AES-GCM ciphertext (failed authentication tag), bad AES-CBC padding, a non-8-byte-multiple AES-KW wrap/unwrap length, and a malformed cipher parameter all surface as a WebCryptoError, so a caller catching pki.errors.PkiError sees a typed verdict rather than a bare Node error crossing the API boundary."
+    ]
+  }
+}

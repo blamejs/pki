@@ -210,12 +210,111 @@ async function testEncodeBoundaryGuards() {
   check("sign rejects a detached payload (no silent empty POST-as-GET signature)", err && err.code === "jose/bad-input");
 }
 
+// ---- profile dispatch + fail-closed error branches -------------------
+// Every path here is an adversarial / malformed input that must fail closed with
+// a typed jose/* fault (or, for the EAB / keychange / PS256 rows, an alg the
+// registry permits that must ROUND-TRIP), driving the shipped verify/sign path.
+async function testProfileAndErrorBranches() {
+  var ec = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var ecJwk = await subtle.exportKey("jwk", ec.publicKey);
+  var enc = function (o) { return pki.jose.base64url.encode(Buffer.from(JSON.stringify(o))); };
+  var good = await pki.jose.sign({ protected: outerHeader({ jwk: ecJwk }), payload: Buffer.from("{}"), key: ec.privateKey });
+
+  // 40. an unknown JWS profile name fails closed -- never silently a default profile.
+  check("40. unknown profile rejected", (await acode(function () { return pki.jose.verify(good, { profile: "no-such-profile", key: ecJwk }); })) === "jose/bad-input");
+  // 41. a protected header that decodes to a non-object (array / number / null) rejected.
+  check("41a. array protected header rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc([1, 2, 3]) }), OUTER); })) === "jose/bad-header");
+  check("41b. numeric protected header rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(5) }), OUTER); })) === "jose/bad-header");
+  check("41c. null protected header rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(null) }), OUTER); })) === "jose/bad-header");
+  // 42. a jwk present but not a JSON object (a bare string) rejected.
+  check("42. non-object jwk rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ jwk: "notanobject" })) }), OUTER); })) === "jose/bad-header");
+  // 43. a jwk object lacking kty reaches the key-type gate and fails closed.
+  check("43. jwk without kty rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ jwk: { foo: 1 } })) }), OUTER); })) === "jose/bad-key");
+  // 44. an EC jwk whose curve disagrees with the alg (P-384 under ES256) rejected.
+  check("44. EC curve mismatch rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ jwk: { kty: "EC", crv: "P-384", x: "AAAA", y: "AAAA" } })) }), OUTER); })) === "jose/bad-alg");
+  // 45. an OKP jwk on an unsupported curve (X25519 under EdDSA) rejected.
+  check("45. unsupported OKP curve rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ alg: "EdDSA", jwk: { kty: "OKP", crv: "X25519", x: "AAAA" } })) }), OUTER); })) === "jose/bad-alg");
+  // 46. a crit entry that is not a string rejected.
+  check("46. non-string crit entry rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ jwk: ecJwk, extra: { crit: [123] } })) }), OUTER); })) === "jose/bad-crit");
+  // 47. an EC jwk with the right kty/curve but an unimportable point fails closed at import
+  // (the length pin passes on a 64-byte sig; the invalid point throws inside importKey).
+  check("47. unimportable EC point rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ jwk: { kty: "EC", crv: "P-256", x: "AAAA", y: "AAAA" } })), signature: pki.jose.base64url.encode(Buffer.alloc(64)) }), OUTER); })) === "jose/bad-key");
+
+  // 48. verify with NO opts at all still verifies an embedded-jwk JWS (opts defaulting).
+  check("48. verify with no opts (embedded jwk) succeeds", (await pki.jose.verify(good)).header.alg === "ES256");
+  // 49. a kid-mode JWS with no opts.key has no verification key and fails closed.
+  var kidJws = await pki.jose.sign({ protected: { alg: "ES256", nonce: "AAAA", url: "https://ca.example/o", kid: "https://ca.example/a" }, payload: Buffer.from("{}"), key: ec.privateKey });
+  check("49. kid-mode JWS without opts.key rejected", (await acode(function () { return pki.jose.verify(kidJws, { profile: "acme-outer" }); })) === "jose/bad-key");
+  // 50. a non-object / array / string JWS envelope rejected.
+  check("50a. null JWS rejected", (await acode(function () { return pki.jose.verify(null, OUTER); })) === "jose/bad-jws");
+  check("50b. array JWS rejected", (await acode(function () { return pki.jose.verify([], OUTER); })) === "jose/bad-jws");
+  check("50c. string JWS rejected", (await acode(function () { return pki.jose.verify("nope", OUTER); })) === "jose/bad-jws");
+  // 51. a non-string (detached) payload rejected -- payload is never detached here.
+  check("51. non-string payload rejected", (await acode(function () { return pki.jose.verify({ protected: "x", signature: "y", payload: null }, OUTER); })) === "jose/bad-jws");
+
+  // 52. an embedded jwk that passes the key-type + public-only gates but is an
+  // unimportable point fails closed when sign confirms it matches the signing key.
+  check("52. sign embedded unimportable jwk rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", nonce: "AAAA", url: "https://ca.example/o", jwk: { kty: "EC", crv: "P-256", x: "AAAA", y: "AAAA" } }, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-key");
+  // 53. sign with no opts / a non-Buffer payload fails closed (never a bare TypeError).
+  check("53a. sign with no opts rejected", (await acode(function () { return pki.jose.sign(); })) === "jose/bad-input");
+  check("53b. sign with a non-Buffer payload rejected", (await acode(function () { return pki.jose.sign({ protected: {}, payload: "notabuffer", key: {} }); })) === "jose/bad-input");
+
+  // 54. the base64url encoder requires a Buffer.
+  check("54. base64url.encode requires a Buffer", (code(function () { pki.jose.base64url.encode("notabuffer"); })) === "jose/bad-input");
+  // 55. assertPublicJwk requires a JWK object (null / array rejected).
+  check("55a. assertPublicJwk(null) rejected", (code(function () { pki.jose.assertPublicJwk(null); })) === "jose/bad-key");
+  check("55b. assertPublicJwk([]) rejected", (code(function () { pki.jose.assertPublicJwk([1]); })) === "jose/bad-key");
+  // 56. thumbprint requires a JWK object with a kty, and a known kty.
+  check("56a. thumbprint(null) rejected", (await acode(function () { return pki.jose.thumbprint(null); })) === "jose/bad-key");
+  check("56b. thumbprint without kty rejected", (await acode(function () { return pki.jose.thumbprint({ x: "a" }); })) === "jose/bad-key");
+  check("56c. thumbprint unsupported kty rejected", (await acode(function () { return pki.jose.thumbprint({ kty: "XYZ", x: "a" }); })) === "jose/bad-key");
+}
+
+// ---- eab-inner (HS*) + keychange-inner (jwk) + PS256/RS256 profiles ---
+// The EAB-inner profile is the ONLY place HS* is accepted (RFC 8555 sec. 7.3.4);
+// its key-id rule is kid-only and a nonce is forbidden. keychange-inner is jwk-only.
+async function testInnerProfilesAndRsaVariants() {
+  // eab-inner: an HS256 MAC JWS round-trips through _importParams / _cryptoAlg (oct).
+  var hmac = await subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
+  var octJwk = await subtle.exportKey("jwk", hmac);
+  var eab = await pki.jose.sign({ protected: { alg: "HS256", url: "https://ca.example/o", kid: "eab-kid" }, payload: Buffer.from("{}"), key: hmac, profile: "eab-inner" });
+  check("57. eab-inner HS256 round-trip", (await pki.jose.verify(eab, { profile: "eab-inner", key: octJwk })).header.alg === "HS256");
+  // 58. a nonce is forbidden in the eab-inner JWS.
+  check("58. eab-inner nonce forbidden", (await acode(function () { return pki.jose.sign({ protected: { alg: "HS256", nonce: "AAAA", url: "https://ca.example/o", kid: "eab-kid" }, payload: Buffer.from("{}"), key: hmac, profile: "eab-inner" }); })) === "jose/bad-header");
+  // 59. eab-inner identifies its key by kid, not jwk -- an embedded jwk is rejected.
+  check("59. eab-inner jwk (not kid) rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "HS256", url: "https://ca.example/o", jwk: octJwk }, payload: Buffer.from("{}"), key: hmac, profile: "eab-inner" }); })) === "jose/bad-header");
+
+  // keychange-inner: jwk-only. A kid is rejected; an embedded jwk round-trips.
+  var ec = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var ecJwk = await subtle.exportKey("jwk", ec.publicKey);
+  check("60. keychange-inner kid (not jwk) rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ES256", url: "https://ca.example/o", kid: "x" }, payload: Buffer.from("{}"), key: ec.privateKey, profile: "keychange-inner" }); })) === "jose/bad-header");
+  var kc = await pki.jose.sign({ protected: { alg: "ES256", url: "https://ca.example/o", jwk: ecJwk }, payload: Buffer.from("{}"), key: ec.privateKey, profile: "keychange-inner" });
+  check("61. keychange-inner jwk round-trip", (await pki.jose.verify(kc, { profile: "keychange-inner" })).header.alg === "ES256");
+
+  // PS256 exercises the RSA-PSS arm of _cryptoAlg (the RS* rows take the PKCS1-v1_5 arm).
+  var pss = await subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var pssJwk = await subtle.exportKey("jwk", pss.publicKey);
+  var pj = await pki.jose.sign({ protected: outerHeader({ alg: "PS256", jwk: pssJwk }), payload: Buffer.from("{}"), key: pss.privateKey });
+  check("62. PS256 (RSA-PSS) round-trip", (await pki.jose.verify(pj, OUTER)).header.alg === "PS256");
+
+  // An RS256 kid-mode JWS derives its signature length from the signing key's
+  // modulusLength (no embedded jwk to read the modulus from), and round-trips.
+  var rsa = await subtle.generateKey({ name: "RSASSA-PKCS1-V1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var rsaJwk = await subtle.exportKey("jwk", rsa.publicKey);
+  var rj = await pki.jose.sign({ protected: { alg: "RS256", nonce: "AAAA", url: "https://ca.example/o", kid: "https://ca.example/a" }, payload: Buffer.from("{}"), key: rsa.privateKey });
+  check("63. RS256 kid-mode sign (modulus from key) round-trip", pki.jose.base64url.decode(rj.signature).length === 256 && (await pki.jose.verify(rj, { profile: "acme-outer", key: rsaJwk })).header.alg === "RS256");
+  // 64. an RS256 signature of the wrong length is caught by the per-alg length pin.
+  check("64. RS256 wrong-length signature rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, rj, { signature: pki.jose.base64url.encode(Buffer.alloc(100)) }), { profile: "acme-outer", key: rsaJwk }); })) === "jose/bad-signature");
+}
+
 async function run() {
   testBase64url();
   testJsonReader();
   await testJws();
   await testThumbprint();
   await testEncodeBoundaryGuards();
+  await testProfileAndErrorBranches();
+  await testInnerProfilesAndRsaVariants();
   console.log("CHECKS " + helpers.getChecks());
 }
 

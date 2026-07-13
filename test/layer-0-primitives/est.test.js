@@ -415,12 +415,192 @@ function testClassify() {
   check("60b. unrecognized op rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "bogus" }); }) === "est/unsupported-operation");
 }
 
+// ---- adversarial / edge-branch coverage (error + fail-closed paths) ----
+// A [2] KEKRecipientInfo EnvelopedData (RFC 5652 sec. 6.2.3) encapsulating a
+// SignedData: the KEKIdentifier's keyIdentifier is the byte id a decryptKeyID
+// would match, so _recipientKeyIds must collect the kekri arm too.
+function kekEnvelopedKeyCI(kekId) {
+  var kekid = b.sequence([b.octetString(kekId)]);                 // KEKIdentifier { keyIdentifier OCTET STRING }
+  var kekri = b.contextConstructed(2, Buffer.concat([b.integer(4n), kekid, algId(AES256_WRAP), b.octetString(Buffer.from([0xAA, 0xBB]))]));
+  var eci = b.sequence([b.oid(ID_SIGNED_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
+  var env = b.sequence([b.integer(2n), b.set([kekri]), eci]);     // kekri recipient -> EnvelopedData version 2
+  return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
+}
+function testCoverageBranches() {
+  var certPart = certsOnly([REAL_CERT]);
+  var encSGK = "application/pkcs7-mime; smime-type=server-generated-key";
+  var certsOnlyCt = "application/pkcs7-mime; smime-type=certs-only";
+  var pkcs8 = b.sequence([b.integer(0n), b.sequence([b.oid("1.3.101.112")]), b.octetString(Buffer.alloc(34, 7))]);
+  function mp(parts, boundary) {
+    boundary = boundary || "cvBnd";
+    var body = parts.map(function (p) {
+      var hdr = (p.ct === null || p.ct === undefined) ? "X-Other: v" : "Content-Type: " + p.ct;
+      return "--" + boundary + "\r\n" + hdr + "\r\n\r\n" + p.body;
+    }).join("\r\n");
+    return body + "\r\n--" + boundary + "--\r\n";
+  }
+  var CT = 'multipart/mixed; boundary="cvBnd"';
+
+  // ---- transfer codec ----
+  // 61. a base64 body that clears the pre-decode text cap but decodes to a DER
+  //     over DER_MAX_BYTES -> est/too-large from the POST-decode length check.
+  var bigB64 = Buffer.alloc(pki.C.LIMITS.DER_MAX_BYTES + 16, 0).toString("base64");
+  check("61. oversize decoded DER rejected post-decode", code(function () { pki.est.transferDecode(bigB64); }) === "est/too-large");
+  // 61b. transferEncode of a non-Buffer -> est/bad-input.
+  check("61b. transferEncode non-Buffer rejected", code(function () { pki.est.transferEncode("not a buffer"); }) === "est/bad-input");
+
+  // ---- multipart splitter (RFC 2046) ----
+  // 62. a non-multipart content-type -> est/bad-multipart (no boundary).
+  check("62. non-multipart content-type rejected", code(function () { pki.est.splitMultipartMixed("body", "text/plain"); }) === "est/bad-multipart");
+  // 62b. a null content-type coerces to "" -> est/bad-multipart.
+  check("62b. null content-type rejected", code(function () { pki.est.splitMultipartMixed("body", null); }) === "est/bad-multipart");
+  // 62c. multipart/mixed with no boundary parameter -> est/bad-multipart.
+  check("62c. missing boundary parameter rejected", code(function () { pki.est.splitMultipartMixed("body", "multipart/mixed"); }) === "est/bad-multipart");
+  // 62d. an UNQUOTED boundary is accepted; a part with no Content-Type header
+  //      surfaces contentType === "".
+  var rawNoCt = "--bnd\r\nX-Foo: bar\r\n\r\nhello\r\n--bnd--\r\n";
+  var pNoCt = pki.est.splitMultipartMixed(rawNoCt, "multipart/mixed; boundary=bnd");
+  check("62d. unquoted boundary + no-content-type part", pNoCt.length === 1 && pNoCt[0].contentType === "" && /hello/.test(pNoCt[0].body));
+  // 62e. an LF-only (not CRLF) header/body separator is tolerated.
+  var rawLf = "--bnd\nContent-Type: text/plain\n\nhello\n--bnd--\n";
+  var pLf = pki.est.splitMultipartMixed(rawLf, 'multipart/mixed; boundary="bnd"');
+  check("62e. LF-only header/body separator parsed", pLf.length === 1 && /hello/.test(pLf[0].body));
+  // 62f. a part with no header/body separator at all -> est/bad-multipart.
+  var rawNoSep = "--bnd\r\nContent-Type: text/plain no blank line\r\n--bnd--\r\n";
+  check("62f. missing header/body separator rejected", code(function () { pki.est.splitMultipartMixed(rawNoSep, "multipart/mixed; boundary=bnd"); }) === "est/bad-multipart");
+  // 62g. a nested multipart part is not permitted -> est/bad-multipart.
+  var rawNested = "--bnd\r\nContent-Type: multipart/mixed; boundary=inner\r\n\r\nx\r\n--bnd--\r\n";
+  check("62g. nested multipart part rejected", code(function () { pki.est.splitMultipartMixed(rawNested, "multipart/mixed; boundary=bnd"); }) === "est/bad-multipart");
+
+  // ---- certs-only validator ----
+  // 63. bytes that do not decode as CMS at all -> est/bad-response.
+  check("63. non-CMS bytes -> bad-response", code(function () { pki.est.parseCertsOnly(Buffer.from([0x30, 0x00])); }) === "est/bad-response");
+  // 63b. a CMS EnvelopedData (not SignedData) -> est/not-certs-only.
+  check("63b. EnvelopedData -> not-certs-only", code(function () { pki.est.parseCertsOnly(envelopedKeyCI()); }) === "est/not-certs-only");
+
+  // ---- findIssuedCert ----
+  var spkiBytes = pki.schema.x509.parse(REAL_CERT).subjectPublicKeyInfo.bytes;
+  // 64. a raw SPKI-bytes Buffer target matches by public key.
+  var f64 = pki.est.findIssuedCert([REAL_CERT], spkiBytes);
+  check("64. findIssuedCert raw Buffer target matches", Buffer.isBuffer(f64) && f64.equals(REAL_CERT));
+  // 64b. a null target and a target object with no .bytes -> null (never a guess).
+  check("64b. null target -> null", pki.est.findIssuedCert([REAL_CERT], null) === null);
+  check("64c. object without bytes -> null", pki.est.findIssuedCert([REAL_CERT], {}) === null);
+  // 64d. an unparseable certificate in the list is skipped, not fatal.
+  var f64d = pki.est.findIssuedCert([Buffer.from([0x30, 0x00]), REAL_CERT], spkiBytes);
+  check("64d. findIssuedCert skips unparseable cert", Buffer.isBuffer(f64d) && f64d.equals(REAL_CERT));
+
+  // ---- serverkeygen recipient collection + coherence ----
+  // 65. a KEKRecipientInfo key id (kekid.keyIdentifier) is collected and matched.
+  var kekKid = Buffer.from([0x33, 0x44]);
+  var bodyKek = mp([{ ct: encSGK, body: kekEnvelopedKeyCI(kekKid).toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  var rKek = pki.est.parseServerKeygenResponse(bodyKek, CT, { requestedEncryption: true, expectedRecipientKeyId: kekKid });
+  check("65. KEKRecipientInfo key id matched", !!rKek.encryptedKey && rKek.encryptedKey.contentTypeName === "envelopedData");
+  // 65b. a KEM recipient names a subjectKeyIdentifier, never an issuerAndSerial --
+  //      an issuer+serial expectation therefore cannot match it -> est/recipient-mismatch.
+  var kemBody = mp([{ ct: encSGK, body: kemEnvelopedKeyCI(kekKid).toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  check("65b. issuer+serial expectation vs kem recipient -> mismatch", code(function () {
+    pki.est.parseServerKeygenResponse(kemBody, CT, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: Buffer.from([0x30, 0x00]), serialNumber: 1n } });
+  }) === "est/recipient-mismatch");
+  // 65c-d. a malformed issuer+serial expectation (non-Buffer issuer / null serial)
+  //        fails the coherence check closed -> est/recipient-mismatch, never a pass.
+  var encBody = mp([{ ct: encSGK, body: envelopedKeyCI().toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  check("65c. non-Buffer issuer expectation -> mismatch", code(function () {
+    pki.est.parseServerKeygenResponse(encBody, CT, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: "notbuf", serialNumber: 1n } });
+  }) === "est/recipient-mismatch");
+  check("65d. null serialNumber expectation -> mismatch", code(function () {
+    pki.est.parseServerKeygenResponse(encBody, CT, { requestedEncryption: true, expectedRecipientIssuerSerial: { issuer: Buffer.from([1]), serialNumber: null } });
+  }) === "est/recipient-mismatch");
+
+  // ---- serverkeygen part dispatch ----
+  // 66. a part with no content-type ("") is not a recognized part -> est/bad-multipart.
+  var noCtBody = mp([{ ct: null, body: pkcs8.toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  check("66. empty-content-type part rejected", code(function () { pki.est.parseServerKeygenResponse(noCtBody, CT, {}); }) === "est/bad-multipart");
+  // 66b. a valueless parameter (no '=') is skipped and a QUOTED smime-type value is
+  //      unquoted -> the key part is still dispatched as the encrypted key.
+  var quotedKey = 'application/pkcs7-mime; foo; smime-type="server-generated-key"';
+  var bodyQ = mp([{ ct: quotedKey, body: envelopedKeyCI().toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  var rQ = pki.est.parseServerKeygenResponse(bodyQ, CT, { requestedEncryption: true });
+  check("66b. valueless param + quoted smime-type dispatched", !!rQ.encryptedKey);
+  // 66c. two certificate parts (no key part) -> est/bad-multipart.
+  var twoCerts = mp([{ ct: certsOnlyCt, body: certPart.toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  check("66c. two cert parts, no key part rejected", code(function () { pki.est.parseServerKeygenResponse(twoCerts, CT, {}); }) === "est/bad-multipart");
+  // 66d. parseServerKeygenResponse tolerates an omitted opts argument.
+  var okBody = mp([{ ct: "application/pkcs8", body: pkcs8.toString("base64") }, { ct: certsOnlyCt, body: certPart.toString("base64") }]);
+  check("66d. omitted opts argument", !!pki.est.parseServerKeygenResponse(okBody, CT).privateKey);
+
+  // ---- HTTP classifier ----
+  // 67. an omitted op (and omitted opts) opts out of the content-type gate -> ok.
+  check("67. classify no opts is permissive", pki.est.classifyResponse(200, { "content-type": "text/whatever" }, Buffer.alloc(0)).status === "ok");
+  // 67b. null headers coerce to {}; a 3xx is a redirect verdict (location null when absent).
+  var r301 = pki.est.classifyResponse(301, null, "", {});
+  check("67b. 301 null headers -> redirect, null location", r301.status === "redirect" && r301.location === null);
+  check("67c. 302 -> redirect with surfaced location", pki.est.classifyResponse(302, { location: "https://x" }, "", { op: "cacerts" }).location === "https://x");
+  // 67d-e. a 4xx with a STRING body (or a null body) still yields est/http-error.
+  check("67d. 4xx string body -> http-error", code(function () { pki.est.classifyResponse(400, {}, "err text", { op: "simpleenroll" }); }) === "est/http-error");
+  check("67e. 4xx null body -> http-error", code(function () { pki.est.classifyResponse(400, {}, null, {}); }) === "est/http-error");
+  // 67f-g. a status outside every handled band -> the neutral "unexpected" verdict.
+  check("67f. status 250 -> unexpected", pki.est.classifyResponse(250, {}, "", {}).status === "unexpected");
+  check("67g. status 100 -> unexpected carries httpStatus", pki.est.classifyResponse(100, {}, "", {}).httpStatus === 100);
+  // 67h-i. an rfc850-date Retry-After with a two-digit year (RFC 7231 sec. 7.1.1.1):
+  //        >= 70 maps to 19xx, < 70 to 20xx.
+  var r850a = pki.est.classifyResponse(202, { "retry-after": "Sunday, 06-Nov-94 08:49:37 GMT" }, Buffer.alloc(0), { op: "simpleenroll" });
+  check("67h. rfc850 two-digit year >= 70 -> 19xx", r850a.retryAfterDate === Date.UTC(1994, 10, 6, 8, 49, 37));
+  var r850b = pki.est.classifyResponse(202, { "retry-after": "Friday, 06-Nov-20 08:49:37 GMT" }, Buffer.alloc(0), { op: "simpleenroll" });
+  check("67i. rfc850 two-digit year < 70 -> 20xx", r850b.retryAfterDate === Date.UTC(2020, 10, 6, 8, 49, 37));
+
+  // ---- builders: config-time input validation ----
+  check("68. challengePassword non-Buffer rejected", code(function () { pki.est.challengePasswordFromTlsUnique("x"); }) === "est/bad-input");
+  check("68b. challengePassword empty rejected", code(function () { pki.est.challengePasswordFromTlsUnique(Buffer.alloc(0)); }) === "est/bad-input");
+  check("68c. decryptKeyIdentifierAttr non-Buffer rejected", code(function () { pki.est.decryptKeyIdentifierAttr("x"); }) === "est/bad-input");
+  check("68d. asymmetricDecryptKeyIdentifierAttr non-Buffer rejected", code(function () { pki.est.asymmetricDecryptKeyIdentifierAttr(123); }) === "est/bad-input");
+  check("68e. smimeCapabilities empty list rejected", code(function () { pki.est.smimeCapabilitiesAttr([]); }) === "est/bad-input");
+  check("68f. smimeCapabilities non-array rejected", code(function () { pki.est.smimeCapabilitiesAttr("x"); }) === "est/bad-input");
+  // 68g-h. a capability's optional parameters -- a raw Buffer or an OID string -- are carried.
+  var capBuf = pki.est.smimeCapabilitiesAttr([{ capabilityID: AES256_WRAP, parameters: Buffer.from([0x05, 0x00]) }]);
+  check("68g. smimeCapabilities Buffer parameters", pki.asn1.read.oid(pki.asn1.decode(capBuf).children[0]) === "1.2.840.113549.1.9.15");
+  var capOid = pki.est.smimeCapabilitiesAttr([{ capabilityID: AES256_WRAP, parameters: AES256_CBC }]);
+  check("68h. smimeCapabilities OID parameters", pki.asn1.read.oid(pki.asn1.decode(capOid).children[0]) === "1.2.840.113549.1.9.15");
+
+  // ---- buildEnrollAttributes ----
+  // 69. a null / empty CsrAttrs yields an empty (non-template) plan, never a throw.
+  var pNull = pki.est.buildEnrollAttributes(null);
+  check("69. null CsrAttrs -> empty plan", pNull.fromTemplate === false && pNull.keyType === null && pNull.unhandled.length === 0);
+  check("69b. empty-object CsrAttrs -> empty plan", pki.est.buildEnrollAttributes({}).keyType === null);
+  // 69c. an extensionRequest attribute's decoded extensions are surfaced on plan.extensions.
+  var extAttr = b.sequence([b.oid(EXTREQ_OID), b.set([b.sequence([b.sequence([b.oid("2.5.29.19"), b.octetString(b.sequence([]))])])])]);
+  var pExt = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([extAttr])));
+  check("69c. extensionRequest -> plan.extensions", Array.isArray(pExt.extensions) && pExt.extensions[0].oid === "2.5.29.19");
+  // 69d. an RSA key-type hint's keySize is surfaced; an EC hint's curve is surfaced.
+  var pRsa = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.sequence([b.oid(RSA_OID), b.set([b.integer(2048n)])])])));
+  check("69d. RSA keySize surfaced", pRsa.keyType.keySize === 2048);
+  var pEc = pki.est.buildEnrollAttributes(pki.schema.csrattrs.parse(b.sequence([b.sequence([b.oid("1.2.840.10045.2.1"), b.set([b.oid("1.2.840.10045.3.1.7")])])])));
+  check("69e. EC curve surfaced", pEc.keyType.curve === "1.2.840.10045.3.1.7");
+
+  // ---- reenrollGuard extension paths ----
+  var tbs = pki.asn1.decode(REAL_CERT).children[0];
+  var subjectDer = tbs.children[5].bytes, spkiDer = tbs.children[6].bytes;
+  function csrWithAttr(attrDer) {
+    var cri = b.sequence([b.integer(0n), subjectDer, spkiDer, b.contextConstructed(0, attrDer)]);
+    return b.sequence([cri, algId(ECDSA_SHA256), b.bitString(Buffer.from([1, 2, 3]), 0)]);
+  }
+  // 70. a CSR whose extensionRequest carries a non-SAN extension (so it requests NO
+  //     SAN) does not match the old cert's SAN -> est/reenroll-san-mismatch.
+  var bcExtReq = b.sequence([b.oid(EXTREQ_OID), b.set([b.sequence([b.sequence([b.oid("2.5.29.19"), b.octetString(b.sequence([]))])])])]);
+  check("70. reenroll CSR extReq without SAN -> san-mismatch", code(function () { pki.est.reenrollGuard(REAL_CERT, csrWithAttr(bcExtReq)); }) === "est/reenroll-san-mismatch");
+  // 70b. a CSR carrying only a non-extensionRequest attribute (challengePassword)
+  //      requests no extensions -> est/reenroll-san-mismatch against the SAN-bearing cert.
+  var cpAttr = b.sequence([b.oid(CHALLENGE_PW), b.set([b.printable("secret")])]);
+  check("70b. reenroll CSR non-extReq attribute -> san-mismatch", code(function () { pki.est.reenrollGuard(REAL_CERT, csrWithAttr(cpAttr)); }) === "est/reenroll-san-mismatch");
+}
+
 function run() {
   testTransferCodec();
   testCertsOnly();
   testServerKeygen();
   testBuilders();
   testClassify();
+  testCoverageBranches();
 }
 
 module.exports = { run: run };

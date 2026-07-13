@@ -825,6 +825,75 @@ function testDispatchAndCoercion() {
   check("dhBasedMac OID pinned", pki.oid.name("1.2.840.113533.7.66.30") === "dhBasedMac");
 }
 
+// ---- edge / adversarial branches (optional-absent, numeric fail bits) --------
+function testEdgeBranches() {
+  // PKIFailureInfo bits past the 26 named bits (§5.2.3) are extensible and surface
+  // as raw numeric indexes, not names. Bit 27 is the last carried bit (canonical
+  // named-bits minimality holds) and must appear as the integer 27.
+  var numeric = parse(minimalMessage({ body: body(23, b.sequence([pkiStatusInfo({ status: 2, failBits: [1, 27] })])) }));
+  check("failInfo bit past 26 surfaces as a numeric index",
+        JSON.stringify(numeric.body.decoded.pKIStatusInfo.failInfo.bits) === JSON.stringify(["badMessageCheck", 27]));
+
+  // RevDetails with the OPTIONAL crlEntryDetails Extensions absent surfaces null
+  // (the present branch is covered by testAcceptRevocation).
+  var rrNoExts = parse(minimalMessage({ body: body(11, b.sequence([revDetails({})])) }));
+  check("rr RevDetails without crlEntryDetails is null", rrNoExts.body.decoded[0].crlEntryDetails === null);
+
+  // RevRepContent with status only -- both OPTIONAL trailing fields (revCerts [0],
+  // crls [1]) absent surface null (the present branch is covered above).
+  var rpStatusOnly = parse(minimalMessage({ body: body(12, b.sequence([b.sequence([pkiStatusInfo({ status: 0 })])])) }));
+  check("rp with only status: revCerts and crls null",
+        rpStatusOnly.body.decoded.revCerts === null && rpStatusOnly.body.decoded.crls === null);
+
+  // KeyRecRepContent (krp) with newSigCert [0] and caCerts [1] present -- the
+  // OPTIONAL trailing fields the minimal krp above leaves absent (§5.3.8).
+  var krpFull = b.sequence([pkiStatusInfo({ status: 0 }), b.explicit(0, RAW_CERT), b.explicit(1, b.sequence([RAW_CERT]))]);
+  var krp = parse(minimalMessage({ body: body(10, krpFull) }));
+  check("krp newSigCert [0] surfaced raw", Buffer.isBuffer(krp.body.decoded.newSigCert) && krp.body.decoded.newSigCert.equals(RAW_CERT));
+  check("krp caCerts [1] surfaced raw", krp.body.decoded.caCerts.length === 1 && krp.body.decoded.caCerts[0].equals(RAW_CERT));
+
+  // PKIProtection [0] EXPLICIT must wrap a BIT STRING; a well-formed but wrong-tag
+  // inner (an INTEGER) makes the leaf reader throw, rethrown as the CMP domain
+  // error, not escaping asn1/* (RFC 9810 §5.1.3).
+  check("protection [0] wrapping a non-BIT-STRING rejected",
+        parseCode(minimalMessage({ protection: b.integer(1) })) === "cmp/bad-protection");
+
+  // RFC 9810 §5.3.11 -- a ccr must not send the private key; the deprecated
+  // thisMessage POPOPrivKey choice (the sibling of the encryptedKey transport
+  // covered above) is likewise forbidden. The same POP is legal in a non-ccr arm.
+  function certReqThisMessagePop() {
+    var thisMsg = b.contextPrimitive(0, Buffer.from([0x00, 0xaa]));   // thisMessage [0] IMPLICIT BIT STRING
+    var pop = b.contextConstructed(2, thisMsg);                        // keyEncipherment [2] { thisMessage [0] }
+    return b.sequence([b.sequence([b.sequence([b.integer(0), b.sequence([b.explicit(5, rdn("cross.ca"))])]), pop])]);
+  }
+  check("ccr POP using thisMessage (private-key transport) rejected (RFC 9810 §5.3.11)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(13, certReqThisMessagePop()) })) === "cmp/bad-body");
+  check("the same thisMessage POP in an ir accepted (restriction is ccr-specific)",
+        parseCode(minimalMessage({ headerOpts: { pvno: 3 }, body: body(0, certReqThisMessagePop()) })) === "NO-THROW");
+
+  // A ccr control whose type is NOT pkiArchiveOptions (a regToken here) is skipped
+  // by both the ccr private-key-control check (§5.3.11) and the non-ccr archive
+  // version gate (§5.2.8.3.1) -- neither forbids nor version-gates it, so the
+  // message parses.
+  var ccrOtherControl = b.sequence([b.sequence([b.sequence([
+    b.integer(0), b.sequence([b.explicit(5, rdn("cross.ca"))]),
+    b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.5.1.1"), b.utf8("tok")])]),   // controls: [regToken]
+  ])])]);
+  check("ccr with a non-archive control accepted (archive checks skip it)",
+        parseCode(minimalMessage({ body: body(13, ccrOtherControl) })) === "NO-THROW");
+
+  // RFC 9810 §5.1.1.4 -- the certProfile name count is bounded by the genm body's
+  // InfoTypeAndValue count (the names map positionally). Within the count parses;
+  // over it is rejected. (The p10cr / request-arm bounds are covered above.)
+  var genmTwo = b.sequence([itv(IT_CA_CERTS, b.sequence([RAW_CERT])), itv("1.3.6.1.5.5.7.4.99")]);
+  var oneProfile = itv(IT_CERT_PROFILE, b.sequence([b.utf8("p1")]));
+  var threeProfiles = itv(IT_CERT_PROFILE, b.sequence([b.utf8("p1"), b.utf8("p2"), b.utf8("p3")]));
+  check("genm with one certProfile name within its body count accepted", parseCode(minimalMessage({
+    header: pkiHeader({ generalInfo: [oneProfile] }), body: body(21, genmTwo) })) === "NO-THROW");
+  check("genm with more certProfile names than body entries rejected", parseCode(minimalMessage({
+    header: pkiHeader({ generalInfo: [threeProfiles] }), body: body(21, genmTwo) })) === "cmp/bad-info-value");
+}
+
 // ---- runner ----------------------------------------------------------
 testAcceptMinimalError();
 testAcceptFullHeader();
@@ -836,6 +905,7 @@ testAcceptRawArmsAndProtection();
 testRejectHeader();
 testRejectEnvelope();
 testRejectBody();
+testEdgeBranches();
 testDispatchAndCoercion();
 
 if (require.main === module) console.log("CHECKS " + helpers.getChecks());

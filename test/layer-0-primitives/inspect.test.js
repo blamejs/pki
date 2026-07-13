@@ -204,6 +204,184 @@ function run() {
   // error, not a raw TypeError from the renderer dereferencing a missing field.
   check("inspect({tbsBytes}) -> inspect/bad-input (not a raw TypeError)", codeOf(function () { pki.inspect.certificate({ tbsBytes: Buffer.alloc(0) }); }) === "inspect/bad-input");
 
+  // --- Adversarial / edge extension, key, and input forms: each drives an
+  // otherwise-untaken best-effort render branch and asserts the fail-safe result
+  // (a hostile or opaque value renders labelled-hex, never a raw byte that could
+  // inject a report line; a malformed sub-structure hex-dumps, never throws). ---
+
+  // Only issuerAltName can carry a fresh GeneralNames without duplicating the EC
+  // fixture's own subjectAltName (the strict parser rejects a repeated extension).
+  function ianExt(gnDer) { return b.sequence([b.oid(pki.oid.byName("issuerAltName")), b.octetString(b.sequence([gnDer]))]); }
+  // otherName [0] IMPLICIT SEQUENCE { type-id, [0] EXPLICIT value } -- an opaque
+  // choice, rendered as hex so its bytes can never break the line structure.
+  var otherNameGn = b.contextConstructed(0, Buffer.concat([b.oid("1.3.6.1.4.1.99999.3.1"), b.explicit(0, b.utf8("hi"))]));
+  check("inspect: issuerAltName otherName renders as labelled hex, not raw bytes",
+    /X509v3 Issuer Alternative Name:\n\s+othername:a0:12:/.test(pki.inspect.certificate(injectExt(ianExt(otherNameGn)))));
+  // ediPartyName [5] -- another opaque constructed choice -> its whole TLV as hex.
+  var ediGn = b.contextConstructed(5, b.sequence([b.explicit(1, b.utf8("party"))]));
+  check("inspect: issuerAltName ediPartyName [5] renders labelled hex",
+    /X509v3 Issuer Alternative Name:\n\s+EdiPartyName:a5:0b:/.test(pki.inspect.certificate(injectExt(ianExt(ediGn)))));
+  // registeredID [8] -- a bare OID choice -> the dotted OID string.
+  var regGn = b.contextPrimitive(8, b.oid("1.2.3.4").subarray(2));
+  check("inspect: issuerAltName registeredID [8] renders the OID",
+    /X509v3 Issuer Alternative Name:\n\s+Registered ID:1\.2\.3\.4/.test(pki.inspect.certificate(injectExt(ianExt(regGn)))));
+
+  // A name-constraints iPAddress subtree is a 32-octet IPv6 address+mask -> the
+  // "addr/mask" form; and with only permittedSubtrees present, the excluded block
+  // is omitted (the per-list empty-array early return), not rendered empty.
+  var ncIp = Buffer.alloc(32); ncIp[0] = 0x20; ncIp[1] = 0x01; ncIp[16] = 0xff; ncIp[17] = 0xff;
+  var nc32 = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("nameConstraints")), b.boolean(true),
+    b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, ncIp)]))]))])));
+  check("inspect: nameConstraints 32-byte IPv6 subtree renders addr/mask, excluded omitted",
+    /Permitted:\n\s+IP Address:2001:0:0:0:0:0:0:0\/FFFF:0:0:0:0:0:0:0/.test(nc32) && nc32.indexOf("Excluded:") < 0);
+
+  // An extKeyUsage whose KeyPurposeId OID is unregistered renders the raw dotted
+  // OID (the registry lookup misses, but the purpose is never dropped).
+  check("inspect: an unregistered EKU purpose renders its raw OID",
+    /X509v3 Extended Key Usage:\n\s+1\.3\.6\.1\.4\.1\.99999\.8\.8/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("extKeyUsage")), b.octetString(b.sequence([b.oid("1.3.6.1.4.1.99999.8.8")]))])))));
+
+  // basicConstraints with a pathLenConstraint -- replace the fixture's own CA:TRUE
+  // basicConstraints (parser rejects a duplicate) so the pathlen suffix renders.
+  function extOidOf(raw) { return A.read.oid(A.decode(raw).children[0]); }
+  function replaceExt(oidName, extDer) {
+    var target = pki.oid.byName(oidName);
+    var kept = extList.filter(function (raw) { return extOidOf(raw) !== target; });
+    return b.sequence([
+      b.sequence(baseTbs.children.map(function (c, i) { return i === extIdx ? b.explicit(3, b.sequence(kept.concat([extDer]))) : c.bytes; })),
+      baseCert.children[1].bytes, baseCert.children[2].bytes,
+    ]);
+  }
+  check("inspect: basicConstraints renders pathlen when present",
+    /X509v3 Basic Constraints: critical\n\s+CA:TRUE, pathlen:3/.test(
+      pki.inspect.certificate(replaceExt("basicConstraints", b.sequence([b.oid(pki.oid.byName("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true), b.integer(3n)]))])))));
+
+  // A CRL distribution point whose distributionPoint is nameRelativeToCRLIssuer [1]
+  // (an RDN, not a fullName) renders the relative-name marker, not a hex dump.
+  var relDp = b.sequence([b.contextConstructed(0, b.contextConstructed(1, b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("crl-rdn")])))]);
+  check("inspect: a CRL DP relative-name renders the marker",
+    /X509v3 CRL Distribution Points:\n\s+Relative Name \(to CRL issuer\)/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")), b.octetString(b.sequence([relDp]))])))));
+
+  // A CRL DP fullName carrying an iPAddress [7] GeneralName (left raw by the
+  // decoder) renders as a dotted-quad, never a raw octet that could inject a line.
+  var ipFull = b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(7, Buffer.from([10, 0, 0, 1]))))]);
+  check("inspect: a CRL DP fullName IP renders as a dotted-quad",
+    /Full Name:\n\s+IP Address:10\.0\.0\.1/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")), b.octetString(b.sequence([ipFull]))])))));
+
+  // An AKI issuer+serial form with an odd-nibble serial pads to an even-length hex
+  // string (0x9 -> serial:0x09), and an all-optional-absent AKI renders keyid:(none)
+  // rather than dropping the field or dereferencing a missing one.
+  var akiIssuer = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("aki-ca")])])]);
+  var akiOdd = b.sequence([b.contextConstructed(1, b.contextConstructed(4, akiIssuer)), b.contextPrimitive(2, Buffer.from([0x09]))]);
+  check("inspect: an AKI odd-nibble serial is zero-padded to even hex",
+    /serial:0x09/.test(pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityKeyIdentifier")), b.octetString(akiOdd)])))));
+  check("inspect: an all-absent AKI renders keyid:(none)",
+    /X509v3 Authority Key Identifier:\n\s+keyid:\(none\)/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityKeyIdentifier")), b.octetString(b.sequence([]))])))));
+
+  // An SCT list with one v1 SCT (decoded fields) plus one SCT of an unrecognized
+  // version (preserved opaque) renders both the decoded SCT and the unknown count.
+  function u16(n) { return Buffer.from([(n >> 8) & 0xff, n & 0xff]); }
+  var sctV1 = Buffer.concat([Buffer.from([0]), Buffer.alloc(32, 0xab), Buffer.from([0, 0, 0, 0, 0, 0, 0, 5]), u16(0), Buffer.from([4]), Buffer.from([3]), u16(0)]);
+  var sctUnk = Buffer.from([9, 0xde, 0xad]);
+  var sctInner = Buffer.concat([u16(sctV1.length), sctV1, u16(sctUnk.length), sctUnk]);
+  var sctBlob = Buffer.concat([u16(sctInner.length), sctInner]);
+  var sctRep = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("signedCertificateTimestampList")), b.octetString(b.octetString(sctBlob))])));
+  check("inspect: an SCT list renders the v1 SCT and the unknown-version count",
+    /Signed Certificate Timestamp:\n\s+Version: v1\n\s+Log ID: ABABABAB/.test(sctRep) &&
+    /Timestamp: 5/.test(sctRep) && /\(1 SCT\(s\) of an unrecognized version\)/.test(sctRep));
+
+  // A certificate policy qualifier with an unregistered qualifier OID and a
+  // non-printable value renders the OID label + a hex dump of the value.
+  var binQual = b.sequence([b.oid("1.3.6.1.4.1.99999.9.9"), b.octetString(Buffer.from([1, 2, 3]))]);
+  var polBin = b.sequence([b.oid("1.3.6.1.4.1.99999.1.2"), b.sequence([binQual])]);
+  check("inspect: an unregistered non-printable policy qualifier renders OID + hex",
+    /1\.3\.6\.1\.4\.1\.99999\.9\.9: 04:03:01:02:03/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")), b.octetString(b.sequence([polBin]))])))));
+
+  // A registered-decoder extension whose VALUE is malformed for that decoder
+  // (an INTEGER where extKeyUsage wants a SEQUENCE) hex-dumps via the fallback,
+  // never throwing and never sinking the surrounding report.
+  check("inspect: a decoder that throws on a malformed value falls back to hex",
+    /X509v3 Extended Key Usage:\n\s+02:01:05/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("extKeyUsage")), b.octetString(b.integer(5n))])))));
+
+  // Non-EC/RSA (EdDSA) and degenerate key forms exercise the raw-key + fallback
+  // key branches: an Ed25519 SPKI shows its raw public key; an ecPublicKey with an
+  // unknown named curve falls back to a point-derived bit length (no ASN1 OID line);
+  // an RSA key with an odd-length modulus hex pads it; a non-RSAPublicKey inner
+  // value falls through to the raw bytes rather than throwing.
+  function swapSpki(spkiDer) {
+    return b.sequence([
+      b.sequence(baseTbs.children.map(function (c, i) { return i === extIdx - 1 ? spkiDer : c.bytes; })),
+      baseCert.children[1].bytes, baseCert.children[2].bytes,
+    ]);
+  }
+  var edKey = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid("1.3.101.112")]), b.bitString(Buffer.alloc(32, 0xab))])));
+  check("inspect: an Ed25519 SPKI renders raw public-key bytes",
+    /Public Key Algorithm: Ed25519\n\s+Public-Key: \(256 bit\)\n\s+pub:\n\s+ab:ab:ab/.test(edKey));
+  var unkCurve = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("ecPublicKey")), b.oid("1.3.6.1.4.1.99999.5.5")]), b.bitString(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64, 0x11)]))])));
+  check("inspect: an ecPublicKey with an unknown curve derives bits from the point, no ASN1 OID",
+    /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(256 bit\)/.test(unkCurve) && unkCurve.indexOf("ASN1 OID:") < 0);
+  var rsaOdd = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(b.sequence([b.integer(0x123n), b.integer(3n)]))])));
+  check("inspect: an RSA modulus with odd-length hex is zero-padded", /Modulus:\n\s+01:23\n/.test(rsaOdd) && /Public-Key: \(9 bit\)/.test(rsaOdd));
+  var rsaBad = pki.inspect.certificate(swapSpki(b.sequence([b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]), b.bitString(Buffer.from([0xff, 0xff, 0xff]))])));
+  check("inspect: a non-RSAPublicKey inner value falls back to raw bytes",
+    /Public Key Algorithm: rsaEncryption\n\s+Public-Key: \(24 bit\)\n\s+pub:\n\s+ff:ff:ff/.test(rsaBad));
+
+  // A hex-dump fallback for an unknown extension whose value is empty (-> "(empty)")
+  // and whose value is non-printable, non-DER binary (-> colon-hex, never raw).
+  check("inspect: an empty unknown-extension value renders (empty)",
+    /1\.3\.6\.1\.4\.1\.99999\.7\.3:\n\s+\(empty\)/.test(
+      pki.inspect.certificate(injectExt(b.sequence([b.oid("1.3.6.1.4.1.99999.7.3"), b.octetString(Buffer.alloc(0))])))));
+  var binFall = pki.inspect.certificate(injectExt(b.sequence([b.oid("1.3.6.1.4.1.99999.7.4"), b.octetString(Buffer.from([0xff, 0xfe, 0x00, 0x99]))])));
+  check("inspect: a non-printable non-DER unknown value hex-dumps, never raw",
+    /1\.3\.6\.1\.4\.1\.99999\.7\.4:\n\s+ff:fe:00:99/.test(binFall));
+
+  // The pre-parsed fast path: field forms a strict parse never produces but the
+  // documented best-effort renderer must still handle -- an unparseable validity
+  // (rendered as the raw string, not a crash), an algorithm carrying only an OID or
+  // neither name nor OID, a small/odd/empty serial (inline decimal), a raw-Buffer or
+  // null public key, no extensions, and a raw-Buffer or absent signature value.
+  function mkParsed(over) {
+    var base = {
+      version: 3, serialNumberHex: "05",
+      signatureAlgorithm: { name: "ecdsaWithSHA256", oid: "1.2.840.10045.4.3.2" },
+      issuer: { dn: "CN=issuer" }, subject: { dn: "CN=subject" },
+      validity: { notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z") },
+      subjectPublicKeyInfo: { algorithm: { name: "Ed25519" }, publicKey: Buffer.alloc(4, 0xaa) },
+      extensions: [], signatureValue: Buffer.from([0x30, 0x03]), tbsBytes: Buffer.from([0x30, 0x00]),
+    };
+    Object.keys(over || {}).forEach(function (k) { base[k] = over[k]; });
+    return base;
+  }
+  var badDate = pki.inspect.certificate(mkParsed({ validity: { notBefore: "not-a-date", notAfter: "also-bad" } }));
+  check("inspect: an unparseable validity renders the raw string, not a crash",
+    /Not Before: not-a-date/.test(badDate) && /Not After : also-bad/.test(badDate));
+  check("inspect: a signature algorithm with only an OID renders the OID",
+    /Signature Algorithm: 1\.2\.3\.4\.5/.test(pki.inspect.certificate(mkParsed({ signatureAlgorithm: { oid: "1.2.3.4.5" } }))));
+  check("inspect: a signature algorithm with neither name nor OID renders 'unknown'",
+    /Signature Algorithm: unknown/.test(pki.inspect.certificate(mkParsed({ signatureAlgorithm: {} }))));
+  check("inspect: a small serial renders inline decimal + hex",
+    /Serial Number: 5 \(0x5\)/.test(pki.inspect.certificate(mkParsed({}))));
+  check("inspect: an empty serial renders 0 (0x0)",
+    /Serial Number: 0 \(0x0\)/.test(pki.inspect.certificate(mkParsed({ serialNumberHex: "" }))));
+  check("inspect: an odd-length serial hex is zero-padded before decoding",
+    /Serial Number: 2748 \(0xabc\)/.test(pki.inspect.certificate(mkParsed({ serialNumberHex: "abc" }))));
+  check("inspect: a raw-Buffer public key renders its bytes",
+    /Public-Key: \(48 bit\)\n\s+pub:\n\s+cd:cd:cd:cd:cd:cd/.test(pki.inspect.certificate(mkParsed({ subjectPublicKeyInfo: { algorithm: { name: "Ed25519" }, publicKey: Buffer.alloc(6, 0xcd) } }))));
+  var nullKey = pki.inspect.certificate(mkParsed({ subjectPublicKeyInfo: { algorithm: { name: "Ed25519" }, publicKey: null } }));
+  check("inspect: a null public key renders the algorithm line without a pub block",
+    /Public Key Algorithm: Ed25519/.test(nullKey) && nullKey.indexOf("pub:") < 0);
+  check("inspect: no extensions omits the X509v3 extensions block",
+    pki.inspect.certificate(mkParsed({})).indexOf("X509v3 extensions") < 0);
+  check("inspect: a raw-Buffer signature value renders a Signature Value block",
+    /Signature Value:\n\s+30:03/.test(pki.inspect.certificate(mkParsed({}))));
+  check("inspect: an absent signature value omits the Signature Value block",
+    pki.inspect.certificate(mkParsed({ signatureValue: null })).indexOf("Signature Value:") < 0);
+
   // --- Interop KAT: the decoded VALUES match the authoritative openssl decode
   // (any openssl version; value-level, not byte-exact). Skips if no openssl. ---
   var ossl = findOpenssl();

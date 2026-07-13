@@ -556,6 +556,162 @@ function testNamedBitsIdiom() {
   }) === "t/bad-bits");
 }
 
+// A setOf / assert:"set" schema asserts the SET tag before it walks items, so a
+// SEQUENCE-tagged node is rejected fail-closed (the SET shape counterpart to the
+// SEQUENCE assertion the seq tests exercise).
+function testSetShapeReject() {
+  var s = S.setOf(S.integerLeaf(), { code: "t/bad-set", what: "the SET" });
+  check("setOf rejects a SEQUENCE-tagged node (must be a SET)",
+    code(function () { walk(s, b.sequence([b.integer(1n)])); }) === "t/bad-set");
+  check("setOf accepts a canonical SET", code(function () { walk(s, b.set([b.integer(1n)])); }) === "NO-THROW");
+}
+
+// The maxCode / dupCode fallbacks: a repeat that declares a `max` cap or a
+// `unique` key but no dedicated maxCode / dupCode falls back to the schema's own
+// `code` -- the reject still fails typed, just under the format's base code.
+function testRepeatCodeFallbacks() {
+  var over = b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)]);
+  check("repeat max without maxCode falls back to schema.code",
+    code(function () { walk(S.seqOf(S.integerLeaf(), { code: "t/bad-list", max: 2 }), over); }) === "t/bad-list");
+  var uq = S.setOfUnique(S.integerLeaf(), function (it) { return it.value.toString(); }, { code: "t/bad-set" });
+  check("setOfUnique duplicate without dupCode falls back to schema.code",
+    code(function () { walk(uq, b.set([b.integer(1n), b.integer(1n)])); }) === "t/bad-set");
+}
+
+// _equalsDefault's Buffer domain: a leaf whose read yields a Buffer (octetString)
+// with a Buffer DEFAULT compares by bytes (value.equals(def)), so an explicitly-
+// encoded byte-equal default is rejected (defaultCode) and a byte-different value
+// is accepted. The scalar tests cover BigInt; this pins the Buffer branch.
+function testBufferDefault() {
+  var spec = S.seq([
+    S.optional("v", S.octetString(), { tag: 0, explicit: true, emptyCode: "t/bad-v", default: Buffer.from([1, 2, 3]), defaultCode: "t/default-encoded" }),
+    S.field("n", S.integerLeaf()),
+  ], { assert: "sequence", code: "t/bad" });
+  check("Buffer default: an explicitly-encoded byte-equal default is rejected",
+    code(function () { walk(spec, b.sequence([b.explicit(0, b.octetString(Buffer.from([1, 2, 3]))), b.integer(9n)])); }) === "t/default-encoded");
+  check("Buffer default: a byte-different present value is accepted",
+    code(function () { walk(spec, b.sequence([b.explicit(0, b.octetString(Buffer.from([9]))), b.integer(9n)])); }) === "NO-THROW");
+}
+
+// An unknown schema.kind (walk) and an unknown field.fkind (_walkSeq) are the
+// same authoring fault -- both fail loud with <prefix>/bad-schema, falling back
+// to the literal "schema" prefix when ctx carries none. encode fails the same
+// class with a plain authoring Error.
+function testUnknownSchemaKind() {
+  var node = pki.asn1.decode(b.integer(1n));
+  check("walk rejects an unknown schema kind (prefix/bad-schema)",
+    code(function () { S.walk({ kind: "zzz" }, node, NS); }) === "t/bad-schema");
+  check("walk unknown kind falls back to schema/ when ctx has no prefix",
+    code(function () { S.walk({ kind: "zzz" }, node, { E: E, oid: pki.oid }); }) === "schema/bad-schema");
+  check("encode rejects an unknown schema kind (authoring Error)",
+    code(function () { S.encode({ kind: "zzz" }, 5); }) === "RAW:Error");
+  var badFld = S.seq([{ fkind: "nope", name: "x", schema: S.integerLeaf() }], { assert: "sequence", code: "t/bad" });
+  check("walk unknown field kind falls back to schema/ with no prefix",
+    code(function () { S.walk(badFld, pki.asn1.decode(b.sequence([])), { E: E, oid: pki.oid }); }) === "schema/bad-schema");
+}
+
+// _assertShape's unknown-mode arm: a seq carrying an assert mode the engine does
+// not know is an authoring fault, failed with the schema's own code rather than
+// silently accepted. A schema with NO assert defaults to the SEQUENCE shape.
+function testUnknownAssertMode() {
+  check("walk rejects an unknown assert mode with the schema code",
+    code(function () { walk(S.seq([], { assert: "bogus", code: "t/bad-assert" }), b.sequence([])); }) === "t/bad-assert");
+  check("a repeat with no explicit assert defaults to the SEQUENCE shape",
+    code(function () { walk({ kind: "repeat", item: S.integerLeaf(), code: "t/x" }, b.sequence([b.integer(1n)])); }) === "NO-THROW");
+}
+
+// encode covers every remaining schema-kind arm + its authoring-fault rejects:
+// `any` (Buffer passthrough / node.bytes), a decode leaf missing its paired
+// encoder, and the constructed / set / unknown / default assert modes of
+// _wrapConstructed (plus the value:undefined tolerance).
+function testEncodeKindsAndAssertModes() {
+  check("encode any(Buffer) emits the buffer as-is", S.encode(S.any(), b.integer(5n)).equals(b.integer(5n)));
+  check("encode any(node) emits the node's raw TLV bytes",
+    S.encode(S.any(), pki.asn1.decode(b.integer(5n))).equals(b.integer(5n)));
+  check("encode a decode leaf without a paired encoder throws",
+    code(function () { S.encode(S.decode(function () {}), 5); }) === "RAW:Error");
+  var conSeq = S.seq([S.field("a", S.integerLeaf())], { assert: "constructed", code: "t/x" });
+  check("encode assert:constructed emits a universal SEQUENCE",
+    S.encode(conSeq, { a: 5n }).equals(b.sequence([b.integer(5n)])));
+  var setSeq = S.seq([S.field("a", S.integerLeaf())], { assert: "set", code: "t/x" });
+  check("encode assert:set emits a universal SET", S.encode(setSeq, { a: 5n }).equals(b.set([b.integer(5n)])));
+  check("encode rejects an unknown assert mode",
+    code(function () { S.encode(S.seq([], { assert: "bogus", code: "t/x" }), {}); }) === "RAW:Error");
+  check("encode a seq with no explicit assert emits a SEQUENCE",
+    S.encode({ kind: "seq", fields: [], code: "t/x" }, {}).equals(b.sequence([])));
+  check("encode a fieldless seq with an undefined value emits an empty SEQUENCE",
+    S.encode(S.seq([], { code: "t/x" }), undefined).equals(b.sequence([])));
+}
+
+// encode of a non-explicit (IMPLICIT) present optional: the implicit leaf already
+// carries the [tag], so encode pushes it directly (the fld.explicit === false
+// branch) and the value round-trips through walk.
+function testEncodeImplicitOptional() {
+  var spec = S.seq([
+    S.optional("v", S.implicitInteger(0), { tag: 0 }),
+    S.field("n", S.integerLeaf()),
+  ], { assert: "sequence", code: "t/bad", build: function (m) { return { v: m.fields.v.value, present: m.fields.v.present, n: m.fields.n.value }; } });
+  var der = S.encode(spec, { v: 42n, n: 9n }, NS);
+  check("encode implicit optional present round-trips",
+    (function () { var r = walk(spec, der).result; return r.v === 42n && r.present === true && r.n === 9n; })());
+  check("encode implicit optional absent omits the field",
+    S.encode(spec, { n: 9n }, NS).equals(b.sequence([b.integer(9n)])));
+}
+
+// encode enforces the repeat array-ness and max cap -- the encode-side mirror of
+// walk's checks, so encode never emits DER its own decoder would reject.
+function testEncodeRepeatGuards() {
+  check("encode rejects a non-array repeat value",
+    code(function () { S.encode(S.seqOf(S.integerLeaf()), "nope"); }) === "RAW:Error");
+  check("encode rejects a repeat over its max cap",
+    code(function () { S.encode(S.seqOf(S.integerLeaf(), { max: 2 }), [1n, 2n, 3n]); }) === "RAW:Error");
+  check("encode accepts a repeat at its max cap",
+    S.encode(S.seqOf(S.integerLeaf(), { max: 3 }), [1n, 2n, 3n]).equals(b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)])));
+}
+
+// embeddedDer without an opts object (the || {} guard) still decodes and walks;
+// the budget-exhaustion reject falls back to opts.code when no dedicated
+// budgetCode is supplied.
+function testEmbeddedDerOptsFallback() {
+  var inner = S.seq([S.field("v", S.integerLeaf())], { code: "t/bad-inner", build: function (m) { return m.fields.v.value; } });
+  check("embeddedDer with no opts decodes and walks",
+    S.embeddedDer(inner, b.sequence([b.integer(7n)]), NS).result === 7n);
+  check("embeddedDer exhausted budget without budgetCode falls back to opts.code",
+    code(function () { S.embeddedDer(inner, b.sequence([b.integer(7n)]), NS, { code: "t/bad-embed", budget: { remaining: 0 } }); }) === "t/bad-embed");
+}
+
+// assertMinimalNamedBits is the centralized X.690 sec. 11.2.2 NamedBitList
+// minimal-encoding guard (KeyUsage / PKIFailureInfo). Exercised directly: the
+// empty-value 0-unused-bits rule, the trailing-zero-octet reject, and the
+// undropped-trailing-zero-bit reject, plus the canonical accepts.
+function testAssertMinimalNamedBits() {
+  function fail(msg) { var e = new Error(msg); e.code = "t/bad-bits"; throw e; }
+  function run2(unusedBits, bytes) { return code(function () { S.assertMinimalNamedBits(unusedBits, bytes, fail); }); }
+  check("named-bits: empty value with 0 unused bits is canonical", run2(0, Buffer.alloc(0)) === "NO-THROW");
+  check("named-bits: empty value with non-zero unused bits rejects", run2(3, Buffer.alloc(0)) === "t/bad-bits");
+  check("named-bits: a trailing all-zero octet rejects", run2(0, Buffer.from([0x00])) === "t/bad-bits");
+  check("named-bits: an undropped trailing zero bit rejects", run2(1, Buffer.from([0x04])) === "t/bad-bits");
+  check("named-bits: a canonical non-empty value is accepted", run2(0, Buffer.from([0x01])) === "NO-THROW");
+  check("named-bits: a value with legitimate unused bits is accepted", run2(7, Buffer.from([0x80])) === "NO-THROW");
+}
+
+// The combinators tolerate an omitted opts object (the || {} guard): each still
+// produces a walkable schema with its defaults.
+function testCombinatorDefaultOpts() {
+  var optSpec = S.seq([S.field("a", S.integerLeaf()), S.optional("b", S.integerLeaf())],
+    { assert: "sequence", code: "t/bad", build: function (m) { return m.fields.b.present; } });
+  check("optional() with no opts yields an always-absent field (never matches)",
+    walk(optSpec, b.sequence([b.integer(1n)])).result === false);
+  check("implicitSetOf() with no opts reads a [0] constructed node",
+    S.walk(S.implicitSetOf(0, S.integerLeaf()), pki.asn1.decode(b.contextConstructed(0, b.integer(1n))), NS).items.length === 1);
+  check("implicitSeqOf() with no opts reads a [1] constructed node",
+    S.walk(S.implicitSeqOf(1, S.integerLeaf()), pki.asn1.decode(b.contextConstructed(1, b.integer(1n))), NS).items.length === 1);
+  var trailSpec = S.seq([S.field("h", S.integerLeaf()), S.trailing([{ tag: 0, name: "z", schema: S.any() }])],
+    { assert: "sequence", code: "t/bad", build: function (m) { return m.fields.z.present; } });
+  check("trailing() with no opts consumes a matching [0] member",
+    walk(trailSpec, b.sequence([b.integer(1n), b.contextPrimitive(0, Buffer.from([1]))])).result === true);
+}
+
 function run() {
   testLeaves();
   testEmbeddedDer();
@@ -581,6 +737,17 @@ function run() {
   testChoiceAndExplicit();
   testRejectUnconsumedChildren();
   testOptionalWhenUniversal();
+  testSetShapeReject();
+  testRepeatCodeFallbacks();
+  testBufferDefault();
+  testUnknownSchemaKind();
+  testUnknownAssertMode();
+  testEncodeKindsAndAssertModes();
+  testEncodeImplicitOptional();
+  testEncodeRepeatGuards();
+  testEmbeddedDerOptsFallback();
+  testAssertMinimalNamedBits();
+  testCombinatorDefaultOpts();
 }
 
 module.exports = { run: run };

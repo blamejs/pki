@@ -383,6 +383,174 @@ async function run() {
   // §8.2 self-attestation -- the statement alg MUST match the credential key's alg.
   check("verify: packed self-attestation alg != credential key alg -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-35)], [cText("sig"), cBytes(Buffer.alloc(8))]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
+
+  // ---- entry-point + envelope edge cases (verify / parseAttestationObject) --------
+  // verify: clientDataHash MUST be a 32-byte SHA-256 digest (config-time reject).
+  check("verify: a clientDataHash that is not 32 bytes -> webauthn/bad-input",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObj("packed"), Buffer.alloc(31)); })) === "webauthn/bad-input");
+  check("verify: a clientDataHash that is not a Buffer -> webauthn/bad-input",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObj("packed"), "not-a-buffer"); })) === "webauthn/bad-input");
+  // verify: a malformed attestationObject surfaces the parse error as a rejection.
+  check("verify: a non-CBOR attestationObject -> webauthn/bad-attestation-object",
+    (await codeOfAsync(function () { return pki.webauthn.verify(Buffer.from("not cbor"), Buffer.alloc(32)); })) === "webauthn/bad-attestation-object");
+  // verify: an unknown fmt with valid attestedCredentialData -> unsupported-format.
+  check("verify: an unsupported attestation format -> webauthn/unsupported-format",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("no-such-fmt", [], realAuthData), packedHash); })) === "webauthn/unsupported-format");
+  // sec. 6.5.4 -- the attestation object MUST be a CBOR map.
+  check("parse: an attestation object that is not a CBOR map -> webauthn/bad-attestation-object",
+    codeOf(function () { pki.webauthn.parseAttestationObject(cInt(5)); }) === "webauthn/bad-attestation-object");
+  // sec. 6.5.4 -- fmt MUST be a text string; authData MUST be a byte string.
+  check("parse: attestation object fmt that is not a text string -> webauthn/bad-attestation-object",
+    codeOf(function () { pki.webauthn.parseAttestationObject(cMap([[cText("fmt"), cInt(5)], [cText("attStmt"), cMap([])], [cText("authData"), cBytes(realAuthData)]])); }) === "webauthn/bad-attestation-object");
+  check("parse: attestation object authData that is not a byte string -> webauthn/bad-attestation-object",
+    codeOf(function () { pki.webauthn.parseAttestationObject(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cMap([])], [cText("authData"), cInt(5)]])); }) === "webauthn/bad-attestation-object");
+
+  // ---- authenticatorData bounded reader (WebAuthn sec. 6.1) ----------------------
+  // AT flag set but the buffer ends before the aaguid + credentialId length.
+  check("parse: AT-set authData truncated before the credentialId length -> webauthn/bad-auth-data",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.concat([Buffer.alloc(32, 1), Buffer.from([0x41]), Buffer.alloc(4)]))); }) === "webauthn/bad-auth-data");
+  // credentialIdLength MUST be 1..1023 (a zero length is rejected).
+  check("parse: attestedCredentialData with a zero credentialId length -> webauthn/bad-credential-id",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.concat([Buffer.alloc(32, 1), Buffer.from([0x41]), Buffer.alloc(4), Buffer.alloc(16, 2), Buffer.from([0, 0])]))); }) === "webauthn/bad-credential-id");
+  // a credentialId length that runs past the end of authenticatorData.
+  var _clen100 = Buffer.alloc(2); _clen100.writeUInt16BE(100);
+  check("parse: credentialId length overruns authenticatorData -> webauthn/bad-auth-data",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], Buffer.concat([Buffer.alloc(32, 1), Buffer.from([0x41]), Buffer.alloc(4), Buffer.alloc(16, 2), _clen100, Buffer.alloc(3)]))); }) === "webauthn/bad-auth-data");
+  // the credentialPublicKey slice is not well-formed CBOR.
+  check("parse: a malformed COSE credential public key -> webauthn/bad-cose-key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: Buffer.from([0x9f]) }))); }) === "webauthn/bad-cose-key");
+  // with the ED flag set the extensions remainder MUST be a single CBOR map (not a uint).
+  var _validEc2 = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)), cKV(-2, cBytes(credKey.x)), cKV(-3, cBytes(credKey.y))]);
+  check("parse: ED flag set with a non-map extensions item -> webauthn/bad-auth-data",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ ed: true, coseKey: _validEc2, trailing: Buffer.from([0x05]) }))); }) === "webauthn/bad-auth-data");
+
+  // ---- attStmt shape + x5c reader --------------------------------------------------
+  function packedAlg(alg, sig, x5cList) { return attObjOf("packed", [[cText("alg"), cInt(alg)], [cText("sig"), cBytes(sig)], [cText("x5c"), cArr(x5cList.map(cBytes))]], realAuthData); }
+  // an attStmt that is not a CBOR map fails the canonical-shape check, not silently.
+  check("verify: packed attStmt that is not a CBOR map -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("packed")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-att-stmt");
+  // x5c MUST be a non-empty array of byte-string certificates.
+  check("verify: packed x5c that is an empty array -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([])]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
+  check("verify: packed x5c entry that is not a byte string -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([cInt(5)])]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
+  check("verify: packed x5c entry that is not a well-formed certificate -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedWith([Buffer.from([1, 2, 3])], Buffer.alloc(8), realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
+  // an alg outside the COSE registry is refused before any signature is evaluated.
+  check("verify: an unsupported COSE algorithm in a packed x5c statement -> webauthn/unsupported-algorithm",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedAlg(-999, Buffer.alloc(8), [packedLeaf]), packedHash); })) === "webauthn/unsupported-algorithm");
+  // alg -8 (EdDSA) with a non-EdDSA (EC) leaf key: the SPKI curve OID is not an OKP curve.
+  check("verify: packed alg -8 with a non-EdDSA (EC) x5c leaf -> webauthn/unsupported-algorithm",
+    (await codeOfAsync(function () { return pki.webauthn.verify(packedAlg(-8, Buffer.alloc(64), [packedLeaf]), packedHash); })) === "webauthn/unsupported-algorithm");
+  // packed self-attestation whose signature does not verify under the credential key.
+  check("verify: packed self-attestation with a non-verifying signature -> webauthn/verify-failed",
+    (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(_B.sequence([_B.integer(1n), _B.integer(1n)]))]], realAuthData), packedHash); })) === "webauthn/verify-failed");
+
+  // ---- tpm statement (WebAuthn 8.3) -----------------------------------------------
+  // Rebuild the real tpm KAT with a single overridden field (ver / alg / sig).
+  function tpmField(k) { var att = pki.webauthn.parseAttestationObject(attObj("tpm")); for (var i = 0; i < att.attStmt.children.length; i++) { var kv = att.attStmt.children[i]; if (pki.cbor.read.textString(kv[0]) === k) return kv[1]; } return null; }
+  function tpmRebuild(over) {
+    over = over || {};
+    var att = pki.webauthn.parseAttestationObject(attObj("tpm"));
+    var x5c = tpmField("x5c").children.map(function (c) { return pki.cbor.read.byteString(c); });
+    return attObjOf("tpm", [
+      [cText("ver"), cText(over.ver != null ? over.ver : "2.0")],
+      [cText("alg"), cInt(over.alg != null ? over.alg : Number(pki.cbor.read.int(tpmField("alg"))))],
+      [cText("sig"), cBytes(over.sig != null ? over.sig : pki.cbor.read.byteString(tpmField("sig")))],
+      [cText("certInfo"), cBytes(pki.cbor.read.byteString(tpmField("certInfo")))],
+      [cText("pubArea"), cBytes(pki.cbor.read.byteString(tpmField("pubArea")))],
+      [cText("x5c"), cArr(x5c.map(cBytes))],
+    ], att.authDataBytes);
+  }
+  // tpm 'ver' MUST be "2.0".
+  check("verify: tpm attestation with ver != 2.0 -> webauthn/bad-att-stmt",
+    (await codeOfAsync(function () { return pki.webauthn.verify(tpmRebuild({ ver: "1.0" }), clientHash("tpm")); })) === "webauthn/bad-att-stmt");
+  // a TPM AIK never signs with EdDSA: alg -8 has no certInfo.extraData hash mapping, so
+  // the extraData step refuses it as unsupported-algorithm (fail-closed, before the sig).
+  check("verify: tpm attestation under an EdDSA alg (-8, no TPM hash) -> webauthn/unsupported-algorithm",
+    (await codeOfAsync(function () { return pki.webauthn.verify(tpmRebuild({ alg: -8 }), clientHash("tpm")); })) === "webauthn/unsupported-algorithm");
+  // the extraData + Name bindings still hold (real certInfo/pubArea) but the AIK signature
+  // is replaced with zeroes: the statement fails at the signature, a false verdict.
+  check("verify: tpm attestation with a non-verifying certInfo signature -> webauthn/verify-failed",
+    (await codeOfAsync(function () { return pki.webauthn.verify(tpmRebuild({ sig: Buffer.alloc(pki.cbor.read.byteString(tpmField("sig")).length, 0) }), clientHash("tpm")); })) === "webauthn/verify-failed");
+
+  // ---- apple statement: extension decode + certificate-key == credential-key -------
+  // A v3 leaf carrying (or omitting) the apple anonymous-attestation extension. The nonce
+  // is embedded correctly so the flow reaches the certificate-key comparison; the SPKI is
+  // varied to drive each key-mismatch arm (WebAuthn 8.8 item 30).
+  var _oidName = pki.oid.byName;
+  function ecSpki(algInner, pt) { return _B.sequence([algInner, _B.bitString(pt)]); }
+  function ecP256Spki(pt) { return ecSpki(_B.sequence([_B.oid(_oidName("ecPublicKey")), _B.oid(_oidName("prime256v1"))]), pt); }
+  function appleCert(spkiNode, extValue) {
+    var tail = extValue == null ? [] : [_B.explicit(3, _B.sequence([_B.sequence([_B.oid(_oidName("appleAnonymousAttestation")), _B.octetString(extValue)])]))];
+    return _B.sequence([
+      _B.sequence([_B.explicit(0, _B.integer(2n)), _B.integer(0x1234n), _B.sequence([_B.oid(_oidName("ecdsaWithSHA256"))]), _dn("I"),
+        _B.sequence([_B.utcTime(new Date("2024-01-01T00:00:00Z")), _B.utcTime(new Date("2030-01-01T00:00:00Z"))]), _dn("L"),
+        spkiNode].concat(tail)),
+      _B.sequence([_B.oid(_oidName("ecdsaWithSHA256"))]), _B.bitString(Buffer.alloc(64))]);
+  }
+  function appleAtt(cert, authData) { return attObjOf("apple", [[cText("x5c"), cArr([cert].map(cBytes))]], authData); }
+  function nonceExtFor(authData, cdh) { return _B.sequence([_B.explicit(1, _B.octetString(crypto.createHash("sha256").update(Buffer.concat([authData, cdh])).digest()))]); }
+  var appleNonceExt = nonceExtFor(realAuthData, packedHash);
+  var goodEcPoint = Buffer.concat([Buffer.from([0x04]), credKey.x, credKey.y]);
+  // no anonymous-attestation extension (present-but-wrong leaf vs a no-extension leaf).
+  check("verify: apple leaf missing the anonymous-attestation extension -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(packedLeaf, realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  check("verify: apple v3 leaf with no extensions -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), null), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // the anonymous-attestation extension value must decode to SEQUENCE {[1] OCTET STRING}.
+  check("verify: apple attestation extension that is not decodable -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), Buffer.from([0x01])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  check("verify: apple attestation extension not SEQUENCE {[1] ...} -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), _B.sequence([_B.integer(1n)])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  check("verify: apple attestation nonce that is not an OCTET STRING -> webauthn/bad-att-cert",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), _B.sequence([_B.explicit(1, _B.integer(1n))])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // the certificate EC key must equal the credential key: curve params present + valid,
+  // the declared curve equal, the point uncompressed, and X/Y equal (WebAuthn 8.8 item 30).
+  check("verify: apple leaf EC key with no named-curve parameters -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecSpki(_B.sequence([_B.oid(_oidName("ecPublicKey"))]), goodEcPoint), appleNonceExt), realAuthData), packedHash); })) === "webauthn/key-mismatch");
+  check("verify: apple leaf EC key whose curve parameters are not an OID -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecSpki(_B.sequence([_B.oid(_oidName("ecPublicKey")), _B.integer(5n)]), goodEcPoint), appleNonceExt), realAuthData), packedHash); })) === "webauthn/key-mismatch");
+  check("verify: apple leaf EC key on a different curve than the credential key -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecSpki(_B.sequence([_B.oid(_oidName("ecPublicKey")), _B.oid(_oidName("secp384r1"))]), goodEcPoint), appleNonceExt), realAuthData), packedHash); })) === "webauthn/key-mismatch");
+  check("verify: apple leaf EC key that is not an uncompressed point -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(Buffer.concat([Buffer.from([0x02]), credKey.x])), appleNonceExt), realAuthData), packedHash); })) === "webauthn/key-mismatch");
+  check("verify: apple leaf EC coordinates differ from the credential key -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(32, 7), Buffer.alloc(32, 8)])), appleNonceExt), realAuthData), packedHash); })) === "webauthn/key-mismatch");
+  // The certificate-key == credential-key comparison also covers RSA credential keys: an
+  // apple leaf whose RSA SPKI equals the RSA credential key verifies; a different modulus
+  // is a key-mismatch. (Forge the nonce for the RSA authData so the flow reaches item 30.)
+  var _rsa1 = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var _rsa1Jwk = _rsa1.publicKey.export({ format: "jwk" });
+  var rsaCose = coseKey([cKV(1, cInt(3)), cKV(3, cInt(-257)), cKV(-1, cBytes(Buffer.from(_rsa1Jwk.n, "base64url"))), cKV(-2, cBytes(Buffer.from(_rsa1Jwk.e, "base64url")))]);
+  var rsaAuthData = buildAuthData({ coseKey: rsaCose });
+  var rsaNonceExt = nonceExtFor(rsaAuthData, packedHash);
+  var rsaMatchCert = appleCert(_B.raw(_rsa1.publicKey.export({ format: "der", type: "spki" })), rsaNonceExt);
+  var rsaMatchRes = await pki.webauthn.verify(appleAtt(rsaMatchCert, rsaAuthData), packedHash);
+  check("verify: apple leaf RSA key equal to an RSA credential key verifies (AnonCA)",
+    rsaMatchRes.verified === true && rsaMatchRes.fmt === "apple" && rsaMatchRes.attestationType === "AnonCA");
+  var _rsa2Spki = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" });
+  check("verify: apple leaf RSA key different from the RSA credential key -> webauthn/key-mismatch",
+    (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_B.raw(_rsa2Spki), rsaNonceExt), rsaAuthData), packedHash); })) === "webauthn/key-mismatch");
+
+  // ---- OKP self-attestation (valid Edwards point through the on-curve gate) --------
+  // A valid Ed25519 self-attestation: the credential OKP point passes the full-order check
+  // and the real signature verifies -- the attestation-type is "Self" (WebAuthn 8.2).
+  var _ed = crypto.generateKeyPairSync("ed25519");
+  var _edX = Buffer.from(_ed.publicKey.export({ format: "jwk" }).x, "base64url");
+  var _edAuthData = buildAuthData({ coseKey: coseKey([cKV(1, cInt(1)), cKV(3, cInt(-8)), cKV(-1, cInt(6)), cKV(-2, cBytes(_edX))]) });
+  var _edAtt = attObjOf("packed", [[cText("alg"), cInt(-8)], [cText("sig"), cBytes(crypto.sign(null, Buffer.concat([_edAuthData, packedHash]), _ed.privateKey))]], _edAuthData);
+  var edRes = await pki.webauthn.verify(_edAtt, packedHash);
+  check("verify: a valid Ed25519 self-attestation verifies (Self)",
+    edRes.verified === true && edRes.fmt === "packed" && edRes.attestationType === "Self");
+  // A valid Ed448 self-attestation (fully-specified alg -53) verifies the same way.
+  var _ed4 = crypto.generateKeyPairSync("ed448");
+  var _ed4X = Buffer.from(_ed4.publicKey.export({ format: "jwk" }).x, "base64url");
+  var _ed4AuthData = buildAuthData({ coseKey: coseKey([cKV(1, cInt(1)), cKV(3, cInt(-53)), cKV(-1, cInt(7)), cKV(-2, cBytes(_ed4X))]) });
+  var _ed4Att = attObjOf("packed", [[cText("alg"), cInt(-53)], [cText("sig"), cBytes(crypto.sign(null, Buffer.concat([_ed4AuthData, packedHash]), _ed4.privateKey))]], _ed4AuthData);
+  var ed4Res = await pki.webauthn.verify(_ed4Att, packedHash);
+  check("verify: a valid Ed448 self-attestation verifies (Self)",
+    ed4Res.verified === true && ed4Res.fmt === "packed" && ed4Res.attestationType === "Self");
 }
 
 module.exports = { run: run };

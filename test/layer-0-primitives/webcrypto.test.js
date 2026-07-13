@@ -519,8 +519,219 @@ async function testJwkOctStrict() {
   check("jwk oct: padded/non-alphabet k rejects", (await code(function () { return subtle.importKey("jwk", { kty: "oct", k: "AAAA=" }, hmacAlg, false, ["sign"]); })) === "webcrypto/data");
 }
 
+// generateKey edge + malformed descriptors: an omitted keyUsages defaults to an
+// empty usage set; a bad AES length / unsupported HMAC hash / unsupported curve /
+// unrecognized algorithm each fail closed with the module's typed code; an object
+// hash is accepted; an omitted RSA modulusLength defaults to 2048.
+async function testGenerateKeyEdges() {
+  var k = await subtle.generateKey({ name: "Ed25519" }, true);
+  check("generateKey with no keyUsages yields empty usage sets", k.privateKey.usages.length === 0 && k.publicKey.usages.length === 0);
+  check("generateKey AES with an off-size length rejects (syntax)",
+    (await code(function () { return subtle.generateKey({ name: "AES-GCM", length: 200 }, true, ["encrypt"]); })) === "webcrypto/syntax");
+  check("generateKey HMAC with an unsupported hash rejects (not-supported)",
+    (await code(function () { return subtle.generateKey({ name: "HMAC", hash: "SHA-999" }, true, ["sign"]); })) === "webcrypto/not-supported");
+  var hk = await subtle.generateKey({ name: "HMAC", hash: { name: "SHA-384" } }, true, ["sign", "verify"]);
+  check("generateKey HMAC accepts an object hash and defaults to its block size", hk.algorithm.length === 1024 && hk.algorithm.hash.name === "SHA-384");
+  var rk = await subtle.generateKey({ name: "RSA-OAEP", hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
+  check("generateKey RSA with no modulusLength defaults to 2048", rk.publicKey.algorithm.modulusLength === 2048);
+  check("generateKey ECDSA with an unsupported curve rejects (not-supported)",
+    (await code(function () { return subtle.generateKey({ name: "ECDSA", namedCurve: "P-999" }, true, ["sign"]); })) === "webcrypto/not-supported");
+  check("generateKey with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.generateKey({ name: "FOO" }, true, ["sign"]); })) === "webcrypto/not-supported");
+}
+
+// _normalizeAlg entry-point validation + digest hash resolution: a null / no-name
+// algorithm descriptor is a syntax error; an unsupported digest name is
+// not-supported.
+async function testNormalizeAndDigestEdges() {
+  check("digest with a null algorithm rejects (syntax)",
+    (await code(function () { return subtle.digest(null, Buffer.from("x")); })) === "webcrypto/syntax");
+  check("digest with a nameless algorithm object rejects (syntax)",
+    (await code(function () { return subtle.digest({ foo: 1 }, Buffer.from("x")); })) === "webcrypto/syntax");
+  check("digest with an unsupported hash rejects (not-supported)",
+    (await code(function () { return subtle.digest("SHA-999", Buffer.from("x")); })) === "webcrypto/not-supported");
+}
+
+// RSA-PSS with no explicit saltLength signs + verifies via the digest-length
+// default (RSA_PSS_SALTLEN_DIGEST) on both the sign and verify branches.
+async function testRsaPssDefaultSalt() {
+  var pss = await subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, hash: "SHA-256" }, true, ["sign", "verify"]);
+  var data = Buffer.from("pss default salt");
+  var sig = await subtle.sign({ name: "RSA-PSS" }, pss.privateKey, data);
+  check("RSA-PSS with no saltLength signs + verifies (digest-length default)",
+    (await subtle.verify({ name: "RSA-PSS" }, pss.publicKey, sig, data)) === true);
+}
+
+// RSA-OAEP with an explicit label round-trips through the label-present branch of
+// both encrypt and decrypt; the same label must be supplied to decrypt.
+async function testRsaOaepLabel() {
+  var oaep = await subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
+  var label = Buffer.from("oaep-label");
+  var ct = await subtle.encrypt({ name: "RSA-OAEP", label: label }, oaep.publicKey, Buffer.from("secret"));
+  var pt = await subtle.decrypt({ name: "RSA-OAEP", label: label }, oaep.privateKey, ct);
+  check("RSA-OAEP with an explicit label round-trips", Buffer.from(pt).toString() === "secret");
+}
+
+// encrypt / decrypt with an algorithm the key is permitted for (usage present)
+// but that is not a recognized encrypt/decrypt algorithm fails not-supported.
+async function testEncryptDecryptUnsupported() {
+  var aes = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  check("encrypt with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.encrypt({ name: "HMAC" }, aes, Buffer.from("x")); })) === "webcrypto/not-supported");
+  check("decrypt with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.decrypt({ name: "HMAC" }, aes, Buffer.from("x")); })) === "webcrypto/not-supported");
+}
+
+// deriveBits / deriveKey with the correct usage but an unrecognized derivation
+// algorithm fails not-supported (the name check follows the usage check).
+async function testDeriveUnsupportedAlg() {
+  var ecdh = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits", "deriveKey"]);
+  check("deriveBits with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.deriveBits({ name: "FOO" }, ecdh.privateKey, 128); })) === "webcrypto/not-supported");
+  check("deriveKey with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.deriveKey({ name: "FOO" }, ecdh.privateKey, { name: "AES-GCM", length: 128 }, true, ["encrypt"]); })) === "webcrypto/not-supported");
+}
+
+// wrapKey / unwrapKey: an unrecognized wrap algorithm fails not-supported; the
+// "jwk" wrap format serializes the exported JWK before content encryption and
+// round-trips through a content-encryption (AES-GCM) wrapping key.
+async function testWrapUnsupportedAndJwk() {
+  var kek = await subtle.generateKey({ name: "AES-KW", length: 256 }, true, ["wrapKey", "unwrapKey"]);
+  var target = await subtle.generateKey({ name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  check("wrapKey with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.wrapKey("raw", target, kek, { name: "HMAC" }); })) === "webcrypto/not-supported");
+  check("unwrapKey with an unrecognized algorithm rejects (not-supported)",
+    (await code(function () { return subtle.unwrapKey("raw", Buffer.alloc(24), kek, { name: "HMAC" }, { name: "AES-GCM", length: 128 }, true, ["encrypt"]); })) === "webcrypto/not-supported");
+
+  var gcmKek = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["wrapKey", "unwrapKey"]);
+  var iv = pki.webcrypto.getRandomValues(new Uint8Array(12));
+  var wrapped = await subtle.wrapKey("jwk", target, gcmKek, { name: "AES-GCM", iv: iv });
+  var unwrapped = await subtle.unwrapKey("jwk", wrapped, gcmKek, { name: "AES-GCM", iv: iv }, { name: "AES-GCM", length: 128 }, true, ["encrypt", "decrypt"]);
+  check("wrapKey/unwrapKey with the 'jwk' format round-trips the key",
+    hex(await subtle.exportKey("raw", target)) === hex(await subtle.exportKey("raw", unwrapped)) && unwrapped.type === "secret");
+}
+
+// importKey format + descriptor edges: an omitted keyUsages defaults to []; a
+// non-HMAC oct JWK, a private JWK, a raw OKP (X25519) public key, and an spki
+// EdDSA public key each import with the right shape; a bogus format, a malformed
+// raw EC point, and a raw RSA request each fail closed; an RSA import with no
+// hash carries an undefined algorithm.hash.
+async function testImportKeyEdges() {
+  var ecdh = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  var spki = await subtle.exportKey("spki", ecdh.publicKey);
+  var noUsages = await subtle.importKey("spki", spki, { name: "ECDH", namedCurve: "P-256" }, true);
+  check("importKey with no keyUsages defaults to an empty usage set", noUsages.usages.length === 0);
+
+  var kbuf = Buffer.alloc(16, 5);
+  var aesImp = await subtle.importKey("jwk", { kty: "oct", k: kbuf.toString("base64url") }, { name: "AES-GCM" }, true, ["encrypt", "decrypt"]);
+  check("importKey jwk oct (non-HMAC) imports an AES key of the raw length",
+    aesImp.algorithm.name === "AES-GCM" && aesImp.algorithm.length === 128 && hex(await subtle.exportKey("raw", aesImp)) === hex(kbuf));
+
+  var edkp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  var privJwk = await subtle.exportKey("jwk", edkp.privateKey);
+  var privImp = await subtle.importKey("jwk", privJwk, { name: "Ed25519" }, true, ["sign"]);
+  var edData = Buffer.from("jwk private import");
+  var edSig = await subtle.sign({ name: "Ed25519" }, privImp, edData);
+  check("importKey jwk with a 'd' member imports a private key that signs",
+    privImp.type === "private" && (await subtle.verify({ name: "Ed25519" }, edkp.publicKey, edSig, edData)) === true);
+
+  var x2 = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  var xraw = await subtle.exportKey("raw", x2.publicKey);
+  var xpub = await subtle.importKey("raw", xraw, { name: "X25519" }, true, []);
+  var x1 = await subtle.generateKey({ name: "X25519" }, true, ["deriveBits"]);
+  check("importKey raw X25519 public derives the same secret as the original peer key",
+    xpub.algorithm.name === "X25519" &&
+    hex(await subtle.deriveBits({ name: "X25519", public: xpub }, x1.privateKey, 256)) ===
+    hex(await subtle.deriveBits({ name: "X25519", public: x2.publicKey }, x1.privateKey, 256)));
+
+  var edspki = await subtle.exportKey("spki", edkp.publicKey);
+  var edPub = await subtle.importKey("spki", edspki, { name: "Ed25519" }, true, ["verify"]);
+  check("importKey spki Ed25519 keeps the canonical label and verifies",
+    edPub.algorithm.name === "Ed25519" && (await subtle.verify({ name: "Ed25519" }, edPub, edSig, edData)) === true);
+  var ed448 = await subtle.generateKey({ name: "Ed448" }, true, ["sign", "verify"]);
+  var ed448spki = await subtle.exportKey("spki", ed448.publicKey);
+  var ed448Pub = await subtle.importKey("spki", ed448spki, { name: "Ed448" }, true, ["verify"]);
+  check("importKey spki Ed448 keeps the canonical label", ed448Pub.algorithm.name === "Ed448");
+
+  var rsa = await subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, hash: "SHA-256" }, true, ["sign", "verify"]);
+  var rsaSpki = await subtle.exportKey("spki", rsa.publicKey);
+  var rsaNoHash = await subtle.importKey("spki", rsaSpki, { name: "RSA-PSS" }, true, ["verify"]);
+  check("importKey spki RSA with no hash carries an undefined algorithm.hash",
+    rsaNoHash.algorithm.name === "RSA-PSS" && rsaNoHash.algorithm.hash === undefined);
+
+  check("importKey with an unsupported format rejects (not-supported)",
+    (await code(function () { return subtle.importKey("bogus", Buffer.alloc(4), { name: "AES-GCM" }, true, ["encrypt"]); })) === "webcrypto/not-supported");
+  check("importKey raw EC with a malformed point rejects (data)",
+    (await code(function () { return subtle.importKey("raw", Buffer.from([1, 2, 3]), { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
+  check("importKey raw for a public-key algorithm with no raw form rejects (not-supported)",
+    (await code(function () { return subtle.importKey("raw", Buffer.alloc(10), { name: "RSA-OAEP" }, true, ["encrypt"]); })) === "webcrypto/not-supported");
+}
+
+// exportKey edges: a secret key rejects the asymmetric 'spki' format; an
+// unsupported format is not-supported; a public-key algorithm with no raw point
+// form (RSA) rejects raw export.
+async function testExportKeyEdges() {
+  var hmacKey = await subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign"]);
+  check("exportKey of a secret key to 'spki' rejects (not-supported)",
+    (await code(function () { return subtle.exportKey("spki", hmacKey); })) === "webcrypto/not-supported");
+  var ecdh = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  check("exportKey with an unsupported format rejects (not-supported)",
+    (await code(function () { return subtle.exportKey("bogus", ecdh.publicKey); })) === "webcrypto/not-supported");
+  var rsa = await subtle.generateKey({ name: "RSA-OAEP", modulusLength: 2048, hash: "SHA-256" }, true, ["encrypt", "decrypt"]);
+  check("exportKey raw of an RSA public key rejects (not-supported)",
+    (await code(function () { return subtle.exportKey("raw", rsa.publicKey); })) === "webcrypto/not-supported");
+}
+
+// HKDF deriveBits with no info uses an empty-info default; deriveKey to a KDF
+// derived type that carries an explicit length narrows the agreement secret to
+// that length before importing the KDF key.
+async function testHkdfInfoAndDeriveKeyKdfLength() {
+  var ikm = await subtle.importKey("raw", Buffer.from("input key material"), { name: "HKDF" }, false, ["deriveBits"]);
+  var out = await subtle.deriveBits({ name: "HKDF", hash: "SHA-256", salt: Buffer.from("salt") }, ikm, 256);
+  check("HKDF deriveBits with no info derives 32 bytes (empty-info default)", out.byteLength === 32);
+
+  var a = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  var b = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveKey"]);
+  var kdfKey = await subtle.deriveKey({ name: "ECDH", public: b.publicKey }, a.privateKey, { name: "HKDF", length: 256 }, false, ["deriveBits"]);
+  check("deriveKey to a KDF type with an explicit length imports a KDF key of that length",
+    kdfKey.type === "secret" && kdfKey.algorithm.name === "HKDF" && kdfKey.algorithm.length === 256);
+}
+
+// A node:crypto fault crossing the public webcrypto surface MUST be a typed WebCryptoError,
+// never a raw node Error; and an imported key whose TYPE disagrees with the requested
+// algorithm is a DataError, not a mislabeled CryptoKey (algorithm confusion).
+async function testNodeErrorTyping() {
+  // Import key-type vs algorithm-name mismatch -> DataError (fail-open otherwise: an RSA key
+  // labelled Ed25519 would then "sign" under the wrong scheme).
+  var rsaPkcs8 = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "der", type: "pkcs8" });
+  check("importKey: RSA pkcs8 under {name:Ed25519} rejected (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("pkcs8", rsaPkcs8, { name: "Ed25519" }, true, ["sign"]); })) === "webcrypto/data");
+  var rsaSpki = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" });
+  check("importKey: RSA spki under {name:ECDSA,P-256} rejected (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("spki", rsaSpki, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
+  var edPkcs8 = nodeCrypto.generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" });
+  check("importKey: an Ed25519 pkcs8 under {name:RSA-PSS} rejected (webcrypto/data)",
+    (await code(async function () { await subtle.importKey("pkcs8", edPkcs8, { name: "RSA-PSS", hash: "SHA-256" }, true, ["sign"]); })) === "webcrypto/data");
+
+  // AES-KW wrap/unwrap of a non-8-multiple length -> typed OperationError, not a raw throw.
+  var kwKey = await subtle.importKey("raw", new Uint8Array(16), { name: "AES-KW" }, false, ["wrapKey", "unwrapKey"]);
+  var gcmKey = await subtle.generateKey({ name: "AES-GCM", length: 256 }, true, ["encrypt", "decrypt"]);
+  check("wrapKey: AES-KW over a jwk (non-8-multiple) -> webcrypto/operation, not a raw throw",
+    (await code(async function () { await subtle.wrapKey("jwk", gcmKey, kwKey, { name: "AES-KW" }); })) === "webcrypto/operation");
+  check("unwrapKey: AES-KW wrapped input of a non-8-multiple length -> webcrypto/operation",
+    (await code(async function () { await subtle.unwrapKey("raw", new Uint8Array(20), kwKey, { name: "AES-KW" }, { name: "AES-GCM", length: 256 }, true, ["encrypt"]); })) === "webcrypto/operation");
+
+  // A tampered AES-GCM ciphertext (bad auth tag) -> typed OperationError, never a raw fault.
+  var iv = nodeCrypto.randomBytes(12);
+  var ctBuf = Buffer.from(await subtle.encrypt({ name: "AES-GCM", iv: iv }, gcmKey, Buffer.from("secret")));
+  ctBuf[ctBuf.length - 1] = ctBuf[ctBuf.length - 1] ^ 0xff;
+  check("decrypt: a tampered AES-GCM ciphertext (bad tag) -> webcrypto/operation, not a raw throw",
+    (await code(async function () { await subtle.decrypt({ name: "AES-GCM", iv: iv }, gcmKey, ctBuf); })) === "webcrypto/operation");
+}
+
 async function run() {
   await testSurface();
+  await testNodeErrorTyping();
   await testRandom();
   await testDigest();
   await testClassicalSign();
@@ -543,6 +754,16 @@ async function run() {
   await testUnwrapJwkNotJson();
   await testUnwrapJwkDuplicateMember();
   await testJwkOctStrict();
+  await testGenerateKeyEdges();
+  await testNormalizeAndDigestEdges();
+  await testRsaPssDefaultSalt();
+  await testRsaOaepLabel();
+  await testEncryptDecryptUnsupported();
+  await testDeriveUnsupportedAlg();
+  await testWrapUnsupportedAndJwk();
+  await testImportKeyEdges();
+  await testExportKeyEdges();
+  await testHkdfInfoAndDeriveKeyKdfLength();
 }
 
 module.exports = { run: run };

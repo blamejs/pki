@@ -532,6 +532,254 @@ function testRfc5280TimeCutover() {
 }
 
 // ---------------------------------------------------------------------------
+// pemDecodeAll — explanatory text AFTER the chain is rejected (the mirror of
+// the before/between rules; RFC 8555 sec. 9.1 certchain = stricttextualmsg
+// *(eol stricttextualmsg), no trailing prose).
+// ---------------------------------------------------------------------------
+
+function testPemDecodeAllTrailingProse() {
+  var PemError = errors.PemError;
+  var vectors = require("../helpers/vectors");
+  var block = pkix.pemEncode(pki.schema.x509.pemDecode(vectors.CERT_EC_PEM), "CERTIFICATE", PemError);
+  check("prose after the chain rejected (RFC 8555 sec. 9.1)",
+    code(function () { pkix.pemDecodeAll(block + "trailing notes\n", "CERTIFICATE", PemError); }) === "pem/explanatory-text");
+}
+
+// ---------------------------------------------------------------------------
+// coerceToDer / decodeRoot — the shared parse-entry boundary.
+//  * a Buffer whose "-----BEGIN" is preceded by a NON-text byte is NOT PEM
+//    armor (DER is binary); it is routed as DER verbatim, never unwrapped.
+//  * a DER buffer the codec rejects surfaces the caller's <prefix>/bad-der.
+// ---------------------------------------------------------------------------
+
+function testCoerceAndDecodeRoot() {
+  var derOpts = { pemLabel: null, PemError: errors.PemError, ErrorClass: errors.PathError, prefix: "path" };
+  // A leading NUL (0x00) before "-----BEGIN" -> _isPemArmor returns false ->
+  // the bytes pass through as DER (a binary payload that merely contains the
+  // armor string is not misrouted into the PEM decoder).
+  var craft = Buffer.concat([Buffer.from([0x00]), Buffer.from("-----BEGIN X-----\nAQE=\n-----END X-----", "latin1")]);
+  var out = pkix.coerceToDer(craft, derOpts);
+  check("coerceToDer: binary-prefixed BEGIN routed as DER (not PEM-unwrapped)", Buffer.isBuffer(out) && out.equals(craft));
+
+  // decodeRoot wraps a codec fault in the caller's <prefix>/bad-der (indefinite
+  // length is rejected by the strict DER decoder).
+  check("decodeRoot: undecodable DER -> <prefix>/bad-der",
+    code(function () { pkix.decodeRoot(Buffer.from([0x30, 0x80, 0x00, 0x00]), { ErrorClass: errors.PathError, prefix: "path", what: "test" }); }) === "path/bad-der");
+}
+
+// ---------------------------------------------------------------------------
+// attrValueToString — a malformed KNOWN string type (invalid UTF-8) surfaces
+// as the caller's <prefix>/bad-atv, never hex-encoded away (that would bypass
+// the decoder's strict string validation on the DN path).
+// ---------------------------------------------------------------------------
+
+function testAttrValueMalformedString() {
+  var ATV = pkix.attrValueToString(NS);
+  // UTF8String (tag 0x0C) with a lone 0xFF content byte — never valid UTF-8.
+  var badUtf8 = asn1.decode(Buffer.from([0x0c, 0x01, 0xff]));
+  check("atv malformed UTF8String rejected fail-closed (not hex-escaped away)",
+    code(function () { schema.walk(ATV, badUtf8, NS); }) === "path/bad-atv");
+}
+
+// ---------------------------------------------------------------------------
+// name() label derivation — an unregistered attribute-type OID surfaces name
+// null and renders as the dotted OID; a registered-but-not-DN-short name
+// renders under its long name (neither collapses to a wrong short label).
+// ---------------------------------------------------------------------------
+
+function testNameLabelDerivation() {
+  var NAME = pkix.name(NS);
+  function nm(oidStr, val) {
+    return schema.walk(NAME, asn1.decode(b.sequence([b.set([b.sequence([b.oid(oidStr), b.utf8(val)])])])), NS).result;
+  }
+  var unreg = "1.3.6.1.4.1.99999.7";
+  var rUnreg = nm(unreg, "Val");
+  check("name: unregistered ATV type surfaces name null", rUnreg.rdns[0][0].name === null && rUnreg.rdns[0][0].type === unreg);
+  check("name: unregistered type renders as the dotted OID", rUnreg.dn === unreg + "=Val");
+  // basicConstraints (2.5.29.19) has a registered name but no DN short label.
+  var rLong = nm("2.5.29.19", "V2");
+  check("name: registered non-DN-short type renders under its long name", rLong.rdns[0][0].name === "basicConstraints" && rLong.dn === "basicConstraints=V2");
+}
+
+// ---------------------------------------------------------------------------
+// generalizedTime / utf8Text / rawNonEmptySequence — the ns-parameterized
+// leaf factories exercised with DEFAULT opts (no explicit code/message), so
+// the fault surfaces under the <prefix>/bad-* default the factory supplies.
+// ---------------------------------------------------------------------------
+
+function testGeneralizedTimeUtf8RawSeqDefaults() {
+  var GT = pkix.generalizedTime(NS);
+  check("generalizedTime default: a GeneralizedTime decodes",
+    schema.walk(GT, asn1.decode(b.generalizedTime(new Date("2050-01-01T00:00:00Z"))), NS) instanceof Date);
+  check("generalizedTime default: a UTCTime rejected with the default code",
+    code(function () { schema.walk(GT, asn1.decode(b.utcTime(new Date("2026-01-01T00:00:00Z"))), NS); }) === "path/bad-time");
+
+  var UT = pkix.utf8Text(NS);
+  check("utf8Text default: a UTF8String decodes", schema.walk(UT, asn1.decode(b.utf8("hi")), NS) === "hi");
+  check("utf8Text default: a non-UTF8String rejected with the default code",
+    code(function () { schema.walk(UT, asn1.decode(b.integer(1n)), NS); }) === "path/bad-freetext");
+
+  var RS = pkix.rawNonEmptySequence(NS);
+  var sb = b.sequence([b.integer(1n)]);
+  check("rawNonEmptySequence default: a non-empty SEQUENCE surfaces its raw TLV", schema.walk(RS, asn1.decode(sb), NS).equals(sb));
+  check("rawNonEmptySequence default: an empty SEQUENCE rejected with the default code",
+    code(function () { schema.walk(RS, asn1.decode(b.sequence([])), NS); }) === "path/bad-sequence");
+  check("rawNonEmptySequence default: a non-SEQUENCE rejected with the default code",
+    code(function () { schema.walk(RS, asn1.decode(b.integer(1n)), NS); }) === "path/bad-sequence");
+}
+
+// ---------------------------------------------------------------------------
+// generalName CHOICE arms — the per-alternative form + content checks (X.690
+// sec. 10.2, RFC 5280 sec. 4.2.1.6) and the raw-only default (no opts).
+// ---------------------------------------------------------------------------
+
+function testGeneralNameArms() {
+  var GNv = pkix.generalName(NS, { decodeValue: true });
+  function rej(node) { return code(function () { schema.walk(GNv, asn1.decode(node), NS); }); }
+
+  // otherName [0] ::= SEQUENCE { type-id OID, value [0] EXPLICIT ANY }
+  check("gn otherName [0] non-OID type-id rejected",
+    rej(b.contextConstructed(0, Buffer.concat([b.integer(1n), b.contextConstructed(0, b.integer(2n))]))) === "path/bad-general-name");
+  check("gn otherName [0] value not a [0] EXPLICIT wrapper rejected",
+    rej(b.contextConstructed(0, Buffer.concat([b.oid("1.2.3"), b.integer(5n)]))) === "path/bad-general-name");
+  var goodOther = schema.walk(GNv, asn1.decode(b.contextConstructed(0, Buffer.concat([
+    b.oid("1.3.6.1.4.1.311.20.2.3"), b.contextConstructed(0, b.utf8("u@e"))]))), NS);
+  check("gn otherName [0] decoded value surfaces typeId + raw valueBytes",
+    goodOther.value && goodOther.value.typeId === "1.3.6.1.4.1.311.20.2.3" && Buffer.isBuffer(goodOther.value.valueBytes));
+
+  // directoryName [4] EXPLICIT Name — exactly one wrapped Name.
+  check("gn directoryName [4] with != 1 wrapped child rejected",
+    rej(b.contextConstructed(4, Buffer.concat([b.sequence([]), b.sequence([])]))) === "path/bad-general-name");
+
+  // rfc822Name/dNSName/URI [1]/[2]/[6] — non-empty IA5.
+  check("gn IA5 name [2] empty content rejected", rej(b.contextPrimitive(2, Buffer.alloc(0))) === "path/bad-general-name");
+
+  // registeredID [8] — a valid OBJECT IDENTIFIER content.
+  check("gn registeredID [8] malformed OID content rejected", rej(b.contextPrimitive(8, Buffer.from([0x80]))) === "path/bad-general-name");
+  var regOk = schema.walk(GNv, asn1.decode(b.contextPrimitive(8, asn1.decode(b.oid("1.2.3.4")).content)), NS);
+  check("gn registeredID [8] valid OID decodes to the dotted string", regOk.value === "1.2.3.4");
+
+  // Bare factory (no opts) — raw-only, no decoded value.
+  var GNbare = pkix.generalName(NS);
+  var bare = schema.walk(GNbare, asn1.decode(b.contextPrimitive(2, Buffer.from("x.example", "ascii"))), NS);
+  check("gn bare factory (no opts) is raw-only", bare.tagNumber === 2 && bare.value === undefined && Buffer.isBuffer(bare.bytes));
+
+  // generalNames bare factory (no opts) — default code + SIZE(1..MAX).
+  var GNS = pkix.generalNames(NS);
+  check("generalNames bare factory decodes a one-element list",
+    schema.walk(GNS, asn1.decode(b.sequence([b.contextPrimitive(2, Buffer.from("a.example", "ascii"))])), NS).result.names.length === 1);
+  check("generalNames bare factory rejects an empty SEQUENCE with the default code",
+    code(function () { schema.walk(GNS, asn1.decode(b.sequence([])), NS); }) === "path/bad-general-names");
+}
+
+// ---------------------------------------------------------------------------
+// certExtensionDecoders — the reader-catch and structural-shape branches every
+// per-OID decoder shares. A structurally-valid-but-semantically-bad leaf
+// (non-minimal INTEGER, out-of-range BOOLEAN, bad BIT STRING, malformed OID)
+// passes the strict decode and is rejected fail-closed at the typed reader.
+// ---------------------------------------------------------------------------
+
+function testExtensionDecoderReaderCatches() {
+  var bc = DEC.byOid[OID_BC];
+  check("bc undecodable extension value -> bad-der-class reject",
+    code(function () { bc(Buffer.from([0x02, 0x05, 0x01])); }) === "path/bad-basic-constraints");
+  check("bc non-minimal INTEGER pathLen rejected at the reader",
+    code(function () { bc(b.sequence([b.boolean(true), b.raw(Buffer.from([0x02, 0x02, 0x00, 0x01]))])); }) === "path/bad-basic-constraints");
+  check("bc out-of-range BOOLEAN cA rejected at the reader",
+    code(function () { bc(b.sequence([b.raw(Buffer.from([0x01, 0x01, 0x42]))])); }) === "path/bad-basic-constraints");
+  check("bc trailing field after cA/pathLen rejected",
+    code(function () { bc(b.sequence([b.boolean(true), b.integer(3n), b.integer(4n)])); }) === "path/bad-basic-constraints");
+
+  var ku = DEC.byOid[OID_KU];
+  check("ku BIT STRING with unused-bit count > 7 rejected at the reader",
+    code(function () { ku(b.raw(Buffer.from([0x03, 0x02, 0x08, 0x00]))); }) === "path/bad-key-usage");
+
+  var nc = DEC.byOid[OID_NC];
+  check("nc GeneralSubtree that is not a SEQUENCE rejected",
+    code(function () { nc(b.sequence([b.contextConstructed(0, b.integer(1n))])); }) === "path/bad-name-constraints");
+  check("nc GeneralSubtree with an unexpected non-context field rejected",
+    code(function () { nc(b.sequence([b.contextConstructed(0, b.sequence([gnDns("a.ex"), b.integer(1n)]))])); }) === "path/bad-name-constraints");
+  check("nc a non-context top-level field rejected",
+    code(function () { nc(b.sequence([b.integer(1n)])); }) === "path/bad-name-constraints");
+  check("nc an unexpected context field [2] rejected",
+    code(function () { nc(b.sequence([b.contextConstructed(2, b.sequence([]))])); }) === "path/bad-name-constraints");
+
+  var cp = DEC.byOid[OID_CP];
+  check("cp PolicyQualifierInfo whose leading member is not an OID rejected",
+    code(function () { cp(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.1"), b.sequence([b.sequence([b.integer(1n), b.nullValue()])])])])); }) === "path/bad-policy");
+
+  var pm = DEC.byOid[OID_PM];
+  check("pm mapping element that is not a 2-member SEQUENCE rejected",
+    code(function () { pm(b.sequence([b.integer(1n)])); }) === "path/bad-policy");
+  check("pm mapping member that is not an OID rejected",
+    code(function () { pm(b.sequence([b.sequence([b.raw(Buffer.from([0x06, 0x01, 0x80])), b.oid("1.2.3")])])); }) === "path/bad-policy");
+
+  var pc = DEC.byOid[OID_PC];
+  check("pc a non-context field rejected",
+    code(function () { pc(b.sequence([b.integer(1n)])); }) === "path/bad-policy");
+  check("pc a non-minimal IMPLICIT INTEGER field rejected at the reader",
+    code(function () { pc(b.sequence([b.contextPrimitive(0, Buffer.from([0x00, 0x01]))])); }) === "path/bad-policy");
+  check("pc an unexpected context field [2] rejected",
+    code(function () { pc(b.sequence([b.contextPrimitive(2, Buffer.from([0x00]))])); }) === "path/bad-policy");
+
+  var eku = DEC.byOid[OID_EKU];
+  check("eku a KeyPurposeId with malformed OID content rejected at the reader",
+    code(function () { eku(b.sequence([b.raw(Buffer.from([0x06, 0x01, 0x80]))])); }) === "path/bad-extension-value");
+
+  var aki = DEC.byOid[OID_AKI];
+  check("aki a non-context field rejected",
+    code(function () { aki(b.sequence([b.integer(1n)])); }) === "path/bad-extension-value");
+  check("aki authorityCertSerialNumber [2] with a non-minimal INTEGER rejected at the reader",
+    code(function () { aki(b.sequence([b.contextPrimitive(2, Buffer.from([0x00, 0x01]))])); }) === "path/bad-extension-value");
+  check("aki an unexpected context field [3] rejected",
+    code(function () { aki(b.sequence([b.contextPrimitive(3, Buffer.from([0x01]))])); }) === "path/bad-extension-value");
+}
+
+// ---------------------------------------------------------------------------
+// cRLDistributionPoints — the DistributionPoint structural-shape branches.
+// ---------------------------------------------------------------------------
+
+function testCrlDistributionPointShapes() {
+  var d = DEC.byOid["2.5.29.31"];
+  check("cdp a DistributionPoint that is not a SEQUENCE rejected",
+    code(function () { d(b.sequence([b.integer(1n)])); }) === "path/bad-crl-distribution-points");
+  check("cdp a non-context DistributionPoint field rejected",
+    code(function () { d(b.sequence([b.sequence([b.integer(1n)])])); }) === "path/bad-crl-distribution-points");
+  check("cdp distributionPoint [0] not wrapping exactly one DPN rejected",
+    code(function () { d(b.sequence([b.sequence([b.contextConstructed(0, Buffer.alloc(0))])])); }) === "path/bad-crl-distribution-points");
+  check("cdp reasons [1] that is not a well-formed BIT STRING rejected at the reader",
+    code(function () { d(b.sequence([b.sequence([b.contextPrimitive(1, Buffer.from([0x08, 0x00]))])])); }) === "path/bad-crl-distribution-points");
+  check("cdp an unexpected DistributionPoint field [3] rejected",
+    code(function () { d(b.sequence([b.sequence([b.contextConstructed(3, Buffer.alloc(0))])])); }) === "path/bad-crl-distribution-points");
+}
+
+// ---------------------------------------------------------------------------
+// certExtensionDecoders load guard — a registry key-list name that resolves to
+// undefined (a typo, or a name absent from the OID registry) fails at module
+// load, never silently dropping the extension from dispatch.
+// ---------------------------------------------------------------------------
+
+function testCertExtensionDecodersLoadGuard() {
+  var fakeOid = { byName: function () { return undefined; }, name: function (x) { return oid.name(x); } };
+  check("certExtensionDecoders throws when a key-list name is unregistered",
+    code(function () { pkix.certExtensionDecoders(pkix.makeNS("path", errors.PathError, fakeOid)); }) === "TypeError");
+}
+
+// ---------------------------------------------------------------------------
+// signedEnvelopeTbs — the shared signed-envelope shape recognizer returns the
+// tbs only for a SEQUENCE-of-3 whose first child is itself a universal
+// SEQUENCE; anything else is null (so a matches() detector cannot over-match).
+// ---------------------------------------------------------------------------
+
+function testSignedEnvelopeTbs() {
+  check("signedEnvelopeTbs: 3-element SEQUENCE with a non-SEQUENCE tbs -> null",
+    pkix.signedEnvelopeTbs(asn1.decode(b.sequence([b.integer(1n), b.integer(2n), b.integer(3n)]))) === null);
+  var tbs = pkix.signedEnvelopeTbs(asn1.decode(b.sequence([b.sequence([b.integer(1n)]), b.integer(2n), b.integer(3n)])));
+  check("signedEnvelopeTbs: a SEQUENCE-of-3 with a SEQUENCE tbs returns the tbs node",
+    tbs && tbs.tagClass === "universal" && tbs.tagNumber === asn1.TAGS.SEQUENCE);
+}
+
+// ---------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------
 
@@ -549,6 +797,16 @@ function run() {
   testPemEncodeLabel();
   testAttrValueEncodeHexForm();
   testRfc5280TimeCutover();
+  testPemDecodeAllTrailingProse();
+  testCoerceAndDecodeRoot();
+  testAttrValueMalformedString();
+  testNameLabelDerivation();
+  testGeneralizedTimeUtf8RawSeqDefaults();
+  testGeneralNameArms();
+  testExtensionDecoderReaderCatches();
+  testCrlDistributionPointShapes();
+  testCertExtensionDecodersLoadGuard();
+  testSignedEnvelopeTbs();
 }
 
 module.exports = { run: run };

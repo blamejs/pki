@@ -602,7 +602,210 @@ function testBerScopedDecode() {
   check("ber keeps the depth cap", code(function () { pki.asn1.decode(depthBomb, { ber: true }); }) === "asn1/too-deep");
 }
 
+// A decoded node's tagClass reflects the identifier's class bits: universal
+// (0x00), application (0x40), context (0x80), private (0xc0). The context path
+// is exercised by the IMPLICIT readers; application and private classes appear
+// in ANY-typed fields the codec surfaces raw, so their class label must be
+// correct too (a mislabelled class would confuse a schema's tag dispatch).
+function testTagClassLabels() {
+  var appNode = pki.asn1.decode(pki.asn1.encode(0x40, false, 5, Buffer.from([1, 2])));
+  check("application-class node labels tagClass application", appNode.tagClass === "application");
+  var privNode = pki.asn1.decode(pki.asn1.encode(0xc0, false, 5, Buffer.from([1, 2])));
+  check("private-class node labels tagClass private", privNode.tagClass === "private");
+}
+
+// X.690 8.1.2.4 high-tag-number form (identifier low 5 bits == 0x1f, then
+// base-128 continuation octets): DER requires the minimal encoding. A leading
+// 0x80 continuation octet, a run past the 4-octet cap, and a low tag (< 0x1f)
+// dressed in the long form are all non-DER and reject typed.
+function testHighTagNumberForm() {
+  // Leading 0x80 in the high-tag body is a non-minimal (redundant) octet.
+  check("high-tag-number leading 0x80 rejects non-minimal-tag",
+    code(function () { pki.asn1.decode(Buffer.from([0x1f, 0x80])); }) === "asn1/non-minimal-tag");
+  // Five continuation octets exceed the 4-octet high-tag cap.
+  check("high-tag-number past the 4-octet cap rejects tag-too-large",
+    code(function () { pki.asn1.decode(Buffer.from([0x1f, 0x81, 0x81, 0x81, 0x81, 0x81])); }) === "asn1/tag-too-large");
+  // Tag 1 encoded in the high-tag form (it fits the low form) is non-minimal.
+  check("low tag in high-tag form rejects non-minimal-tag",
+    code(function () { pki.asn1.decode(Buffer.from([0x1f, 0x01])); }) === "asn1/non-minimal-tag");
+}
+
+// X.690 8.1.3 long-form length: the declared length-octet count must fit the
+// buffer and the leading length octet must be non-zero (minimal).
+function testLongFormLengthEdges() {
+  // 0x82 declares two length octets but only one follows.
+  check("long-form length overrunning the buffer rejects truncated",
+    code(function () { pki.asn1.decode(Buffer.from([0x04, 0x82, 0x01])); }) === "asn1/truncated");
+  // 0x82 0x00 0x80 is a non-minimal length (a leading zero length octet).
+  check("long-form length with a leading zero octet rejects non-minimal-length",
+    code(function () { pki.asn1.decode(Buffer.from([0x04, 0x82, 0x00, 0x80])); }) === "asn1/non-minimal-length");
+}
+
+// Typed-reader content-shape edges the round-trip suite doesn't reach: a
+// wrong-width BOOLEAN, an empty INTEGER / BIT STRING, a non-minimal NEGATIVE
+// INTEGER, and unused bits declared over an empty BIT STRING body.
+function testReaderContentEdges() {
+  // BOOLEAN content must be exactly one octet (zero or two octets reject).
+  check("BOOLEAN with empty content rejects bad-boolean",
+    code(function () { pki.asn1.read.boolean(pki.asn1.decode(Buffer.from([0x01, 0x00]))); }) === "asn1/bad-boolean");
+  check("BOOLEAN with two content octets rejects bad-boolean",
+    code(function () { pki.asn1.read.boolean(pki.asn1.decode(Buffer.from([0x01, 0x02, 0x00, 0x00]))); }) === "asn1/bad-boolean");
+  // INTEGER must have at least one content octet.
+  check("empty INTEGER rejects bad-integer",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from([0x02, 0x00]))); }) === "asn1/bad-integer");
+  // A negative INTEGER with a redundant leading 0xFF octet is non-minimal
+  // (0xFF 0x80 should be 0x80) -- the reader counterpart of the positive case.
+  check("reader rejects a non-minimal negative INTEGER",
+    code(function () { pki.asn1.read.integer(pki.asn1.decode(Buffer.from([0x02, 0x02, 0xff, 0x80]))); }) === "asn1/non-minimal-integer");
+  // BIT STRING must carry at least the unused-bit-count octet.
+  check("empty BIT STRING rejects bad-bit-string",
+    code(function () { pki.asn1.read.bitString(pki.asn1.decode(Buffer.from([0x03, 0x00]))); }) === "asn1/bad-bit-string");
+  // A non-zero unused-bit count over an empty body (only the count octet) is
+  // contradictory -- there are no bits to leave unused.
+  check("BIT STRING declaring unused bits over an empty body rejects bad-bit-string",
+    code(function () { pki.asn1.read.bitString(pki.asn1.decode(Buffer.from([0x03, 0x01, 0x03]))); }) === "asn1/bad-bit-string");
+}
+
+// read.octetStringImplicit expects a context-class node at the given tag; a
+// universal node or the wrong context tag is a tag mismatch, never coerced.
+function testOctetStringImplicitTagMismatch() {
+  check("read.octetStringImplicit rejects a universal node",
+    code(function () { pki.asn1.read.octetStringImplicit(pki.asn1.decode(pki.asn1.build.octetString(Buffer.from([1]))), 0); }) === "asn1/unexpected-tag");
+  check("read.octetStringImplicit rejects the wrong context tag",
+    code(function () { pki.asn1.read.octetStringImplicit(pki.asn1.decode(pki.asn1.build.contextPrimitive(1, Buffer.from([1]))), 0); }) === "asn1/unexpected-tag");
+}
+
+// OID content edges: empty content, content ending mid sub-identifier (a
+// dangling continuation octet), and the first-arc < 40 case (arc1 == 0, e.g.
+// the 0.x itu-t arcs) that the 1.x / 2.x fixtures don't reach.
+function testOidContentEdges() {
+  check("empty OID content rejects oid/empty",
+    code(function () { pki.asn1.decodeOidContent(Buffer.alloc(0)); }) === "oid/empty");
+  // 0x2a terminates the first sub-identifier; the trailing 0x81 keeps the
+  // continuation bit set with no terminal octet, so the OID ends mid arc.
+  check("OID ending mid sub-identifier rejects oid/truncated",
+    code(function () { pki.asn1.decodeOidContent(Buffer.from([0x2a, 0x81])); }) === "oid/truncated");
+  // First sub-identifier 39 (< 40) decodes to arc1 == 0 (0.39).
+  check("OID first sub-identifier below 40 yields arc1 == 0",
+    pki.asn1.decodeOidContent(Buffer.from([0x27])) === "0.39");
+}
+
+// readString / readTime require a universal node; a context-tagged node is not
+// a string / time type and rejects typed. readString also spans TeletexString
+// (decoded latin1) and the UniversalString length-multiple-of-4 rule.
+function testStringTimeTypeEdges() {
+  var TAGS = pki.asn1.TAGS;
+  check("readString on a context-tagged node rejects expected-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(pki.asn1.build.contextPrimitive(0, Buffer.from([0x41])))); }) === "asn1/expected-string");
+  check("readTime on a context-tagged node rejects expected-time",
+    code(function () { pki.asn1.read.time(pki.asn1.decode(pki.asn1.build.contextPrimitive(0, Buffer.from("260704070027Z", "latin1")))); }) === "asn1/expected-time");
+  // TeletexString (T.61, tag 0x14) is surfaced as latin1 text.
+  check("readString decodes a TeletexString as latin1",
+    pki.asn1.read.string(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.TELETEX_STRING, Buffer.from([0x41, 0x42])))) === "AB");
+  // UniversalString (UCS-4) content length must be a multiple of 4.
+  check("UniversalString with a non-multiple-of-4 length rejects bad-universal-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(pki.asn1.encode(0x00, false, TAGS.UNIVERSAL_STRING, Buffer.from([0x00, 0x00, 0x41])))); }) === "asn1/bad-universal-string");
+}
+
+// encodeLength (the public low-level length encoder) validates its input like
+// the other numeric builders: a non-integer / non-finite / negative length is
+// an authoring fault, and a length needing more than 126 octets can't be a DER
+// long-form length.
+function testEncodeLengthEdges() {
+  check("encodeLength rejects a negative length",
+    code(function () { pki.asn1.encodeLength(-1); }) === "asn1/bad-length");
+  check("encodeLength rejects a fractional length",
+    code(function () { pki.asn1.encodeLength(1.5); }) === "asn1/bad-length");
+  check("encodeLength rejects a NaN length",
+    code(function () { pki.asn1.encodeLength(NaN); }) === "asn1/bad-length");
+  check("encodeLength rejects a non-number length",
+    code(function () { pki.asn1.encodeLength("5"); }) === "asn1/bad-length");
+  // A length that would need more than 126 long-form octets can't be encoded.
+  check("encodeLength rejects a length needing more than 126 octets",
+    code(function () { pki.asn1.encodeLength(Number.MAX_VALUE); }) === "asn1/length-too-large");
+  // A normal long-form length still encodes canonically (0x81 0xC8 for 200).
+  check("encodeLength encodes 200 as a canonical long form",
+    hex(pki.asn1.encodeLength(200)) === "81c8");
+}
+
+// sequenceTlv recovers a universal SEQUENCE from a decoded node: a constructed
+// node contributes its children's DER, and a primitive node contributes its
+// content octets directly (both the branches of the content/children choice).
+function testSequenceTlv() {
+  var b = pki.asn1.build, TAGS = pki.asn1.TAGS;
+  // Constructed IMPLICIT [6] node -> universal SEQUENCE over its children.
+  var ctxNode = pki.asn1.decode(b.contextConstructed(6, b.integer(1n)));
+  var fromChildren = pki.asn1.sequenceTlv(ctxNode);
+  var dc = pki.asn1.decode(fromChildren);
+  check("sequenceTlv rebuilds a SEQUENCE from a constructed node's children",
+    dc.tagNumber === TAGS.SEQUENCE && pki.asn1.read.integer(dc.children[0]) === 1n);
+  // Primitive node whose content is itself a valid inner TLV -> that content
+  // becomes the SEQUENCE body verbatim.
+  var primNode = pki.asn1.decode(b.octetString(b.integer(1n)));
+  var fromContent = pki.asn1.sequenceTlv(primNode);
+  var dp = pki.asn1.decode(fromContent);
+  check("sequenceTlv wraps a primitive node's content as the SEQUENCE body",
+    dp.tagNumber === TAGS.SEQUENCE && pki.asn1.read.integer(dp.children[0]) === 1n);
+}
+
+// encode accepts a non-Buffer content (a byte array or an omitted content) via
+// Buffer.from, alongside the Buffer path -- the escape-hatch encoder must not
+// require a pre-built Buffer for a simple byte list.
+function testEncodeNonBufferContent() {
+  var TAGS = pki.asn1.TAGS;
+  var fromArray = pki.asn1.encode(0x00, false, TAGS.OCTET_STRING, [1, 2, 3]);
+  check("encode accepts an array content",
+    hex(pki.asn1.read.octetString(pki.asn1.decode(fromArray))) === "010203");
+  var fromUndefined = pki.asn1.encode(0x00, false, TAGS.NULL, undefined);
+  check("encode accepts an omitted content as empty",
+    pki.asn1.read.nullValue(pki.asn1.decode(fromUndefined)) === null);
+}
+
+// build.integer's numeric path (intToDer): an unsafe JS number and a
+// non-number / non-BigInt are authoring faults, and a negative value needing
+// more than one octet exercises the width-growth loop.
+function testIntToDerEdges() {
+  var b = pki.asn1.build;
+  // 2^53 is beyond Number.MAX_SAFE_INTEGER -- the caller must pass a BigInt.
+  check("build.integer rejects an unsafe JS number",
+    code(function () { b.integer(Math.pow(2, 53)); }) === "asn1/bad-integer");
+  check("build.integer rejects a null value",
+    code(function () { b.integer(null); }) === "asn1/bad-integer");
+  check("build.integer rejects a plain-object value",
+    code(function () { b.integer({}); }) === "asn1/bad-integer");
+  // -200 needs two two's-complement octets (0xFF 0x38); it round-trips.
+  check("build.integer encodes a multi-octet negative value",
+    pki.asn1.read.integer(pki.asn1.decode(b.integer(-200n))) === -200n);
+  check("build.integer -200 emits two content octets",
+    hex(pki.asn1.decode(b.integer(-200n)).content) === "ff38");
+}
+
+// build.printable rejects a value outside the PrintableString set, and the
+// SEQUENCE / SET builders reject a non-array argument (a defended authoring
+// fault, not a silent single-child coercion).
+function testBuildPrintableAndChildrenGuard() {
+  var b = pki.asn1.build;
+  check("build.printable rejects a character outside the set",
+    code(function () { b.printable("A@B"); }) === "asn1/bad-printable-string");
+  check("build.sequence rejects a non-array argument",
+    code(function () { b.sequence("notarray"); }) === "asn1/bad-children");
+  check("build.set rejects a null argument",
+    code(function () { b.set(null); }) === "asn1/bad-children");
+}
+
 function run() {
+  testTagClassLabels();
+  testHighTagNumberForm();
+  testLongFormLengthEdges();
+  testReaderContentEdges();
+  testOctetStringImplicitTagMismatch();
+  testOidContentEdges();
+  testStringTimeTypeEdges();
+  testEncodeLengthEdges();
+  testSequenceTlv();
+  testEncodeNonBufferContent();
+  testIntToDerEdges();
+  testBuildPrintableAndChildrenGuard();
   testBerScopedDecode();
   testBuildVectors();
   testRoundTrip();
