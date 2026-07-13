@@ -751,6 +751,98 @@ function testEmptyAuthenticatedSafe() {
   check("empty AuthenticatedSafe parses to zero bags", parseCode(der) === "NO-THROW" && parse(der).safeBags.length === 0);
 }
 
+// ---- REJECT: sdsiCertificate certValue must be an IA5String ---------------
+function testRejectSdsiNonIa5() {
+  // CertBag sec. 4.2.3 closed set: the sdsiCertificate arm carries an IA5String.
+  // A different universal type in that arm is not an sdsiCertificate value and
+  // rejects fail-closed (the accept path for a real IA5String is covered above).
+  var utf8Sdsi = safeBag(CERT_BAG, certBagInner(SDSI_CERT_TYPE, b.utf8("not-ia5")));
+  check("sdsiCertificate certValue not an IA5String rejected",
+        parseCode(minimalPfx({ bags: [utf8Sdsi] })) === "pkcs12/bad-bag-value");
+  var octetSdsi = safeBag(CERT_BAG, certBagInner(SDSI_CERT_TYPE, b.octetString(Buffer.from([1, 2, 3]))));
+  check("sdsiCertificate certValue as OCTET STRING rejected",
+        parseCode(minimalPfx({ bags: [octetSdsi] })) === "pkcs12/bad-bag-value");
+}
+
+// ---- REJECT: x509Certificate certValue must be an OCTET STRING -------------
+function testRejectX509CertValueNotOctet() {
+  // The x509Certificate arm wraps the DER certificate in an OCTET STRING; a
+  // non-OCTET-STRING inner value carries the generic bag-value reason (this
+  // caller passes no override code, so the _octetContent default applies).
+  var notOctet = safeBag(CERT_BAG, certBagInner(X509_CERT_TYPE, b.utf8("nope")));
+  check("x509Certificate certValue not an OCTET STRING rejected",
+        parseCode(minimalPfx({ bags: [notOctet] })) === "pkcs12/bad-bag-value");
+  // The x509CRL crlValue arm shares the same OCTET-STRING requirement and code.
+  var crlNotOctet = safeBag(CRL_BAG, certBagInner(X509_CRL_TYPE, b.utf8("nope")));
+  check("x509CRL crlValue not an OCTET STRING rejected",
+        parseCode(minimalPfx({ bags: [crlNotOctet] })) === "pkcs12/bad-bag-value");
+}
+
+// ---- REJECT: single-value localKeyId ---------------------------------------
+function testRejectMultiValueLocalKeyId() {
+  // localKeyId is SINGLE VALUE TRUE (PKCS#9 / RFC 2985): exactly one OCTET
+  // STRING value and at most one instance -- the OCTET-STRING analogue of the
+  // friendlyName rule above.
+  var twoValues = attribute(LOCAL_KEY_ID, [b.octetString(Buffer.alloc(4, 1)), b.octetString(Buffer.alloc(4, 2))]);
+  check("localKeyId with two values rejected",
+        parseCode(minimalPfx({ bags: [certBag([twoValues])] })) === "pkcs12/bad-local-key-id");
+  var dupInstances = [localKeyIdAttr(Buffer.alloc(4, 1)), localKeyIdAttr(Buffer.alloc(4, 9))];
+  check("duplicate localKeyId instances rejected",
+        parseCode(minimalPfx({ bags: [certBag(dupInstances)] })) === "pkcs12/bad-local-key-id");
+}
+
+// ---- REJECT: unrecognized AuthenticatedSafe element content type -----------
+function testRejectUnknownSafeContentType() {
+  // sec. 4.1 -- each AuthenticatedSafe element is id-data, id-encryptedData, or
+  // id-envelopedData. An UNREGISTERED content OID rejects and the message names
+  // the raw dotted OID (the registry has no name to substitute).
+  var unknownEl = contentInfo("1.2.3.4.5.6.7", b.octetString(Buffer.from([1])));
+  var der = pfx({
+    authSafe: contentInfo(ID_DATA, b.octetString(authenticatedSafe([unknownEl]))),
+    macData: macData({ iterations: 2048 }),
+  });
+  check("unregistered AuthenticatedSafe element content type rejected",
+        parseCode(der) === "pkcs12/bad-safe-contentinfo-type");
+  var msg = "";
+  try { parse(der); } catch (e) { msg = e && e.message; }
+  check("unknown-content-type message carries the raw dotted OID", msg.indexOf("1.2.3.4.5.6.7") !== -1);
+}
+
+// ---- REJECT: matches() structural discriminators fail closed ---------------
+function testMatchesStructuralRejects() {
+  // matches() is the orchestrator's structural PFX detector. Beyond the
+  // INTEGER-first / ContentInfo-second shape, each discriminator that fails
+  // returns false so the orchestrator keeps probing instead of mis-routing.
+  function dec(der) { return pki.asn1.decode(der); }
+
+  // Not a SEQUENCE of 2-3 children at all.
+  check("matches: non-SEQUENCE root rejected", pkcs12Mod.matches(dec(b.octetString(Buffer.from([1])))) === false);
+  check("matches: 4-child root rejected",
+        pkcs12Mod.matches(dec(b.sequence([b.integer(3), b.integer(1), b.integer(2), b.integer(4)]))) === false);
+
+  // First child (version) is not a universal INTEGER.
+  var okCi = b.sequence([b.oid(ID_DATA), b.explicit(0, b.octetString(Buffer.from([1])))]);
+  check("matches: non-INTEGER first child rejected",
+        pkcs12Mod.matches(dec(b.sequence([b.oid(ID_DATA), okCi]))) === false);
+
+  // children[1] is a 2-element SEQUENCE but its first child is not an OID -- a
+  // ContentInfo always leads with a contentType OID.
+  var oidlessCi = b.sequence([b.integer(3), b.sequence([b.integer(5), b.explicit(0, b.octetString(Buffer.from([1])))])]);
+  check("matches: ContentInfo whose first child is not an OID rejected", pkcs12Mod.matches(dec(oidlessCi)) === false);
+
+  // children[1] leads with an OID but its second child is not the [0]
+  // constructed content wrapper (a bare INTEGER, then a primitive [0]).
+  var nonCtxCi = b.sequence([b.integer(3), b.sequence([b.oid(ID_DATA), b.integer(9)])]);
+  check("matches: ContentInfo second child not a [0] wrapper rejected", pkcs12Mod.matches(dec(nonCtxCi)) === false);
+  var primCtxCi = b.sequence([b.integer(3), b.sequence([b.oid(ID_DATA), b.contextPrimitive(0, Buffer.from([1]))])]);
+  check("matches: ContentInfo [0] content primitive (no children) rejected", pkcs12Mod.matches(dec(primCtxCi)) === false);
+
+  // A third child (macData position) is present but is not a SEQUENCE -- pkcs8
+  // carries an OCTET STRING there, so an OCTET-STRING third child is not a PFX.
+  var badThird = b.sequence([b.integer(3), okCi, b.octetString(Buffer.from([1]))]);
+  check("matches: non-SEQUENCE third (macData) child rejected", pkcs12Mod.matches(dec(badThird)) === false);
+}
+
 // ---- runner ----------------------------------------------------------
 testAcceptMinimal();
 testAcceptKeyBags();
@@ -780,6 +872,11 @@ testMultiDefectFailClosed();
 testRejectInnerContentType();
 testContainerOctetStringCodes();
 testEmptyAuthenticatedSafe();
+testRejectSdsiNonIa5();
+testRejectX509CertValueNotOctet();
+testRejectMultiValueLocalKeyId();
+testRejectUnknownSafeContentType();
+testMatchesStructuralRejects();
 
 if (require.main === module) console.log("CHECKS " + helpers.getChecks());
 module.exports = {};

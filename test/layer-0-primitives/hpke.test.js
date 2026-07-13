@@ -171,6 +171,18 @@ function testAdversarialBranches() {
   var sc = pki.hpke.setupS(IDS, kp.publicKey, {});
   var rc = pki.hpke.setupR(IDS, sc.enc, kp.privateKey, {});
   check("recipient open ct shorter than tag -> hpke/open-failed", codeOf(function () { rc.open(Buffer.alloc(0), Buffer.alloc(5)); }) === "hpke/open-failed");
+  // A node KeyObject on the WRONG curve for the suite (an X25519 key handed to a
+  // P-256 suite): its JWK export lacks the coordinate the suite's
+  // SerializePublicKey requires (an OKP key has no EC y), so the coordinate guard
+  // raises a typed error. That HpkeError must be surfaced unchanged as
+  // hpke/bad-key, never swallowed or re-wrapped as a raw node error.
+  check("setupS curve-mismatched public KeyObject -> hpke/bad-key", codeOf(function () { pki.hpke.setupS(P256, kp.publicKey, {}); }) === "hpke/bad-key");
+  check("setupR curve-mismatched private KeyObject -> hpke/bad-key", codeOf(function () { pki.hpke.setupR(P256, Buffer.alloc(65), kp.privateKey, {}); }) === "hpke/bad-key");
+  // opts is optional (RFC 9180 base mode needs no info/psk/senderKey): omitting the
+  // argument entirely on both setup calls must default cleanly and still round-trip.
+  var sNo = pki.hpke.setupS(IDS, kp.publicKey);
+  var rNo = pki.hpke.setupR(IDS, sNo.enc, kp.privateKey);
+  check("setupS/setupR with opts omitted round-trip", rNo.open(Buffer.alloc(0), sNo.context.seal(Buffer.alloc(0), Buffer.from("no-opts"))).toString() === "no-opts");
 }
 
 function run() {

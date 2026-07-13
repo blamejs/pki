@@ -1028,6 +1028,80 @@ async function testAnchorDefensiveDefaults() {
 }
 
 // ---------------------------------------------------------------------------
+// Dedup metadata-agreement (_anchorsAgree / _paramsEqual): two entries that
+// collide on (subjectDer, publicKey) run the FULL agreement chain -- including
+// the EC named-curve PARAMETER comparison (a non-null Buffer, unlike the
+// parameter-free Ed25519 fixtures) and the per-purpose + per-date equality --
+// before collapsing to one anchor or failing closed on any disagreement.
+// ---------------------------------------------------------------------------
+
+// A parseable P-256 EC root: its SPKI carries a namedCurve parameter (a
+// Buffer). x509.parse does not verify the signature, so a well-formed
+// ECDSA-Sig-Value placeholder suffices to exercise the parse -> anchor path.
+async function mkEcRoot() {
+  var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var spki = Buffer.from(await subtle.exportKey("spki", kp.publicKey));
+  var sigAlg = b.sequence([b.oid("1.2.840.10045.4.3.2")]); // ecdsa-with-SHA256
+  var tbs = b.sequence([
+    b.explicit(0, b.integer(2n)),
+    b.integer(7701n),
+    sigAlg,
+    nameDer("EC Test Root"),
+    b.sequence([b.utcTime(new Date("2026-01-01T00:00:00Z")), b.utcTime(new Date("2032-01-01T00:00:00Z"))]),
+    nameDer("EC Test Root"),
+    b.raw(spki),
+    b.explicit(3, b.sequence([bcExt()])),
+  ]);
+  return b.sequence([tbs, sigAlg, b.bitString(b.sequence([b.integer(1n), b.integer(1n)]), 0)]);
+}
+
+async function testDedupAnchorAgreement() {
+  // Two CCADB rows for one EC root collide on (subjectDer, publicKey); the
+  // agreement check compares the non-null namedCurve parameter Buffers.
+  var ecDer = await mkEcRoot();
+  var ecCert = pki.schema.x509.parse(ecDer);
+  var ecPem = pki.schema.x509.pemEncode(ecDer, "CERTIFICATE");
+  check("an EC root SPKI carries a non-null namedCurve parameter (Buffer)",
+    Buffer.isBuffer(ecCert.subjectPublicKeyInfo.algorithm.parameters));
+
+  var ecCsv = csvOf([
+    CSV_HEADER,
+    ["EC Test Root", q("Websites"), "", "", q(ecPem)],
+    ["EC Test Root", q("Websites"), "", "", q(ecPem)],
+  ]);
+  var ecOut = pki.trust.parseCcadbCsv(ecCsv);
+  check("two identical EC-root rows (matching namedCurve params) collapse to one anchor",
+    ecOut.anchors.length === 1 && Buffer.isBuffer(ecOut.anchors[0].parameters) &&
+    ecOut.anchors[0].parameters.equals(ecCert.subjectPublicKeyInfo.algorithm.parameters));
+
+  var fx = await fixtures();
+  var pemA = pki.schema.x509.pemEncode(fx.rootADer, "CERTIFICATE");
+
+  // Two rows agreeing on purposes but DISAGREEING on the distrust date run the
+  // agreement chain past the purpose comparison to the date comparison and
+  // fail closed -- never silently pick one instant.
+  var dateConflict = csvOf([
+    CSV_HEADER,
+    ["Test Root A", q("Websites"), "2027.06.01", "", q(pemA)],
+    ["Test Root A", q("Websites"), "2028.06.01", "", q(pemA)],
+  ]);
+  check("two rows agreeing on purposes but disagreeing on the distrust date -> trust/pairing-mismatch",
+    codeOf(function () { pki.trust.parseCcadbCsv(dateConflict); }) === "trust/pairing-mismatch");
+
+  // Fully-agreeing rows (same purposes AND same date) run the chain to
+  // completion (true) and collapse to one anchor.
+  var agree = csvOf([
+    CSV_HEADER,
+    ["Test Root A", q("Websites"), "2027.06.01", "", q(pemA)],
+    ["Test Root A", q("Websites"), "2027.06.01", "", q(pemA)],
+  ]);
+  var agreeOut = pki.trust.parseCcadbCsv(agree);
+  check("two fully-agreeing rows (purposes + dates) collapse to one anchor",
+    agreeOut.anchors.length === 1 &&
+    agreeOut.anchors[0].distrustAfter.serverAuth.getTime() === Date.UTC(2027, 5, 1, 23, 59, 59));
+}
+
+// ---------------------------------------------------------------------------
 
 async function run() {
   await testCertdataPairing();
@@ -1047,6 +1121,7 @@ async function run() {
   await testCsvLexBounds();
   await testCsvSemanticEdges();
   await testAnchorDefensiveDefaults();
+  await testDedupAnchorAgreement();
 }
 
 module.exports = { run: run };

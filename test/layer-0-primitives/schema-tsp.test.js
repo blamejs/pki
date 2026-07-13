@@ -303,6 +303,21 @@ function testToken() {
     b.contextConstructed(1, b.oid(SHA256)), authEncap, implicitSetOf(2, authAttrs), b.octetString(Buffer.alloc(32, 0x4D))]);
   var authToken = b.sequence([b.oid(ID_CT_AUTHDATA), b.explicit(0, authData)]);
   check("44d. AuthenticatedData token (not SignedData) rejected typed", tokenCode(authToken) === "tsp/not-signed-data");
+  // 44e-44g. a well-formed CMS SignedData token that passes every structural token
+  //          gate (content type, single signer, SigningCertificate attr) but whose
+  //          encapsulated eContent is NOT a decodable TSTInfo -- parseToken decodes the
+  //          inner payload and MUST keep its typed-TspError contract at each layer, never
+  //          leak a bare codec error nor accept the malformed payload.
+  // 44e. the inner eContent is a well-formed DER value of the wrong type (an INTEGER,
+  //      not the TSTInfo SEQUENCE) -> the schema walk rejects it fail-closed.
+  check("44e. token with a non-TSTInfo eContent -> tsp/bad-tst-info", tokenCode(timeStampToken(b.integer(2n))) === "tsp/bad-tst-info");
+  // 44f. the inner eContent is undecodable DER (a SEQUENCE header claiming more content
+  //      than is present) -> the embedded-DER decode fails and surfaces tsp/bad-der.
+  check("44f. token with an undecodable eContent -> tsp/bad-der", tokenCode(timeStampToken(Buffer.from([0x30, 0x05, 0x02, 0x01, 0x01]))) === "tsp/bad-der");
+  // 44g. the inner TSTInfo decodes as DER but a leaf carries the wrong tag (version is
+  //      ENUMERATED, not INTEGER) -> the leaf-level codec fault is wrapped into the
+  //      typed tsp/bad-der, not leaked as a bare asn1/* error from the composed decode.
+  check("44g. token whose inner TSTInfo has a codec fault -> tsp/bad-der", tokenCode(timeStampToken(tstInfo({ version: b.enumerated(1n) }))) === "tsp/bad-der");
 }
 
 // ---- Dispatch + coercion ---------------------------------------------

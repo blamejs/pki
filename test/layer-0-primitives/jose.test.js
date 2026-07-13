@@ -239,6 +239,10 @@ async function testProfileAndErrorBranches() {
   // 47. an EC jwk with the right kty/curve but an unimportable point fails closed at import
   // (the length pin passes on a 64-byte sig; the invalid point throws inside importKey).
   check("47. unimportable EC point rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ jwk: { kty: "EC", crv: "P-256", x: "AAAA", y: "AAAA" } })), signature: pki.jose.base64url.encode(Buffer.alloc(64)) }), OUTER); })) === "jose/bad-key");
+  // 47b. an RS256 jwk missing the modulus n: the signature-length pin cannot be
+  // resolved (no modulus to measure and no signing key on the verify side), so it is
+  // skipped and the malformed key fails closed at importKey -- never a length bypass.
+  check("47b. RSA jwk without modulus n fails closed at import", (await acode(function () { return pki.jose.verify(Object.assign({}, good, { protected: enc(outerHeader({ alg: "RS256", jwk: { kty: "RSA", e: "AQAB" } })) }), OUTER); })) === "jose/bad-key");
 
   // 48. verify with NO opts at all still verifies an embedded-jwk JWS (opts defaulting).
   check("48. verify with no opts (embedded jwk) succeeds", (await pki.jose.verify(good)).header.alg === "ES256");
@@ -251,6 +255,9 @@ async function testProfileAndErrorBranches() {
   check("50c. string JWS rejected", (await acode(function () { return pki.jose.verify("nope", OUTER); })) === "jose/bad-jws");
   // 51. a non-string (detached) payload rejected -- payload is never detached here.
   check("51. non-string payload rejected", (await acode(function () { return pki.jose.verify({ protected: "x", signature: "y", payload: null }, OUTER); })) === "jose/bad-jws");
+  // 51b. a string protected header with a NON-string signature rejected: the second
+  // arm of the protected/signature type gate must fire independently of the first.
+  check("51b. non-string signature rejected", (await acode(function () { return pki.jose.verify({ protected: "abc", signature: 123, payload: "x" }, OUTER); })) === "jose/bad-jws");
 
   // 52. an embedded jwk that passes the key-type + public-only gates but is an
   // unimportable point fails closed when sign confirms it matches the signing key.

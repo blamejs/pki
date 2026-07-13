@@ -30,6 +30,7 @@ var L6 = "40d88127d4d31a3891f41598eeed41174e5bc89b1eb9bbd66a8cbfc09956a3fd";
 var R2 = "a20bf9a7cc2dc8a08f5f415a71b19f6ac427bab54d24eec868b5d3103449953a"; // root(size 2) = nodeHash(L0,L1)
 var R3 = "3b6cccd7e3e023ff393006f030315ee7ad9eb111b022b41fba7e5b7a3973f688"; // root(size 3)
 var R4 = "9bcd51240af4005168f033121ba85be5a6ed4f0e6a5fac262066729b8fbfdecb"; // root(size 4)
+var R5 = "b855b42d6c30f5b087e05266783fbd6e394f7b926013ccaa67700a8b0c5a596f"; // root(size 5)
 var R6 = "bb36e7d3d4cee5720cbd323d02fab15962e2ba1dadf5f8fc6eeef4fd6ad056a8"; // root(size 6)
 var R7 = "3560191803028444b232018ac047fdb561c09c23a7a6876c85e08b5e4d48e9f3"; // root(size 7)
 var EMPTY = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"; // SHA-256("")
@@ -75,6 +76,10 @@ var CONSISTENCY_ACCEPT = [
   ["cons-1-7", 1, 7, L0, R7, [L1, N23, N456]],
   ["cons-3-7", 3, 7, R3, R7, [L2, L3, R2, N456]],
   ["cons-4-7", 4, 7, R4, R7, [N456]],
+  // Non-pow2 old tree whose old-root reconstruction descends through an
+  // even fn === sn boundary (fn is shifted down until odd): the old-root leg
+  // exercises the constant-time descent inside the consistency fold.
+  ["cons-5-6", 5, 6, R5, R6, [L4, L5, R4]],
   ["cons-6-7", 6, 7, R6, R7, [N45, L6, R4]],
   ["cons-7-7", 7, 7, R7, R7, []],
   ["cons-0-7", 0, 7, EMPTY, R7, []],
@@ -94,6 +99,9 @@ function flip(hex) { var b = H(hex); b[0] ^= 0x01; return b.toString("hex"); }
 function testRejects() {
   var m = pki.merkle;
   // --- inclusion, THROW ---
+  // No-argument call: opts defaults to {}, then the missing leafIndex coord
+  // fails closed with a typed merkle/* error (never a raw TypeError).
+  check("rej-incl-no-opts", code(function () { m.verifyInclusion(); }) === "merkle/bad-input");
   check("rej-incl-empty-tree", code(function () { m.verifyInclusion({ leafIndex: 0, treeSize: 0, leafHash: H(L0), proof: [], rootHash: H(L0) }); }) === "merkle/empty-tree");
   check("rej-incl-index-oob", code(function () { m.verifyInclusion({ leafIndex: 7, treeSize: 7, leafHash: H(L3), proof: P([L2, R2, N456]), rootHash: H(R7) }); }) === "merkle/index-out-of-range");
   check("rej-incl-bad-hashlen", code(function () { m.verifyInclusion({ leafIndex: 3, treeSize: 7, leafHash: H(L3), proof: [Buffer.alloc(31), H(R2), H(N456)], rootHash: H(R7) }); }) === "merkle/bad-hash-length");
@@ -125,12 +133,17 @@ function testRejects() {
   check("rej-incl-domain-swap (false)", m.verifyInclusion({ leafIndex: 0, treeSize: 1, leafHash: m.leafHash(Buffer.from([9])), proof: [], rootHash: H(R2) }) === false);
   check("a leaf hash can never equal an interior node value", m.leafHash(Buffer.from([9])).toString("hex") !== R2);
   // --- consistency, THROW ---
+  // No-argument call: opts defaults to {}, missing oldSize fails closed typed.
+  check("rej-cons-no-opts", code(function () { m.verifyConsistency(); }) === "merkle/bad-input");
   check("rej-cons-old-gt-new", code(function () { m.verifyConsistency({ oldSize: 7, newSize: 3, oldRoot: H(R7), newRoot: H(R3), proof: [] }); }) === "merkle/old-size-exceeds-new");
   check("rej-cons-old-zero-nonempty", code(function () { m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(EMPTY), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }); }) === "merkle/bad-proof-length");
   check("rej-cons-sizes-equal-nonempty", code(function () { m.verifyConsistency({ oldSize: 7, newSize: 7, oldRoot: H(R7), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }); }) === "merkle/sizes-equal-nonempty-proof");
   check("rej-cons-empty-proof", code(function () { m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(R7), proof: [] }); }) === "merkle/empty-consistency-proof");
   check("rej-cons-bad-hashlen", code(function () { m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(R7), proof: [Buffer.alloc(31), H(L3), H(R2), H(N456)] }); }) === "merkle/bad-hash-length");
   check("rej-cons-proof-too-long", code(function () { m.verifyConsistency({ oldSize: 4, newSize: 7, oldRoot: H(R4), newRoot: H(R7), proof: P([N456, N45]) }); }) === "merkle/bad-proof-length");
+  // Too short: the 3->7 proof needs 4 nodes; a 3-node proof completes the fold
+  // with sn != 0 and fails closed ("shorter than the geometry requires").
+  check("rej-cons-proof-too-short", code(function () { m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(R7), proof: P([L2, L3, R2]) }); }) === "merkle/bad-proof-length");
   // --- consistency, RETURN false (the append-only bypass legs) ---
   check("rej-cons-old-zero-wrongroot (false)", m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(flip(EMPTY)), newRoot: H(R7), proof: [] }) === false);
   // empty-to-empty (newSize 0): BOTH roots must be the empty root -- a bogus
