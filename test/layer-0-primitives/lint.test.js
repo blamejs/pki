@@ -114,6 +114,13 @@ function run() {
     has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([0], true)] })), "lint/rfc5280/ca-without-keycertsign"));
   check("a CA cert WITH keyCertSign does NOT flag ca-without-keycertsign",
     !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski()] })), "lint/rfc5280/ca-without-keycertsign"));
+  // The inverse coherence rule: keyCertSign asserted without cA=TRUE is a violation.
+  check("keyCertSign asserted without cA -> keycertsign-without-ca (error)",
+    sevOf(pki.lint.certificate(makeCert({ exts: [keyUsage([5], true)] })), "lint/rfc5280/keycertsign-without-ca") === "error");
+  check("keyCertSign with cA=TRUE does NOT flag keycertsign-without-ca",
+    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski()] })), "lint/rfc5280/keycertsign-without-ca"));
+  check("a leaf without keyCertSign does NOT flag keycertsign-without-ca",
+    !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], true)] })), "lint/rfc5280/keycertsign-without-ca"));
   check("an unknown critical extension -> unknown-critical-extension (error)",
     has(pki.lint.certificate(makeCert({ exts: [extByOid("1.3.6.1.4.1.99999.7.7", true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
   // Strict-parse pre-emption (Open Q8): a duplicate extension OID / pathLen-without-cA are
