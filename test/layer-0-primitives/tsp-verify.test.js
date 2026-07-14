@@ -359,6 +359,7 @@ async function testTspCoverage() {
   check("cert-less token without opts.certs -> tsp/bad-signature", (await pki.tsp.verify(certlessTok, DATA, {})).code === "tsp/bad-signature");
   check("cert-less token with out-of-band opts.certs verifies", (await pki.tsp.verify(certlessTok, DATA, { certs: [tsa.cert] })).valid === true);
   await rejects("opts.certs not an array -> tsp/bad-input", function () { return pki.tsp.verify(certlessTok, DATA, { certs: tsa.cert }); }, "tsp/bad-input");
+  await rejects("opts.certs with a non-Buffer element -> tsp/bad-input (never silently dropped)", function () { return pki.tsp.verify(certlessTok, DATA, { certs: [42] }); }, "tsp/bad-input");
   // response: failInfo on a non-rejection status, and an unknown PKIFailureInfo name, fail closed.
   rejectsSync("response failInfo on status!=2 -> tsp/unexpected-failinfo", function () { return pki.tsp.response(null, { status: 3, failInfo: ["badAlg"] }); }, "tsp/unexpected-failinfo");
   rejectsSync("response unknown failInfo name -> tsp/bad-input", function () { return pki.tsp.response(null, { status: 2, failInfo: ["notARealBit"] }); }, "tsp/bad-input");
