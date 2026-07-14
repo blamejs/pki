@@ -344,6 +344,14 @@ async function testTspCoverage() {
   var tok371 = await pki.cms.sign(tst371, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [badHashScv2] }] });
   var r371 = await pki.tsp.verify(tok371, DATA, {});
   check("unsupported ESSCertID hash -> tsp/unsupported-algorithm", r371.valid === false && r371.code === "tsp/unsupported-algorithm");
+  // a token whose messageImprint hashedMessage is not a full-length digest (empty here) must not
+  // verify, even against a matching empty precomputed imprint -- an empty value is not a SHA-256 hash.
+  var emptyMi = b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(Buffer.alloc(0))]);
+  var emptyTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), emptyMi, b.integer(41n), b.generalizedTime(GENTIME)]);
+  var emptyTok = await pki.cms.sign(emptyTst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2] }] });
+  check("empty token imprint + matching empty precomputed imprint -> tsp/imprint-mismatch", (await pki.tsp.verify(emptyTok, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(0) }, {})).code === "tsp/imprint-mismatch");
+  // a caller precomputed imprint of the wrong length for its algorithm is a config error -> throw.
+  await rejects("precomputed imprint wrong length -> tsp/bad-input", function () { return pki.tsp.verify(token, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(16) }, {}); }, "tsp/bad-input");
   // response: failInfo on a non-rejection status, and an unknown PKIFailureInfo name, fail closed.
   rejectsSync("response failInfo on status!=2 -> tsp/unexpected-failinfo", function () { return pki.tsp.response(null, { status: 3, failInfo: ["badAlg"] }); }, "tsp/unexpected-failinfo");
   rejectsSync("response unknown failInfo name -> tsp/bad-input", function () { return pki.tsp.response(null, { status: 2, failInfo: ["notARealBit"] }); }, "tsp/bad-input");
