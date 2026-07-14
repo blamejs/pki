@@ -16,6 +16,7 @@ The RFC 3161 Time-Stamp Protocol surface is complete: pki.tsp.request and pki.ts
 ### Fixed
 
 - CMS signer-certificate lookup now matches the certificate's issuer name in addition to its serial number when a signer is identified by issuerAndSerialNumber (RFC 5652); the issuer comparison was previously inert, so a signer was located by serial number alone. The verification verdict is unchanged -- the signature check remains the authority -- but the correct signer certificate is now selected precisely.
+- Malformed input to several verifiers now fails closed with a typed pki.errors.PkiError instead of a raw TypeError: a signer or issuer distinguished name carrying an embedded control byte (the RFC 5280 section 7.1 name comparison, CVE-2009-2408) and oversized or malformed JSON are rejected with a domain error code across pki.cms.verify, pki.tsp.verify, pki.jose, pki.sigstore, and pki.webcrypto key import.
 
 ## v0.2.18 — 2026-07-14
 

@@ -2449,6 +2449,38 @@ function testJsonParseNotViaGuard() {
   _report("no lib file parses JSON via a bare JSON.parse instead of guard.json", bad);
 }
 
+// ---------------------------------------------------------------------------
+// factory-convention guards receive a (code, message) FACTORY, not an error CLASS
+// ---------------------------------------------------------------------------
+
+function testGuardErrorFactoryNotClass() {
+  // class: guard-error-class-not-factory
+  // The guard-*.js primitives that throw via the FACTORY convention -- `throw
+  // E(code, message)` with no `new` (guard.name / json / limits / crypto /
+  // encoding / identifier / range) -- MUST be handed a (code, message) FACTORY
+  // (`_err`, `E`, `ns.E`, `ctx.E`), never a defineClass error CLASS. Passing a
+  // class invokes it without `new` on the error path: a raw "Class constructor
+  // cannot be invoked without 'new'" TypeError, a fail-open shape where hostile
+  // input meant to REJECT crashes instead of failing closed. A bare
+  // Capitalized*Error argument is a class -- flag it wherever it appears.
+  var re = /guard\.(?:name|json|limits|crypto|encoding|identifier|range)\.\w+\([^;]{0,400}?,\s*[A-Z][A-Za-z0-9]*Error\b/;
+  var files = _libFiles();
+  var bad = [];
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); } catch (_e) { continue; }
+    var subject = _stripCommentsAndLiterals(content);
+    var reG = new RegExp(re.source, "g");
+    var m;
+    while ((m = reG.exec(subject)) !== null) {
+      var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
+      bad.push({ file: _relPath(files[i]), line: lineNum, content: "factory-convention guard handed an error CLASS; pass the (code,message) factory (_err / E)" });
+    }
+  }
+  bad = _filterMarkers(bad, "guard-error-class-not-factory");
+  _report("factory-convention guards receive a (code,message) factory, not an error class", bad);
+}
+
 function run() {
   _allViolations = [];
   testSourceHeaders();
@@ -2472,6 +2504,7 @@ function run() {
   testGuardShapeReinlined();
   testConstantTimeCompareShortCircuited();
   testEveryGuardEnforced();
+  testGuardErrorFactoryNotClass();
   testValidatorShapeReinlined();
   testEveryValidatorEnforced();
   testInlineStructureValidatorCluster();
