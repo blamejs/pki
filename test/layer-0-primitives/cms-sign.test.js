@@ -317,7 +317,41 @@ async function testMlDsa() {
   await rejects("R11 ML-DSA-44 CryptoKey vs ML-DSA-65 cert", function () { return pki.cms.sign(CONTENT, { cert: makeSigner("ml-dsa-65").cert, key: key44 }); }, "cms/bad-input");
 }
 
+// An id-RSASSA-PSS signer whose SPKI carries CUSTOM RSASSA-PSS-params (over a real RSA public key),
+// exercising the pinned-hash reader (_pssHashFromSpki) across every shape branch.
+function pssSignerWithParams(paramsNode) {
+  var b = pki.asn1.build;
+  var base = makeSigner("rsa-pss");
+  var spki = pki.asn1.decode(base.spki);   // SEQUENCE { AlgorithmIdentifier, subjectPublicKey BIT STRING }
+  var alg = paramsNode ? b.sequence([b.oid(pki.oid.byName("rsassaPss")), paramsNode]) : b.sequence([b.oid(pki.oid.byName("rsassaPss"))]);
+  return { cert: signing.minimalCert(b.sequence([alg, b.raw(spki.children[1].bytes)])), key: base.key };
+}
+
+// ---- coverage: the id-RSASSA-PSS SPKI pinned-hash reader across malformed / unpinned params ----
+async function testPssSpkiParams() {
+  var b = pki.asn1.build;
+  // params that are not a SEQUENCE / an empty SEQUENCE / a [0] hashAlgorithm whose inner is not an
+  // OID: the reader finds no pinned hash and the signer falls back to the SHA-256 default, so the
+  // message still signs and verifies. (Drives the three structural fall-through branches.)
+  var shapes = [
+    b.nullValue(),                                                            // not a SEQUENCE
+    b.sequence([]),                                                           // a SEQUENCE with no [0] hashAlgorithm
+    b.sequence([b.explicit(0, b.sequence([b.nullValue()]))]),                 // [0] hashAlgorithm inner is not an OID
+  ];
+  // The reader finds no pinned hash and the signer falls back to the SHA-256 default, so signing
+  // succeeds and emits a SignedData (the crafted SPKI is deliberately malformed, so it is not
+  // re-importable for a round-trip -- the graceful sign-side fallback is what these vectors drive).
+  for (var i = 0; i < shapes.length; i++) {
+    var out = await pki.cms.sign(CONTENT, pssSignerWithParams(shapes[i]));
+    check("PSS SPKI params shape " + i + " -> sha256 fallback signs", Buffer.isBuffer(out) && out.length > 0);
+  }
+  // a [0] hashAlgorithm pinning a hash this toolkit does not map (SHA-1) fails closed at sign time,
+  // rather than silently signing under a digest the key forbids.
+  await rejects("PSS SPKI pins an unsupported hash -> reject", function () { return pki.cms.sign(CONTENT, pssSignerWithParams(b.sequence([b.explicit(0, b.sequence([b.oid(pki.oid.byName("sha1"))]))]))); }, "cms/unsupported-algorithm");
+}
+
 async function run() {
+  await testPssSpkiParams();
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();

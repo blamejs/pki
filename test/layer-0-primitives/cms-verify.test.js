@@ -476,6 +476,17 @@ async function testBadInput() {
 async function testMlDsaVerify() {
   // a valid ML-DSA-65 SignedData verifies (the full sign round-trip is covered in cms-sign.test.js).
   check("ML-DSA-65 SignedData verifies", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")))).valid === true);
+  // a SignedData with NO embedded certificates: the signer certificate is supplied out-of-band via
+  // opts.certs (drives the `parsed.certificates || []` no-embed path).
+  var noCerts = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  var outOfBandCert = Buffer.from(noCerts.certificates[0].bytes);
+  delete noCerts.certificates;
+  check("ML-DSA-65 no embedded cert + opts.certs -> valid", (await pki.cms.verify(noCerts, { certs: [outOfBandCert] })).valid === true);
+  // a parsed-object input whose certificates entry is a raw DER Buffer (not a { bytes } object) is
+  // accepted -- the candidate loader handles both shapes (drives the raw-value ternary arm).
+  var rawCertObj = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  rawCertObj.certificates = [Buffer.from(rawCertObj.certificates[0].bytes)];   // a raw DER Buffer, not { bytes }
+  check("ML-DSA-65 raw-Buffer certificate entry -> valid", (await pki.cms.verify(rawCertObj)).valid === true);
   // R3 -- signatureAlgorithm / signer-key parameter-set disagreement (the sameKeyOid guard).
   var m3 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
   m3.signerInfos[0].signatureAlgorithm.name = "id-ml-dsa-87";
