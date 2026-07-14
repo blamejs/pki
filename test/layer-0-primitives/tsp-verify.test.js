@@ -374,6 +374,14 @@ async function testTspCoverage() {
   var fracTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(53n), gtRaw]);
   var fracTok = await pki.cms.sign(fracTst, { cert: expTsa.cert, key: expTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [expScv2] }] });
   check("sub-ms genTime just past cert expiry -> tsp/untrusted-tsa (ceil not floor)", (await pki.tsp.verify(fracTok, DATA, { trustAnchor: expTsa.anchor })).code === "tsp/untrusted-tsa");
+  // symmetric boundary: a sub-ms genTime just BEFORE the cert's notBefore must not validate either --
+  // the ceil rounding must not lift it into the window. notBefore 2027-01-01T12:00:00Z; genTime .9999s.
+  var nbTsa = makeTsa(ekuExt([TS_EKU], true), { notBefore: new Date("2027-01-01T12:00:00Z"), notAfter: new Date("2035-01-01T00:00:00Z") });
+  var nbScv2 = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha256").update(nbTsa.cert).digest())])])]);
+  var nbRaw = Buffer.concat([Buffer.from([0x18, 0x14]), Buffer.from("20270101115959.9999Z", "latin1")]);   // 0.1ms before notBefore
+  var nbTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(56n), nbRaw]);
+  var nbTok = await pki.cms.sign(nbTst, { cert: nbTsa.cert, key: nbTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [nbScv2] }] });
+  check("sub-ms genTime just before cert notBefore -> tsp/untrusted-tsa", (await pki.tsp.verify(nbTok, DATA, { trustAnchor: nbTsa.anchor })).code === "tsp/untrusted-tsa");
   // a v1-only SigningCertificate (SHA-1) binding falls back to the legacy attribute and is refused as
   // a collision-weak identity pin (the SHA-2-only binding, round-tripped from the v2 preference).
   var v1OnlyTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(54n), b.generalizedTime(GENTIME)]);
