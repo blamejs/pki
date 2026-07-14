@@ -45,6 +45,9 @@ function makeSigner(alg, opts) {
     case "ec-p521": kp = crypto.generateKeyPairSync("ec", { namedCurve: "secp521r1" }); break;
     case "ed25519": kp = crypto.generateKeyPairSync("ed25519"); break;
     case "ed448": kp = crypto.generateKeyPairSync("ed448"); break;
+    case "ml-dsa-44": kp = crypto.generateKeyPairSync("ml-dsa-44"); break;   // SPKI OID is id-ml-dsa-44
+    case "ml-dsa-65": kp = crypto.generateKeyPairSync("ml-dsa-65"); break;
+    case "ml-dsa-87": kp = crypto.generateKeyPairSync("ml-dsa-87"); break;
     default: throw new Error("makeSigner: unknown algorithm " + alg);
   }
   var spki = kp.publicKey.export({ format: "der", type: "spki" });

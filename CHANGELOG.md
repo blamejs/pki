@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.16 — 2026-07-14
+
+Post-quantum ML-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with ML-DSA-44/65/87 (RFC 9882), freely mixed with the classical signers in one message.
+
+### Added
+
+- pki.cms.sign and pki.cms.verify sign and verify a CMS SignedData with the post-quantum ML-DSA-44, ML-DSA-65, and ML-DSA-87 (RFC 9882): pure mode, empty context, AlgorithmIdentifier parameters absent, over attached or detached content and single or multiple signers -- freely mixed with RSA, RSASSA-PSS, ECDSA, and EdDSA signers in one message. The signer identifier is issuerAndSerialNumber or subjectKeyIdentifier, and the output is a DER Buffer or PEM.
+- The CMS message-digest algorithm for an ML-DSA signer is held to the parameter set's security strength (RFC 9882 section 3.3): SHA-512 by default and SHAKE256 optional, with SHA-256 accepted only for ML-DSA-44. A below-strength digest is refused fail-closed on both signing and verification, so a weak message digest cannot cap the collision resistance of a strong ML-DSA signature.
+
+### Changed
+
+- CMS signature verification now requires a one-shot signer (EdDSA or ML-DSA, where a single algorithm identifier names both the key and the signature) to present a signer certificate whose public-key algorithm matches the SignerInfo signatureAlgorithm; a disagreement fails closed with a typed error rather than surfacing an opaque import failure.
+
 ## v0.2.15 — 2026-07-13
 
 CMS SignedData signing arrives as pki.cms.sign, and RFC 3161 timestamp token creation as pki.tsp.sign -- the producing sides of the CMS and timestamp verifiers, emitting exactly what pki.cms.verify and OpenSSL cms -verify accept.
