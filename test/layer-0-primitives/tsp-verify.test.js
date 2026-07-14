@@ -360,6 +360,31 @@ async function testTspCoverage() {
   check("cert-less token with out-of-band opts.certs verifies", (await pki.tsp.verify(certlessTok, DATA, { certs: [tsa.cert] })).valid === true);
   await rejects("opts.certs not an array -> tsp/bad-input", function () { return pki.tsp.verify(certlessTok, DATA, { certs: tsa.cert }); }, "tsp/bad-input");
   await rejects("opts.certs with a non-Buffer element -> tsp/bad-input (never silently dropped)", function () { return pki.tsp.verify(certlessTok, DATA, { certs: [42] }); }, "tsp/bad-input");
+  // a token carrying BOTH the legacy SigningCertificate (SHA-1) and the RFC 5816 SigningCertificateV2
+  // (SHA-2) attributes must bind via the SHA-2 attribute -- the SHA-1 one sorts first but is refused.
+  var v1scv = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha1").update(tsa.cert).digest())])])]);
+  var dualTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(52n), b.generalizedTime(GENTIME)]);
+  var dualTok = await pki.cms.sign(dualTst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificate", values: [v1scv] }, { type: "signingCertificateV2", values: [scv2] }] });
+  check("token with SigningCertificate (SHA-1) + V2 (SHA-2) -> prefers V2 -> verifies", (await pki.tsp.verify(dualTok, DATA, {})).valid === true);
+  // a sub-millisecond genTime minted just after the TSA cert's notAfter must NOT validate: the path
+  // time is the ceil of genTime, not the floor (else the token slips inside the expired window).
+  var expTsa = makeTsa(ekuExt([TS_EKU], true), { notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T12:00:00Z") });
+  var expScv2 = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha256").update(expTsa.cert).digest())])])]);
+  var gtRaw = Buffer.concat([Buffer.from([0x18, 0x14]), Buffer.from("20270101120000.0001Z", "latin1")]);   // genTime 0.1ms past notAfter
+  var fracTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(53n), gtRaw]);
+  var fracTok = await pki.cms.sign(fracTst, { cert: expTsa.cert, key: expTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [expScv2] }] });
+  check("sub-ms genTime just past cert expiry -> tsp/untrusted-tsa (ceil not floor)", (await pki.tsp.verify(fracTok, DATA, { trustAnchor: expTsa.anchor })).code === "tsp/untrusted-tsa");
+  // a v1-only SigningCertificate (SHA-1) binding falls back to the legacy attribute and is refused as
+  // a collision-weak identity pin (the SHA-2-only binding, round-tripped from the v2 preference).
+  var v1OnlyTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(54n), b.generalizedTime(GENTIME)]);
+  var v1OnlyTok = await pki.cms.sign(v1OnlyTst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificate", values: [v1scv] }] });
+  check("v1-only SigningCertificate (SHA-1) binding -> tsp/unsupported-algorithm", (await pki.tsp.verify(v1OnlyTok, DATA, {})).code === "tsp/unsupported-algorithm");
+  // a genTime fraction that IS representable in milliseconds (.5) is not sub-millisecond, so no ceil
+  // is applied and a token well within validity verifies normally.
+  var gt5 = Buffer.concat([Buffer.from([0x18, 17]), Buffer.from("20270101000000.5Z", "latin1")]);
+  var frac5Tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(55n), gt5]);
+  var frac5Tok = await pki.cms.sign(frac5Tst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2] }] });
+  check("millisecond-representable genTime fraction (.5) -> no ceil, verifies", (await pki.tsp.verify(frac5Tok, DATA, { trustAnchor: tsa.anchor })).valid === true);
   // response: failInfo on a non-rejection status, and an unknown PKIFailureInfo name, fail closed.
   rejectsSync("response failInfo on status!=2 -> tsp/unexpected-failinfo", function () { return pki.tsp.response(null, { status: 3, failInfo: ["badAlg"] }); }, "tsp/unexpected-failinfo");
   rejectsSync("response unknown failInfo name -> tsp/bad-input", function () { return pki.tsp.response(null, { status: 2, failInfo: ["notARealBit"] }); }, "tsp/bad-input");
