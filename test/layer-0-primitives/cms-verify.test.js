@@ -488,11 +488,16 @@ async function testMlDsaVerify() {
   var m2 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
   m2.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // a non-NULL OCTET STRING
   check("R2 ML-DSA digestAlgorithm non-NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m2)));
-  // R14 -- an ML-DSA SignerInfo carrying a DER NULL digestAlgorithm parameter: RFC 9882 sec. 3.3
-  // requires the parameters OMITTED (stricter than the generic absent-or-NULL rule), so a NULL fails.
+  // R14 -- a SHA-2 ML-DSA digestAlgorithm (id-sha512) carrying a DER NULL parameter is ACCEPTED:
+  // RFC 9882 says signers omit it, but RFC 5754 requires a verifier to accept SHA-2 with absent OR NULL.
   var m14 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  m14.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- must be absent for ML-DSA
-  check("R14 ML-DSA digestAlgorithm DER NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m14)));
+  m14.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- accepted for SHA-2 (RFC 5754)
+  check("R14 ML-DSA sha512 digestAlgorithm DER NULL parameter -> accepted (RFC 5754)", (await pki.cms.verify(m14)).valid === true);
+  // R14b -- a SHAKE256 ML-DSA digestAlgorithm with a present parameter (even DER NULL) is REJECTED:
+  // RFC 8702 sec. 3.1 requires the SHAKE parameters absent, with no NULL exception.
+  var m14b = pki.schema.cms.parse(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })));
+  m14b.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- forbidden for SHAKE256
+  check("R14b ML-DSA shake256 digestAlgorithm NULL parameter -> unsupported (RFC 8702)", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m14b)));
   // R8 -- an unwired message digest (SHA3-512) with signed attributes present.
   var m8 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
   m8.signerInfos[0].digestAlgorithm.name = "sha3-512";
