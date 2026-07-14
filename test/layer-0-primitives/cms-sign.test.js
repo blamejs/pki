@@ -204,6 +204,10 @@ async function testSchemeAndInputs() {
   var pemBuf = Buffer.from(pki.schema.x509.pemEncode(s2.cert, "CERTIFICATE"));
   var pb = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: pemBuf, key: s2.key }));
   check("PEM certificate as a Buffer -> verifies", pb.valid === true);
+  // a certificate as a Uint8Array of PEM bytes is DECODED to DER (not embedded as PEM text).
+  var pemU8 = new Uint8Array(pemBuf);
+  var pu8out = await pki.cms.sign(CONTENT, { cert: pemU8, key: s2.key });
+  check("Uint8Array PEM cert -> verifies + embeds DER (0x30), not PEM", (await pki.cms.verify(pu8out)).valid === true && pki.schema.cms.parse(pu8out).certificates[0].bytes[0] === 0x30);
 
   // a v1 signer certificate (no version field -> issuer at a different tbs index).
   var v1 = _v1Signer();

@@ -88,6 +88,17 @@ async function testPassthrough() {
   check("TSA cert as PEM -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: certPem, key: tsa.key }, { policy: "1.2.3", serialNumber: 7 }))).valid === true);
   check("TSA cert as Uint8Array -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: new Uint8Array(tsa.cert), key: tsa.key }, { policy: "1.2.3", serialNumber: 8 }))).valid === true);
   check("TSA cert as a PEM Buffer -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: Buffer.from(certPem), key: tsa.key }, { policy: "1.2.3", serialNumber: 9 }))).valid === true);
+
+  // a TSA cert as a Uint8Array of PEM bytes: the ESSCertIDv2 certHash is over the DECODED DER
+  // certificate (matching the embedded cert), never the PEM text.
+  var tok = await pki.tsp.sign(imprint("sha256"), { cert: new Uint8Array(Buffer.from(certPem)), key: tsa.key }, { policy: "1.2.3", serialNumber: 10 });
+  var parsed = pki.schema.cms.parse(tok);
+  var embedded = parsed.certificates[0].bytes;
+  var scAttr = parsed.signerInfos[0].signedAttrs.filter(function (a) { return a.type === pki.oid.byName("signingCertificateV2"); })[0];
+  var scDer = pki.asn1.decode(scAttr.values[0]);
+  var certHash = pki.asn1.read.octetString(scDer.children[0].children[0].children[0]);
+  var expected = crypto.createHash("sha256").update(embedded).digest();
+  check("Uint8Array PEM TSA cert -> ESSCertIDv2 certHash matches the embedded DER cert", Buffer.compare(certHash, expected) === 0);
 }
 
 // ---- config-time misuse fails closed with a typed tsp/* error ----
@@ -112,6 +123,8 @@ async function testBadInput() {
   await rejects("Accuracy seconds negative", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { seconds: -1 } }); }, "tsp/bad-input");
   await rejects("no options at all", function () { return pki.tsp.sign(imprint("sha256"), tsa); }, "tsp/bad-input");
   await rejects("a null messageImprint", function () { return pki.tsp.sign(null, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
+  await rejects("an invalid genTime Date", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: new Date("not a date") }); }, "tsp/bad-input");
+  await rejects("a non-Date genTime", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: "2026-01-01" }); }, "tsp/bad-input");
 }
 
 async function run() {

@@ -304,13 +304,22 @@ module.exports = {
         var content = Buffer.from("pki.cms.sign cross-implementation content");
         var contentPath = ctx.tmpFile(content, "content.bin");
         // Every signer key algorithm the primitive advertises must round-trip through openssl.
+        // Ed25519/Ed448 CMS support depends on the OpenSSL build, so those are gated on the
+        // signature-algorithm capability probe and SKIPPED (never failed) where absent -- the
+        // output still round-trips through pki.cms.verify (proven in cms-sign.test.js).
         var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448"];
+        var edCapable = { ed25519: ctx.opensslSupports("ED25519"), ed448: ctx.opensslSupports("ED448") };
         for (var i = 0; i < algs.length; i++) {
-          var signer = makeSigner(algs[i]);
+          var alg = algs[i];
+          if ((alg === "ed25519" || alg === "ed448") && !edCapable[alg]) {
+            ctx.skip("openssl in this environment does not support " + alg + " CMS (our output round-trips through pki.cms.verify)");
+            continue;
+          }
+          var signer = makeSigner(alg);
           var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
           var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
           var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
-          ctx.check("openssl cms -verify accepts our " + algs[i] + " SignedData", a.code === 0);
+          ctx.check("openssl cms -verify accepts our " + alg + " SignedData", a.code === 0);
         }
         // detached content + a negative (tampered content must be rejected), on ec-p256.
         var s = makeSigner("ec-p256");
