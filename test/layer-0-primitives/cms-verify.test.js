@@ -488,6 +488,11 @@ async function testMlDsaVerify() {
   var m2 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
   m2.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // a non-NULL OCTET STRING
   check("R2 ML-DSA digestAlgorithm non-NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m2)));
+  // R14 -- an ML-DSA SignerInfo carrying a DER NULL digestAlgorithm parameter: RFC 9882 sec. 3.3
+  // requires the parameters OMITTED (stricter than the generic absent-or-NULL rule), so a NULL fails.
+  var m14 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  m14.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- must be absent for ML-DSA
+  check("R14 ML-DSA digestAlgorithm DER NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m14)));
   // R8 -- an unwired message digest (SHA3-512) with signed attributes present.
   var m8 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
   m8.signerInfos[0].digestAlgorithm.name = "sha3-512";

@@ -301,6 +301,11 @@ async function testMlDsa() {
   // R10 -- no-signed-attrs generation MUST emit digestAlgorithm = SHA-512 (RFC 9882 sec. 3.3).
   var r10 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
   check("R10 no-attrs digestAlgorithm == sha512 params-absent", r10.signerInfos[0].digestAlgorithm.name === "sha512" && r10.signerInfos[0].digestAlgorithm.parameters == null);
+  // R13 -- no-attrs signing MUST emit SHA-512 even when the caller requests another suitable digest
+  // (RFC 9882 sec. 3.3: without signed attributes the digestAlgorithm has no meaning, so the signer
+  // forces the interoperable SHA-512 rather than carry a value a strict peer would reject).
+  var r13 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" }), { signedAttributes: false }));
+  check("R13 no-attrs ML-DSA forces sha512 digestAlgorithm", r13.signerInfos[0].digestAlgorithm.name === "sha512");
   // R12 (sign side, Q1 = ENFORCE) -- a below-strength digest for the parameter set is refused at
   // config time: SHA-256 (128-bit) under ML-DSA-87 (lambda 256) / ML-DSA-65 (lambda 192).
   await rejects("R12 ML-DSA-87 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-87"), { digestAlgorithm: "sha256" })); }, "cms/unsupported-algorithm");
