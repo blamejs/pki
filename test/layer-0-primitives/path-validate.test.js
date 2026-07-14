@@ -780,6 +780,21 @@ async function testSignatureAndInputEdges() {
   var res28 = await run([zeroSig], { time: T2027, trustAnchor: anchorEc });
   check("r=0,s=0 ECDSA signature rejected", res28.valid === false && failCodes(res28).indexOf("path/bad-signature") !== -1);
 
+  // the EdDSA analogue: a low-order issuer key verifies a matching low-order signature as TRUE for
+  // EVERY message -- a trivial forgery node/OpenSSL import without complaint. With the issuer key
+  // the identity point (0,1) and the signature R=identity, S=0, the verification equation
+  // [S]B == R + H(..)*A collapses to identity == identity regardless of the signed bytes. The
+  // issuer point MUST be rejected before verify, so the forged path is refused, not accepted.
+  var ID_POINT = Buffer.concat([Buffer.from([1]), Buffer.alloc(31)]);   // (0,1) encoded little-endian
+  var loAnchor = await mkAnchor("ed25519", "LoRoot");
+  loAnchor.publicKey = b.sequence([b.sequence([b.oid(pki.oid.byName("Ed25519"))]), b.bitString(ID_POINT, 0)]);
+  var loLeaf = await mkCert({
+    subject: "LoLeaf", issuer: "LoRoot", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    mutateSig: function () { return Buffer.concat([ID_POINT, Buffer.alloc(32)]); },   // R=identity, S=0
+  });
+  var resLo = await run([loLeaf], { time: T2027, trustAnchor: loAnchor });
+  check("low-order EdDSA issuer key rejected before verify", resLo.valid === false && failCodes(resLo).indexOf("path/bad-signature") !== -1);
+
   // an embedded NUL in a constrained name never truncates the
   // comparison (CVE-2009-2408): either the parse layer refuses the name or
   // the validator refuses the match — never valid:true.

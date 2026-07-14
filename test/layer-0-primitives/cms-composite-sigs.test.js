@@ -118,6 +118,31 @@ async function testEcdsaOrderBound() {
   check("ECDSA s == n -> cms/bad-signature (the [1,n-1] belt)", res.code === "cms/bad-signature");
 }
 
+// ---- reject: a low-order EdDSA traditional component (the CVE class every other EdDSA verify
+// path in the toolkit already gates -- cms.verify, path.validate). node/OpenSSL imports an
+// all-zeroes (on-curve, low-order) Ed25519 key without complaint and it can verify a forged
+// component; leaving that unchecked collapses the composite AND to ML-DSA-only. The shared
+// edwards-point.validate gate must reject the point before verify, exactly as the ECDSA
+// order-bound belt above surfaces a coded fault rather than a silent false.
+async function testEddsaLowOrder() {
+  var s = makeCompositeSigner("id-MLDSA65-Ed25519-SHA512");
+  var d = s.comp;
+  var msg = Buffer.from("preimage for the composite EdDSA low-order vector");
+  var sig = await compositeSig.compositeSign(d, s.key, msg);
+  // Sanity: the untampered composite (full-order Ed25519 component) verifies.
+  var good = await compositeSig.compositeVerify(s.spki, sig, msg, d, CmsError, "cms/unsupported-algorithm", "cms/bad-signature");
+  check("eddsa low-order base: valid composite verifies", good.ok === true);
+  // Forge the SPKI: keep the ML-DSA half, replace the 32-byte Ed25519 traditional half with an
+  // all-zeroes low-order point. The ML-DSA component still verifies, isolating the trad gate.
+  var rawKey = pki.asn1.read.bitString(pki.asn1.decode(s.spki).children[1]).bytes;
+  var mldsaPK = Buffer.from(rawKey.subarray(0, d.mldsaPk));
+  var forgedSpki = b.sequence([b.sequence([b.oid(pki.oid.byName("id-MLDSA65-Ed25519-SHA512"))]),
+    b.bitString(Buffer.concat([mldsaPK, Buffer.alloc(32)]), 0)]);
+  var res = await compositeSig.compositeVerify(forgedSpki, sig, msg, d, CmsError, "cms/unsupported-algorithm", "cms/bad-signature");
+  check("composite EdDSA low-order point -> rejected", res.ok === false);
+  check("composite EdDSA low-order point -> cms/bad-signature (rejected before verify)", res.code === "cms/bad-signature");
+}
+
 // ---- reject: a composite key/signature shorter than the fixed ML-DSA component ----
 async function testBadSplitLength() {
   var s = makeCompositeSigner("id-MLDSA65-ECDSA-P256-SHA512");
@@ -264,6 +289,7 @@ async function run() {
   await testMultiSigner();
   await testAndDowngrade();
   await testEcdsaOrderBound();
+  await testEddsaLowOrder();
   await testBadSplitLength();
   await testDigestCoherence();
   await testParamsPresent();
