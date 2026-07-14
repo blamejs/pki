@@ -645,6 +645,22 @@ async function testChainAndBindings() {
   var dosAnchorP = pki.schema.x509.parse(signedCert("MRoot", "MRoot", dosAnchorKp, dosAnchorKp, [bcCA]));
   var dosAnchor = { name: dosAnchorP.subject, publicKey: dosAnchorP.subjectPublicKeyInfo.bytes, algorithm: dosAnchorP.signatureAlgorithm.oid };
   check("interlinked same-subject certs stay bounded -> verdict (MAX_TSA_CHAINS)", (await pki.tsp.verify(dosTok, DATA, { trustAnchor: dosAnchor, certs: dosCerts })).valid === false);
+
+  // a keyUsage asserting a signing bit but encoded as a NON-minimal NamedBitList (a trailing zero
+  // byte) is malformed DER -- the X.690 sec. 11.2.2 minimal rule the shared decoder applies must not
+  // be bypassed by the generic BIT STRING reader.
+  var nonMinKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), false, b.bitString(Buffer.from([0x80, 0x00]), 0))]);
+  check("non-minimal keyUsage NamedBitList -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(nonMinKuTsa), DATA, {})).code === "tsp/bad-key-usage");
+
+  // a subjectAltName encoded as a SET (not a SEQUENCE OF GeneralName) must not contribute a tsa
+  // identity, even carrying a byte-equal GeneralName -- the wrapper must be a universal SEQUENCE.
+  var setSanTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("subjectAltName"), false, b.set([b.contextConstructed(4, certName("AltTSA"))]))]);
+  function setSanTok() {
+    var scv = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha256").update(setSanTsa.cert).digest())])])]);
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(74n), b.generalizedTime(GENTIME), b.explicit(0, b.contextConstructed(4, certName("AltTSA")))]);
+    return pki.cms.sign(tst, { cert: setSanTsa.cert, key: setSanTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
+  }
+  check("subjectAltName wrapped in a SET (not SEQUENCE) -> tsp/tsa-mismatch", (await pki.tsp.verify(await setSanTok(), DATA, {})).code === "tsp/tsa-mismatch");
 }
 
 async function run() {
