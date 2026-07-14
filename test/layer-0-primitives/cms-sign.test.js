@@ -136,6 +136,15 @@ async function testOutputForms() {
   var fromCk = await pki.cms.verify(await pki.cms.sign(CONTENT, { cert: s2.cert, key: ck }));
   check("CryptoKey signer key -> verifies", fromCk.valid === true);
 
+  // a pre-imported CryptoKey whose algorithm disagrees with the certificate is rejected -- the
+  // baked-in hash / curve / algorithm must match the resolved signing scheme (fail closed).
+  var rk = makeSigner("rsa");
+  var ckHash = await pki.webcrypto.subtle.importKey("pkcs8", rk.key, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-512" }, false, ["sign"]);
+  await rejects("CryptoKey hash mismatching the digest", function () { return pki.cms.sign(CONTENT, { cert: rk.cert, key: ckHash }); }, "cms/bad-input");
+  var ckCurve = await pki.webcrypto.subtle.importKey("pkcs8", makeSigner("ec-p384").key, { name: "ECDSA", namedCurve: "P-384" }, false, ["sign"]);
+  await rejects("CryptoKey curve mismatching the certificate", function () { return pki.cms.sign(CONTENT, { cert: makeSigner("ec-p256").cert, key: ckCurve }); }, "cms/bad-input");
+  await rejects("CryptoKey algorithm mismatching the certificate", function () { return pki.cms.sign(CONTENT, { cert: rk.cert, key: ck }); }, "cms/bad-input");
+
   // a PEM certificate + a PEM PKCS#8 key.
   var s3 = makeSigner("ec-p256");
   var certPem = pki.schema.x509.pemEncode(s3.cert, "CERTIFICATE");
