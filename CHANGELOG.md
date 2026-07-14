@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.15 — 2026-07-13
+
+CMS SignedData signing arrives as pki.cms.sign, and RFC 3161 timestamp token creation as pki.tsp.sign -- the producing sides of the CMS and timestamp verifiers, emitting exactly what pki.cms.verify and OpenSSL cms -verify accept.
+
+### Added
+
+- pki.cms.sign(content, signers, opts) produces a CMS SignedData (RFC 5652 section 5): attached or detached content, one or many signers, RSA (PKCS#1 v1.5 and, with opts.pss, RSASSA-PSS), ECDSA (P-256/384/521), Ed25519, and Ed448. Each signer is { cert, key } (a PEM/DER certificate and a WebCrypto CryptoKey or PKCS#8 key); the signed attributes (content-type, message-digest, signing-time, plus opts.additionalSignedAttributes) are canonical DER and the signature covers the exact section 5.4 preimage. opts selects detached content, the encapsulated content type, the signer identifier (issuerAndSerialNumber or subjectKeyIdentifier), certificate embedding, and DER or PEM output.
+- pki.tsp.sign(messageImprint, tsa, opts) creates an RFC 3161 TimeStampToken over a message imprint ({ hashAlgorithm, hashedMessage }): a CMS SignedData whose content is a TSTInfo carrying the imprint, the TSA policy, a serial number, and genTime, with optional accuracy, nonce, and ordering, and the RFC 3161 section 2.4.2 / RFC 5816 signing-certificate (ESSCertIDv2) attribute binding the token to the TSA certificate. It composes pki.cms.sign, so any supported TSA key algorithm works.
+
 ## v0.2.14 — 2026-07-13
 
 CMS SignedData signature verification arrives as pki.cms.verify -- verifying a signed message (S/MIME, timestamps, code signing) over the exact RFC 5652 preimage, for attached and detached content, one or many signers, across RSA, RSASSA-PSS, ECDSA, and EdDSA.

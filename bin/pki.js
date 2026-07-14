@@ -15,11 +15,13 @@
  *              [--label LABEL]
  *   pki verify <cert>... --anchor <cert>  validate an ordered certification path (anchor->target)
  *              [--time ISO]
+ *   pki sign <file> --cert <c> --key <k>  produce a CMS SignedData over the file (pki.cms.sign)
+ *              [--detached] [--pss] [--digest D] [--pem] [--out F]
  *
  * The CLI is a thin operator convenience over the library surface: it validates its
  * arguments (entry-point tier — bad input exits non-zero with a message) and never does
- * anything the public API cannot. inspect / lint / convert / verify compose pki.inspect,
- * pki.lint, the per-format PEM codecs, and pki.path.validate respectively.
+ * anything the public API cannot. inspect / lint / convert / verify / sign compose pki.inspect,
+ * pki.lint, the per-format PEM codecs, pki.path.validate, and pki.cms.sign respectively.
  */
 
 var fs  = require("node:fs");
@@ -34,7 +36,7 @@ function fail(msg) {
 // rest are positionals in `_`. A value-taking flag whose value is absent or is itself another
 // flag is a usage error (never silently coerced to `true`, which would make e.g. `--time`
 // parse as `new Date(true)` = a real 1970 timestamp). No clustering, no `=value`.
-var VALUE_FLAGS = { to: 1, profile: 1, severity: 1, label: 1, anchor: 1, time: 1 };
+var VALUE_FLAGS = { to: 1, profile: 1, severity: 1, label: 1, anchor: 1, time: 1, cert: 1, key: 1, digest: 1, out: 1 };
 function parseArgs(argv) {
   var out = { _: [] };
   for (var i = 0; i < argv.length; i++) {
@@ -200,7 +202,28 @@ function cmdVerify(args) {
   }, function (e) { return fail(e.code + ": " + e.message); });
 }
 
-var USAGE = "usage: pki <version|oid|parse|inspect|lint|convert|verify> [args]\n";
+// pki sign <content-file> --cert <cert> --key <key> -- produce a CMS SignedData over the file
+// via pki.cms.sign. The signer key is a PKCS#8 DER or PEM private key; the certificate is DER or
+// PEM. Output is a DER Buffer (or a PEM block with --pem) to --out or stdout.
+function cmdSign(args) {
+  var contentFile = args._[0];
+  if (!contentFile || !args.cert || !args.key) {
+    return fail("usage: pki sign <content-file> --cert <cert> --key <key.pkcs8> [--detached] [--pss] [--digest sha256|sha384|sha512] [--pem] [--out <file>]");
+  }
+  var content = readFileBytes(contentFile);
+  var signer = { cert: _asPemOrDer(readFileBytes(args.cert)), key: _asPemOrDer(readFileBytes(args.key)) };
+  if (args.pss) signer.pss = true;
+  if (args.digest) signer.digestAlgorithm = args.digest;
+  return pki.cms.sign(content, signer, { detached: !!args.detached, pem: !!args.pem }).then(function (out) {
+    if (args.out) { try { fs.writeFileSync(args.out, out); } catch (e) { return fail("cannot write " + args.out + ": " + e.message); } }
+    else { process.stdout.write(out); }   // process.exitCode (0) lets Node flush a piped stdout
+  }, function (e) { return fail((e.code || "cms/sign-error") + ": " + e.message); });
+}
+// A PEM file (its first byte is '-') is passed to pki.cms.sign as a string; a DER file as its
+// Buffer. cms.sign accepts either for the certificate and needs a string for a PEM private key.
+function _asPemOrDer(buf) { return buf[0] === 0x2d ? buf.toString("latin1") : buf; }
+
+var USAGE = "usage: pki <version|oid|parse|inspect|lint|convert|verify|sign> [args]\n";
 
 function main(argv) {
   var cmd = argv[0];
@@ -212,6 +235,7 @@ function main(argv) {
     case "lint":    return cmdLint(parseArgs(argv.slice(1)));
     case "convert": return cmdConvert(parseArgs(argv.slice(1)));
     case "verify":  return cmdVerify(parseArgs(argv.slice(1)));
+    case "sign":    return cmdSign(parseArgs(argv.slice(1)));
     case undefined: case "help": case "--help": case "-h":
       process.stdout.write(USAGE);
       return;

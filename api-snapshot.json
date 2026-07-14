@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.14",
+  "packageVersion": "0.2.15",
   "surface": {
     "C": {
       "kind": "object",
@@ -1031,6 +1031,10 @@
     "cms": {
       "kind": "object",
       "members": {
+        "sign": {
+          "kind": "function",
+          "arity": 3
+        },
         "verify": {
           "kind": "function",
           "arity": 2
@@ -2558,6 +2562,15 @@
         }
       }
     },
+    "tsp": {
+      "kind": "object",
+      "members": {
+        "sign": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
     "version": {
       "kind": "string"
     },
@@ -2642,6 +2655,7 @@
     "pki.cbor.read.time": "0.1.27",
     "pki.cbor.read.oid": "0.1.27",
     "pki.cms.verify": "0.2.14",
+    "pki.cms.sign": "0.2.15",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.ct.parseSctList": "0.1.20",
@@ -2736,6 +2750,7 @@
     "pki.trust.parseCertdata": "0.2.0",
     "pki.trust.parseCcadbCsv": "0.2.0",
     "pki.trust.anchor": "0.2.0",
+    "pki.tsp.sign": "0.2.15",
     "pki.webauthn.parseAttestationObject": "0.2.5",
     "pki.webauthn.verify": "0.2.5",
     "pki.webcrypto.CryptoKey": "0.1.0",

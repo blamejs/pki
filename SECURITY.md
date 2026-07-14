@@ -315,7 +315,12 @@ security-only patches after the next major releases.
   can verify a forged signature, is rejected. A false verdict or an unresolved parameter
   is a fail-closed `cms/*` outcome, never a silent pass; the signer certificate is located
   but deliberately not chained to a trust anchor, which remains the caller's explicit
-  `pki.path.validate` step.
+  `pki.path.validate` step. The producing side (`pki.cms.sign`, and `pki.tsp.sign` over it)
+  emits exactly the shapes the verifier checks — canonical DER signed attributes, the same
+  algorithm-parameter forms (NULL for RSA, absent for ECDSA/EdDSA, the RSASSA-PSS params), and
+  ECDSA signatures re-encoded to canonical DER through the shared `validator.sig` gate — so a
+  token this toolkit signs cannot desynchronize from what it (or OpenSSL) verifies, and the
+  signer's private key is only ever handed to the WebCrypto sign call, never logged or embedded.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,

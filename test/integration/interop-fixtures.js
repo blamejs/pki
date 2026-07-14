@@ -294,4 +294,60 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.cms.sign : a SignedData we produce verifies under `openssl cms` --------
+  "pki.cms.sign": [
+    {
+      desc: "a SignedData we sign verifies under `openssl cms -verify` across RSA / RSASSA-PSS / ECDSA / Ed25519 / Ed448 (attached + detached); openssl REJECTS a tampered copy",
+      run: async function (ctx) {
+        var makeSigner = require("../helpers/signing").makeSigner;
+        var content = Buffer.from("pki.cms.sign cross-implementation content");
+        var contentPath = ctx.tmpFile(content, "content.bin");
+        // Every signer key algorithm the primitive advertises must round-trip through openssl.
+        // EdDSA is the exception: `openssl list -signature-algorithms` advertises ED25519/ED448 on
+        // builds whose `openssl cms` still rejects them ("invalid digest" on 3.0.x), so a
+        // signature-algorithm probe is not a reliable CMS-capability gate. Instead the actual
+        // `openssl cms -verify` result IS the probe -- RSA/ECDSA/PSS MUST verify (a real failure),
+        // while an EdDSA case that openssl's CMS cannot verify is SKIPPED (never failed); the output
+        // still round-trips through pki.cms.verify (proven in cms-sign.test.js).
+        var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448"];
+        for (var i = 0; i < algs.length; i++) {
+          var alg = algs[i];
+          var signer = makeSigner(alg);
+          var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
+          var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
+          var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
+          if (a.code !== 0 && (alg === "ed25519" || alg === "ed448")) {
+            ctx.skip("openssl cms -verify in this environment does not verify " + alg + " CMS (our output round-trips through pki.cms.verify)");
+            continue;
+          }
+          ctx.check("openssl cms -verify accepts our " + alg + " SignedData", a.code === 0);
+        }
+        // detached content + a negative (tampered content must be rejected), on ec-p256.
+        var s = makeSigner("ec-p256");
+        var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(s.cert, "CERTIFICATE"), "cert.pem");
+        var det = ctx.tmpFile(await ctx.pki.cms.sign(content, s, { detached: true }), "det.der");
+        var d = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", det, "-content", contentPath, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl cms -verify accepts our detached SignedData over the content", d.code === 0);
+        var wrong = ctx.tmpFile(Buffer.from("an entirely different content"), "wrong.bin");
+        var t = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", det, "-content", wrong, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl rejects our detached signature over tampered content", t.code !== 0);
+      },
+    },
+  ],
+
+  // ---- pki.tsp.sign : an RFC 3161 timestamp token we create verifies under openssl --
+  "pki.tsp.sign": [
+    {
+      desc: "a timestamp token we create verifies its CMS signature under `openssl cms -verify`",
+      run: async function (ctx) {
+        var signer = require("../helpers/signing").makeSigner("ec-p256");
+        var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
+        var imprint = { hashAlgorithm: "sha256", hashedMessage: require("node:crypto").createHash("sha256").update("timestamped document").digest() };
+        var token = ctx.tmpFile(await ctx.pki.tsp.sign(imprint, signer, { policy: "1.3.6.1.4.1.1", serialNumber: 1, nonce: 42 }), "token.der");
+        var r = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", token, "-certfile", certPath], { allowNonZero: true });
+        ctx.check("openssl cms -verify accepts our timestamp token's signature", r.code === 0);
+      },
+    },
+  ],
 };

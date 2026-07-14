@@ -54,6 +54,20 @@ function run() {
   // A constructed r (an empty SEQUENCE where a primitive INTEGER is required) is rejected.
   check("constructed r (SEQUENCE in r's slot) -> rejected", code(function () { sig.ecdsaSigToRaw(H("3006" + "3000" + "020105"), 32, E, CODE); }) === CODE);
   check("empty input -> rejected", code(function () { sig.ecdsaSigToRaw(H(""), 32, E, CODE); }) === CODE);
+
+  // --- rawToEcdsaDer: the inverse (raw r||s -> canonical DER), round-trip identity ---
+  var rawIn = Buffer.concat([H(rHex), H(sHex)]);   // 64-byte raw r||s
+  var derOut = sig.rawToEcdsaDer(rawIn, 32);
+  check("rawToEcdsaDer emits a DER SEQUENCE", derOut[0] === 0x30);
+  check("rawToEcdsaDer -> ecdsaSigToRaw round-trips to identity", Buffer.compare(sig.ecdsaSigToRaw(derOut, 32, E, CODE), rawIn) === 0);
+  // A coordinate whose high bit is set gets a leading 0x00 in DER and is stripped back on read.
+  var hi = Buffer.concat([H("ff" + "00".repeat(31)), H("80" + "11".repeat(31))]);
+  check("rawToEcdsaDer round-trips a high-bit coordinate", Buffer.compare(sig.ecdsaSigToRaw(sig.rawToEcdsaDer(hi, 32), 32, E, CODE), hi) === 0);
+  // config-time TypeError on a mis-sized / non-Buffer raw signature.
+  var t1 = false; try { sig.rawToEcdsaDer(rawIn, 48); } catch (e) { t1 = e instanceof TypeError; }
+  check("rawToEcdsaDer rejects a wrong-length raw sig (TypeError)", t1);
+  var t2 = false; try { sig.rawToEcdsaDer("notbuf", 32); } catch (e) { t2 = e instanceof TypeError; }
+  check("rawToEcdsaDer rejects a non-Buffer raw sig (TypeError)", t2);
 }
 
 module.exports = { run: run };
