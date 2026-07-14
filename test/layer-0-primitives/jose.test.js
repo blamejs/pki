@@ -65,6 +65,17 @@ async function testJws() {
   var edJwk = await subtle.exportKey("jwk", ed.publicKey);
   var edJws = await pki.jose.sign({ protected: outerHeader({ alg: "EdDSA", jwk: edJwk }), payload: Buffer.from("{}"), key: ed.privateKey });
   check("28. EdDSA round-trip", (await pki.jose.verify(edJws, OUTER)).header.alg === "EdDSA");
+  // 28a. a low-order OKP jwk (the identity point) with a forged signature (R=identity, S=0) would
+  // verify TRUE for every message against that bad key -- node imports the key without complaint.
+  // The point MUST be rejected before verify, the same gate every EdDSA verify path applies.
+  var idPoint = Buffer.concat([Buffer.from([1]), Buffer.alloc(31)]);   // (0,1), a low-order Ed25519 point
+  var loJwk = { kty: "OKP", crv: "Ed25519", x: pki.jose.base64url.encode(idPoint) };
+  var loJws = {
+    protected: pki.jose.base64url.encode(Buffer.from(JSON.stringify(outerHeader({ alg: "EdDSA", jwk: loJwk })))),
+    payload: pki.jose.base64url.encode(Buffer.from("{}")),
+    signature: pki.jose.base64url.encode(Buffer.concat([idPoint, Buffer.alloc(32)])),   // R=identity, S=0
+  };
+  check("28a. low-order OKP jwk rejected before verify", (await acode(function () { return pki.jose.verify(loJws, OUTER); })) === "jose/bad-key");
   // 28b. an EdDSA kid-signed request (no embedded jwk) must still sign -- the curve
   // comes from the signing key, not the absent header jwk.
   var edKidJws = await pki.jose.sign({ protected: { alg: "EdDSA", nonce: "aGVsbG8", url: "https://ca.example/o", kid: "https://ca.example/acct/1" }, payload: Buffer.from("{}"), key: ed.privateKey });

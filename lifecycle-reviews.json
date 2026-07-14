@@ -47,6 +47,12 @@
     "reviewedAt": "0.2.5",
     "reviewBy": "0.3.0"
   },
+  "pki.ct.verifySct": {
+    "decision": "keep-experimental",
+    "reason": "RFC 6962 sec. 3.2 SCT verification is settled in standard but not cross-implementation-interop-proven: the harness proves it via a self round-trip (real node crypto signs, verifySct verifies) and against real certificate SCT extensions, but no offline oracle signs an SCT for an independent cross-check, so the boolean/opts surface is not frozen. Graduate once the SCT-list encode/sign producing side and a production-CT-log SCT cross-check land.",
+    "reviewedAt": "0.2.18",
+    "reviewBy": "0.3.0"
+  },
   "pki.schema.smime.parseSigningCertificate": {
     "decision": "keep-experimental",
     "reason": "The RFC 5035 / RFC 8551 S/MIME ESS SigningCertificate decoder is not yet interop-proven: the openssl-cms oracle for the ESS signing-certificate attribute is available but no fixtures row is registered in the integration harness yet (auto-interop.test.js flags exactly this), so no independent implementation round-trips a structure it decodes. Graduate once an interop fixtures row exercises an ESS attribute through OpenSSL.",

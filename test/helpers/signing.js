@@ -11,8 +11,13 @@
 
 var crypto = require("node:crypto");
 var pki = require("../../index.js");
+var compositeSig = require("../../lib/composite-sig");
 var b = pki.asn1.build;
 function O(n) { return pki.oid.byName(n); }
+// The raw subjectPublicKey bytes (past the unused-bits octet) of an exported SPKI DER.
+function _rawSpkiKey(spkiDer) { return pki.asn1.read.bitString(pki.asn1.decode(spkiDer).children[1]).bytes; }
+// The node keygen type for an EC WebCrypto curve.
+var _EC_NODE_CURVE = { "P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1" };
 
 // A minimal X.509 certificate (v3) around `spki`, self-issued, with a dummy signature.
 // opts.ski adds a subjectKeyIdentifier extension; opts.serial / opts.cn override the defaults.
@@ -55,4 +60,35 @@ function makeSigner(alg, opts) {
   return { cert: minimalCert(spki, opts), key: kp.privateKey.export({ format: "der", type: "pkcs8" }), keyObject: kp.privateKey, spki: spki };
 }
 
-module.exports = { makeSigner: makeSigner, minimalCert: minimalCert };
+// makeCompositeSigner(arm, opts) -> { cert (DER), key: { mldsa, trad } (PKCS#8 DER pair), spki,
+// comp } for a composite ML-DSA arm (draft-ietf-lamps-pq-composite-sigs). Generates the two
+// component keypairs and builds a minimal signer cert whose SPKI carries the composite OID over the
+// raw mldsaPK || tradPK concatenation (sec. 4.1) -- the exact shape pki.cms.verify / pki.path.validate
+// split. The traditional public key is the uncompressed EC point, the raw EdDSA key, or the
+// RSAPublicKey DER, matching composite-sig's _verifyTradComponent SPKI wrappers.
+function makeCompositeSigner(arm, opts) {
+  var comp = compositeSig.COMPOSITE_ALGS[O(arm)];
+  if (!comp) throw new Error("makeCompositeSigner: unknown composite arm " + arm);
+  if (comp.trad.unsupported) throw new Error("makeCompositeSigner: " + arm + " is unsupported (" + comp.trad.unsupported + ")");
+  var mk = crypto.generateKeyPairSync(comp.mldsa.toLowerCase());   // "ML-DSA-65" -> node "ml-dsa-65"
+  var mldsaPK = _rawSpkiKey(mk.publicKey.export({ format: "der", type: "spki" }));
+  var tk, tradPK;
+  if (comp.trad.ec) {
+    tk = crypto.generateKeyPairSync("ec", { namedCurve: _EC_NODE_CURVE[comp.trad.ec] });
+    tradPK = _rawSpkiKey(tk.publicKey.export({ format: "der", type: "spki" }));   // uncompressed point (leading 0x04)
+  } else if (comp.trad.eddsa) {
+    tk = crypto.generateKeyPairSync(comp.trad.eddsa.toLowerCase());               // "Ed25519" -> "ed25519"
+    tradPK = _rawSpkiKey(tk.publicKey.export({ format: "der", type: "spki" }));
+  } else {
+    tk = crypto.generateKeyPairSync("rsa", { modulusLength: comp.trad.rsaBits });
+    tradPK = tk.publicKey.export({ format: "der", type: "pkcs1" });               // RSAPublicKey DER
+  }
+  var spki = b.sequence([b.sequence([b.oid(O(arm))]), b.bitString(Buffer.concat([mldsaPK, tradPK]), 0)]);
+  return {
+    cert: minimalCert(spki, opts),
+    key: { mldsa: mk.privateKey.export({ format: "der", type: "pkcs8" }), trad: tk.privateKey.export({ format: "der", type: "pkcs8" }) },
+    spki: spki, comp: comp,
+  };
+}
+
+module.exports = { makeSigner: makeSigner, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner };

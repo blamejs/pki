@@ -780,6 +780,21 @@ async function testSignatureAndInputEdges() {
   var res28 = await run([zeroSig], { time: T2027, trustAnchor: anchorEc });
   check("r=0,s=0 ECDSA signature rejected", res28.valid === false && failCodes(res28).indexOf("path/bad-signature") !== -1);
 
+  // the EdDSA analogue: a low-order issuer key verifies a matching low-order signature as TRUE for
+  // EVERY message -- a trivial forgery node/OpenSSL import without complaint. With the issuer key
+  // the identity point (0,1) and the signature R=identity, S=0, the verification equation
+  // [S]B == R + H(..)*A collapses to identity == identity regardless of the signed bytes. The
+  // issuer point MUST be rejected before verify, so the forged path is refused, not accepted.
+  var ID_POINT = Buffer.concat([Buffer.from([1]), Buffer.alloc(31)]);   // (0,1) encoded little-endian
+  var loAnchor = await mkAnchor("ed25519", "LoRoot");
+  loAnchor.publicKey = b.sequence([b.sequence([b.oid(pki.oid.byName("Ed25519"))]), b.bitString(ID_POINT, 0)]);
+  var loLeaf = await mkCert({
+    subject: "LoLeaf", issuer: "LoRoot", signWith: "ed25519", subjectKeys: "ed25519leaf",
+    mutateSig: function () { return Buffer.concat([ID_POINT, Buffer.alloc(32)]); },   // R=identity, S=0
+  });
+  var resLo = await run([loLeaf], { time: T2027, trustAnchor: loAnchor });
+  check("low-order EdDSA issuer key rejected before verify", resLo.valid === false && failCodes(resLo).indexOf("path/bad-signature") !== -1);
+
   // an embedded NUL in a constrained name never truncates the
   // comparison (CVE-2009-2408): either the parse layer refuses the name or
   // the validator refuses the match — never valid:true.
@@ -2253,6 +2268,18 @@ async function testOcspCheckerStandalone() {
   var p256Keys = await ensureKeys("p256");
   var o4b = await mkOcsp({ responderID: { byKeyOf: p256Keys.spki }, signWith: "p256", certs: [delegate], single: [goodSingle()] });
   check("O4b delegated responder byKey -> good", (await chk(o4b)).status === "good");
+
+  // O4c — a delegated responder whose SUBJECT key is a low-order Ed25519 point (the identity),
+  // legitimately issued by the CA. That low-order key verifies a forged response signature (the
+  // identity-point forgery, R=identity S=0, which verifies for every message) so an authorized
+  // responder could assert any status by forgery. The response-signature verify path validates the
+  // point first -- the revocation analogue of the certificate-path gate -- and refuses it, so the
+  // forged response yields unknown, never a forged good/revoked.
+  var ID_POINT = Buffer.concat([Buffer.from([1]), Buffer.alloc(31)]);   // (0,1), a low-order Ed25519 point
+  var loSpki = b.sequence([b.sequence([b.oid(pki.oid.byName("Ed25519"))]), b.bitString(ID_POINT, 0)]);
+  var loDelegate = await mkCert({ subject: "LoResponder", issuer: "Root", signWith: "ed25519", spki: loSpki, serial: 55n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
+  var oLo = await mkOcsp({ responderID: { byName: "LoResponder" }, signWith: "ed25519", certs: [loDelegate], single: [goodSingle()], mutateSig: function () { return Buffer.concat([ID_POINT, Buffer.alloc(32)]); } });
+  check("O4c low-order delegate responder key -> unknown (forged response refused)", (await chk(oLo)).status === "unknown");
 
   // O5 / O5b — revoked surfaces (or omits) the revocationReason.
   var o5 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });

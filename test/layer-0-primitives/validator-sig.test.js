@@ -13,6 +13,9 @@ var sig = require("../../lib/validator-sig");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
 var check = helpers.check;
+var bld = helpers.pki.asn1.build;
+// The NIST P-256 group order n; a valid ECDSA signature has r, s in [1, n-1] (CVE-2022-21449).
+var N_P256 = BigInt("0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
 
 // The caller's error class threads a cause (as WebauthnError does), so define with withCause.
 var TestError = errors.defineClass("TestError", { withCause: true });
@@ -68,6 +71,17 @@ function run() {
   check("rawToEcdsaDer rejects a wrong-length raw sig (TypeError)", t1);
   var t2 = false; try { sig.rawToEcdsaDer("notbuf", 32); } catch (e) { t2 = e instanceof TypeError; }
   check("rawToEcdsaDer rejects a non-Buffer raw sig (TypeError)", t2);
+
+  // --- ecdsaDerToP1363: the ORDER-aware [1, n-1] gate (CVE-2022-21449), relocated here so the
+  // composite-signature and certification-path ECDSA components share one home. Stricter than
+  // ecdsaSigToRaw: it also rejects r or s >= the curve ORDER n, which ecdsaSigToRaw does not know. ---
+  var okDer = bld.sequence([bld.integer(1n), bld.integer(2n)]);
+  check("ecdsaDerToP1363 valid (r,s in [1,n-1]) -> 64-byte raw", sig.ecdsaDerToP1363(okDer, "P-256", E, CODE).length === 64);
+  check("ecdsaDerToP1363 unsupported curve -> rejected", code(function () { sig.ecdsaDerToP1363(okDer, "P-999", E, CODE); }) === CODE);
+  check("ecdsaDerToP1363 s == 0 -> out of range", code(function () { sig.ecdsaDerToP1363(bld.sequence([bld.integer(1n), bld.integer(0n)]), "P-256", E, CODE); }) === CODE);
+  check("ecdsaDerToP1363 s == n (order) -> out of range (CVE-2022-21449 upper bound)", code(function () { sig.ecdsaDerToP1363(bld.sequence([bld.integer(1n), bld.integer(N_P256)]), "P-256", E, CODE); }) === CODE);
+  check("ecdsaDerToP1363 r == n (order) -> out of range", code(function () { sig.ecdsaDerToP1363(bld.sequence([bld.integer(N_P256), bld.integer(1n)]), "P-256", E, CODE); }) === CODE);
+  check("ecdsaDerToP1363 not a SEQUENCE(r,s) -> rejected", code(function () { sig.ecdsaDerToP1363(bld.sequence([bld.integer(1n)]), "P-256", E, CODE); }) === CODE);
 }
 
 module.exports = { run: run };
