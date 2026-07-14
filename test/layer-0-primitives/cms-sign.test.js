@@ -166,6 +166,8 @@ async function testBadInput() {
   await rejects("signer without a cert", function () { return pki.cms.sign(CONTENT, { key: s.key }); }, "cms/bad-input");
   await rejects("signer cert a bad type", function () { return pki.cms.sign(CONTENT, { cert: 12345, key: s.key }); }, "cms/bad-input");
   await rejects("signer key a bad type", function () { return pki.cms.sign(CONTENT, { cert: s.cert, key: 12345 }); }, "cms/bad-input");
+  await rejects("an invalid signingTime Date", function () { return pki.cms.sign(CONTENT, s, { signingTime: new Date("not a date") }); }, "cms/bad-input");
+  await rejects("a non-Date signingTime", function () { return pki.cms.sign(CONTENT, s, { signingTime: "2026-01-01" }); }, "cms/bad-input");
   // an unsupported signer key algorithm (X25519 is a KEM key, not a signing key).
   var x = crypto.generateKeyPairSync("x25519");
   var xSpki = x.publicKey.export({ format: "der", type: "spki" });
