@@ -414,6 +414,79 @@ async function testBuilderCoverage() {
   check("TSA malformed keyUsage value -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(badKuTsa), DATA, {})).code === "tsp/bad-key-usage");
 }
 
+// An issuer-signed EC (P-256 / ecdsa-SHA256) certificate, for a multi-level chain.
+function signedCert(subjectCN, issuerCN, subjectKp, issuerKp, exts) {
+  var algId = b.sequence([b.oid(pki.oid.byName("ecdsaWithSHA256"))]);
+  var tbsCh = [
+    b.contextConstructed(0, b.integer(2n)),
+    b.integer(BigInt(1 + Math.floor(Math.random() * 1e12))),
+    algId, certName(issuerCN),
+    b.sequence([b.utcTime(new Date("2020-01-01T00:00:00Z")), b.utcTime(new Date("2035-01-01T00:00:00Z"))]),
+    certName(subjectCN),
+    b.raw(subjectKp.publicKey.export({ format: "der", type: "spki" })),
+  ];
+  if (exts && exts.length) tbsCh.push(b.contextConstructed(3, b.sequence(exts)));
+  var tbs = b.sequence(tbsCh);
+  return b.sequence([tbs, algId, b.bitString(crypto.sign("sha256", tbs, { key: issuerKp.privateKey, dsaEncoding: "der" }), 0)]);
+}
+// Add an (unsigned) certificate to a token's SignedData certificates [0] SET -- the set is outside
+// the signed content, so the signature stays valid; a verifier reads the fuller embedded chain.
+function spliceCert(tokenDer, extraCertDer) {
+  var ci = pki.asn1.decode(tokenDer);
+  var sd = ci.children[1].children[0];   // [0] EXPLICIT -> SignedData
+  var ch = sd.children, idx = -1;
+  for (var i = 0; i < ch.length; i++) { if (ch[i].tagClass === "context" && ch[i].tagNumber === 0) { idx = i; break; } }
+  var certs = ch[idx].children.map(function (c) { return c.bytes; });
+  certs.push(extraCertDer); certs.sort(Buffer.compare);
+  var newSd = b.sequence(ch.map(function (c, i) { return b.raw(i === idx ? b.contextConstructed(0, Buffer.concat(certs)) : c.bytes); }));
+  return b.sequence([b.raw(ci.children[0].bytes), b.explicit(0, newSd)]);
+}
+
+// ---- Codex-round hardening: embedded-chain path validation, EKU-wrapper strictness, and the
+// ESSCertID(V2) issuerSerial binding. ----
+async function testChainAndBindings() {
+  var bcCA = extDer(pki.oid.byName("basicConstraints"), true, b.sequence([b.boolean(true)]));
+  var rootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var interKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var leafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var rootCert = signedCert("ChainRoot", "ChainRoot", rootKp, rootKp, [bcCA]);
+  var interCert = signedCert("ChainInter", "ChainRoot", interKp, rootKp, [bcCA]);
+  var leafCert = signedCert("ChainLeaf", "ChainInter", leafKp, interKp, [ekuExt([TS_EKU], true)]);
+  var rootP = pki.schema.x509.parse(rootCert);
+  var anchor = { name: rootP.subject, publicKey: rootP.subjectPublicKeyInfo.bytes, algorithm: rootP.signatureAlgorithm.oid };
+  var chainTok = await pki.tsp.sign(imprint("sha256"), { cert: leafCert, key: leafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
+  // #1: a TSA under an intermediate -- without the intermediate embedded, it cannot chain to the root.
+  var noInter = await pki.tsp.verify(chainTok, DATA, { trustAnchor: anchor });
+  check("TSA under an intermediate, chain NOT embedded -> tsp/untrusted-tsa", noInter.valid === false && noInter.code === "tsp/untrusted-tsa");
+  // ...with the intermediate embedded, verify orders [leaf, inter] and validates to the root.
+  var withInter = await pki.tsp.verify(spliceCert(chainTok, interCert), DATA, { trustAnchor: anchor });
+  check("TSA under an intermediate, chain embedded -> valid", withInter.valid === true);
+
+  // #2: the extKeyUsage extnValue MUST be a SEQUENCE OF -- a SET wrapper with the same OID child
+  // must not slip through the children walk.
+  var setEkuTsa = makeTsa(extDer(pki.oid.byName("extKeyUsage"), true, b.set([b.oid(TS_EKU)])));
+  check("EKU wrapped in a SET (not SEQUENCE) -> tsp/bad-eku", (await pki.tsp.verify(await signToken(setEkuTsa), DATA, {})).code === "tsp/bad-eku");
+  // ...and an EKU SEQUENCE whose element is not a KeyPurposeId OID fails the OID read -> tsp/bad-eku.
+  var nonOidEkuTsa = makeTsa(extDer(pki.oid.byName("extKeyUsage"), true, b.sequence([b.integer(5n)])));
+  check("EKU SEQUENCE with a non-OID element -> tsp/bad-eku", (await pki.tsp.verify(await signToken(nonOidEkuTsa), DATA, {})).code === "tsp/bad-eku");
+
+  // #3: the ESSCertID(V2) issuerSerial, when present, MUST match the signer cert's serialNumber.
+  var essTsa = makeTsa(ekuExt([TS_EKU], true));   // self-signed, serial 1, subject/issuer "TSA"
+  var certHash = crypto.createHash("sha256").update(essTsa.cert).digest();
+  function scv2(serial) {
+    var is = b.sequence([b.sequence([b.contextConstructed(4, certName("TSA"))]), b.integer(BigInt(serial))]);
+    return b.sequence([b.sequence([b.sequence([b.octetString(certHash), is])])]);
+  }
+  function essTok(serial) {
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"),
+      b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]),
+      b.integer(50n), b.generalizedTime(GENTIME)]);
+    return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2(serial)] }] });
+  }
+  check("ESSCertID issuerSerial wrong serial -> tsp/cert-binding-mismatch", (await pki.tsp.verify(await essTok(999), DATA, {})).code === "tsp/cert-binding-mismatch");
+  check("ESSCertID issuerSerial correct serial verifies", (await pki.tsp.verify(await essTok(1), DATA, {})).valid === true);
+}
+
 async function run() {
   testRequestRoundTrip();
   testRequestMinimal();
@@ -434,6 +507,7 @@ async function run() {
   await testVerifyDesync();
   await testTspCoverage();
   await testBuilderCoverage();
+  await testChainAndBindings();
 }
 
 module.exports = { run: run };
