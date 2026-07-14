@@ -209,6 +209,14 @@ async function testDigestParamsPresent() {
   var res = await pki.cms.verify(parsed, { certs: [s.cert] });
   check("present non-NULL digest params -> valid:false", res.valid === false);
   check("present non-NULL digest params -> cms/unsupported-algorithm", res.signers[0].code === "cms/unsupported-algorithm");
+  // draft sec. 3.4: the composite digestAlgorithm parameters MUST be OMITTED -- a present DER NULL
+  // (which the generic RFC 5754 rule accepts for a SHA-2 digest, and which the classical/ML-DSA
+  // paths accept) is non-conformant for a composite SignerInfo and is likewise rejected.
+  var pNull = pki.schema.cms.parse(p7);
+  pNull.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- must be omitted for composite
+  var resNull = await pki.cms.verify(pNull, { certs: [s.cert] });
+  check("present DER NULL digest params -> valid:false", resNull.valid === false);
+  check("present DER NULL digest params -> cms/unsupported-algorithm", resNull.signers[0].code === "cms/unsupported-algorithm");
 }
 
 // ---- reject: malformed composite public key / RSA component -> a fail-closed verdict, never a throw ----
