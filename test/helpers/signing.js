@@ -37,7 +37,8 @@ function minimalCert(spki, opts) {
 function makeSigner(alg, opts) {
   opts = opts || {};
   var kp;
-  switch (alg) {
+  if (alg.indexOf("slh-dsa-") === 0) { kp = crypto.generateKeyPairSync(alg); }   // FIPS 205 SLH-DSA -- any of the twelve pure sets (node type == the OID name minus id-)
+  else switch (alg) {
     case "rsa": kp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }); break;
     case "rsa-pss": kp = crypto.generateKeyPairSync("rsa-pss", opts.pssHash ? { modulusLength: 2048, hashAlgorithm: opts.pssHash, mgf1HashAlgorithm: opts.pssHash } : { modulusLength: 2048 }); break;   // SPKI OID is id-RSASSA-PSS
     case "ec-p256": kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }); break;

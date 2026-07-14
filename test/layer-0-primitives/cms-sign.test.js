@@ -350,8 +350,49 @@ async function testPssSpkiParams() {
   await rejects("PSS SPKI pins an unsupported hash -> reject", function () { return pki.cms.sign(CONTENT, pssSignerWithParams(b.sequence([b.explicit(0, b.sequence([b.oid(pki.oid.byName("sha1"))]))]))); }, "cms/unsupported-algorithm");
 }
 
+// ---- SLH-DSA (RFC 9814): the twelve pure FIPS 205 sets; the message digest is PINNED per set ----
+var SLH_DSA_SETS = [
+  "sha2-128s", "sha2-128f", "sha2-192s", "sha2-192f", "sha2-256s", "sha2-256f",
+  "shake-128s", "shake-128f", "shake-192s", "shake-192f", "shake-256s", "shake-256f",
+];
+var SLH_DSA_PINNED = {   // RFC 9814 sec. 4 message-digest per parameter set
+  "sha2-128s": "sha256", "sha2-128f": "sha256", "sha2-192s": "sha512", "sha2-192f": "sha512",
+  "sha2-256s": "sha512", "sha2-256f": "sha512", "shake-128s": "shake128", "shake-128f": "shake128",
+  "shake-192s": "shake256", "shake-192f": "shake256", "shake-256s": "shake256", "shake-256f": "shake256",
+};
+async function testSlhDsa() {
+  // every one of the twelve pure sets signs and verifies, carrying its RFC 9814 sec. 4 pinned digest.
+  for (var i = 0; i < SLH_DSA_SETS.length; i++) {
+    var set = SLH_DSA_SETS[i];
+    var der = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-" + set));
+    check("SLH-DSA " + set + " -> verifies", (await pki.cms.verify(der)).valid === true);
+    check("SLH-DSA " + set + " -> digestAlgorithm == " + SLH_DSA_PINNED[set], pki.schema.cms.parse(der).signerInfos[0].digestAlgorithm.name === SLH_DSA_PINNED[set]);
+  }
+  // detached, no-signed-attributes, and mixed with a classical signer, on the fast sha2-128f set.
+  var det = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f"), { detached: true });
+  check("SLH-DSA detached + content -> valid", (await pki.cms.verify(det, { content: CONTENT })).valid === true);
+  check("SLH-DSA no-attrs -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f"), { signedAttributes: false }))).valid === true);
+  var mixed = await pki.cms.verify(await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("slh-dsa-sha2-128f")]));
+  check("SLH-DSA + ECDSA multi-signer -> all valid", mixed.valid === true && mixed.signers.length === 2 && mixed.signers.every(function (x) { return x.ok; }));
+  // sid=subjectKeyIdentifier.
+  check("SLH-DSA sid=ski -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f", { ski: true }), { sid: "ski" }))).valid === true);
+  // signatureAlgorithm / signer-key parameter-set disagreement is a fail-closed mismatch (sameKeyOid).
+  var m = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f")));
+  m.signerInfos[0].signatureAlgorithm.name = "id-slh-dsa-sha2-256f";
+  check("SLH-DSA sig-alg / key set mismatch -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m)));
+  // a caller digestAlgorithm that contradicts the parameter set's RFC 9814 sec. 4 pinned digest
+  // (sha2-128f pins SHA-256) is rejected at config time rather than emitting a non-conformant digest.
+  await rejects("SLH-DSA + contradicting digestAlgorithm -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("slh-dsa-sha2-128f"), { digestAlgorithm: "sha512" })); }, "cms/bad-input");
+  // a SHAKE-digest SLH-DSA SignerInfo (shake-128f pins SHAKE128) whose digestAlgorithm carries a
+  // present parameter (even DER NULL) is rejected -- RFC 8702 sec. 3.1 requires SHAKE params absent.
+  var shk = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f")));
+  shk.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- forbidden for SHAKE
+  check("SLH-DSA shake128 digestAlgorithm NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(shk)));
+}
+
 async function run() {
   await testPssSpkiParams();
+  await testSlhDsa();
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();

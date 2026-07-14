@@ -92,13 +92,13 @@ function buildSynBundle(opts) {
   var leafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var rekorKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2030-01-01T00:00:00Z");
-  var integratedTime = Math.floor(new Date("2027-06-01T00:00:00Z").getTime() / 1000);
+  var integratedTime = opts.integratedTime !== undefined ? opts.integratedTime : Math.floor(new Date("2027-06-01T00:00:00Z").getTime() / 1000);
   var rootDer = synCert({ serial: 1n, issuer: "syn-root", subject: "syn-root", notBefore: NB, notAfter: NA,
     subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey, extensions: [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))] });
   var san = opts.san || [gnUriDer("https://github.com/synthetic/repo")];
   var leafDer = synCert({ serial: 2n, issuer: opts.leafIssuer || "syn-root", subject: "syn-leaf", notBefore: NB, notAfter: NA,
     subjectKey: leafKp.publicKey, signerKey: rootKp.privateKey,
-    extensions: [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])), synExt("subjectAltName", false, B.sequence(san))] });
+    extensions: [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])), synExt("subjectAltName", false, B.sequence(san))].concat(opts.extraLeafExtensions || []) });
   var payloadType = opts.payloadType || "application/vnd.in-toto+json";
   var payloadObj = opts.payload !== undefined ? opts.payload
     : { _type: "https://in-toto.io/Statement/v1", predicateType: "https://slsa.dev/provenance/v1", subject: [{ name: "pkg", digest: { sha512: "ab".repeat(64) } }], predicate: {} };
@@ -541,6 +541,32 @@ async function run() {
   var synDir = buildSynBundle({ san: [B.contextConstructed(4, B.sequence([B.set([B.sequence([synOid("commonName"), B.utf8("dir")])])]))] });
   var svd = await pki.sigstore.verifyBundle(synDir.bundle, synDir.trust);
   check("synthetic directoryName-only SAN -> identity.san is null", svd && svd.verified === true && svd.identity.san === null);
+
+  // A transparency-log entry whose integratedTime is attested by the SET (the
+  // synthetic SET is re-signed over it) but is non-finite is rejected: the log
+  // time must be a valid date to bound the ephemeral Fulcio certificate. A
+  // negative finite time cannot reach this arm -- the C.TIME.seconds scale guard
+  // rejects it first -- so a non-finite value is the reachable malformed-time form.
+  var synBadTime = buildSynBundle({ integratedTime: NaN });
+  check("synthetic SET-attested non-finite integratedTime -> sigstore/bad-tlog-entry",
+    await codeOf(pki.sigstore.verifyBundle(synBadTime.bundle, synBadTime.trust)) === "sigstore/bad-tlog-entry");
+
+  // A Fulcio arc extension (.1.8 issuer; non-critical, so the RFC 5280 chain leg
+  // ignores it) whose value is well-formed DER but not a string is first decoded
+  // in the identity leg. The raw asn1/* decode fault is re-typed at the _identity
+  // boundary to a typed sigstore/bad-certificate rather than leaking an asn1/* code.
+  var synBadFulcio = buildSynBundle({ extraLeafExtensions: [B.sequence([B.oid("1.3.6.1.4.1.57264.1.8"), B.octetString(B.integer(5n))])] });
+  check("synthetic malformed Fulcio .8 extension value -> sigstore/bad-certificate",
+    await codeOf(pki.sigstore.verifyBundle(synBadFulcio.bundle, synBadFulcio.trust)) === "sigstore/bad-certificate");
+
+  // An otherName SAN whose [0] EXPLICIT value is a non-string (INTEGER) clears the
+  // chain leg's otherName gate (which checks the [0] shape but not the inner type)
+  // and reaches _sanValue: read.string throws, the raw content is decoded to UTF-8
+  // best-effort, and the identity is still surfaced as an otherName (verified true).
+  var synOtherInt = buildSynBundle({ san: [B.contextConstructed(0, Buffer.concat([B.oid("1.3.6.1.4.1.57264.1.7"), B.explicit(0, B.integer(5n))]))] });
+  var svOtherInt = await pki.sigstore.verifyBundle(synOtherInt.bundle, synOtherInt.trust);
+  check("synthetic otherName SAN with a non-string value -> otherName identity (verified)",
+    svOtherInt && svOtherInt.verified === true && svOtherInt.identity.san && svOtherInt.identity.san.type === "otherName");
 
   // in-toto statement leg: a non-in-toto payloadType, a wrong statement _type, and
   // an empty subject each fail closed with sigstore/bad-statement.

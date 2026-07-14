@@ -345,6 +345,15 @@ function kuVal(bitPositions) {
 function kuExt(bitPositions) { return ext("2.5.29.15", true, kuVal(bitPositions)); }
 var KU_KEY_CERT_SIGN = 5, KU_CRL_SIGN = 6, KU_DIGITAL_SIGNATURE = 0;
 
+// Composite ML-DSA SubjectPublicKeyInfo (draft-ietf-lamps-pq-composite-sigs sec.
+// 4.1): AlgorithmIdentifier { compositeOID } with ABSENT parameters + the raw
+// mldsaPK || tradPK as the subjectPublicKey BIT STRING. The key body is a
+// fixed-length placeholder (ML-DSA-65 pk 1952 + ECDSA-P256 point 65); these
+// vectors drive the composite keyUsage gate and the fail-closed composite verify
+// seam, which run before any real key material is consumed.
+var COMPOSITE_OID = pki.oid.byName("id-MLDSA65-ECDSA-P256-SHA512");
+function compositeSpki() { return b.sequence([b.sequence([b.oid(COMPOSITE_OID)]), b.bitString(Buffer.alloc(1952 + 65), 0)]); }
+
 // GeneralName arms used by the fixtures.
 function gnDns(text) { return b.contextPrimitive(2, Buffer.from(text, "ascii")); }
 function gnEmail(text) { return b.contextPrimitive(1, Buffer.from(text, "ascii")); }
@@ -2377,6 +2386,25 @@ async function testOcspCheckerStandalone() {
   // attacker-crafted certs list cannot drive unbounded pre-auth delegate verifies.
   var manyCerts = await mkOcsp({ responderID: { byName: "OcspResponder" }, signWith: "p256", certs: new Array(33).fill(delegate), single: [goodSingle()] });
   check("O31 over-cap embedded certs rejected at parse", (await codeOf((async function () { return pki.path.ocspChecker([manyCerts]); })())) === "ocsp/too-many-certs");
+
+  // O32 -- a composite-keyed OCSP delegate (draft-ietf-lamps-pq-composite-sigs) is an
+  // out-of-path signer subject to the sec. 5.2 keyUsage gate. A digitalSignature-only
+  // composite delegate PASSES the gate and authorizes, so the response signature is
+  // then checked through the shared verify seam under the composite key. This
+  // transport-free checker has no composite signing material, so that signature
+  // cannot verify -> fail closed to unknown (never "good"). The composite
+  // signatureAlgorithm also drives the composite branch on the OCSP verify seam.
+  var compDelegate = await mkCert({ subject: "CompositeResponder", issuer: "Root", signWith: "ed25519", spki: compositeSpki(), serial: 62n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), kuExt([KU_DIGITAL_SIGNATURE]), nocheckExt()] });
+  var o32 = await mkOcsp({ responderID: { byName: "CompositeResponder" }, signWith: "ed25519", certs: [compDelegate], single: [goodSingle()], sigAlgOverride: b.sequence([b.oid(COMPOSITE_OID)]) });
+  check("O32 composite digitalSignature delegate authorizes; composite response sig fails closed -> unknown", (await chk(o32)).status === "unknown");
+
+  // O33 -- a DUAL-USAGE composite delegate (digitalSignature + keyEncipherment) passes
+  // the delegate-authorization keyUsage check (digitalSignature present) but FAILS the
+  // sec. 5.2 composite gate (a forbidden encryption bit), so it is NOT an authorized
+  // responder -> unknown.
+  var compDualKu = await mkCert({ subject: "CompositeDualResponder", issuer: "Root", signWith: "ed25519", spki: compositeSpki(), serial: 63n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), kuExt([KU_DIGITAL_SIGNATURE, 2]), nocheckExt()] });
+  var o33 = await mkOcsp({ responderID: { byName: "CompositeDualResponder" }, signWith: "ed25519", certs: [compDualKu], single: [goodSingle()] });
+  check("O33 dual-usage composite delegate fails the sec. 5.2 gate -> unauthorized -> unknown", (await chk(o33)).status === "unknown");
 }
 
 // Known-answer interop: the CertID issuerNameHash/issuerKeyHash conventions
@@ -2440,6 +2468,23 @@ async function testTrustAnchorConstraints() {
   // T26 -- checkPurpose emailProtection but only serverAuth distrust present -> unaffected.
   var r26 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "emailProtection" });
   check("T26 wrong-purpose distrust key -> unaffected", r26.valid === true);
+
+  // T27 -- checkPurpose is an UNREGISTERED canonical dotted OID: oid.name returns
+  // undefined, so it resolves through the fallback to the dotted string ITSELF,
+  // which is then consumed as the index into the anchor's per-purpose trust map. A
+  // delegator for that dotted purpose -> valid; a non-delegator -> not trusted.
+  // CP_PURPOSE is a canonical dotted OID with NO registered name (a private-arc
+  // sentinel that no test aliases): oid.name returns undefined, so checkPurpose
+  // resolves through the fallback to the dotted string itself, which is then
+  // consumed as the index into the anchor's per-purpose trust map. The computed
+  // key guarantees the map key equals the resolved checkPurpose regardless of the
+  // literal, so a delegator entry -> valid and a non-delegator -> not trusted.
+  var CP_PURPOSE = "1.3.6.1.4.1.99999.424242";
+  function purposesFor(v) { var p = {}; p[CP_PURPOSE] = v; return p; }
+  var r27ok = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: withMeta({ purposes: purposesFor(true) }), checkPurpose: CP_PURPOSE });
+  check("T27 unregistered dotted checkPurpose trusted via fallback -> valid", r27ok.valid === true);
+  var r27no = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: withMeta({ purposes: purposesFor(false) }), checkPurpose: CP_PURPOSE });
+  check("T27 unregistered dotted checkPurpose not a delegator -> purpose-not-trusted", r27no.valid === false && failCodes(r27no).indexOf("path/purpose-not-trusted") !== -1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2893,6 +2938,20 @@ async function testCoverageEdges() {
   // ---- 1124 checkPurpose is a canonical dotted OID with no registered name -----
   await cap("1124 unregistered dotted checkPurpose kept as the dotted OID", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: "1.3.6.1.4.1.99999.77" }); });
 
+  // ---- composite ML-DSA keyUsage gate at the leaf (draft sec. 5.2) ------------
+  // 475 a composite-keyed leaf with NO keyUsage places no restriction (RFC 5280
+  // sec. 4.2.1.3): compositeKeyUsageCheck returns ok, the ed25519 anchor signs the
+  // leaf so the signature verifies, and the 1-cert path is valid.
+  await cap("475 composite-keyed leaf without keyUsage -> path valid", async function () {
+    return run([await mkCert({ subject: "CompNoKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki() })], { time: T2027, trustAnchor: anchor });
+  });
+  // 481 a composite keyUsage asserting ONLY a reserved bit (>= 9) decodes with every
+  // NAMED flag false: it clears the encryption gate but asserts no signature bit, so
+  // the sec. 5.2 signature-only rule rejects the composite key. (bit 9: 03 03 06 00 40.)
+  await cap("481 composite keyUsage asserts no signature bit -> rejected", async function () {
+    return run([await mkCert({ subject: "CompBit9", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki(), extensions: [ext("2.5.29.15", true, b.bitString(Buffer.from([0x00, 0x40]), 6))] })], { time: T2027, trustAnchor: anchor });
+  });
+
   // ---- 1462 cert DistributionPoint cRLIssuer names a NON-directoryName ---------
   // crlIssuerNamesIssuer skips any cRLIssuer GeneralName that is not a
   // directoryName [4]; with no directoryName the DP never corresponds -> the
@@ -3046,6 +3105,8 @@ async function testCoverageEdges() {
     "666 iPAddress seed base as a plain Uint8Array accepted": { valid: true },
     "812 EC subject-key parameters copied into the working key": { valid: true },
     "1124 unregistered dotted checkPurpose kept as the dotted OID": { valid: true },
+    "475 composite-keyed leaf without keyUsage -> path valid": { valid: true },
+    "481 composite keyUsage asserts no signature bit -> rejected": { code: "path/composite-key-usage" },
     "1462 cert DP cRLIssuer is a URI (not directoryName) -> revocation-only": { code: RUND },
     "1465 cert DP cRLIssuer names the issuer + DP corresponds -> good": { valid: true },
     "1744 CRL non-octet-aligned signature -> undetermined": { code: RUND },

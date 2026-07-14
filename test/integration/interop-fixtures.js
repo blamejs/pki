@@ -311,14 +311,14 @@ module.exports = {
         // result IS the probe -- RSA/ECDSA/PSS MUST verify (a real failure), while an EdDSA/ML-DSA
         // case openssl's CMS cannot verify is SKIPPED (never failed); the output still round-trips
         // through pki.cms.verify (proven in cms-sign.test.js).
-        var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"];
+        var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87", "slh-dsa-sha2-128f", "slh-dsa-shake-128f"];
         for (var i = 0; i < algs.length; i++) {
           var alg = algs[i];
           var signer = makeSigner(alg);
           var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
           var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
           var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
-          var skippable = alg === "ed25519" || alg === "ed448" || alg.indexOf("ml-dsa") === 0;
+          var skippable = alg === "ed25519" || alg === "ed448" || alg.indexOf("ml-dsa") === 0 || alg.indexOf("slh-dsa") === 0;
           if (a.code !== 0 && skippable) {
             ctx.skip("openssl cms -verify in this environment does not verify " + alg + " CMS (our output round-trips through pki.cms.verify)");
             continue;
