@@ -352,6 +352,13 @@ async function testTspCoverage() {
   check("empty token imprint + matching empty precomputed imprint -> tsp/imprint-mismatch", (await pki.tsp.verify(emptyTok, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(0) }, {})).code === "tsp/imprint-mismatch");
   // a caller precomputed imprint of the wrong length for its algorithm is a config error -> throw.
   await rejects("precomputed imprint wrong length -> tsp/bad-input", function () { return pki.tsp.verify(token, { hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(16) }, {}); }, "tsp/bad-input");
+  // a cert-less token (the TSA omits its certificate when certReq was false) fails without the cert,
+  // and verifies when the caller supplies it out-of-band via opts.certs (RFC 3161 -- cert optional).
+  var certlessTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(51n), b.generalizedTime(GENTIME)]);
+  var certlessTok = await pki.cms.sign(certlessTst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", certificates: false, additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2] }] });
+  check("cert-less token without opts.certs -> tsp/bad-signature", (await pki.tsp.verify(certlessTok, DATA, {})).code === "tsp/bad-signature");
+  check("cert-less token with out-of-band opts.certs verifies", (await pki.tsp.verify(certlessTok, DATA, { certs: [tsa.cert] })).valid === true);
+  await rejects("opts.certs not an array -> tsp/bad-input", function () { return pki.tsp.verify(certlessTok, DATA, { certs: tsa.cert }); }, "tsp/bad-input");
   // response: failInfo on a non-rejection status, and an unknown PKIFailureInfo name, fail closed.
   rejectsSync("response failInfo on status!=2 -> tsp/unexpected-failinfo", function () { return pki.tsp.response(null, { status: 3, failInfo: ["badAlg"] }); }, "tsp/unexpected-failinfo");
   rejectsSync("response unknown failInfo name -> tsp/bad-input", function () { return pki.tsp.response(null, { status: 2, failInfo: ["notARealBit"] }); }, "tsp/bad-input");
@@ -574,6 +581,36 @@ async function testChainAndBindings() {
     return pki.cms.sign(tst, { cert: badSanTsa.cert, key: badSanTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
   }
   check("tsa hint with a malformed subjectAltName in the cert -> tsp/tsa-mismatch", (await pki.tsp.verify(await badSanTok(), DATA, {})).code === "tsp/tsa-mismatch");
+
+  // same-subject issuer certificates (CA rollover / cross-certification): more than one certificate
+  // carries the issuer's subject DN, one with the wrong key. A greedy first-match order commits to
+  // the decoy and fails; enumerating candidate chains backtracks to the real issuer. The decoy is
+  // placed BEFORE the real issuer in the pool so a greedy order would pick it.
+  var btRootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var btInterKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var btDecoyKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var btLeafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var btRoot = signedCert("BTRoot", "BTRoot", btRootKp, btRootKp, [bcCA]);
+  var btInter = signedCert("BTInter", "BTRoot", btInterKp, btRootKp, [bcCA]);        // the REAL issuer of the leaf
+  var btDecoy = signedCert("BTInter", "BTRoot", btDecoyKp, btRootKp, [bcCA]);        // same subject DN, different key
+  var btLeaf = signedCert("BTTSA", "BTInter", btLeafKp, btInterKp, [ekuExt([TS_EKU], true)]);
+  var btRootP = pki.schema.x509.parse(btRoot);
+  var btAnchor = { name: btRootP.subject, publicKey: btRootP.subjectPublicKeyInfo.bytes, algorithm: btRootP.signatureAlgorithm.oid };
+  var btTok = await pki.tsp.sign(imprint("sha256"), { cert: btLeaf, key: btLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
+  check("same-subject issuer certs -> backtracking finds the real issuer", (await pki.tsp.verify(btTok, DATA, { trustAnchor: btAnchor, certs: [btDecoy, btInter] })).valid === true);
+
+  // MAX_TSA_CHAINS DoS bound (CWE-834): a hostile embed of interlinked same-subject certificates
+  // (each a candidate issuer of the others) would explode the candidate-path search combinatorially.
+  // The bound keeps verify terminating and returning a verdict rather than hanging.
+  var dosCerts = [], dosKps = [];
+  for (var di = 0; di < 6; di++) { var dk = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }); dosKps.push(dk); dosCerts.push(signedCert("MInter", "MInter", dk, dk, [bcCA])); }
+  var dosLeafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var dosLeaf = signedCert("MTSA", "MInter", dosLeafKp, dosKps[0], [ekuExt([TS_EKU], true)]);
+  var dosTok = await pki.tsp.sign(imprint("sha256"), { cert: dosLeaf, key: dosLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
+  var dosAnchorKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var dosAnchorP = pki.schema.x509.parse(signedCert("MRoot", "MRoot", dosAnchorKp, dosAnchorKp, [bcCA]));
+  var dosAnchor = { name: dosAnchorP.subject, publicKey: dosAnchorP.subjectPublicKeyInfo.bytes, algorithm: dosAnchorP.signatureAlgorithm.oid };
+  check("interlinked same-subject certs stay bounded -> verdict (MAX_TSA_CHAINS)", (await pki.tsp.verify(dosTok, DATA, { trustAnchor: dosAnchor, certs: dosCerts })).valid === false);
 }
 
 async function run() {
