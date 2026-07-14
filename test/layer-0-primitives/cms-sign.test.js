@@ -388,6 +388,11 @@ async function testSlhDsa() {
   var shk = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f")));
   shk.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- forbidden for SHAKE
   check("SLH-DSA shake128 digestAlgorithm NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(shk)));
+  // RFC 9814 sec. 4: a message-digest that is not the parameter set's paired hash is rejected on
+  // verify -- SHA-256 on sha2-256f (which pairs SHA-512, twice the 256-bit tree hash) fails closed.
+  var wrongMd = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-256f")));
+  wrongMd.signerInfos[0].digestAlgorithm.name = "sha256";
+  check("SLH-DSA sha2-256f + mismatched sha256 digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(wrongMd)));
 }
 
 async function run() {
