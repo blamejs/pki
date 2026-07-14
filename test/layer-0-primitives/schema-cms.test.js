@@ -944,6 +944,11 @@ function testAeadAndAttrEdgeCases() {
     code(function () { pki.schema.parse(b.sequence([b.oid("1.2.3"), b.integer(5n)])); }) === "schema/unknown-format");
   check("orchestrator OID + [0] primitive is not CMS",
     code(function () { pki.schema.parse(b.sequence([b.oid("1.2.3"), b.contextPrimitive(0, Buffer.from([1]))])); }) === "schema/unknown-format");
+  // orchestrator: a 2-child SEQUENCE whose FIRST child is not an OBJECT IDENTIFIER is
+  // not CMS (cms.matches returns false at the isUniversal(k[0], OID) arm) and matches
+  // no registered format.
+  check("orchestrator non-OID-led pair is not CMS",
+    code(function () { pki.schema.parse(b.sequence([b.integer(5n), b.integer(6n)])); }) === "schema/unknown-format");
 
   // assertAttachedCiphertext (per-profile opt-in): a detached / empty / missing
   // encryptedContent fails closed; a non-empty ciphertext returns the eci (CWE-20).
@@ -974,6 +979,18 @@ function testCmsFailClosedBranches() {
   check("ber walkSignedData: BER (indefinite) countersignature value rejected",
     code(function () { cmsLib.walkSignedData(nCs); }) === "cms/bad-countersignature");
 
+  // walkEnvelopedData / walkEncryptedData: the @internal composer entrypoints (consumed
+  // by schema-crmf / schema-cmp / schema-pkcs12 for a bare EnvelopedData / EncryptedData
+  // carried outside a ContentInfo), driven directly -- mirroring the walkSignedData
+  // vectors above. There is no pki.schema.cms.parse route to a bare content structure.
+  var envNode = pki.asn1.decode(envelopedData({ version: 0 }));
+  var envR = cmsLib.walkEnvelopedData(envNode);
+  check("walkEnvelopedData accepts a bare EnvelopedData node",
+    envR.version === 0 && envR.recipientInfos.length >= 1);
+  var encNode = pki.asn1.decode(encryptedData({ version: 0 }));
+  var encR = cmsLib.walkEncryptedData(encNode);
+  check("walkEncryptedData accepts a bare EncryptedData node", encR.version === 0);
+
   // assertAttachedCiphertext with NO label falls back to the default
   // "encrypted content" phrasing in its fail-closed message (per-profile
   // opt-in, CWE-20 — a detached/empty ciphertext is verification-of-nothing).
@@ -983,6 +1000,19 @@ function testCmsFailClosedBranches() {
   catch (e) { noLabel = e; }
   check("assertAttachedCiphertext default label rejects detached",
     !!noLabel && noLabel.code === "cms/test-detached" && /^encrypted content must carry/.test(noLabel.message));
+}
+
+// ---- the public PEM codec (pemEncode / pemDecode) round-trips ----------
+// pki.schema.cms.pemEncode / pemDecode are pure PEM-codec wrappers (they do NOT
+// parse their input); one round-trip covers both, plus the label || "CMS" default
+// arm, and a second with an explicit label covers the other side of that ||.
+function testCmsPemRoundTrip() {
+  var der = cms({});                    // any valid CMS DER; the PEM codec does not parse it
+  var pem = pki.schema.cms.pemEncode(der);
+  check("cms pemEncode default label", /-----BEGIN CMS-----/.test(pem));
+  check("cms pem round-trip (default label)", pki.schema.cms.pemDecode(pem).equals(der));
+  var pem2 = pki.schema.cms.pemEncode(der, "PKCS7");
+  check("cms pem round-trip (explicit label)", pki.schema.cms.pemDecode(pem2, "PKCS7").equals(der));
 }
 
 function run() {
@@ -1009,6 +1039,7 @@ function run() {
   testContentTypeDiscriminator();
   testAeadAndAttrEdgeCases();
   testCmsFailClosedBranches();
+  testCmsPemRoundTrip();
 }
 
 module.exports = { run: run };

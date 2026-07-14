@@ -4,7 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.2.16 — 2026-07-14
+## v0.2.17 — 2026-07-14
+
+Post-quantum SLH-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with all twelve FIPS 205 SLH-DSA parameter sets (RFC 9814), freely mixed with the classical and ML-DSA signers in one message.
+
+### Added
+
+- pki.cms.sign and pki.cms.verify sign and verify a CMS SignedData with the twelve pure FIPS 205 SLH-DSA parameter sets (id-slh-dsa-sha2-128s/f, -192s/f, -256s/f and the SHAKE equivalents), RFC 9814: pure mode, empty context, AlgorithmIdentifier parameters absent, over attached or detached content and single or multiple signers -- freely mixed with RSA, RSASSA-PSS, ECDSA, EdDSA, and ML-DSA signers in one message. The signer identifier is issuerAndSerialNumber or subjectKeyIdentifier, and the output is a DER Buffer or PEM.
+- The CMS message-digest algorithm for an SLH-DSA signer is fixed to the parameter set's paired digest (RFC 9814 section 4); signing emits it automatically and rejects a caller digest that contradicts the set, so the SignedData carries the conformant digest for the chosen parameter set.
+
+### Changed
+
+- CMS signature verification's one-shot signer-key agreement check (a single algorithm identifier naming both the key and the signature) now covers SLH-DSA alongside EdDSA and ML-DSA: an SLH-DSA SignerInfo whose signer certificate public-key parameter set disagrees with the signatureAlgorithm fails closed with a typed error.
+
+## v0.2.16 — 2026-07-13
 
 Post-quantum ML-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with ML-DSA-44/65/87 (RFC 9882), freely mixed with the classical signers in one message.
 

@@ -325,7 +325,8 @@ security-only patches after the next major releases.
   pure mode with the empty context; the message-digest algorithm is held to each parameter set's
   security strength on both sign and verify (a below-strength digest — the weaker link that would
   cap the signature's collision resistance — is refused), and the signer certificate's public-key
-  parameter set must agree with the SignerInfo signatureAlgorithm.
+  parameter set must agree with the SignerInfo signatureAlgorithm. SLH-DSA (the twelve FIPS 205
+  pure sets, RFC 9814) signs and verifies the same way, with the message digest pinned per set.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,

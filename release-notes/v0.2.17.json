@@ -1,0 +1,14 @@
+{
+  "version": "0.2.17",
+  "headline": "Post-quantum SLH-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with all twelve FIPS 205 SLH-DSA parameter sets (RFC 9814), freely mixed with the classical and ML-DSA signers in one message.",
+  "summary": "pki.cms.sign and pki.cms.verify gain the twelve pure SLH-DSA signature algorithms -- the stateless hash-based FIPS 205 sets (SHA-2 and SHAKE families at the 128/192/256 security levels, in the small and fast variants) -- over the exact CMS SignedData structure both primitives already produce and consume. SLH-DSA is used in pure mode with the empty context (RFC 9814); the AlgorithmIdentifier parameters are absent, and the signature covers the same RFC 5652 section 5.4 preimage as every other signer. The message-digest algorithm is fixed per parameter set (RFC 9814 section 4: SHA-256 for the 128-bit SHA-2 sets, SHA-512 for the 192/256-bit SHA-2 sets, SHAKE128 for the 128-bit SHAKE sets, SHAKE256 for the 192/256-bit SHAKE sets) -- signing emits the paired digest and refuses a contradicting one. An SLH-DSA signer can be one of several in a single SignedData alongside RSA, RSASSA-PSS, ECDSA, EdDSA, and ML-DSA signers, over attached or detached content, identified by issuerAndSerialNumber or subjectKeyIdentifier. A message this toolkit signs round-trips through pki.cms.verify and is accepted by OpenSSL cms -verify where the platform's OpenSSL supports SLH-DSA in CMS.",
+  "sections": {
+    "Added": [
+      "pki.cms.sign and pki.cms.verify sign and verify a CMS SignedData with the twelve pure FIPS 205 SLH-DSA parameter sets (id-slh-dsa-sha2-128s/f, -192s/f, -256s/f and the SHAKE equivalents), RFC 9814: pure mode, empty context, AlgorithmIdentifier parameters absent, over attached or detached content and single or multiple signers -- freely mixed with RSA, RSASSA-PSS, ECDSA, EdDSA, and ML-DSA signers in one message. The signer identifier is issuerAndSerialNumber or subjectKeyIdentifier, and the output is a DER Buffer or PEM.",
+      "The CMS message-digest algorithm for an SLH-DSA signer is fixed to the parameter set's paired digest (RFC 9814 section 4); signing emits it automatically and rejects a caller digest that contradicts the set, so the SignedData carries the conformant digest for the chosen parameter set."
+    ],
+    "Changed": [
+      "CMS signature verification's one-shot signer-key agreement check (a single algorithm identifier naming both the key and the signature) now covers SLH-DSA alongside EdDSA and ML-DSA: an SLH-DSA SignerInfo whose signer certificate public-key parameter set disagrees with the signatureAlgorithm fails closed with a typed error."
+    ]
+  }
+}

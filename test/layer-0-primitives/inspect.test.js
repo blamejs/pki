@@ -397,6 +397,17 @@ function run() {
   check("inspect: an ecPublicKey with no public key renders (0 bit), no pub block",
     /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(0 bit\)/.test(ecNullPub) && ecNullPub.indexOf("pub:") < 0);
 
+  // A pre-parsed extension whose OID has a decoder but whose name has no renderer
+  // (only reachable via the pre-parsed fast path -- a genuine parse keeps name<->oid
+  // consistent, enforced by the completeness gate) falls back to a hex dump of the
+  // value, never null/crash. Drives _renderExtValue's "no registered renderer" arm.
+  var noRend = pki.inspect.certificate(mkParsed({ extensions: [
+    { oid: pki.oid.byName("basicConstraints"), name: "unrenderedName",
+      critical: false, value: b.sequence([]) },
+  ] }));
+  check("inspect: a pre-parsed ext with a decodable OID but no renderer hex-dumps, not crash",
+    /unrenderedName:\n\s+30:00/.test(noRend) && noRend.indexOf("CA:FALSE") < 0);
+
   // A basicConstraints with cA absent (BOOLEAN DEFAULT FALSE) renders CA:FALSE, not
   // TRUE -- the fixture's own CA:TRUE constraints only exercise the TRUE arm.
   check("inspect: basicConstraints with cA absent renders CA:FALSE",

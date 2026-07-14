@@ -451,6 +451,12 @@ function testSetSorted() {
   var tlvB = b.integer(2n); // 02 01 02  (tlvA < tlvB by Buffer.compare)
   check("build.set sorts components canonically",
     hex(b.set([tlvB, tlvA])) === hex(b.set([tlvA, tlvB])));
+  // build.setOf sorts its members by DER encoding (X.690 11.6), like build.set.
+  check("build.setOf sorts components canonically",
+    hex(b.setOf([tlvB, tlvA])) === hex(b.setOf([tlvA, tlvB])));
+  // Known-answer: SET tag 0x31, length 6, members in ascending order.
+  check("build.setOf emits a SET (0x31) with ascending members",
+    hex(b.setOf([tlvB, tlvA])) === "3106020101020102");
 }
 
 function testIntegerBufferMinimal() {

@@ -276,6 +276,16 @@ function run() {
   var explicitParamsSpki = b.sequence([b.sequence([b.oid(oid.byName("ecPublicKey")), b.sequence([b.integer(1n)])]), ecNode.children[1].bytes]);
   check("an EC key with explicit (non-named) parameters -> weak-key (fail-closed)",
     has(pki.lint.certificate(tlsKeyCert(explicitParamsSpki)), "lint/cabf-tls/weak-key"));
+  // Fail-closed: an EC key with ABSENT AlgorithmIdentifier parameters carries no named curve.
+  // The algorithm SEQUENCE holds only the ecPublicKey OID, so the strict parser records
+  // algorithm.parameters === null; _ecCurveName's non-Buffer params guard fires and resolves a
+  // null curve (not in APPROVED_EC_CURVES) -> weak-key with context.curve null. Distinct from
+  // the explicit-params case above (a SEQUENCE is a Buffer -> the decode catch resolves it).
+  var ecNoParamsSpki = b.sequence([b.sequence([b.oid(oid.byName("ecPublicKey"))]), ecNode.children[1].bytes]);
+  var ecNoParamsReport = pki.lint.certificate(tlsKeyCert(ecNoParamsSpki));
+  var ecNoParamsWeak = ecNoParamsReport.findings.filter(function (f) { return f.id === "lint/cabf-tls/weak-key"; })[0];
+  check("an EC key with absent parameters -> weak-key (curve null, fail-closed)",
+    has(ecNoParamsReport, "lint/cabf-tls/weak-key") && ecNoParamsWeak && ecNoParamsWeak.context.curve === null);
   // Fail-closed: an RSA SPKI whose publicKey is not a decodable RSAPublicKey -> weak-key.
   var rsaNode = asn1.decode(require("crypto").generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" }));
   var badModulusSpki = b.sequence([rsaNode.children[0].bytes, b.bitString(Buffer.from([0xde, 0xad, 0xbe, 0xef]), 0)]);
