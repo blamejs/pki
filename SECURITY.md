@@ -111,18 +111,24 @@ security-only patches after the next major releases.
   before it is read; an unapproved or unknown typecode, a truncated blob, or a
   hostile level count fails closed with a typed error rather than an unbounded
   loop or an out-of-bounds read.
-- **Composite (hybrid) signature downgrade.** `pki.path.validate` verifies
-  composite ML-DSA signatures (draft-ietf-lamps-pq-composite-sigs) — a post-quantum
-  ML-DSA paired with a traditional RSA / ECDSA / EdDSA — by reconstructing the
-  domain-separated message representative and verifying the two components
-  independently, accepting the certificate (or CRL / OCSP response) ONLY when
+- **Composite (hybrid) signature downgrade.** `pki.path.validate` (certificates,
+  CRLs, OCSP responses) and `pki.cms.verify` (CMS `SignerInfo`,
+  draft-ietf-lamps-cms-composite-sigs) verify composite ML-DSA signatures
+  (draft-ietf-lamps-pq-composite-sigs) — a post-quantum ML-DSA paired with a
+  traditional RSA / ECDSA / EdDSA — by reconstructing the domain-separated message
+  representative and verifying the two components independently, accepting ONLY when
   **both** pass. A single-component accept would be the exact downgrade the
   construction exists to prevent: it would let an adversary who breaks either the
   post-quantum or the classical primitive forge a signature the other component
   should still reject. The public-key algorithm OID is bound to the signature OID
   (algorithm-confusion defense), the AlgorithmIdentifier parameters MUST be absent,
   and an arm whose curve or pre-hash the crypto engine cannot reach fails closed to
-  a typed reason code rather than silently skipping its check.
+  a typed reason code rather than silently skipping its check. In CMS the SignerInfo
+  `digestAlgorithm` MUST equal the arm's pre-hash (draft §3.4); a mismatch fails
+  closed (the §5 SHOULD-reject taken), so the message-digest attribute cannot be
+  computed under a different digest than the one the composite signature covers.
+  `pki.cms.sign` produces a composite `SignerInfo` from the two component keys
+  (`{ mldsa, trad }`); it never emits a single-component signature.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node

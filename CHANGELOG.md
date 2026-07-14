@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.2.17 — 2026-07-14
+## v0.2.18 — 2026-07-14
+
+Composite ML-DSA signatures join CMS SignedData: pki.cms.sign and pki.cms.verify now produce and verify a composite SignerInfo -- a post-quantum ML-DSA paired with a traditional RSA, ECDSA, or EdDSA -- accepted only when BOTH components verify.
+
+### Added
+
+- pki.cms.verify verifies, and pki.cms.sign produces, a composite ML-DSA CMS SignerInfo (draft-ietf-lamps-cms-composite-sigs) pairing ML-DSA-44/65/87 with a traditional RSA (PKCS#1 v1.5 or PSS), ECDSA (P-256/384/521), or EdDSA (Ed25519) component. The signature is accepted only when BOTH the post-quantum and traditional components verify over the domain-separated message representative; the digestAlgorithm is the parameter set's paired pre-hash, and the composite public-key OID must match the signatureAlgorithm. Fifteen algorithm arms verify and sign today; the two brainpool-curve arms and the one SHAKE256-pre-hash arm are recognized but fail closed to a typed error (their curve / digest is outside the WebCrypto surface).
+- pki.cms.sign accepts a composite signer as { cert, key: { mldsa, trad } } -- the two component private keys as PKCS#8 -- since a composite private key has no single native representation; it signs both components over the RFC 5652 section 5.4 preimage and emits the fixed-order composite signature the verifier consumes.
+
+## v0.2.17 — 2026-07-13
 
 Post-quantum SLH-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with all twelve FIPS 205 SLH-DSA parameter sets (RFC 9814), freely mixed with the classical and ML-DSA signers in one message.
 
