@@ -27,57 +27,57 @@ function imprint(hashAlgorithm) {
   return { hashAlgorithm: hashAlgorithm, hashedMessage: crypto.createHash(hashAlgorithm).update(DATA).digest() };
 }
 
-// ---- A1: request round-trip with every optional present ----
+// ---- request round-trip with every optional present ----
 function testRequestRoundTrip() {
   var mi = imprint("sha256");
   var der = pki.tsp.request(mi, { reqPolicy: "1.2.3.4.1", nonce: 0x0102030405060708n, certReq: true });
   check("request returns a DER Buffer", Buffer.isBuffer(der));
   var req = pki.tsp.parseRequest(der);
-  check("A1 version is 1", req.version === 1);
-  check("A1 messageImprint hash round-trips", Buffer.compare(req.messageImprint.hashedMessage, mi.hashedMessage) === 0);
-  check("A1 reqPolicy round-trips", req.reqPolicy === "1.2.3.4.1");
-  check("A1 nonce lossless (BigInt + hex)", req.nonce === 0x0102030405060708n && req.nonceHex === "0102030405060708");
-  check("A1 certReq true round-trips", req.certReq === true);
+  check("version is 1", req.version === 1);
+  check("messageImprint hash round-trips", Buffer.compare(req.messageImprint.hashedMessage, mi.hashedMessage) === 0);
+  check("reqPolicy round-trips", req.reqPolicy === "1.2.3.4.1");
+  check("nonce lossless (BigInt + hex)", req.nonce === 0x0102030405060708n && req.nonceHex === "0102030405060708");
+  check("certReq true round-trips", req.certReq === true);
   // the schema-namespace parser (pki.schema.tsp.parseRequest) is the same decoder the pki.tsp
   // delegate wraps -- exercise it directly so both public paths are covered.
   var schemaReq = pki.schema.tsp.parseRequest(der);
-  check("A1 pki.schema.tsp.parseRequest agrees", schemaReq.nonce === req.nonce && schemaReq.certReq === true);
+  check("pki.schema.tsp.parseRequest agrees", schemaReq.nonce === req.nonce && schemaReq.certReq === true);
   // the built DER is byte-stable (a second build of the same inputs is identical).
-  check("A1 request DER is byte-stable", Buffer.compare(pki.tsp.request(mi, { reqPolicy: "1.2.3.4.1", nonce: 0x0102030405060708n, certReq: true }), der) === 0);
+  check("request DER is byte-stable", Buffer.compare(pki.tsp.request(mi, { reqPolicy: "1.2.3.4.1", nonce: 0x0102030405060708n, certReq: true }), der) === 0);
 }
 
-// ---- A2: minimal request -- DEFAULT FALSE certReq is OMITTED, optionals absent ----
+// ---- minimal request -- DEFAULT FALSE certReq is OMITTED, optionals absent ----
 function testRequestMinimal() {
   var der = pki.tsp.request(imprint("sha256"));
   var req = pki.tsp.parseRequest(der);
-  check("A2 certReq defaults false", req.certReq === false);
-  check("A2 nonce absent -> null", req.nonce === null);
-  check("A2 reqPolicy absent -> null", req.reqPolicy === null);
+  check("certReq defaults false", req.certReq === false);
+  check("nonce absent -> null", req.nonce === null);
+  check("reqPolicy absent -> null", req.reqPolicy === null);
   // certReq DEFAULT FALSE must not be encoded: no BOOLEAN (tag 0x01) in the request body.
-  check("A2 DEFAULT-FALSE certReq omitted from the DER", der.indexOf(0x01, 2) === -1 || der.indexOf(Buffer.from([0x01, 0x01, 0x00])) === -1);
+  check("DEFAULT-FALSE certReq omitted from the DER", der.indexOf(0x01, 2) === -1 || der.indexOf(Buffer.from([0x01, 0x01, 0x00])) === -1);
 }
 
-// ---- A3: response round-trip (granted) wraps a real token ----
+// ---- response round-trip (granted) wraps a real token ----
 async function testResponseGranted() {
   var token = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 1, genTime: new Date("2027-01-01T00:00:00Z") });
   var der = pki.tsp.response(token, {});
   check("response returns a DER Buffer", Buffer.isBuffer(der));
   var resp = pki.tsp.parseResponse(der);
-  check("A3 status granted (0)", resp.status === 0);
-  check("A3 timeStampToken present + decoded", resp.timeStampToken && resp.timeStampToken.tstInfo.genTime instanceof Date);
-  check("A3 token genTime round-trips", resp.timeStampToken.tstInfo.genTime.toISOString() === "2027-01-01T00:00:00.000Z");
+  check("status granted (0)", resp.status === 0);
+  check("timeStampToken present + decoded", resp.timeStampToken && resp.timeStampToken.tstInfo.genTime instanceof Date);
+  check("token genTime round-trips", resp.timeStampToken.tstInfo.genTime.toISOString() === "2027-01-01T00:00:00.000Z");
 }
 
-// ---- A4: response rejection carries a PKIStatusInfo, no token ----
+// ---- response rejection carries a PKIStatusInfo, no token ----
 function testResponseRejection() {
   var der = pki.tsp.response(null, { status: 2, failInfo: ["badAlg"] });
   var resp = pki.tsp.parseResponse(der);
-  check("A4 status rejection (2)", resp.status === 2);
-  check("A4 failInfo decoded", resp.failInfo && resp.failInfo.bits.indexOf("badAlg") !== -1);
-  check("A4 no token on rejection", resp.timeStampToken === null);
+  check("status rejection (2)", resp.status === 2);
+  check("failInfo decoded", resp.failInfo && resp.failInfo.bits.indexOf("badAlg") !== -1);
+  check("no token on rejection", resp.timeStampToken === null);
 }
 
-// ---- R2: a request encoding an explicit certReq FALSE is non-DER (DEFAULT must be omitted) ----
+// ---- a request encoding an explicit certReq FALSE is non-DER (DEFAULT must be omitted) ----
 function testCertReqExplicitFalseRejected() {
   // hand-build a TimeStampReq whose certReq BOOLEAN FALSE is explicitly present.
   var mi = imprint("sha256");
@@ -86,25 +86,25 @@ function testCertReqExplicitFalseRejected() {
     b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(mi.hashedMessage)]),
     b.boolean(false),   // certReq DEFAULT FALSE encoded explicitly -- non-canonical
   ]);
-  rejectsSync("R2 explicit certReq FALSE", function () { return pki.tsp.parseRequest(reqDer); }, "tsp/bad-request");
+  rejectsSync("explicit certReq FALSE", function () { return pki.tsp.parseRequest(reqDer); }, "tsp/bad-request");
 }
 
-// ---- R11: strict DER -- a non-minimal / trailing-byte request is refused ----
+// ---- strict DER -- a non-minimal / trailing-byte request is refused ----
 function testStrictDer() {
   var mi = imprint("sha256");
   var good = pki.tsp.request(mi);
   var trailing = Buffer.concat([good, Buffer.from([0x00])]);
-  rejectsSync("R11 trailing byte after TimeStampReq", function () { return pki.tsp.parseRequest(trailing); }, "tsp/bad-der");
+  rejectsSync("trailing byte after TimeStampReq", function () { return pki.tsp.parseRequest(trailing); }, "tsp/bad-der");
 }
 
-// ---- R13: the response orchestrator still routes a TimeStampResp to schema.tsp ----
+// ---- the response orchestrator still routes a TimeStampResp to schema.tsp ----
 async function testOrchestratorRouting() {
   var token = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 2 });
   var der = pki.tsp.response(token, {});
   // pki.schema.parse detects + routes; a TimeStampResp yields the tsp result (a tsp-specific
   // timeStampToken shape), proving it routed to schema.tsp and was not mis-detected.
   var routed = pki.schema.parse(der);
-  check("R13 TimeStampResp routes to the tsp parser", routed && routed.status === 0 && routed.timeStampToken && routed.timeStampToken.tstInfo.genTime instanceof Date);
+  check("TimeStampResp routes to the tsp parser", routed && routed.status === 0 && routed.timeStampToken && routed.timeStampToken.tstInfo.genTime instanceof Date);
 }
 
 function rejectsSync(label, fn, code) {
@@ -174,80 +174,80 @@ function signToken(tsa, extra) {
   return pki.tsp.sign(imprint("sha256"), { cert: tsa.cert, key: tsa.key }, Object.assign({ policy: "1.2.3.4.1", serialNumber: 7, genTime: GENTIME }, extra || {}));
 }
 
-// ---- A5/A6/A7: accept with anchor, accept without anchor, precomputed imprint ----
+// ---- accept with anchor, accept without anchor, precomputed imprint ----
 async function testVerifyAccept() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));   // critical, exclusive id-kp-timeStamping
   var token = await signToken(tsa);
   var res = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor });
-  check("A5 valid with trust anchor", res.valid === true);
-  check("A5 genTime from verified eContent", res.genTime instanceof Date && res.genTime.toISOString() === "2027-01-01T00:00:00.000Z");
-  check("A5 serialNumber surfaced (lossless)", res.serialNumber === 7n);
-  check("A5 policy surfaced", res.policy === "1.2.3.4.1");
+  check("valid with trust anchor", res.valid === true);
+  check("genTime from verified eContent", res.genTime instanceof Date && res.genTime.toISOString() === "2027-01-01T00:00:00.000Z");
+  check("serialNumber surfaced (lossless)", res.serialNumber === 7n);
+  check("policy surfaced", res.policy === "1.2.3.4.1");
   var res6 = await pki.tsp.verify(token, DATA, {});
-  check("A6 valid without anchor; TSA cert surfaced for the caller to anchor", res6.valid === true && res6.signer && Buffer.isBuffer(res6.signer.cert));
+  check("valid without anchor; TSA cert surfaced for the caller to anchor", res6.valid === true && res6.signer && Buffer.isBuffer(res6.signer.cert));
   var res7 = await pki.tsp.verify(token, imprint("sha256"), {});
-  check("A7 precomputed imprint matches", res7.valid === true);
+  check("precomputed imprint matches", res7.valid === true);
 }
 
-// ---- A8: nonce echoed and required ----
+// ---- nonce echoed and required ----
 async function testVerifyNonce() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var withNonce = await signToken(tsa, { nonce: 0x0102030405060708n });
-  check("A8 nonce match -> valid", (await pki.tsp.verify(withNonce, DATA, { nonce: 0x0102030405060708n })).valid === true);
+  check("nonce match -> valid", (await pki.tsp.verify(withNonce, DATA, { nonce: 0x0102030405060708n })).valid === true);
   var r7 = await pki.tsp.verify(withNonce, DATA, { nonce: 0xdeadbeefn });
-  check("R7 nonce mismatch -> tsp/nonce-mismatch", r7.valid === false && r7.code === "tsp/nonce-mismatch");
+  check("nonce mismatch -> tsp/nonce-mismatch", r7.valid === false && r7.code === "tsp/nonce-mismatch");
   var noNonce = await signToken(tsa);
   var r7b = await pki.tsp.verify(noNonce, DATA, { nonce: 1n });
-  check("R7 nonce required but absent -> tsp/nonce-mismatch", r7b.valid === false && r7b.code === "tsp/nonce-mismatch");
+  check("nonce required but absent -> tsp/nonce-mismatch", r7b.valid === false && r7b.code === "tsp/nonce-mismatch");
 }
 
-// ---- A9: algorithm-agnostic signer (the CMS layer carries any signer) ----
+// ---- algorithm-agnostic signer (the CMS layer carries any signer) ----
 async function testVerifyAlgAgnostic() {
   var edTsa = makeTsa(ekuExt([TS_EKU], true), { keyType: "ed25519" });
   var token = await signToken(edTsa);
-  check("A9 Ed25519 TSA verifies", (await pki.tsp.verify(token, DATA, { trustAnchor: edTsa.anchor })).valid === true);
+  check("Ed25519 TSA verifies", (await pki.tsp.verify(token, DATA, { trustAnchor: edTsa.anchor })).valid === true);
 }
 
-// ---- R1: message-imprint mismatch ----
+// ---- message-imprint mismatch ----
 async function testVerifyImprintMismatch() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var token = await signToken(tsa);
   var r1 = await pki.tsp.verify(token, Buffer.from("a different document"), {});
-  check("R1 imprint mismatch -> tsp/imprint-mismatch", r1.valid === false && r1.code === "tsp/imprint-mismatch");
+  check("imprint mismatch -> tsp/imprint-mismatch", r1.valid === false && r1.code === "tsp/imprint-mismatch");
 }
 
-// ---- R3: a CMS SignedData whose eContentType != id-ct-TSTInfo is not a token (throws) ----
+// ---- a CMS SignedData whose eContentType != id-ct-TSTInfo is not a token (throws) ----
 async function testVerifyWrongEContentType() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var notAToken = await pki.cms.sign(Buffer.from("plain content"), { cert: tsa.cert, key: tsa.key });   // eContentType id-data
-  await rejects("R3 wrong eContentType", function () { return pki.tsp.verify(notAToken, DATA, {}); }, "tsp/wrong-econtent-type");
+  await rejects("wrong eContentType", function () { return pki.tsp.verify(notAToken, DATA, {}); }, "tsp/wrong-econtent-type");
 }
 
-// ---- R4/R5/R5b: the RFC 3161 sec. 2.3 critical single-timeStamping EKU gate ----
+// ---- the RFC 3161 sec. 2.3 critical single-timeStamping EKU gate ----
 async function testVerifyEkuGate() {
   var nonCrit = makeTsa(ekuExt([TS_EKU], false));   // present but NOT critical
   var r4 = await pki.tsp.verify(await signToken(nonCrit), DATA, {});
-  check("R4 non-critical EKU -> tsp/eku-not-critical", r4.valid === false && r4.code === "tsp/eku-not-critical");
+  check("non-critical EKU -> tsp/eku-not-critical", r4.valid === false && r4.code === "tsp/eku-not-critical");
   var extra = makeTsa(ekuExt([TS_EKU, CLIENT_AUTH], true));   // timeStamping + clientAuth
   var r5 = await pki.tsp.verify(await signToken(extra), DATA, {});
-  check("R5 extra EKU purpose -> tsp/eku-not-exclusive", r5.valid === false && r5.code === "tsp/eku-not-exclusive");
+  check("extra EKU purpose -> tsp/eku-not-exclusive", r5.valid === false && r5.code === "tsp/eku-not-exclusive");
   var anyEku = makeTsa(ekuExt([pki.oid.byName("anyExtendedKeyUsage")], true));
   var r5any = await pki.tsp.verify(await signToken(anyEku), DATA, {});
-  check("R5 anyExtendedKeyUsage -> tsp/eku-not-exclusive", r5any.valid === false && r5any.code === "tsp/eku-not-exclusive");
+  check("anyExtendedKeyUsage -> tsp/eku-not-exclusive", r5any.valid === false && r5any.code === "tsp/eku-not-exclusive");
   var noEku = makeTsa(null);   // extKeyUsage absent
   var r5b = await pki.tsp.verify(await signToken(noEku), DATA, {});
-  check("R5b absent EKU -> tsp/bad-eku (RFC 3161 sec. 2.3 requires it present+critical)", r5b.valid === false && r5b.code === "tsp/bad-eku");
+  check("absent EKU -> tsp/bad-eku (RFC 3161 sec. 2.3 requires it present+critical)", r5b.valid === false && r5b.code === "tsp/bad-eku");
 }
 
-// ---- R6: genTime outside the TSA cert validity window (path.validate at time=genTime) ----
+// ---- genTime outside the TSA cert validity window (path.validate at time=genTime) ----
 async function testVerifyExpired() {
   var expired = makeTsa(ekuExt([TS_EKU], true), { notBefore: new Date("2018-01-01T00:00:00Z"), notAfter: new Date("2019-01-01T00:00:00Z") });
   var token = await signToken(expired);   // genTime 2027 is outside 2018..2019
   var r6 = await pki.tsp.verify(token, DATA, { trustAnchor: expired.anchor });
-  check("R6 expired TSA at genTime -> tsp/untrusted-tsa", r6.valid === false && r6.code === "tsp/untrusted-tsa");
+  check("expired TSA at genTime -> tsp/untrusted-tsa", r6.valid === false && r6.code === "tsp/untrusted-tsa");
 }
 
-// ---- R8: ESSCertID(V2) binding mismatch (a signed but WRONG certHash) ----
+// ---- ESSCertID(V2) binding mismatch (a signed but WRONG certHash) ----
 async function testVerifyBinding() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var mi = imprint("sha256");
@@ -259,19 +259,19 @@ async function testVerifyBinding() {
   var badToken = await pki.cms.sign(tstInfo, { cert: tsa.cert, key: tsa.key },
     { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [bogusScv2] }] });
   var r8 = await pki.tsp.verify(badToken, DATA, {});
-  check("R8 ESSCertID binding mismatch -> tsp/cert-binding-mismatch", r8.valid === false && r8.code === "tsp/cert-binding-mismatch");
+  check("ESSCertID binding mismatch -> tsp/cert-binding-mismatch", r8.valid === false && r8.code === "tsp/cert-binding-mismatch");
 }
 
-// ---- R9: a well-formed, correctly-bound token whose TSA cert does not chain to the anchor ----
+// ---- a well-formed, correctly-bound token whose TSA cert does not chain to the anchor ----
 async function testVerifyUntrusted() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var other = makeTsa(ekuExt([TS_EKU], true), { name: "OtherRoot" });   // a different key
   var token = await signToken(tsa);
   var r9 = await pki.tsp.verify(token, DATA, { trustAnchor: other.anchor });
-  check("R9 TSA does not chain to the anchor -> tsp/untrusted-tsa", r9.valid === false && r9.code === "tsp/untrusted-tsa");
+  check("TSA does not chain to the anchor -> tsp/untrusted-tsa", r9.valid === false && r9.code === "tsp/untrusted-tsa");
 }
 
-// ---- R10 (desync): verify reads from the authenticated eContent, ignoring a mutated parsed object ----
+// ---- desync: verify reads from the authenticated eContent, ignoring a mutated parsed object ----
 async function testVerifyDesync() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var token = await signToken(tsa, { nonce: 0x11223344n });
@@ -281,7 +281,7 @@ async function testVerifyDesync() {
   // verify takes the TOKEN BYTES and re-decodes TSTInfo from the authenticated eContent, so the
   // mutation to the separate parsed object has no effect on the verdict.
   var res = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, nonce: 0x11223344n });
-  check("R10 verify ignores a mutated parsed object (reads verified eContent)", res.valid === true);
+  check("verify ignores a mutated parsed object (reads verified eContent)", res.valid === true);
 }
 
 // ---- branch coverage: the reachable edges of request/response/verify not hit above ----
@@ -331,6 +331,12 @@ async function testTspCoverage() {
   var badEkuTsa = makeTsa(extDer(pki.oid.byName("extKeyUsage"), true, Buffer.from([0xff, 0x01, 0x00])));
   var be = await pki.tsp.verify(await signToken(badEkuTsa), DATA, {});
   check("malformed critical EKU value -> tsp/bad-eku", be.valid === false && be.code === "tsp/bad-eku");
+  // an EKU extnValue that is not decodable DER at all (a truncated TLV) -> the decode catch, fail closed.
+  var truncEkuTsa = makeTsa(extDer(pki.oid.byName("extKeyUsage"), true, Buffer.from([0x30, 0x05])));
+  check("non-DER EKU value -> tsp/bad-eku", (await pki.tsp.verify(await signToken(truncEkuTsa), DATA, {})).code === "tsp/bad-eku");
+  // a keyUsage extension whose value is not a decodable BIT STRING -> the keyUsage decode catch.
+  var badKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), false, Buffer.from([0x03, 0x05]))]);
+  check("malformed keyUsage value -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(badKuTsa), DATA, {})).code === "tsp/bad-key-usage");
   // an ESSCertID(V2) using an unsupported hash algorithm cannot be recomputed -> fail closed.
   var goodImprint = b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]);
   var tst371 = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(5n), b.generalizedTime(GENTIME)]);
@@ -415,11 +421,11 @@ async function testBuilderCoverage() {
 }
 
 // An issuer-signed EC (P-256 / ecdsa-SHA256) certificate, for a multi-level chain.
-function signedCert(subjectCN, issuerCN, subjectKp, issuerKp, exts) {
+function signedCert(subjectCN, issuerCN, subjectKp, issuerKp, exts, serial) {
   var algId = b.sequence([b.oid(pki.oid.byName("ecdsaWithSHA256"))]);
   var tbsCh = [
     b.contextConstructed(0, b.integer(2n)),
-    b.integer(BigInt(1 + Math.floor(Math.random() * 1e12))),
+    b.integer(serial != null ? BigInt(serial) : BigInt(1 + Math.floor(Math.random() * 1e12))),
     algId, certName(issuerCN),
     b.sequence([b.utcTime(new Date("2020-01-01T00:00:00Z")), b.utcTime(new Date("2035-01-01T00:00:00Z"))]),
     certName(subjectCN),
@@ -442,8 +448,9 @@ function spliceCert(tokenDer, extraCertDer) {
   return b.sequence([b.raw(ci.children[0].bytes), b.explicit(0, newSd)]);
 }
 
-// ---- Codex-round hardening: embedded-chain path validation, EKU-wrapper strictness, and the
-// ESSCertID(V2) issuerSerial binding. ----
+// ---- embedded-chain path validation, EKU-wrapper strictness, the ESSCertID(V2) issuerSerial
+// (serial + issuer) binding, the RFC 5816 sec. 2.2.2 tsa hint, the critical-extension gate, and
+// the SHA-2-only certificate-binding pin ----
 async function testChainAndBindings() {
   var bcCA = extDer(pki.oid.byName("basicConstraints"), true, b.sequence([b.boolean(true)]));
   var rootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -485,6 +492,80 @@ async function testChainAndBindings() {
   }
   check("ESSCertID issuerSerial wrong serial -> tsp/cert-binding-mismatch", (await pki.tsp.verify(await essTok(999), DATA, {})).code === "tsp/cert-binding-mismatch");
   check("ESSCertID issuerSerial correct serial verifies", (await pki.tsp.verify(await essTok(1), DATA, {})).valid === true);
+
+  // an intermediate that REUSES the leaf's serial number must still order + validate: a self-cert
+  // is identified by issuer + serial, never the serial alone.
+  var ssRootKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ssInterKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ssLeafKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ssRoot = signedCert("SSRoot", "SSRoot", ssRootKp, ssRootKp, [bcCA], 5);
+  var ssInter = signedCert("SSInter", "SSRoot", ssInterKp, ssRootKp, [bcCA], 5);       // serial 5 -- same as the leaf
+  var ssLeaf = signedCert("SSLeaf", "SSInter", ssLeafKp, ssInterKp, [ekuExt([TS_EKU], true)], 5);
+  var ssRootP = pki.schema.x509.parse(ssRoot);
+  var ssAnchor = { name: ssRootP.subject, publicKey: ssRootP.subjectPublicKeyInfo.bytes, algorithm: ssRootP.signatureAlgorithm.oid };
+  var ssTok = await pki.tsp.sign(imprint("sha256"), { cert: ssLeaf, key: ssLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
+  check("intermediate reusing the leaf serial still chains (issuer+serial identity)", (await pki.tsp.verify(spliceCert(ssTok, ssInter), DATA, { trustAnchor: ssAnchor })).valid === true);
+
+  // #2b (RFC 5035): the ESSCertID issuerSerial issuer, when present, MUST equal the signer cert issuer.
+  var isHash = crypto.createHash("sha256").update(essTsa.cert).digest();
+  function essTokIssuer(issuerCN) {
+    var is = b.sequence([b.sequence([b.contextConstructed(4, certName(issuerCN))]), b.integer(1n)]);
+    var scv = b.sequence([b.sequence([b.sequence([b.octetString(isHash), is])])]);
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(60n), b.generalizedTime(GENTIME)]);
+    return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
+  }
+  check("issuerSerial issuer == signer issuer -> verifies", (await pki.tsp.verify(await essTokIssuer("TSA"), DATA, {})).valid === true);
+  check("issuerSerial issuer mismatch -> tsp/cert-binding-mismatch", (await pki.tsp.verify(await essTokIssuer("WrongIssuer"), DATA, {})).code === "tsp/cert-binding-mismatch");
+
+  // #3 (RFC 5816 sec. 2.2.2): a TSTInfo tsa field, when present, MUST name the signer certificate.
+  function tsaTok(tsaCN) {
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(70n), b.generalizedTime(GENTIME), b.explicit(0, b.contextConstructed(4, certName(tsaCN)))]);
+    return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2(1)] }] });
+  }
+  check("TSTInfo tsa naming the signer subject -> verifies", (await pki.tsp.verify(await tsaTok("TSA"), DATA, {})).valid === true);
+  check("TSTInfo tsa naming a different subject -> tsp/tsa-mismatch", (await pki.tsp.verify(await tsaTok("NotTheTSA"), DATA, {})).code === "tsp/tsa-mismatch");
+
+  // A CRITICAL extension in the TSTInfo is unrecognized (RFC 3161 defines none) and must fail closed;
+  // a non-critical one is ignorable and accepted.
+  function extTok(critical) {
+    var exts = b.contextConstructed(1, extDer("1.2.3.99", critical, b.nullValue()));
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(90n), b.generalizedTime(GENTIME), exts]);
+    return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2(1)] }] });
+  }
+  check("TSTInfo critical unknown extension -> tsp/unknown-critical-extension", (await pki.tsp.verify(await extTok(true), DATA, {})).code === "tsp/unknown-critical-extension");
+  check("TSTInfo non-critical extension -> accepted", (await pki.tsp.verify(await extTok(false), DATA, {})).valid === true);
+
+  // the ESSCertID(V2) certificate binding is an identity pin: a SHA-1 certHash (RFC 2634 ESSCertID)
+  // is collision-weak and MUST be refused -- RFC 5816 moved the binding to the SHA-2 ESSCertIDv2.
+  function sha1BindTok() {
+    var h = crypto.createHash("sha1").update(essTsa.cert).digest();
+    var scv = b.sequence([b.sequence([b.sequence([b.sequence([b.oid(pki.oid.byName("sha1"))]), b.octetString(h)])])]);
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(95n), b.generalizedTime(GENTIME)]);
+    return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
+  }
+  check("ESSCertIDv2 SHA-1 certHash -> tsp/unsupported-algorithm (identity pin must be SHA-2)", (await pki.tsp.verify(await sha1BindTok(), DATA, {})).code === "tsp/unsupported-algorithm");
+
+  // RFC 5816 sec. 2.2.2: the tsa hint MAY name a subjectAltName entry (matched byte-exact as a
+  // GeneralName), not only the subject DN -- here the hint's DN differs from the subject, so the
+  // match can only be satisfied through the SAN.
+  var altGN = b.contextConstructed(4, certName("AltTSA"));
+  var sanTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("subjectAltName"), false, b.sequence([altGN]))]);
+  function sanTsaTok() {
+    var scv = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha256").update(sanTsa.cert).digest())])])]);
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(72n), b.generalizedTime(GENTIME), b.explicit(0, b.contextConstructed(4, certName("AltTSA")))]);
+    return pki.cms.sign(tst, { cert: sanTsa.cert, key: sanTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
+  }
+  check("tsa hint matching a subjectAltName entry (not the subject DN) -> verifies", (await pki.tsp.verify(await sanTsaTok(), DATA, {})).valid === true);
+
+  // a tsa hint that misses the subject DN and forces the subjectAltName path, where the SAN value is
+  // not decodable DER -> the SAN decode fails closed to no-match (tsp/tsa-mismatch).
+  var badSanTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("subjectAltName"), false, Buffer.from([0x30, 0x05]))]);
+  function badSanTok() {
+    var scv = b.sequence([b.sequence([b.sequence([b.octetString(crypto.createHash("sha256").update(badSanTsa.cert).digest())])])]);
+    var tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), b.sequence([b.sequence([b.oid(pki.oid.byName("sha256")), b.nullValue()]), b.octetString(imprint("sha256").hashedMessage)]), b.integer(73n), b.generalizedTime(GENTIME), b.explicit(0, b.contextConstructed(4, certName("Nope")))]);
+    return pki.cms.sign(tst, { cert: badSanTsa.cert, key: badSanTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv] }] });
+  }
+  check("tsa hint with a malformed subjectAltName in the cert -> tsp/tsa-mismatch", (await pki.tsp.verify(await badSanTok(), DATA, {})).code === "tsp/tsa-mismatch");
 }
 
 async function run() {
