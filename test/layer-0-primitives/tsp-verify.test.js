@@ -133,9 +133,10 @@ function extDer(oidStr, critical, valueDer) {
 function ekuExt(purposeOids, critical) { return extDer(pki.oid.byName("extKeyUsage"), critical, b.sequence(purposeOids.map(function (o) { return b.oid(o); }))); }
 function certName(cn) { return b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8(cn)])])]); }
 
-// makeTsa(ekuExtension, opts) -> { cert (DER), key (PKCS#8 DER), anchor } for a self-signed TSA
-// with a REAL signature. opts: keyType ("ec"|"ed25519"), notBefore/notAfter (Date), name, serial.
-function makeTsa(ekuExtension, opts) {
+// makeTsa(ext, opts) -> { cert (DER), key (PKCS#8 DER), anchor } for a self-signed TSA with a REAL
+// signature. `ext` is a single Extension DER or an array of them. opts: keyType ("ec"|"ed25519"),
+// notBefore/notAfter (Date), name, serial.
+function makeTsa(ext, opts) {
   opts = opts || {};
   var kp, algId, signFn;
   if (opts.keyType === "ed25519") {
@@ -157,7 +158,8 @@ function makeTsa(ekuExtension, opts) {
     certName(name),
     b.raw(kp.publicKey.export({ format: "der", type: "spki" })),
   ];
-  if (ekuExtension) tbsCh.push(b.contextConstructed(3, b.sequence([ekuExtension])));
+  var extList = Array.isArray(ext) ? ext : (ext ? [ext] : []);
+  if (extList.length) tbsCh.push(b.contextConstructed(3, b.sequence(extList)));
   var tbs = b.sequence(tbsCh);
   var cert = b.sequence([tbs, algId, b.bitString(signFn(tbs), 0)]);
   var parsed = pki.schema.x509.parse(cert);
@@ -392,6 +394,24 @@ async function testBuilderCoverage() {
   // verify: a malformed trustAnchor makes path.validate fault -> caught fail-closed as tsp/untrusted-tsa.
   var ba = await pki.tsp.verify(tsTok, DATA, { trustAnchor: { name: "x", publicKey: Buffer.from([1, 2, 3]), algorithm: "1.2.840.10045.4.3.2" } });
   check("malformed trustAnchor -> tsp/untrusted-tsa", ba.valid === false && ba.code === "tsp/untrusted-tsa");
+  // M11 keyUsage (RFC 5280 sec. 4.2.1.3): a TSA cert whose keyUsage forbids signing (keyEncipherment
+  // only, no digitalSignature / nonRepudiation) cannot mint a token, even with a correct EKU.
+  var keyEncOnly = extDer(pki.oid.byName("keyUsage"), true, b.bitString(Buffer.from([0x20]), 5));   // keyEncipherment (bit 2) only
+  var noSignTsa = makeTsa([ekuExt([TS_EKU], true), keyEncOnly]);
+  var kur = await pki.tsp.verify(await signToken(noSignTsa), DATA, {});
+  check("TSA keyUsage without a signing bit -> tsp/bad-key-usage", kur.valid === false && kur.code === "tsp/bad-key-usage");
+  // the accept arm: a keyUsage asserting digitalSignature (bit 0) passes the signing-permitted gate.
+  var signTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.bitString(Buffer.from([0x80]), 7))]);
+  check("TSA keyUsage with digitalSignature verifies", (await pki.tsp.verify(await signToken(signTsa), DATA, {})).valid === true);
+  // nonRepudiation (bit 1) alone also permits signing -> accept.
+  var nrTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.bitString(Buffer.from([0x40]), 6))]);
+  check("TSA keyUsage with nonRepudiation verifies", (await pki.tsp.verify(await signToken(nrTsa), DATA, {})).valid === true);
+  // an empty keyUsage (no bits) permits nothing -> reject.
+  var emptyKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.bitString(Buffer.alloc(0), 0))]);
+  check("TSA empty keyUsage -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(emptyKuTsa), DATA, {})).code === "tsp/bad-key-usage");
+  // a keyUsage value that is not a BIT STRING fails closed via the decode catch.
+  var badKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.integer(5n))]);
+  check("TSA malformed keyUsage value -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(badKuTsa), DATA, {})).code === "tsp/bad-key-usage");
 }
 
 async function run() {
