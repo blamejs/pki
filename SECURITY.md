@@ -246,6 +246,9 @@ security-only patches after the next major releases.
   exist only in the External Account Binding profile so an `RS256`→`HS256` key
   confusion cannot resolve (CVE-2016-10555), signature lengths are pinned before
   any crypto call, and an all-zero ECDSA signature is refused (CVE-2022-21449).
+  An OKP (Ed25519/Ed448) verification key is validated on-curve and full-order
+  before use — a low-order key, which the platform imports without complaint and
+  which verifies a forged signature, cannot verify a forged JWS.
   The base64url codec rejects padding, non-alphabet bytes, and non-canonical
   trailing bits (RFC 8555 §6.1), and the JSON reader rejects a duplicate member
   at any nesting depth (the parser-differential smuggling class, CVE-2017-12635)
