@@ -366,6 +366,7 @@ async function testBuilderCoverage() {
   check("response with no opts arg builds a granted response", Buffer.isBuffer(pki.tsp.response(token)));
   check("response pem:true -> PEM string", typeof pki.tsp.response(token, { pem: true }) === "string");
   check("response statusString array round-trips", pki.tsp.parseResponse(pki.tsp.response(null, { status: 2, statusString: ["a", "b"], failInfo: ["badAlg"] })).statusString.length === 2);
+  rejectsSync("response empty statusString array -> tsp/bad-input (PKIFreeText SIZE 1..MAX)", function () { return pki.tsp.response(null, { status: 2, statusString: [], failInfo: ["badAlg"] }); }, "tsp/bad-input");
   check("response accepts a Uint8Array token", Buffer.isBuffer(pki.tsp.response(new Uint8Array(token), {})));
   var pemToken = await pki.tsp.sign(mi, makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 11, pem: true });
   check("response accepts a PEM-string token", Buffer.isBuffer(pki.tsp.response(pemToken, {})));
