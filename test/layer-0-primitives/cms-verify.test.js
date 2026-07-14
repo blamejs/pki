@@ -19,6 +19,7 @@
 var fs = require("fs");
 var path = require("path");
 var helpers = require("../helpers");
+var makeSigner = require("../helpers/signing").makeSigner;
 var pki = helpers.pki;
 var check = helpers.check;
 var b = pki.asn1.build;
@@ -443,12 +444,25 @@ async function testEdPointValidation() {
   var red = await pki.cms.verify(p);
   check("Ed25519 low-order signer point rejected before verify", red.valid === false && red.signers[0].code === "cms/bad-signature");
 
-  // the Ed448 curve selector: relabel the signer as Ed448 -- the Ed25519-sized point is not a
-  // valid Ed448 point, so it is rejected before verify.
-  var p448 = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
-  p448.signerInfos[0].signatureAlgorithm.name = "Ed448";
+  // the one-shot sameKeyOid guard: an Ed448 signatureAlgorithm over an Ed25519 signer key is an
+  // algorithm mismatch (the key and signature share one OID, RFC 8410), rejected before import.
+  var pMism = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
+  pMism.signerInfos[0].signatureAlgorithm.name = "Ed448";
+  var rMism = await pki.cms.verify(pMism);
+  check("Ed448 sig-alg over an Ed25519 signer key -> algorithm mismatch", rMism.valid === false && rMism.signers[0].code === "cms/unsupported-algorithm");
+
+  // the Ed448 curve selector in the point validator: a genuine Ed448 signer whose public-key point
+  // is zeroed (a low-order point) is rejected before verify, exactly as the Ed25519 case above.
+  var signed448 = await pki.cms.sign(CONTENT, makeSigner("ed448"));
+  var p448 = pki.schema.cms.parse(signed448);
+  var cert448 = Buffer.from(p448.certificates[0].bytes);
+  var pat448 = Buffer.from([0x2B, 0x65, 0x71, 0x03, 0x3A, 0x00]);   // Ed448 OID tail + BIT STRING(58) + 0 unused bits
+  var j = cert448.indexOf(pat448);
+  check("Ed448 SPKI point located in the signer cert", j >= 0);
+  cert448.fill(0x00, j + pat448.length, j + pat448.length + 57);   // all-zeroes: a low-order Ed448 point
+  p448.certificates[0].bytes = cert448;
   var r448 = await pki.cms.verify(p448);
-  check("Ed448-labelled signer with a non-Ed448 point", r448.valid === false && r448.signers[0].code === "cms/bad-signature");
+  check("Ed448 low-order signer point rejected before verify", r448.valid === false && r448.signers[0].code === "cms/bad-signature");
 }
 
 // ---- config-time misuse throws typed cms/bad-input ----
@@ -456,6 +470,70 @@ async function testBadInput() {
   await rejects("options a string", function () { return pki.cms.verify(fx("rsa-attached.p7s"), "nope"); }, "cms/bad-input");
   await rejects("options a Buffer", function () { return pki.cms.verify(fx("rsa-attached.p7s"), Buffer.from([1])); }, "cms/bad-input");
   await rejects("detached content wrong type", function () { return pki.cms.verify(fx("rsa-detached.p7s"), { content: 12345 }); }, "cms/bad-input");
+}
+
+// ---- ML-DSA (RFC 9882) verify-side rejects, driven on mutated parsed inputs ----
+async function testMlDsaVerify() {
+  // a valid ML-DSA-65 SignedData verifies (the full sign round-trip is covered in cms-sign.test.js).
+  check("ML-DSA-65 SignedData verifies", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")))).valid === true);
+  // a SignedData with NO embedded certificates: the signer certificate is supplied out-of-band via
+  // opts.certs (drives the `parsed.certificates || []` no-embed path).
+  var noCerts = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  var outOfBandCert = Buffer.from(noCerts.certificates[0].bytes);
+  delete noCerts.certificates;
+  check("ML-DSA-65 no embedded cert + opts.certs -> valid", (await pki.cms.verify(noCerts, { certs: [outOfBandCert] })).valid === true);
+  // a parsed-object input whose certificates entry is a raw DER Buffer (not a { bytes } object) is
+  // accepted -- the candidate loader handles both shapes (drives the raw-value ternary arm).
+  var rawCertObj = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  rawCertObj.certificates = [Buffer.from(rawCertObj.certificates[0].bytes)];   // a raw DER Buffer, not { bytes }
+  check("ML-DSA-65 raw-Buffer certificate entry -> valid", (await pki.cms.verify(rawCertObj)).valid === true);
+  // R3 -- signatureAlgorithm / signer-key parameter-set disagreement (the sameKeyOid guard).
+  var m3 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  m3.signerInfos[0].signatureAlgorithm.name = "id-ml-dsa-87";
+  check("R3 sig-alg id-ml-dsa-87 over an id-ml-dsa-65 key -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m3)));
+  // R1 (defense-in-depth) -- signatureAlgorithm parameters present where absent is required.
+  var m1 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  m1.signerInfos[0].signatureAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // a DER NULL, must be absent
+  check("R1 ML-DSA signatureAlgorithm parameters present -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m1)));
+  // R2 -- digestAlgorithm parameters present and non-NULL.
+  var m2 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  m2.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // a non-NULL OCTET STRING
+  check("R2 ML-DSA digestAlgorithm non-NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m2)));
+  // R14 -- a SHA-2 ML-DSA digestAlgorithm (id-sha512) carrying a DER NULL parameter is ACCEPTED:
+  // RFC 9882 says signers omit it, but RFC 5754 requires a verifier to accept SHA-2 with absent OR NULL.
+  var m14 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  m14.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- accepted for SHA-2 (RFC 5754)
+  check("R14 ML-DSA sha512 digestAlgorithm DER NULL parameter -> accepted (RFC 5754)", (await pki.cms.verify(m14)).valid === true);
+  // R14b -- a SHAKE256 ML-DSA digestAlgorithm with a present parameter (even DER NULL) is REJECTED:
+  // RFC 8702 sec. 3.1 requires the SHAKE parameters absent, with no NULL exception.
+  var m14b = pki.schema.cms.parse(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })));
+  m14b.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- forbidden for SHAKE256
+  check("R14b ML-DSA shake256 digestAlgorithm NULL parameter -> unsupported (RFC 8702)", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m14b)));
+  // R8 -- an unwired message digest (SHA3-512) with signed attributes present.
+  var m8 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  m8.signerInfos[0].digestAlgorithm.name = "sha3-512";
+  check("R8 ML-DSA unsupported message digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m8)));
+  // R12 (verify side) -- a below-strength message digest for the parameter set (SHA-256 / ML-DSA-87).
+  var m12 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-87")));
+  m12.signerInfos[0].digestAlgorithm.name = "sha256";
+  check("R12 SHA-256 under ML-DSA-87 (below strength) -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m12)));
+  // R7 -- empty-context binding (RFC 9882 sec. 3.2): an ML-DSA signature computed under a NON-EMPTY
+  // context does not verify under CMS, which signs and verifies with the empty context. Re-sign the
+  // exact preimage with a context and swap it in -> the verdict is invalid (a code-less false, no throw).
+  var s7 = makeSigner("ml-dsa-65");
+  var p7 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, s7));
+  var preimage7 = Buffer.from(p7.signerInfos[0].signedAttrsBytes); preimage7[0] = 0x31;   // [0] IMPLICIT -> universal SET OF
+  p7.signerInfos[0].signature = require("node:crypto").sign(null, preimage7, { key: s7.keyObject, context: Buffer.from("ctx") });
+  check("R7 non-empty-context ML-DSA signature -> invalid under empty-context verify", (await pki.cms.verify(p7)).valid === false);
+  // M9 -- with NO signed attributes the digestAlgorithm has no meaning and is ignored on verify:
+  // neither an unsupported digest NAME nor a present (non-NULL) PARAMETER may reject the signature.
+  var noattr = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  noattr.signerInfos[0].digestAlgorithm.name = "sha3-512";   // meaningless when signed attrs absent
+  check("M9 no-signed-attrs verify ignores digestAlgorithm name", (await pki.cms.verify(noattr, { content: CONTENT })).valid === true);
+  // R15 -- a present, non-NULL digestAlgorithm parameter is likewise ignored without signed attributes.
+  var m15 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  m15.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // present non-NULL -- ignored w/o attrs
+  check("R15 no-attrs ML-DSA ignores a present digestAlgorithm parameter", (await pki.cms.verify(m15, { content: CONTENT })).valid === true);
 }
 
 async function run() {
@@ -475,6 +553,7 @@ async function run() {
   await testContentType();
   await testSignedAttrsBinding();
   await testEdPointValidation();
+  await testMlDsaVerify();
   await testBadInput();
 }
 

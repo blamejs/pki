@@ -14,21 +14,25 @@
  */
 
 var pki = require("..");
-var SIGNER = require("../test/helpers/signing").makeSigner("ec-p256");
+var signing = require("../test/helpers/signing");
+var SIGNER = signing.makeSigner("ec-p256");
+var SIGNER_MLDSA = signing.makeSigner("ml-dsa-44");   // the post-quantum signer path (RFC 9882)
 
 function isPki(e) { return e instanceof pki.errors.PkiError; }
 
 module.exports.fuzz = async function (data) {
   var content = Buffer.from(data);
   try {
-    if (data.length & 1) {
-      var detached = await pki.cms.sign(content, SIGNER, { detached: true });
-      var vd = await pki.cms.verify(detached, { content: content });
-      if (vd.valid !== true) throw new Error("cms.sign detached output did not verify");
-    } else {
+    var mode = data.length % 3;
+    if (mode === 0) {
       var attached = await pki.cms.sign(content, SIGNER);
-      var va = await pki.cms.verify(attached);
-      if (va.valid !== true) throw new Error("cms.sign attached output did not verify");
+      if ((await pki.cms.verify(attached)).valid !== true) throw new Error("cms.sign attached output did not verify");
+    } else if (mode === 1) {
+      var detached = await pki.cms.sign(content, SIGNER, { detached: true });
+      if ((await pki.cms.verify(detached, { content: content })).valid !== true) throw new Error("cms.sign detached output did not verify");
+    } else {
+      var mldsa = await pki.cms.sign(content, SIGNER_MLDSA);
+      if ((await pki.cms.verify(mldsa)).valid !== true) throw new Error("cms.sign ML-DSA output did not verify");
     }
   } catch (e) { if (!isPki(e)) throw e; }
 };

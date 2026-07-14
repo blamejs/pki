@@ -321,6 +321,11 @@ security-only patches after the next major releases.
   ECDSA signatures re-encoded to canonical DER through the shared `validator.sig` gate — so a
   token this toolkit signs cannot desynchronize from what it (or OpenSSL) verifies, and the
   signer's private key is only ever handed to the WebCrypto sign call, never logged or embedded.
+  Post-quantum ML-DSA (ML-DSA-44/65/87, RFC 9882) signs and verifies over the same preimage in
+  pure mode with the empty context; the message-digest algorithm is held to each parameter set's
+  security strength on both sign and verify (a below-strength digest — the weaker link that would
+  cap the signature's collision resistance — is refused), and the signer certificate's public-key
+  parameter set must agree with the SignerInfo signatureAlgorithm.
 - **Supply-chain compromise via transitive deps.** There are zero npm runtime
   dependencies and nothing is vendored — the cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,

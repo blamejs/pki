@@ -262,7 +262,96 @@ function _v1Signer() {
   return { cert: cert, key: kp.privateKey.export({ format: "der", type: "pkcs8" }) };
 }
 
+// ---- ML-DSA (RFC 9882): the first post-quantum SignerInfo, pure mode, empty context ----
+async function testMlDsa() {
+  // A1 -- ML-DSA-65 attached, signed attrs present, default SHA-512 message digest.
+  var a1 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
+  check("A1 ML-DSA-65 attached signed-attrs -> valid", a1.valid === true);
+  // A2 -- ML-DSA-44 with the SHAKE256 message digest (the sec. 3.3 SHOULD path).
+  var a2 = await pki.cms.verify(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })));
+  check("A2 ML-DSA-44 shake256 digest -> valid", a2.valid === true);
+  // A3 -- ML-DSA-87 detached; correct content verifies, wrong content does not.
+  var s87 = makeSigner("ml-dsa-87");
+  var det = await pki.cms.sign(CONTENT, s87, { detached: true });
+  check("A3 ML-DSA-87 detached + content -> valid", (await pki.cms.verify(det, { content: CONTENT })).valid === true);
+  check("A3 ML-DSA-87 detached + wrong content -> invalid", (await pki.cms.verify(det, { content: Buffer.from("other") })).valid === false);
+  // A4 -- ML-DSA-65 with NO signed attributes (signature over the content directly).
+  var a4 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  check("A4 ML-DSA-65 no-signed-attrs -> valid", a4.valid === true);
+  // A5 -- multi-signer: a classical ECDSA signer + an ML-DSA signer over one SignedData.
+  var a5 = await pki.cms.verify(await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("ml-dsa-65")]));
+  check("A5 mixed ECDSA + ML-DSA multi-signer -> all valid", a5.valid === true && a5.signers.length === 2 && a5.signers.every(function (x) { return x.ok; }));
+  // A6 -- subjectKeyIdentifier signer identifier (v3 SignerInfo).
+  var a6 = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-44", { ski: true }), { sid: "ski" }));
+  check("A6 ML-DSA-44 sid=ski -> valid", a6.valid === true && a6.signers[0].sid.subjectKeyIdentifier != null);
+  // A7 -- byte-level: default digestAlgorithm is SHA-512 params-absent; signatureAlgorithm params absent; PEM round-trips.
+  var der = await pki.cms.sign(CONTENT, makeSigner("ml-dsa-44"));
+  var parsed = pki.schema.cms.parse(der);
+  check("A7 digestAlgorithm == sha512", parsed.signerInfos[0].digestAlgorithm.name === "sha512");
+  check("A7 signatureAlgorithm == id-ml-dsa-44, params absent", parsed.signerInfos[0].signatureAlgorithm.name === "id-ml-dsa-44" && parsed.signerInfos[0].signatureAlgorithm.parameters == null);
+  var pem = await pki.cms.sign(CONTENT, makeSigner("ml-dsa-44"), { pem: true });
+  check("A7 PEM output", typeof pem === "string" && pem.indexOf("-----BEGIN CMS-----") === 0 && (await pki.cms.verify(pem)).valid === true);
+  // A9 -- ML-DSA-44 + SHA-256: SHA-256 IS suitable for ML-DSA-44 (Table 1) -> MUST be accepted
+  // (the negative control for the per-parameter-set digest-strength gate).
+  var a9 = await pki.cms.verify(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "sha256" })));
+  check("A9 ML-DSA-44 + sha256 (suitable) -> valid", a9.valid === true);
+
+  // R9 -- no-signed-attrs + a non-`data` eContentType is rejected at config time.
+  await rejects("R9 ML-DSA no-attrs non-data eContentType", function () { return pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false, eContentType: "signedData" }); }, "cms/bad-input");
+  // R10 -- no-signed-attrs generation MUST emit digestAlgorithm = SHA-512 (RFC 9882 sec. 3.3).
+  var r10 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  check("R10 no-attrs digestAlgorithm == sha512 params-absent", r10.signerInfos[0].digestAlgorithm.name === "sha512" && r10.signerInfos[0].digestAlgorithm.parameters == null);
+  // R13 -- no-attrs signing MUST emit SHA-512 even when the caller requests another suitable digest
+  // (RFC 9882 sec. 3.3: without signed attributes the digestAlgorithm has no meaning, so the signer
+  // forces the interoperable SHA-512 rather than carry a value a strict peer would reject).
+  var r13 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" }), { signedAttributes: false }));
+  check("R13 no-attrs ML-DSA forces sha512 digestAlgorithm", r13.signerInfos[0].digestAlgorithm.name === "sha512");
+  // R12 (sign side, Q1 = ENFORCE) -- a below-strength digest for the parameter set is refused at
+  // config time: SHA-256 (128-bit) under ML-DSA-87 (lambda 256) / ML-DSA-65 (lambda 192).
+  await rejects("R12 ML-DSA-87 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-87"), { digestAlgorithm: "sha256" })); }, "cms/unsupported-algorithm");
+  await rejects("R12 ML-DSA-65 + sha256 (below strength) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-65"), { digestAlgorithm: "sha256" })); }, "cms/unsupported-algorithm");
+  await rejects("R8 ML-DSA-65 + sha3-512 (unwired digest) -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-65"), { digestAlgorithm: "sha3-512" })); }, "cms/unsupported-algorithm");
+  // R11 -- an ML-DSA-44 CryptoKey against an ML-DSA-65 certificate is a fail-closed mismatch.
+  var subtle = require("../../lib/webcrypto").webcrypto.subtle;
+  var key44 = await subtle.importKey("pkcs8", makeSigner("ml-dsa-44").key, { name: "ML-DSA-44" }, false, ["sign"]);
+  await rejects("R11 ML-DSA-44 CryptoKey vs ML-DSA-65 cert", function () { return pki.cms.sign(CONTENT, { cert: makeSigner("ml-dsa-65").cert, key: key44 }); }, "cms/bad-input");
+}
+
+// An id-RSASSA-PSS signer whose SPKI carries CUSTOM RSASSA-PSS-params (over a real RSA public key),
+// exercising the pinned-hash reader (_pssHashFromSpki) across every shape branch.
+function pssSignerWithParams(paramsNode) {
+  var b = pki.asn1.build;
+  var base = makeSigner("rsa-pss");
+  var spki = pki.asn1.decode(base.spki);   // SEQUENCE { AlgorithmIdentifier, subjectPublicKey BIT STRING }
+  var alg = paramsNode ? b.sequence([b.oid(pki.oid.byName("rsassaPss")), paramsNode]) : b.sequence([b.oid(pki.oid.byName("rsassaPss"))]);
+  return { cert: signing.minimalCert(b.sequence([alg, b.raw(spki.children[1].bytes)])), key: base.key };
+}
+
+// ---- coverage: the id-RSASSA-PSS SPKI pinned-hash reader across malformed / unpinned params ----
+async function testPssSpkiParams() {
+  var b = pki.asn1.build;
+  // params that are not a SEQUENCE / an empty SEQUENCE / a [0] hashAlgorithm whose inner is not an
+  // OID: the reader finds no pinned hash and the signer falls back to the SHA-256 default, so the
+  // message still signs and verifies. (Drives the three structural fall-through branches.)
+  var shapes = [
+    b.nullValue(),                                                            // not a SEQUENCE
+    b.sequence([]),                                                           // a SEQUENCE with no [0] hashAlgorithm
+    b.sequence([b.explicit(0, b.sequence([b.nullValue()]))]),                 // [0] hashAlgorithm inner is not an OID
+  ];
+  // The reader finds no pinned hash and the signer falls back to the SHA-256 default, so signing
+  // succeeds and emits a SignedData (the crafted SPKI is deliberately malformed, so it is not
+  // re-importable for a round-trip -- the graceful sign-side fallback is what these vectors drive).
+  for (var i = 0; i < shapes.length; i++) {
+    var out = await pki.cms.sign(CONTENT, pssSignerWithParams(shapes[i]));
+    check("PSS SPKI params shape " + i + " -> sha256 fallback signs", Buffer.isBuffer(out) && out.length > 0);
+  }
+  // a [0] hashAlgorithm pinning a hash this toolkit does not map (SHA-1) fails closed at sign time,
+  // rather than silently signing under a digest the key forbids.
+  await rejects("PSS SPKI pins an unsupported hash -> reject", function () { return pki.cms.sign(CONTENT, pssSignerWithParams(b.sequence([b.explicit(0, b.sequence([b.oid(pki.oid.byName("sha1"))]))]))); }, "cms/unsupported-algorithm");
+}
+
 async function run() {
+  await testPssSpkiParams();
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();
@@ -271,6 +360,7 @@ async function run() {
   await testSignedAttributes();
   await testOutputForms();
   await testBadInput();
+  await testMlDsa();
 }
 
 module.exports = { run: run };

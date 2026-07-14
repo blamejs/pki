@@ -303,21 +303,23 @@ module.exports = {
         var makeSigner = require("../helpers/signing").makeSigner;
         var content = Buffer.from("pki.cms.sign cross-implementation content");
         var contentPath = ctx.tmpFile(content, "content.bin");
-        // Every signer key algorithm the primitive advertises must round-trip through openssl.
-        // EdDSA is the exception: `openssl list -signature-algorithms` advertises ED25519/ED448 on
-        // builds whose `openssl cms` still rejects them ("invalid digest" on 3.0.x), so a
-        // signature-algorithm probe is not a reliable CMS-capability gate. Instead the actual
-        // `openssl cms -verify` result IS the probe -- RSA/ECDSA/PSS MUST verify (a real failure),
-        // while an EdDSA case that openssl's CMS cannot verify is SKIPPED (never failed); the output
-        // still round-trips through pki.cms.verify (proven in cms-sign.test.js).
-        var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448"];
+        // Every classical signer key algorithm the primitive advertises must round-trip through
+        // openssl. EdDSA and ML-DSA are gated differently: `openssl list -signature-algorithms`
+        // advertises ED25519/ED448/ML-DSA on builds whose `openssl cms` still rejects them (an
+        // "invalid digest" on 3.0.x EdDSA; no ML-DSA CMS at all before 3.5), so a signature-algorithm
+        // probe is not a reliable CMS-capability gate. Instead the actual `openssl cms -verify`
+        // result IS the probe -- RSA/ECDSA/PSS MUST verify (a real failure), while an EdDSA/ML-DSA
+        // case openssl's CMS cannot verify is SKIPPED (never failed); the output still round-trips
+        // through pki.cms.verify (proven in cms-sign.test.js).
+        var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448", "ml-dsa-44", "ml-dsa-65", "ml-dsa-87"];
         for (var i = 0; i < algs.length; i++) {
           var alg = algs[i];
           var signer = makeSigner(alg);
           var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
           var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
           var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
-          if (a.code !== 0 && (alg === "ed25519" || alg === "ed448")) {
+          var skippable = alg === "ed25519" || alg === "ed448" || alg.indexOf("ml-dsa") === 0;
+          if (a.code !== 0 && skippable) {
             ctx.skip("openssl cms -verify in this environment does not verify " + alg + " CMS (our output round-trips through pki.cms.verify)");
             continue;
           }

@@ -1,0 +1,14 @@
+{
+  "version": "0.2.16",
+  "headline": "Post-quantum ML-DSA joins CMS SignedData: pki.cms.sign and pki.cms.verify now sign and verify with ML-DSA-44/65/87 (RFC 9882), freely mixed with the classical signers in one message.",
+  "summary": "pki.cms.sign and pki.cms.verify gain the three pure ML-DSA signature algorithms -- ML-DSA-44, ML-DSA-65, and ML-DSA-87 (RFC 9882, FIPS 204) -- over the exact CMS SignedData structure both primitives already produce and consume. ML-DSA is used in pure mode with the empty context; the AlgorithmIdentifier parameters are absent, and the signature covers the same RFC 5652 section 5.4 preimage as every other signer. The message-digest algorithm defaults to SHA-512 (the RFC 9882 interop default) with SHAKE256 optional, and is held to each parameter set's security strength: a digest below the parameter set's collision strength -- the weaker link that would cap the signature's real security -- is refused on both signing and verification. An ML-DSA signer can be one of several in a single SignedData alongside RSA, RSASSA-PSS, ECDSA, and EdDSA signers, over attached or detached content, identified by issuerAndSerialNumber or subjectKeyIdentifier. A message this toolkit signs round-trips through pki.cms.verify and is accepted by OpenSSL cms -verify where the platform's OpenSSL supports ML-DSA in CMS.",
+  "sections": {
+    "Added": [
+      "pki.cms.sign and pki.cms.verify sign and verify a CMS SignedData with the post-quantum ML-DSA-44, ML-DSA-65, and ML-DSA-87 (RFC 9882): pure mode, empty context, AlgorithmIdentifier parameters absent, over attached or detached content and single or multiple signers -- freely mixed with RSA, RSASSA-PSS, ECDSA, and EdDSA signers in one message. The signer identifier is issuerAndSerialNumber or subjectKeyIdentifier, and the output is a DER Buffer or PEM.",
+      "The CMS message-digest algorithm for an ML-DSA signer is held to the parameter set's security strength (RFC 9882 section 3.3): SHA-512 by default and SHAKE256 optional, with SHA-256 accepted only for ML-DSA-44. A below-strength digest is refused fail-closed on both signing and verification, so a weak message digest cannot cap the collision resistance of a strong ML-DSA signature."
+    ],
+    "Changed": [
+      "CMS signature verification now requires a one-shot signer (EdDSA or ML-DSA, where a single algorithm identifier names both the key and the signature) to present a signer certificate whose public-key algorithm matches the SignerInfo signatureAlgorithm; a disagreement fails closed with a typed error rather than surfacing an opaque import failure."
+    ]
+  }
+}
