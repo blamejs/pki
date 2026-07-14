@@ -298,16 +298,24 @@ module.exports = {
   // ---- pki.cms.sign : a SignedData we produce verifies under `openssl cms` --------
   "pki.cms.sign": [
     {
-      desc: "a SignedData we sign verifies under `openssl cms -verify` (attached + detached); openssl REJECTS a tampered copy",
+      desc: "a SignedData we sign verifies under `openssl cms -verify` across RSA / RSASSA-PSS / ECDSA / Ed25519 / Ed448 (attached + detached); openssl REJECTS a tampered copy",
       run: async function (ctx) {
-        var signer = require("../helpers/signing").makeSigner("ec-p256");
-        var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
+        var makeSigner = require("../helpers/signing").makeSigner;
         var content = Buffer.from("pki.cms.sign cross-implementation content");
         var contentPath = ctx.tmpFile(content, "content.bin");
-        var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
-        var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", certPath], { allowNonZero: true });
-        ctx.check("openssl cms -verify accepts our attached SignedData", a.code === 0);
-        var det = ctx.tmpFile(await ctx.pki.cms.sign(content, signer, { detached: true }), "det.der");
+        // Every signer key algorithm the primitive advertises must round-trip through openssl.
+        var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448"];
+        for (var i = 0; i < algs.length; i++) {
+          var signer = makeSigner(algs[i]);
+          var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
+          var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
+          var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
+          ctx.check("openssl cms -verify accepts our " + algs[i] + " SignedData", a.code === 0);
+        }
+        // detached content + a negative (tampered content must be rejected), on ec-p256.
+        var s = makeSigner("ec-p256");
+        var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(s.cert, "CERTIFICATE"), "cert.pem");
+        var det = ctx.tmpFile(await ctx.pki.cms.sign(content, s, { detached: true }), "det.der");
         var d = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", det, "-content", contentPath, "-certfile", certPath], { allowNonZero: true });
         ctx.check("openssl cms -verify accepts our detached SignedData over the content", d.code === 0);
         var wrong = ctx.tmpFile(Buffer.from("an entirely different content"), "wrong.bin");
