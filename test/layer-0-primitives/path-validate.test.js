@@ -2269,6 +2269,18 @@ async function testOcspCheckerStandalone() {
   var o4b = await mkOcsp({ responderID: { byKeyOf: p256Keys.spki }, signWith: "p256", certs: [delegate], single: [goodSingle()] });
   check("O4b delegated responder byKey -> good", (await chk(o4b)).status === "good");
 
+  // O4c — a delegated responder whose SUBJECT key is a low-order Ed25519 point (the identity),
+  // legitimately issued by the CA. That low-order key verifies a forged response signature (the
+  // identity-point forgery, R=identity S=0, which verifies for every message) so an authorized
+  // responder could assert any status by forgery. The response-signature verify path validates the
+  // point first -- the revocation analogue of the certificate-path gate -- and refuses it, so the
+  // forged response yields unknown, never a forged good/revoked.
+  var ID_POINT = Buffer.concat([Buffer.from([1]), Buffer.alloc(31)]);   // (0,1), a low-order Ed25519 point
+  var loSpki = b.sequence([b.sequence([b.oid(pki.oid.byName("Ed25519"))]), b.bitString(ID_POINT, 0)]);
+  var loDelegate = await mkCert({ subject: "LoResponder", issuer: "Root", signWith: "ed25519", spki: loSpki, serial: 55n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
+  var oLo = await mkOcsp({ responderID: { byName: "LoResponder" }, signWith: "ed25519", certs: [loDelegate], single: [goodSingle()], mutateSig: function () { return Buffer.concat([ID_POINT, Buffer.alloc(32)]); } });
+  check("O4c low-order delegate responder key -> unknown (forged response refused)", (await chk(oLo)).status === "unknown");
+
   // O5 / O5b — revoked surfaces (or omits) the revocationReason.
   var o5 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
   var r5 = await chk(o5);

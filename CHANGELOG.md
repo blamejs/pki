@@ -15,7 +15,7 @@ Composite ML-DSA signatures join CMS SignedData: pki.cms.sign and pki.cms.verify
 
 ### Fixed
 
-- Certification-path validation (pki.path.validate) and composite CMS SignerInfo verification now validate an EdDSA (Ed25519 / Ed448) public key as a canonical, on-curve, full-order Edwards point before verifying a signature with it. A low-order key -- for example the identity point, which the underlying platform imports without complaint and which verifies a forged signature for every message -- is rejected up front, so it can no longer certify a forged certificate chain or satisfy the traditional half of a composite signature. The check is now consistent across every signature-verification surface (certificates, CMS SignerInfo, and the composite construction).
+- Certification-path validation (pki.path.validate) and composite CMS SignerInfo verification now validate an EdDSA (Ed25519 / Ed448) public key as a canonical, on-curve, full-order Edwards point before verifying any signature with it -- a certificate signature, a CRL or OCSP-response signature checked during revocation, or a composite component. A low-order key -- for example the identity point, which the underlying platform imports without complaint and which verifies a forged signature for every message -- is rejected up front, so it can no longer certify a forged certificate chain, forge a CRL or OCSP response, or satisfy the traditional half of a composite signature. Certificate and revocation verification share one key-import routine, so the check cannot be applied to one surface and skipped on another.
 
 ## v0.2.17 — 2026-07-13
 

@@ -191,11 +191,11 @@ security-only patches after the next major releases.
   signature algorithm is derived from the certificate and the issuer key, never a
   message-selected field (CVE-2015-9235); ECDSA signatures with a component
   outside `[1, n−1]` — including the all-zero forgery — are rejected
-  (CVE-2022-21449); an EdDSA (Ed25519/Ed448) issuer key is validated on-curve and
-  full-order before verification, so a low-order key — for example the identity
-  point, which the platform imports without complaint and which verifies a forged
-  signature for every message — cannot certify a forged chain; the
-  certificate-policy tree carries a hard node cap and fails
+  (CVE-2022-21449); an EdDSA (Ed25519/Ed448) issuer or revocation-responder key is
+  validated on-curve and full-order before verification, so a low-order key — for
+  example the identity point, which the platform imports without complaint and which
+  verifies a forged signature for every message — cannot certify a forged chain or
+  forge a CRL / OCSP response; the certificate-policy tree carries a hard node cap and fails
   closed at it (CVE-2023-0464), and an invalid policy OID is surfaced, never
   silently dropped (CVE-2023-0465); name comparison rejects embedded NUL and
   control bytes so a truncated name cannot compare equal (CVE-2009-2408); and an
