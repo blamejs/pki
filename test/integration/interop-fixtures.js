@@ -352,4 +352,117 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.tsp.verify : `openssl ts` is the oracle for the whole RFC 3161 request/response +
+  // token surface -- a TimeStampReq/Resp/token we emit is read by openssl, and one openssl emits
+  // is read + verified by us, so neither side is validated only by its own decoder. -----------
+  "pki.tsp.verify": [
+    {
+      desc: "openssl ts round-trip: our request/response parse under openssl, and we verify an openssl token (RFC 3161)",
+      run: async function (ctx) {
+        var pki = ctx.pki;
+        var nodeCrypto = require("node:crypto");
+        var tsp = pki.tsp || {};
+        // Oracle-capability probe: `openssl ts` with no sub-mode prints its usage (-query/-reply/
+        // -verify); a build without the subcommand reports an invalid command.
+        var tsProbe = ctx.runOpenssl(["ts"], { allowNonZero: true });
+        var tsText = String(tsProbe.stdout || "") + String(tsProbe.stderr || "");
+        if (!/-query|-reply|-verify/.test(tsText)) {
+          ctx.skip("openssl `ts` subcommand unavailable in this build -- RFC 3161 TSP cross-check cannot run");
+          return;
+        }
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        function reserve(ext) { return T(Buffer.alloc(0), ext); }   // reserve + track a path openssl writes
+        function fwd(p) { return p.replace(/\\/g, "/"); }           // openssl .cnf reads forward slashes
+        try {
+          var data = Buffer.from("pki.js RFC 3161 openssl-ts cross-implementation payload");
+          var dataPath = T(data, "data.bin");
+          var digest = nodeCrypto.createHash("sha256").update(data).digest();
+          // Hermetic TSA material, independent of the host OpenSSL config: req/x509 are driven from
+          // written .cnf sections + an explicit -extfile, so a machine-global config cannot inject a
+          // CA extension the binary rejects. The TSA cert carries the RFC 3161 sec. 2.3 critical,
+          // sole id-kp-timeStamping EKU the verifier and `openssl ts -verify` both require.
+          var caKey = reserve("caKey.pem");
+          var caCert = reserve("caCert.pem");
+          var caCnf = T(Buffer.from(
+            "[req]\ndistinguished_name = dn\nx509_extensions = v3_ca\nprompt = no\n" +
+            "[dn]\nCN = pkijs-interop-tsa-root\n" +
+            "[v3_ca]\nbasicConstraints = critical, CA:TRUE\nkeyUsage = critical, keyCertSign, cRLSign\n" +
+            "subjectKeyIdentifier = hash\n", "ascii"), "ca.cnf");
+          ctx.runOpenssl(["req", "-x509", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-keyout", caKey, "-out", caCert, "-days", "2", "-nodes", "-config", caCnf]);
+          var serial = T(Buffer.from("01", "ascii"), "serial.txt");
+          var caSrl = T(Buffer.from("01", "ascii"), "ca.srl");   // seeded: x509 -CAserial reads a number
+          var tsaKey = reserve("tsaKey.pem");
+          var tsaCsr = reserve("tsaCsr.pem");
+          var tsaCert = reserve("tsaCert.pem");
+          var tsaCnf = T(Buffer.from(
+            "[req]\ndistinguished_name = dn\nprompt = no\n[dn]\nCN = pkijs-interop-tsa\n" +
+            "[tsa_ext]\nbasicConstraints = critical, CA:FALSE\nkeyUsage = critical, digitalSignature\n" +
+            "extendedKeyUsage = critical, timeStamping\nsubjectKeyIdentifier = hash\n" +
+            "[tsa]\ndefault_tsa = tsa_config1\n[tsa_config1]\nserial = " + fwd(serial) + "\ncrypto_device = builtin\n" +
+            "signer_digest = sha256\ndigests = sha256, sha384, sha512\ndefault_policy = 1.2.3.4.1\n" +
+            "other_policies = 1.2.3.4.5, 1.2.3.4.6\ness_cert_id_chain = no\ness_cert_id_alg = sha256\n" +
+            "accuracy = secs:1\nclock_precision_digits = 0\nordering = no\ntsa_name = no\n", "ascii"), "tsa.cnf");
+          ctx.runOpenssl(["req", "-newkey", "ec", "-pkeyopt", "ec_paramgen_curve:P-256",
+            "-keyout", tsaKey, "-out", tsaCsr, "-nodes", "-config", tsaCnf]);
+          ctx.runOpenssl(["x509", "-req", "-in", tsaCsr, "-CA", caCert, "-CAkey", caKey,
+            "-CAserial", caSrl, "-days", "1", "-out", tsaCert, "-extfile", tsaCnf, "-extensions", "tsa_ext"]);
+          var ekuProbe = ctx.runOpenssl(["x509", "-in", tsaCert, "-noout", "-ext", "extendedKeyUsage"], { allowNonZero: true });
+          if (ekuProbe.code === 0) {
+            ctx.check("the interop TSA cert carries a critical timeStamping EKU",
+              /critical/i.test(ekuProbe.stdout) && /Time Stamping/i.test(ekuProbe.stdout));
+          } else {
+            ctx.skip("openssl `x509 -ext` unavailable to introspect the TSA cert EKU (enforced by the verify legs regardless)");
+          }
+          // (we read them) openssl builds a TimeStampReq -> pki.tsp.parseRequest decodes it.
+          var theirReq = reserve("their.tsq");
+          ctx.runOpenssl(["ts", "-query", "-data", dataPath, "-sha256", "-cert", "-out", theirReq]);
+          var pr = tsp.parseRequest(ctx.fs.readFileSync(theirReq));
+          ctx.check("pki.tsp.parseRequest reads openssl's TimeStampReq as version 1", pr.version === 1);
+          ctx.check("parseRequest agrees on the sha256 imprint algorithm", pr.messageImprint.hashAlgorithm.name === "sha256");
+          ctx.check("parseRequest's imprint equals sha256(data)", Buffer.compare(Buffer.from(pr.messageImprint.hashedMessage), digest) === 0);
+          ctx.check("parseRequest reads certReq TRUE (openssl ts -query -cert)", pr.certReq === true);
+          // (they read us) pki.tsp.request builds a TimeStampReq -> openssl ts -reply consumes it.
+          var ourReq = T(tsp.request({ hashAlgorithm: "sha256", hashedMessage: digest }, { certReq: true, nonce: 0x0102030405060708n }), "our.tsq");
+          var ourReqReply = reserve("ourReqReply.tsr");
+          var rq = ctx.runOpenssl(["ts", "-reply", "-queryfile", ourReq, "-signer", tsaCert, "-inkey", tsaKey, "-config", tsaCnf, "-out", ourReqReply], { allowNonZero: true });
+          ctx.check("openssl ts -reply consumes our pki.tsp.request TimeStampReq", rq.code === 0 && ctx.fs.statSync(ourReqReply).size > 0);
+          // (we read them) pki.tsp.parseResponse reads openssl's granted TimeStampResp.
+          var theirResp = reserve("their.tsr");
+          ctx.runOpenssl(["ts", "-reply", "-queryfile", theirReq, "-signer", tsaCert, "-inkey", tsaKey, "-config", tsaCnf, "-out", theirResp]);
+          var resp = tsp.parseResponse(ctx.fs.readFileSync(theirResp));
+          ctx.check("pki.tsp.parseResponse reads openssl's granted TimeStampResp", resp.status === 0 && resp.timeStampToken != null);
+          // (we verify them) pki.tsp.verify accepts openssl's token chained to the CA anchor; a
+          // tampered payload is a fail-closed { valid:false } verdict, never a throw.
+          var theirToken = reserve("their.token");
+          ctx.runOpenssl(["ts", "-reply", "-queryfile", theirReq, "-signer", tsaCert, "-inkey", tsaKey, "-config", tsaCnf, "-token_out", "-out", theirToken]);
+          var ca = pki.schema.x509.parse(ctx.fs.readFileSync(caCert));
+          var anchor = { name: ca.subject, publicKey: ca.subjectPublicKeyInfo.bytes, algorithm: ca.signatureAlgorithm.oid };
+          var tokenBytes = ctx.fs.readFileSync(theirToken);
+          var v = await tsp.verify(tokenBytes, data, { trustAnchor: anchor });
+          ctx.check("pki.tsp.verify accepts openssl's timestamp token against the CA anchor", v.valid === true);
+          ctx.check("pki.tsp.verify surfaces genTime as a Date from the verified eContent", v.genTime instanceof Date && !isNaN(v.genTime.getTime()));
+          var vNeg = await tsp.verify(tokenBytes, Buffer.from("a different payload"), { trustAnchor: anchor });
+          ctx.check("pki.tsp.verify rejects openssl's token over tampered data (tsp/imprint-mismatch)", vNeg.valid === false && vNeg.code === "tsp/imprint-mismatch");
+          // (they verify us) openssl ts -verify accepts a response we sign + wrap; wrong data rejected.
+          var tsaCertDer = reserve("tsaCert.der");
+          var tsaKeyP8 = reserve("tsaKey.p8");
+          ctx.runOpenssl(["x509", "-in", tsaCert, "-outform", "DER", "-out", tsaCertDer]);
+          ctx.runOpenssl(["pkcs8", "-topk8", "-nocrypt", "-in", tsaKey, "-outform", "DER", "-out", tsaKeyP8]);
+          var tsa = { cert: ctx.fs.readFileSync(tsaCertDer), key: ctx.fs.readFileSync(tsaKeyP8) };
+          var ourToken = await tsp.sign({ hashAlgorithm: "sha256", hashedMessage: digest }, tsa, { policy: "1.2.3.4.1", serialNumber: 7 });
+          var ourResp = T(tsp.response(ourToken, {}), "our.tsr");
+          var vr = ctx.runOpenssl(["ts", "-verify", "-data", dataPath, "-in", ourResp, "-CAfile", caCert, "-untrusted", tsaCert], { allowNonZero: true });
+          ctx.check("openssl ts -verify accepts our pki.tsp.sign + response over the data", vr.code === 0 && /Verification:\s*OK/i.test(String(vr.stdout) + String(vr.stderr)));
+          var wrong = T(Buffer.from("a different payload"), "wrong.bin");
+          var vrNeg = ctx.runOpenssl(["ts", "-verify", "-data", wrong, "-in", ourResp, "-CAfile", caCert, "-untrusted", tsaCert], { allowNonZero: true });
+          ctx.check("openssl ts -verify rejects our response over tampered data", vrNeg.code !== 0);
+        } finally {
+          tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } });
+        }
+      },
+    },
+  ],
 };

@@ -29,7 +29,7 @@ action wrapper, which does not support JavaScript targets.
 | `pkcs8-parse.fuzz.js`    | `pki.schema.pkcs8.parse` / `parseEncrypted`           |
 | `cms-parse.fuzz.js`      | `pki.schema.cms.parse`                                |
 | `ocsp-parse.fuzz.js`     | `pki.schema.ocsp.parseRequest` / `parseResponse`      |
-| `tsp-parse.fuzz.js`      | `pki.schema.tsp.parse` / `parseTstInfo` / `parseToken` |
+| `tsp-parse.fuzz.js`      | `pki.schema.tsp.parse` / `parseRequest` / `parseTstInfo` / `parseToken` + `pki.tsp.verify` |
 | `attrcert-parse.fuzz.js` | `pki.schema.attrcert.parse`                           |
 | `crmf-parse.fuzz.js`     | `pki.schema.crmf.parse`                               |
 | `cmp-parse.fuzz.js`      | `pki.schema.cmp.parse`                                |
