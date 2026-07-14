@@ -52,6 +52,10 @@ async function testAlgorithms() {
   // an id-RSASSA-PSS signer certificate (a PSS-restricted RSA key) signs with RSASSA-PSS.
   var rpssKey = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("rsa-pss")));
   check("id-RSASSA-PSS signer cert -> signs+verifies (PSS)", rpssKey.valid === true);
+  // an id-RSASSA-PSS key whose SPKI params pin SHA-384: signing honors the pinned hash (Node
+  // rejects signing a SHA-384-restricted key under the SHA-256 default), so the token verifies.
+  var pinned = await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("rsa-pss", { pssHash: "sha384" })));
+  check("id-RSASSA-PSS SHA-384-pinned key -> signs under SHA-384 + verifies", pinned.valid === true);
 }
 
 // ---- content modes: attached / detached ----
@@ -182,6 +186,9 @@ async function testSchemeAndInputs() {
   await rejects("RSA + unsupported digest", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("rsa"), { digestAlgorithm: "sha1" })); }, un);
   await rejects("ECDSA + unsupported digest", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ec-p256"), { digestAlgorithm: "sha1" })); }, un);
   await rejects("Ed25519 + unsupported digest", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("ed25519"), { digestAlgorithm: "sha1" })); }, un);
+  // a digestAlgorithm that contradicts an id-RSASSA-PSS key's SPKI-pinned hash is rejected
+  // fail-closed (the key forbids that digest), not silently signed under the wrong hash.
+  await rejects("PSS-pinned key + conflicting digestAlgorithm", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("rsa-pss", { pssHash: "sha384" }), { digestAlgorithm: "sha256" })); }, "cms/bad-input");
   // an EC signer on an unsupported curve (secp256k1).
   var k1 = crypto.generateKeyPairSync("ec", { namedCurve: "secp256k1" });
   var k1cert = signing.minimalCert(k1.publicKey.export({ format: "der", type: "spki" }));

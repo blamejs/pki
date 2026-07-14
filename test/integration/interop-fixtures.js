@@ -304,21 +304,23 @@ module.exports = {
         var content = Buffer.from("pki.cms.sign cross-implementation content");
         var contentPath = ctx.tmpFile(content, "content.bin");
         // Every signer key algorithm the primitive advertises must round-trip through openssl.
-        // Ed25519/Ed448 CMS support depends on the OpenSSL build, so those are gated on the
-        // signature-algorithm capability probe and SKIPPED (never failed) where absent -- the
-        // output still round-trips through pki.cms.verify (proven in cms-sign.test.js).
+        // EdDSA is the exception: `openssl list -signature-algorithms` advertises ED25519/ED448 on
+        // builds whose `openssl cms` still rejects them ("invalid digest" on 3.0.x), so a
+        // signature-algorithm probe is not a reliable CMS-capability gate. Instead the actual
+        // `openssl cms -verify` result IS the probe -- RSA/ECDSA/PSS MUST verify (a real failure),
+        // while an EdDSA case that openssl's CMS cannot verify is SKIPPED (never failed); the output
+        // still round-trips through pki.cms.verify (proven in cms-sign.test.js).
         var algs = ["rsa", "rsa-pss", "ec-p256", "ec-p384", "ec-p521", "ed25519", "ed448"];
-        var edCapable = { ed25519: ctx.opensslSupports("ED25519"), ed448: ctx.opensslSupports("ED448") };
         for (var i = 0; i < algs.length; i++) {
           var alg = algs[i];
-          if ((alg === "ed25519" || alg === "ed448") && !edCapable[alg]) {
-            ctx.skip("openssl in this environment does not support " + alg + " CMS (our output round-trips through pki.cms.verify)");
-            continue;
-          }
           var signer = makeSigner(alg);
           var cp = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
           var att = ctx.tmpFile(await ctx.pki.cms.sign(content, signer), "att.der");
           var a = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", att, "-certfile", cp], { allowNonZero: true });
+          if (a.code !== 0 && (alg === "ed25519" || alg === "ed448")) {
+            ctx.skip("openssl cms -verify in this environment does not verify " + alg + " CMS (our output round-trips through pki.cms.verify)");
+            continue;
+          }
           ctx.check("openssl cms -verify accepts our " + alg + " SignedData", a.code === 0);
         }
         // detached content + a negative (tampered content must be rejected), on ec-p256.

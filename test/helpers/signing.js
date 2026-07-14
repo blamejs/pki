@@ -32,12 +32,14 @@ function minimalCert(spki, opts) {
 }
 
 // makeSigner(alg, opts) -> { cert (DER Buffer), key (PKCS#8 DER Buffer), keyObject, spki }.
-// alg: "rsa" | "ec-p256" | "ec-p384" | "ec-p521" | "ed25519" | "ed448".
+// alg: "rsa" | "rsa-pss" | "ec-p256" | "ec-p384" | "ec-p521" | "ed25519" | "ed448".
+// opts.pssHash pins the id-RSASSA-PSS key's permitted hash in its SPKI params (e.g. "sha384").
 function makeSigner(alg, opts) {
+  opts = opts || {};
   var kp;
   switch (alg) {
     case "rsa": kp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }); break;
-    case "rsa-pss": kp = crypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048 }); break;   // SPKI OID is id-RSASSA-PSS
+    case "rsa-pss": kp = crypto.generateKeyPairSync("rsa-pss", opts.pssHash ? { modulusLength: 2048, hashAlgorithm: opts.pssHash, mgf1HashAlgorithm: opts.pssHash } : { modulusLength: 2048 }); break;   // SPKI OID is id-RSASSA-PSS
     case "ec-p256": kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" }); break;
     case "ec-p384": kp = crypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" }); break;
     case "ec-p521": kp = crypto.generateKeyPairSync("ec", { namedCurve: "secp521r1" }); break;
