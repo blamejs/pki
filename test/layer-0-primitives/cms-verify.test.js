@@ -509,10 +509,15 @@ async function testMlDsaVerify() {
   var preimage7 = Buffer.from(p7.signerInfos[0].signedAttrsBytes); preimage7[0] = 0x31;   // [0] IMPLICIT -> universal SET OF
   p7.signerInfos[0].signature = require("node:crypto").sign(null, preimage7, { key: s7.keyObject, context: Buffer.from("ctx") });
   check("R7 non-empty-context ML-DSA signature -> invalid under empty-context verify", (await pki.cms.verify(p7)).valid === false);
-  // M9 -- with NO signed attributes the digestAlgorithm has no meaning and is ignored on verify.
+  // M9 -- with NO signed attributes the digestAlgorithm has no meaning and is ignored on verify:
+  // neither an unsupported digest NAME nor a present (non-NULL) PARAMETER may reject the signature.
   var noattr = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
   noattr.signerInfos[0].digestAlgorithm.name = "sha3-512";   // meaningless when signed attrs absent
-  check("M9 no-signed-attrs verify ignores digestAlgorithm", (await pki.cms.verify(noattr, { content: CONTENT })).valid === true);
+  check("M9 no-signed-attrs verify ignores digestAlgorithm name", (await pki.cms.verify(noattr, { content: CONTENT })).valid === true);
+  // R15 -- a present, non-NULL digestAlgorithm parameter is likewise ignored without signed attributes.
+  var m15 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
+  m15.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // present non-NULL -- ignored w/o attrs
+  check("R15 no-attrs ML-DSA ignores a present digestAlgorithm parameter", (await pki.cms.verify(m15, { content: CONTENT })).valid === true);
 }
 
 async function run() {
