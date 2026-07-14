@@ -180,6 +180,12 @@ async function testCollidingSignerCert() {
   p.certificates = [{ bytes: collide }, p.certificates[0]];
   var r = await pki.cms.verify(p);
   check("colliding signer cert before the real one -> still valid", r.valid === true);
+  // a signer certificate whose issuer DN carries an embedded control byte must fail closed with a
+  // TYPED error from the RFC 5280 sec. 7.1 DN comparison, never a raw TypeError. The name guard takes
+  // a (code, message) error FACTORY, not a class -- passing a class made it call the class without
+  // `new`. Fuzzer-found reproducer (control byte in the signer cert issuer CN).
+  var CTRL_DN = "MIIDNgYJKoZIhvcNAQcCoIIDJzCCAyMCAQExDTALBglghkgBZQMEAgEwMAYJKoZIhvcNAQcBoCMEIWhlbGxvIENNUyBTaWduZWREYXRhIHZlcmlmaWNhdGlvbqCCAVUwggFRMIH5oAMCAQICFBKb5wRioFwAWFI0UitKp50hymL4MAoGCCqGSM49BAMCMBgxFjAUBgNVBAMMDUNNUyBFAAAAAAAAAAAwHhcNMjYwNzEzMTk0MTEwWhcNMzYwNzEwMTk0MTEwWjAYMRYwFAYDVQQDDA1DTVMgRUMgU2lnbmVyMFkwEwYHKoZIzj0CAQYIKobOPQFIAwcDQgAEO5Cm7ZlKPMJql9Kv0kc0kZM0ySzP3lsiwNocPb2v4YvZCKK3S2NnvwO80XibHg7/rvj9vbxH/c6oEYI1CkkamKMhMB8wHQYDVR0OBBYEFMfQePWAY9Mmh236ceGi6rP42qGcMAoGCCqGSM49BAMCA0cAMEQCIEy9WcbDNeH3QKawlrd8pTbdDBVk6P31Dp/9/ODG2k2AAiATyR1REzj+qCCSTftWgNZBdZw37PTh3SZTyWzd3WUj0jGCAYIwggF+AgEBMDAwGDEWMBQGA1UEAwwNQ01TIEVDIFNpZ25lcgIUEpvnBGKgXABYUjRSK0qnnSHKYvgwCwYJYIZIAWUDBAIBoIHkMBgGCSqGSIb3DQEJAzELBgkqhkiG9w0BBwEwHAYJ1nm3efcNAQkFMQ8XDTI2MDcxMzE5NDExMFowLwYJKoZIhvcNAQkEMSIEID8oZDYwsuqHSt0BLC4SbzD+QnSOaxX/Tfdd3wm+EtGkMHkGCSqGSIb3DQEJDzFsMGowCwYJYIZKAWUD+v7VzwsGCWCGSAFlAwQBFjALBglghkgBZQMEAQIwCgYIKoZIhvcNAwcwDgYIKoZIhvcNAwICAgCAMA0GCCqGSIb3DQMCAgFAMAcGBSsOAwIHMA0GCCqGSIb3DQMCAgEoMAoGCCqGSM49BAMCBEcwRQIgSz+DvXbv53iYxIfQeb+HQDT42qGcMAoGCCqGSM49BAMCA0cAMEQCIEy97W2S9TRqOeTXBvGJEryGcd1M6FOjaNu6RA==";
+  await rejects("control-byte issuer DN in signer cert -> typed cms/bad-name (not a raw TypeError)", function () { return pki.cms.verify(Buffer.from(CTRL_DN, "base64")); }, "cms/bad-name");
 }
 
 // ---- input forms: DER Buffer (covered above), PEM string, parsed object ----

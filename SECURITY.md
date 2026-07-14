@@ -220,6 +220,26 @@ security-only patches after the next major releases.
   issuer's same serial. A missing or passed `nextUpdate`, an unauthorized
   responder, or any signature-verification failure yields an undetermined status
   that fails the path closed.
+- **Timestamp-token forgery (TSA impersonation).** `pki.tsp.verify` trusts a
+  timestamp token only when its signer is demonstrably a time-stamping
+  authority. The TSA signing certificate — an out-of-path signer: it signs the
+  token but sits on no certification path the caller has already validated —
+  receives full certification-path validation to the caller's trust anchor at
+  the token's own `genTime` (issuer signatures, the validity window at signing
+  time, critical-extension handling, optional revocation), and RFC 3161 §2.3
+  is enforced on top: the certificate's extendedKeyUsage extension must be
+  present, be critical, and contain exactly id-kp-timeStamping — so a
+  general-purpose certificate the same CA issued (a TLS leaf, an
+  `anyExtendedKeyUsage` holder) cannot mint a token that verifies. The token
+  is bound to that exact certificate through its ESSCertID(V2)
+  signing-certificate attribute (RFC 5816) — the certificate hash is
+  recomputed and compared, so a valid signature cannot be re-paired with a
+  substituted certificate. The message imprint is recomputed from the
+  presented data, the encapsulated content must be a TSTInfo, and a request
+  nonce must be echoed by the token. Every checked field is read from the
+  verified encapsulated content, never a caller-supplied parsed object, and a
+  well-formed token failing any check is a fail-closed `{ valid: false }`
+  verdict with a typed reason code, never a silent pass.
 - **Algorithm-parameter confusion.** For the algorithms whose `parameters` field
   MUST be absent — ML-DSA, SLH-DSA, the RFC 8410 Edwards/Montgomery curves,
   ML-KEM (RFC 9936), and the HKDF identifiers (RFC 8619) — the single shared
