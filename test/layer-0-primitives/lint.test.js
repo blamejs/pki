@@ -354,6 +354,13 @@ function run() {
     has(pki.lint.certificate(makeCert({ spki: kemSpkiOf(b.octetString(kemEk)), exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
   check("ML-KEM ek sized for a DIFFERENT set than the OID -> lint/rfc9935/kem-key-length",
     has(pki.lint.certificate(makeCert({ spki: kemSpkiOf(kemEk, 512), exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
+  // RFC 9935 sec. 4: the ek BIT STRING must be BYTE-ALIGNED. A right-length key with a non-zero
+  // unused-bit count is not the raw ek -- length alone is not sufficient. (Canonical-DER build
+  // requires the unused low bit be zero, so clear it before declaring unusedBits=1.)
+  var alignedEk = Buffer.from(kemEk); alignedEk[alignedEk.length - 1] &= 0xFE;
+  var kemUnaligned = b.sequence([b.sequence([b.oid(oid.byName("id-ml-kem-768"))]), b.bitString(alignedEk, 1)]);
+  check("ML-KEM ek in a non-octet-aligned BIT STRING (unusedBits=1) -> lint/rfc9935/kem-key-length",
+    has(pki.lint.certificate(makeCert({ spki: kemUnaligned, exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
   check("a non-KEM cert never carries the rfc9935 rows",
     !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-usage") && !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-length"));
 

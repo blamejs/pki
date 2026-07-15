@@ -1021,6 +1021,16 @@ async function testMlKemImport() {
   check("ML-KEM cross-set expandedKey (768-set inner under the 512 OID) -> typed webcrypto/data",
     (await code(function () { return subtle.importKey("pkcs8", kemPkcs8(512, inner768), { name: "ML-KEM-512" }, true, []); })) === "webcrypto/data");
 
+  // A malformed ML-KEM PKCS#8 ENVELOPE (missing the privateKey OCTET STRING) fails the
+  // pre-validation decode before the engine, typed.
+  var noOctet = b.sequence([b.integer(0n), b.sequence([b.oid(O("id-ml-kem-768"))])]);
+  check("ML-KEM pkcs8 missing the privateKey OCTET STRING -> typed webcrypto/data",
+    (await code(function () { return subtle.importKey("pkcs8", noOctet, { name: "ML-KEM-768" }, true, []); })) === "webcrypto/data");
+  // A PKCS#8 whose privateKeyAlgorithm OID is NOT an ML-KEM OID, imported under an ML-KEM name:
+  // the OID (the authority) does not match, so pre-validation rejects it.
+  var wrongOidP8 = b.sequence([b.integer(0n), b.sequence([b.oid(O("id-ml-dsa-65"))]), b.octetString(Buffer.concat([Buffer.from([0x80, 0x40]), seed64]))]);
+  check("ML-KEM name over a non-ML-KEM (id-ml-dsa-65) pkcs8 OID -> typed webcrypto/data",
+    (await code(function () { return subtle.importKey("pkcs8", wrongOidP8, { name: "ML-KEM-768" }, true, []); })) === "webcrypto/data");
   // A truncated SPKI rejects typed through the same choke point (the generic
   // import-boundary class, not ML-KEM-specific).
   check("truncated SPKI -> typed webcrypto/data (not a raw engine error)",
@@ -1029,6 +1039,30 @@ async function testMlKemImport() {
   // garbage rejects typed.
   check("malformed EC JWK -> typed webcrypto/data (not a raw engine error)",
     (await code(function () { return subtle.importKey("jwk", { kty: "EC", crv: "P-256", x: "AQ", y: "AQ" }, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
+
+  // A non-object jwk keyData -- null / undefined / array / primitive (incl. the JSON token
+  // `null` an unwrapKey over non-authenticating ciphertext can yield) -- fails closed as a typed
+  // DataError, never a raw property-access TypeError.
+  for (var badJwk of [null, undefined, [], 42, "x", true]) {
+    check("jwk keyData " + JSON.stringify(badJwk) + " -> typed webcrypto/data (no raw TypeError)",
+      (await code((function (j) { return function () { return subtle.importKey("jwk", j, { name: "ML-KEM-768" }, true, []); }; })(badJwk))) === "webcrypto/data");
+  }
+
+  // spki / pkcs8 import under a SECRET-KEY / KDF name is unsupported (W3C NotSupportedError):
+  // it must neither mint a mislabeled CryptoKey nor dodge the ML-KEM pkcs8 pre-validation.
+  var rsaP8 = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "der", type: "pkcs8" });
+  var rsaSpki = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" });
+  for (var symName of ["AES-GCM", "HMAC", "HKDF", "PBKDF2"]) {
+    check("pkcs8 import under " + symName + " -> webcrypto/not-supported",
+      (await code((function (n) { return function () { return subtle.importKey("pkcs8", rsaP8, { name: n }, true, []); }; })(symName))) === "webcrypto/not-supported");
+    check("spki import under " + symName + " -> webcrypto/not-supported",
+      (await code((function (n) { return function () { return subtle.importKey("spki", rsaSpki, { name: n }, true, []); }; })(symName))) === "webcrypto/not-supported");
+  }
+  // the name-dodge: an ML-KEM bare-seed pkcs8 (RFC 9935 sec. 6-forbidden) cannot be smuggled
+  // in under a symmetric name to bypass _preValidatePkcs8.
+  var bareSeedP8 = b.sequence([b.integer(0n), b.sequence([b.oid(O("id-ml-kem-768"))]), b.octetString(seed64)]);
+  check("ML-KEM bare-seed pkcs8 under AES-GCM (guard dodge) -> webcrypto/not-supported",
+    (await code(function () { return subtle.importKey("pkcs8", bareSeedP8, { name: "AES-GCM" }, true, []); })) === "webcrypto/not-supported");
 }
 
 module.exports = { run: run };

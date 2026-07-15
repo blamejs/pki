@@ -16,6 +16,7 @@ ML-KEM public keys in X.509 certificates and PKCS#8 private keys (RFC 9935 / FIP
 ### Fixed
 
 - pki.webcrypto.subtle.importKey no longer surfaces a raw engine exception when handed a malformed or inconsistent key: a bad SPKI, a bad JWK, or an ML-KEM private key whose seed and expanded halves are inconsistent (FIPS 203 section 7.3) now fails closed with a typed webcrypto/data error. For an ML-KEM PKCS#8, the RFC 9935 section 6 private-key CHOICE is validated by its DER tag and exact size for the algorithm OID before the engine imports it -- the OpenSSL-legacy bare-seed, bare-expanded-key, and concatenated layouts the engine would otherwise accept are rejected, so a non-conformant private key cannot be imported under an ML-KEM name.
+- pki.webcrypto.subtle.importKey now fails closed on two further malformed-input classes: a JWK import whose key data is not an object (null, a primitive, or an array -- including the JSON null an unwrap over non-authenticating ciphertext can yield) returns a typed webcrypto/data error instead of a raw TypeError; and an SPKI or PKCS#8 import requested under a secret-key or key-derivation algorithm name (AES-GCM/CBC/CTR/KW, HMAC, HKDF, PBKDF2) is rejected as webcrypto/not-supported rather than importing a mislabeled key handle.
 
 ## v0.2.20 — 2026-07-15
 

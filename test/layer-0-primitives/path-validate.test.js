@@ -3026,6 +3026,11 @@ async function testCoverageEdges() {
     var leaf = await mkCert({ subject: "KemCaLeaf", issuer: "KemCa", signWith: "ed25519", subjectKeys: "ed25519leaf" });
     return run([kemCa, leaf], { time: T2027, trustAnchor: anchor });
   });
+  // A MALFORMED keyUsage extension on an ML-KEM leaf: the decode throws, and the gate maps it to
+  // path/kem-key-usage rather than letting a raw error escape (kemKeyUsageCheck's catch arm).
+  await cap("9935 ML-KEM leaf with a malformed (non-BIT-STRING) keyUsage -> rejected", async function () {
+    return run([await mkCert({ subject: "KemBadKu", issuer: "Root", signWith: "ed25519", spki: mlkemSpki, extensions: [ext("2.5.29.15", true, b.integer(5))] })], { time: T2027, trustAnchor: anchor });
+  });
 
   // ---- 1462 cert DistributionPoint cRLIssuer names a NON-directoryName ---------
   // crlIssuerNamesIssuer skips any cRLIssuer GeneralName that is not a
@@ -3191,6 +3196,7 @@ async function testCoverageEdges() {
     "9935 ML-KEM leaf keyUsage=nonRepudiation -> rejected (keyEncipherment not set)": { code: "path/kem-key-usage" },
     "9935 ML-KEM leaf keyUsage=keyEncipherment+reserved bit 9 -> rejected": { code: "path/kem-key-usage" },
     "9935 ML-KEM intermediate keyUsage=keyCertSign -> rejected": { code: "path/kem-key-usage" },
+    "9935 ML-KEM leaf with a malformed (non-BIT-STRING) keyUsage -> rejected": { code: "path/kem-key-usage" },
     "1462 cert DP cRLIssuer is a URI (not directoryName) -> revocation-only": { code: RUND },
     "1465 cert DP cRLIssuer names the issuer + DP corresponds -> good": { valid: true },
     "1744 CRL non-octet-aligned signature -> undetermined": { code: RUND },
