@@ -177,6 +177,27 @@ async function run() {
     void b; pki.webauthn.parseAttestationObject(cbor);
   })));
 
+  // --- non-map attStmt: the attestation statement MUST be a CBOR map (WebAuthn 6.5.4) ---
+  // A non-map attStmt is a structural malformation of the attestation OBJECT, rejected at
+  // parse -- it must NEVER reach a format verifier. A CBOR array attStmt in particular has a
+  // `children` array whose entries are single nodes, not {key,value} pairs: iterating them as
+  // pairs read kv[0] as undefined and threw a raw TypeError, leaking a non-PkiError.
+  var nmAuthData = pki.webauthn.parseAttestationObject(attObj("packed")).authDataBytes;
+  function attObjRaw(fmt, attStmtBuf, authData) {
+    return cMap([[cText("fmt"), cText(fmt)], [cText("attStmt"), attStmtBuf], [cText("authData"), cBytes(authData)]]);
+  }
+  // Every non-map CBOR type for attStmt is rejected at parse with the structural code.
+  [["array", cArr([cInt(1), cInt(2)])], ["integer", cInt(7)], ["byte string", cBytes(Buffer.alloc(3))], ["text string", cText("x")]].forEach(function (t) {
+    check("parse: a " + t[0] + " attStmt -> webauthn/bad-attestation-object (not a raw throw)",
+      codeOf(function () { pki.webauthn.parseAttestationObject(attObjRaw("packed", t[1], nmAuthData)); }) === "webauthn/bad-attestation-object");
+  });
+  // verify() runs the same structural parse first: an ARRAY attStmt (the fuzz-found crash
+  // input) in EVERY format fails closed with the typed structural error, never a raw throw.
+  for (var nmFmt of ["packed", "apple", "fido-u2f", "android-key", "tpm", "none"]) {
+    check("verify: an array attStmt (" + nmFmt + ") fails closed as webauthn/bad-attestation-object",
+      (await codeOfAsync((function (f) { return function () { return pki.webauthn.verify(attObjRaw(f, cArr([cInt(1), cInt(2)]), nmAuthData), Buffer.alloc(32), {}); }; })(nmFmt))) === "webauthn/bad-attestation-object");
+  }
+
   // --- adversarial-audit conformance vectors (each RED on the pre-fix tree) ---
   // Real KAT material reused: the packed leaf (v3, non-CA, OU=Authenticator
   // Attestation), a CA certificate (tpm chain root, cA=true), the apple leaf
@@ -368,9 +389,10 @@ async function run() {
   // §8.7 -- a non-empty none attStmt is rejected.
   check("verify: none attestation with a non-empty attStmt -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("none", [[cText("x"), cInt(1)]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
-  // §8.7 -- a none attStmt that is not a map at all (here a uint) is rejected.
-  check("verify: none attestation with a non-map attStmt -> webauthn/bad-att-stmt",
-    (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-att-stmt");
+  // §6.5.4 -- a none attStmt that is not a map at all (here a uint) is a structural
+  // malformation of the attestation OBJECT, rejected at parse before format dispatch.
+  check("verify: none attestation with a non-map attStmt -> webauthn/bad-attestation-object",
+    (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-attestation-object");
   // §6.5.4 -- an attestation object with an extra top-level key (non-canonical envelope) is rejected.
   check("parse: attestation object with an extra top-level key -> webauthn/bad-attestation-object",
     codeOf(function () { pki.webauthn.parseAttestationObject(cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cMap([])], [cText("authData"), cBytes(realAuthData)], [cText("zextra"), cInt(1)]])); }) === "webauthn/bad-attestation-object");
@@ -426,9 +448,10 @@ async function run() {
 
   // ---- attStmt shape + x5c reader --------------------------------------------------
   function packedAlg(alg, sig, x5cList) { return attObjOf("packed", [[cText("alg"), cInt(alg)], [cText("sig"), cBytes(sig)], [cText("x5c"), cArr(x5cList.map(cBytes))]], realAuthData); }
-  // an attStmt that is not a CBOR map fails the canonical-shape check, not silently.
-  check("verify: packed attStmt that is not a CBOR map -> webauthn/bad-att-stmt",
-    (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("packed")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-att-stmt");
+  // an attStmt that is not a CBOR map is a structural malformation of the attestation
+  // OBJECT, rejected at parse before format dispatch, not silently.
+  check("verify: packed attStmt that is not a CBOR map -> webauthn/bad-attestation-object",
+    (await codeOfAsync(function () { return pki.webauthn.verify(cMap([[cText("fmt"), cText("packed")], [cText("attStmt"), cInt(5)], [cText("authData"), cBytes(realAuthData)]]), packedHash); })) === "webauthn/bad-attestation-object");
   // x5c MUST be a non-empty array of byte-string certificates.
   check("verify: packed x5c that is an empty array -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("packed", [[cText("alg"), cInt(-7)], [cText("sig"), cBytes(Buffer.alloc(8))], [cText("x5c"), cArr([])]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");

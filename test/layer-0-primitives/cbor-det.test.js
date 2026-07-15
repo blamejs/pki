@@ -37,9 +37,10 @@ function testAccept() {
   check("acc-uint-4294967296", r.uint(d(B("1b0000000100000000"))) === 4294967296n);
   check("acc-uint-max64", r.uint(d(B("1bffffffffffffffff"))) === 18446744073709551615n);
 
-  // major type 1 — negative int
+  // major type 1 — negative int (both the type-pinned nint reader and the polymorphic int)
   check("acc-nint-neg1", r.int(d(B("20"))) === -1n);
   check("acc-nint-neg100", r.int(d(B("3863"))) === -100n);
+  check("acc-nint-direct", r.nint(d(B("20"))) === -1n);
 
   // major type 2 — byte string
   check("acc-bstr-empty", r.byteString(d(B("40"))).length === 0);
@@ -307,6 +308,7 @@ function testSurface() {
   check("pki.cbor.read.textString is exposed", typeof pki.cbor.read.textString === "function");
   check("pki.cbor.read.array is exposed", typeof pki.cbor.read.array === "function");
   check("pki.cbor.read.map is exposed", typeof pki.cbor.read.map === "function");
+  check("pki.cbor.read.mapGet is exposed", typeof pki.cbor.read.mapGet === "function");
   check("pki.cbor.read.boolean is exposed", typeof pki.cbor.read.boolean === "function");
   check("pki.cbor.read.nullValue is exposed", typeof pki.cbor.read.nullValue === "function");
   check("pki.cbor.read.undefinedValue is exposed", typeof pki.cbor.read.undefinedValue === "function");
@@ -316,9 +318,39 @@ function testSurface() {
   check("pki.cbor.read.oid is exposed", typeof pki.cbor.read.oid === "function");
 }
 
+// read.mapGet -- the single keyed-lookup home over a decoded map's [key, value]
+// pairs (a text-string key, or an integer key as COSE labels are). The map major
+// type is asserted INSIDE the primitive, so a consumer's lookup can never walk a
+// non-map's children as pairs (single nodes, whose pair index reads undefined).
+function testMapGet() {
+  var d = pki.cbor.decode;
+  var r = pki.cbor.read;
+  // text-keyed lookup: hit, miss (null), and no cross-type coercion
+  var tm = d(B("a2616101616202"));               // { "a": 1, "b": 2 }
+  check("mapGet-text-hit", r.uint(r.mapGet(tm, "b")) === 2n);
+  check("mapGet-text-miss-null", r.mapGet(tm, "c") === null);
+  check("mapGet-int-key-vs-text-map-null", r.mapGet(tm, 1) === null);
+  // int-keyed lookup (COSE labels): positive, negative, BigInt form, miss
+  var im = d(B("a3010203042005"));               // { 1: 2, 3: 4, -1: 5 }
+  check("mapGet-int-hit", r.uint(r.mapGet(im, 3)) === 4n);
+  check("mapGet-negint-hit", r.uint(r.mapGet(im, -1)) === 5n);
+  check("mapGet-bigint-key-hit", r.uint(r.mapGet(im, 1n)) === 2n);
+  check("mapGet-int-miss-null", r.mapGet(im, 2) === null);
+  check("mapGet-text-key-vs-int-map-null", r.mapGet(im, "1") === null);
+  check("mapGet-empty-map-null", r.mapGet(d(B("a0")), "a") === null);
+  // a non-map node fails closed as the codec's wrong-major verdict, never null
+  check("mapGet-on-array-unexpected-major", code(function () { r.mapGet(d(B("80")), "a"); }) === "cbor/unexpected-major");
+  check("mapGet-on-uint-unexpected-major", code(function () { r.mapGet(d(B("01")), 1); }) === "cbor/unexpected-major");
+  // a key that is neither a text string nor an integer is a caller bug: TypeError
+  check("mapGet-float-key-typeerror", threw(function () { r.mapGet(im, 1.5); }) instanceof TypeError);
+  check("mapGet-object-key-typeerror", threw(function () { r.mapGet(im, {}); }) instanceof TypeError);
+  check("mapGet-unsafe-number-key-typeerror", threw(function () { r.mapGet(im, Number.MAX_SAFE_INTEGER + 1); }) instanceof TypeError);
+}
+
 function run() {
   testSurface();
   testAccept();
+  testMapGet();
   testRejectDecode();
   testReaderRejects();
   testReadMismatch();

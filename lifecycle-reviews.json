@@ -454,5 +454,11 @@
     "reason": "Enumerates the lint profile names; the profile set will grow as the CABF / S/MIME / CRL / OCSP corpora land. Graduate alongside pki.lint.certificate.",
     "reviewedAt": "0.2.10",
     "reviewBy": "0.3.0"
+  },
+  "pki.cms.verify": {
+    "decision": "keep-experimental",
+    "reason": "The SignedData verify surface is interop-proven for the classical signers, but the post-quantum acceptance rules (ML-DSA RFC 9882, SLH-DSA RFC 9814, composite ML-DSA) landed across the last three releases and the composite draft is still pre-RFC. Graduate together with pki.cms.sign once the PQC/composite signer set has seasoned a full review cycle and the composite spec reaches RFC.",
+    "reviewedAt": "0.2.20",
+    "reviewBy": "0.3.0"
   }
 }
