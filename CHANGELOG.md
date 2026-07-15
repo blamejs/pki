@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.21 — 2026-07-15
+
+ML-KEM public keys in X.509 certificates and PKCS#8 private keys (RFC 9935 / FIPS 203) become a first-class, fail-closed surface: certification-path validation enforces the keyEncipherment-only key usage, key import validates the private-key CHOICE and rejects an inconsistent key with a typed error, and pki.lint gains the RFC 9935 certificate rows.
+
+### Added
+
+- pki.path.validate enforces the RFC 9935 section 5 key-usage rule for ML-KEM (id-ml-kem-512/768/1024) certificates: a present keyUsage MUST assert keyEncipherment as the only bit. A leaf with digitalSignature, an ML-KEM key with keyCertSign / cRLSign / keyAgreement / dataEncipherment / nonRepudiation, or keyEncipherment set alongside any reserved bit, fails closed with the frozen code path/kem-key-usage -- for the target and every intermediate whose own subject key is ML-KEM. An absent keyUsage places no restriction (RFC 5280 section 4.2.1.3).
+- pki.lint gains an rfc9935 profile: lint/rfc9935/kem-key-usage (the section 5 keyEncipherment-only rule) and lint/rfc9935/kem-key-length (the SPKI encapsulation key must be exactly 800 / 1184 / 1568 octets for the id-ml-kem-512 / 768 / 1024 OID -- the OID is the sole authority for the parameter set, so an OCTET-STRING-wrapped or wrong-set key is flagged). Both run by default and are silent on a non-ML-KEM certificate.
+
+### Fixed
+
+- pki.webcrypto.subtle.importKey no longer surfaces a raw engine exception when handed a malformed or inconsistent key: a bad SPKI, a bad JWK, or an ML-KEM private key whose seed and expanded halves are inconsistent (FIPS 203 section 7.3) now fails closed with a typed webcrypto/data error. For an ML-KEM PKCS#8, the RFC 9935 section 6 private-key CHOICE is validated by its DER tag and exact size for the algorithm OID before the engine imports it -- the OpenSSL-legacy bare-seed, bare-expanded-key, and concatenated layouts the engine would otherwise accept are rejected, so a non-conformant private key cannot be imported under an ML-KEM name.
+
 ## v0.2.20 — 2026-07-15
 
 A WebAuthn attestation object whose attestation statement is not a CBOR map is now rejected with a typed webauthn/bad-attestation-object at parse instead of surfacing an untyped error from a format verifier, and the strict CBOR codec gains pki.cbor.read.mapGet -- a keyed map lookup that asserts the map's major type inside the accessor.

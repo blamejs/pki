@@ -198,6 +198,41 @@ function run() {
   testInputCoercion();
   testMultiDefectFailClosed();
   testParseEncryptedRejections();
+  testMlKemPrivateKeys();
+}
+
+// ML-KEM PKCS#8 (RFC 9935 sec. 6): both real producer shapes parse -- Node's seed-only
+// [0] arm (66-byte inner) and the published App C.1 seed/expandedKey/both arms across all
+// three parameter sets. The parse surfaces the inner CHOICE as opaque octets (raw-by-design,
+// algorithm-agnostic -- the CHOICE validation lives at the webcrypto import boundary), and
+// the RFC 5958 version<->publicKey coupling holds on the ML-KEM shapes.
+function testMlKemPrivateKeys() {
+  var fs = require("fs");
+  var path = require("path");
+  var FIX = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "mlkem", "rfc9935-appc.json"), "utf8")).vectors;
+  function fx(n) { return Buffer.from(FIX[n].derHex, "hex"); }
+  var b = pki.asn1.build;
+  function O(n) { return pki.oid.byName(n); }
+  [512, 768, 1024].forEach(function (set) {
+    ["seed", "expanded", "both"].forEach(function (arm) {
+      var der = fx("mlkem" + set + "-" + arm);
+      var p = pki.schema.pkcs8.parse(der);
+      check("ML-KEM-" + set + " " + arm + " arm (RFC 9935 C.1) parses",
+        p.privateKeyAlgorithm.name === "id-ml-kem-" + set && Buffer.isBuffer(p.privateKey));
+      check("ML-KEM-" + set + " " + arm + " orchestrator routes to pkcs8", (function () { var r = pki.schema.parse(der); return Buffer.isBuffer(r.privateKey) && r.validity === undefined && r.privateKeyAlgorithm.name === "id-ml-kem-" + set; })());
+    });
+    // Node's own emit shape (seed-only [0], 66-byte inner) parses identically.
+    var nodeDer = require("node:crypto").generateKeyPairSync("ml-kem-" + set).privateKey.export({ format: "der", type: "pkcs8" });
+    var np = pki.schema.pkcs8.parse(nodeDer);
+    check("ML-KEM-" + set + " Node seed-only emit parses (66-byte [0] inner surfaced raw)",
+      np.privateKey.length === 66 && np.privateKey[0] === 0x80);
+  });
+  // RFC 5958 version<->publicKey coupling on an ML-KEM shape: a v1 envelope carrying a
+  // [1] publicKey (or v2 without one) is rejected -- re-pinned on this algorithm.
+  var seedInner = Buffer.concat([Buffer.from([0x80, 0x40]), Buffer.alloc(64, 1)]);
+  var v1WithPub = b.sequence([b.integer(0n), b.sequence([b.oid(O("id-ml-kem-768"))]), b.octetString(seedInner), b.contextPrimitive(1, Buffer.concat([Buffer.from([0x00]), Buffer.alloc(1184, 2)]))]);
+  check("ML-KEM pkcs8 v1 carrying a [1] publicKey -> pkcs8/bad-version",
+    code(function () { pki.schema.pkcs8.parse(v1WithPub); }) === "pkcs8/bad-version");
 }
 
 module.exports = { run: run };

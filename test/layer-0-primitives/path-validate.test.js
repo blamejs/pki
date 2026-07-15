@@ -19,6 +19,7 @@
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
+var nodeCrypto = require("node:crypto");
 
 var b = pki.asn1.build;
 var subtle = pki.webcrypto.subtle;
@@ -2979,6 +2980,53 @@ async function testCoverageEdges() {
     return run([await mkCert({ subject: "CompBit9", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki(), extensions: [ext("2.5.29.15", true, b.bitString(Buffer.from([0x00, 0x40]), 6))] })], { time: T2027, trustAnchor: anchor });
   });
 
+  // ---- ML-KEM keyUsage gate (RFC 9935 sec. 5) ---------------------------------
+  // A certificate whose SPKI carries an id-ml-kem-* OID, IF it has a keyUsage
+  // extension, MUST assert keyEncipherment as the ONLY key usage set. Absent
+  // keyUsage places no restriction (RFC 5280 sec. 4.2.1.3). An ML-KEM key cannot
+  // sign, so the cert is always signed by a non-KEM issuer key.
+  var KU_KEY_ENCIPHERMENT = 2, KU_NON_REPUDIATION = 1, KU_DATA_ENCIPHERMENT = 3, KU_KEY_AGREEMENT = 4;
+  var mlkemSpki = nodeCrypto.generateKeyPairSync("ml-kem-768").publicKey.export({ format: "der", type: "spki" });
+  function kemLeaf(subj, kuBits) {
+    var o = { subject: subj, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: mlkemSpki };
+    if (kuBits) o.extensions = [kuExt(kuBits)];
+    return mkCert(o);
+  }
+  await cap("9935 ML-KEM leaf keyUsage=keyEncipherment only -> valid", async function () {
+    return run([await kemLeaf("KemOk", [KU_KEY_ENCIPHERMENT])], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("9935 ML-KEM leaf without keyUsage -> valid (unconstrained)", async function () {
+    return run([await kemLeaf("KemNoKu", null)], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("9935 ML-KEM leaf keyUsage=digitalSignature -> rejected", async function () {
+    return run([await kemLeaf("KemDs", [KU_DIGITAL_SIGNATURE])], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("9935 ML-KEM leaf keyUsage=digitalSignature+keyEncipherment -> rejected", async function () {
+    return run([await kemLeaf("KemDsKe", [KU_DIGITAL_SIGNATURE, KU_KEY_ENCIPHERMENT])], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("9935 ML-KEM leaf keyUsage=keyAgreement -> rejected", async function () {
+    return run([await kemLeaf("KemKa", [KU_KEY_AGREEMENT])], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("9935 ML-KEM leaf keyUsage=dataEncipherment -> rejected", async function () {
+    return run([await kemLeaf("KemDe", [KU_DATA_ENCIPHERMENT])], { time: T2027, trustAnchor: anchor });
+  });
+  await cap("9935 ML-KEM leaf keyUsage=nonRepudiation -> rejected (keyEncipherment not set)", async function () {
+    return run([await kemLeaf("KemNr", [KU_NON_REPUDIATION])], { time: T2027, trustAnchor: anchor });
+  });
+  // "the ONLY key usage set" binds unnamed bits too: keyEncipherment + a reserved
+  // bit (>= 9) is not keyEncipherment-only.
+  await cap("9935 ML-KEM leaf keyUsage=keyEncipherment+reserved bit 9 -> rejected", async function () {
+    return run([await kemLeaf("KemBit9", [KU_KEY_ENCIPHERMENT, 9])], { time: T2027, trustAnchor: anchor });
+  });
+  // The gate runs at the INTERMEDIATE position too: an ML-KEM "CA" asserting
+  // keyCertSign is rejected explicitly (its inability to sign also fails the
+  // leaf's signature check; the includes-assertion pins the explicit code).
+  await cap("9935 ML-KEM intermediate keyUsage=keyCertSign -> rejected", async function () {
+    var kemCa = await mkCert({ subject: "KemCa", issuer: "Root", signWith: "ed25519", spki: mlkemSpki, extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+    var leaf = await mkCert({ subject: "KemCaLeaf", issuer: "KemCa", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+    return run([kemCa, leaf], { time: T2027, trustAnchor: anchor });
+  });
+
   // ---- 1462 cert DistributionPoint cRLIssuer names a NON-directoryName ---------
   // crlIssuerNamesIssuer skips any cRLIssuer GeneralName that is not a
   // directoryName [4]; with no directoryName the DP never corresponds -> the
@@ -3134,6 +3182,15 @@ async function testCoverageEdges() {
     "1124 unregistered dotted checkPurpose kept as the dotted OID": { valid: true },
     "475 composite-keyed leaf without keyUsage -> path valid": { valid: true },
     "481 composite keyUsage asserts no signature bit -> rejected": { code: "path/composite-key-usage" },
+    "9935 ML-KEM leaf keyUsage=keyEncipherment only -> valid": { valid: true },
+    "9935 ML-KEM leaf without keyUsage -> valid (unconstrained)": { valid: true },
+    "9935 ML-KEM leaf keyUsage=digitalSignature -> rejected": { code: "path/kem-key-usage" },
+    "9935 ML-KEM leaf keyUsage=digitalSignature+keyEncipherment -> rejected": { code: "path/kem-key-usage" },
+    "9935 ML-KEM leaf keyUsage=keyAgreement -> rejected": { code: "path/kem-key-usage" },
+    "9935 ML-KEM leaf keyUsage=dataEncipherment -> rejected": { code: "path/kem-key-usage" },
+    "9935 ML-KEM leaf keyUsage=nonRepudiation -> rejected (keyEncipherment not set)": { code: "path/kem-key-usage" },
+    "9935 ML-KEM leaf keyUsage=keyEncipherment+reserved bit 9 -> rejected": { code: "path/kem-key-usage" },
+    "9935 ML-KEM intermediate keyUsage=keyCertSign -> rejected": { code: "path/kem-key-usage" },
     "1462 cert DP cRLIssuer is a URI (not directoryName) -> revocation-only": { code: RUND },
     "1465 cert DP cRLIssuer names the issuer + DP corresponds -> good": { valid: true },
     "1744 CRL non-octet-aligned signature -> undetermined": { code: RUND },

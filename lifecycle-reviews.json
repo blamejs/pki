@@ -460,5 +460,17 @@
     "reason": "The SignedData verify surface is interop-proven for the classical signers, but the post-quantum acceptance rules (ML-DSA RFC 9882, SLH-DSA RFC 9814, composite ML-DSA) landed across the last three releases and the composite draft is still pre-RFC. Graduate together with pki.cms.sign once the PQC/composite signer set has seasoned a full review cycle and the composite spec reaches RFC.",
     "reviewedAt": "0.2.20",
     "reviewBy": "0.3.0"
+  },
+  "pki.cms.sign": {
+    "decision": "keep-experimental",
+    "reason": "The CMS SignedData signing surface tracks pki.cms.verify: the post-quantum ML-DSA / SLH-DSA / composite ML-DSA signer arms landed across the last three releases and the composite draft is still pre-RFC. Graduate together with pki.cms.verify once the PQC/composite signer set has seasoned a full review cycle and the composite specification reaches RFC.",
+    "reviewedAt": "0.2.21",
+    "reviewBy": "0.3.0"
+  },
+  "pki.tsp.sign": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp-token producing surface composes pki.cms.sign; it graduates with the CMS signing surface it builds on, once that set has seasoned and the composite signer specification reaches RFC.",
+    "reviewedAt": "0.2.21",
+    "reviewBy": "0.3.0"
   }
 }

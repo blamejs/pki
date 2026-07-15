@@ -10,7 +10,7 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 
 - **Strict, validating DER/BER codec** — *Shipped.* An in-house, purpose-built ASN.1 encoder/decoder with a hard depth and size bound so malformed or deeply nested input is rejected in bounded time instead of exhausting the stack. DER is canonical on encode; the decoder rejects non-canonical structures by default and accepts BER only where a specific standard permits it. A single structure definition drives both encode and decode so context-tag (EXPLICIT/IMPLICIT) handling cannot diverge between the two directions.
 - **Data-driven algorithm registry** — *Targeted.* The OID registry (`pki.oid`) names every algorithm, attribute, and extension in both directions today; the resolution table that maps an OID to its parameters, key importer, signer, and verifier lands with the signing surface, so new signature and KEM algorithms — including post-quantum ones — are registry entries, not special cases.
-- **Node-native crypto engine** — *Shipped.* Cryptographic operations run over Node's native `node:crypto` through the W3C WebCrypto engine (`pki.webcrypto`), which removes the Web Crypto limits on streaming, opaque (non-extractable) key handles, and algorithm coverage. It ships the full classical set plus post-quantum ML-DSA and SLH-DSA signatures; ML-KEM key generation is available, with KEM encapsulation on the roadmap.
+- **Node-native crypto engine** — *Shipped.* Cryptographic operations run over Node's native `node:crypto` through the W3C WebCrypto engine (`pki.webcrypto`), which removes the Web Crypto limits on streaming, opaque (non-extractable) key handles, and algorithm coverage. It ships the full classical set plus post-quantum ML-DSA and SLH-DSA signatures and ML-KEM key generation, encoding, and import; KEM encapsulation lands with the CMS KEM-decrypt surface.
 - **Fail-closed operation** — *Shipped.* Every decode and (as they land) encrypt, sign, and verify path throws on failure through the typed `PkiError` taxonomy. No path emits zero, default, or partial output in place of a real result.
 
 ## X.509 certificates and CRLs — RFC 5280
@@ -53,7 +53,7 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 
 The clearest differentiator: the classical toolkit this library replaces has no post-quantum surface at all. PQC algorithms are registry entries alongside classical ones, not bolt-ons.
 
-- **ML-KEM in X.509** — *Targeted.* ML-KEM public keys in certificates and SPKI. draft-ietf-lamps-kyber-certificates.
+- **ML-KEM in X.509** — *Shipped.* ML-KEM public keys in certificates and PKCS#8 private keys: parse and import all three parameter sets, enforce the keyEncipherment-only key usage in path validation, and lint the certificate and encapsulation-key size against the algorithm OID. RFC 9935 / FIPS 203.
 - **ML-DSA in X.509** — *Targeted.* ML-DSA certificate signing and verification, tracking the LAMPS certificate specification through publication. draft-ietf-lamps-dilithium-certificates.
 - **SLH-DSA** — *Verification shipped; CMS signing + verification shipped.* All twelve FIPS 205 parameter sets verify in certification-path validation (`pki.path.validate`), and `pki.cms.sign` / `pki.cms.verify` now sign and verify a CMS SignedData with any of the twelve pure sets — pure mode, empty context, the parameter set's message digest pinned per RFC 9814 §4, freely mixed with the classical and ML-DSA signers. The parameters-MUST-be-absent rule is enforced across every format's AlgorithmIdentifier. *Planned next:* SLH-DSA certificate signing (the X.509 producing side). RFC 9909 (X.509), RFC 9814 (CMS).
 - **ML-KEM in CMS** — *Shipped (parse); decrypt Targeted.* ML-KEM KEMRecipientInfo recipients parse with FIPS 203 ciphertext-size and parameters-absent enforcement (RFC 9936); decryption rides KEM encapsulation in the crypto engine. RFC 9629.
@@ -236,9 +236,9 @@ The toolkit targets the standards surface below. Status is given for post-quantu
 | **RFC 9814** | Use of SLH-DSA in CMS *(published Jul 2025)* | SLH-DSA SignerInfo (pure mode, empty context) |
 | **RFC 9629** | KEM algorithms in CMS (`KEMRecipientInfo`) | Framework for ML-KEM recipient info |
 | draft-ietf-lamps-dilithium-certificates | Algorithm Identifiers for ML-DSA in X.509 *(I-D, active)* | ML-DSA cert/CRL public-key & signature OIDs |
-| draft-ietf-lamps-kyber-certificates | Algorithm Identifiers for ML-KEM in X.509 *(I-D, active)* | ML-KEM subject-public-key in certs |
+| RFC 9935 | Algorithm Identifiers for ML-KEM in X.509 *(published)* | ML-KEM subject-public-key in certs |
 | draft-ietf-lamps-x509-slhdsa | Algorithm Identifiers for SLH-DSA in X.509 *(I-D, active)* | SLH-DSA cert/CRL identifiers |
-| draft-ietf-lamps-cms-kyber | Use of ML-KEM in CMS *(I-D, at IESG)* | ML-KEM `KEMRecipientInfo` conventions over RFC 9629 |
+| RFC 9936 | Use of ML-KEM in CMS *(published)* | ML-KEM `KEMRecipientInfo` conventions over RFC 9629 |
 | draft-ietf-lamps-pq-composite-sigs | Composite ML-DSA for X.509 *(I-D, active)* | Hybrid ML-DSA + RSA/ECDSA/EdDSA cert signatures |
 | draft-ietf-lamps-pq-composite-kem | Composite ML-KEM for X.509 *(I-D, active)* | Hybrid ML-KEM + RSA-OAEP/ECDH/X25519 keys |
 | draft-ietf-lamps-cms-composite-sigs | Composite ML-DSA in CMS *(I-D, active)* | Composite-signature SignerInfo |

@@ -912,6 +912,7 @@ async function run() {
   await testRsaObjectHash();
   await testCryptoKeyConstructor();
   await testMldsaContext();
+  await testMlKemImport();
 }
 
 // ML-DSA (FIPS 204) context: sign and verify honor an optional context octet string
@@ -939,6 +940,95 @@ async function testMldsaContext() {
     (await code(function () { return subtle.verify({ name: "ML-DSA-65", context: new Uint8Array(256) }, kp.publicKey, sig, msg); })) === "webcrypto/data");
   check("ML-DSA accepts a 255-byte context (the boundary)",
     (await code(function () { return subtle.sign({ name: "ML-DSA-65", context: new Uint8Array(255) }, kp.privateKey, msg); })) === "NO-THROW");
+}
+
+// ML-KEM (RFC 9935 / FIPS 203) SPKI + PKCS#8 import: the three parameter sets accept in
+// every RFC 9935 sec. 6 CHOICE arm (seed / expandedKey / both -- the published App C.1
+// material), the forbidden legacy layouts and the App C.4 inconsistent keys reject as a
+// TYPED webcrypto/* verdict (never a raw engine error), and the one shape the engine
+// accepts but RFC 9935 forbids -- a bare seed with no CHOICE tag -- is pre-rejected.
+async function testMlKemImport() {
+  var fs = require("fs");
+  var path = require("path");
+  var FIX = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "mlkem", "rfc9935-appc.json"), "utf8")).vectors;
+  function fx(n) { return Buffer.from(FIX[n].derHex, "hex"); }
+  var b = pki.asn1.build;
+  function O(n) { return pki.oid.byName(n); }
+  var seed64 = Buffer.alloc(64); for (var i = 0; i < 64; i++) seed64[i] = i;
+  function kemPkcs8(set, inner) {
+    return b.sequence([b.integer(0n), b.sequence([b.oid(O("id-ml-kem-" + set))]), b.octetString(inner)]);
+  }
+  function seedArm(bytes) { return Buffer.concat([Buffer.from([0x80, bytes.length]), bytes]); }
+  var DK_LEN = { 512: 1632, 768: 2400, 1024: 3168 };
+
+  // accept: all three sets x all three published C.1 arms + the published C.2 SPKIs.
+  for (var set of [512, 768, 1024]) {
+    for (var arm of ["seed", "expanded", "both"]) {
+      check("ML-KEM-" + set + " pkcs8 " + arm + " arm (RFC 9935 C.1) imports",
+        (await code((function (s, a) { return function () { return subtle.importKey("pkcs8", fx("mlkem" + s + "-" + a), { name: "ML-KEM-" + s }, true, []); }; })(set, arm))) === "NO-THROW");
+    }
+    check("ML-KEM-" + set + " published SPKI (RFC 9935 C.2) imports",
+      (await code((function (s) { return function () { return subtle.importKey("spki", fx("pub-" + s), { name: "ML-KEM-" + s }, true, []); }; })(set))) === "NO-THROW");
+  }
+
+  // emit pin (RFC 9935 sec. 6/7 RECOMMENDED): the engine exports pkcs8 in the seed-only
+  // [0] arm -- a 66-byte inner tagged 0x80 0x40 -- so an engine-side format change is caught.
+  var kemKp = nodeCrypto.generateKeyPairSync("ml-kem-768");
+  var outP8 = kemKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var innerBytes = pki.asn1.read.octetString(pki.asn1.decode(outP8).children[2]);
+  check("ML-KEM pkcs8 export emits the seed-only [0] arm (RFC 9935 sec. 6 RECOMMENDED)",
+    innerBytes.length === 66 && innerBytes[0] === 0x80 && innerBytes[1] === 0x40);
+  var goodSpki = kemKp.publicKey.export({ format: "der", type: "spki" });
+  check("ML-KEM spki import + export round-trips byte-identically", (await (async function () {
+    var k = await subtle.importKey("spki", goodSpki, { name: "ML-KEM-768" }, true, []);
+    return Buffer.from(await subtle.exportKey("spki", k)).equals(goodSpki);
+  })()));
+
+  // RFC 9935 sec. 8 / FIPS 203 sec. 7.3: the four published App C.4 inconsistent
+  // ML-KEM-512 keys reject as a TYPED verdict -- the engine detects the inconsistency;
+  // the toolkit surfaces it as webcrypto/data, never a raw engine error.
+  for (var bad of ["bad512-both-mismatch", "bad512-mutated-s0", "bad512-mutated-hek", "bad512-z-mismatch"]) {
+    check("ML-KEM inconsistent key " + bad + " (RFC 9935 C.4) -> typed webcrypto/data",
+      (await code((function (n) { return function () { return subtle.importKey("pkcs8", fx(n), { name: "ML-KEM-512" }, true, []); }; })(bad))) === "webcrypto/data");
+  }
+
+  // RFC 9935 sec. 6: the privateKey OCTET STRING carries the DER CHOICE -- NEVER a bare
+  // seed. The engine ACCEPTS this legacy layout, so the toolkit pre-rejects it.
+  check("ML-KEM bare-seed inner (no CHOICE tag) -> webcrypto/data",
+    (await code(function () { return subtle.importKey("pkcs8", kemPkcs8(768, seed64), { name: "ML-KEM-768" }, true, []); })) === "webcrypto/data");
+
+  // Engine-rejected malformations surface TYPED (the import-boundary raw-error-leak
+  // class): every reject through importKey is a webcrypto/* PkiError.
+  var mal = [
+    ["constructed [0] seed (explicit-tagging mistake)", kemPkcs8(768, Buffer.concat([Buffer.from([0xa0, 0x42, 0x04, 0x40]), seed64]))],
+    ["63-byte seed", kemPkcs8(768, seedArm(seed64.subarray(0, 63)))],
+    ["65-byte seed", kemPkcs8(768, seedArm(Buffer.concat([seed64, Buffer.from([0xff])])))],
+    ["universal OCTET STRING(64) inner (not guessed as a seed)", kemPkcs8(768, b.octetString(seed64))],
+    ["bare raw dk inner", kemPkcs8(768, Buffer.alloc(DK_LEN[768], 7))],
+    ["expandedKey off-by-one", kemPkcs8(768, b.octetString(Buffer.alloc(DK_LEN[768] + 1, 7)))],
+    ["oqskeypair dk||ek concatenation", kemPkcs8(768, Buffer.alloc(DK_LEN[768] + 1184, 7))],
+    ["both-arm with a wrong-size expandedKey", kemPkcs8(768, b.sequence([b.octetString(seed64), b.octetString(Buffer.alloc(DK_LEN[768] + 5, 7))]))],
+    ["both-arm with a wrong-size seed", kemPkcs8(768, b.sequence([b.octetString(seed64.subarray(0, 63)), b.octetString(Buffer.alloc(DK_LEN[768], 7))]))],
+    ["both-arm with only one element", kemPkcs8(768, b.sequence([b.octetString(seed64)]))],
+  ];
+  for (var m of mal) {
+    check("ML-KEM " + m[0] + " -> typed webcrypto/data",
+      (await code((function (d) { return function () { return subtle.importKey("pkcs8", d, { name: "ML-KEM-768" }, true, []); }; })(m[1]))) === "webcrypto/data");
+  }
+  // The OID is the sole authority for the parameter set: a 768-set expandedKey under the
+  // id-ml-kem-512 OID rejects (RFC 9935 sec. 6 -- never a length heuristic).
+  var inner768 = pki.asn1.read.octetString(pki.asn1.decode(fx("mlkem768-expanded")).children[2]);
+  check("ML-KEM cross-set expandedKey (768-set inner under the 512 OID) -> typed webcrypto/data",
+    (await code(function () { return subtle.importKey("pkcs8", kemPkcs8(512, inner768), { name: "ML-KEM-512" }, true, []); })) === "webcrypto/data");
+
+  // A truncated SPKI rejects typed through the same choke point (the generic
+  // import-boundary class, not ML-KEM-specific).
+  check("truncated SPKI -> typed webcrypto/data (not a raw engine error)",
+    (await code(function () { return subtle.importKey("spki", goodSpki.subarray(0, goodSpki.length - 10), { name: "ML-KEM-768" }, true, []); })) === "webcrypto/data");
+  // The jwk arm wraps the same way: a structurally-plausible EC JWK whose coordinates are
+  // garbage rejects typed.
+  check("malformed EC JWK -> typed webcrypto/data (not a raw engine error)",
+    (await code(function () { return subtle.importKey("jwk", { kty: "EC", crv: "P-256", x: "AQ", y: "AQ" }, { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]); })) === "webcrypto/data");
 }
 
 module.exports = { run: run };
