@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.19",
+  "packageVersion": "0.2.20",
   "surface": {
     "C": {
       "kind": "object",
@@ -995,6 +995,10 @@
             "map": {
               "kind": "function",
               "arity": 1
+            },
+            "mapGet": {
+              "kind": "function",
+              "arity": 2
             },
             "nint": {
               "kind": "function",
@@ -2675,6 +2679,7 @@
     "pki.cbor.read.textString": "0.1.27",
     "pki.cbor.read.array": "0.1.27",
     "pki.cbor.read.map": "0.1.27",
+    "pki.cbor.read.mapGet": "0.2.20",
     "pki.cbor.read.boolean": "0.1.27",
     "pki.cbor.read.nullValue": "0.1.27",
     "pki.cbor.read.undefinedValue": "0.1.27",

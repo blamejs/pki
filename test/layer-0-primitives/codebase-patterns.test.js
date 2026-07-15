@@ -2056,6 +2056,50 @@ function _functionRegions(src) {
   return out;
 }
 
+function testCborMapPairAccessOutsideCodec() {
+  // class: cbor-map-pair-access-outside-codec
+  // A CBOR node's `children` are [key, value] PAIRS only for a MAP (majorType 5). For an
+  // ARRAY (majorType 4) the children are single value nodes, so reading a children element
+  // as a pair -- node.children[i][0], or a node.children.forEach(kv => kv[0]) split -- yields
+  // `undefined`, and dereferencing it (kv[0].majorType) throws a RAW TypeError on hostile
+  // input (fuzz-found: a CBOR-array attStmt reaching the WebAuthn attestation-statement walk)
+  // instead of a typed fail-closed reject. The codec owns the two safe accessors --
+  // cbor.read.map(node) (asserts the major type, returns the pairs) and
+  // cbor.read.mapGet(node, key) (asserted keyed lookup) -- so OUTSIDE lib/cbor-det.js a raw
+  // pair access is a violation even when a local guard happens to precede it: the guarded
+  // hand-roll is exactly the duplicate that drifts (the fuzz-found instance was the one
+  // hand-roll among three that lost its guard). Pair access on read.map's RETURN value is
+  // legitimate and does not match (the reader already asserted the type). Rename-proof:
+  // it matches the `.children` pair-access SHAPE, no symbol.
+  var CODEC_HOME = "cbor-det.js";
+  // Form A -- an indexed pair access: children[<expr>][0] / children[<expr>][1].
+  var INDEXED = /\.children\s*\[[^\]\n]+\]\s*\[\s*[01]\s*\]/;
+  // Form B -- a .children iteration whose callback PARAMETER is then pair-indexed [0]/[1].
+  var ITER = /\.children\s*\.\s*(?:forEach|map|some|every|filter|reduce|find|flatMap)\s*\(\s*(?:async\s+)?(?:function\s*[\w$]*\s*)?\(?\s*([A-Za-z_$][\w$]*)/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    if (path.basename(f) === CODEC_HOME) return;           // the codec is the accessors' home
+    var src = fs.readFileSync(f, "utf8");
+    _functionRegions(src).forEach(function (reg) {
+      // Strip block + line comments so a doc-comment mention of the shape does not count.
+      var body = reg.body.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+      var hit = INDEXED.test(body);
+      if (!hit) {
+        var im = body.match(ITER);
+        if (im) {
+          var param = im[1].replace(/[.$]/g, "\\$&");
+          hit = new RegExp("\\b" + param + "\\s*\\[\\s*[01]\\s*\\]").test(body);
+        }
+      }
+      if (hit) bad.push({ file: rel, line: reg.startLine,
+        content: "cbor-map-pair-access-outside-codec in " + reg.name + "() -- a node.children element is read as a { key, value } pair outside the codec; route through cbor.read.map / cbor.read.mapGet, which assert majorType 5 (a non-map's children are single nodes, so a pair index throws a raw TypeError on hostile input)" });
+    });
+  });
+  bad = _filterMarkers(bad, "cbor-map-pair-access-outside-codec");
+  _report("no CBOR map-pair access outside the codec home (raw-TypeError fail-open vector, codebase-wide)", bad);
+}
+
 function testGuardShapeReinlined() {
   // class: guard-shape-reinlined
   // Function-granular, DERIVED guard enforcement. Each shape-enforced guard
@@ -2501,6 +2545,7 @@ function run() {
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
+  testCborMapPairAccessOutsideCodec();
   testGuardShapeReinlined();
   testConstantTimeCompareShortCircuited();
   testEveryGuardEnforced();

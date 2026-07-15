@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.20 — 2026-07-15
+
+A WebAuthn attestation object whose attestation statement is not a CBOR map is now rejected with a typed webauthn/bad-attestation-object at parse instead of surfacing an untyped error from a format verifier, and the strict CBOR codec gains pki.cbor.read.mapGet -- a keyed map lookup that asserts the map's major type inside the accessor.
+
+### Added
+
+- pki.cbor.read.mapGet(node, key) -- the keyed lookup over a decoded CBOR map (RFC 8949 major type 5). A text-string key matches text-string map keys; an integer key (a safe-integer number or a BigInt, as COSE labels are) matches integer map keys; matching never coerces across the two. It returns the value node, or null when the map has no such entry -- decode already enforced key uniqueness, so at most one entry can match. A non-map node throws cbor/unexpected-major, and a key that is neither a text string nor an integer throws a TypeError.
+
+### Changed
+
+- A WebAuthn attestation object whose attStmt is not a CBOR map is now classified as a malformed attestation object -- webauthn/bad-attestation-object, thrown at parse for every attestation format -- where it previously surfaced as a per-format webauthn/bad-att-stmt or an untyped error depending on the CBOR type carried.
+
+### Fixed
+
+- pki.webauthn.parseAttestationObject and pki.webauthn.verify no longer throw a raw TypeError when the attestation object's attStmt is a CBOR array: the attestation-statement field walk read the array's children as key/value pairs and dereferenced undefined. The attestation object's attStmt shape is now validated at parse (WebAuthn sec. 6.5.4), and the statement walk reads its pairs through pki.cbor.read.map, which asserts the major type -- malformed hostile bytes are a typed webauthn/* verdict, never an untyped crash.
+
 ## v0.2.19 — 2026-07-14
 
 The RFC 3161 Time-Stamp Protocol surface is complete: pki.tsp.request and pki.tsp.response build and parse the protocol's request and response messages, and pki.tsp.verify verifies a timestamp token end to end -- the CMS signature, the message imprint, the ESSCertID(V2) certificate binding, the critical timeStamping-only extendedKeyUsage, and full validation of the TSA certificate at the token's own genTime.
