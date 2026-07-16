@@ -59,6 +59,11 @@ function run() {
   check("20. an unterminated part (no closing boundary) -> typed fault", fault(function () { mime.splitMultipart(Buffer.from("--B\r\ncontent with no close\r\n"), "B", E, "m/bad"); }) === "m/bad");
   // an opening boundary line that is never terminated (mime.js:158)
   check("21. an unterminated boundary line -> typed fault", fault(function () { mime.splitMultipart(Buffer.from("--B"), "B", E, "m/bad"); }) === "m/bad");
+  // RFC 2046 sec. 5.1.1: a delimiter must begin a line and be a complete token -- a "--boundary"
+  // appearing MID-LINE in a part's content, or a longer "--boundaryextra", is NOT a delimiter.
+  var midline = mime.splitMultipart(Buffer.from("--B\r\nfirst with --B inside a line\r\n--B\r\nsecond\r\n--B--\r\n"), "B", E, "m/bad");
+  check("22. a mid-line --boundary is not a delimiter (content preserved)", midline.length === 2 && midline[0].toString() === "first with --B inside a line");
+  check("23. a longer --boundaryextra token is not the boundary", mime.splitMultipart(Buffer.from("--B\r\ncontent\r\n--Bextra x\r\n--B--\r\n"), "B", E, "m/bad").length === 1);
 
   console.log("CHECKS " + helpers.getChecks());
 }
