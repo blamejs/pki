@@ -123,6 +123,9 @@ async function run() {
   var kekA = Buffer.alloc(32, 0x11), kekB = Buffer.alloc(32, 0x22);
   var twoKek = await pki.cms.encrypt(MSG, [{ kek: kekA, kekId: Buffer.from("kA") }, { kek: kekB, kekId: Buffer.from("kB") }], { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("two kekri, no kekId given, decrypts with the second kek (each tried)", Buffer.compare((await pki.cms.decrypt(twoKek, { kek: kekB })).content, MSG) === 0);
+  // a cert matching several recipients: if the first (a broken ktri) fails, fall through to the real one.
+  var dupKtri = _dupKtriBroken(await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
+  check("a cert matching two ktri decrypts even when the first-tried recipient fails", Buffer.compare((await pki.cms.decrypt(dupKtri, { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
   check("a normal password still round-trips within the cap", Buffer.compare((await pki.cms.decrypt(hiEnv, { password: "p" })).content, MSG) === 0);
 
   // ---- orchestrator routing ----
@@ -360,6 +363,20 @@ function _stripOrigCurve(der) {
   var kariContent = Buffer.concat([kari.children[0].bytes, newOrig].concat(kari.children.slice(2).map(function (c) { return c.bytes; })));
   var newKari = b2.contextConstructed(1, kariContent);
   var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? b2.setOf([newKari]) : b2.raw(c.bytes); });
+  return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
+}
+
+// Add a second ktri with the same rid but a broken (1-byte) encryptedKey; the SET-OF sorts the shorter
+// one first, so it is tried first and fails -- the decryptor must fall through to the real recipient.
+function _dupKtriBroken(der) {
+  var b2 = pki.asn1.build;
+  var ci = pki.asn1.decode(der);
+  var ed = ci.children[1].children[0];
+  var riSet = ed.children.filter(function (c) { return c.tagNumber === 17 && c.tagClass === "universal"; })[0];
+  var ktri = riSet.children[0];
+  var broken = b2.sequence([b2.raw(ktri.children[0].bytes), b2.raw(ktri.children[1].bytes), b2.raw(ktri.children[2].bytes), b2.octetString(Buffer.alloc(1))]);
+  var newSet = b2.setOf([broken, b2.raw(ktri.bytes)]);
+  var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? newSet : b2.raw(c.bytes); });
   return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
 }
 
