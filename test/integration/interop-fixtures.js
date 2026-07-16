@@ -16,6 +16,13 @@
  */
 
 var path = require("node:path");
+var makeOcspWorld = require("../helpers/ocsp-world").makeOcspWorld;
+
+function _pem(der, label) {
+  return "-----BEGIN " + label + "-----\n" +
+    Buffer.from(der).toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") +
+    "\n-----END " + label + "-----\n";
+}
 
 // --- helpers shared by the x509 fixtures ------------------------------
 
@@ -459,6 +466,86 @@ module.exports = {
           var wrong = T(Buffer.from("a different payload"), "wrong.bin");
           var vrNeg = ctx.runOpenssl(["ts", "-verify", "-data", wrong, "-in", ourResp, "-CAfile", caCert, "-untrusted", tsaCert], { allowNonZero: true });
           ctx.check("openssl ts -verify rejects our response over tampered data", vrNeg.code !== 0);
+        } finally {
+          tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } });
+        }
+      },
+    },
+  ],
+
+  // ---- pki.ocsp.sign : a signed BasicOCSPResponse `openssl ocsp` verifies ------
+  "pki.ocsp.sign": [
+    {
+      desc: "a signed OCSP response verifies under `openssl ocsp` (Response verify OK + status good)",
+      run: async function (ctx) {
+        var w = await makeOcspWorld("ec-p256");
+        var thisUpdate = new Date(Date.now() - 3600 * 1000);            // an hour ago (no clock-skew edge)
+        var nextUpdate = new Date(Date.now() + 365 * 24 * 3600 * 1000);
+        var resp = await ctx.pki.ocsp.sign(
+          { responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: thisUpdate, nextUpdate: nextUpdate }] },
+          { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        try {
+          var issuerP = T(_pem(w.issuerCertDer, "CERTIFICATE"), "issuer.pem");
+          var leafP = T(_pem(w.targetCertDer, "CERTIFICATE"), "leaf.pem");
+          var respP = T(resp, "resp.der");
+          var out = ctx.runOpenssl(["ocsp", "-respin", respP, "-CAfile", issuerP, "-issuer", issuerP, "-cert", leafP, "-no_nonce"], { allowNonZero: true });
+          var all = String(out.stdout) + String(out.stderr);
+          ctx.check("openssl verifies our OCSP response signature over the delegate chain (Response verify OK)", /Response verify OK/i.test(all));
+          ctx.check("openssl reads our OCSP certificate status as good", /:\s*good/.test(String(out.stdout)));
+        } finally {
+          tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } });
+        }
+      },
+    },
+  ],
+
+  // ---- pki.ocsp.verify : `openssl ocsp` is the oracle for the whole RFC 6960 request/response
+  // surface -- an OCSPRequest we emit drives openssl's responder, and the response openssl signs is
+  // parsed + verified by us, so neither side is validated only by its own decoder. --------------
+  "pki.ocsp.verify": [
+    {
+      desc: "openssl ocsp round-trip: openssl's responder-signed response parses + verifies under us (RFC 6960)",
+      run: async function (ctx) {
+        var pki = ctx.pki;
+        // Oracle-capability probe: `openssl ocsp -help` lists the responder/verify options
+        // (-respin/-index/-reqin); a build without the subcommand reports an invalid command.
+        var probe = ctx.runOpenssl(["ocsp", "-help"], { allowNonZero: true });
+        var probeText = String(probe.stdout || "") + String(probe.stderr || "");
+        if (!/-respin|-index|-reqin/.test(probeText)) {
+          ctx.skip("openssl `ocsp` subcommand unavailable in this build -- RFC 6960 OCSP cross-check cannot run");
+          return;
+        }
+        var w = await makeOcspWorld("ec-p256");
+        var leaf = pki.schema.x509.parse(w.targetCertDer);
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        function reserve(ext) { return T(Buffer.alloc(0), ext); }      // reserve + track a path openssl writes
+        try {
+          var issuerP = T(_pem(w.issuerCertDer, "CERTIFICATE"), "issuer.pem");
+          var responderP = T(_pem(w.responderCertDer, "CERTIFICATE"), "responder.pem");
+          var rkeyP = T(_pem(w.responderKeyPkcs8, "PRIVATE KEY"), "responder.key.pem");
+          // openssl's flat-file CA database: one Valid entry binding the leaf serial to a 2040 expiry.
+          var indexP = T("V\t400101000000Z\t\t" + leaf.serialNumberHex.toUpperCase() + "\tunknown\t/CN=leaf.example\n", "index.txt");
+          var reqP = T(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }), "req.der");
+          var respP = reserve("resp.der");
+          ctx.runOpenssl(["ocsp", "-index", indexP, "-CA", issuerP, "-rsigner", responderP, "-rkey", rkeyP, "-reqin", reqP, "-respout", respP, "-ndays", "365", "-no_nonce"]);
+          var respBytes = ctx.fs.readFileSync(respP);
+          // (we parse them) pki.schema.ocsp.parseResponse reads openssl's responder output.
+          var parsed = pki.schema.ocsp.parseResponse(respBytes);
+          ctx.check("pki.schema.ocsp.parseResponse reads openssl's successful response", parsed.responseStatus.code === 0 && parsed.basicResponse != null);
+          // (we verify them) pki.ocsp.verify accepts openssl's response as good + authorized.
+          var v = await pki.ocsp.verify(respBytes, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() });
+          ctx.check("pki.ocsp.verify accepts openssl's OCSP response (good, authorized, signature valid)",
+            v.status === "good" && v.responderAuthorized === true && v.signatureValid === true);
+          // A one-byte mutation of openssl's response is never accepted as good: either the parse
+          // fails closed (a typed PkiError) or the signature no longer verifies ("unknown").
+          var tampered = Buffer.from(respBytes); tampered[tampered.length - 12] ^= 0x01;
+          var vBad;
+          try { vBad = await pki.ocsp.verify(tampered, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() }); }
+          catch (e) { if (!(e instanceof pki.errors.PkiError)) throw e; vBad = { status: "unknown" }; }
+          ctx.check("pki.ocsp.verify never returns good for a tampered openssl response", vBad.status !== "good");
         } finally {
           tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } });
         }

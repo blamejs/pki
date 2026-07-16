@@ -232,7 +232,15 @@ security-only patches after the next major releases.
   `good` for one issuer's serial cannot be replayed to answer for another
   issuer's same serial. A missing or passed `nextUpdate`, an unauthorized
   responder, or any signature-verification failure yields an undetermined status
-  that fails the path closed.
+  that fails the path closed. `pki.ocsp.verify` (the standalone relying-party
+  entry) and `pki.path.verifyOcspResponse` (its lower-level primitive) run this
+  exact responder-authorization, signature, CertID, and currency core — there is
+  no weaker second OCSP verify path — and additionally bind the RFC 9654 request
+  nonce under a constant-time comparison, failing closed to `unknown` when the
+  response omits or does not echo a nonce the client sent. The producing side,
+  `pki.ocsp.sign`, embeds the responder certificate verbatim from caller-supplied
+  DER rather than re-encoding a parsed certificate, so the bytes a relying party
+  verifies are the exact bytes the CA issued.
 - **Timestamp-token forgery (TSA impersonation).** `pki.tsp.verify` trusts a
   timestamp token only when its signer is demonstrably a time-stamping
   authority. The TSA signing certificate — an out-of-path signer: it signs the

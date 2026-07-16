@@ -193,8 +193,17 @@ function fixturesFor(tag) {
     p7sDer: cmsDetachedDer, detachedBytes: cmsDetachedContent,
     // pki.cms.sign / pki.tsp.sign: a real signer certificate + PKCS#8 key + a digest.
     signerCertDer: signFixtureSigner.cert, signerKeyPkcs8: signFixtureSigner.key, sha256Digest: cmsSha256Digest,
+    // pki.ocsp: a leaf + issuer (the same real EC cert stands in for both) + a
+    // responder cert/key, and a real signed BasicOCSPResponse (built in run()) so
+    // buildRequest / sign / verify run the actual code path to a fail-closed verdict.
+    leafDer: certDer, caDer: certDer,
+    responderCertDer: signFixtureSigner.cert, responderPkcs8: signFixtureSigner.key,
+    responseDer: ocspResponseDer,
   };
 }
+// A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
+// start (signing is async so it cannot be a module-load constant).
+var ocspResponseDer = null;
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples
 // (thumbprint, key authorization, the challenge computations) run against it.
 var JOSE_EC_JWK = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" };
@@ -217,6 +226,10 @@ function _testSources() {
 
 // ---- the walk --------------------------------------------------------
 async function run() {
+  ocspResponseDer = await pki.ocsp.sign(
+    { responderID: "byName", responses: [{ cert: certDer, issuer: certDer, status: "good" }] },
+    { cert: signFixtureSigner.cert, key: signFixtureSigner.key });
+
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 
   var readme = fs.readFileSync(path.join(ROOT, "README.md"), "utf8");

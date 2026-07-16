@@ -38,6 +38,7 @@ var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
 var cms       = require("./lib/cms-verify");
 var tsp       = require("./lib/tsp-sign");
+var ocsp      = require("./lib/ocsp");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -77,6 +78,7 @@ module.exports = {
   ct:        ct,
   cms:       cms,
   tsp:       tsp,
+  ocsp:      ocsp,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

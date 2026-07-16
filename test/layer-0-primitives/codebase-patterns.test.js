@@ -149,6 +149,7 @@ var VALID_ALLOW_CLASSES = {
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
   "guard-shape-reinlined": 1,
+  "ocsp-responder-auth-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
   "guard-without-enforcement": 1,
   "validator-shape-reinlined": 1,
@@ -2100,6 +2101,49 @@ function testCborMapPairAccessOutsideCodec() {
   _report("no CBOR map-pair access outside the codec home (raw-TypeError fail-open vector, codebase-wide)", bad);
 }
 
+function testOcspResponderAuthReinlined() {
+  // class: ocsp-responder-auth-reinlined
+  // An OCSP response is only trustworthy if its signer is an AUTHORIZED responder:
+  // the issuing CA directly, or a CA-issued delegate that asserts the id-kp-OCSPSigning
+  // extendedKeyUsage AND carries the id-pkix-ocsp-nocheck extension (RFC 6960 sec.
+  // 4.2.2.2 -- anyEKU / an absent EKU do NOT authorize, and a transport-free verifier
+  // cannot otherwise confirm the responder cert is unrevoked). That out-of-path
+  // signer-cert authorization is the single most security-critical, easiest-to-
+  // under-enforce gate in the toolkit, so it lives in exactly ONE place --
+  // lib/ocsp-verify.js's makeOcspVerify(...) core, which both the path validator's
+  // ocspChecker and pki.ocsp.verify compose. A SECOND verify path that re-resolves
+  // these two OIDs itself is re-inlining the authorization decision instead of routing
+  // through that core -- the exact drift that reintroduces a fail-open responder.
+  //
+  // Rename-proof: it matches the co-occurrence of the two RFC-frozen OID registry
+  // names (`ocspSigning` and `ocspNoCheck`, the arguments oid.byName resolves) within
+  // one function body, comments stripped but string literals kept. A legitimate
+  // consumer routes through the core and never names both OIDs, so it cannot match;
+  // the OID registry (oid.js) and the display-name table (constants.js) DECLARE the
+  // names without performing authorization and are the shape's declaration homes.
+  var HOME = "lib/ocsp-verify.js";
+  var DECL_HOMES = { "lib/oid.js": 1, "lib/constants.js": 1 };
+  var SIGNING = /\bocspSigning\b/, NOCHECK = /\bocspNoCheck\b/;
+  function stripComments(s) {
+    return s.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
+  }
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (rel === HOME || DECL_HOMES[rel]) return;
+    var src = fs.readFileSync(f, "utf8");
+    _functionRegions(src).forEach(function (r) {
+      var body = stripComments(r.body);
+      if (SIGNING.test(body) && NOCHECK.test(body)) {
+        bad.push({ file: rel, line: r.startLine,
+          content: "function `" + r.name + "` resolves both the id-kp-OCSPSigning EKU and the id-pkix-ocsp-nocheck extension -- OCSP responder authorization re-inlined outside " + HOME + "; route it through ocspVerify.makeOcspVerify(...).evaluateResponse (the one place the out-of-path responder-cert authorization lives)" });
+      }
+    });
+  });
+  bad = _filterMarkers(bad, "ocsp-responder-auth-reinlined");
+  _report("no lib function re-inlines OCSP responder authorization outside " + HOME, bad);
+}
+
 function testGuardShapeReinlined() {
   // class: guard-shape-reinlined
   // Function-granular, DERIVED guard enforcement. Each shape-enforced guard
@@ -2546,6 +2590,7 @@ function run() {
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
   testCborMapPairAccessOutsideCodec();
+  testOcspResponderAuthReinlined();
   testGuardShapeReinlined();
   testConstantTimeCompareShortCircuited();
   testEveryGuardEnforced();
