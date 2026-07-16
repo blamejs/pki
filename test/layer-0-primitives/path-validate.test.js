@@ -648,6 +648,10 @@ async function testCoreRejections() {
   var qcCrit = await mkCert({ subject: "QcC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.5.5.7.1.3", true, b.sequence([b.sequence([b.oid("0.4.0.1862.1.1")])]))] });
   var res18c = await run([qcCrit], { time: T2027, trustAnchor: anchor });
   check("critical qcStatements is recognized (not unrecognized-critical)", res18c.valid === true && failCodes(res18c).indexOf("path/unrecognized-critical-extension") === -1);
+  // A CRITICAL qcStatements carrying an UNKNOWN (opaque) statement cannot be fully processed -> rejected.
+  var qcCritOpaque = await mkCert({ subject: "QcCO", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.5.5.7.1.3", true, b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.7")])]))] });
+  var res18d = await run([qcCritOpaque], { time: T2027, trustAnchor: anchor });
+  check("critical qcStatements with an opaque statement rejected", res18d.valid === false && failCodes(res18d).indexOf("path/unrecognized-critical-extension") !== -1);
 }
 
 // ---------------------------------------------------------------------------
