@@ -1784,6 +1784,24 @@ function testNoDuplicateCodeBlocks() {
       files: ["lib/inspect.js:<top>", "lib/lint.js:<top>", "lib/webauthn.js:<top>"],
       reason: "inspect/lint/webauthn each compose pkix.certExtensionDecoders under their own makeNS namespace; the decoder table lives in pkix, the header composition is not further extractable.",
     },
+    {
+      // The crypto-layer modules (cms-encrypt / cms-decrypt / ocsp producer / sign-scheme) each
+      // carry a per-domain input normalizer -- _normCertDer / _normKeyDer / _toDer / _normPkcs8 --
+      // that coerces a Buffer / Uint8Array / PEM string to DER through its OWN domain PEM decoder
+      // (x509 / pkcs8 / schema-cms) and throws its OWN typed error code (cms/* vs ocsp/*). This is
+      // the same thin-per-domain-wrapper class as the allowlisted pemDecode/pemEncode delegations:
+      // the 3-line coerce shape recurs without being further extractable (each binds a different
+      // decoder + error factory). Their <top> require headers share the same requires idiom for the
+      // same reason. family-subset so any 3+ match.
+      files: [
+        "lib/cms-decrypt.js:_normCertDer", "lib/cms-decrypt.js:_normKeyDer", "lib/cms-decrypt.js:_toDer",
+        "lib/cms-encrypt.js:_normCertDer", "lib/ocsp.js:_normCertDer", "lib/ocsp.js:_toDer",
+        "lib/sign-scheme.js:_normPkcs8",
+        "lib/cms-decrypt.js:<top>", "lib/cms-encrypt.js:<top>", "lib/ocsp.js:<top>",
+      ],
+      mode: "family-subset",
+      reason: "per-domain cert/key/input-to-DER normalizers (own PEM decoder + typed error code), the same thin-wrapper class as the allowlisted pemDecode/pemEncode; not further extractable.",
+    },
   ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;

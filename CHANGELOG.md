@@ -4,7 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.2.22 — 2026-07-16
+## v0.2.23 — 2026-07-16
+
+CMS content encryption arrives as pki.cms.encrypt and pki.cms.decrypt: EnvelopedData, AuthEnvelopedData, and EncryptedData with every RFC 5652 recipient type -- RSA-OAEP, ephemeral-static ECDH, X25519/X448, symmetric key-wrap, password, and post-quantum ML-KEM (RFC 9629/9936) -- and a single, oracle-free decryption verdict.
+
+### Added
+
+- pki.cms.encrypt(content, recipients, opts) produces a CMS EnvelopedData, AuthEnvelopedData (AES-GCM, the default), or EncryptedData. Recipients auto-dispatch off the certificate key: RSA -> ktri RSAES-OAEP-SHA256/384/512 (v1.5 never emitted); EC P-256/384/521 -> kari ephemeral-static ECDH with the ANSI-X9.63 KDF; X25519/X448 -> kari with HKDF (RFC 8418); ML-KEM-512/768/1024 -> ori/KEMRecipientInfo (RFC 9629/9936). A { password } recipient uses PBKDF2 + the RFC 3211 PWRI-KEK; a { kek, kekId } recipient uses AES key wrap. EncryptedData takes a raw { cek } or a PBES2 { password }. Content is AES-128/192/256-GCM or -CBC; the same fresh content-encryption key is wrapped for every recipient. Fail-closed with typed CmsError.
+- pki.cms.decrypt(input, keyMaterial, opts) decrypts an EnvelopedData / AuthEnvelopedData / EncryptedData (DER or PEM). It selects the recipient the key material { key, cert } / { password } / { kek } / { cek } targets, acquires the content-encryption key through the matching arm (RSA-OAEP or PKCS#1 v1.5 decrypt-only under the RFC 3218 implicit-rejection countermeasure, ECDH / X25519 / X448, AES key-unwrap, PBKDF2, ML-KEM decapsulation), and decrypts + authenticates the content -- returning { content, contentType, contentTypeName, recipientType, recipientIndex, contentEncryptionAlgorithm, authenticated }. Every secret-dependent failure collapses to one uniform cms/decrypt-failed verdict (Bleichenbacher / EFAIL / password-oracle freedom); a PBKDF2 iteration cap bounds password-based decryption work.
+- The WebCrypto engine gains ML-KEM key encapsulation (SubtleCrypto.encapsulateBits / decapsulateBits over FIPS 203) and the ANSI-X9.63 single-step key-derivation function (the X963KDF derive algorithm), the two primitives the post-quantum and elliptic-curve CMS recipient arms compose.
+
+## v0.2.22 — 2026-07-15
 
 The RFC 6960 OCSP producer and relying-party surface arrives as pki.ocsp: build and sign OCSP requests and responses, mint unsigned error responses, and verify a response end to end against the same hardened responder-authorization, signature, CertID, currency, and nonce gates the certification-path revocation checker runs.
 

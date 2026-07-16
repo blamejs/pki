@@ -90,10 +90,44 @@ async function testPqcSign() {
     var r = await _signVerify({ name: lvl });
     check(lvl + " verifies + rejects tamper (PQC)", r.ok === true && r.tampered === false);
   }
-  // ML-KEM: key generation + SPKI export ship today (KEM encapsulation
-  // follows once Node exposes it).
+  // ML-KEM: key generation + SPKI export.
   var kem = await subtle.generateKey({ name: "ML-KEM-768" }, true, []);
   check("ML-KEM-768 key generation + SPKI export", (await subtle.exportKey("spki", kem.publicKey)).byteLength > 0);
+
+  // ML-KEM encapsulateBits / decapsulateBits (FIPS 203, over Node's KEM primitive).
+  for (var kemSet of ["ML-KEM-512", "ML-KEM-768", "ML-KEM-1024"]) {
+    var kkp = await subtle.generateKey({ name: kemSet }, true, ["encapsulateBits", "decapsulateBits"]);
+    var enc = await subtle.encapsulateBits({ name: kemSet }, kkp.publicKey);
+    var ss2 = await subtle.decapsulateBits({ name: kemSet }, kkp.privateKey, enc.ciphertext);
+    check(kemSet + " encapsulateBits/decapsulateBits round-trip to the same shared key",
+      enc.sharedKey.byteLength === 32 && Buffer.from(ss2).equals(Buffer.from(enc.sharedKey)));
+  }
+  var kp768 = await subtle.generateKey({ name: "ML-KEM-768" }, true, ["encapsulateBits", "decapsulateBits"]);
+  var e768 = await subtle.encapsulateBits({ name: "ML-KEM-768" }, kp768.publicKey);
+  check("encapsulateBits rejects a private (decapsulation) key -> invalid-access",
+    (await code(function () { return subtle.encapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey); })) === "webcrypto/invalid-access");
+  check("decapsulateBits rejects a public key -> invalid-access",
+    (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.publicKey, e768.ciphertext); })) === "webcrypto/invalid-access");
+  check("decapsulateBits rejects a wrong-length ciphertext -> operation",
+    (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(100)); })) === "webcrypto/operation");
+  check("encapsulateBits/decapsulateBits reject a non-ML-KEM algorithm -> not-supported",
+    (await code(function () { return subtle.encapsulateBits({ name: "AES-GCM" }, kp768.publicKey); })) === "webcrypto/not-supported");
+  // FO implicit rejection: a right-length tampered ciphertext decapsulates to a DIFFERENT
+  // (pseudo-random) shared key, never a throw -- the property the CMS uniform verdict relies on.
+  var ssGarbage = await subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(1088, 0xAB));
+  check("decapsulateBits implicit-rejects a tampered ciphertext (pseudo-random SS, no throw)",
+    ssGarbage.byteLength === 32 && !Buffer.from(ssGarbage).equals(Buffer.from(e768.sharedKey)));
+
+  // X9.63 single-step KDF (ANSI-X9.63 / SEC1 sec. 3.6.1) -- the RFC 5753 kari KEK derivation.
+  // NIST CAVP ANS-X9.63-2001 SHA-256 known-answer vectors, driven through the deriveBits surface.
+  var x9Z = Buffer.from("96c05619d56c328ab95fe84b18264b08725b85e33fd34f08", "hex");
+  var x9Key = await subtle.importKey("raw", x9Z, { name: "X963KDF" }, false, ["deriveBits"]);
+  check("X963KDF SHA-256 (no SharedInfo, 128-bit) matches the NIST CAVP vector",
+    Buffer.from(await subtle.deriveBits({ name: "X963KDF", hash: "SHA-256", info: Buffer.alloc(0) }, x9Key, 128)).toString("hex") === "443024c3dae66b95e6f5670601558f71");
+  var x9Z2 = Buffer.from("22518b10e70f2a3f243810ae3254139efbee04aa57c7af7d", "hex");
+  var x9Key2 = await subtle.importKey("raw", x9Z2, { name: "X963KDF" }, false, ["deriveBits"]);
+  check("X963KDF SHA-256 (with SharedInfo, 256-bit) matches the NIST CAVP vector",
+    Buffer.from(await subtle.deriveBits({ name: "X963KDF", hash: "SHA-256", info: Buffer.from("75eef81aa3041e33b80971203d2c0c52", "hex") }, x9Key2, 256)).toString("hex") === "c498af77161cc59f2962b9a713e2b215152d139766ce34a776df11866a69bf2e");
 }
 
 async function testImportExport() {

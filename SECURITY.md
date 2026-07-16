@@ -142,6 +142,22 @@ security-only patches after the next major releases.
   tag before the engine sees it — the OpenSSL-legacy bare-seed layout the engine would
   otherwise accept is rejected — and an internally inconsistent seed/expanded key
   (FIPS 203 §7.3) is a typed `webcrypto/data` verdict, never a raw engine error.
+- **CMS decryption oracles (Bleichenbacher / EFAIL / password-guessing).**
+  `pki.cms.decrypt` is oracle-free by construction. Recipient selection fails with a
+  distinct typed code, but EVERY secret-dependent failure past that point — a
+  PKCS#1 v1.5 or RSAES-OAEP unwrap fault, an AES-KW integrity-check (A6A6…) mismatch,
+  an RFC 3211 PWRI check-byte mismatch, a CBC padding fault, an AES-GCM tag mismatch,
+  a content-key length mismatch — collapses to the SINGLE uniform `cms/decrypt-failed`
+  verdict (same code, same message, no cause chaining), so an attacker measuring the
+  error has no distinguishable signal (RFC 3218 / EFAIL). The PKCS#1 v1.5 arm is
+  decrypt-only and applies the RFC 3218 §2.3.2 implicit-rejection countermeasure — on
+  any v1.5 fault it substitutes a fresh random content-encryption key and proceeds, so
+  the failure surfaces later, uniformly, exactly like every other bad key; v1.5 is
+  never emitted. Integrity is verified before any plaintext is released, and a CBC
+  EnvelopedData (unauthenticated content) surfaces `authenticated: false` in the
+  verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt default. A
+  password recipient's PBKDF2 iteration count is capped (`cms/iteration-limit`, a
+  caller-lowerable bound) so an attacker-inflated count cannot force unbounded work.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
