@@ -659,7 +659,7 @@ async function testCoreRejections() {
   check("PROCESSED_EXTENSIONS is frozen", Object.isFrozen(pki.path.PROCESSED_EXTENSIONS));
   check("TARGET_UNPROCESSED_IF_CRITICAL is frozen", Object.isFrozen(pki.path.TARGET_UNPROCESSED_IF_CRITICAL));
   var injOid = "1.2.3.4.5.6.7.8.9";
-  try { pki.path.PROCESSED_EXTENSIONS[injOid] = true; } catch (e) { /* strict-mode throw on a frozen write is acceptable */ }
+  try { pki.path.PROCESSED_EXTENSIONS[injOid] = true; } catch (_e) { /* strict-mode throw on a frozen write is acceptable */ }
   check("a write to PROCESSED_EXTENSIONS does not take effect", pki.path.PROCESSED_EXTENSIONS[injOid] !== true);
   var injCrit = await mkCert({ subject: "Inj", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext(injOid, true, b.nullValue())] });
   var res18e = await run([injCrit], { time: T2027, trustAnchor: anchor });
