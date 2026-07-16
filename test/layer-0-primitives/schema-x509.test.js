@@ -605,12 +605,16 @@ function testQcStatements() {
     build.sequence([build.oid(RP), build.integer(10n)]),
     build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("https://x/pds"), build.printable("en")])])]),
     build.sequence([build.oid(CCL), build.sequence([build.printable("DE"), build.printable("FR")])]),
-    build.sequence([build.oid(IM), build.sequence([build.oid("0.4.0.1862.1.8.1")])])]);
+    build.sequence([build.oid(IM), build.sequence([build.oid("0.4.0.1862.1.8.1")])]),
+    build.sequence([build.oid(V1), build.sequence([build.oid("1.2.3.4")])]),   // SemanticsInformation (id-qcs)
+    build.sequence([build.oid("1.2.3.99")])]);                                 // unknown statementId -> opaque
   var richRendered = pki.inspect.certificate(_certWithQc(false, richQc));
   check("qc: inspect renders a QcLimitValue amount", /100000 USD/.test(richRendered));
   check("qc: inspect renders a QcRetentionPeriod", /10 years/.test(richRendered));
   check("qc: inspect renders a QcPDS location", /https:\/\/x\/pds \(en\)/.test(richRendered));
   check("qc: inspect renders QcCClegislation countries", /DE, FR/.test(richRendered));
+  check("qc: inspect renders a SemanticsInformation identifier", /1\.2\.3\.4/.test(richRendered));
+  check("qc: inspect renders an unknown statement as opaque", /1\.2\.3\.99 \(opaque\)/.test(richRendered));
 
   // 15. A CRITICAL qcStatements IS flagged unknown-critical: its qualified-certificate semantics are
   // not processed here (path-validate rejects a critical instance for the same reason), so the linter
@@ -620,10 +624,101 @@ function testQcStatements() {
   check("qc: a critical qcStatements is flagged unknown-critical", lintFindings.some(function (f) { return f.id === "lint/rfc5280/unknown-critical-extension" && f.context && f.context.name === "qcStatements"; }));
 }
 
+// [MS-WCCE] / [MS-CRTD] Microsoft enterprise CA certificate extensions -- the five
+// certExtensionDecoders rows (certificate template v2, v1 enroll cert-type name, CA version,
+// previous-CA-cert hash, application policies) surfaced via x509.parse -> byOid + pki.inspect.
+function testMsCaExtensions() {
+  var NS = pkix.makeNS("path", pki.errors.PathError, oidReg);
+  var byOid = pkix.certExtensionDecoders(NS).byOid;
+  var TPL = oidReg.byName("msCertificateTemplate"), ECT = oidReg.byName("msEnrollCertType");
+  var CAV = oidReg.byName("msCaVersion"), PCH = oidReg.byName("msPreviousCertHash");
+  var AP = oidReg.byName("msApplicationPolicies"), CP = oidReg.byName("certificatePolicies");
+  var tpl = byOid[TPL], ect = byOid[ECT], cav = byOid[CAV], pch = byOid[PCH];
+  function _certWithExt(extOid, critical, valBytes) {
+    var ext = [build.oid(extOid)];
+    if (critical) ext.push(build.boolean(true));
+    ext.push(build.octetString(valBytes));
+    return _cert([build.explicit(0, build.integer(2n)), build.integer(2n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), _validity(), _name("subj"), _spki(), build.explicit(3, build.sequence([build.sequence(ext)]))]);
+  }
+
+  // --- 1. msCertificateTemplate (CertificateTemplateOID) ---
+  var t1 = tpl(build.sequence([build.oid("1.2.3"), build.integer(100n), build.integer(0n)]));
+  check("ms: template full -> {id, major, minor}", t1.templateID === "1.2.3" && t1.templateMajorVersion === 100 && t1.templateMinorVersion === 0);
+  var t2 = tpl(build.sequence([build.oid("1.2.3")]));
+  check("ms: template OID-only -> both versions null", t2.templateMajorVersion === null && t2.templateMinorVersion === null);
+  var t3 = tpl(build.sequence([build.oid("1.2.3"), build.integer(100n)]));
+  check("ms: template major-only -> minor null", t3.templateMajorVersion === 100 && t3.templateMinorVersion === null);
+  var t4 = tpl(build.sequence([build.oid("1.2.3"), build.integer(2147483649n)]));   // 0x80000001, a DWORD > 2^31-1
+  check("ms: template major accepts a DWORD beyond uint31", t4.templateMajorVersion === 2147483649);
+  check("ms: template missing templateID -> bad-ms-certificate-template", code(function () { tpl(build.sequence([])); }) === "path/bad-ms-certificate-template");
+  check("ms: template non-OID first child -> reject", code(function () { tpl(build.sequence([build.integer(100n)])); }) === "path/bad-ms-certificate-template");
+  check("ms: template trailing 4th field -> reject", code(function () { tpl(build.sequence([build.oid("1.2.3"), build.integer(1n), build.integer(0n), build.integer(1n)])); }) === "path/bad-ms-certificate-template");
+  check("ms: template non-minimal major INTEGER -> reject", code(function () { tpl(build.sequence([build.oid("1.2.3"), build.raw(Buffer.from([0x02, 0x02, 0x00, 0x64]))])); }) === "path/bad-ms-certificate-template");
+
+  // --- 2. msEnrollCertType (bare BMPString "User" = 1e 08 00 55 00 73 00 65 00 72) ---
+  check("ms: enroll cert-type BMPString decodes", ect(build.raw(Buffer.from([0x1e, 0x08, 0x00, 0x55, 0x00, 0x73, 0x00, 0x65, 0x00, 0x72]))) === "User");
+  check("ms: enroll cert-type empty BMPString -> ''", ect(build.raw(Buffer.from([0x1e, 0x00]))) === "");
+  check("ms: enroll cert-type wrong string type (UTF8) -> reject", code(function () { ect(build.utf8("User")); }) === "path/bad-ms-enroll-cert-type");
+  check("ms: enroll cert-type odd BMP length -> reject", code(function () { ect(build.raw(Buffer.from([0x1e, 0x03, 0x00, 0x55, 0x00]))); }) === "path/bad-ms-enroll-cert-type");
+
+  // --- 3. msCaVersion (INTEGER, keyIndex<<16 | certIndex) ---
+  var v1 = cav(build.integer(65541n));   // 0x00010005
+  check("ms: CA version splits keyIndex/certIndex", v1.caVersion === 65541 && v1.caKeyIndex === 1 && v1.certIndex === 5);
+  var v2 = cav(build.integer(2147483648n));   // 0x80000000, high bit set
+  check("ms: CA version high-bit DWORD (not uint31)", v2.caKeyIndex === 32768 && v2.certIndex === 0);
+  var v3 = cav(build.integer(4294967295n));   // 0xFFFFFFFF
+  check("ms: CA version max DWORD splits", v3.caKeyIndex === 65535 && v3.certIndex === 65535);
+  check("ms: CA version negative -> reject", code(function () { cav(build.integer(-1n)); }) === "path/bad-ms-ca-version");
+  check("ms: CA version over DWORD -> reject", code(function () { cav(build.integer(4294967296n)); }) === "path/bad-ms-ca-version");
+  check("ms: CA version wrong tag (OCTET STRING) -> reject", code(function () { cav(build.octetString(Buffer.from([0, 1, 0, 5]))); }) === "path/bad-ms-ca-version");
+
+  // --- 4. msPreviousCertHash (the SHA-1 thumbprint of the prior CA cert -- exactly 20 octets) ---
+  check("ms: previous-cert-hash SHA-1 (20) -> Buffer(20)", pch(build.octetString(Buffer.alloc(20, 0xab))).length === 20);
+  check("ms: previous-cert-hash SHA-256 length (32) -> reject (not a SHA-1 thumbprint)", code(function () { pch(build.octetString(Buffer.alloc(32, 0xcd))); }) === "path/bad-ms-previous-cert-hash");
+  check("ms: previous-cert-hash empty -> reject", code(function () { pch(build.octetString(Buffer.alloc(0))); }) === "path/bad-ms-previous-cert-hash");
+  check("ms: previous-cert-hash 19 octets -> reject (off-by-one)", code(function () { pch(build.octetString(Buffer.alloc(19, 0x01))); }) === "path/bad-ms-previous-cert-hash");
+  check("ms: previous-cert-hash wrong tag (INTEGER) -> reject", code(function () { pch(build.integer(0n)); }) === "path/bad-ms-previous-cert-hash");
+
+  // --- 5. msApplicationPolicies (= RFC 5280 certificatePolicies, reuse not re-impl) ---
+  check("ms: application-policies reuses the certificatePolicies closure (identity)", byOid[AP] === byOid[CP]);
+  var ap = byOid[AP](build.sequence([build.sequence([build.oid("2.5")])]));
+  check("ms: application-policies decodes a PolicyInformation", ap[0].policyIdentifier === "2.5");
+  check("ms: application-policies empty SEQUENCE -> reject", code(function () { byOid[AP](build.sequence([])); }) !== "NO-THROW");
+
+  // --- strict-DER: trailing bytes after the TLV and constructed strings fail closed with the typed code ---
+  check("ms: CA version with trailing bytes -> reject", code(function () { cav(Buffer.concat([build.integer(65541n), Buffer.from([0xff, 0xff])])); }) === "path/bad-ms-ca-version");
+  check("ms: CA version non-minimal INTEGER -> reject", code(function () { cav(build.raw(Buffer.from([0x02, 0x02, 0x00, 0x05]))); }) === "path/bad-ms-ca-version");
+  check("ms: template with trailing bytes -> reject", code(function () { tpl(Buffer.concat([build.sequence([build.oid("1.2.3")]), Buffer.from([0x00])])); }) === "path/bad-ms-certificate-template");
+  check("ms: constructed BMPString enroll cert-type -> reject", code(function () { ect(build.raw(Buffer.from([0x3e, 0x04, 0x1e, 0x02, 0x00, 0x55]))); }) === "path/bad-ms-enroll-cert-type");
+  check("ms: constructed OCTET STRING previous-cert-hash -> reject", code(function () { pch(build.raw(Buffer.from([0x24, 0x04, 0x04, 0x02, 0xab, 0xcd]))); }) === "path/bad-ms-previous-cert-hash");
+
+  // --- orchestrator: x509.parse -> extensions -> byOid, per extension ---
+  var certDer = _certWithExt(TPL, false, build.sequence([build.oid("1.2.3"), build.integer(5n), build.integer(2n)]));
+  var parsed = pki.schema.x509.parse(certDer);
+  var extNode = parsed.extensions.filter(function (e) { return e.oid === TPL; })[0];
+  check("ms: orchestrator surfaces msCertificateTemplate on x509.parse", !!extNode && byOid[TPL](extNode.value).templateMajorVersion === 5);
+
+  // --- inspect renders each extension's decoded values ---
+  var rTpl = pki.inspect.certificate(certDer);
+  check("ms: inspect renders the template id + version", /1\.2\.3/.test(rTpl) && /v5\.2|5\.2/.test(rTpl));
+  var rCav = pki.inspect.certificate(_certWithExt(CAV, false, build.integer(65541n)));
+  check("ms: inspect renders the CA version", /1\.5/.test(rCav));
+  var rPch = pki.inspect.certificate(_certWithExt(PCH, false, build.octetString(Buffer.from("deadbeef".repeat(5), "hex"))));
+  check("ms: inspect renders the previous-cert-hash upper-hex", /DE:AD:BE:EF/.test(rPch));
+  var rEct = pki.inspect.certificate(_certWithExt(ECT, false, build.raw(Buffer.from([0x1e, 0x08, 0x00, 0x55, 0x00, 0x73, 0x00, 0x65, 0x00, 0x72]))));
+  check("ms: inspect renders the enroll cert-type name", /User/.test(rEct));
+  var rTplOid = pki.inspect.certificate(_certWithExt(TPL, false, build.sequence([build.oid("1.4.9")])));
+  check("ms: inspect renders an OID-only template (no version suffix)", /Template: 1\.4\.9/.test(rTplOid) && !/1\.4\.9 v/.test(rTplOid));
+  var rTplMaj = pki.inspect.certificate(_certWithExt(TPL, false, build.sequence([build.oid("1.4.9"), build.integer(5n)])));
+  check("ms: inspect renders a major-only template (minor defaults to 0)", /1\.4\.9 v5\.0/.test(rTplMaj));
+}
+
 function run() {
   testParseFields();
   testExtensions();
   testQcStatements();
+  testMsCaExtensions();
   testPem();
   testRejects();
   testShortTbsWithVersion();

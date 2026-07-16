@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.31",
+  "packageVersion": "0.2.32",
   "surface": {
     "C": {
       "kind": "object",
@@ -2056,7 +2056,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 17
+          "length": 22
         }
       }
     },
@@ -2213,6 +2213,49 @@
     "path": {
       "kind": "object",
       "members": {
+        "PROCESSED_EXTENSIONS": {
+          "kind": "object",
+          "members": {
+            "2.5.29.15": {
+              "kind": "boolean"
+            },
+            "2.5.29.17": {
+              "kind": "boolean"
+            },
+            "2.5.29.19": {
+              "kind": "boolean"
+            },
+            "2.5.29.30": {
+              "kind": "boolean"
+            },
+            "2.5.29.31": {
+              "kind": "boolean"
+            },
+            "2.5.29.32": {
+              "kind": "boolean"
+            },
+            "2.5.29.33": {
+              "kind": "boolean"
+            },
+            "2.5.29.36": {
+              "kind": "boolean"
+            },
+            "2.5.29.37": {
+              "kind": "boolean"
+            },
+            "2.5.29.54": {
+              "kind": "boolean"
+            }
+          }
+        },
+        "TARGET_UNPROCESSED_IF_CRITICAL": {
+          "kind": "object",
+          "members": {
+            "2.5.29.33": {
+              "kind": "boolean"
+            }
+          }
+        },
         "crlChecker": {
           "kind": "function",
           "arity": 1

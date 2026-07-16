@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.32 — 2026-07-16
+
+X.509 certificates now decode the Microsoft Active Directory Certificate Services enrollment extensions, and pki.lint's critical-extension check is aligned with certification-path validation.
+
+### Added
+
+- pki.schema.x509.parse decodes the Microsoft Active Directory Certificate Services enrollment extensions ([MS-WCCE] / [MS-CRTD]): the v2 certificate template (szOID-CERTIFICATE_TEMPLATE -- template OID plus major/minor version), the legacy v1 template name (szOID-ENROLL_CERTTYPE_EXTENSION), the CA version (szOID-CERTSRV_CA_VERSION, surfaced as the raw value and as the CA key index / certificate index split), the previous-CA-certificate hash (szOID-CERTSRV_PREVIOUS_CERT_HASH), and the application policies (szOID-APPLICATION_CERT_POLICIES, decoded as RFC 5280 certificate policies). Each is rendered by pki.inspect and fails closed with a typed error on a malformed shape. The version fields accept the full 32-bit range Active Directory uses, not a signed subset.
+
+### Changed
+
+- pki.lint's unrecognized-critical-extension check now mirrors certification-path validation: it reports a critical extension whose semantics the path validator does not process -- an authority/subject key identifier, a freshest-CRL pointer, an SCT list, a qualified-certificate statement, or a Microsoft enterprise-CA extension -- rather than treating any extension it can merely decode as processed. precertificatePoison, which RFC 6962 requires to be critical, is not reported. A conforming relying party must reject a critical extension it cannot process, so a certificate whose critical enterprise or qualified-certificate constraints this toolkit does not enforce is now surfaced by the linter.
+
 ## v0.2.31 — 2026-07-16
 
 X.509 certificates now decode the RFC 3739 / ETSI EN 319 412-5 qualified-certificate qcStatements extension, and the sigstore verifier gains a low-order EdDSA public-key gate.
