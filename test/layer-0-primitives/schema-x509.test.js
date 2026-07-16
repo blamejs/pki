@@ -673,10 +673,11 @@ function testMsCaExtensions() {
   check("ms: CA version over DWORD -> reject", code(function () { cav(build.integer(4294967296n)); }) === "path/bad-ms-ca-version");
   check("ms: CA version wrong tag (OCTET STRING) -> reject", code(function () { cav(build.octetString(Buffer.from([0, 1, 0, 5]))); }) === "path/bad-ms-ca-version");
 
-  // --- 4. msPreviousCertHash (OCTET STRING, any digest length) ---
+  // --- 4. msPreviousCertHash (the SHA-1 thumbprint of the prior CA cert -- exactly 20 octets) ---
   check("ms: previous-cert-hash SHA-1 (20) -> Buffer(20)", pch(build.octetString(Buffer.alloc(20, 0xab))).length === 20);
-  check("ms: previous-cert-hash SHA-256 (32) -> Buffer(32)", pch(build.octetString(Buffer.alloc(32, 0xcd))).length === 32);
-  check("ms: previous-cert-hash empty -> Buffer(0)", pch(build.octetString(Buffer.alloc(0))).length === 0);
+  check("ms: previous-cert-hash SHA-256 length (32) -> reject (not a SHA-1 thumbprint)", code(function () { pch(build.octetString(Buffer.alloc(32, 0xcd))); }) === "path/bad-ms-previous-cert-hash");
+  check("ms: previous-cert-hash empty -> reject", code(function () { pch(build.octetString(Buffer.alloc(0))); }) === "path/bad-ms-previous-cert-hash");
+  check("ms: previous-cert-hash 19 octets -> reject (off-by-one)", code(function () { pch(build.octetString(Buffer.alloc(19, 0x01))); }) === "path/bad-ms-previous-cert-hash");
   check("ms: previous-cert-hash wrong tag (INTEGER) -> reject", code(function () { pch(build.integer(0n)); }) === "path/bad-ms-previous-cert-hash");
 
   // --- 5. msApplicationPolicies (= RFC 5280 certificatePolicies, reuse not re-impl) ---
@@ -703,7 +704,7 @@ function testMsCaExtensions() {
   check("ms: inspect renders the template id + version", /1\.2\.3/.test(rTpl) && /v5\.2|5\.2/.test(rTpl));
   var rCav = pki.inspect.certificate(_certWithExt(CAV, false, build.integer(65541n)));
   check("ms: inspect renders the CA version", /1\.5/.test(rCav));
-  var rPch = pki.inspect.certificate(_certWithExt(PCH, false, build.octetString(Buffer.from([0xde, 0xad, 0xbe, 0xef]))));
+  var rPch = pki.inspect.certificate(_certWithExt(PCH, false, build.octetString(Buffer.from("deadbeef".repeat(5), "hex"))));
   check("ms: inspect renders the previous-cert-hash upper-hex", /DE:AD:BE:EF/.test(rPch));
   var rEct = pki.inspect.certificate(_certWithExt(ECT, false, build.raw(Buffer.from([0x1e, 0x08, 0x00, 0x55, 0x00, 0x73, 0x00, 0x65, 0x00, 0x72]))));
   check("ms: inspect renders the enroll cert-type name", /User/.test(rEct));
