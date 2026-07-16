@@ -91,6 +91,9 @@ stopwords = [
   "mlkemPrivateKey",
   "mlkemPublicKey",
   "signerKeyPkcs8",
+  "responderKeyPkcs8",
+  "issuerKeyPkcs8",
+  "rogueIssuerKeyPkcs8",
 ]
 
 [[allowlists]]

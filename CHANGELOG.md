@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.22 — 2026-07-16
+
+The RFC 6960 OCSP producer and relying-party surface arrives as pki.ocsp: build and sign OCSP requests and responses, mint unsigned error responses, and verify a response end to end against the same hardened responder-authorization, signature, CertID, currency, and nonce gates the certification-path revocation checker runs.
+
+### Added
+
+- pki.ocsp is the RFC 6960 OCSP request/response surface. pki.ocsp.buildRequest(query, opts) builds an OCSPRequest (one or many { cert, issuer } queries; CertID under SHA-1 or SHA-2; optional RFC 9654 nonce; optional requestor signature; the RFC 5019 lightweight profile). pki.ocsp.sign(responseData, responder, opts) signs a BasicOCSPResponse over the exact ResponseData DER for the issuing CA or a delegated responder, with good / revoked / unknown per-certificate status and any pki.cms.sign signature algorithm (RSA, RSASSA-PSS, ECDSA, EdDSA, the post-quantum ML-DSA and SLH-DSA sets). pki.ocsp.buildErrorResponse(status) mints the unsigned section 2.3 error response. Transport-free; malformed input throws a typed OcspError.
+- pki.ocsp.verify(response, opts) verifies an OCSP response as a relying party, fail-closed: it binds the supplied issuer certificate to the target certificate (the target's issuer name must equal the issuer's subject and the target's signature must verify under the issuer's key), recomputes the CertID under its own hash algorithm to bind the checked certificate to its issuer, requires an authorized responder (the issuing CA, or a CA-issued delegate bearing id-kp-OCSPSigning and id-pkix-ocsp-nocheck that passes the full out-of-path certificate gates), verifies the signature over tbsResponseDataBytes, enforces thisUpdate / nextUpdate currency, and binds the request nonce (RFC 9654) under a constant-time comparison. A revoked status shadows good within a response; an unbound issuer, an unauthorized responder, a mismatched CertID, or a stale or unverifiable response returns { status: "unknown" } with granular responderAuthorized / signatureValid / matched flags -- never a silent accept. It runs the exact responder-authorization, signature, and currency gates pki.path.ocspChecker runs, through one shared core.
+- pki.path.verifyOcspResponse(parsedResponse, cert, issuerCert, time, opts) is the lower-level primitive pki.ocsp.verify composes: it verifies a single already-parsed OCSP response for one certificate against its already-parsed issuer, returning the same fail-closed granular verdict, for callers that have already decoded their inputs.
+
 ## v0.2.21 — 2026-07-15
 
 ML-KEM public keys in X.509 certificates and PKCS#8 private keys (RFC 9935 / FIPS 203) become a first-class, fail-closed surface: certification-path validation enforces the keyEncipherment-only key usage, key import validates the private-key CHOICE and rejects an inconsistent key with a typed error, and pki.lint gains the RFC 9935 certificate rows.
