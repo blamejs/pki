@@ -104,7 +104,7 @@ Certificate lifecycle management is absent from the toolkit this library replace
 
 ## Messaging
 
-- **S/MIME** — *ESS attribute decode shipped* (`pki.schema.smime`): the RFC 5035 SigningCertificate / SigningCertificateV2 and RFC 8551 SMIMECapabilities signed-attribute values a CMS SignerInfo carries decode to their signing-certificate binding and capability list, OID-dispatched from a CMS attribute. *Planned next:* the S/MIME assembly / verification layer over the CMS building blocks so operators are not left wiring MIME by hand. RFC 8551, RFC 5035.
+- **S/MIME** — *Signed-message assembly + verification shipped* (`pki.smime`), over the shipped ESS attribute decoders (`pki.schema.smime`). `pki.smime.sign(content, signers, opts)` assembles a signed S/MIME message in both RFC 8551 forms — `multipart/signed` (clear-signed, a detached CMS signature alongside the readable content) and `application/pkcs7-mime; smime-type=signed-data` (opaque) — and `pki.smime.verify` unwraps and verifies both, recomputing over the same RFC 8551 §3.1.1 canonicalizer the signer used (a shared `lib/mime.js`), so a transport that re-wraps line endings still verifies and a tampered part fails. The crypto is entirely `pki.cms.sign` / `pki.cms.verify`, so any RSA / RSASSA-PSS / ECDSA / EdDSA / ML-DSA / SLH-DSA signer carries through; bidirectionally interoperable with `openssl smime` / `openssl cms`. The RFC 5035 SigningCertificate(V2) and SMIMECapabilities signed-attribute decoders continue to surface a SignerInfo's signing-certificate binding + capability list. *Planned next:* S/MIME encryption (enveloped-data) now that CMS EnvelopedData encrypt has shipped, and header protection. RFC 8551, RFC 5035.
 
 ## Attestation and supply chain
 

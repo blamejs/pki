@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.25 — 2026-07-16
+
+S/MIME signed-message assembly and verification arrive as pki.smime: sign and verify RFC 8551 multipart/signed and application/pkcs7-mime messages over the CMS layer, bidirectionally interoperable with OpenSSL.
+
+### Added
+
+- pki.smime.sign(content, signers, opts) assembles a signed RFC 8551 S/MIME message. opts.form selects multipart/signed (default, clear-signed: the canonical entity in the first part and a detached CMS SignedData over its canonical form as an application/pkcs7-signature second part, with protocol="application/pkcs7-signature" and a matching micalg) or pkcs7-mime (opaque: one application/pkcs7-mime; smime-type=signed-data entity whose base64 body is an attached CMS SignedData). content is wrapped as a text/plain entity by default or taken verbatim with opts.entity. Any pki.cms.sign signer (RSA / RSASSA-PSS / ECDSA / EdDSA / ML-DSA / SLH-DSA) carries through. Fail-closed with typed SmimeError.
+- pki.smime.verify(message, opts) unwraps and verifies a signed S/MIME message in both forms, recomputing the detached signature over the first part's RFC 8551 sec. 3.1.1 canonical form (the same canonicalizer the signer used, so a line-ending-mangling transport still verifies and a tampered part fails). It returns pki.cms.verify's { valid, signers } verdict plus the form, the recovered content, and the micalg; a micalg disagreeing with the actual digest is advisory unless opts.strictMicalg. Chaining a signer to a trust anchor is the caller's pki.path.validate step. Bidirectionally interoperable with openssl smime and openssl cms.
+
 ## v0.2.24 — 2026-07-16
 
 SCT-list encoding and log signing join pki.ct: encodeSctList builds an RFC 6962 SignedCertificateTimestampList byte-for-byte, and signSct performs a Certificate Transparency log's signing step, completing the parse/verify/encode/sign symmetry.

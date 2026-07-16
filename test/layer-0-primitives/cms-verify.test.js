@@ -536,6 +536,8 @@ async function testMlDsaVerify() {
   var noattr = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
   noattr.signerInfos[0].digestAlgorithm.name = "sha3-512";   // meaningless when signed attrs absent
   check("M9 no-signed-attrs verify ignores digestAlgorithm name", (await pki.cms.verify(noattr, { content: CONTENT })).valid === true);
+  // opts.content that DIFFERS from an attached SignedData's own eContent is a substitution trap -> reject.
+  await rejects("opts.content differing from an attached SignedData's eContent -> cms/content-conflict", function () { return pki.cms.verify(noattr, { content: Buffer.from("a different content the signature never covered") }); }, "cms/content-conflict");
   // R15 -- a present, non-NULL digestAlgorithm parameter is likewise ignored without signed attributes.
   var m15 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
   m15.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // present non-NULL -- ignored w/o attrs
