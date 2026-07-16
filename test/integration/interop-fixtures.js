@@ -552,4 +552,71 @@ module.exports = {
       },
     },
   ],
+
+  // ---- pki.cms.encrypt / decrypt : `openssl cms` is the oracle for the RFC 5652 enveloped family.
+  // A message we encrypt is decrypted by openssl (every recipient arm), and a message openssl
+  // encrypts (v1.5 + OAEP + ML-KEM) is decrypted by us -- neither side validated only by its own
+  // codec. -----------------------------------------------------------------------------------
+  "pki.cms.encrypt": [
+    {
+      desc: "every recipient arm we emit is decrypted by `openssl cms -decrypt` (ktri-OAEP / kari / kekri / pwri / GCM / ML-KEM)",
+      run: async function (ctx) {
+        var pki = ctx.pki, makeRecipient = require("../helpers/signing").makeRecipient;
+        var probe = ctx.runOpenssl(["cms", "-help"], { allowNonZero: true });
+        if (!/-decrypt/.test(String(probe.stdout || "") + String(probe.stderr || ""))) { ctx.skip("openssl `cms` unavailable -- RFC 5652 enveloped cross-check cannot run"); return; }
+        var msg = Buffer.from("pki.cms enveloped-data cross-implementation payload");
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        function decOk(label, env, args) {
+          var respP = T(env, "env.der");
+          var r = ctx.runOpenssl(["cms", "-decrypt", "-inform", "DER", "-in", respP].concat(args), { allowNonZero: true });
+          ctx.check("openssl decrypts our " + label, r.code === 0 && String(r.stdout).indexOf("cross-implementation payload") !== -1);
+        }
+        try {
+          var rsa = makeRecipient("rsa");
+          var rsaCrt = T(pki.schema.x509.pemEncode(rsa.cert, "CERTIFICATE"), "rsa.crt"), rsaKey = T(pki.schema.pkcs8.pemEncode(rsa.key, "PRIVATE KEY"), "rsa.key");
+          decOk("ktri-OAEP GCM AuthEnvelopedData", await pki.cms.encrypt(msg, [{ cert: rsa.cert }]), ["-inkey", rsaKey, "-recip", rsaCrt]);
+          decOk("ktri-OAEP CBC EnvelopedData", await pki.cms.encrypt(msg, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }), ["-inkey", rsaKey, "-recip", rsaCrt]);
+          var ec = makeRecipient("ec-p256");
+          decOk("kari ECDH P-256", await pki.cms.encrypt(msg, [{ cert: ec.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }), ["-inkey", T(pki.schema.pkcs8.pemEncode(ec.key, "PRIVATE KEY"), "ec.key"), "-recip", T(pki.schema.x509.pemEncode(ec.cert, "CERTIFICATE"), "ec.crt")]);
+          var mk = makeRecipient("ml-kem-768");
+          var mkEnv = await pki.cms.encrypt(msg, [{ cert: mk.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+          var mkR = ctx.runOpenssl(["cms", "-decrypt", "-inform", "DER", "-in", T(mkEnv, "mk.der"), "-inkey", T(pki.schema.pkcs8.pemEncode(mk.key, "PRIVATE KEY"), "mk.key"), "-recip", T(pki.schema.x509.pemEncode(mk.cert, "CERTIFICATE"), "mk.crt")], { allowNonZero: true });
+          if (mkR.code === 0) ctx.check("openssl decrypts our ori/KEMRecipientInfo ML-KEM-768", String(mkR.stdout).indexOf("cross-implementation payload") !== -1);
+          else ctx.skip("this openssl build lacks ML-KEM KEMRecipientInfo cms support (needs OpenSSL 4.x) -- ML-KEM enveloped cross-check skipped");
+          decOk("pwri password", await pki.cms.encrypt(msg, [{ password: "corr3ct-h0rse" }], { contentEncryptionAlgorithm: "aes-256-cbc" }), ["-pwri_password", "corr3ct-h0rse"]);
+          var kek = Buffer.alloc(32, 0x5a);
+          decOk("kekri AES-256-KW", await pki.cms.encrypt(msg, [{ kek: kek, kekId: Buffer.from("kid1") }], { contentEncryptionAlgorithm: "aes-256-cbc" }), ["-secretkey", kek.toString("hex"), "-secretkeyid", Buffer.from("kid1").toString("hex")]);
+        } finally { tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } }); }
+      },
+    },
+  ],
+  "pki.cms.decrypt": [
+    {
+      desc: "an `openssl cms -encrypt` message (v1.5 / OAEP / ML-KEM) is decrypted by pki.cms.decrypt",
+      run: async function (ctx) {
+        var pki = ctx.pki, makeRecipient = require("../helpers/signing").makeRecipient;
+        var probe = ctx.runOpenssl(["cms", "-help"], { allowNonZero: true });
+        if (!/-encrypt/.test(String(probe.stdout || "") + String(probe.stderr || ""))) { ctx.skip("openssl `cms` unavailable -- RFC 5652 enveloped cross-check cannot run"); return; }
+        var msg = Buffer.from("openssl -> pki.cms.decrypt cross-implementation payload");
+        var tmps = [];
+        function T(bytes, ext) { var p = ctx.tmpFile(bytes, ext); tmps.push(p); return p; }
+        try {
+          var msgP = T(msg, "m.bin");
+          async function osslToUs(label, recip, extraEncArgs, optional) {
+            var crt = T(pki.schema.x509.pemEncode(recip.cert, "CERTIFICATE"), "r.crt");
+            var outP = T(Buffer.alloc(0), "oe.der");
+            var enc = ctx.runOpenssl(["cms", "-encrypt", "-aes-256-cbc", "-in", msgP, "-outform", "DER", "-out", outP, "-recip", crt].concat(extraEncArgs || []), optional ? { allowNonZero: true } : {});
+            if (optional && enc.code !== 0) { ctx.skip("this openssl build lacks ML-KEM KEMRecipientInfo cms support (needs OpenSSL 4.x) -- " + label + " cross-check skipped"); return; }
+            var v = await pki.cms.decrypt(ctx.fs.readFileSync(outP), { key: recip.key, cert: recip.cert });
+            ctx.check("pki.cms.decrypt accepts openssl's " + label, Buffer.compare(v.content, msg) === 0);
+          }
+          var rsa = makeRecipient("rsa");
+          await osslToUs("PKCS#1 v1.5 ktri", rsa, []);
+          await osslToUs("RSAES-OAEP ktri", rsa, ["-keyopt", "rsa_padding_mode:oaep"]);
+          await osslToUs("ML-KEM-768 KEMRecipientInfo", makeRecipient("ml-kem-768"), [], true);
+        } finally { tmps.forEach(function (p) { try { ctx.fs.unlinkSync(p); } catch (_e) { /* best-effort */ } }); }
+      },
+    },
+  ],
 };

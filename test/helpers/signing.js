@@ -62,6 +62,46 @@ function makeSigner(alg, opts) {
   return { cert: minimalCert(spki, opts), key: kp.privateKey.export({ format: "der", type: "pkcs8" }), keyObject: kp.privateKey, spki: spki };
 }
 
+// A keyUsage extension (SEQUENCE { extnID, critical BOOLEAN, extnValue OCTET STRING }) asserting a
+// single named bit -- keyEncipherment (2) or keyAgreement (4), which M9/M15 of the CMS enveloped
+// profile require on a recipient certificate.
+var _KU_BIT = { digitalSignature: 0, keyEncipherment: 2, dataEncipherment: 3, keyAgreement: 4 };
+function keyUsageExt(bitName) {
+  var bit = _KU_BIT[bitName], byte = 0x80 >> bit, unused = 7 - bit;
+  var ku = b.bitString(Buffer.from([byte]), unused);
+  return b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(ku)]);
+}
+
+// makeRecipient(kind, opts) -- an encryption recipient for pki.cms.encrypt/decrypt tests: a runtime
+// keypair (gitleaks blocks committed private keys) + a minimal certificate around its SPKI carrying
+// the profile-mandated keyUsage. Returns { cert, key (PKCS#8 DER), keyObject, spki }.
+var _RECIP = {
+  "rsa": { gen: ["rsa", { modulusLength: 2048 }], ku: "keyEncipherment" },
+  "ec-p256": { gen: ["ec", { namedCurve: "prime256v1" }], ku: "keyAgreement" },
+  "ec-p384": { gen: ["ec", { namedCurve: "secp384r1" }], ku: "keyAgreement" },
+  "ec-p521": { gen: ["ec", { namedCurve: "secp521r1" }], ku: "keyAgreement" },
+  "x25519": { gen: ["x25519"], ku: "keyAgreement" },
+  "x448": { gen: ["x448"], ku: "keyAgreement" },
+  "ml-kem-512": { gen: ["ml-kem-512"], ku: "keyEncipherment" },
+  "ml-kem-768": { gen: ["ml-kem-768"], ku: "keyEncipherment" },
+  "ml-kem-1024": { gen: ["ml-kem-1024"], ku: "keyEncipherment" },
+};
+var _recipSerial = 0x1000;
+function makeRecipient(kind, opts) {
+  opts = opts || {};
+  var spec = _RECIP[kind];
+  if (!spec) throw new Error("makeRecipient: unknown kind " + kind);
+  var kp = crypto.generateKeyPairSync.apply(crypto, spec.gen);
+  var spki = kp.publicKey.export({ format: "der", type: "spki" });
+  var exts = (opts.exts || []).slice();
+  if (opts.keyUsage !== false) exts.push(keyUsageExt(opts.keyUsage || spec.ku));
+  // A unique serial + CN per recipient so two recipients never collide on the issuerAndSerialNumber
+  // rid (recipient certs are self-issued, so the issuer DN is the per-recipient CN).
+  var serial = opts.serial != null ? opts.serial : (_recipSerial += 1);
+  var cert = minimalCert(spki, { cn: opts.cn || ("Recipient " + kind + " " + serial), serial: serial, ski: opts.ski, exts: exts });
+  return { cert: cert, key: kp.privateKey.export({ format: "der", type: "pkcs8" }), keyObject: kp.privateKey, spki: spki };
+}
+
 // makeCompositeSigner(arm, opts) -> { cert (DER), key: { mldsa, trad } (PKCS#8 DER pair), spki,
 // comp } for a composite ML-DSA arm (draft-ietf-lamps-pq-composite-sigs). Generates the two
 // component keypairs and builds a minimal signer cert whose SPKI carries the composite OID over the
@@ -93,4 +133,4 @@ function makeCompositeSigner(arm, opts) {
   };
 }
 
-module.exports = { makeSigner: makeSigner, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner };
+module.exports = { makeSigner: makeSigner, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt };

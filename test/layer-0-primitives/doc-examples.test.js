@@ -199,8 +199,13 @@ function fixturesFor(tag) {
     leafDer: certDer, caDer: certDer,
     responderCertDer: signFixtureSigner.cert, responderPkcs8: signFixtureSigner.key,
     responseDer: ocspResponseDer,
+    // pki.cms.encrypt / decrypt: a real RSA recipient + a real encrypted envelope so the examples
+    // run the actual encrypt/decrypt path (built in run()).
+    recipientCertDer: cmsRecipient && cmsRecipient.cert, recipientKeyPkcs8: cmsRecipient && cmsRecipient.key,
+    envDer: cmsEnvDer,
   };
 }
+var cmsRecipient = null, cmsEnvDer = null;
 // A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
 // start (signing is async so it cannot be a module-load constant).
 var ocspResponseDer = null;
@@ -229,6 +234,8 @@ async function run() {
   ocspResponseDer = await pki.ocsp.sign(
     { responderID: "byName", responses: [{ cert: certDer, issuer: certDer, status: "good" }] },
     { cert: signFixtureSigner.cert, key: signFixtureSigner.key });
+  cmsRecipient = require("../helpers/signing").makeRecipient("rsa");
+  cmsEnvDer = await pki.cms.encrypt(Buffer.from("secret"), [{ cert: cmsRecipient.cert }]);
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 
