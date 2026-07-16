@@ -183,6 +183,21 @@ function run() {
   // a tag-48 MAC-address value that does not wrap a byte string fails closed.
   check("68. a tag-48 value not wrapping a byte string -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: "d83001" })); }) === "c509/bad-name");
 
+  // ==== conformance fixes round 3: parameter DER validity + ECDSA signature width ====
+  // supplied algorithm parameters that are not a single well-formed DER element fail closed.
+  check("69. malformed algorithm parameters (trailing bytes) -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d040302430500ff" })); }) === "c509/non-invertible");
+  // an ECDSA signature whose width is not 2x a supported curve field size fails closed.
+  check("70. a non-curve-width ECDSA signature -> c509/bad-signature", codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: "583e" + "00".repeat(62) })); }) === "c509/bad-signature");
+  // an EC point whose length does not match its curve field size fails closed.
+  check("71. an EC point with a wrong length for its curve -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "5820fe" + "00".repeat(31) })); }) === "c509/non-invertible");
+  // a ~oid ecPublicKey algorithm carries no curve (the int form does), so it cannot be reconstructed.
+  check("72. a ~oid ecPublicKey without a curve -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "472a8648ce3d0201" })); }) === "c509/non-invertible");
+  // a SEC1 0x02/0x03 compressed point of the wrong length fails closed.
+  check("73. a wrong-length compressed (0x02) EC point -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "582002" + "00".repeat(31) })); }) === "c509/non-invertible");
+  // a correct-length SEC1 0x02 compressed point (type-3) is kept compressed in the reconstruction.
+  var compressed = pki.schema.c509.parse(V.mk({ 8: "582102" + "b1216ab96e5b3b3340f5bdf02e693f16213a04525ed44450b1019c2dfd3838ab" }));
+  check("74. a correct-length compressed EC point is kept in the reconstruction", pki.schema.x509.parse(compressed.reconstructedDer).subjectPublicKeyInfo.algorithm.name === "ecPublicKey");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
