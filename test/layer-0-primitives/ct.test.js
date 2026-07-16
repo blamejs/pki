@@ -485,6 +485,82 @@ async function testVerifySct() {
   check("93. verifySct rejects an RSAPublicKey missing its exponent (ct/bad-input)", (await vres(function () { return pki.ct.verifySct(entry, ecSct, noExpRsa); })) === "ct/bad-input");
 }
 
+// ---- encodeSctList: the exact inverse of parseSctList (byte-exact round-trip) ----
+function testEncodeSctList() {
+  var ext = extValueOf([
+    serialized(sctBody({ logId: Buffer.alloc(32, 0x11), ts: 1700000000000n, sig: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]) })),
+    serialized(sctBody({ logId: Buffer.alloc(32, 0x22), ts: 1700000000001n, ext: Buffer.from("xt") })),
+  ]);
+  var parsed = pki.ct.parseSctList(ext);
+  var reEnc = pki.ct.encodeSctList(parsed.scts);
+  check("94. encodeSctList round-trips byte-identically", Buffer.isBuffer(reEnc) && reEnc.equals(ext));
+  var reParsed = pki.ct.parseSctList(reEnc);
+  check("95. re-parsed list matches the original scts", reParsed.scts.length === 2 &&
+    reParsed.scts[0].logId.equals(parsed.scts[0].logId) && reParsed.scts[0].timestamp === parsed.scts[0].timestamp &&
+    reParsed.scts[1].signature.equals(parsed.scts[1].signature) && reParsed.scts[1].extensions.equals(parsed.scts[1].extensions));
+  // an unknown/opaque SCT (v99) re-emits its rawSct verbatim (forward-compat symmetry).
+  var unkBody = Buffer.concat([Buffer.from([99]), Buffer.alloc(10, 0xEE)]);
+  var pUnk = pki.ct.parseSctList(extValueOf([serialized(unkBody), serialized(sctBody({}))]));
+  var reEncUnk = pki.ct.encodeSctList([{ version: 99, rawSct: pUnk.unknownScts[0].rawSct }, pUnk.scts[0]]);
+  check("96. encodeSctList re-emits an unknown SCT's rawSct verbatim", pki.ct.parseSctList(reEncUnk).unknownScts[0].rawSct.equals(pUnk.unknownScts[0].rawSct));
+  var okSct = { version: 0, logId: Buffer.alloc(32), timestamp: 1n, extensions: Buffer.alloc(0), hashAlg: 4, sigAlg: 3, signature: Buffer.alloc(2) };
+  check("97. encodeSctList([]) -> ct/empty-list", code(function () { pki.ct.encodeSctList([]); }) === "ct/empty-list");
+  check("98. a non-32-byte logId -> ct/bad-input", code(function () { pki.ct.encodeSctList([Object.assign({}, okSct, { logId: Buffer.alloc(31) })]); }) === "ct/bad-input");
+  check("99. a negative timestamp -> ct/bad-input", code(function () { pki.ct.encodeSctList([Object.assign({}, okSct, { timestamp: -1n })]); }) === "ct/bad-input");
+  check("100. an out-of-range hashAlg -> ct/bad-input", code(function () { pki.ct.encodeSctList([Object.assign({}, okSct, { hashAlg: 256 })]); }) === "ct/bad-input");
+  var many = []; for (var i = 0; i <= 256; i++) many.push(okSct);
+  check("101. more than SCT_MAX_COUNT scts -> ct/too-many-scts", code(function () { pki.ct.encodeSctList(many); }) === "ct/too-many-scts");
+  check("102. encodeSctList(non-array) -> ct/bad-input", code(function () { pki.ct.encodeSctList("nope"); }) === "ct/bad-input");
+  check("103. a signature over 2^16-1 -> ct/bad-input", code(function () { pki.ct.encodeSctList([Object.assign({}, okSct, { signature: Buffer.alloc(65536) })]); }) === "ct/bad-input");
+  check("103b. a non-object SCT element -> ct/bad-input", code(function () { pki.ct.encodeSctList([42]); }) === "ct/bad-input");
+  // an opaque SCT whose rawSct[0] disagrees with its declared version -> ct/bad-input (never emit a
+  // list our own parser would reject or re-classify): version 7 but a rawSct beginning 0x00 (v1).
+  check("103c. an opaque SCT with a version <-> rawSct[0] mismatch -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 7, rawSct: Buffer.concat([Buffer.from([0]), Buffer.alloc(10, 0xEE)]) }]); }) === "ct/bad-input");
+  check("103d. a consistent opaque SCT (version == rawSct[0]) round-trips", (function () { var r = pki.ct.parseSctList(pki.ct.encodeSctList([{ version: 7, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }])); return r.unknownScts.length === 1 && r.unknownScts[0].version === 7; })());
+  check("103e. an opaque SCT with an empty rawSct -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 7, rawSct: Buffer.alloc(0) }]); }) === "ct/bad-input");
+}
+
+// ---- signSct: the log's digitally-signed step (inverse of verifySct) ----
+async function testSignSct() {
+  var nodeCrypto = require("crypto");
+  var ecPair = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecPriv = ecPair.privateKey.export({ type: "pkcs8", format: "der" });
+  var ecSpki = ecPair.publicKey.export({ type: "spki", format: "der" });
+  var leaf = Buffer.alloc(50, 0x5A);
+  var entry = { entryType: 0, leafCert: leaf };
+  var sct = await pki.ct.signSct(entry, ecPriv);
+  check("104. signSct returns a v1 SCT (sha256/ecdsa)", sct.version === 0 && sct.hashAlg === 4 && sct.sigAlg === 3 && Buffer.isBuffer(sct.signature));
+  check("105. signSct sets logId = SHA-256(logSPKI)", sct.logIdHex === nodeCrypto.createHash("sha256").update(ecSpki).digest("hex"));
+  check("106. signSct -> verifySct round-trips (ECDSA P-256)", (await pki.ct.verifySct(entry, sct, ecSpki)) === true);
+  var reSct = pki.ct.parseSctList(pki.ct.encodeSctList([sct])).scts[0];
+  check("107. a signed SCT round-trips through encode/parse and re-verifies", (await pki.ct.verifySct(entry, reSct, ecSpki)) === true);
+  var rsaPair = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaSct = await pki.ct.signSct(entry, rsaPair.privateKey.export({ type: "pkcs8", format: "der" }));
+  check("108. signSct RSA -> sigAlg=1 (rsa)", rsaSct.sigAlg === 1);
+  check("109. signSct -> verifySct round-trips (RSA-2048)", (await pki.ct.verifySct(entry, rsaSct, rsaPair.publicKey.export({ type: "spki", format: "der" }))) === true);
+  var edPriv = nodeCrypto.generateKeyPairSync("ed25519").privateKey.export({ type: "pkcs8", format: "der" });
+  check("110. signSct with an Ed25519 log key -> ct/unsupported-algorithm", (await vres(function () { return pki.ct.signSct(entry, edPriv); })) === "ct/unsupported-algorithm");
+  var p384 = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "secp384r1" }).privateKey.export({ type: "pkcs8", format: "der" });
+  check("111. signSct with a P-384 log key -> ct/unsupported-algorithm", (await vres(function () { return pki.ct.signSct(entry, p384); })) === "ct/unsupported-algorithm");
+  check("112. signSct with a wrong opts.logId -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecPriv, { logId: Buffer.alloc(32, 0x00) }); })) === "ct/bad-input");
+  check("113. signSct with a NaN timestamp -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecPriv, { timestamp: NaN }); })) === "ct/bad-input");
+  var pEntry = { entryType: 1, tbsCertificate: Buffer.alloc(40, 0x33), issuerKeyHash: Buffer.alloc(32, 0x44) };
+  check("114. signSct over a precert entry -> verifySct round-trips", (await pki.ct.verifySct(pEntry, await pki.ct.signSct(pEntry, ecPriv), ecSpki)) === true);
+  check("115. signSct accepts a PEM-string log key", (await pki.ct.verifySct(entry, await pki.ct.signSct(entry, ecPair.privateKey.export({ type: "pkcs8", format: "pem" })), ecSpki)) === true);
+  check("116. signSct rejects a public-key SPKI (needs the private key) -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecSpki); })) === "ct/bad-input");
+  check("117. signSct rejects a public KeyObject -> ct/bad-input", (await vres(function () { return pki.ct.signSct(entry, ecPair.publicKey); })) === "ct/bad-input");
+  check("118. signSct accepts a private KeyObject", (await pki.ct.verifySct(entry, await pki.ct.signSct(entry, ecPair.privateKey), ecSpki)) === true);
+  var rsa1024 = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 1024 }).privateKey.export({ type: "pkcs8", format: "der" });
+  check("119. signSct with an RSA key below 2048 bits -> ct/unsupported-algorithm", (await vres(function () { return pki.ct.signSct(entry, rsa1024); })) === "ct/unsupported-algorithm");
+  // explicit timestamp (BigInt + Number) and extensions arms
+  var tsSct = await pki.ct.signSct(entry, ecPriv, { timestamp: 1700000000000n, extensions: Buffer.from([0x00, 0x01, 0xff]) });
+  check("120. signSct honours an explicit BigInt timestamp + extensions", tsSct.timestamp === 1700000000000n && tsSct.extensions.equals(Buffer.from([0x00, 0x01, 0xff])) && (await pki.ct.verifySct(entry, tsSct, ecSpki)) === true);
+  var tsNumSct = await pki.ct.signSct(entry, ecPriv, { timestamp: 1700000000001 });
+  check("121. signSct honours an explicit Number timestamp", tsNumSct.timestamp === 1700000000001n);
+  // reconstructSignedData tolerates a null entry (fails closed on the absent entryType)
+  check("122. reconstructSignedData(null, sct) -> ct/bad-entry-type", code(function () { pki.ct.reconstructSignedData(null, tsSct); }) === "ct/bad-entry-type");
+}
+
 async function run() {
   testAccept();
   testInnerWrap();
@@ -497,6 +573,8 @@ async function run() {
   testNotASchemaFormat();
   testKnownAnswerVector();
   await testVerifySct();
+  testEncodeSctList();
+  await testSignSct();
 }
 
 module.exports = { run: run };

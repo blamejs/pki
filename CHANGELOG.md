@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.24 — 2026-07-16
+
+SCT-list encoding and log signing join pki.ct: encodeSctList builds an RFC 6962 SignedCertificateTimestampList byte-for-byte, and signSct performs a Certificate Transparency log's signing step, completing the parse/verify/encode/sign symmetry.
+
+### Added
+
+- pki.ct.encodeSctList(scts) builds an RFC 6962 SCT-list extension value from an array of SCTs -- the exact inverse of pki.ct.parseSctList (byte-identical round-trip). A decoded v1 SCT is rebuilt from its fields in the RFC 6962 sec. 3.2 order; an opaque non-v1 entry re-emits its rawSct verbatim (forward compatibility). The list must be non-empty and stays within the parser's SCT_MAX_COUNT / SCT_MAX_BYTES caps. Fail-closed with a typed CtError.
+- pki.ct.signSct(entry, logKey, opts) performs a Certificate Transparency log's signing step (RFC 6962 sec. 3.2): it rebuilds the digitally-signed preimage via the same reconstructSignedData builder the verifier hashes, signs it with the log's private key (ECDSA NIST P-256 or RSA >= 2048, SHA-256 per sec. 2.1.4), and returns a fully-formed v1 SCT that pki.ct.verifySct accepts. The LogID is derived as SHA-256 of the log's SubjectPublicKeyInfo (sec. 3.4); a supplied opts.logId must match. Composes with encodeSctList to assemble a signed SCT-list extension.
+
 ## v0.2.23 — 2026-07-16
 
 CMS content encryption arrives as pki.cms.encrypt and pki.cms.decrypt: EnvelopedData, AuthEnvelopedData, and EncryptedData with every RFC 5652 recipient type -- RSA-OAEP, ephemeral-static ECDH, X25519/X448, symmetric key-wrap, password, and post-quantum ML-KEM (RFC 9629/9936) -- and a single, oracle-free decryption verdict.

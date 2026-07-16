@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.23",
+  "packageVersion": "0.2.24",
   "surface": {
     "C": {
       "kind": "object",
@@ -1693,6 +1693,10 @@
             }
           }
         },
+        "encodeSctList": {
+          "kind": "function",
+          "arity": 1
+        },
         "parseSctList": {
           "kind": "function",
           "arity": 1
@@ -1700,6 +1704,10 @@
         "reconstructSignedData": {
           "kind": "function",
           "arity": 2
+        },
+        "signSct": {
+          "kind": "function",
+          "arity": 3
         },
         "verifySct": {
           "kind": "function",
@@ -2741,6 +2749,8 @@
     "pki.ct.parseSctList": "0.1.20",
     "pki.ct.reconstructSignedData": "0.1.20",
     "pki.ct.verifySct": "0.2.12",
+    "pki.ct.encodeSctList": "0.2.24",
+    "pki.ct.signSct": "0.2.24",
     "pki.est.transferDecode": "0.1.24",
     "pki.est.transferEncode": "0.1.24",
     "pki.est.parseCertsOnly": "0.1.24",
