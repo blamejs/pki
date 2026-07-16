@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.29 — 2026-07-16
+
+Certificate Transparency log-list signature verification arrives as pki.ct.verifyLogListSignature: verify the detached signature published alongside the CT log list against a caller-pinned signer key, completing the offline log-list trust chain.
+
+### Added
+
+- pki.ct.verifyLogListSignature(json, signature, publicKey) verifies the detached signature over the Certificate Transparency log list (log_list.sig over log_list.json). The message is the raw json bytes, verified byte-for-byte with no canonicalization; publicKey is the caller-pinned signer SubjectPublicKeyInfo (there is no embedded key). The scheme is RSASSA-PKCS1-v1.5 with SHA-256 (an EC P-256 arm is accepted for future-proofing). It resolves true or false (a cryptographic verdict) and throws a typed CtError on a forgeable or unsupported key (an RSA exponent below 3, a sub-2048-bit RSA key, an unsupported key type or curve, a non-conformant ECDSA DER signature). Its verdict is cross-checked against OpenSSL's dgst -verify. Paired with pki.ct.parseLogList, this completes the offline CT log-list trust chain.
+
 ## v0.2.28 — 2026-07-16
 
 The Certificate Transparency log-list trust surface arrives as pki.ct.parseLogList and pki.ct.verifySctWithLogList: resolve a trusted CT log's key from an SCT's log id and verify it in one step, ingesting the CT log-list JSON into state- and temporal-interval-constrained trusted logs.

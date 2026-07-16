@@ -378,6 +378,14 @@ security-only patches after the next major releases.
   `ct/temporal-interval`, never a silently skipped constraint — before delegating the
   signature check to `verifySct`. The log-list JSON is decoded through the bounded,
   duplicate-member-rejecting reader (byte and depth caps, `__proto__`-safe).
+  `pki.ct.verifyLogListSignature` verifies the detached `log_list.sig` over the raw
+  log-list bytes (byte-for-byte, never re-serialized) against a caller-PINNED signer
+  key — no baked-in key. It pins the scheme to RSASSA-PKCS1-v1.5/SHA-256 (rejecting a
+  PSS signature) and fails closed BEFORE any verification on a forgeable key: an RSA
+  public exponent below 3 (a PKCS#1 v1.5 `e = 1` "signature" is just the DigestInfo)
+  or an even exponent, a sub-2048-bit RSA key, and — on the EC arm — a non-conformant
+  ECDSA DER Sig-Value (defeating the CVE-2022-21449 `r = s = 0` shape) are all typed
+  throws, not a `true`. Its verdict is cross-checked against `openssl dgst -verify`.
   `pki.schema.smime` decodes the ESS signing-certificate attributes the same way:
   it surfaces the certificate hash, the (implied or decoded) hash algorithm, and
   the issuer/serial reference raw so a verifier recomputes the hash and matches

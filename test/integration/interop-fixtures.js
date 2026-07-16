@@ -446,6 +446,33 @@ module.exports = {
     },
   ],
 
+  // ---- pki.ct.verifyLogListSignature : our RSASSA-PKCS1-v1.5/SHA-256 verdict agrees with `openssl dgst` --
+  // Unlike the log-list JSON ingest (no oracle), the log_list.sig scheme is standard, so OpenSSL is a real
+  // independent cross-check: our true/false must agree with `openssl dgst -verify`'s Verified OK / failure.
+  "pki.ct.verifyLogListSignature": [
+    {
+      desc: "our RSA-PKCS1-v1.5/SHA-256 log-list-signature verdict agrees with `openssl dgst -verify` (both accept a valid signature and both reject a tampered message)",
+      run: async function (ctx) {
+        var crypto = require("crypto");
+        var kp = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+        var spkiDer = kp.publicKey.export({ format: "der", type: "spki" });
+        var pubPem = ctx.tmpFile(kp.publicKey.export({ format: "pem", type: "spki" }), "pub.pem");
+        var msg = Buffer.from('{"operators":[],"log_list_timestamp":"2026-07-16T00:00:00Z"}');
+        var msgPath = ctx.tmpFile(msg, "msg.json");
+        var sig = crypto.sign("sha256", msg, kp.privateKey);
+        var sigPath = ctx.tmpFile(sig, "sig.bin");
+        ctx.check("our verifyLogListSignature accepts a valid RSA-PKCS1-SHA256 signature", (await ctx.pki.ct.verifyLogListSignature(msg, sig, spkiDer)) === true);
+        var v = ctx.runOpenssl(["dgst", "-sha256", "-verify", pubPem, "-signature", sigPath, msgPath], { allowNonZero: true });
+        ctx.check("openssl dgst -verify agrees the signature is valid", v.code === 0 && /Verified OK/i.test(String(v.stdout) + String(v.stderr)));
+        var tampered = Buffer.from(msg); tampered[5] ^= 0x01;
+        var tamperedPath = ctx.tmpFile(tampered, "msg2.json");
+        ctx.check("our verifyLogListSignature rejects a tampered message (a verdict)", (await ctx.pki.ct.verifyLogListSignature(tampered, sig, spkiDer)) === false);
+        var v2 = ctx.runOpenssl(["dgst", "-sha256", "-verify", pubPem, "-signature", sigPath, tamperedPath], { allowNonZero: true });
+        ctx.check("openssl dgst -verify agrees a tampered message fails", v2.code !== 0);
+      },
+    },
+  ],
+
   // ---- pki.tsp.sign : an RFC 3161 timestamp token we create verifies under openssl --
   "pki.tsp.sign": [
     {

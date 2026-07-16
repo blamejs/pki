@@ -210,11 +210,14 @@ function fixturesFor(tag) {
     // pki.ct.parseLogList / verifySctWithLogList: a real CT log-list JSON + a parsed result + a
     // cryptographically-real embedded SCT (a generated log key signs an SCT whose logId = SHA-256 SPKI).
     logListJsonBytes: ctLogListJson, logList: ctLogList, sctEntry: ctEntry, embeddedSct: ctSct,
+    // pki.ct.verifyLogListSignature: a detached RSA-PKCS1-SHA256 signature over the log-list bytes + its signer SPKI.
+    logListSig: ctLogListSig, googleSignerSpki: ctSignerSpki,
   };
 }
 var cmsRecipient = null, cmsEnvDer = null, smimeMessageBytes = null;
 var cmsCompressedDer = null, smimeCompressedBytes = null;
 var ctLogListJson = null, ctLogList = null, ctEntry = null, ctSct = null;
+var ctLogListSig = null, ctSignerSpki = null;
 // A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
 // start (signing is async so it cannot be a module-load constant).
 var ocspResponseDer = null;
@@ -260,6 +263,9 @@ async function run() {
   ctLogList = pki.ct.parseLogList(ctLogListJson);
   ctSct = { version: 0, logId: ctLogId, logIdHex: ctLogId.toString("hex"), timestamp: 1700000000000n, signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 3, signatureName: "ecdsa" }, signature: null, extensions: Buffer.alloc(0) };
   ctSct.signature = ctCrypto.sign("sha256", pki.ct.reconstructSignedData(ctEntry, ctSct), ctKp.privateKey);
+  var ctSigKp = ctCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
+  ctLogListSig = ctCrypto.sign("sha256", ctLogListJson, ctSigKp.privateKey);
+  ctSignerSpki = ctSigKp.publicKey.export({ format: "der", type: "spki" });
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 

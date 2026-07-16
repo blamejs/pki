@@ -46,6 +46,7 @@ jobs:
           - ct-parse
           - ct-verify
           - ct-log-list
+          - ct-log-list-sig
           - merkle-verify
           - smime-parse
           - smime-verify
