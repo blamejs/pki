@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.27",
+  "packageVersion": "0.2.28",
   "surface": {
     "C": {
       "kind": "object",
@@ -51,6 +51,9 @@
               "kind": "number"
             },
             "COMPRESS_MAX_BYTES": {
+              "kind": "number"
+            },
+            "CT_LOG_LIST_MAX_BYTES": {
               "kind": "number"
             },
             "DER_MAX_BYTES": {
@@ -1124,6 +1127,9 @@
             "COMPRESS_MAX_BYTES": {
               "kind": "number"
             },
+            "CT_LOG_LIST_MAX_BYTES": {
+              "kind": "number"
+            },
             "DER_MAX_BYTES": {
               "kind": "number"
             },
@@ -1717,6 +1723,10 @@
           "kind": "function",
           "arity": 1
         },
+        "parseLogList": {
+          "kind": "function",
+          "arity": 2
+        },
         "parseSctList": {
           "kind": "function",
           "arity": 1
@@ -1732,6 +1742,10 @@
         "verifySct": {
           "kind": "function",
           "arity": 3
+        },
+        "verifySctWithLogList": {
+          "kind": "function",
+          "arity": 4
         }
       }
     },
@@ -2802,6 +2816,8 @@
     "pki.ct.verifySct": "0.2.12",
     "pki.ct.encodeSctList": "0.2.24",
     "pki.ct.signSct": "0.2.24",
+    "pki.ct.parseLogList": "0.2.28",
+    "pki.ct.verifySctWithLogList": "0.2.28",
     "pki.est.transferDecode": "0.1.24",
     "pki.est.transferEncode": "0.1.24",
     "pki.est.parseCertsOnly": "0.1.24",

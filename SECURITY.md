@@ -366,7 +366,18 @@ security-only patches after the next major releases.
   actually signed. The TLS-encoded list itself is decoded with a bounded reader
   that validates every framing length and caps the per-list byte size and SCT
   count before iterating, so a crafted SCT extension is bounded work with a typed
-  `ct/*` verdict rather than unbounded work inside a certificate extension.
+  `ct/*` verdict rather than unbounded work inside a certificate extension. The CT
+  log-list trust surface (`pki.ct.parseLogList`) binds identity to the key, not a
+  label: it recomputes each log's id as SHA-256 of its DER SubjectPublicKeyInfo and
+  refuses a stated `log_id` that disagrees (`ct/log-id-mismatch`, RFC 6962 §3.2), so
+  a tampered list cannot swap a log's key while keeping its id or point an id at an
+  attacker key. `pki.ct.verifySctWithLogList` then enforces trust *before* any crypto —
+  a `pending`/`rejected` log, or a `retired` log for an SCT timestamped at or after its
+  retirement, is `ct/log-untrusted`; a certificate whose `notAfter` is outside the
+  resolved log's temporal-interval window (or unresolvable for a windowed log) is
+  `ct/temporal-interval`, never a silently skipped constraint — before delegating the
+  signature check to `verifySct`. The log-list JSON is decoded through the bounded,
+  duplicate-member-rejecting reader (byte and depth caps, `__proto__`-safe).
   `pki.schema.smime` decodes the ESS signing-certificate attributes the same way:
   it surfaces the certificate hash, the (implied or decoded) hash algorithm, and
   the issuer/serial reference raw so a verifier recomputes the hash and matches

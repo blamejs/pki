@@ -514,5 +514,35 @@
     "reason": "The deterministic-CBOR read surface (pki.cbor) is still settling as its COSE / CWT / EAT / C509 consumers land; read.mapGet is a stable map-lookup leaf but its home namespace has no externally frozen consumer yet. Graduate alongside the pki.cbor read surface once the C509 profile and the COSE key/attestation consumers pin it.",
     "reviewedAt": "0.2.26",
     "reviewBy": "0.3.0"
+  },
+  "pki.ocsp.buildRequest": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.28",
+    "reviewBy": "0.3.0"
+  },
+  "pki.ocsp.sign": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.28",
+    "reviewBy": "0.3.0"
+  },
+  "pki.ocsp.buildErrorResponse": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.28",
+    "reviewBy": "0.3.0"
+  },
+  "pki.ocsp.verify": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.28",
+    "reviewBy": "0.3.0"
+  },
+  "pki.path.verifyOcspResponse": {
+    "decision": "keep-experimental",
+    "reason": "The lower-level RFC 6960 relying-party OCSP verify shares the path-validate verify bridge and the same not-yet-interop-proven-against-an-independent-validator revocation path as pki.path.validate; graduate alongside pki.path.validate.",
+    "reviewedAt": "0.2.28",
+    "reviewBy": "0.3.0"
   }
 }

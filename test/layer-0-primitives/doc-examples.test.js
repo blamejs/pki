@@ -207,10 +207,14 @@ function fixturesFor(tag) {
     compressedDer: cmsCompressedDer, compressedSmimeBytes: smimeCompressedBytes,
     // pki.smime.verify: a real signed multipart/signed S/MIME message.
     smimeMessageBytes: smimeMessageBytes,
+    // pki.ct.parseLogList / verifySctWithLogList: a real CT log-list JSON + a parsed result + a
+    // cryptographically-real embedded SCT (a generated log key signs an SCT whose logId = SHA-256 SPKI).
+    logListJsonBytes: ctLogListJson, logList: ctLogList, sctEntry: ctEntry, embeddedSct: ctSct,
   };
 }
 var cmsRecipient = null, cmsEnvDer = null, smimeMessageBytes = null;
 var cmsCompressedDer = null, smimeCompressedBytes = null;
+var ctLogListJson = null, ctLogList = null, ctEntry = null, ctSct = null;
 // A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
 // start (signing is async so it cannot be a module-load constant).
 var ocspResponseDer = null;
@@ -244,6 +248,18 @@ async function run() {
   cmsCompressedDer = await pki.cms.compress(Buffer.from("compress me"));
   smimeCompressedBytes = await pki.smime.compress(Buffer.from("compress this message"));
   smimeMessageBytes = await pki.smime.sign(Buffer.from("hello"), [{ cert: signFixtureSigner.cert, key: signFixtureSigner.key }]);
+  // A cryptographically-real CT log-list + embedded SCT: a generated EC log key, a log-list JSON whose
+  // one usable log carries that key (log_id = SHA-256 of its SPKI), and an SCT signed by that key.
+  var ctCrypto = require("crypto");
+  var ctLeaf = pki.schema.x509.pemDecode(helpers.vectors.CERT_EC_PEM, "CERTIFICATE");
+  ctEntry = { entryType: 0, leafCert: ctLeaf };
+  var ctKp = ctCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ctSpki = ctKp.publicKey.export({ format: "der", type: "spki" });
+  var ctLogId = ctCrypto.createHash("sha256").update(ctSpki).digest();
+  ctLogListJson = Buffer.from(JSON.stringify({ version: "3", operators: [{ name: "Example Operator", logs: [{ description: "Example Log", log_id: ctLogId.toString("base64"), key: ctSpki.toString("base64"), url: "https://ct.example.com/", mmd: 86400, state: { usable: { timestamp: "2022-01-01T00:00:00Z" } } }], tiled_logs: [] }] }));
+  ctLogList = pki.ct.parseLogList(ctLogListJson);
+  ctSct = { version: 0, logId: ctLogId, logIdHex: ctLogId.toString("hex"), timestamp: 1700000000000n, signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 3, signatureName: "ecdsa" }, signature: null, extensions: Buffer.alloc(0) };
+  ctSct.signature = ctCrypto.sign("sha256", pki.ct.reconstructSignedData(ctEntry, ctSct), ctKp.privateKey);
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 
