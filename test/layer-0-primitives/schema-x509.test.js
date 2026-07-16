@@ -567,6 +567,10 @@ function testQcStatements() {
   check("qc: QcLimitValue accepts a large amount beyond uint31", rBig[0].info.amount === 5000000000);
   var rExp = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("USD"), build.integer(1n), build.integer(1000n)])])]));
   check("qc: QcLimitValue accepts an exponent beyond a small window", rExp[0].info.exponent === 1000);
+  // A PrintableString currency carrying a disallowed byte (0x40 '@', not in the PrintableString set)
+  // decodes structurally but fails the leaf read; the decoder must surface its own typed
+  // bad-qc-statement, not leak asn1/bad-printable-string. Raw TLV: 13 03 'U' 'S' '@'.
+  check("qc: QcLimitValue currency with a disallowed byte -> bad-qc-statement (typed, not asn1/*)", code(function () { dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.raw(Buffer.from([0x13, 0x03, 0x55, 0x53, 0x40])), build.integer(1n), build.integer(0n)])])])); }) === "path/bad-qc-statement");
 
   // 13. Orchestrator: the SHIPPED consumer path (x509.parse -> extensions -> byOid).
   function _certWithQc(critical, qcVal) {
