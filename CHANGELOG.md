@@ -15,6 +15,7 @@ X.509 certificates now decode the RFC 3739 / ETSI EN 319 412-5 qualified-certifi
 ### Security
 
 - The sigstore keyless-bundle verifier now routes an Ed25519/Ed448 Fulcio leaf or Rekor log public key through the shared full-order Edwards-point gate before verification. A low-order OKP key (which node imports without complaint and which can verify a forged EdDSA signature) is rejected at key-parse (sigstore/bad-key) instead of being handed to verify -- the same defense the webauthn and certification-path EdDSA verifiers already apply.
+- Certification-path validation rejects a CRITICAL qcStatements extension (RFC 5280 sec. 6.1.4). A critical qualified-certificate statement asserts semantics a relying party must enforce -- a QcLimitValue reliance limit, a QcType certificate purpose -- and the validator does not enforce them, so treating the extension as processed would let a caller rely on a certificate outside its asserted qualified-certificate constraints; it is left unprocessed and fails as an unrecognized critical extension. A non-critical qcStatements is informational and does not affect the verdict; the extension is still decoded for pki.inspect and lint.
 
 ## v0.2.30 — 2026-07-16
 
