@@ -247,6 +247,10 @@ async function run() {
   function oriKem(kemOid) { return bp.contextConstructed(4, Buffer.concat([bp.oid(O("kem")), bp.sequence([bp.integer(0n), bp.contextPrimitive(0, Buffer.alloc(20)), bp.sequence([bp.oid(O(kemOid))]), bp.octetString(Buffer.alloc(32)), bp.sequence([bp.oid(O("hkdfWithSha256"))]), bp.integer(32n), bp.sequence([bp.oid(O("aes256-wrap"))]), bp.octetString(Buffer.alloc(40))])])); }
   check("an RSA-KEM (id-kem-rsa) OtherRecipientInfo -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(envSet([oriKem("id-kem-rsa")]), { key: mkem.key, cert: mkem.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
   check("an unknown KEM OtherRecipientInfo -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(envSet([oriKem("data")]), { key: mkem.key, cert: mkem.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
+  // a valid ML-KEM recipient (correct ct/kek lengths so the parser accepts it) that names an
+  // unsupported key-derivation function -> the KDF is honored/rejected, not silently ignored.
+  var kemBadKdf = bp.contextConstructed(4, Buffer.concat([bp.oid(O("kem")), bp.sequence([bp.integer(0n), bp.contextPrimitive(0, Buffer.alloc(20)), bp.sequence([bp.oid(O("id-ml-kem-768"))]), bp.octetString(Buffer.alloc(1088)), bp.sequence([bp.oid(O("sha256"))]), bp.integer(32n), bp.sequence([bp.oid(O("aes256-wrap"))]), bp.octetString(Buffer.alloc(40))])]));
+  check("a KEMRecipientInfo naming an unsupported KDF -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(envSet([kemBadKdf]), { key: mkem.key, cert: mkem.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
 
   // a PBKDF2 salt above the DoS cap -> cms/bad-input.
   var bigSaltKdf = bp.contextConstructed(0, Buffer.concat([bp.oid(O("pbkdf2")), bp.sequence([bp.octetString(Buffer.alloc(2000)), bp.integer(1000n)])]));
