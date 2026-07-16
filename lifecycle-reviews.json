@@ -544,5 +544,17 @@
     "reason": "The lower-level RFC 6960 relying-party OCSP verify shares the path-validate verify bridge and the same not-yet-interop-proven-against-an-independent-validator revocation path as pki.path.validate; graduate alongside pki.path.validate.",
     "reviewedAt": "0.2.28",
     "reviewBy": "0.3.0"
+  },
+  "pki.cms.encrypt": {
+    "decision": "keep-experimental",
+    "reason": "The CMS content-encryption surface (all five RFC 5652 recipient arms) is oracle-free and interop-proven against openssl cms, but its post-quantum ML-KEM KEMRecipientInfo arm rides recently-published RFCs (9629/9936) and the composite-KEM draft is unlanded; graduate once the enveloped surface's PQC recipient set is settled.",
+    "reviewedAt": "0.2.29",
+    "reviewBy": "0.3.0"
+  },
+  "pki.cms.decrypt": {
+    "decision": "keep-experimental",
+    "reason": "The CMS content-decryption surface (all five recipient arms, oracle-free) is interop-proven against openssl cms, but its post-quantum ML-KEM KEMRecipientInfo arm rides recently-published RFCs (9629/9936) and the composite-KEM draft is unlanded; graduate alongside pki.cms.encrypt once the enveloped surface's PQC recipient set is settled.",
+    "reviewedAt": "0.2.29",
+    "reviewBy": "0.3.0"
   }
 }

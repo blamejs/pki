@@ -155,6 +155,7 @@ var VALID_ALLOW_CLASSES = {
   "validator-shape-reinlined": 1,
   "validator-without-enforcement": 1,
   "inline-structure-validator": 1,
+  "nan-date-comparison-unguarded": 1,
   // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
   // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
   "swallow-unverified": 1,
@@ -2039,6 +2040,45 @@ function testNumberNarrowsUnboundedInteger() {
   _report("no Number() narrows an unbounded ASN.1 integer read (silent-rounding vector, codebase-wide)", bad);
 }
 
+function testNanDateComparisonUnguarded() {
+  // class: nan-date-comparison-unguarded
+  // A fail-open where an Invalid Date silently bypasses a time / window / validity
+  // gate. `new Date(badString)` never throws -- it yields an Invalid Date that is
+  // still `instanceof Date`, and EVERY relational comparison against its NaN
+  // `.getTime()` (`NaN < x`, `NaN >= x`, `NaN <= x`, `NaN > x`) is false, so a gate
+  // `if (t < start || t >= end) throw` NEVER fires and the out-of-window / expired
+  // input is accepted. Any lib function comparing a `.getTime()` result with a
+  // relational operator MUST reject `isNaN(getTime())` first -- OR take the Date
+  // from a source that already rejects NaN (the codec `readTime`, the shared
+  // `rfc3339.parse`, a Date literal), documented with an
+  // `allow:nan-date-comparison-unguarded` marker naming the validated source.
+  // Scope-aware (function-granular, like number-narrows); fires on a NEW unguarded
+  // comparison ANYWHERE in lib, including a not-yet-written primitive. Rename-proof:
+  // it matches the `.getTime()`-in-a-comparison shape and the `isNaN(` guard shape,
+  // never a symbol. This class is a 3-peat -- TSP (v0.2.19), OCSP (v0.2.22), and the
+  // CT log-list temporal gate (v0.2.28) were each a real fail-open of exactly this shape.
+  var CMP = /\.getTime\(\)\s*[<>]|[<>]=?\s*[A-Za-z_$][\w$.]*\.getTime\(\)/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var src = fs.readFileSync(f, "utf8");
+    _functionRegions(src).forEach(function (region) {
+      var lines = _lines(region.body);
+      var off = -1;
+      for (var i = 0; i < lines.length; i++) {
+        if (/^\s*(\/\/|\*|\/\*)/.test(lines[i])) continue;           // skip comment lines
+        if (CMP.test(lines[i])) { off = i; break; }
+      }
+      if (off < 0) return;                                            // no getTime relational comparison
+      if (/\bisNaN\s*\(/.test(region.body)) return;                   // the function guards NaN -> safe
+      bad.push({ file: rel, line: region.startLine + off,
+        content: "the function '" + region.name + "' compares a Date's .getTime() against a bound with no isNaN guard -- an Invalid Date (getTime() === NaN) makes every relational comparison false and SILENTLY BYPASSES the gate; reject isNaN(getTime()) first, or mark allow:nan-date-comparison-unguarded when the Date is source-validated (codec readTime / rfc3339.parse / literal)" });
+    });
+  });
+  bad = _filterMarkers(bad, "nan-date-comparison-unguarded");
+  _report("no lib function compares a Date .getTime() against a bound without an isNaN guard (NaN-Date fail-open, codebase-wide)", bad);
+}
+
 // Split a source file into top-level function regions [{ name, startLine, body }].
 // A region spans from one function declaration to the next; a nested closure is
 // lumped into its parent region -- a re-inline in a closure is still inside the
@@ -2607,6 +2647,7 @@ function run() {
   testSharedLeafOptionScope();
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
+  testNanDateComparisonUnguarded();
   testCborMapPairAccessOutsideCodec();
   testOcspResponderAuthReinlined();
   testGuardShapeReinlined();
