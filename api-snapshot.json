@@ -2248,6 +2248,14 @@
             }
           }
         },
+        "TARGET_UNPROCESSED_IF_CRITICAL": {
+          "kind": "object",
+          "members": {
+            "2.5.29.33": {
+              "kind": "boolean"
+            }
+          }
+        },
         "crlChecker": {
           "kind": "function",
           "arity": 1

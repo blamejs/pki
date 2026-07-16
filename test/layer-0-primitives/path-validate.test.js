@@ -657,6 +657,7 @@ async function testCoreRejections() {
   // The exported processed-extension set is FROZEN: a caller must not be able to add an OID and make
   // an attacker's critical, decoder-less extension pass the unrecognized-critical check.
   check("PROCESSED_EXTENSIONS is frozen", Object.isFrozen(pki.path.PROCESSED_EXTENSIONS));
+  check("TARGET_UNPROCESSED_IF_CRITICAL is frozen", Object.isFrozen(pki.path.TARGET_UNPROCESSED_IF_CRITICAL));
   var injOid = "1.2.3.4.5.6.7.8.9";
   try { pki.path.PROCESSED_EXTENSIONS[injOid] = true; } catch (e) { /* strict-mode throw on a frozen write is acceptable */ }
   check("a write to PROCESSED_EXTENSIONS does not take effect", pki.path.PROCESSED_EXTENSIONS[injOid] !== true);
