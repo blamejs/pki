@@ -204,7 +204,8 @@ async function run() {
 
   // ---- input-form parity: the alternate Buffer/Uint8Array/already-parsed arms ----
   check("decrypt accepts a plain Uint8Array input", Buffer.compare((await pki.cms.decrypt(new Uint8Array(envCbc), { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
-  check("decrypt accepts an already-parsed CMS object as input", Buffer.compare((await pki.cms.decrypt(pki.schema.cms.parse(envCbc), { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
+  check("decrypt rejects a non-bytes input object (no bypassing the strict parser via a contentTypeName marker)", (await codeOf(function () { return pki.cms.decrypt({ contentTypeName: "envelopedData" }, { key: rsa.key, cert: rsa.cert }); })) === "cms/bad-input");
+  check("decrypt rejects an already-parsed object (input must be DER/PEM bytes)", /^(cms|asn1)\//.test(await codeOf(function () { return pki.cms.decrypt(pki.schema.cms.parse(envCbc), { key: rsa.key, cert: rsa.cert }); })));
   check("decrypt accepts a plain Uint8Array recipient key", Buffer.compare((await pki.cms.decrypt(envCbc, { key: new Uint8Array(rsa.key), cert: rsa.cert })).content, MSG) === 0);
   check("decrypt accepts a plain Uint8Array recipient cert", Buffer.compare((await pki.cms.decrypt(envCbc, { key: rsa.key, cert: new Uint8Array(rsa.cert) })).content, MSG) === 0);
   check("decrypt accepts a Uint8Array password", Buffer.compare((await pki.cms.decrypt(pwriEnv, { password: new Uint8Array(Buffer.from("right")) })).content, MSG) === 0);
