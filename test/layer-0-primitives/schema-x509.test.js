@@ -554,6 +554,10 @@ function testQcStatements() {
   var rPds = dec(build.sequence([build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("https://x/pds"), build.printable("en")])])])]));
   check("qc: QcPDS decodes url + language", rPds[0].info.locations[0].url === "https://x/pds" && rPds[0].info.locations[0].language === "en");
   check("qc: QcPDS bad language length -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("u"), build.printable("eng")])])])])); }) === "path/bad-qc-statement");
+  // ETSI EN 319 412-5 Annex B: PdsLocation ::= SEQUENCE { url IA5String, language PrintableString (SIZE(2)) }
+  // -- language is mandatory (no OPTIONAL) in every version V1.1.1..V2.5.1; a location missing it is
+  // non-conformant and fails closed (inspect degrades to opaque bytes). Do not loosen to accept one child.
+  check("qc: QcPDS language-less location -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("https://x/pds")])])])])); }) === "path/bad-qc-statement");
   var rCcl = dec(build.sequence([build.sequence([build.oid(CCL), build.sequence([build.printable("US"), build.printable("CA")])])]));
   check("qc: QcCClegislation decodes the country codes", rCcl[0].info.countries.join(",") === "US,CA");
   check("qc: QcCClegislation bad country length -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(CCL), build.sequence([build.printable("USA")])])])); }) === "path/bad-qc-statement");
