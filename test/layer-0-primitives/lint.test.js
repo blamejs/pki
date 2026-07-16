@@ -322,6 +322,16 @@ function run() {
     has(pki.lint.certificate(makeCert({ exts: [ext("qcStatements", true, qcExtVal)] })), "lint/rfc5280/unknown-critical-extension"));
   check("a non-critical qcStatements is NOT unknown-critical (informational, still decoded)",
     !has(pki.lint.certificate(makeCert({ exts: [ext("qcStatements", false, qcExtVal)] })), "lint/rfc5280/unknown-critical-extension"));
+  // Recognition mirrors path-validate's PROCESSED_EXTENSIONS, not the decoder table: a decode-only
+  // extension the validator does NOT process is flagged when critical (an authorityKeyIdentifier and
+  // an MS enterprise-CA extension both decode for display but MUST be non-critical), while
+  // precertificatePoison -- the one decode-only extension RFC 6962 REQUIRES critical -- is not flagged.
+  check("a critical authorityKeyIdentifier is unknown-critical (decode-only, not path-processed)",
+    has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("authorityKeyIdentifier"), true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
+  check("a critical msCertificateTemplate is unknown-critical (decode-only enterprise extension)",
+    has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("msCertificateTemplate"), true, b.sequence([b.oid("1.2.3")]))] })), "lint/rfc5280/unknown-critical-extension"));
+  check("a critical precertificatePoison is NOT unknown-critical (RFC 6962 requires it critical)",
+    !has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("precertificatePoison"), true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
 
   // A CA certificate is NOT a TLS server (leaf) cert even with a serverAuth EKU: the
   // default profile must NOT apply the CABF leaf rules (e.g. san-missing) to it.
