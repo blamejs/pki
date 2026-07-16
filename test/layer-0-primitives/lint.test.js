@@ -305,15 +305,17 @@ function run() {
   var oaepSpki = b.sequence([b.sequence([b.oid(oid.byName("rsaesOaep")), b.nullValue()]), b.bitString(b.sequence([b.integer((1n << 1023n) | 1n), b.integer(65537n)]), 0)]);
   check("a weak RSAES-OAEP key -> weak-key (error)", has(pki.lint.certificate(tlsKeyCert(oaepSpki)), "lint/cabf-tls/weak-key"));
 
-  // unknown-critical-extension mirrors path-validate's processed set. policyMappings is processed for
-  // an intermediate CA, so a critical instance on a CA cert is NOT flagged -- but it is prepare-next-
-  // only and unprocessed on the target/leaf, so a critical instance on an end-entity IS flagged (the
-  // path-validate target exception, lib/path-validate.js:1067-1068).
+  // unknown-critical-extension mirrors path-validate's processed set. policyMappings is prepare-next-
+  // only and unprocessed on the TARGET certificate; path-validate decides target status by path
+  // position, so ANY cert (a leaf OR a subordinate CA) can be validated as the target where a critical
+  // instance is rejected. A linter has no path context, so it flags a critical policyMappings on both.
   var pmVal = b.sequence([b.sequence([b.oid("2.5.29.32.0"), b.oid("2.5.29.32.0")])]);
-  check("a critical policyMappings on a CA cert is NOT unknown-critical (processed for an intermediate)",
-    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski(), ext("policyMappings", true, pmVal)] })), "lint/rfc5280/unknown-critical-extension"));
-  check("a critical policyMappings on a leaf/target cert IS unknown-critical (unprocessed on the target)",
+  check("a critical policyMappings on a leaf cert IS unknown-critical (unprocessed on the target)",
     has(pki.lint.certificate(makeCert({ exts: [ext("policyMappings", true, pmVal)] })), "lint/rfc5280/unknown-critical-extension"));
+  check("a critical policyMappings on a CA cert is ALSO flagged (a subordinate CA can be a path target)",
+    has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski(), ext("policyMappings", true, pmVal)] })), "lint/rfc5280/unknown-critical-extension"));
+  check("a NON-critical policyMappings is not unknown-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [ext("policyMappings", false, pmVal)] })), "lint/rfc5280/unknown-critical-extension"));
   // A critical extension carrying a NON-extension OID (an algorithm OID the name registry
   // resolves) is still unknown-critical -- recognition is scoped to extension OIDs.
   check("a critical extension with an algorithm OID is still unknown-critical",
