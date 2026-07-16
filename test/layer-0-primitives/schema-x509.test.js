@@ -592,14 +592,18 @@ function testQcStatements() {
   var decoded = pkix.certExtensionDecoders(NS).byOid[qcExt.oid](qcExt.value);
   check("qc: orchestrator parse -> extensions -> byOid decodes end to end", decoded[0].name === "qcCompliance" && decoded[1].info.typeNames[0] === "qctWeb");
 
-  // 14. inspect renders the decoded statements (not raw bytes).
+  // 14. inspect renders the decoded statements AND their decoded values (not just the name, not raw
+  // bytes): the cert carries a QcType(web), so the rendered purpose value must appear.
   var rendered = pki.inspect.certificate(certDer);
-  check("qc: inspect renders the decoded qcStatements", /qcCompliance|qcType|Qualified/i.test(rendered));
+  check("qc: inspect renders the decoded qcStatement names", /qcCompliance|qcType/i.test(rendered));
+  check("qc: inspect renders the decoded qcStatement values (QcType purpose)", /qctWeb/i.test(rendered));
 
-  // 15. A CRITICAL qcStatements no longer fires lint/rfc5280/unknown-critical-extension.
+  // 15. A CRITICAL qcStatements IS flagged unknown-critical: its qualified-certificate semantics are
+  // not processed here (path-validate rejects a critical instance for the same reason), so the linter
+  // must surface it. Findings expose the rule id as .id (not .code) and the extension via .context.
   var critCertDer = _certWithQc(true, build.sequence([build.sequence([build.oid(C)])]));
   var lintFindings = pki.lint.certificate(critCertDer).findings;
-  check("qc: a critical qcStatements is not flagged unknown-critical", !lintFindings.some(function (f) { return f.code === "lint/rfc5280/unknown-critical-extension" && /qcstatement|1\.3\.6\.1\.5\.5\.7\.1\.3/i.test(JSON.stringify(f)); }));
+  check("qc: a critical qcStatements is flagged unknown-critical", lintFindings.some(function (f) { return f.id === "lint/rfc5280/unknown-critical-extension" && f.context && f.context.name === "qcStatements"; }));
 }
 
 function run() {
