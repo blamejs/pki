@@ -70,6 +70,11 @@ function run() {
   // ---- the default code kicks in when a write is not given its own ----
   check("29. the constructor default code is used when none is supplied", fault(function () { new ByteWriter(E).u8(256); }) === "byte-writer/bad-value");
 
+  // ---- an unsupported length-prefix width is refused (not silently mis-sized via 32-bit shift wrap) ----
+  check("30. vector with a 0-byte length prefix -> w/bad", fault(function () { W().vector(0, 0, null, Buffer.alloc(1)); }) === "w/bad");
+  check("31. vector with a 5-byte length prefix -> w/bad", fault(function () { W().vector(5, 0, null, Buffer.alloc(1)); }) === "w/bad");
+  check("32. vector with a non-integer length prefix width -> w/bad", fault(function () { W().vector(2.5, 0, null, Buffer.alloc(1)); }) === "w/bad");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
