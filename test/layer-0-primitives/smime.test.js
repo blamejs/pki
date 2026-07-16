@@ -115,6 +115,11 @@ async function run() {
   check("30. strictMicalg compares the micalg as an order-independent, whitespace-tolerant set", (await pki.smime.verify(Buffer.from(mixed.toString().replace(/micalg=[^;]+/, "micalg=\"sha-512, sha-256\"")), { strictMicalg: true })).valid === true);
   check("31. strictMicalg still flags a genuinely wrong micalg set", (await codeOf(function () { return pki.smime.verify(Buffer.from(mixed.toString().replace(/micalg=[^;]+/, "micalg=sha-384")), { strictMicalg: true }); })) === "smime/micalg-mismatch");
 
+  // RFC 2045: 8-bit (non-ASCII) default content is declared 8bit, not (falsely) 7bit; it round-trips.
+  var m8 = await pki.smime.sign(Buffer.from("café — résumé\n", "utf8"), signers, { form: "multipart" });
+  check("32. non-ASCII default content is declared Content-Transfer-Encoding: 8bit", /Content-Transfer-Encoding: 8bit/.test(m8.toString("latin1")) && (await pki.smime.verify(m8)).valid === true);
+  check("33. ASCII default content stays 7bit", /Content-Transfer-Encoding: 7bit/.test((await pki.smime.sign(Buffer.from("plain ascii body"), signers)).toString()));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
