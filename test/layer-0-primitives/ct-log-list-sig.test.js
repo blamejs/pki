@@ -76,6 +76,9 @@ async function run() {
   // rejects it -> the fail-closed ct/verify-error catch (not a false verdict).
   var offCurve = b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(Buffer.concat([Buffer.from([0x04]), Buffer.alloc(64, 0xff)]), 0)]);
   check("17. an EC SPKI with an off-curve point -> ct/verify-error (unimportable key, fail-closed)", (await code(function () { return pki.ct.verifyLogListSignature(JSON_BLOB, ecSig, offCurve); })) === "ct/verify-error");
+  // the signed message is bounded before the digest/verify (a hostile caller cannot force unbounded work).
+  var over = Buffer.alloc(pki.C.LIMITS.CT_LOG_LIST_MAX_BYTES + 1, 0x20);
+  check("18. a json message over the CT_LOG_LIST_MAX_BYTES cap -> ct/too-large (bounded before verify)", (await code(function () { return pki.ct.verifyLogListSignature(over, rsaSig, rsaSpki); })) === "ct/too-large");
 
   console.log("CHECKS " + helpers.getChecks());
 }
