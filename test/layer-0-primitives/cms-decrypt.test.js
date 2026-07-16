@@ -146,6 +146,11 @@ async function run() {
   var ukmEc = makeRecipient("ec-p256");
   var ukmEnv = await pki.cms.encrypt(MSG, [{ cert: ukmEc.cert }], { contentEncryptionAlgorithm: "aes-256-cbc", ukm: Buffer.from("ukm-material") });
   check("kari with ukm round-trips", Buffer.compare((await pki.cms.decrypt(ukmEnv, { key: ukmEc.key, cert: ukmEc.cert })).content, MSG) === 0);
+  // a kari whose RecipientEncryptedKey for THIS recipient is not element 0 (a dummy rek prepended):
+  // selection + unwrap must find the matching rek by rid, not blindly take element 0.
+  var mrEc = makeRecipient("ec-p256");
+  var mrEnv = _prependDummyKariRek(await pki.cms.encrypt(MSG, [{ cert: mrEc.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
+  check("a multi-rek kari selects this recipient's encrypted key (not element 0)", Buffer.compare((await pki.cms.decrypt(mrEnv, { key: mrEc.key, cert: mrEc.cert })).content, MSG) === 0);
   var ukmKem = makeRecipient("ml-kem-768");
   var ukmKemEnv = await pki.cms.encrypt(MSG, [{ cert: ukmKem.cert }], { contentEncryptionAlgorithm: "aes-256-cbc", ukm: Buffer.from("kem-ukm") });
   check("kemri with ukm round-trips", Buffer.compare((await pki.cms.decrypt(ukmKemEnv, { key: ukmKem.key, cert: ukmKem.cert })).content, MSG) === 0);
@@ -280,6 +285,25 @@ function _rebuildContentIv(der, ivLen) {
   var newEdKids = ed.children.slice(0, ed.children.length - 1).map(function (c) { return b2.raw(c.bytes); }).concat([b2.sequence(newEciKids)]);
   return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(newEdKids))]);
 }
+// Prepend a dummy RecipientEncryptedKey (a non-matching rid) before the real one in a kari, so the
+// recipient's own rek is at index 1 -- exercises rid-matched rek selection instead of "take element 0".
+function _prependDummyKariRek(der) {
+  var b2 = pki.asn1.build;
+  var ci = pki.asn1.decode(der);
+  var ed = ci.children[1].children[0];
+  var riSet = ed.children.filter(function (c) { return c.tagNumber === 17 && c.tagClass === "universal"; })[0];
+  var kari = riSet.children[0];
+  var reks = kari.children[kari.children.length - 1];
+  var realRek = reks.children[0];
+  var issuerBytes = realRek.children[0].children[0].bytes;   // reuse the issuer Name, bump the serial
+  var dummyRek = b2.sequence([b2.sequence([b2.raw(issuerBytes), b2.integer(99999n)]), b2.octetString(Buffer.alloc(40))]);
+  var newReks = b2.sequence([dummyRek, b2.raw(realRek.bytes)]);
+  var kariContent = Buffer.concat(kari.children.slice(0, kari.children.length - 1).map(function (c) { return c.bytes; }).concat([newReks]));
+  var newKari = b2.contextConstructed(1, kariContent);
+  var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? b2.setOf([newKari]) : b2.raw(c.bytes); });
+  return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
+}
+
 function _flipByte(buf, i) { var c = Buffer.from(buf); c[i] ^= 0x01; return c; }
 function _encKeyOffset(der) { return Math.floor(der.length / 2); }  // a byte inside the RSA-encrypted key region
 
