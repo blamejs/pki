@@ -110,6 +110,8 @@ async function run() {
   // ---- PBKDF2 DoS cap ----
   var hiEnv = await pki.cms.encrypt(MSG, [{ password: "p", iterations: 1000 }], { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("maxIterations cap below the message iterations -> cms/iteration-limit", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: 100 }); })) === "cms/iteration-limit");
+  check("a NaN maxIterations -> cms/bad-input (never a silently-disabled cap)", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: NaN }); })) === "cms/bad-input");
+  check("a non-number maxIterations -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: "100" }); })) === "cms/bad-input");
   check("a normal password still round-trips within the cap", Buffer.compare((await pki.cms.decrypt(hiEnv, { password: "p" })).content, MSG) === 0);
 
   // ---- orchestrator routing ----

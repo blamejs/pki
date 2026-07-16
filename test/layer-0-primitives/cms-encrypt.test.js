@@ -142,6 +142,7 @@ async function run() {
   check("pwri fractional iterations -> cms/bad-input (not a native RangeError)", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: "p", iterations: 1.5 }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("EncryptedData PBES2 fractional iterations -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, { password: "p", iterations: 1.5 }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("EncryptedData PBES2 zero iterations -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, { password: "p", iterations: 0 }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("EncryptedData PBES2 with a non-BufferSource salt -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, { password: "p", salt: 42 }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   // the global opts.pem drives PBES2 EncryptedData output, exactly like the raw-cek path.
   check("EncryptedData PBES2 honours the global opts.pem", /-----BEGIN CMS-----/.test(await pki.cms.encrypt(MSG, { password: "p" }, { contentEncryptionAlgorithm: "aes-256-cbc", pem: true })));
   check("pwri with a Uint8Array password round-trips", Buffer.compare((await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ password: new Uint8Array(Buffer.from("pw")) }], { contentEncryptionAlgorithm: "aes-256-cbc" }), { password: "pw" })).content, MSG) === 0);
