@@ -597,6 +597,20 @@ function testQcStatements() {
   var rendered = pki.inspect.certificate(certDer);
   check("qc: inspect renders the decoded qcStatement names", /qcCompliance|qcType/i.test(rendered));
   check("qc: inspect renders the decoded qcStatement values (QcType purpose)", /qctWeb/i.test(rendered));
+  // Exercise every value-bearing renderer branch (QcLimitValue amount, QcRetentionPeriod years, QcPDS
+  // location, legislation countries) so a statement's decoded payload -- not just its name -- is shown.
+  var IM = oidReg.byName("qcIdentMethod");
+  var richQc = build.sequence([
+    build.sequence([build.oid(L), build.sequence([build.printable("USD"), build.integer(100000n), build.integer(0n)])]),
+    build.sequence([build.oid(RP), build.integer(10n)]),
+    build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("https://x/pds"), build.printable("en")])])]),
+    build.sequence([build.oid(CCL), build.sequence([build.printable("DE"), build.printable("FR")])]),
+    build.sequence([build.oid(IM), build.sequence([build.oid("0.4.0.1862.1.8.1")])])]);
+  var richRendered = pki.inspect.certificate(_certWithQc(false, richQc));
+  check("qc: inspect renders a QcLimitValue amount", /100000 USD/.test(richRendered));
+  check("qc: inspect renders a QcRetentionPeriod", /10 years/.test(richRendered));
+  check("qc: inspect renders a QcPDS location", /https:\/\/x\/pds \(en\)/.test(richRendered));
+  check("qc: inspect renders QcCClegislation countries", /DE, FR/.test(richRendered));
 
   // 15. A CRITICAL qcStatements IS flagged unknown-critical: its qualified-certificate semantics are
   // not processed here (path-validate rejects a critical instance for the same reason), so the linter
