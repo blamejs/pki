@@ -98,11 +98,19 @@ async function makeOcspWorld(alg) {
   var altKp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
   var altCaCertDer = await signCert({ serial: 9, issuerCN: "Other CA", subjectCN: "Other CA", spki: Buffer.from(await subtle.exportKey("spki", altKp.publicKey)), issuerKey: altKp.privateKey, exts: caExts() });
 
+  // A ROGUE cert sharing the real issuer's subject DN but a DIFFERENT key -- the same-DN
+  // substitution a standalone OCSP verify must cryptographically bind against (the leaf did NOT
+  // chain to this key, so binding the leaf's signature to the supplied issuer key defeats it).
+  var rogueKp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  var rogueIssuerCertDer = await signCert({ serial: 7, issuerCN: "OCSP Mini CA", subjectCN: "OCSP Mini CA", spki: Buffer.from(await subtle.exportKey("spki", rogueKp.publicKey)), issuerKey: rogueKp.privateKey, exts: caExts() });
+  var rogueIssuerKeyPkcs8 = Buffer.from(await subtle.exportKey("pkcs8", rogueKp.privateKey));
+
   return {
     alg: alg,
     issuerKeyPkcs8: issuerKeyPkcs8, issuerCertDer: issuerCertDer, issuerKeyObject: caKp.privateKey,
     responderKeyPkcs8: respKeyPkcs8, responderCertDer: responderCertDer, responderKeyObject: respKp.privateKey,
     targetCertDer: targetCertDer, altCaCertDer: altCaCertDer, altCaKeyObject: altKp.privateKey,
+    rogueIssuerCertDer: rogueIssuerCertDer, rogueIssuerKeyPkcs8: rogueIssuerKeyPkcs8,
     delegate: delegate,
   };
 }

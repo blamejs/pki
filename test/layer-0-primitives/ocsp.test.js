@@ -138,6 +138,18 @@ async function run() {
   var stale = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: new Date("2025-01-01Z"), nextUpdate: new Date("2025-06-01Z") }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("currency: nextUpdate before now -> stale, unknown", (await verify(w, stale)).status === "unknown");
 
+  // ---- issuer-substitution defense: bind the supplied issuer to the target cert ----
+  // A rogue "issuer" that shares the real issuer's subject DN but a different key: it can build a
+  // self-consistent CertID under its own key and sign a direct-responder good response. The verify
+  // MUST reject it because the target certificate's signature does not verify under the rogue key.
+  var rogueResp = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.rogueIssuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.rogueIssuerCertDer, key: w.rogueIssuerKeyPkcs8 }, { embedCert: false });
+  check("a rogue issuer (matching subject DN, different key) is not accepted as the direct CA responder",
+    (await pki.ocsp.verify(rogueResp, { cert: w.targetCertDer, issuer: w.rogueIssuerCertDer, time: T })).status === "unknown");
+  check("pki.path.verifyOcspResponse rejects an unbound issuer (target signature does not verify under it)",
+    (function (r) { return r.status === "unknown" && r.signatureValid === false; })(await pki.path.verifyOcspResponse(pki.schema.ocsp.parseResponse(rogueResp), pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.rogueIssuerCertDer), T)));
+  check("an issuer whose subject DN differs from the target's issuer is rejected (name binding)",
+    (await verify(w, good, { cert: w.targetCertDer, issuer: w.altCaCertDer })).status === "unknown");
+
   // ---- CertID mismatch (cross-CA substitution defense) ----
   var wrongCertId = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.altCaCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("CertID mismatch: issuerKeyHash of a different CA -> not-about-this-cert, unknown", (await verify(w, wrongCertId)).status === "unknown");
