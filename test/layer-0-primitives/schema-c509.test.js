@@ -16,9 +16,6 @@ var check = helpers.check;
 var pki = helpers.pki;
 var V = require("../helpers/c509-vectors");
 var c509mod = require("../../lib/schema-c509");
-var b = pki.asn1.build;
-function O(n) { return pki.oid.byName(n); }
-async function code(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 
 function run() {
   // ==== A.1.1 -- the type-3 (CBOR re-encoded X.509) certificate decodes to the documented fields ====
@@ -159,6 +156,21 @@ function run() {
   // _shortName OU/L/ST display fallbacks, the empty-tag-48 Buffer.alloc(0) guard, and the matches()
   // negative-int probe side -- none reachable through pki.schema.c509.parse without breaking a decoder
   // invariant, so they are left uncovered rather than forced with an assertionless test.
+
+  // ==== conformance fixes: dangling pairs, algorithm parameters, empty-extensions wrapper ====
+  // a Name array with an odd length (a dangling attribute type) fails closed.
+  check("61. a Name array with a dangling attribute type -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "8101" })); }) === "c509/bad-name");
+  // an extensions array with an odd length (a dangling extension identifier) fails closed.
+  check("62. an extensions array with a dangling identifier -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8102" })); }) === "c509/bad-extensions");
+  // a [~oid, params] algorithm's parameters are PRESERVED in the reconstruction (not silently dropped).
+  var withParams = pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d040302420500" }));   // [~oid ecdsa, NULL]
+  check("63. a [~oid, params] algorithm preserves its parameters in the DER", withParams.reconstructedDer.toString("hex").indexOf("300c06082a8648ce3d0403020500") !== -1);
+  // an empty C509 extensions array reconstructs to an OMITTED [3] field, not an empty SEQUENCE (RFC 5280).
+  var emptyExt = pki.schema.c509.parse(V.mk({ 9: "80" }));
+  check("64. empty extensions omit the [3] wrapper (no empty-SEQUENCE extensions)", (function () {
+    var x = pki.schema.x509.parse(emptyExt.reconstructedDer);
+    return (!x.extensions || x.extensions.length === 0) && emptyExt.reconstructedDer.toString("hex").indexOf("a3023000") === -1;
+  })());
 
   console.log("CHECKS " + helpers.getChecks());
 }
