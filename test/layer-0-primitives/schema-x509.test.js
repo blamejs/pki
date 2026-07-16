@@ -507,6 +507,43 @@ function run() {
   testValidityTimeEncodingCutover();
   testRfc5280Conformance();
   testMultiDefectFailClosed();
+  testMlKemCertificates();
+}
+
+// ML-KEM certificates (RFC 9935): the parse acceptance surface for all three parameter
+// sets -- OID resolution both directions, ABSENT parameters (the shared algorithmIdentifier
+// choke point rejects NULL/present), the raw ek surfaced byte-exact, orchestrator routing,
+// and the published App C.3 certificates. Parse stays size-agnostic (house precedent:
+// sizes enforce in lint + at the import boundary).
+function testMlKemCertificates() {
+  var fs = require("fs");
+  var path = require("path");
+  var FIX = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "mlkem", "rfc9935-appc.json"), "utf8")).vectors;
+  function fx(n) { return Buffer.from(FIX[n].derHex, "hex"); }
+  var b = pki.asn1.build;
+  var EK_LEN = { 512: 800, 768: 1184, 1024: 1568 };
+  [512, 768, 1024].forEach(function (set) {
+    var certDer = fx("cert-" + set);
+    var c = pki.schema.x509.parse(certDer);
+    check("ML-KEM-" + set + " published cert (RFC 9935 C.3) parses with the id-ml-kem OID resolved",
+      c.subjectPublicKeyInfo.algorithm.name === "id-ml-kem-" + set &&
+      c.subjectPublicKeyInfo.algorithm.oid === oidReg.byName("id-ml-kem-" + set));
+    check("ML-KEM-" + set + " SPKI parameters are absent (RFC 9935 sec. 3)",
+      c.subjectPublicKeyInfo.algorithm.parameters === null);
+    check("ML-KEM-" + set + " raw ek surfaced at its exact FIPS 203 size",
+      c.subjectPublicKeyInfo.publicKey.bytes.length === EK_LEN[set]);
+    check("ML-KEM-" + set + " orchestrator routes to x509", (function () { var r = pki.schema.parse(certDer); return r.tbsBytes !== undefined && r.subjectPublicKeyInfo.algorithm.name === "id-ml-kem-" + set; })());
+  });
+  // The shared algorithmIdentifier choke point: NULL parameters on an ML-KEM SPKI reject.
+  var good = pki.asn1.decode(fx("cert-768"));
+  var tbs = good.children[0];
+  var ek = pki.asn1.read.bitString(tbs.children[6].children[1]).bytes;
+  var badSpki = b.sequence([b.sequence([b.oid(oidReg.byName("id-ml-kem-768")), b.nullValue()]), b.bitString(ek, 0)]);
+  var kids = tbs.children.map(function (ch) { return ch.bytes; });
+  kids[6] = badSpki;
+  var badCert = b.sequence([b.sequence(kids), good.children[1].bytes, good.children[2].bytes]);
+  check("ML-KEM SPKI with NULL parameters -> rejected by the shared algorithmIdentifier choke point",
+    code(function () { pki.schema.x509.parse(badCert); }) !== "NO-THROW");
 }
 
 module.exports = { run: run };

@@ -129,6 +129,19 @@ security-only patches after the next major releases.
   computed under a different digest than the one the composite signature covers.
   `pki.cms.sign` produces a composite `SignerInfo` from the two component keys
   (`{ mldsa, trad }`); it never emits a single-component signature.
+- **ML-KEM key misuse (RFC 9935 / FIPS 203).** An ML-KEM public key is a
+  key-establishment-only key — it cannot sign or agree. `pki.path.validate` enforces
+  the RFC 9935 §5 rule that an ML-KEM certificate's keyUsage, if present, asserts
+  `keyEncipherment` as the ONLY bit: a leaf presented for signing (`digitalSignature`),
+  an ML-KEM "CA" (`keyCertSign`), a `keyAgreement`/`dataEncipherment` misuse, or an
+  extra reserved bit alongside `keyEncipherment` all fail closed with
+  `path/kem-key-usage`, and `pki.lint` mirrors the rule plus an encapsulation-key-size
+  check keyed to the algorithm OID (the OID is the sole authority for the parameter
+  set, never the length). On import, `pki.webcrypto.subtle.importKey("pkcs8", …)`
+  validates the RFC 9935 §6 `seed`/`expandedKey`/`both` private-key CHOICE by its DER
+  tag before the engine sees it — the OpenSSL-legacy bare-seed layout the engine would
+  otherwise accept is rejected — and an internally inconsistent seed/expanded key
+  (FIPS 203 §7.3) is a typed `webcrypto/data` verdict, never a raw engine error.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node

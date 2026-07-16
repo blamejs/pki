@@ -329,6 +329,41 @@ function run() {
   check("pki.lint.rules() enumerates the registry with stable ids", pki.lint.rules().length > 10 && pki.lint.rules().every(function (r) { return typeof r.id === "string" && typeof r.citation === "string"; }));
   check("pki.lint.rules('rfc5280') filters to one profile", pki.lint.rules("rfc5280").every(function (r) { return r.source === "rfc5280"; }));
 
+  // ---- RFC 9935 ML-KEM certificate rows ----
+  // sec. 5: keyEncipherment MUST be the only key usage set; sec. 4: the SPKI BIT STRING
+  // is the raw ek, exactly 800/1184/1568 octets FOR THE OID (the OID is the authority).
+  var kemKp = require("node:crypto").generateKeyPairSync("ml-kem-768");
+  var kemSpkiDer = kemKp.publicKey.export({ format: "der", type: "spki" });
+  var kemEk = asn1.read.bitString(asn1.decode(kemSpkiDer).children[1]).bytes;
+  function kemSpkiOf(bytes, set) {
+    return b.sequence([b.sequence([b.oid(oid.byName("id-ml-kem-" + (set || 768)))]), b.bitString(bytes, 0)]);
+  }
+  var kemGood = makeCert({ spki: kemSpkiDer, exts: [keyUsage([2], true), ski()] });
+  var kemGoodReport = pki.lint.certificate(kemGood);
+  check("ML-KEM cert with keyEncipherment-only keyUsage is silent on the rfc9935 rows",
+    !has(kemGoodReport, "lint/rfc9935/kem-key-usage") && !has(kemGoodReport, "lint/rfc9935/kem-key-length"));
+  check("ML-KEM cert without keyUsage is silent on kem-key-usage (absent = unconstrained)",
+    !has(pki.lint.certificate(makeCert({ spki: kemSpkiDer, exts: [ski()] })), "lint/rfc9935/kem-key-usage"));
+  check("ML-KEM cert with digitalSignature keyUsage -> lint/rfc9935/kem-key-usage",
+    has(pki.lint.certificate(makeCert({ spki: kemSpkiDer, exts: [keyUsage([0], true), ski()] })), "lint/rfc9935/kem-key-usage"));
+  check("ML-KEM cert with keyEncipherment+keyAgreement -> lint/rfc9935/kem-key-usage",
+    has(pki.lint.certificate(makeCert({ spki: kemSpkiDer, exts: [keyUsage([2, 4], true), ski()] })), "lint/rfc9935/kem-key-usage"));
+  check("ML-KEM cert with a truncated ek -> lint/rfc9935/kem-key-length",
+    has(pki.lint.certificate(makeCert({ spki: kemSpkiOf(kemEk.subarray(0, kemEk.length - 1)), exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
+  check("ML-KEM cert with an OCTET-wrapped ek -> lint/rfc9935/kem-key-length (RFC 9935 sec. 4)",
+    has(pki.lint.certificate(makeCert({ spki: kemSpkiOf(b.octetString(kemEk)), exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
+  check("ML-KEM ek sized for a DIFFERENT set than the OID -> lint/rfc9935/kem-key-length",
+    has(pki.lint.certificate(makeCert({ spki: kemSpkiOf(kemEk, 512), exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
+  // RFC 9935 sec. 4: the ek BIT STRING must be BYTE-ALIGNED. A right-length key with a non-zero
+  // unused-bit count is not the raw ek -- length alone is not sufficient. (Canonical-DER build
+  // requires the unused low bit be zero, so clear it before declaring unusedBits=1.)
+  var alignedEk = Buffer.from(kemEk); alignedEk[alignedEk.length - 1] &= 0xFE;
+  var kemUnaligned = b.sequence([b.sequence([b.oid(oid.byName("id-ml-kem-768"))]), b.bitString(alignedEk, 1)]);
+  check("ML-KEM ek in a non-octet-aligned BIT STRING (unusedBits=1) -> lint/rfc9935/kem-key-length",
+    has(pki.lint.certificate(makeCert({ spki: kemUnaligned, exts: [keyUsage([2], true), ski()] })), "lint/rfc9935/kem-key-length"));
+  check("a non-KEM cert never carries the rfc9935 rows",
+    !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-usage") && !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-length"));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

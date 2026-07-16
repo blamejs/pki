@@ -20,19 +20,21 @@ function _rawSpkiKey(spkiDer) { return pki.asn1.read.bitString(pki.asn1.decode(s
 var _EC_NODE_CURVE = { "P-256": "prime256v1", "P-384": "secp384r1", "P-521": "secp521r1" };
 
 // A minimal X.509 certificate (v3) around `spki`, self-issued, with a dummy signature.
-// opts.ski adds a subjectKeyIdentifier extension; opts.serial / opts.cn override the defaults.
+// opts.ski adds a subjectKeyIdentifier extension; opts.exts is an array of pre-built Extension
+// SEQUENCEs appended to the extensions [3] block; opts.serial / opts.cn override the defaults.
 function minimalCert(spki, opts) {
   opts = opts || {};
   var alg = b.sequence([b.oid(O("ecdsaWithSHA256"))]);
   var name = b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.printable(opts.cn || "Test Signer")])])]);
   var validity = b.sequence([b.utcTime(new Date("2020-01-01T00:00:00Z")), b.utcTime(new Date("2040-01-01T00:00:00Z"))]);
   var tbsFields = [b.explicit(0, b.integer(2n)), b.integer(BigInt(opts.serial || 0x77)), alg, name, validity, name, b.raw(spki)];
+  var exts = (opts.exts || []).slice();
   if (opts.ski) {
     var keyid = crypto.createHash("sha1").update(spki).digest();
     var inner = opts.badSki ? b.integer(5) : b.octetString(keyid);   // badSki: the value is not an OCTET STRING
-    var ext = b.sequence([b.oid(O("subjectKeyIdentifier")), b.octetString(inner)]);
-    tbsFields.push(b.explicit(3, b.sequence([ext])));   // extensions [3] EXPLICIT
+    exts.push(b.sequence([b.oid(O("subjectKeyIdentifier")), b.octetString(inner)]));
   }
+  if (exts.length) tbsFields.push(b.explicit(3, b.sequence(exts)));   // extensions [3] EXPLICIT
   return b.sequence([b.sequence(tbsFields), alg, b.bitString(Buffer.from([0, 0, 0, 0]), 0)]);
 }
 
