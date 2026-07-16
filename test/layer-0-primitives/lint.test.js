@@ -314,6 +314,14 @@ function run() {
   // resolves) is still unknown-critical -- recognition is scoped to extension OIDs.
   check("a critical extension with an algorithm OID is still unknown-critical",
     has(pki.lint.certificate(makeCert({ exts: [extByOid(oid.byName("sha256"), true, b.nullValue())] })), "lint/rfc5280/unknown-critical-extension"));
+  // qcStatements decodes for display but its CRITICAL semantics are not processed here (path-validate
+  // rejects a critical instance for the same reason), so a critical qcStatements is still flagged --
+  // structural decodability is not validation processing -- while a non-critical one is informational.
+  var qcExtVal = b.sequence([b.sequence([b.oid(oid.byName("qcCompliance"))])]);
+  check("a critical qcStatements is unknown-critical (decoded, but semantics not processed)",
+    has(pki.lint.certificate(makeCert({ exts: [ext("qcStatements", true, qcExtVal)] })), "lint/rfc5280/unknown-critical-extension"));
+  check("a non-critical qcStatements is NOT unknown-critical (informational, still decoded)",
+    !has(pki.lint.certificate(makeCert({ exts: [ext("qcStatements", false, qcExtVal)] })), "lint/rfc5280/unknown-critical-extension"));
 
   // A CA certificate is NOT a TLS server (leaf) cert even with a serverAuth EKU: the
   // default profile must NOT apply the CABF leaf rules (e.g. san-missing) to it.

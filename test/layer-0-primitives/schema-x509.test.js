@@ -518,7 +518,11 @@ function testQcStatements() {
   // 5-8. Structural rejects.
   check("qc: not a SEQUENCE -> bad-qc-statements", code(function () { dec(build.integer(5n)); }) === "path/bad-qc-statements");
   check("qc: non-OID statementId -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.integer(1n), build.nullValue()])])); }) === "path/bad-qc-statement");
-  check("qc: duplicate statementId -> duplicate-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(C)]), build.sequence([build.oid(C)])])); }) === "path/duplicate-qc-statement");
+  // RFC 3739 defines QCStatements as a SEQUENCE OF QCStatement with no uniqueness constraint, so a
+  // repeated statementId is valid on the wire -- every statement decodes in order (a linter may flag the
+  // repeat; the decoder must not drop it and make the extension undecodable for inspect / lint).
+  var rDup = dec(build.sequence([build.sequence([build.oid(C)]), build.sequence([build.oid(C)])]));
+  check("qc: a repeated statementId decodes in wire order (no uniqueness constraint)", rDup.length === 2 && rDup[0].name === "qcCompliance" && rDup[1].name === "qcCompliance");
   check("qc: empty SEQUENCE OF -> bad-qc-statements", code(function () { dec(build.sequence([])); }) === "path/bad-qc-statements");
   // 9. A presence-only statement carrying statementInfo rejects.
   check("qc: QcCompliance with statementInfo -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(C), build.nullValue()])])); }) === "path/bad-qc-statement");
