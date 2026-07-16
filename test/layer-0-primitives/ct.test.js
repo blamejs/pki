@@ -503,6 +503,15 @@ function testEncodeSctList() {
   var pUnk = pki.ct.parseSctList(extValueOf([serialized(unkBody), serialized(sctBody({}))]));
   var reEncUnk = pki.ct.encodeSctList([{ version: 99, rawSct: pUnk.unknownScts[0].rawSct }, pUnk.scts[0]]);
   check("96. encodeSctList re-emits an unknown SCT's rawSct verbatim", pki.ct.parseSctList(reEncUnk).unknownScts[0].rawSct.equals(pUnk.unknownScts[0].rawSct));
+  // an INTERLEAVED known/unknown list round-trips byte-identically via .all (wire order preserved).
+  var interleaved = extValueOf([
+    serialized(Buffer.concat([Buffer.from([99]), Buffer.alloc(8, 0xEE)])),
+    serialized(sctBody({ logId: Buffer.alloc(32, 0x33) })),
+    serialized(Buffer.concat([Buffer.from([100]), Buffer.alloc(6, 0xDD)])),
+  ]);
+  var pInter = pki.ct.parseSctList(interleaved);
+  check("96b. parseSctList surfaces every entry in wire order via .all", pInter.all.length === 3 && pInter.scts.length === 1 && pInter.unknownScts.length === 2);
+  check("96c. encodeSctList(list.all) round-trips an interleaved list byte-identically", pki.ct.encodeSctList(pInter.all).equals(interleaved));
   var okSct = { version: 0, logId: Buffer.alloc(32), timestamp: 1n, extensions: Buffer.alloc(0), hashAlg: 4, sigAlg: 3, signature: Buffer.alloc(2) };
   check("97. encodeSctList([]) -> ct/empty-list", code(function () { pki.ct.encodeSctList([]); }) === "ct/empty-list");
   check("98. a non-32-byte logId -> ct/bad-input", code(function () { pki.ct.encodeSctList([Object.assign({}, okSct, { logId: Buffer.alloc(31) })]); }) === "ct/bad-input");

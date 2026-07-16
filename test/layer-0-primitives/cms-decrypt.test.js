@@ -17,6 +17,10 @@ var makeRecipient = signing.makeRecipient;
 var b = pki.asn1.build;
 function O(n) { return pki.oid.byName(n); }
 async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
+// For an UNAUTHENTICATED cipher (CBC EncryptedData), a wrong key cannot be guaranteed to throw --
+// PKCS#7 padding is coincidentally valid ~1/256 of the time -- so the deterministic security property
+// is "never recovers the plaintext": either the uniform cms/decrypt-failed OR non-plaintext garbage.
+async function noPlaintext(fn) { try { var r = await fn(); return Buffer.isBuffer(r.content) && Buffer.compare(r.content, MSG) !== 0; } catch (e) { return e.code === "cms/decrypt-failed"; } }
 var MSG = Buffer.from("the CMS enveloped-data round-trip payload -- attack me");
 
 async function rt(recipDesc, km, opts) {
@@ -79,9 +83,10 @@ async function run() {
   // GCM: tampered tag, ciphertext, and AAD each -> uniform, authenticated never leaks.
   var gEnv = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }]);
   check("GCM tampered ciphertext -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(_flipByte(gEnv, gEnv.length - 25), { key: rsa.key, cert: rsa.cert }); })) === "cms/decrypt-failed");
-  // CBC bad pad (EFAIL) -> uniform.
+  // CBC tampered content (EFAIL class): unauthenticated CBC cannot guarantee a throw (padding is
+  // coincidentally valid ~1/256), so the property is "no partial plaintext leak" -- uniform-fail or garbage.
   var cbcEnv = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
-  check("CBC tampered content -> cms/decrypt-failed (EFAIL class, no partial plaintext)", (await codeOf(function () { return pki.cms.decrypt(_flipByte(cbcEnv, cbcEnv.length - 5), { key: rsa.key, cert: rsa.cert }); })) === "cms/decrypt-failed");
+  check("CBC tampered content never recovers the plaintext (EFAIL class, no partial plaintext)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(cbcEnv, cbcEnv.length - 5), { key: rsa.key, cert: rsa.cert }); }));
   // AES-KW oracle: a single-byte-tampered wrapped CEK -> uniform.
   var kekEnv = await pki.cms.encrypt(MSG, [{ kek: kek, kekId: Buffer.from("k5") }], { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("AES-KW tampered wrapped CEK -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(kekEnv, { kek: Buffer.alloc(32, 8) }); })) === "cms/decrypt-failed");
@@ -297,8 +302,11 @@ async function run() {
   // rebuild a real kekri envelope with a wrong-length content IV -> the CEK unwraps, the open fails uniform.
   var badIvEnv = _rebuildContentIv(kekNoId, 8);
   check("a valid CEK over a wrong-length content IV -> cms/decrypt-failed (uniform)", (await codeOf(function () { return pki.cms.decrypt(badIvEnv, { kek: kek }); })) === "cms/decrypt-failed");
-  check("EncryptedData {cek} with the wrong key -> cms/decrypt-failed (uniform CBC open)", (await codeOf(function () { return pki.cms.decrypt(cekEnv, { cek: Buffer.alloc(32, 0xff) }); })) === "cms/decrypt-failed");
-  check("EncryptedData PBES2 with the wrong password -> cms/decrypt-failed (uniform CBC open)", (await codeOf(function () { return pki.cms.decrypt(pwEnv, { password: "wrong" }); })) === "cms/decrypt-failed");
+  check("EncryptedData {cek} with the wrong key never recovers the plaintext (unauthenticated CBC)", await noPlaintext(function () { return pki.cms.decrypt(cekEnv, { cek: Buffer.alloc(32, 0xff) }); }));
+  check("EncryptedData PBES2 with the wrong password never recovers the plaintext", await noPlaintext(function () { return pki.cms.decrypt(pwEnv, { password: "wrong" }); }));
+  // a valid cek over a non-block-multiple ciphertext -> the CBC open faults DETERMINISTICALLY (the uniform catch).
+  var badLenCt = bp.sequence([bp.oid(O("encryptedData")), bp.explicit(0, bp.sequence([bp.integer(0n), bp.sequence([bp.oid(O("data")), bp.sequence([bp.oid(O("aes256-CBC")), bp.octetString(Buffer.alloc(16))]), bp.contextPrimitive(0, Buffer.alloc(15))])]))]);
+  check("EncryptedData with a non-block-multiple ciphertext -> cms/decrypt-failed (deterministic CBC-open fault)", (await codeOf(function () { return pki.cms.decrypt(badLenCt, { cek: Buffer.alloc(32, 3) }); })) === "cms/decrypt-failed");
   check("a malformed recipient-key PEM -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(envCbc, { key: "-----BEGIN PRIVATE KEY-----\nnot-b64!!\n-----END PRIVATE KEY-----\n", cert: rsa.cert }); })) === "cms/bad-input");
   check("a malformed recipient-cert PEM (decrypt) -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(envCbc, { key: rsa.key, cert: "-----BEGIN CERTIFICATE-----\nnot-b64!!\n-----END CERTIFICATE-----\n" }); })) === "cms/bad-input");
 

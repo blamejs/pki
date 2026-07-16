@@ -26,11 +26,10 @@ module.exports.fuzz = function (data) {
     throw e;
   }
   try {
-    var all = parsed.scts.concat(parsed.unknownScts);
-    if (all.length === 0) return;                       // parse never yields an empty non-throwing list, but guard anyway
-    var reParsed = pki.ct.parseSctList(pki.ct.encodeSctList(all));
-    if (reParsed.scts.length !== parsed.scts.length || reParsed.unknownScts.length !== parsed.unknownScts.length) {
-      throw new Error("ct encode/parse round-trip changed the SCT count");
+    if (parsed.all.length === 0) return;                // parse never yields an empty non-throwing list, but guard anyway
+    // .all preserves wire order across known + unknown, so the re-encode is byte-identical.
+    if (!pki.ct.encodeSctList(parsed.all).equals(data)) {
+      throw new Error("ct encode(parse.all) is not byte-identical to the input");
     }
   } catch (e) {
     if (e instanceof pki.errors.PkiError) return;
