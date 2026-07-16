@@ -112,6 +112,17 @@ async function run() {
   check("maxIterations cap below the message iterations -> cms/iteration-limit", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: 100 }); })) === "cms/iteration-limit");
   check("a NaN maxIterations -> cms/bad-input (never a silently-disabled cap)", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: NaN }); })) === "cms/bad-input");
   check("a non-number maxIterations -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: "100" }); })) === "cms/bad-input");
+  check("a fractional recipientIndex -> cms/bad-input (never a raw TypeError)", (await codeOf(function () { return pki.cms.decrypt(multi, { password: "pw" }, { recipientIndex: 1.5 }); })) === "cms/bad-input");
+
+  // multiple unlabelled recipients of the same kind: the caller's secret may match any of them, so
+  // each is tried until one opens the content (not just the first after DER SET-OF ordering).
+  var twoPw = await pki.cms.encrypt(MSG, [{ password: "alpha" }, { password: "bravo" }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  check("a message with two pwri decrypts with the first password", Buffer.compare((await pki.cms.decrypt(twoPw, { password: "alpha" })).content, MSG) === 0);
+  check("a message with two pwri decrypts with the second password", Buffer.compare((await pki.cms.decrypt(twoPw, { password: "bravo" })).content, MSG) === 0);
+  check("a message with two pwri and a wrong password -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(twoPw, { password: "charlie" }); })) === "cms/decrypt-failed");
+  var kekA = Buffer.alloc(32, 0x11), kekB = Buffer.alloc(32, 0x22);
+  var twoKek = await pki.cms.encrypt(MSG, [{ kek: kekA, kekId: Buffer.from("kA") }, { kek: kekB, kekId: Buffer.from("kB") }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  check("two kekri, no kekId given, decrypts with the second kek (each tried)", Buffer.compare((await pki.cms.decrypt(twoKek, { kek: kekB })).content, MSG) === 0);
   check("a normal password still round-trips within the cap", Buffer.compare((await pki.cms.decrypt(hiEnv, { password: "p" })).content, MSG) === 0);
 
   // ---- orchestrator routing ----
