@@ -158,6 +158,15 @@ security-only patches after the next major releases.
   verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt default. A
   password recipient's PBKDF2 iteration count is capped (`cms/iteration-limit`, a
   caller-lowerable bound) so an attacker-inflated count cannot force unbounded work.
+  `pki.smime.decrypt` (RFC 8551) inherits every one of these properties unchanged: it
+  only propagates the uniform `cms/decrypt-failed` verdict, adds no secret-dependent
+  branch of its own, and derives the `smime-type` from the CMS body rather than the
+  attacker-controlled MIME header (a mislabeled header cannot misrepresent what was
+  encrypted). An enveloped-only (CBC) message has no integrity (RFC 8551 §3.3): its
+  recovered plaintext is returned marked `authenticated: false`, so the caller gets an
+  explicit unauthenticated verdict alongside the content — not a bare, trustworthy-looking
+  result — and can reject it. Callers that require integrity should check `authenticated`
+  (or send AES-GCM AuthEnvelopedData, the encrypt default).
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node

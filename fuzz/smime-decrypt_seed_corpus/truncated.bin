@@ -1,0 +1,9 @@
+Content-Type: application/pkcs7-mime; smime-type=authEnveloped-data; name=smime.p7m
+Content-Transfer-Encoding: base64
+Content-Disposition: attachment; filename=smime.p7m
+
+MIICJAYLKoZIhvcNAQkQARegggITMIICDwIBADGCAW4wggFqAgEAMCMwHTEbMBkG
+A1UEAxMSUmVjaXBpZW50IHJzYSA0MDk3AgIQATA8BgkqhkiG9w0BAQcwL6APMA0G
+CWCGSAFlAwQCAQUAoRwwGgYJKoZIhvcNAQEIMA0GCWCGSAFlAwQCAQUABIIBAGTc
+adY3NQRjApBZvtBz1hvPCRkop9dRyCB958/a2xZJ8MFBItLRVD2CvPSpSr9hyZKz
+TxSaR4Pv2cWyNnUPcWZZakd5M2Jw
