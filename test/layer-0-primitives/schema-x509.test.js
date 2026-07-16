@@ -599,7 +599,7 @@ function testQcStatements() {
   check("qc: inspect renders the decoded qcStatement values (QcType purpose)", /qctWeb/i.test(rendered));
   // Exercise every value-bearing renderer branch (QcLimitValue amount, QcRetentionPeriod years, QcPDS
   // location, legislation countries) so a statement's decoded payload -- not just its name -- is shown.
-  var IM = oidReg.byName("qcIdentMethod");
+  // IM (qcIdentMethod) is already in scope from the decode vectors above.
   var richQc = build.sequence([
     build.sequence([build.oid(L), build.sequence([build.printable("USD"), build.integer(100000n), build.integer(0n)])]),
     build.sequence([build.oid(RP), build.integer(10n)]),
