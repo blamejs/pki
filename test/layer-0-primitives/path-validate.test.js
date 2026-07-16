@@ -653,6 +653,16 @@ async function testCoreRejections() {
   var qcNon = await mkCert({ subject: "QcN", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.5.5.7.1.3", false, b.sequence([b.sequence([b.oid("0.4.0.1862.1.1")])]))] });
   var res18d = await run([qcNon], { time: T2027, trustAnchor: anchor });
   check("non-critical qcStatements accepted (informational)", res18d.valid === true);
+
+  // The exported processed-extension set is FROZEN: a caller must not be able to add an OID and make
+  // an attacker's critical, decoder-less extension pass the unrecognized-critical check.
+  check("PROCESSED_EXTENSIONS is frozen", Object.isFrozen(pki.path.PROCESSED_EXTENSIONS));
+  var injOid = "1.2.3.4.5.6.7.8.9";
+  try { pki.path.PROCESSED_EXTENSIONS[injOid] = true; } catch (e) { /* strict-mode throw on a frozen write is acceptable */ }
+  check("a write to PROCESSED_EXTENSIONS does not take effect", pki.path.PROCESSED_EXTENSIONS[injOid] !== true);
+  var injCrit = await mkCert({ subject: "Inj", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext(injOid, true, b.nullValue())] });
+  var res18e = await run([injCrit], { time: T2027, trustAnchor: anchor });
+  check("a critical extension whose OID a caller tried to inject is still rejected", res18e.valid === false && failCodes(res18e).indexOf("path/unrecognized-critical-extension") !== -1);
 }
 
 // ---------------------------------------------------------------------------

@@ -37,7 +37,7 @@
   },
   "pki.path.validate": {
     "decision": "keep-experimental",
-    "reason": "The RFC 5280 §6 path-validation surface is broad and still hardening, and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
+    "reason": "The RFC 5280 \u00c2\u00a76 path-validation surface is broad and still hardening, and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
     "reviewedAt": "0.2.5",
     "reviewBy": "0.3.0"
   },
@@ -579,6 +579,18 @@
     "decision": "keep-experimental",
     "reason": "The CMS content-decryption surface (all five recipient arms, oracle-free) is interop-proven against openssl cms, but its post-quantum ML-KEM KEMRecipientInfo arm rides recently-published RFCs (9629/9936) and the composite-KEM draft is unlanded; graduate alongside pki.cms.encrypt once the enveloped surface's PQC recipient set is settled.",
     "reviewedAt": "0.2.29",
+    "reviewBy": "0.3.0"
+  },
+  "pki.smime.encrypt": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8551 S/MIME encryption layer is bidirectionally interop-proven against openssl cms, but it is a thin frame over pki.cms.encrypt, whose post-quantum ML-KEM recipient arm rides recently-published specs and is itself kept experimental; graduate S/MIME encryption together with the CMS content-encryption surface it composes.",
+    "reviewedAt": "0.2.32",
+    "reviewBy": "0.3.0"
+  },
+  "pki.smime.decrypt": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8551 S/MIME encryption layer is bidirectionally interop-proven against openssl cms, but it is a thin frame over pki.cms.encrypt, whose post-quantum ML-KEM recipient arm rides recently-published specs and is itself kept experimental; graduate S/MIME encryption together with the CMS content-encryption surface it composes.",
+    "reviewedAt": "0.2.32",
     "reviewBy": "0.3.0"
   }
 }
