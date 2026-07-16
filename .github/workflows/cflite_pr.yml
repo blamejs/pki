@@ -45,6 +45,7 @@ jobs:
           - asn1-der
           - cbor-det-parse
           - x509-parse
+          - c509-parse
           - cms-parse
           - ocsp-parse
           - tsp-parse

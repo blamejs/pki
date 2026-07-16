@@ -345,6 +345,32 @@ async function run() {
     });
     check("fragment anchors all exist" + (badFrags.length ? " (bad: " + badFrags.map(function (b) { return b.from + " -> " + b.href; }).join(", ") + ")" : ""), badFrags.length === 0);
 
+    // Drift-guard: @spec recognized-set vs linkable-set. The comment-block validator RECOGNIZES a
+    // reference category (SPEC_PATTERNS) and the page generator LINKS it (_specUrl) via two separately
+    // maintained lists. Without a cross-check, a category that is recognized but has no _specUrl mapping
+    // renders SILENTLY as plain <code> -- a citation that looks documented but never links, with nothing
+    // to distinguish "intentionally unlinkable" (paywalled ISO/ANSI, semver, internal) from "link mapping
+    // forgotten". Each sample asserts BOTH that the validator accepts it AND that its link status is the
+    // declared one; the coverage loop then requires every SPEC_PATTERN to own at least one sample, so a
+    // NEW recognized category cannot be added without consciously declaring (and asserting) its link status.
+    var SPEC_SAMPLES = [
+      { ref: "RFC 8949", linked: true }, { ref: "draft-ietf-cose-cbor-encoded-cert", linked: true },
+      { ref: "FIPS 186-5", linked: true }, { ref: "SP 800-56A", linked: true }, { ref: "X.509", linked: true },
+      { ref: "SEC 1", linked: true }, { ref: "W3C WebCryptoAPI", linked: true },
+      { ref: "ISO/IEC 7816-4", linked: false }, { ref: "ANSI X9.62", linked: false }, { ref: "IEC 62443", linked: false },
+      { ref: "PKCS#7", linked: false }, { ref: "CA/Browser Forum Baseline", linked: false }, { ref: "DSSE", linked: false },
+      { ref: "Sigstore bundle", linked: false }, { ref: "SLSA provenance", linked: false }, { ref: "in-toto", linked: false },
+      { ref: "SemVer 2.0.0", linked: false }, { ref: "internal (design: infra)", linked: false },
+    ];
+    SPEC_SAMPLES.forEach(function (s) {
+      check("@spec '" + s.ref + "' is recognized by the validator", engine.isValidSpecRef(s.ref) === true);
+      check("@spec '" + s.ref + "' link status is " + (s.linked ? "linked" : "plain code"), (generator.specUrl(s.ref) !== null) === s.linked);
+    });
+    engine.SPEC_PATTERNS.forEach(function (re, i) {
+      check("SPEC_PATTERN #" + i + " has a declared link-status sample (no silently-unlinkable category)",
+        SPEC_SAMPLES.some(function (s) { return re.test(s.ref); }));
+    });
+
     // Unknown path 404s.
     var missing = await _get(port, "/definitely-not-a-real-namespace");
     check("unknown path -> 404", missing.status === 404);

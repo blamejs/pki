@@ -52,12 +52,31 @@ function testCounter() {
   check("NaN max throws TypeError", typeErr(function () { limits.counter(NaN, E, "x/many", "item"); }) === "TYPE");
   check("fractional max throws TypeError", typeErr(function () { limits.counter(1.5, E, "x/many", "item"); }) === "TYPE");
   check("negative max throws TypeError", typeErr(function () { limits.counter(-1, E, "x/many", "item"); }) === "TYPE");
+  // no label -> the (label || "decoded item") default is exercised.
+  var c2 = limits.counter(0, E, "x/many");
+  check("counter with no label uses the default label", typeErr(function () { c2.tick(); }) === "x/many");
+}
+
+function testByteCap() {
+  var buf = Buffer.alloc(10);
+  check("byteCap returns the buffer when within the cap", limits.byteCap(buf, 16, E, "x/too-large", "blob") === buf);
+  check("byteCap returns the buffer at exactly the cap", limits.byteCap(buf, 10, E, "x/too-large", "blob") === buf);
+  check("byteCap throws the typed error one byte over the cap", typeErr(function () { limits.byteCap(buf, 9, E, "x/too-large", "blob"); }) === "x/too-large");
+  // The ceiling is an authoring input: an undefined / NaN / fractional / negative max
+  // makes `length > max` never fire -- a dead size defence. Config-time TypeError.
+  check("byteCap undefined max throws TypeError", typeErr(function () { limits.byteCap(buf, undefined, E, "x/too-large", "blob"); }) === "TYPE");
+  check("byteCap NaN max throws TypeError", typeErr(function () { limits.byteCap(buf, NaN, E, "x/too-large", "blob"); }) === "TYPE");
+  check("byteCap fractional max throws TypeError", typeErr(function () { limits.byteCap(buf, 1.5, E, "x/too-large", "blob"); }) === "TYPE");
+  check("byteCap negative max throws TypeError", typeErr(function () { limits.byteCap(buf, -1, E, "x/too-large", "blob"); }) === "TYPE");
+  // no label -> the (label || "input") default is exercised.
+  check("byteCap over-cap with no label uses the default label", typeErr(function () { limits.byteCap(buf, 9, E, "x/too-large"); }) === "x/too-large");
 }
 
 function run() {
   testCap();
   testCapAuthoringBounds();
   testCounter();
+  testByteCap();
 }
 
 module.exports = { run: run };

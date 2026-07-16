@@ -162,6 +162,7 @@ function _specUrl(ref) {
   var r = String(ref).trim();
   var m;
   if ((m = r.match(/^RFC (\d+)(?:\s+§([\w.]+))?/)))      return "https://datatracker.ietf.org/doc/html/rfc" + m[1] + (m[2] ? "#section-" + m[2] : "");
+  if ((m = r.match(/^(draft-[a-z][a-z0-9-]+)/i)))        return "https://datatracker.ietf.org/doc/html/" + m[1].toLowerCase();
   if ((m = r.match(/^FIPS (\d+(?:-\d+)?)/)))             return "https://csrc.nist.gov/pubs/fips/" + m[1].toLowerCase() + "/final";
   if ((m = r.match(/^(?:NIST )?SP (800-\d+[A-Za-z]?)/))) return "https://csrc.nist.gov/publications/detail/sp/" + m[1].toLowerCase() + "/final";
   if ((m = r.match(/^(X\.\d+)/)))                        return "https://www.itu.int/rec/T-REC-" + m[1];
