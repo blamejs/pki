@@ -208,6 +208,12 @@ function run() {
   // a zero RSA modulus fails closed.
   check("78. a zero RSA modulus -> c509/bad-spki", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "00", 8: "40" })); }) === "c509/bad-spki");
 
+  // ==== conformance fixes round 5: ~oid extension value shape ====
+  // a non-critical ~oid extension whose value is not a byte string fails closed.
+  check("79. a non-critical ~oid extension value that is not a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f01" })); }) === "c509/bad-extensions");
+  // a critical ~oid extension whose [bytes] wrap does not hold a byte string fails closed.
+  check("80. a critical ~oid extension not wrapping a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f8101" })); }) === "c509/bad-extensions");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
