@@ -10,7 +10,7 @@ X.509 certificates now decode the RFC 3739 / ETSI EN 319 412-5 qualified-certifi
 
 ### Added
 
-- pki.schema.x509.parse decodes the RFC 3739 sec. 3.2.6 / ETSI EN 319 412-5 qualified-certificate qcStatements extension (id-pe-qcStatements). The decoded statements -- QcCompliance (EU-qualified), QcLimitValue (reliance limit), QcSSCD (key in a QSCD), QcType (certificate purpose: esign / eseal / web), QcRetentionPeriod, QcPDS (disclosure-statement URLs), QcCClegislation (country of qualification), and the PKIX SemanticsInformation -- are surfaced on the parsed extension and rendered by pki.inspect. An unknown statementId is preserved opaque (its raw bytes, semantics not executed); a malformed shape fails closed with a typed error.
+- The toolkit decodes the RFC 3739 sec. 3.2.6 / ETSI EN 319 412-5 qualified-certificate qcStatements extension (id-pe-qcStatements). The decoded statements -- QcCompliance (EU-qualified), QcLimitValue (reliance limit), QcSSCD (key in a QSCD), QcType (certificate purpose: esign / eseal / web), QcRetentionPeriod, QcPDS (disclosure-statement URLs), QcCClegislation (country of qualification), QcIdentMethod, QcQSCDlegislation, and the PKIX SemanticsInformation -- are decoded and validated by the toolkit's certificate-extension decoders and rendered by pki.inspect. An unknown statementId is preserved opaque (its raw bytes, semantics not executed); a malformed shape fails closed with a typed error.
 
 ### Security
 

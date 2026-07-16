@@ -542,7 +542,12 @@ function testQcStatements() {
   // SemanticsInformation with nameRegistrationAuthorities (a SEQUENCE OF GeneralName); a QCStatement of >2 children.
   var rSem = dec(build.sequence([build.sequence([build.oid(V1), build.sequence([build.oid("1.2.3.4"), build.sequence([build.contextPrimitive(6, Buffer.from("https://ra", "ascii"))])])])]));
   check("qc: SemanticsInformation decodes nameRegistrationAuthorities", rSem[0].info.semanticsIdentifier === "1.2.3.4" && rSem[0].info.nameRegistrationAuthorities.length === 1);
+  check("qc: a nameRegistrationAuthority that is not a GeneralName -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(V1), build.sequence([build.oid("1.2.3"), build.sequence([build.integer(5n)])])])])); }) === "path/bad-qc-statement");
   check("qc: a QCStatement of more than two elements -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(C), build.nullValue(), build.nullValue()])])); }) === "path/bad-qc-statement");
+  // ETSI V2.5.1 additions: QcIdentMethod (SEQUENCE OF OID) + QcQSCDlegislation (SEQUENCE OF CountryName).
+  var IM = oidReg.byName("qcIdentMethod"), QSCDL = oidReg.byName("qcQSCDlegislation");
+  check("qc: QcIdentMethod decodes its method OIDs", dec(build.sequence([build.sequence([build.oid(IM), build.sequence([build.oid("1.2.3.4")])])]))[0].info.methods[0] === "1.2.3.4");
+  check("qc: QcQSCDlegislation decodes its country codes", dec(build.sequence([build.sequence([build.oid(QSCDL), build.sequence([build.printable("DE")])])]))[0].info.countries[0] === "DE");
   // Remaining ETSI statement decoders + the signed MonetaryValue exponent.
   var RP = oidReg.byName("qcRetentionPeriod"), PDS = oidReg.byName("qcPDS"), CCL = oidReg.byName("qcCClegislation");
   check("qc: QcRetentionPeriod decodes the year count", dec(build.sequence([build.sequence([build.oid(RP), build.integer(10n)])]))[0].info.years === 10);
@@ -554,6 +559,8 @@ function testQcStatements() {
   check("qc: QcCClegislation bad country length -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(CCL), build.sequence([build.printable("USA")])])])); }) === "path/bad-qc-statement");
   var rNeg = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("USD"), build.integer(100n), build.integer(-2n)])])]));
   check("qc: QcLimitValue decodes a negative (fractional) exponent", rNeg[0].info.exponent === -2);
+  var rBig = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("JPY"), build.integer(5000000000n), build.integer(0n)])])]));
+  check("qc: QcLimitValue accepts a large amount beyond uint31", rBig[0].info.amount === 5000000000);
 
   // 13. Orchestrator: the SHIPPED consumer path (x509.parse -> extensions -> byOid).
   function _certWithQc(critical, qcVal) {
