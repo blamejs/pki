@@ -518,6 +518,9 @@ function testEncodeSctList() {
   check("103c. an opaque SCT with a version <-> rawSct[0] mismatch -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 7, rawSct: Buffer.concat([Buffer.from([0]), Buffer.alloc(10, 0xEE)]) }]); }) === "ct/bad-input");
   check("103d. a consistent opaque SCT (version == rawSct[0]) round-trips", (function () { var r = pki.ct.parseSctList(pki.ct.encodeSctList([{ version: 7, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }])); return r.unknownScts.length === 1 && r.unknownScts[0].version === 7; })());
   check("103e. an opaque SCT with an empty rawSct -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 7, rawSct: Buffer.alloc(0) }]); }) === "ct/bad-input");
+  // a non-byte version must not be masked into a valid one (263 & 0xff == 7 would spoof v7).
+  check("103f. an opaque SCT version above 255 -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 263, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }]); }) === "ct/bad-input");
+  check("103g. a fractional opaque SCT version -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 7.5, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }]); }) === "ct/bad-input");
 }
 
 // ---- signSct: the log's digitally-signed step (inverse of verifySct) ----
@@ -559,6 +562,8 @@ async function testSignSct() {
   check("121. signSct honours an explicit Number timestamp", tsNumSct.timestamp === 1700000000001n);
   // reconstructSignedData tolerates a null entry (fails closed on the absent entryType)
   check("122. reconstructSignedData(null, sct) -> ct/bad-entry-type", code(function () { pki.ct.reconstructSignedData(null, tsSct); }) === "ct/bad-entry-type");
+  // a duck-typed impostor "KeyObject" (an asymmetricKeyType but no real key) faults typed, not raw.
+  check("123. signSct with an impostor KeyObject -> ct/bad-input (not a raw TypeError)", (await vres(function () { return pki.ct.signSct(entry, { asymmetricKeyType: "ec", type: "private", export: function () { throw new Error("impostor"); } }); })) === "ct/bad-input");
 }
 
 async function run() {
