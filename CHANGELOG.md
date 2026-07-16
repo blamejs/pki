@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.28 — 2026-07-16
+
+The Certificate Transparency log-list trust surface arrives as pki.ct.parseLogList and pki.ct.verifySctWithLogList: resolve a trusted CT log's key from an SCT's log id and verify it in one step, ingesting the CT log-list JSON into state- and temporal-interval-constrained trusted logs.
+
+### Added
+
+- pki.ct.parseLogList(json, opts) ingests a Certificate Transparency log-list JSON document into { logs, byLogId } -- constraint-carrying trusted logs keyed by log id. Each log's key is base64-decoded to its DER SubjectPublicKeyInfo and validated as on-profile; the log id is recomputed as SHA-256 of the key and must equal the stated log_id (RFC 6962 section 3.2, ct/log-id-mismatch), so a swapped key or a flipped id is refused. The state (exactly one of pending/qualified/usable/readonly/retired/rejected) and temporal_interval decode into trust constraints, and two entries for one recomputed id must agree or the list is rejected (ct/duplicate-log). Parsing is offline and routes through the bounded, duplicate-member-rejecting JSON reader; every malformed input is a typed CtError.
+- pki.ct.verifySctWithLogList(entry, sct, logList, opts) resolves the trusted CT log for an SCT by its log id and verifies it in one step. The log's state gates trust (usable/qualified/readonly proceed; a retired log only for an SCT timestamped before its retirement; pending/rejected are ct/log-untrusted) and its temporal_interval gates the covered certificate (the cert's notAfter -- from the leaf certificate for a precert-free entry, or opts.certNotAfter -- must fall in the log's window, and a windowed log with no resolvable notAfter is ct/temporal-interval, never silently skipped). The signature check is delegated to the shipped pki.ct.verifySct. Resolves true for a valid signature from a trusted, in-window log, false on a cryptographic mismatch, and throws a typed CtError on any structural or trust failure.
+
 ## v0.2.27 — 2026-07-16
 
 CMS CompressedData arrives as pki.cms.compress / pki.cms.decompress, with the matching S/MIME pki.smime.compress / pki.smime.decompress: compress and recover RFC 3274 messages, with a bounded inflate that defends the decompression-bomb class.
