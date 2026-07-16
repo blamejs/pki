@@ -248,6 +248,13 @@ async function run() {
   check("OAEP with an MGF1 hash != the OAEP hash -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(oaepMgf, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
   var oaepLabel = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha256")), NL])), bp.explicit(2, bp.sequence([bp.oid(O("pSpecified")), bp.octetString(Buffer.from("label"))]))]));
   check("OAEP with a non-empty label -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(oaepLabel, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
+  // PKCS#1 v1.5 (rsaEncryption) implicit rejection WITHOUT an openssl oracle: a decode fault (here a
+  // wrong-length RSA ciphertext) yields a fresh random CEK, so the failure is the uniform verdict --
+  // never a distinguishable padding error (RFC 3218 sec. 2.3.2).
+  var v15Ktri = bp.sequence([bp.integer(0n), bp.sequence([bp.sequence([]), bp.integer(1n)]), bp.sequence([bp.oid(O("rsaEncryption")), NL]), bp.octetString(Buffer.alloc(128))]);
+  var v15EciNoSsl = bp.sequence([bp.oid(O("data")), bp.sequence([bp.oid(O("aes256-CBC")), bp.octetString(Buffer.alloc(16))]), bp.contextPrimitive(0, Buffer.alloc(16))]);
+  var v15EnvNoSsl = bp.sequence([bp.oid(O("envelopedData")), bp.explicit(0, bp.sequence([bp.integer(0n), bp.setOf([v15Ktri]), v15EciNoSsl]))]);
+  check("v1.5 ktri with a decode fault -> cms/decrypt-failed (implicit rejection, no oracle)", (await codeOf(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/decrypt-failed");
 
   // ---- EncryptedData + PBES2 distinct-code reject arms ----
   function encData3(algNode, hasContent) {
