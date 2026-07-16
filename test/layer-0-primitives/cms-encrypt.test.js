@@ -106,6 +106,8 @@ async function run() {
   check("encrypt with a non-string/Buffer password -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: 42 }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("encrypt with a bad recipient cert type -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: 42 }]); })) === "cms/bad-input");
   check("subjectKeyIdentifier requested but the cert lacks the extension -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, keyIdentifier: "subjectKeyIdentifier" }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("an unrecognized keyIdentifier value -> cms/bad-input (never a silent issuerAndSerialNumber)", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, keyIdentifier: "subjectKeyId" }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("keyIdentifier: \"issuerAndSerialNumber\" is accepted", Buffer.compare((await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ cert: rsa.cert, keyIdentifier: "issuerAndSerialNumber" }], { contentEncryptionAlgorithm: "aes-256-cbc" }), { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
   // an Ed25519 recipient cert (a signature key, no enveloped arm) -> unsupported.
   var ed = signing.makeSigner("ed25519");
   check("an Ed25519 recipient certificate -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: ed.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/unsupported-algorithm");

@@ -153,6 +153,10 @@ async function run() {
   var mrEc = makeRecipient("ec-p256");
   var mrEnv = _prependDummyKariRek(await pki.cms.encrypt(MSG, [{ cert: mrEc.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
   check("a multi-rek kari selects this recipient's encrypted key (not element 0)", Buffer.compare((await pki.cms.decrypt(mrEnv, { key: mrEc.key, cert: mrEc.cert })).content, MSG) === 0);
+  // a kari whose originator EC key omits its curve parameters inherits the curve from the recipient.
+  var poEc = makeRecipient("ec-p256");
+  var poEnv = _stripOrigCurve(await pki.cms.encrypt(MSG, [{ cert: poEc.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
+  check("a kari with a parameterless originator EC key inherits the recipient's curve", Buffer.compare((await pki.cms.decrypt(poEnv, { key: poEc.key, cert: poEc.cert })).content, MSG) === 0);
   var ukmKem = makeRecipient("ml-kem-768");
   var ukmKemEnv = await pki.cms.encrypt(MSG, [{ cert: ukmKem.cert }], { contentEncryptionAlgorithm: "aes-256-cbc", ukm: Buffer.from("kem-ukm") });
   check("kemri with ukm round-trips", Buffer.compare((await pki.cms.decrypt(ukmKemEnv, { key: ukmKem.key, cert: ukmKem.cert })).content, MSG) === 0);
@@ -317,6 +321,24 @@ function _prependDummyKariRek(der) {
   var dummyRek = b2.sequence([b2.sequence([b2.raw(issuerBytes), b2.integer(99999n)]), b2.octetString(Buffer.alloc(40))]);
   var newReks = b2.sequence([dummyRek, b2.raw(realRek.bytes)]);
   var kariContent = Buffer.concat(kari.children.slice(0, kari.children.length - 1).map(function (c) { return c.bytes; }).concat([newReks]));
+  var newKari = b2.contextConstructed(1, kariContent);
+  var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? b2.setOf([newKari]) : b2.raw(c.bytes); });
+  return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
+}
+
+// Strip the curve parameters from a kari's originator EC key (RFC 5753 sec. 7.1 allows inheriting
+// the curve from the recipient) -- the decryptor must resolve the curve from the recipient certificate.
+function _stripOrigCurve(der) {
+  var b2 = pki.asn1.build;
+  var ci = pki.asn1.decode(der);
+  var ed = ci.children[1].children[0];
+  var riSet = ed.children.filter(function (c) { return c.tagNumber === 17 && c.tagClass === "universal"; })[0];
+  var kari = riSet.children[0];
+  var opk = kari.children[1].children[0];                                   // originator [0] EXPLICIT -> originatorKey [1]
+  var algId = opk.children[0];
+  var newOpk = b2.contextConstructed(1, Buffer.concat([b2.sequence([b2.raw(algId.children[0].bytes)]), opk.children[1].bytes]));
+  var newOrig = b2.contextConstructed(0, newOpk);
+  var kariContent = Buffer.concat([kari.children[0].bytes, newOrig].concat(kari.children.slice(2).map(function (c) { return c.bytes; })));
   var newKari = b2.contextConstructed(1, kariContent);
   var edKids = ed.children.map(function (c) { return (c.tagNumber === 17 && c.tagClass === "universal") ? b2.setOf([newKari]) : b2.raw(c.bytes); });
   return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(edKids))]);
