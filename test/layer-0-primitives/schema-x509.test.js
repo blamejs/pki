@@ -561,6 +561,8 @@ function testQcStatements() {
   check("qc: QcLimitValue decodes a negative (fractional) exponent", rNeg[0].info.exponent === -2);
   var rBig = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("JPY"), build.integer(5000000000n), build.integer(0n)])])]));
   check("qc: QcLimitValue accepts a large amount beyond uint31", rBig[0].info.amount === 5000000000);
+  var rExp = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("USD"), build.integer(1n), build.integer(1000n)])])]));
+  check("qc: QcLimitValue accepts an exponent beyond a small window", rExp[0].info.exponent === 1000);
 
   // 13. Orchestrator: the SHIPPED consumer path (x509.parse -> extensions -> byOid).
   function _certWithQc(critical, qcVal) {
