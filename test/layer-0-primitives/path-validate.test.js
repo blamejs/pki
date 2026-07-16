@@ -2496,6 +2496,14 @@ async function testTrustAnchorConstraints() {
   // T26 -- checkPurpose emailProtection but only serverAuth distrust present -> unaffected.
   var r26 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "emailProtection" });
   check("T26 wrong-purpose distrust key -> unaffected", r26.valid === true);
+  // T27 -- a PRESENT-but-malformed distrustAfter (an Invalid Date) must fail CLOSED.
+  // An Invalid Date is instanceof Date, but `notBefore > InvalidDate` is NaN-false,
+  // so the distrust restriction would silently NOT apply and a leaf that should be
+  // distrusted passes -- the NaN-Date fail-open. The malformed caller config is a
+  // config-time reject (guard.time.assertValid), not a silent bypass.
+  var taBad = withMeta({ distrustAfter: { serverAuth: new Date("not-a-date") } });
+  check("T27 malformed distrustAfter (Invalid Date) -> path/bad-input",
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taBad, checkPurpose: "serverAuth" }))) === "path/bad-input");
 
   // T27 -- checkPurpose is an UNREGISTERED canonical dotted OID: oid.name returns
   // undefined, so it resolves through the fallback to the dotted string ITSELF,

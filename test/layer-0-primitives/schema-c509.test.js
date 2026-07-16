@@ -1,0 +1,177 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * Layer 0 -- pki.schema.c509.parse: C509 CBOR-encoded certificates (draft-ietf-cose-cbor-encoded-cert-20).
+ * A C509Certificate is a deterministic-CBOR array of exactly 11 elements (10 TBS fields + the issuer
+ * signature). Two modes: c509CertificateType 2 = natively-signed C509, 3 = a CBOR re-encoding of a DER
+ * X.509 v3 certificate that MUST invert byte-for-byte to the original DER (so the original signature
+ * verifies). Composes the shipped pki.cbor codec (core-deterministic, fail-closed) + the x509 model; it
+ * decodes CBOR, not DER, so it is reached by explicit call, never auto-routed by pki.schema.parse. The
+ * authoritative gate is the Appendix A.1 byte-exact KAT (both modes + the DER round-trip).
+ */
+
+var helpers = require("../helpers");
+var check = helpers.check;
+var pki = helpers.pki;
+var V = require("../helpers/c509-vectors");
+var c509mod = require("../../lib/schema-c509");
+var b = pki.asn1.build;
+function O(n) { return pki.oid.byName(n); }
+async function code(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
+
+function run() {
+  // ==== A.1.1 -- the type-3 (CBOR re-encoded X.509) certificate decodes to the documented fields ====
+  var c3 = pki.schema.c509.parse(V.A1.type3);
+  check("1. type-3 A.1 decodes: certificateType 3", c3.certificateType === 3);
+  check("2. serialNumberHex 01f50d (bare ~biguint)", c3.serialNumberHex === V.A1.serialHex);
+  check("3. signatureAlgorithm resolves to ecdsaWithSHA256 (int 0)", c3.signatureAlgorithm.name === "ecdsaWithSHA256");
+  check("4. issuer renders CN=RFC test CA", c3.issuer.dn === V.A1.issuerDn);
+  check("5. validity notBefore/notAfter are the 2023/2026 Dates (bare ~time uints)", c3.validity.notBefore.getTime() === V.A1.notBefore.getTime() && c3.validity.notAfter.getTime() === V.A1.notAfter.getTime());
+  check("6. subject is the tag-48 EUI-64 0123456789AB", Buffer.isBuffer(c3.subject.eui64) && c3.subject.eui64.equals(V.A1.subjectEui64));
+  check("7. subjectPublicKeyAlgorithm resolves (int 1 = EC secp256r1)", /ec|prime256|secp256/i.test(c3.subjectPublicKeyAlgorithm.name || ""));
+  check("8. one non-critical keyUsage(digitalSignature) extension from the int shortcut", c3.extensions.length === 1 && c3.extensions[0].name === "keyUsage" && c3.extensions[0].critical === false);
+  check("9. issuerSignatureValue is the raw 64-byte r||s", Buffer.isBuffer(c3.signatureValue) && c3.signatureValue.length === V.A1.sigLen);
+
+  // ==== the type-3 DER INVERTIBILITY: reconstruct the original DER byte-for-byte ====
+  check("10. the reconstructed DER equals the original A.1 DER byte-for-byte (invertible)", Buffer.isBuffer(c3.reconstructedDer) && c3.reconstructedDer.equals(V.A1.der));
+  check("11. x509.parse(reconstructed) matches x509.parse(original) -- serial + issuer + validity", (function () {
+    var a = pki.schema.x509.parse(c3.reconstructedDer), o = pki.schema.x509.parse(V.A1.der);
+    return a.serialNumberHex === o.serialNumberHex && a.issuer.dn === o.issuer.dn && a.validity.notAfter.getTime() === o.validity.notAfter.getTime();
+  })());
+
+  // ==== A.1.2 -- the type-2 natively-signed form ====
+  var c2 = pki.schema.c509.parse(V.A1.type2);
+  check("12. type-2 A.1 decodes: certificateType 2", c2.certificateType === 2);
+  check("13. signedData is the raw byte range of TBS elements 0..9 (raw-exactness, not a re-encode)", Buffer.isBuffer(c2.signedData) && c2.signedData.length > 0 && V.A1.type2.indexOf(c2.signedData) === 1);
+  check("14. type-2 subjectPublicKey keeps its SEC1 0x02/0x03/0x04 point form (not 0xFE/0xFD)", c2.subjectPublicKey[0] === 0x02 || c2.subjectPublicKey[0] === 0x03 || c2.subjectPublicKey[0] === 0x04);
+
+  // ==== mode discrimination + structural fail-closed ====
+  check("15. certificateType 0 -> c509/bad-certificate-type", code2(V.A1.type3, 1, 0x00) === "c509/bad-certificate-type");
+  check("16. certificateType 4 -> c509/bad-certificate-type", code2(V.A1.type3, 1, 0x04) === "c509/bad-certificate-type");
+  check("17. a non-array root (a CBOR map) -> c509/not-a-certificate", codeSync(function () { return pki.schema.c509.parse(Buffer.from([0xA0])); }) === "c509/not-a-certificate");
+  check("18. an array of length != 11 -> c509/not-a-certificate or c509/bad-tbs", /^c509\/(not-a-certificate|bad-tbs)$/.test(codeSync(function () { return pki.schema.c509.parse(Buffer.from([0x82, 0x03, 0x00])); })));
+
+  // ==== the deterministic-CBOR gate is inherited ====
+  check("19. trailing bytes after the array -> a cbor/* or c509/* fault (deterministic gate)", /^(cbor|c509)\//.test(codeSync(function () { return pki.schema.c509.parse(Buffer.concat([V.A1.type3, Buffer.from([0x00])])); })));
+
+  // ==== the DER orchestrator does NOT route to c509 (CBOR, not DER) ====
+  check("20. pki.schema.parse(c509Bytes) does not route to c509 (non-DER)", /^(asn1|schema)\//.test(codeSync(function () { return pki.schema.parse(V.A1.type3); })));
+
+  // ==== field-encoding reject vectors (fail-closed, typed) ====
+  check("21. non-minimal serial (leading 0x00) -> c509/non-minimal-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "4300f50d" })); }) === "c509/non-minimal-serial");
+  check("22. serial not a byte string -> c509/bad-serial", codeSync(function () { return pki.schema.c509.parse(V.mk({ 1: "1a0001f50d" })); }) === "c509/bad-serial");
+  check("23. notBefore a negative (major-type-1) ~time -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "3a63b0cd00" })); }) === "c509/bad-validity");
+  check("24. an unknown signatureAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "18ff" })); }) === "c509/unknown-algorithm");
+  check("25. an unknown subjectPublicKeyAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "18ff" })); }) === "c509/unknown-algorithm");
+  check("26. an EC subjectPublicKey that is not a byte string -> c509/bad-spki", codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "01" })); }) === "c509/bad-spki");
+  check("27. a signatureValue that is not a byte string -> c509/bad-signature", codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: "01" })); }) === "c509/bad-signature");
+  check("28. an unresolved attribute type int -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "82187b6141" })); }) === "c509/bad-name");
+
+  // ==== name variants ====
+  // null issuer (self-signed): issuer decodes to null and reconstructs as issuer == subject.
+  var selfSigned = pki.schema.c509.parse(V.mk({ 3: "f6" }));
+  check("29. null issuer decodes to null (self-signed)", selfSigned.issuer === null);
+  check("30. self-signed reconstruction: issuer DN == subject DN", (function () { var x = pki.schema.x509.parse(selfSigned.reconstructedDer); return x.issuer.dn === x.subject.dn; })());
+  // a negative attribute int -> a PrintableString value; a multi-attribute RDNSequence.
+  var printable = pki.schema.c509.parse(V.mk({ 3: "82206141" }));   // [-1 (printable commonName), "A"]
+  check("31. a negative attribute int -> a printableString reconstruction", (function () { var x = pki.schema.x509.parse(printable.reconstructedDer); return x.issuer.dn === "CN=A"; })());
+  var multi = pki.schema.c509.parse(V.mk({ 3: "8401614108614f" }));  // [1,"A", 8,"O"]
+  check("32. a multi-attribute issuer decodes both RDNs", multi.issuer.rdns.length === 2 && multi.issuer.rdns[1].type === "organizationName");
+
+  // ==== algorithm variants (int / ~oid / [~oid, params]) ====
+  // a ~oid signatureAlgorithm (bare OID content) resolves to the SAME name and reconstructs byte-exact.
+  var oidAlg = pki.schema.c509.parse(V.mk({ 2: "482a8648ce3d040302" }));
+  check("33. a ~oid signatureAlgorithm resolves + round-trips byte-exact", oidAlg.signatureAlgorithm.name === "ecdsaWithSHA256" && oidAlg.reconstructedDer.equals(V.A1.der));
+  // an [~oid, params] algorithm array form decodes with surfaced parameters.
+  var arrAlg = pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d04030240" }));
+  check("34. an [~oid, params] algorithm array form decodes", arrAlg.signatureAlgorithm.name === "ecdsaWithSHA256");
+
+  // ==== no-expiry validity (notAfter == null) ====
+  var noExpiry = pki.schema.c509.parse(V.mk({ 5: "f6" }));
+  check("35. notAfter == null decodes to null (no expiry)", noExpiry.validity.notAfter === null);
+  check("36. no-expiry reconstruction uses the 99991231235959Z sentinel", pki.schema.x509.parse(noExpiry.reconstructedDer).validity.notAfter.getUTCFullYear() === 9999);
+
+  // ==== RSA subjectPublicKey (rsaEncryption; the modulus-only exponent-65537 short form) ====
+  var rsaMod = "50c0000000000000000000000000000001";   // byte string(16) modulus, high bit set (~biguint)
+  var rsa = pki.schema.c509.parse(V.mk({ 7: "00", 8: rsaMod }));
+  check("37. RSA modulus-only decodes with the implied exponent 65537", rsa.rsaPublicKey.exponent === 65537n && rsa.rsaPublicKey.modulus > 0n);
+  check("38. RSA reconstruction produces a parseable rsaEncryption SPKI", pki.schema.x509.parse(rsa.reconstructedDer).subjectPublicKeyInfo.algorithm.name === "rsaEncryption");
+  // the explicit [modulus, exponent] array form.
+  var rsaArr = pki.schema.c509.parse(V.mk({ 7: "00", 8: "82" + rsaMod + "4303ffff" }));   // [modulus, exp 0x03ffff]
+  check("39. RSA [modulus, exponent] array form decodes the explicit exponent", rsaArr.rsaPublicKey.exponent === 0x03ffffn);
+
+  // ==== the matches() structural probe ====
+  check("40. matches() accepts a c509 array, rejects a non-c509 shape", c509mod.matches(pki.cbor.decode(V.A1.type3)) === true && c509mod.matches(pki.cbor.decode(Buffer.from([0x82, 0x03, 0x00]))) === false);
+
+  // ==== remaining structural rejects + the array-form extension paths ====
+  check("41. an algorithm that is not int / ~oid / array -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "f5" })); }) === "c509/unknown-algorithm");
+  check("42. an attribute value that is not a SpecialText -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "8201f5" })); }) === "c509/bad-name");
+  check("43. an extensions field that is neither an array nor a keyUsage int -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "6141" })); }) === "c509/bad-extensions");
+  // array-form extensions (int extensionID and ~oid extensionID) round-trip to the same keyUsage DER.
+  check("44. an array-form int-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "82024403020780" })).reconstructedDer.equals(V.A1.der));
+  check("45. an array-form ~oid-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "8243551d0f4403020780" })).reconstructedDer.equals(V.A1.der));
+  // a subjectPublicKey algorithm outside the reconstruction covered set (Ed25519 via ~oid) fails closed.
+  check("46. an unsupported subjectPublicKey algorithm (type-3) -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "432b6570" })); }) === "c509/non-invertible");
+  // a ~time beyond the ECMAScript Date window -> c509/bad-validity.
+  check("47. a ~time outside the representable Date range -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "1b0001000000000000" })); }) === "c509/bad-validity");
+  // the keyUsage int-shortcut with a NEGATIVE int -> a CRITICAL keyUsage extension.
+  var critKu = pki.schema.c509.parse(V.mk({ 9: "20" }));   // nint -1 -> critical keyUsage
+  check("48. a negative keyUsage int-shortcut decodes as critical", critKu.extensions[0].critical === true && pki.schema.x509.parse(critKu.reconstructedDer).issuer.dn === "CN=RFC test CA");
+  // a critical ~oid extension ([ bytes ] wrap) extracts the inner byte string as the value.
+  var critOid = pki.schema.c509.parse(V.mk({ 9: "8243551d0f814403020780" }));
+  check("49. a critical ~oid extension ([bytes] wrap) decodes critical with the inner value", critOid.extensions[0].critical === true && critOid.extensions[0].value.toString("hex") === "03020780");
+  // an array int extension whose value is not a byte string cannot invert -> c509/non-invertible.
+  check("50. an extension with a non-reconstructable value -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820418ff" })); }) === "c509/non-invertible");
+  // a countryName attribute reconstructs as a PrintableString.
+  var country = pki.schema.c509.parse(V.mk({ 3: "8204625553" }));   // [4 (countryName), "US"]
+  check("51. a countryName attribute reconstructs as PrintableString", pki.schema.x509.parse(country.reconstructedDer).issuer.dn === "C=US");
+  // a validity instant in 2050+ reconstructs as GeneralizedTime (RFC 5280 sec. 4.1.2.5).
+  var future = pki.schema.c509.parse(V.mk({ 4: "1a967e7f80" }));   // notBefore 2050-01-01
+  check("52. a >= 2050 validity instant reconstructs as GeneralizedTime", pki.schema.x509.parse(future.reconstructedDer).validity.notBefore.getUTCFullYear() === 2050);
+  // an EC subjectPublicKey already uncompressed (0x04) is kept and round-trips byte-exact.
+  var uncompressed = "5841" + "04b1216ab96e5b3b3340f5bdf02e693f16213a04525ed44450b1019c2dfd3838abac4e14d86c0983ed5e9eef2448c6861cc406547177e6026030d051f7792ac206";
+  check("53. an uncompressed EC point (0x04) is kept and round-trips byte-exact", pki.schema.c509.parse(V.mk({ 8: uncompressed })).reconstructedDer.equals(V.A1.der));
+  // an unrecognized EC point encoding (head 0x05) fails closed.
+  check("54. an unrecognized EC point encoding -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "582105" + "00".repeat(32) })); }) === "c509/non-invertible");
+  // a keyUsage shortcut of 0 (no bits set) cannot invert.
+  check("55. a keyUsage shortcut with no bits set -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "00" })); }) === "c509/non-invertible");
+  // an RSA subjectPublicKey that is neither a ~biguint nor [modulus, exponent] fails closed.
+  check("56. a malformed RSA subjectPublicKey -> c509/bad-spki", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "00", 8: "01" })); }) === "c509/bad-spki");
+  // an 8-byte tag-48 MAC (EUI-64 directly, no FF-FE insertion) decodes.
+  var mac8 = pki.schema.c509.parse(V.mk({ 6: "d830" + "48" + "0123456789abcdef" }));   // tag(48) byte-string(8)
+  check("57. an 8-byte tag-48 MAC decodes to a full EUI-64", pki.schema.x509.parse(mac8.reconstructedDer).subject.dn === "CN=01-23-45-67-89-AB-CD-EF");
+  // a bare byte-string SpecialText (even-length-hex commonName optimization).
+  var hexCn = pki.schema.c509.parse(V.mk({ 3: "42abcd" }));   // byte string "abcd" as a single commonName
+  check("58. a bare byte-string commonName decodes via the hex optimization", hexCn.issuer.dn === "CN=abcd");
+  // a Name that is neither null, a SpecialText, nor an array fails closed.
+  check("59. a Name that is not null / SpecialText / array -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "01" })); }) === "c509/bad-name");
+  // an array extension with an unregistered int type fails closed.
+  check("60. an array extension with an unregistered int type -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8218ff00" })); }) === "c509/bad-extensions");
+  // a 0xFD-marked (was-odd-y) EC point de-compresses to a valid uncompressed point.
+  var oddY = pki.schema.c509.parse(V.mk({ 8: "5821fd" + "b1216ab96e5b3b3340f5bdf02e693f16213a04525ed44450b1019c2dfd3838ab" }));
+  check("59b. a 0xFD (was-odd-y) EC point de-compresses to a valid EC key", pki.schema.x509.parse(oddY.reconstructedDer).subjectPublicKeyInfo.algorithm.name === "ecPublicKey");
+  // a ~oid algorithm for an OID not in the name registry surfaces the dotted string (the OID is explicit).
+  var unkOid = pki.schema.c509.parse(V.mk({ 2: "442b060102" }));   // ~oid 1.3.6.1.2 (unregistered)
+  check("60b. an unregistered ~oid algorithm surfaces its dotted string", unkOid.signatureAlgorithm.name === "1.3.6.1.2");
+  // Coverage residual (verified trivial): the remaining uncovered branches in schema-c509.js are
+  // defensive `node.children || []` guards (a decoded CBOR array always has children), the cosmetic
+  // _shortName OU/L/ST display fallbacks, the empty-tag-48 Buffer.alloc(0) guard, and the matches()
+  // negative-int probe side -- none reachable through pki.schema.c509.parse without breaking a decoder
+  // invariant, so they are left uncovered rather than forced with an assertionless test.
+
+  console.log("CHECKS " + helpers.getChecks());
+}
+
+// A helper: patch one byte in a copy of `buf` (e.g. the certificateType) and return the parse error code.
+function code2(buf, offset, value) {
+  var c = Buffer.from(buf); c[offset] = value;
+  return codeSync(function () { return pki.schema.c509.parse(c); });
+}
+function codeSync(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  Promise.resolve().then(run).then(null, function (e) { console.error(e && e.stack || e); process.exit(1); });
+}

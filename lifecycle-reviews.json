@@ -1,4 +1,16 @@
 {
+  "pki.ct.encodeSctList": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6962 SCT producing surface (the TLS-encoded SignedCertificateTimestampList) is complete and round-trips through the shipped pki.ct.parseSctList, but it is not yet cross-checked against an independent CT log's own encoding in the integration harness. Graduate once an external CT toolchain validates a list it emits.",
+    "reviewedAt": "0.2.30",
+    "reviewBy": "0.3.0"
+  },
+  "pki.ct.signSct": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6962 SCT signing surface rides the same producing-side path as pki.ct.encodeSctList and is not yet interop-proven against an independent CT verifier. Graduate alongside pki.ct.encodeSctList.",
+    "reviewedAt": "0.2.30",
+    "reviewBy": "0.3.0"
+  },
   "pki.webauthn.parseAttestationObject": {
     "decision": "keep-experimental",
     "reason": "The attestation-object surface is hardened and covers the WebAuthn attestation-statement formats, but the format set is still growing and the aaguid->root binding via FIDO MDS is the caller's step rather than an in-toolkit surface. Graduate once the attestation-format coverage and the metadata-service trust-anchor binding are settled.",

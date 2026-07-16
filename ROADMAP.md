@@ -116,7 +116,7 @@ Path validation's fastest-growing consumers are attestation chains, and the Node
 
 ## Alternative encodings
 
-- **C509 CBOR certificates** — *Codec shipped; profile under design.* The strict deterministic-CBOR codec the profile builds on shipped as `pki.cbor` (RFC 8949 §4.2 core deterministic, a fail-closed sibling of the DER codec that also opens COSE / CWT / EAT). The C509 certificate profile itself — a CBOR encoding of the X.509 model the toolkit already parses — remains under design against draft-ietf-cose-cbor-encoded-cert.
+- **C509 CBOR certificates** — *Shipped (parsing + type-3 DER round-trip).* `pki.schema.c509.parse` decodes a C509 certificate (draft-ietf-cose-cbor-encoded-cert) in both forms — natively-signed and the CBOR re-encoding of a DER X.509 v3 certificate — over the strict deterministic-CBOR `pki.cbor` codec (RFC 8949 §4.2). A type-3 certificate is inverted back to the original DER byte-for-byte (de-compressing the EC point, re-emitting each field as canonical DER, re-wrapping the ECDSA signature), so the original signature still verifies and the result round-trips through `pki.schema.x509.parse`; a field outside the reconstruction's covered set fails closed. It decodes CBOR, not DER, so it is an explicit-call surface, not auto-routed by `pki.schema.parse`. A C509 encoder and the deferred per-extension value inversions remain *Planned*.
 
 ## Assurance and interoperability
 

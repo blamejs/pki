@@ -46,6 +46,7 @@ var NO_FIXTURE_YET = {
   "pki.schema.cmp":      "openssl's `cmp` subcommand is client-only (needs a live server as the oracle peer); add a fixtures row when an oracle path exists",
   "pki.schema.attrcert": "openssl cannot emit RFC 5755 attribute certificates; add a fixtures row when an independent oracle exists",
   "pki.schema.csrattrs": "openssl/NSS have no generator for the EST CSR Attributes wire format (RFC 8951 / 9908 CsrAttrs); add a fixtures row when an independent oracle exists",
+  "pki.schema.c509":     "openssl/NSS have no C509 (draft-ietf-cose-cbor-encoded-cert) codec; the type-3 reconstruction emits standard DER that is byte-exact to the Appendix A known-answer certificates and is cross-checked by the x509 interop, so there is no independent C509 oracle to add until a C509 toolchain exists",
 };
 
 // Discover every primitive name from the lib/ @primitive comment blocks.

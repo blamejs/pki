@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.30 — 2026-07-16
+
+C509 CBOR-encoded certificates arrive as pki.schema.c509.parse: decode the compact CBOR profile of X.509 in both its natively-signed and X.509-re-encoded forms, reconstructing the original DER byte-for-byte so the original signature still verifies.
+
+### Added
+
+- pki.schema.c509.parse(bytes) decodes a C509 CBOR-encoded certificate (draft-ietf-cose-cbor-encoded-cert) into structured, validated fields. It reads both certificate forms -- natively-signed (c509CertificateType 2) and the CBOR re-encoding of a DER X.509 v3 certificate (type 3) -- over the strict deterministic-CBOR codec, fail-closed. For a type-3 certificate it reconstructs the original DER byte-for-byte (de-compressing the EC point, re-emitting each field as canonical DER, re-wrapping the ECDSA signature) so the original signature verifies and the certificate round-trips through pki.schema.x509.parse; a field it cannot invert byte-exactly fails closed. It decodes CBOR, not DER, so it is an explicit-call surface and is not auto-routed by pki.schema.parse.
+
+### Fixed
+
+- Certification-path validation now rejects a trust anchor whose per-purpose distrust-after date is an invalid Date at input (path/bad-input). Previously a malformed date value passed the Date type check but compared as not-a-number, silently disabling the distrust-after restriction it was meant to enforce.
+
 ## v0.2.29 — 2026-07-16
 
 Certificate Transparency log-list signature verification arrives as pki.ct.verifyLogListSignature: verify the detached signature published alongside the CT log list against a caller-pinned signer key, completing the offline log-list trust chain.

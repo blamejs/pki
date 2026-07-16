@@ -2054,10 +2054,13 @@ function testNanDateComparisonUnguarded() {
   // `allow:nan-date-comparison-unguarded` marker naming the validated source.
   // Scope-aware (function-granular, like number-narrows); fires on a NEW unguarded
   // comparison ANYWHERE in lib, including a not-yet-written primitive. Rename-proof:
-  // it matches the `.getTime()`-in-a-comparison shape and the `isNaN(` guard shape,
-  // never a symbol. This class is a 3-peat -- TSP (v0.2.19), OCSP (v0.2.22), and the
-  // CT log-list temporal gate (v0.2.28) were each a real fail-open of exactly this shape.
-  var CMP = /\.getTime\(\)\s*[<>]|[<>]=?\s*[A-Za-z_$][\w$.]*\.getTime\(\)/;
+  // it matches the `.getTime()`-in-a-comparison shape, the equally-lenient
+  // `Date.parse(...)`-in-a-comparison shape (Date.parse returns NaN for an unparseable
+  // string, so `Date.parse(a) <= Date.parse(b)` is false-on-NaN just like getTime),
+  // and the `isNaN(` guard shape -- never a symbol. This class is a 3-peat -- TSP
+  // (v0.2.19), OCSP (v0.2.22), and the CT log-list temporal gate (v0.2.28) were each a
+  // real fail-open of exactly this shape. The reusable safe primitive is guard.time.
+  var CMP = /\.getTime\(\)\s*[<>]|[<>]=?\s*[A-Za-z_$][\w$.]*\.getTime\(\)|Date\.parse\s*\([^)]*\)\s*[<>]|[<>]=?\s*Date\.parse\s*\(/;
   var bad = [];
   _libFiles().forEach(function (f) {
     var rel = path.relative(REPO_ROOT, f);
@@ -2072,7 +2075,7 @@ function testNanDateComparisonUnguarded() {
       if (off < 0) return;                                            // no getTime relational comparison
       if (/\bisNaN\s*\(/.test(region.body)) return;                   // the function guards NaN -> safe
       bad.push({ file: rel, line: region.startLine + off,
-        content: "the function '" + region.name + "' compares a Date's .getTime() against a bound with no isNaN guard -- an Invalid Date (getTime() === NaN) makes every relational comparison false and SILENTLY BYPASSES the gate; reject isNaN(getTime()) first, or mark allow:nan-date-comparison-unguarded when the Date is source-validated (codec readTime / rfc3339.parse / literal)" });
+        content: "the function '" + region.name + "' compares a Date's .getTime() (or Date.parse()) against a bound with no isNaN guard -- an Invalid Date / unparseable string yields NaN, and every relational comparison against NaN is false, SILENTLY BYPASSING the gate; route through guard.time (assertValid/within) or reject isNaN() first, or mark allow:nan-date-comparison-unguarded when the value is source-validated (codec readTime / rfc3339.isValid / literal)" });
     });
   });
   bad = _filterMarkers(bad, "nan-date-comparison-unguarded");

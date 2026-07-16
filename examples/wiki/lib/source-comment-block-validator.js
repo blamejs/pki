@@ -80,6 +80,9 @@ var SPEC_PATTERNS = [
   new RegExp("^FIPS \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^(?:NIST )?SP 800-\\d+[A-Za-z]?(?:\\s+Rev\\.?\\s*\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^RFC \\d+" + _SPEC_OPT + "$"),
+  // IETF Internet-Drafts (a work-in-progress normative source, e.g. draft-ietf-cose-cbor-encoded-cert):
+  // datatracker deep-links these, so _specUrl MUST map them (see the recognized-links-are-linkable guard).
+  new RegExp("^draft-[a-z][a-z0-9-]+" + _SPEC_OPT + "$"),
   new RegExp("^X\\.\\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^ISO/IEC \\d+(?:-\\d+)?" + _SPEC_OPT + "$"),
   new RegExp("^SEC \\d+" + _SPEC_OPT + "$"),
@@ -543,4 +546,5 @@ module.exports = {
   EXAMPLE_PLACEHOLDERS: EXAMPLE_PLACEHOLDERS,
   isValidSpecRef:       _isValidSpecRef,
   isValidDefendsRef:    _isValidDefendsRef,
+  SPEC_PATTERNS:        SPEC_PATTERNS,
 };
