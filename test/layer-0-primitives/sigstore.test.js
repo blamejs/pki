@@ -97,7 +97,7 @@ function buildSynBundle(opts) {
     subjectKey: rootKp.publicKey, signerKey: rootKp.privateKey, extensions: [synExt("basicConstraints", true, B.sequence([B.boolean(true)])), synExt("keyUsage", true, synKuVal([5, 6]))] });
   var san = opts.san || [gnUriDer("https://github.com/synthetic/repo")];
   var leafDer = synCert({ serial: 2n, issuer: opts.leafIssuer || "syn-root", subject: "syn-leaf", notBefore: NB, notAfter: NA,
-    subjectKey: leafKp.publicKey, signerKey: rootKp.privateKey,
+    subjectKey: opts.leafSubjectKey || leafKp.publicKey, signerKey: rootKp.privateKey,
     extensions: [synExt("keyUsage", true, synKuVal([0])), synExt("extKeyUsage", false, B.sequence([synOid("codeSigning")])), synExt("subjectAltName", false, B.sequence(san))].concat(opts.extraLeafExtensions || []) });
   var payloadType = opts.payloadType || "application/vnd.in-toto+json";
   var payloadObj = opts.payload !== undefined ? opts.payload
@@ -521,6 +521,15 @@ async function run() {
   var synGood = buildSynBundle({});
   var sv = await pki.sigstore.verifyBundle(synGood.bundle, synGood.trust);
   check("synthetic bundle (self-issued trust) fully verifies", sv && sv.verified === true && sv.identity.san.type === "uri");
+
+  // A low-order (all-zeroes) Ed25519 Fulcio leaf key verifies a FORGED EdDSA signature; node imports it
+  // without complaint, so the shared Edwards-point full-order gate must reject it at key-parse (before the
+  // DSSE verify), exactly as the webauthn / path-validation EdDSA paths do. Without the gate the bundle
+  // reaches the verify step (a different, later error); with it, sigstore/bad-key fires first.
+  var lowOrderEd25519 = crypto.createPublicKey({ key: Buffer.from("302a300506032b6570032100" + "00".repeat(32), "hex"), format: "der", type: "spki" });
+  var synLowOrder = buildSynBundle({ leafSubjectKey: lowOrderEd25519 });
+  check("a low-order Ed25519 Fulcio leaf key -> sigstore/bad-key before verify",
+    (await codeOf(pki.sigstore.verifyBundle(synLowOrder.bundle, synLowOrder.trust))) === "sigstore/bad-key");
 
   // A Fulcio machine identity carried as an otherName SAN ([0] { type-id, [0]
   // EXPLICIT value }) is decoded and surfaced with its type-id.

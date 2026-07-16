@@ -1,4 +1,16 @@
 {
+  "pki.smime.sign": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8551 S/MIME message layer (multipart/signed clear-signed + application/pkcs7-mime opaque) is hardened and openssl-interop-proven, but the surrounding S/MIME surface is still growing (encryption, compression, capability negotiation) and the canonicalization/CTE handling continues to absorb interop refinements. Graduate once the full S/MIME message surface is settled.",
+    "reviewedAt": "0.2.31",
+    "reviewBy": "0.3.0"
+  },
+  "pki.smime.verify": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same lib/mime.js canonicalizer and content-binding path as pki.smime.sign; graduate alongside it once the S/MIME message surface is settled.",
+    "reviewedAt": "0.2.31",
+    "reviewBy": "0.3.0"
+  },
   "pki.ct.encodeSctList": {
     "decision": "keep-experimental",
     "reason": "The RFC 6962 SCT producing surface (the TLS-encoded SignedCertificateTimestampList) is complete and round-trips through the shipped pki.ct.parseSctList, but it is not yet cross-checked against an independent CT log's own encoding in the integration harness. Graduate once an external CT toolchain validates a list it emits.",

@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.31 — 2026-07-16
+
+X.509 certificates now decode the RFC 3739 / ETSI EN 319 412-5 qualified-certificate qcStatements extension, and the sigstore verifier gains a low-order EdDSA public-key gate.
+
+### Added
+
+- pki.schema.x509.parse decodes the RFC 3739 sec. 3.2.6 / ETSI EN 319 412-5 qualified-certificate qcStatements extension (id-pe-qcStatements). The decoded statements -- QcCompliance (EU-qualified), QcLimitValue (reliance limit), QcSSCD (key in a QSCD), QcType (certificate purpose: esign / eseal / web), QcRetentionPeriod, QcPDS (disclosure-statement URLs), QcCClegislation (country of qualification), and the PKIX SemanticsInformation -- are surfaced on the parsed extension and rendered by pki.inspect. An unknown statementId is preserved opaque (its raw bytes, semantics not executed); a malformed shape fails closed with a typed error.
+
+### Security
+
+- The sigstore keyless-bundle verifier now routes an Ed25519/Ed448 Fulcio leaf or Rekor log public key through the shared full-order Edwards-point gate before verification. A low-order OKP key (which node imports without complaint and which can verify a forged EdDSA signature) is rejected at key-parse (sigstore/bad-key) instead of being handed to verify -- the same defense the webauthn and certification-path EdDSA verifiers already apply.
+
 ## v0.2.30 — 2026-07-16
 
 C509 CBOR-encoded certificates arrive as pki.schema.c509.parse: decode the compact CBOR profile of X.509 in both its natively-signed and X.509-re-encoded forms, reconstructing the original DER byte-for-byte so the original signature still verifies.

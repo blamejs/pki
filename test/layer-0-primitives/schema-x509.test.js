@@ -492,9 +492,99 @@ function testMultiDefectFailClosed() {
   ]));
 }
 
+// RFC 3739 sec. 3.2.6 + ETSI EN 319 412-5 qualified-certificate statements (the id-pe-qcStatements
+// extension decoder registered in certExtensionDecoders, surfaced via x509.parse -> byOid).
+function testQcStatements() {
+  var NS = pkix.makeNS("path", pki.errors.PathError, oidReg);
+  var qcOid = oidReg.byName("qcStatements");
+  var dec = pkix.certExtensionDecoders(NS).byOid[qcOid];
+  var C = oidReg.byName("qcCompliance"), L = oidReg.byName("qcLimitValue"), SSCD = oidReg.byName("qcSSCD");
+  var T = oidReg.byName("qcType"), Tesign = oidReg.byName("qctEsign"), Tweb = oidReg.byName("qctWeb");
+  var V1 = oidReg.byName("qcsPkixQCSyntaxV1");
+
+  // 1. QcCompliance (info-absent) accepts; info === null.
+  var r1 = dec(build.sequence([build.sequence([build.oid(C)])]));
+  check("qc: QcCompliance decodes info-absent", r1.length === 1 && r1[0].statementId === C && r1[0].name === "qcCompliance" && r1[0].info === null);
+  // 2. QcType (SEQUENCE OF OID) -> types + typeNames.
+  var r2 = dec(build.sequence([build.sequence([build.oid(T), build.sequence([build.oid(Tesign), build.oid(Tweb)])])]));
+  check("qc: QcType decodes the purpose OIDs + names", r2[0].name === "qcType" && r2[0].info.types.join(",") === Tesign + "," + Tweb && r2[0].info.typeNames.join(",") === "qctEsign,qctWeb");
+  // 3. QcLimitValue MonetaryValue (alphabetic currency), uint31/int-narrowed to Numbers.
+  var r3 = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("EUR"), build.integer(100000n), build.integer(2n)])])]));
+  check("qc: QcLimitValue decodes currency/amount/exponent", r3[0].info.currency === "EUR" && r3[0].info.amount === 100000 && r3[0].info.exponent === 2);
+  // 4. Unknown statementId preserved OPAQUE (no throw), raw statementInfo TLV byte-identical.
+  var infoTlv = build.utf8("whatever");
+  var r4 = dec(build.sequence([build.sequence([build.oid("1.3.6.1.4.1.99999.1"), infoTlv])]));
+  check("qc: unknown statementId preserved opaque", r4[0].name === null && r4[0].info.opaque === true && Buffer.isBuffer(r4[0].info.bytes) && r4[0].info.bytes.equals(infoTlv));
+  // 5-8. Structural rejects.
+  check("qc: not a SEQUENCE -> bad-qc-statements", code(function () { dec(build.integer(5n)); }) === "path/bad-qc-statements");
+  check("qc: non-OID statementId -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.integer(1n), build.nullValue()])])); }) === "path/bad-qc-statement");
+  check("qc: duplicate statementId -> duplicate-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(C)]), build.sequence([build.oid(C)])])); }) === "path/duplicate-qc-statement");
+  check("qc: empty SEQUENCE OF -> bad-qc-statements", code(function () { dec(build.sequence([])); }) === "path/bad-qc-statements");
+  // 9. A presence-only statement carrying statementInfo rejects.
+  check("qc: QcCompliance with statementInfo -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(C), build.nullValue()])])); }) === "path/bad-qc-statement");
+  check("qc: QcSSCD with statementInfo -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(SSCD), build.nullValue()])])); }) === "path/bad-qc-statement");
+  // 10. QcType shape violations.
+  check("qc: QcType member not an OID -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(T), build.sequence([build.integer(1n)])])])); }) === "path/bad-qc-statement");
+  check("qc: QcType empty inner -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(T), build.sequence([])])])); }) === "path/bad-qc-statement");
+  check("qc: QcType statementInfo absent -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(T)])])); }) === "path/bad-qc-statement");
+  // 11. QcLimitValue currency arms.
+  check("qc: QcLimitValue bad alphabetic currency length -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("EU"), build.integer(1n), build.integer(0n)])])])); }) === "path/bad-qc-statement");
+  var rNum = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.integer(978n), build.integer(1n), build.integer(0n)])])]));
+  check("qc: QcLimitValue numeric currency accepts", rNum[0].info.currency === 978);
+  check("qc: QcLimitValue numeric currency out of range -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.integer(1000n), build.integer(1n), build.integer(0n)])])])); }) === "path/bad-qc-statement");
+  // 12. Mixed statements: wire order preserved, known + unknown coexist.
+  var r12 = dec(build.sequence([build.sequence([build.oid(C)]), build.sequence([build.oid(T), build.sequence([build.oid(Tesign)])]), build.sequence([build.oid("1.3.6.1.4.1.99999.2"), build.printable("x")])]));
+  check("qc: mixed statements preserve order + known/unknown", r12.length === 3 && r12[0].info === null && r12[1].info.types[0] === Tesign && r12[2].info.opaque === true && r12[2].name === null);
+  // 16. SemanticsInformation (v1): at least one field; empty rejects.
+  var r16 = dec(build.sequence([build.sequence([build.oid(V1), build.sequence([build.oid("1.3.6.1.4.1.99999.9")])])]));
+  check("qc: SemanticsInformation decodes semanticsIdentifier", r16[0].info.semanticsIdentifier === "1.3.6.1.4.1.99999.9" && r16[0].info.nameRegistrationAuthorities.length === 0);
+  check("qc: empty SemanticsInformation -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(V1), build.sequence([])])])); }) === "path/bad-qc-statement");
+  // SemanticsInformation with nameRegistrationAuthorities (a SEQUENCE OF GeneralName); a QCStatement of >2 children.
+  var rSem = dec(build.sequence([build.sequence([build.oid(V1), build.sequence([build.oid("1.2.3.4"), build.sequence([build.contextPrimitive(6, Buffer.from("https://ra", "ascii"))])])])]));
+  check("qc: SemanticsInformation decodes nameRegistrationAuthorities", rSem[0].info.semanticsIdentifier === "1.2.3.4" && rSem[0].info.nameRegistrationAuthorities.length === 1);
+  check("qc: a QCStatement of more than two elements -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(C), build.nullValue(), build.nullValue()])])); }) === "path/bad-qc-statement");
+  // Remaining ETSI statement decoders + the signed MonetaryValue exponent.
+  var RP = oidReg.byName("qcRetentionPeriod"), PDS = oidReg.byName("qcPDS"), CCL = oidReg.byName("qcCClegislation");
+  check("qc: QcRetentionPeriod decodes the year count", dec(build.sequence([build.sequence([build.oid(RP), build.integer(10n)])]))[0].info.years === 10);
+  var rPds = dec(build.sequence([build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("https://x/pds"), build.printable("en")])])])]));
+  check("qc: QcPDS decodes url + language", rPds[0].info.locations[0].url === "https://x/pds" && rPds[0].info.locations[0].language === "en");
+  check("qc: QcPDS bad language length -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(PDS), build.sequence([build.sequence([build.ia5("u"), build.printable("eng")])])])])); }) === "path/bad-qc-statement");
+  var rCcl = dec(build.sequence([build.sequence([build.oid(CCL), build.sequence([build.printable("US"), build.printable("CA")])])]));
+  check("qc: QcCClegislation decodes the country codes", rCcl[0].info.countries.join(",") === "US,CA");
+  check("qc: QcCClegislation bad country length -> bad-qc-statement", code(function () { dec(build.sequence([build.sequence([build.oid(CCL), build.sequence([build.printable("USA")])])])); }) === "path/bad-qc-statement");
+  var rNeg = dec(build.sequence([build.sequence([build.oid(L), build.sequence([build.printable("USD"), build.integer(100n), build.integer(-2n)])])]));
+  check("qc: QcLimitValue decodes a negative (fractional) exponent", rNeg[0].info.exponent === -2);
+
+  // 13. Orchestrator: the SHIPPED consumer path (x509.parse -> extensions -> byOid).
+  function _certWithQc(critical, qcVal) {
+    var ext = [build.oid(qcOid)];
+    if (critical) ext.push(build.boolean(true));
+    ext.push(build.octetString(qcVal));
+    return _cert([build.explicit(0, build.integer(2n)), build.integer(2n), _algId("1.2.840.10045.4.3.2"),
+      _name("issuer"), _validity(), _name("subj"), _spki(), build.explicit(3, build.sequence([build.sequence(ext)]))]);
+  }
+  var qcVal = build.sequence([build.sequence([build.oid(C)]), build.sequence([build.oid(T), build.sequence([build.oid(Tweb)])]), build.sequence([build.oid("1.3.6.1.4.1.99999.3"), build.printable("z")])]);
+  var certDer = _certWithQc(false, qcVal);
+  var parsed = pki.schema.x509.parse(certDer);
+  var qcExt = parsed.extensions.filter(function (e) { return e.oid === qcOid; })[0];
+  check("qc: x509.parse surfaces the qcStatements extension (name + raw value)", qcExt && qcExt.name === "qcStatements" && Buffer.isBuffer(qcExt.value));
+  var decoded = pkix.certExtensionDecoders(NS).byOid[qcExt.oid](qcExt.value);
+  check("qc: orchestrator parse -> extensions -> byOid decodes end to end", decoded[0].name === "qcCompliance" && decoded[1].info.typeNames[0] === "qctWeb");
+
+  // 14. inspect renders the decoded statements (not raw bytes).
+  var rendered = pki.inspect.certificate(certDer);
+  check("qc: inspect renders the decoded qcStatements", /qcCompliance|qcType|Qualified/i.test(rendered));
+
+  // 15. A CRITICAL qcStatements no longer fires lint/rfc5280/unknown-critical-extension.
+  var critCertDer = _certWithQc(true, build.sequence([build.sequence([build.oid(C)])]));
+  var lintFindings = pki.lint.certificate(critCertDer).findings;
+  check("qc: a critical qcStatements is not flagged unknown-critical", !lintFindings.some(function (f) { return f.code === "lint/rfc5280/unknown-critical-extension" && /qcstatement|1\.3\.6\.1\.5\.5\.7\.1\.3/i.test(JSON.stringify(f)); }));
+}
+
 function run() {
   testParseFields();
   testExtensions();
+  testQcStatements();
   testPem();
   testRejects();
   testShortTbsWithVersion();
