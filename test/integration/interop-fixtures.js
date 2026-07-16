@@ -388,6 +388,39 @@ module.exports = {
     },
   ],
 
+  // ---- pki.smime.encrypt : encrypted S/MIME messages we assemble interoperate with `openssl cms` -----
+  "pki.smime.encrypt": [
+    {
+      desc: "an encrypted S/MIME message we assemble (authEnveloped-data + enveloped-data) is decrypted by `openssl cms -decrypt`; an `openssl cms -encrypt` message is decrypted by pki.smime.decrypt",
+      run: async function (ctx) {
+        var pki = ctx.pki, makeRecipient = require("../helpers/signing").makeRecipient;
+        var probe = ctx.runOpenssl(["cms", "-help"], { allowNonZero: true });
+        if (!/-decrypt/.test(String(probe.stdout || "") + String(probe.stderr || ""))) { ctx.skip("openssl `cms` unavailable -- S/MIME enveloped cross-check cannot run"); return; }
+        var rsa = makeRecipient("rsa");
+        var crt = ctx.tmpFile(pki.schema.x509.pemEncode(rsa.cert, "CERTIFICATE"), "r.crt");
+        var key = ctx.tmpFile(pki.schema.pkcs8.pemEncode(rsa.key, "PRIVATE KEY"), "r.key");
+        var vout = ctx.tmpFile(Buffer.alloc(0), "vout");
+        var content = Buffer.from("pki.smime encrypted cross-implementation payload");
+        // forward: our authEnveloped-data (GCM default) -> openssl cms -decrypt.
+        var gcm = ctx.tmpFile(await pki.smime.encrypt(content, [{ cert: rsa.cert }]), "gcm.eml");
+        var g = ctx.runOpenssl(["cms", "-decrypt", "-in", gcm, "-inkey", key, "-recip", crt, "-out", vout], { allowNonZero: true });
+        if (g.code === 0) ctx.check("openssl cms -decrypt recovers our authEnveloped-data (GCM) message", ctx.fs.readFileSync(vout).indexOf(content) >= 0);
+        else ctx.skip("this openssl build cannot cms -decrypt an AES-GCM AuthEnvelopedData S/MIME message");
+        // forward: our enveloped-data (CBC) -> openssl cms -decrypt.
+        var cbc = ctx.tmpFile(await pki.smime.encrypt(content, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }), "cbc.eml");
+        var c = ctx.runOpenssl(["cms", "-decrypt", "-in", cbc, "-inkey", key, "-recip", crt, "-out", vout], { allowNonZero: true });
+        ctx.check("openssl cms -decrypt recovers our enveloped-data (CBC) message", c.code === 0 && ctx.fs.readFileSync(vout).indexOf(content) >= 0);
+        // reverse: openssl cms -encrypt -> pki.smime.decrypt (the shared MIME frame + enveloped body).
+        var contentPath = ctx.tmpFile(content, "c.txt");
+        var osslPath = ctx.tmpFile(Buffer.alloc(0), "ossl.eml");
+        var r = ctx.runOpenssl(["cms", "-encrypt", "-aes-256-cbc", "-in", contentPath, "-out", osslPath, "-recip", crt], { allowNonZero: true });
+        ctx.check("openssl cms -encrypt succeeds", r.code === 0);
+        var dec = await pki.smime.decrypt(ctx.fs.readFileSync(osslPath), { key: rsa.key, cert: rsa.cert });
+        ctx.check("pki.smime.decrypt recovers an openssl cms -encrypt message", dec.content.indexOf(content) >= 0 && dec.smimeType === "enveloped-data" && dec.authenticated === false);
+      },
+    },
+  ],
+
   // ---- pki.tsp.sign : an RFC 3161 timestamp token we create verifies under openssl --
   "pki.tsp.sign": [
     {

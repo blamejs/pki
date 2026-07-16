@@ -15,6 +15,7 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var pki = helpers.pki;
 var signing = require("../helpers/signing");
+var makeRecipient = signing.makeRecipient;
 
 async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 
@@ -124,6 +125,114 @@ async function run() {
   var shakeSg = signing.makeSigner("slh-dsa-shake-128s");
   var shakeMsg = await pki.smime.sign(MSG, [{ cert: shakeSg.cert, key: shakeSg.key }], { form: "multipart" });
   check("34. a SHAKE digest preserves its micalg name (shake128, not sha-ke128)", /micalg=shake128/.test(shakeMsg.toString()) && (await pki.smime.verify(shakeMsg, { strictMicalg: true })).valid === true);
+
+  // ==== S/MIME encryption (enveloped-data), RFC 8551 sec. 3.3 / sec. 3.4 ============================
+  // No trailing newline: the recovered content is the CANONICAL entity (bare LF -> CRLF), so a needle
+  // ending in "\n" would not match "payload\r\n" -- search for a needle that does not span a line end.
+  var ENC = Buffer.from("secret payload");
+
+  // ---- E1: round-trip per recipient type (recipient-agnostic -- every cms.encrypt arm carries through) ----
+  var eRsa = makeRecipient("rsa");
+  var enc = await pki.smime.encrypt(ENC, [{ cert: eRsa.cert }]);
+  check("35. encrypt emits application/pkcs7-mime; smime-type=authEnveloped-data (the AEAD default)", /Content-Type: application\/pkcs7-mime; smime-type=authEnveloped-data; name=smime\.p7m/.test(enc.toString("latin1")));
+  check("36. it declares base64 transfer + attachment disposition", /Content-Transfer-Encoding: base64/.test(enc.toString("latin1")) && /Content-Disposition: attachment; filename=smime\.p7m/.test(enc.toString("latin1")));
+  var dRsa = await pki.smime.decrypt(enc, { key: eRsa.key, cert: eRsa.cert });
+  check("37. RSA (ktri/OAEP) round-trips: recovered content is the inner text/plain entity", dRsa.content.indexOf(ENC) >= 0 && dRsa.content.indexOf(Buffer.from("text/plain")) >= 0);
+  check("38. the decrypt verdict surfaces smimeType + authenticated:true (AuthEnvelopedData)", dRsa.smimeType === "authEnveloped-data" && dRsa.authenticated === true && dRsa.recipientType === "ktri");
+
+  var recips = ["ec-p256", "x25519", "ml-kem-768"];
+  for (var e = 0; e < recips.length; e++) {
+    var rc = makeRecipient(recips[e]);
+    var enc2 = await pki.smime.encrypt(ENC, [{ cert: rc.cert }]);
+    var dec2 = await pki.smime.decrypt(enc2, { key: rc.key, cert: rc.cert });
+    check("39." + e + " a " + recips[e] + " recipient round-trips through S/MIME encryption", dec2.content.indexOf(ENC) >= 0 && dec2.authenticated === true);
+  }
+
+  // ---- E2: password (pwri) + kek (kekri) recipients need no certificate ----
+  var pwEnc = await pki.smime.encrypt(ENC, [{ password: "s3cret" }]);
+  check("40. a password recipient (pwri) round-trips", (await pki.smime.decrypt(pwEnc, { password: "s3cret" })).content.indexOf(ENC) >= 0);
+  var kek = Buffer.alloc(32, 7), kekId = Buffer.from("kek-1");
+  var kekEnc = await pki.smime.encrypt(ENC, [{ kek: kek, kekId: kekId }]);
+  check("41. a kek recipient (kekri) round-trips", (await pki.smime.decrypt(kekEnc, { kek: kek, kekId: kekId })).content.indexOf(ENC) >= 0);
+
+  // ---- E3: smime-type is DERIVED from the produced CMS content type; CBC -> enveloped-data (no integrity) ----
+  var cbc = await pki.smime.encrypt(ENC, [{ cert: eRsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  check("42. a CBC choice yields smime-type=enveloped-data (EnvelopedData)", /smime-type=enveloped-data/.test(cbc.toString("latin1")));
+  var dCbc = await pki.smime.decrypt(cbc, { key: eRsa.key, cert: eRsa.cert });
+  check("43. an enveloped-only (CBC) message surfaces authenticated:false (the EFAIL / no-integrity caveat)", dCbc.smimeType === "enveloped-data" && dCbc.authenticated === false && dCbc.content.indexOf(ENC) >= 0);
+
+  // ---- E4: entity input forms ----
+  var entEnc = await pki.smime.encrypt(Buffer.from("Content-Type: application/json\r\n\r\n{\"k\":1}\n"), [{ cert: eRsa.cert }], { entity: true });
+  check("44. opts.entity encrypts a caller's full MIME entity verbatim", (await pki.smime.decrypt(entEnc, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(Buffer.from("application/json")) >= 0);
+  var ctEnc = await pki.smime.encrypt(ENC, [{ cert: eRsa.cert }], { contentType: "text/html; charset=utf-8" });
+  check("45. opts.contentType is honored on the wrapped entity", (await pki.smime.decrypt(ctEnc, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(Buffer.from("text/html")) >= 0);
+
+  // ---- E5: a single non-array recipient descriptor is normalized to the enveloped path (ergonomic) ----
+  check("46. a single {cert} (not an array) still encrypts as enveloped (not EncryptedData)", (await pki.smime.decrypt(await pki.smime.encrypt(ENC, { cert: eRsa.cert }), { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+
+  // ---- E6: multi-recipient: ONE content-encryption key, each recipient's key material recovers it ----
+  var eEc = makeRecipient("ec-p256");
+  var multiEnc = await pki.smime.encrypt(ENC, [{ cert: eRsa.cert }, { cert: eEc.cert }, { password: "pw" }]);
+  check("47. multi-recipient: RSA key recovers", (await pki.smime.decrypt(multiEnc, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+  check("48. multi-recipient: EC key recovers the same content", (await pki.smime.decrypt(multiEnc, { key: eEc.key, cert: eEc.cert })).content.indexOf(ENC) >= 0);
+  check("49. multi-recipient: password recovers the same content", (await pki.smime.decrypt(multiEnc, { password: "pw" })).content.indexOf(ENC) >= 0);
+
+  // ---- E7: receive tolerance -- OpenSSL's x-pkcs7-mime + a MISSING smime-type both decrypt ----
+  var xType = Buffer.from(enc.toString("latin1").replace("application/pkcs7-mime", "application/x-pkcs7-mime"), "latin1");
+  check("50. an application/x-pkcs7-mime (OpenSSL legacy) message decrypts", (await pki.smime.decrypt(xType, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+  var noType = Buffer.from(enc.toString("latin1").replace("; smime-type=authEnveloped-data", ""), "latin1");
+  check("51. a MISSING smime-type decrypts (off the CMS content type)", (await pki.smime.decrypt(noType, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+
+  // ---- E8: reject / fail-closed ----
+  check("52. a non-pkcs7-mime message -> smime/unsupported-type", (await codeOf(function () { return pki.smime.decrypt(Buffer.from("Content-Type: text/plain\r\n\r\njust text"), { key: eRsa.key, cert: eRsa.cert }); })) === "smime/unsupported-type");
+  check("53. a signed-data pkcs7-mime is not a decrypt input -> smime/unsupported-type", (await codeOf(function () { return pki.smime.decrypt(Buffer.from("Content-Type: application/pkcs7-mime; smime-type=signed-data\r\nContent-Transfer-Encoding: base64\r\n\r\nAAAAAAAA\r\n"), { key: eRsa.key, cert: eRsa.cert }); })) === "smime/unsupported-type");
+  check("54. a garbage base64 body -> a typed PkiError (never a raw throw)", /^(smime|cms|asn1)\//.test(await codeOf(function () { return pki.smime.decrypt(Buffer.from("Content-Type: application/pkcs7-mime; smime-type=authEnveloped-data\r\nContent-Transfer-Encoding: base64\r\n\r\nAAAAAAAA\r\n"), { key: eRsa.key, cert: eRsa.cert }); })));
+  check("55. wrong recipient key material -> cms/no-matching-recipient (propagated, fail-closed)", (await codeOf(function () { return pki.smime.decrypt(enc, { key: makeRecipient("rsa").key, cert: makeRecipient("rsa").cert }); })) === "cms/no-matching-recipient");
+  // a tampered AEAD ciphertext collapses to the uniform cms/decrypt-failed (oracle freedom is the CMS
+  // layer's guarantee -- smime.decrypt must PROPAGATE it, never add a distinguishing branch).
+  var tEnc = enc.toString("latin1");
+  var b64start = tEnc.indexOf("\r\n\r\n") + 4, mid = b64start + 200;
+  var tampChar = tEnc[mid] === "A" ? "B" : "A";
+  var tampEnc = Buffer.from(tEnc.slice(0, mid) + tampChar + tEnc.slice(mid + 1), "latin1");
+  check("56. a tampered AEAD ciphertext -> a typed PkiError (fail-closed, no oracle)", /^(cms|smime|asn1)\//.test(await codeOf(function () { return pki.smime.decrypt(tampEnc, { key: eRsa.key, cert: eRsa.cert }); })));
+
+  // ---- E9: strictSmimeType (belt-and-braces, mirrors strictMicalg) ----
+  var mislabel = Buffer.from(enc.toString("latin1").replace("smime-type=authEnveloped-data", "smime-type=enveloped-data"), "latin1");
+  check("57. a mislabeled smime-type is advisory by default (still decrypts off the CMS content type)", (await pki.smime.decrypt(mislabel, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+  check("58. opts.strictSmimeType flags a smime-type that disagrees with the CMS body -> smime/smime-type-mismatch", (await codeOf(function () { return pki.smime.decrypt(mislabel, { key: eRsa.key, cert: eRsa.cert }, { strictSmimeType: true }); })) === "smime/smime-type-mismatch");
+
+  // ---- E10: a message larger than the MIME cap fails closed on receive (size ceiling) ----
+  check("59. decrypt of a non-Buffer/bad input -> a typed smime/* error", /^smime\//.test(await codeOf(function () { return pki.smime.decrypt(42, { key: eRsa.key, cert: eRsa.cert }); })));
+
+  // ---- E11: a pkcs7-mime whose body is a CMS structure that is NOT enveloped (a bare EncryptedData, or
+  // a SignedData) and carries NO smime-type is not a decrypt input -> smime/unsupported-type. EncryptedData
+  // in particular is deliberately NOT an S/MIME construct (RFC 8551 registers no smime-type for it). ----
+  var encData = Buffer.from(await pki.cms.encrypt(Buffer.from("x"), { cek: Buffer.alloc(32, 3) }, { contentEncryptionAlgorithm: "aes-256-cbc" }));   // non-array -> EncryptedData (CBC only)
+  var wrapped = Buffer.concat([Buffer.from("Content-Type: application/pkcs7-mime\r\nContent-Transfer-Encoding: base64\r\n\r\n", "latin1"), Buffer.from(encData.toString("base64"), "latin1"), Buffer.from("\r\n", "latin1")]);
+  check("60. a pkcs7-mime wrapping a bare EncryptedData (no smime-type) -> smime/unsupported-type", (await codeOf(function () { return pki.smime.decrypt(wrapped, { cek: Buffer.alloc(32, 3) }); })) === "smime/unsupported-type");
+  var signedDer = Buffer.from(await pki.cms.sign(Buffer.from("Content-Type: text/plain\r\n\r\nsigned"), signers));
+  var wrapSigned = Buffer.concat([Buffer.from("Content-Type: application/pkcs7-mime\r\nContent-Transfer-Encoding: base64\r\n\r\n", "latin1"), Buffer.from(signedDer.toString("base64"), "latin1"), Buffer.from("\r\n", "latin1")]);
+  check("61. a pkcs7-mime wrapping a SignedData (no smime-type) is not a decrypt input -> smime/unsupported-type", (await codeOf(function () { return pki.smime.decrypt(wrapSigned, { key: eRsa.key, cert: eRsa.cert }); })) === "smime/unsupported-type");
+
+  // ---- E12: every advertised opt is forwarded to the CMS layer (encrypt: oaepHash / keyIdentifier / ukm;
+  // decrypt: recipientIndex / maxIterations) -- an advertised-untested opt is an unasserted guarantee. ----
+  check("62. encrypt forwards opts.oaepHash to the ktri recipient", (await pki.smime.decrypt(await pki.smime.encrypt(ENC, [{ cert: eRsa.cert }], { oaepHash: "sha384" }), { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+  var eSki = makeRecipient("rsa", { ski: Buffer.from("smime-ski-20-bytes!!", "latin1") });
+  check("63. encrypt forwards opts.keyIdentifier=subjectKeyIdentifier", (await pki.smime.decrypt(await pki.smime.encrypt(ENC, [{ cert: eSki.cert }], { keyIdentifier: "subjectKeyIdentifier" }), { key: eSki.key, cert: eSki.cert })).content.indexOf(ENC) >= 0);
+  check("64. encrypt forwards opts.ukm to a kari recipient", (await pki.smime.decrypt(await pki.smime.encrypt(ENC, [{ cert: eEc.cert }], { ukm: Buffer.from("user-keying-material") }), { key: eEc.key, cert: eEc.cert })).content.indexOf(ENC) >= 0);
+  check("65. decrypt forwards opts.recipientIndex + opts.maxIterations to cms.decrypt", (await pki.smime.decrypt(multiEnc, { password: "pw" }, { recipientIndex: 2, maxIterations: 1000000 })).content.indexOf(ENC) >= 0);
+
+  // ---- E13: the smime-type header is advisory + case-insensitive on receive (the CMS body is authoritative);
+  // strict on emit. A legitimately oddly-cased header decrypts, and strictSmimeType matches case-insensitively. ----
+  var oddCase = Buffer.from(enc.toString("latin1").replace("smime-type=authEnveloped-data", "smime-type=AuthEnveloped-DATA"), "latin1");
+  check("66. an oddly-cased smime-type still decrypts (advisory, body-authoritative)", (await pki.smime.decrypt(oddCase, { key: eRsa.key, cert: eRsa.cert })).content.indexOf(ENC) >= 0);
+  check("67. strictSmimeType matches an oddly-cased-but-correct smime-type (case-insensitive)", (await pki.smime.decrypt(oddCase, { key: eRsa.key, cert: eRsa.cert }, { strictSmimeType: true })).content.indexOf(ENC) >= 0);
+
+  // ---- E14: encrypt fails closed on a missing / empty / malformed recipient set (an advertised guarantee:
+  // an S/MIME enveloped message is never emitted with no recipient). Surfaces the CMS layer's typed code. ----
+  check("68. an empty recipient array -> fail-closed typed error (never a recipient-less envelope)", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.encrypt(ENC, []); })));
+  check("69. null recipients -> fail-closed typed error", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.encrypt(ENC, null); })));
+  check("70. a bogus recipient descriptor -> fail-closed typed error", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.encrypt(ENC, [{ nonsense: 1 }]); })));
 
   console.log("CHECKS " + helpers.getChecks());
 }
