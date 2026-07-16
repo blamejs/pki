@@ -47,6 +47,7 @@ jobs:
           - ct-verify
           - merkle-verify
           - smime-parse
+          - smime-verify
           - pkix-ext-parse
           - crl-parse
           - csr-parse

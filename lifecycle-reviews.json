@@ -472,5 +472,41 @@
     "reason": "The RFC 3161 timestamp-token producing surface composes pki.cms.sign; it graduates with the CMS signing surface it builds on, once that set has seasoned and the composite signer specification reaches RFC.",
     "reviewedAt": "0.2.21",
     "reviewBy": "0.3.0"
+  },
+  "pki.schema.tsp.parseRequest": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.25",
+    "reviewBy": "0.3.0"
+  },
+  "pki.tsp.request": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.25",
+    "reviewBy": "0.3.0"
+  },
+  "pki.tsp.parseRequest": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.25",
+    "reviewBy": "0.3.0"
+  },
+  "pki.tsp.response": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.25",
+    "reviewBy": "0.3.0"
+  },
+  "pki.tsp.parseResponse": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.25",
+    "reviewBy": "0.3.0"
+  },
+  "pki.tsp.verify": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
+    "reviewedAt": "0.2.25",
+    "reviewBy": "0.3.0"
   }
 }

@@ -203,9 +203,11 @@ function fixturesFor(tag) {
     // run the actual encrypt/decrypt path (built in run()).
     recipientCertDer: cmsRecipient && cmsRecipient.cert, recipientKeyPkcs8: cmsRecipient && cmsRecipient.key,
     envDer: cmsEnvDer,
+    // pki.smime.verify: a real signed multipart/signed S/MIME message.
+    smimeMessageBytes: smimeMessageBytes,
   };
 }
-var cmsRecipient = null, cmsEnvDer = null;
+var cmsRecipient = null, cmsEnvDer = null, smimeMessageBytes = null;
 // A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
 // start (signing is async so it cannot be a module-load constant).
 var ocspResponseDer = null;
@@ -236,6 +238,7 @@ async function run() {
     { cert: signFixtureSigner.cert, key: signFixtureSigner.key });
   cmsRecipient = require("../helpers/signing").makeRecipient("rsa");
   cmsEnvDer = await pki.cms.encrypt(Buffer.from("secret"), [{ cert: cmsRecipient.cert }]);
+  smimeMessageBytes = await pki.smime.sign(Buffer.from("hello"), [{ cert: signFixtureSigner.cert, key: signFixtureSigner.key }]);
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 

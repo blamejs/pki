@@ -37,6 +37,7 @@ var schema    = require("./lib/schema-all");
 var path      = require("./lib/path-validate");
 var ct        = require("./lib/ct");
 var cms       = require("./lib/cms-verify");
+var smime     = require("./lib/smime");
 var tsp       = require("./lib/tsp-sign");
 var ocsp      = require("./lib/ocsp");
 var merkle    = require("./lib/merkle");
@@ -77,6 +78,7 @@ module.exports = {
   // surfaced raw for external verification (pki.ct.reconstructSignedData).
   ct:        ct,
   cms:       cms,
+  smime:     smime,
   tsp:       tsp,
   ocsp:      ocsp,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
