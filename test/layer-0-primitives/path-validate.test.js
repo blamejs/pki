@@ -644,6 +644,10 @@ async function testCoreRejections() {
   var unkNon = await mkCert({ subject: "UnkN", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.4.1.99999.99", false, b.octetString(Buffer.from([1])))] });
   var res18b = await run([unkNon], { time: T2027, trustAnchor: anchor });
   check("same OID non-critical accepted", res18b.valid === true);
+  // A CRITICAL qcStatements (RFC 3739 all-or-nothing criticality) is RECOGNIZED -- not unrecognized-critical.
+  var qcCrit = await mkCert({ subject: "QcC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.5.5.7.1.3", true, b.sequence([b.sequence([b.oid("0.4.0.1862.1.1")])]))] });
+  var res18c = await run([qcCrit], { time: T2027, trustAnchor: anchor });
+  check("critical qcStatements is recognized (not unrecognized-critical)", res18c.valid === true && failCodes(res18c).indexOf("path/unrecognized-critical-extension") === -1);
 }
 
 // ---------------------------------------------------------------------------
