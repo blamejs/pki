@@ -149,7 +149,8 @@ function run() {
   var oddY = pki.schema.c509.parse(V.mk({ 8: "5821fd" + "b1216ab96e5b3b3340f5bdf02e693f16213a04525ed44450b1019c2dfd3838ab" }));
   check("59b. a 0xFD (was-odd-y) EC point de-compresses to a valid EC key", pki.schema.x509.parse(oddY.reconstructedDer).subjectPublicKeyInfo.algorithm.name === "ecPublicKey");
   // a ~oid algorithm for an OID not in the name registry surfaces the dotted string (the OID is explicit).
-  var unkOid = pki.schema.c509.parse(V.mk({ 2: "442b060102" }));   // ~oid 1.3.6.1.2 (unregistered)
+  // Driven on a type-2 (natively-signed) certificate so the non-ECDSA algorithm is not reconstructed.
+  var unkOid = pki.schema.c509.parse(V.mk({ 0: "02", 2: "442b060102" }));   // type 2, ~oid 1.3.6.1.2 (unregistered)
   check("60b. an unregistered ~oid algorithm surfaces its dotted string", unkOid.signatureAlgorithm.name === "1.3.6.1.2");
   // Coverage residual (verified trivial): the remaining uncovered branches in schema-c509.js are
   // defensive `node.children || []` guards (a decoded CBOR array always has children), the cosmetic
@@ -171,6 +172,16 @@ function run() {
     var x = pki.schema.x509.parse(emptyExt.reconstructedDer);
     return (!x.extensions || x.extensions.length === 0) && emptyExt.reconstructedDer.toString("hex").indexOf("a3023000") === -1;
   })());
+
+  // ==== conformance fixes round 2: signature algorithm + parameter/value type strictness ====
+  // a type-3 certificate with a non-ECDSA signature algorithm cannot have its r||s re-wrapped.
+  check("65. a non-ECDSA type-3 signature algorithm -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "432b6570" })); }) === "c509/non-invertible");
+  // a malformed (odd-length) ECDSA signature is a typed C509 error, never a raw TypeError.
+  check("66. an odd-length type-3 signature -> c509/bad-signature", codeSync(function () { return pki.schema.c509.parse(V.mk({ 10: "43010203" })); }) === "c509/bad-signature");
+  // a [~oid, params] algorithm whose parameters are not a byte string fails closed.
+  check("67. non-byte-string algorithm parameters -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d04030201" })); }) === "c509/unknown-algorithm");
+  // a tag-48 MAC-address value that does not wrap a byte string fails closed.
+  check("68. a tag-48 value not wrapping a byte string -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: "d83001" })); }) === "c509/bad-name");
 
   console.log("CHECKS " + helpers.getChecks());
 }
