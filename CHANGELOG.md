@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.27 — 2026-07-16
+
+CMS CompressedData arrives as pki.cms.compress / pki.cms.decompress, with the matching S/MIME pki.smime.compress / pki.smime.decompress: compress and recover RFC 3274 messages, with a bounded inflate that defends the decompression-bomb class.
+
+### Added
+
+- pki.cms.compress(content, opts) and pki.cms.decompress(input, opts) produce and consume a CMS CompressedData (RFC 3274): ZLIB (RFC 1950 / RFC 1951) compression, version 0, id-alg-zlibCompress with omitted parameters. opts.contentType sets the inner content type (default id-data), opts.level the DEFLATE level, opts.pem returns PEM. Decompress requires version 0, id-alg-zlibCompress with absent-or-NULL parameters, and a present encapsulated content; it bounds the decompressed output at C.LIMITS.COMPRESS_MAX_BYTES (16 MiB, tightened downward via opts.maxOutputBytes) and stops before the output is materialized, so a decompression bomb throws cms/decompress-too-large rather than exhausting memory. Every malformed or truncated stream fails closed as cms/decompress-failed. Fail-closed with typed CmsError.
+- pki.smime.compress(content, opts) and pki.smime.decompress(message, opts) assemble and open a compressed S/MIME message (RFC 8551 section 3.6): an opaque application/pkcs7-mime; smime-type=compressed-data; name=smime.p7z entity whose base64 body is a CMS CompressedData. The MIME entity is canonicalized before compression and recovered exactly; the recovered content -- which may itself be a signed or enveloped S/MIME message -- is returned for the caller to feed back to pki.smime.verify / pki.smime.decrypt. Compression is a size transform with no integrity, confidentiality, or authentication (RFC 8551 section 2.4.5). Receive-tolerant: OpenSSL's legacy application/x-pkcs7-mime and a missing smime-type are both accepted.
+
 ## v0.2.26 — 2026-07-16
 
 S/MIME encryption arrives as pki.smime.encrypt / pki.smime.decrypt: envelope and open RFC 8551 encrypted messages over the CMS layer, with AES-GCM authenticated enveloping as the default and bidirectional OpenSSL interoperability.

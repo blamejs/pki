@@ -84,6 +84,17 @@ security-only patches after the next major releases.
   detached-backed input (a transferred / structuredClone'd view whose bytes are
   gone, so it reads as zero-length) fails closed with a typed error at the byte
   boundary instead of being processed as empty.
+- **Decompression bombs (CWE-409).** `pki.cms.decompress` (RFC 3274 CompressedData)
+  inflates the RFC 1950 ZLIB stream through a bounded primitive: the decompressed
+  output is capped at `C.LIMITS.COMPRESS_MAX_BYTES` (16 MiB, tightened downward via
+  `opts.maxOutputBytes`) and the inflate stops at the bound BEFORE the output is
+  materialized (Node's `maxOutputLength`), so a tiny stream that would expand to
+  gigabytes throws `cms/decompress-too-large` rather than exhausting memory. Every
+  other malformed / truncated / corrupt stream collapses to the uniform
+  `cms/decompress-failed` (no per-errno telemetry). CompressedData carries no
+  integrity, confidentiality, or authentication (RFC 8551 §2.4.5) — the decompress
+  verdict has no `authenticated` / `valid` field, so a caller cannot mistake
+  size-reduction for protection; sign or encrypt the result if you need it.
 - **Encoding malleability.** Every textual encoding an operator hands the
   toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
   transfer), hex, a JSON document, a dotted-decimal OID string — is decoded

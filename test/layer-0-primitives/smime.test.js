@@ -234,6 +234,41 @@ async function run() {
   check("69. null recipients -> fail-closed typed error", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.encrypt(ENC, null); })));
   check("70. a bogus recipient descriptor -> fail-closed typed error", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.encrypt(ENC, [{ nonsense: 1 }]); })));
 
+  // ==== S/MIME compression (compressed-data), RFC 8551 sec. 3.6 / RFC 3274 =========================
+  var CMP = Buffer.from("compress me: " + "the quick brown fox ".repeat(64));   // compressible
+
+  // ---- Z1: compress -> decompress recovers the inner MIME entity; the p7z header shape (M9) ----
+  var z = await pki.smime.compress(CMP);
+  check("71. compress emits application/pkcs7-mime; smime-type=compressed-data; name=smime.p7z", /Content-Type: application\/pkcs7-mime; smime-type=compressed-data; name=smime\.p7z/.test(z.toString("latin1")));
+  check("72. it declares base64 transfer + attachment filename=smime.p7z", /Content-Transfer-Encoding: base64/.test(z.toString("latin1")) && /Content-Disposition: attachment; filename=smime\.p7z/.test(z.toString("latin1")));
+  var dz = await pki.smime.decompress(z);
+  check("73. decompress recovers the inner text/plain entity carrying the content", dz.content.indexOf(Buffer.from("the quick brown fox")) >= 0 && dz.content.indexOf(Buffer.from("text/plain")) >= 0);
+  check("74. the decompress verdict carries NO authenticated/valid field (not a security assertion, M13/M20)", dz.authenticated === undefined && dz.valid === undefined && dz.compressionAlgorithm === "id-alg-zlibCompress");
+
+  // ---- Z2: entity input forms (M10) ----
+  var zEnt = await pki.smime.compress(Buffer.from("Content-Type: application/json\r\n\r\n{\"k\":1}\n"), { entity: true });
+  check("75. opts.entity compresses a caller's full MIME entity verbatim", (await pki.smime.decompress(zEnt)).content.indexOf(Buffer.from("application/json")) >= 0);
+  check("76. opts.contentType is honored on the wrapped entity", (await pki.smime.decompress(await pki.smime.compress(CMP, { contentType: "text/html; charset=utf-8" }))).content.indexOf(Buffer.from("text/html")) >= 0);
+
+  // ---- Z3: receive tolerance (M11) ----
+  check("77. an application/x-pkcs7-mime (OpenSSL legacy) compressed message decompresses", (await pki.smime.decompress(Buffer.from(z.toString("latin1").replace("application/pkcs7-mime", "application/x-pkcs7-mime"), "latin1"))).content.indexOf(Buffer.from("the quick brown fox")) >= 0);
+  check("78. a MISSING smime-type decompresses (off the CMS content type)", (await pki.smime.decompress(Buffer.from(z.toString("latin1").replace("; smime-type=compressed-data", ""), "latin1"))).content.indexOf(Buffer.from("the quick brown fox")) >= 0);
+  check("79. a mixed-case smime-type decompresses (advisory, body-authoritative)", (await pki.smime.decompress(Buffer.from(z.toString("latin1").replace("smime-type=compressed-data", "smime-type=Compressed-Data"), "latin1"))).content.indexOf(Buffer.from("the quick brown fox")) >= 0);
+  check("80. a signed-data smime-type is not a decompress input -> smime/unsupported-type", (await codeOf(function () { return pki.smime.decompress(Buffer.from("Content-Type: application/pkcs7-mime; smime-type=signed-data\r\nContent-Transfer-Encoding: base64\r\n\r\nAAAA\r\n")); })) === "smime/unsupported-type");
+  check("81. a non-pkcs7-mime message -> smime/unsupported-type", (await codeOf(function () { return pki.smime.decompress(Buffer.from("Content-Type: text/plain\r\n\r\njust text")); })) === "smime/unsupported-type");
+
+  // ---- Z4: nesting (RFC 8551 sec. 3.7): compress(sign(...)) -> decompress returns the inner signed entity;
+  // a following smime.verify on it is valid (no auto-recursion; the caller re-verifies) (M12) ----
+  var signedMsg = await pki.smime.sign(Buffer.from("nested payload\n"), signers, { form: "pkcs7-mime" });
+  var nested = await pki.smime.compress(signedMsg, { entity: true });
+  var inner = await pki.smime.decompress(nested);
+  check("82. compress-then-sign nests: decompress returns the inner signed message, which then verifies", (await pki.smime.verify(inner.content)).valid === true);
+
+  // ---- Z5: forwarding + bomb defense at the smime layer ----
+  check("83. decompress forwards opts.maxOutputBytes (a tightened cap fails a large payload)", (await codeOf(function () { return pki.smime.decompress(z, { maxOutputBytes: 8 }); })) === "cms/decompress-too-large");
+  check("84. compress of a non-Buffer -> a typed error", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.compress(42); })));
+  check("85. compress forwards opts.level to cms.compress", (await pki.smime.decompress(await pki.smime.compress(CMP, { level: 9 }))).content.indexOf(Buffer.from("the quick brown fox")) >= 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

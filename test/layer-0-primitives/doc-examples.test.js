@@ -203,11 +203,14 @@ function fixturesFor(tag) {
     // run the actual encrypt/decrypt path (built in run()).
     recipientCertDer: cmsRecipient && cmsRecipient.cert, recipientKeyPkcs8: cmsRecipient && cmsRecipient.key,
     envDer: cmsEnvDer,
+    // pki.cms.decompress / pki.smime.decompress: a real CompressedData + compressed S/MIME message.
+    compressedDer: cmsCompressedDer, compressedSmimeBytes: smimeCompressedBytes,
     // pki.smime.verify: a real signed multipart/signed S/MIME message.
     smimeMessageBytes: smimeMessageBytes,
   };
 }
 var cmsRecipient = null, cmsEnvDer = null, smimeMessageBytes = null;
+var cmsCompressedDer = null, smimeCompressedBytes = null;
 // A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
 // start (signing is async so it cannot be a module-load constant).
 var ocspResponseDer = null;
@@ -238,6 +241,8 @@ async function run() {
     { cert: signFixtureSigner.cert, key: signFixtureSigner.key });
   cmsRecipient = require("../helpers/signing").makeRecipient("rsa");
   cmsEnvDer = await pki.cms.encrypt(Buffer.from("secret"), [{ cert: cmsRecipient.cert }]);
+  cmsCompressedDer = await pki.cms.compress(Buffer.from("compress me"));
+  smimeCompressedBytes = await pki.smime.compress(Buffer.from("compress this message"));
   smimeMessageBytes = await pki.smime.sign(Buffer.from("hello"), [{ cert: signFixtureSigner.cert, key: signFixtureSigner.key }]);
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
