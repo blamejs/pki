@@ -120,6 +120,11 @@ async function run() {
   check("32. non-ASCII default content is declared Content-Transfer-Encoding: 8bit", /Content-Transfer-Encoding: 8bit/.test(m8.toString("latin1")) && (await pki.smime.verify(m8)).valid === true);
   check("33. ASCII default content stays 7bit", /Content-Transfer-Encoding: 7bit/.test((await pki.smime.sign(Buffer.from("plain ascii body"), signers)).toString()));
 
+  // a SHAKE-digest signer (SLH-DSA / RFC 8702) keeps its micalg name verbatim -- never "sha-ke256".
+  var shakeSg = signing.makeSigner("slh-dsa-shake-128s");
+  var shakeMsg = await pki.smime.sign(MSG, [{ cert: shakeSg.cert, key: shakeSg.key }], { form: "multipart" });
+  check("34. a SHAKE digest preserves its micalg name (shake128, not sha-ke128)", /micalg=shake128/.test(shakeMsg.toString()) && (await pki.smime.verify(shakeMsg, { strictMicalg: true })).valid === true);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
