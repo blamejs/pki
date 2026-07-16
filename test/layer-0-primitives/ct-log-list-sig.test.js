@@ -66,6 +66,14 @@ async function run() {
   // a non-conformant DER ECDSA-Sig-Value (r = s = 0, CVE-2022-21449) -> ct/bad-signature, never true.
   var zeroSig = b.sequence([b.integer(0n), b.integer(0n)]);
   check("12. an r=s=0 ECDSA Sig-Value -> ct/bad-signature (never true, CVE-2022-21449)", /^(ct\/bad-signature|false)$/.test(String(await vres(function () { return pki.ct.verifyLogListSignature(JSON_BLOB, zeroSig, ecSpki); }))));
+  // an ECDSA component >= the curve order n (in [n, 2^256)) passes a field-SIZE check but violates the
+  // FIPS 186-5 sec. 6.4.2 order bound; the order-aware gate rejects it BEFORE verify (not just r=s=0).
+  var P256_N = BigInt("0xFFFFFFFF00000000FFFFFFFFFFFFFFFFBCE6FAADA7179E84F3B9CAC2FC632551");
+  var rEqualsN = b.sequence([b.integer(P256_N), b.integer(1n)]);
+  check("12a. an ECDSA r == the curve order n -> ct/bad-signature (FIPS 186-5 order bound)", (await code(function () { return pki.ct.verifyLogListSignature(JSON_BLOB, rEqualsN, ecSpki); })) === "ct/bad-signature");
+  // a non-minimal DER s INTEGER (redundant 00 sign octet) -> ct/bad-signature (the s-position read gate).
+  var nonMinimalS = Buffer.from([0x30, 0x07, 0x02, 0x01, 0x01, 0x02, 0x02, 0x00, 0x01]);
+  check("12b. a non-minimal DER s INTEGER -> ct/bad-signature", (await code(function () { return pki.ct.verifyLogListSignature(JSON_BLOB, nonMinimalS, ecSpki); })) === "ct/bad-signature");
 
   // ==== Config-time misuse -> ct/bad-input ==========================================================
   check("13. a non-Buffer/string json -> ct/bad-input", (await code(function () { return pki.ct.verifyLogListSignature(123, rsaSig, rsaSpki); })) === "ct/bad-input");
