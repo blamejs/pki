@@ -107,6 +107,14 @@ async function run() {
   var forged = "Content-Type: multipart/signed; protocol=\"application/pkcs7-signature\"; micalg=sha-256; boundary=\"BB\"\r\n\r\n--BB\r\nContent-Type: text/plain\r\n\r\nFORGED: pay Mallory\r\n--BB\r\nContent-Type: application/pkcs7-signature\r\nContent-Transfer-Encoding: base64\r\n\r\n" + attB64 + "\r\n--BB--\r\n";
   check("28. an ATTACHED SignedData in the signature part -> smime/bad-multipart (no content-substitution forgery)", (await codeOf(function () { return pki.smime.verify(Buffer.from(forged)); })) === "smime/bad-multipart");
 
+  // RFC 8551 sec. 3.4.3.2: a multi-signer message with MIXED digests lists EVERY digest in micalg
+  // (distinct, sorted) -- not just the first signer's. rsa uses SHA-256; ML-DSA-65 uses SHA-512.
+  var ml = signing.makeSigner("ml-dsa-65");
+  var mixed = await pki.smime.sign(MSG, [{ cert: rsa.cert, key: rsa.key }, { cert: ml.cert, key: ml.key }], { form: "multipart" });
+  check("29. a mixed-digest multi-signer lists every digest in micalg (sorted)", /micalg=sha-256,sha-512/.test(mixed.toString()) && (await pki.smime.verify(mixed, { strictMicalg: true })).valid === true);
+  check("30. strictMicalg compares the micalg as an order-independent, whitespace-tolerant set", (await pki.smime.verify(Buffer.from(mixed.toString().replace(/micalg=[^;]+/, "micalg=\"sha-512, sha-256\"")), { strictMicalg: true })).valid === true);
+  check("31. strictMicalg still flags a genuinely wrong micalg set", (await codeOf(function () { return pki.smime.verify(Buffer.from(mixed.toString().replace(/micalg=[^;]+/, "micalg=sha-384")), { strictMicalg: true }); })) === "smime/micalg-mismatch");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
