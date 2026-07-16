@@ -971,13 +971,16 @@ async function testMlKemImport() {
       (await code((function (s) { return function () { return subtle.importKey("spki", fx("pub-" + s), { name: "ML-KEM-" + s }, true, []); }; })(set))) === "NO-THROW");
   }
 
-  // emit pin (RFC 9935 sec. 6/7 RECOMMENDED): the engine exports pkcs8 in the seed-only
-  // [0] arm -- a 66-byte inner tagged 0x80 0x40 -- so an engine-side format change is caught.
+  // Whatever RFC 9935 sec. 6 CHOICE arm the engine exports (the emitted arm is engine-version
+  // dependent -- seed-only [0], expandedKey, or both -- so this asserts BEHAVIOUR, not the exact
+  // shape): the inner is a valid CHOICE arm and the emitted pkcs8 re-imports.
   var kemKp = nodeCrypto.generateKeyPairSync("ml-kem-768");
   var outP8 = kemKp.privateKey.export({ format: "der", type: "pkcs8" });
   var innerBytes = pki.asn1.read.octetString(pki.asn1.decode(outP8).children[2]);
-  check("ML-KEM pkcs8 export emits the seed-only [0] arm (RFC 9935 sec. 6 RECOMMENDED)",
-    innerBytes.length === 66 && innerBytes[0] === 0x80 && innerBytes[1] === 0x40);
+  check("ML-KEM pkcs8 export emits a valid RFC 9935 sec. 6 CHOICE arm (seed [0] / expandedKey / both)",
+    [0x80, 0x04, 0x30].indexOf(innerBytes[0]) !== -1);
+  check("ML-KEM pkcs8 export re-imports (engine round-trip)",
+    (await code(function () { return subtle.importKey("pkcs8", outP8, { name: "ML-KEM-768" }, true, []); })) === "NO-THROW");
   var goodSpki = kemKp.publicKey.export({ format: "der", type: "spki" });
   check("ML-KEM spki import + export round-trips byte-identically", (await (async function () {
     var k = await subtle.importKey("spki", goodSpki, { name: "ML-KEM-768" }, true, []);

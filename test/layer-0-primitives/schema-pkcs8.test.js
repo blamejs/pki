@@ -201,9 +201,10 @@ function run() {
   testMlKemPrivateKeys();
 }
 
-// ML-KEM PKCS#8 (RFC 9935 sec. 6): both real producer shapes parse -- Node's seed-only
-// [0] arm (66-byte inner) and the published App C.1 seed/expandedKey/both arms across all
-// three parameter sets. The parse surfaces the inner CHOICE as opaque octets (raw-by-design,
+// ML-KEM PKCS#8 (RFC 9935 sec. 6): the real producer shapes parse -- Node's own emit
+// (whichever CHOICE arm this engine version produces) and the published App C.1
+// seed/expandedKey/both arms across all three parameter sets. The parse surfaces the inner
+// CHOICE as opaque octets (raw-by-design,
 // algorithm-agnostic -- the CHOICE validation lives at the webcrypto import boundary), and
 // the RFC 5958 version<->publicKey coupling holds on the ML-KEM shapes.
 function testMlKemPrivateKeys() {
@@ -221,11 +222,13 @@ function testMlKemPrivateKeys() {
         p.privateKeyAlgorithm.name === "id-ml-kem-" + set && Buffer.isBuffer(p.privateKey));
       check("ML-KEM-" + set + " " + arm + " orchestrator routes to pkcs8", (function () { var r = pki.schema.parse(der); return Buffer.isBuffer(r.privateKey) && r.validity === undefined && r.privateKeyAlgorithm.name === "id-ml-kem-" + set; })());
     });
-    // Node's own emit shape (seed-only [0], 66-byte inner) parses identically.
+    // Node's own emit (whichever RFC 9935 sec. 6 CHOICE arm this engine version produces --
+    // seed [0] / expandedKey / both) parses, surfacing the inner CHOICE raw.
     var nodeDer = require("node:crypto").generateKeyPairSync("ml-kem-" + set).privateKey.export({ format: "der", type: "pkcs8" });
     var np = pki.schema.pkcs8.parse(nodeDer);
-    check("ML-KEM-" + set + " Node seed-only emit parses (66-byte [0] inner surfaced raw)",
-      np.privateKey.length === 66 && np.privateKey[0] === 0x80);
+    check("ML-KEM-" + set + " Node emit parses (inner CHOICE surfaced raw)",
+      np.privateKeyAlgorithm.name === "id-ml-kem-" + set && Buffer.isBuffer(np.privateKey) &&
+      [0x80, 0x04, 0x30].indexOf(np.privateKey[0]) !== -1);
   });
   // RFC 5958 version<->publicKey coupling on an ML-KEM shape: a v1 envelope carrying a
   // [1] publicKey (or v2 without one) is rejected -- re-pinned on this algorithm.
