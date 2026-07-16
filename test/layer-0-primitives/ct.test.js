@@ -521,6 +521,11 @@ function testEncodeSctList() {
   // a non-byte version must not be masked into a valid one (263 & 0xff == 7 would spoof v7).
   check("103f. an opaque SCT version above 255 -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 263, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }]); }) === "ct/bad-input");
   check("103g. a fractional opaque SCT version -> ct/bad-input", code(function () { pki.ct.encodeSctList([{ version: 7.5, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }]); }) === "ct/bad-input");
+  // two SCTs whose combined body crosses the 65535-byte sct_list cap -> ct/too-large (enforced
+  // incrementally, so an over-long list fails without first accumulating the whole set).
+  var bigSct = { version: 0, logId: Buffer.alloc(32), timestamp: 1n, extensions: Buffer.alloc(0), hashAlg: 4, sigAlg: 3, signature: Buffer.alloc(60000) };
+  check("103h. an SCT list body over 65535 bytes -> ct/too-large", code(function () { pki.ct.encodeSctList([bigSct, bigSct]); }) === "ct/too-large");
+  check("103i. a single SCT near the cap still encodes", Buffer.isBuffer(pki.ct.encodeSctList([bigSct])));
 }
 
 // ---- signSct: the log's digitally-signed step (inverse of verifySct) ----
