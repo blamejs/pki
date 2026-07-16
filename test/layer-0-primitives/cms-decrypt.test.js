@@ -229,6 +229,22 @@ async function run() {
   check("an RSA-KEM (id-kem-rsa) OtherRecipientInfo -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(envSet([oriKem("id-kem-rsa")]), { key: mkem.key, cert: mkem.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
   check("an unknown KEM OtherRecipientInfo -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(envSet([oriKem("data")]), { key: mkem.key, cert: mkem.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
 
+  // a PBKDF2 salt above the DoS cap -> cms/bad-input.
+  var bigSaltKdf = bp.contextConstructed(0, Buffer.concat([bp.oid(O("pbkdf2")), bp.sequence([bp.octetString(Buffer.alloc(2000)), bp.integer(1000n)])]));
+  check("a PBKDF2 salt above the cap -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(envSet([pwriRI(bigSaltKdf, pwriKea)]), { password: "p" }); })) === "cms/bad-input");
+  // OAEP parameters WebCrypto cannot faithfully honor (an MGF1 hash != the OAEP hash, or a non-empty
+  // label) are rejected, not silently ignored. A ktri with a SKI rid pins EnvelopedData/recipient version 2.
+  var NL = bp.raw(Buffer.from([5, 0]));
+  function ktriOaepEnv(paramsInner) {
+    var ktri = bp.sequence([bp.integer(2n), bp.contextPrimitive(0, Buffer.alloc(20)), bp.sequence([bp.oid(O("rsaesOaep")), paramsInner]), bp.octetString(Buffer.alloc(256))]);
+    var eci = bp.sequence([bp.oid(O("data")), bp.sequence([bp.oid(O("aes256-CBC")), bp.octetString(Buffer.alloc(16))]), bp.contextPrimitive(0, Buffer.alloc(16))]);
+    return bp.sequence([bp.oid(O("envelopedData")), bp.explicit(0, bp.sequence([bp.integer(2n), bp.setOf([ktri]), eci]))]);
+  }
+  var oaepMgf = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha256")), NL])), bp.explicit(1, bp.sequence([bp.oid(O("mgf1")), bp.sequence([bp.oid(O("sha1")), NL])]))]));
+  check("OAEP with an MGF1 hash != the OAEP hash -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(oaepMgf, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
+  var oaepLabel = ktriOaepEnv(bp.sequence([bp.explicit(0, bp.sequence([bp.oid(O("sha256")), NL])), bp.explicit(2, bp.sequence([bp.oid(O("pSpecified")), bp.octetString(Buffer.from("label"))]))]));
+  check("OAEP with a non-empty label -> cms/unsupported-algorithm", (await codeOf(function () { return pki.cms.decrypt(oaepLabel, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/unsupported-algorithm");
+
   // ---- EncryptedData + PBES2 distinct-code reject arms ----
   function encData3(algNode, hasContent) {
     var eci = [bp.oid(O("data")), algNode];
