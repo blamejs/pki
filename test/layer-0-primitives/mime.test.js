@@ -64,6 +64,11 @@ function run() {
   var midline = mime.splitMultipart(Buffer.from("--B\r\nfirst with --B inside a line\r\n--B\r\nsecond\r\n--B--\r\n"), "B", E, "m/bad");
   check("22. a mid-line --boundary is not a delimiter (content preserved)", midline.length === 2 && midline[0].toString() === "first with --B inside a line");
   check("23. a longer --boundaryextra token is not the boundary", mime.splitMultipart(Buffer.from("--B\r\ncontent\r\n--Bextra x\r\n--B--\r\n"), "B", E, "m/bad").length === 1);
+  // a "--boundary" line with a NON-padding suffix is content, not a delimiter (only LWSP may follow).
+  check("24. a --boundary line with a non-whitespace suffix is content", mime.splitMultipart(Buffer.from("--B\r\ncontent --B garbage\r\nmore\r\n--B\r\nsecond\r\n--B--\r\n"), "B", E, "m/bad")[0].toString().indexOf("--B garbage") >= 0);
+  // trailing linear whitespace (transport padding) on a genuine delimiter line IS accepted.
+  var padded = mime.splitMultipart(Buffer.from("--B \t\r\nfirst\r\n--B--\r\n"), "B", E, "m/bad");
+  check("25. trailing LWSP transport-padding on a delimiter is accepted", padded.length === 1 && padded[0].toString() === "first");
 
   console.log("CHECKS " + helpers.getChecks());
 }
