@@ -421,6 +421,31 @@ module.exports = {
     },
   ],
 
+  // ---- pki.cms.compress : CMS CompressedData (RFC 3274) round-trips with `openssl cms -compress` ------
+  // OpenSSL's CMS zlib support (COMP) is a build-time option many distributions omit, so probe-by-doing
+  // and skip when the runtime lacks it -- the self round-trip + the RFC 1950 magic-byte assertion (in
+  // the unit test) carry correctness; this fixture adds the cross-implementation gate where available.
+  "pki.cms.compress": [
+    {
+      desc: "a CompressedData we emit is recovered by `openssl cms -uncompress`, and an `openssl cms -compress` message is recovered by pki.cms.decompress (RFC 3274) -- skipped when the OpenSSL build lacks zlib COMP",
+      run: async function (ctx) {
+        var pki = ctx.pki;
+        var content = Buffer.from("pki.cms CompressedData cross-implementation payload");
+        var probeIn = ctx.tmpFile(content, "c.txt");
+        var probeOut = ctx.tmpFile(Buffer.alloc(0), "probe.der");
+        var probe = ctx.runOpenssl(["cms", "-compress", "-in", probeIn, "-outform", "DER", "-out", probeOut], { allowNonZero: true });
+        if (probe.code !== 0 || /unsupported compression/i.test(String(probe.stderr || ""))) { ctx.skip("this openssl build lacks CMS zlib (COMP) support -- RFC 3274 CompressedData cross-check cannot run"); return; }
+        // our compress -> openssl cms -uncompress recovers the exact content.
+        var ours = ctx.tmpFile(Buffer.from(await pki.cms.compress(content)), "ours.der");
+        var u = ctx.runOpenssl(["cms", "-uncompress", "-inform", "DER", "-in", ours], { allowNonZero: true });
+        ctx.check("openssl cms -uncompress recovers our CompressedData", u.code === 0 && String(u.stdout).indexOf("cross-implementation payload") !== -1);
+        // openssl cms -compress -> our decompress recovers the content (we accept its zlib stream + params encoding).
+        var v = await pki.cms.decompress(ctx.fs.readFileSync(probeOut));
+        ctx.check("pki.cms.decompress recovers an openssl cms -compress message", Buffer.compare(v.content, content) === 0);
+      },
+    },
+  ],
+
   // ---- pki.tsp.sign : an RFC 3161 timestamp token we create verifies under openssl --
   "pki.tsp.sign": [
     {
