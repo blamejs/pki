@@ -257,18 +257,37 @@ async function run() {
     await codeOf(pki.path.build(Buffer.from([1, 2, 3]), { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   check("an unparseable candidate -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: [Buffer.from([1, 2, 3])], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
-  // A claimed-parsed object (truthy tbsBytes) that lacks the real parsed-cert fields must fail
-  // closed as a typed path/bad-input, NOT a raw TypeError deep in the search. Cover the leaf,
-  // candidate, and certificate-form-anchor positions and each missing-field branch.
+  // A claimed-parsed object (truthy tbsBytes) that lacks ANY nested parsed-cert field the search
+  // or anchor conversion dereferences must fail closed as a typed path/bad-input, NOT a raw
+  // TypeError. Cover every nested-field branch (missing subject / subject.rdns / subject.bytes /
+  // issuer / issuer.rdns / subjectPublicKeyInfo / spki.bytes / extensions), then the candidate
+  // and certificate-form-anchor positions.
   var Z = Buffer.alloc(0);
-  check("a bare { tbsBytes } leaf -> path/bad-input (not a raw TypeError)",
-    await codeOf(pki.path.build({ tbsBytes: Z }, { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
-  check("a claimed-parsed candidate missing issuer -> path/bad-input",
-    await codeOf(pki.path.build(leaf, { candidates: [{ tbsBytes: Z, subject: { rdns: [], bytes: Z } }], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
-  check("a claimed-parsed anchor missing subjectPublicKeyInfo -> path/bad-input",
-    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] } }], time: T })) === "path/bad-input");
-  check("a claimed-parsed leaf with a non-array extensions -> path/bad-input",
-    await codeOf(pki.path.build({ tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] }, subjectPublicKeyInfo: { bytes: Z }, extensions: "nope" }, { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+  var badShapes = [
+    { tbsBytes: Z },
+    { tbsBytes: Z, subject: { bytes: Z } },
+    { tbsBytes: Z, subject: { rdns: [] } },
+    { tbsBytes: Z, subject: { rdns: [], bytes: Z } },
+    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: {} },
+    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] } },
+    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] }, subjectPublicKeyInfo: {} },
+    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] }, subjectPublicKeyInfo: { bytes: Z }, extensions: "x" },
+  ];
+  for (var bi = 0; bi < badShapes.length; bi++) {
+    check("a claimed-parsed leaf with a malformed nested field (#" + bi + ") -> path/bad-input",
+      await codeOf(pki.path.build(badShapes[bi], { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+  }
+  check("a malformed claimed-parsed candidate -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [{ tbsBytes: Z }], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+  check("a malformed certificate-form anchor -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ tbsBytes: Z }], time: T })) === "path/bad-input");
+
+  // maxPathCerts:1 permits exactly a leaf directly under an anchor (a zero-hop search): the bound
+  // must not throw before the anchor is checked, whether maxDepth is omitted or explicitly 0.
+  check("maxPathCerts:1 permits a leaf directly under the anchor (zero-hop)",
+    (await pki.path.build(direct, { candidates: [], trustAnchors: [anchorCert], time: T, maxPathCerts: 1 })).valid === true);
+  check("maxPathCerts:1 with an explicit maxDepth:0 also permits the zero-hop path",
+    (await pki.path.build(direct, { candidates: [], trustAnchors: [anchorCert], time: T, maxPathCerts: 1, maxDepth: 0 })).valid === true);
   check("a tuple anchor whose name lacks .rdns -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ name: {}, publicKey: anchorKp.spki, algorithm: "1.3.101.112" }], time: T })) === "path/bad-input");
   check("an oversized candidate pool -> path/bad-input",
