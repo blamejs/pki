@@ -434,8 +434,8 @@ function testAcExtensionDecoders() {
   check("ext auditIdentity: non-OCTET-STRING -> bad-audit-identity", extCode(AUDIT, b.integer(0)) === "attrcert/bad-audit-identity");
 
   // noRevAvail
-  check("ext noRevAvail: empty -> {noRevAvail:true}", extDecoded(NOREV, Buffer.alloc(0)).noRevAvail === true);
-  check("ext noRevAvail: NULL -> {noRevAvail:true}", extDecoded(NOREV, b.nullValue()).noRevAvail === true);
+  check("ext noRevAvail: DER NULL (05 00) -> {noRevAvail:true}", extDecoded(NOREV, b.nullValue()).noRevAvail === true);
+  check("ext noRevAvail: empty extnValue -> bad-no-rev-avail (NULL required, RFC 5755 4.3.6)", extCode(NOREV, Buffer.alloc(0)) === "attrcert/bad-no-rev-avail");
   check("ext noRevAvail: BOOLEAN -> bad-no-rev-avail", extCode(NOREV, b.boolean(true)) === "attrcert/bad-no-rev-avail");
 
   // targetInformation
