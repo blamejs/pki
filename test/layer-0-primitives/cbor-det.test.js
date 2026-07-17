@@ -389,6 +389,12 @@ function testBuildEncoder() {
   check("build-uint rejects a negative value", code(function () { b.uint(-1n); }) === "cbor/bad-argument");
   check("build-nint rejects a non-negative value", code(function () { b.nint(0n); }) === "cbor/bad-argument");
   check("build-array rejects a non-Buffer item", code(function () { b.array([5]); }) === "cbor/not-buffer");
+  // a container never embeds bytes the strict decoder would reject: a nested item must be one well-formed item.
+  check("build-array rejects a stray break byte item", code(function () { b.array([Buffer.from([0xff])]); }) === "cbor/bad-item");
+  check("build-array rejects an item with trailing bytes", code(function () { b.array([Buffer.from([0x00, 0x00])]); }) === "cbor/bad-item");
+  check("build-array rejects an indefinite-length item", code(function () { b.array([Buffer.from([0x9f, 0xff])]); }) === "cbor/bad-item");
+  check("build-map rejects a malformed key item", code(function () { b.map([[Buffer.from([0xff]), b.uint(1n)]]); }) === "cbor/bad-item");
+  check("build-tag rejects a malformed content item", code(function () { b.tag(2, Buffer.from([0x00, 0x00])); }) === "cbor/bad-item");
 }
 
 function run() {
