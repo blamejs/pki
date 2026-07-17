@@ -43,6 +43,7 @@ var ocsp      = require("./lib/ocsp");
 var x509      = require("./lib/x509-sign");
 var csr       = require("./lib/csr-sign");
 var attrcert  = require("./lib/attrcert-sign");
+var crmf      = require("./lib/crmf-sign");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -98,6 +99,10 @@ module.exports = {
   // builds and signs an AttributeCertificate binding a Holder to privilege attributes as an
   // Attribute Authority (never self-signed). Parsing lives at pki.schema.attrcert.parse.
   attrcert:  attrcert,
+  // `crmf` is the RFC 4211 certificate-request-message producing side -- pki.crmf.build
+  // assembles a CertReqMessages (a CertTemplate + a signature proof of possession) for a CMP
+  // or EST enrollment. Parsing lives at pki.schema.crmf.parse.
+  crmf:      crmf,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

@@ -837,6 +837,32 @@ function run() {
   testIntegerBufferMinimal();
   testOidSubIdentifierCap();
   testReadStringValidation();
+  testImplicitRetag();
+}
+
+// build.implicit -- IMPLICIT [tag] retag of a UNIVERSAL TLV: replace the tag, preserve the source P/C bit
+// and content octets (X.680 sec. 30.6). The disambiguation: a CONSTRUCTED source yields a constructed
+// context tag; a PRIMITIVE source yields a primitive context tag; the content octets are byte-identical.
+function testImplicitRetag() {
+  var b = pki.asn1.build;
+  var seq = b.sequence([b.integer(1n), b.integer(2n)]);          // constructed source
+  var i3 = b.implicit(3, seq);
+  check("implicit: SEQUENCE -> [3] constructed (0xA3)", i3[0] === 0xa3);
+  var n3 = pki.asn1.decode(i3);
+  check("implicit: [3] node is context + constructed", n3.tagClass === "context" && n3.tagNumber === 3 && n3.constructed === true);
+  check("implicit: [3] content == the source SEQUENCE content", Buffer.compare(i3.slice(i3.length - n3.length), seq.slice(seq.length - n3.length)) === 0);
+
+  var int = b.integer(2n);                                       // primitive source
+  var i0 = b.implicit(0, int);
+  check("implicit: INTEGER -> [0] primitive (0x80)", i0[0] === 0x80);
+  var n0 = pki.asn1.decode(i0);
+  check("implicit: [0] node is context + primitive", n0.tagClass === "context" && n0.tagNumber === 0 && n0.constructed === false);
+  check("implicit: [0] content == the source INTEGER content", Buffer.compare(n0.content, pki.asn1.decode(int).content) === 0);
+
+  var bs = b.bitString(Buffer.from([0xaa]), 0);                  // primitive BIT STRING source
+  check("implicit: BIT STRING -> [7] primitive (0x87)", b.implicit(7, bs)[0] === 0x87);
+  // a source with trailing bytes is not a single well-formed TLV -> the strict decode rejects it.
+  check("implicit: rejects a non-single-TLV source", code(function () { b.implicit(0, Buffer.concat([int, int])); }) !== null);
 }
 
 // build.namedBitString -- the minimal DER NamedBitList (X.690 sec. 11.2.2): trailing zero bits removed,

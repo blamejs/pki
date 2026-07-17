@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.3 — 2026-07-17
+
+pki.crmf.build issues RFC 4211 certificate request messages -- a CertReqMessages with a signature proof of possession, over every algorithm the toolkit supports.
+
+### Added
+
+- pki.crmf.build(spec, key, opts) builds and DER-encodes an RFC 4211 CertReqMessages -- a CertTemplate of the requested certificate fields plus a POPOSigningKey proof of possession signed with the requester's key (or a raVerified proof, opted into without a key) -- and returns DER, or a PEM block with opts.pem. The signing algorithm is resolved from the requested public key: RSA PKCS#1 v1.5 / PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, or a composite arm. Requested v3 extensions, registration controls, and regInfo ride in the message; pass an array of specs for a batch. Certificate-request-message parsing remains pki.schema.crmf.parse.
+- pki.asn1.build.implicit(tag, tlv) retags an encoded universal TLV as a context-class IMPLICIT [tag], preserving the source's primitive/constructed bit and content -- the single home for the IMPLICIT tag replacement the CertTemplate and other context-tagged structures compose.
+
 ## v0.3.2 — 2026-07-17
 
 pki.attrcert.sign issues RFC 5755 attribute certificates -- an Attribute Authority binds a holder to privilege attributes and signs with any algorithm the toolkit supports.
