@@ -199,17 +199,14 @@ function run() {
   check("a critical inhibitAnyPolicy does NOT flag inhibit-any-policy-not-critical",
     !has(pki.lint.certificate(makeCert({ exts: [inhibitAnyPolicy(true)] })), "lint/rfc5280/inhibit-any-policy-not-critical"));
 
-  // keyUsage SHOULD be critical (4.2.1.3) -- a SHOULD (warn), scoped to CA certificates.
-  check("a CA cert with a non-critical keyUsage -> key-usage-not-critical (warn)",
-    sevOf(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], false), ski()] })), "lint/rfc5280/key-usage-not-critical") === "warn");
-  check("a CA cert with a critical keyUsage does NOT flag key-usage-not-critical",
-    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski()] })), "lint/rfc5280/key-usage-not-critical"));
-  // 4.2.1.3 scopes the SHOULD to conforming CAs: an end-entity cert with a non-critical keyUsage
-  // (common and accepted) is NA -- not a spurious warning.
-  check("an end-entity cert with a non-critical keyUsage is NA for key-usage-not-critical",
-    !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], false), aki()] })), "lint/rfc5280/key-usage-not-critical"));
-  check("a CA cert with no keyUsage is NA for key-usage-not-critical",
-    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), ski()] })), "lint/rfc5280/key-usage-not-critical"));
+  // keyUsage SHOULD be critical (4.2.1.3) -- present-gated: the issuing CA should mark keyUsage
+  // critical in ANY certificate (EE or CA), so a non-critical keyUsage on a leaf warns too.
+  check("a non-critical keyUsage on an end-entity cert -> key-usage-not-critical (warn)",
+    sevOf(pki.lint.certificate(makeCert({ exts: [keyUsage([0], false), aki()] })), "lint/rfc5280/key-usage-not-critical") === "warn");
+  check("a critical keyUsage does NOT flag key-usage-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), aki()] })), "lint/rfc5280/key-usage-not-critical"));
+  check("a cert with no keyUsage is NA for key-usage-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [ski(), aki()] })), "lint/rfc5280/key-usage-not-critical"));
 
   // end-entity SKI SHOULD be present (4.2.1.2) -- notice; distinct from the CA-only ski-missing.
   var eeNoSki = pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), aki()] }));
