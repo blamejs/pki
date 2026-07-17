@@ -284,6 +284,14 @@ async function testAdvancedBranches() {
   // a recognized AC extension with a malformed value via the array hatch re-throws the decoder's typed error.
   var badAac = B.sequence([B.oid(pki.oid.byName("aaControls")), B.octetString(B.integer(1n))]);   // AAControls must be a SEQUENCE
   check("malformed pre-encoded aaControls -> typed attrcert/*", /^attrcert\//.test(await codeOf(pki.attrcert.sign(spec({ extensions: [badAac] }), aaOf(aa))) || ""));
+  // the escape hatch MUST enforce the RFC 5755 mandated criticality.
+  var tiNonCrit = B.sequence([B.oid(pki.oid.byName("targetInformation")), B.octetString(B.sequence([B.sequence([B.explicit(0, B.contextPrimitive(2, Buffer.from("t")))])]))]);   // targetInformation without critical=TRUE
+  check("pre-encoded targetInformation not critical -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [tiNonCrit] }), aaOf(aa))) === "attrcert/bad-input");
+  var noRevCrit = B.sequence([B.oid(pki.oid.byName("noRevAvail")), B.boolean(true), B.octetString(B.nullValue())]);   // noRevAvail marked critical (MUST be non-critical)
+  check("pre-encoded noRevAvail marked critical -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: [noRevCrit] }), aaOf(aa))) === "attrcert/bad-input");
+  // a correctly-critical pre-encoded targetInformation is accepted.
+  var tiCrit = B.sequence([B.oid(pki.oid.byName("targetInformation")), B.boolean(true), B.octetString(B.sequence([B.sequence([B.explicit(0, B.contextPrimitive(2, Buffer.from("t")))])]))]);
+  check("pre-encoded critical targetInformation round-trips", pki.schema.attrcert.parse(await pki.attrcert.sign(spec({ extensions: [tiCrit] }), aaOf(aa))).extensions.length === 1);
 }
 
 // ---- escape hatches ---------------------------------------------------------
