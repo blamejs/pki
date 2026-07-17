@@ -347,6 +347,50 @@ function testMapGet() {
   check("mapGet-unsafe-number-key-typeerror", threw(function () { r.mapGet(im, Number.MAX_SAFE_INTEGER + 1); }) instanceof TypeError);
 }
 
+// ---- build: the deterministic-CBOR encoder, byte-exact inverse of decode ----
+
+function testBuildEncoder() {
+  var b = pki.cbor.build;
+  var d = pki.cbor.decode;
+  var r = pki.cbor.read;
+  function hex(x) { return x.toString("hex"); }
+  // shortest-form heads at every argument-width boundary (the exact mirror of the non-minimal-argument reject).
+  check("build-uint-0 -> 00", hex(b.uint(0n)) === "00");
+  check("build-uint-23 -> 17", hex(b.uint(23n)) === "17");
+  check("build-uint-24 -> 1818", hex(b.uint(24n)) === "1818");
+  check("build-uint-255 -> 18ff", hex(b.uint(255n)) === "18ff");
+  check("build-uint-256 -> 190100", hex(b.uint(256n)) === "190100");
+  check("build-uint-65536 -> 1a00010000", hex(b.uint(65536n)) === "1a00010000");
+  check("build-uint-epoch -> 1a63b0cd00", hex(b.uint(1672531200n)) === "1a63b0cd00");
+  check("build-uint-2^32 -> 1b0000000100000000", hex(b.uint(4294967296n)) === "1b0000000100000000");
+  check("build-int-neg1 -> 20", hex(b.int(-1n)) === "20");
+  check("build-int-neg500 -> 3901f3", hex(b.int(-500n)) === "3901f3");
+  check("build-byteString-33 head -> 5821", hex(b.byteString(Buffer.alloc(33))).slice(0, 4) === "5821");
+  check("build-textString hi -> 626869", hex(b.textString("hi")) === "626869");
+  check("build-bool-true -> f5", hex(b.boolean(true)) === "f5");
+  check("build-bool-false -> f4", hex(b.boolean(false)) === "f4");
+  check("build-null -> f6", hex(b.nullValue()) === "f6");
+  // round-trip through the strict decoder -- decode(build.x) accepts (canonical by construction).
+  check("build-uint round-trips", r.uint(d(b.uint(300000n))) === 300000n);
+  check("build-int round-trips", r.int(d(b.int(-42n))) === -42n);
+  check("build-byteString round-trips", Buffer.compare(r.byteString(d(b.byteString(Buffer.from([1, 2, 3])))), Buffer.from([1, 2, 3])) === 0);
+  check("build-oid round-trips", r.oid(d(b.oid("2.16.840.1.101.3.4.2.1"))) === "2.16.840.1.101.3.4.2.1");
+  check("build-time round-trips to the epoch second", r.time(d(b.time(new Date("2013-03-21T20:04:00Z")))).getTime() === Date.parse("2013-03-21T20:04:00Z"));
+  // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
+  var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
+  check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
+  var m = b.map([[b.uint(2n), b.uint(20n)], [b.uint(1n), b.uint(10n)]]);
+  check("build-map sorts keys bytewise (1 before 2)", d(m).children[0][0].bytes[0] === 0x01);
+  check("build-map round-trips both entries", r.mapGet(d(m), 1) !== null && r.mapGet(d(m), 2) !== null);
+  check("build-map rejects a duplicate key", code(function () { b.map([[b.uint(1n), b.uint(1n)], [b.uint(1n), b.uint(2n)]]); }) === "cbor/duplicate-map-key");
+  // tag composition + the biguint preferred-serialization guard.
+  check("build-tag-2 biguint (>8 bytes)", r.biguint(d(b.biguint(1n << 100n))) === (1n << 100n));
+  check("build-biguint rejects a <=8-byte value (use uint)", code(function () { b.biguint(255n); }) === "cbor/bad-argument");
+  check("build-uint rejects a negative value", code(function () { b.uint(-1n); }) === "cbor/bad-argument");
+  check("build-nint rejects a non-negative value", code(function () { b.nint(0n); }) === "cbor/bad-argument");
+  check("build-array rejects a non-Buffer item", code(function () { b.array([5]); }) === "cbor/not-buffer");
+}
+
 function run() {
   testSurface();
   testAccept();
@@ -356,6 +400,7 @@ function run() {
   testReadMismatch();
   testConfig();
   testEdgeBranches();
+  testBuildEncoder();
   console.log("CHECKS " + helpers.getChecks());
 }
 

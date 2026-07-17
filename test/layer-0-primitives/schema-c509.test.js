@@ -16,8 +16,9 @@ var check = helpers.check;
 var pki = helpers.pki;
 var V = require("../helpers/c509-vectors");
 var c509mod = require("../../lib/schema-c509");
+var signing = require("../helpers/signing");
 
-function run() {
+async function run() {
   // ==== A.1.1 -- the type-3 (CBOR re-encoded X.509) certificate decodes to the documented fields ====
   var c3 = pki.schema.c509.parse(V.A1.type3);
   check("1. type-3 A.1 decodes: certificateType 3", c3.certificateType === 3);
@@ -213,6 +214,55 @@ function run() {
   check("79. a non-critical ~oid extension value that is not a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f01" })); }) === "c509/bad-extensions");
   // a critical ~oid extension whose [bytes] wrap does not hold a byte string fails closed.
   check("80. a critical ~oid extension not wrapping a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f8101" })); }) === "c509/bad-extensions");
+
+  // ==== encode: the producing side (pki.schema.c509.encode, the byte-exact inverse of parse) ====
+  // AUTHORITATIVE KAT: the forward transform of the Appendix A.1 DER yields the draft canonical type-3
+  // (the MAC-address commonName compressed to a tag-48 EUI-48, the lone keyUsage as the int shortcut).
+  check("81. encode(A.1 DER) == the draft type-3 C509 byte-for-byte", pki.schema.c509.encode(V.A1.der).equals(V.A1.type3));
+  // re-emit: a parsed result re-encodes to identical bytes (both certificate types).
+  check("82. encode(parse(type-3)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type3)).equals(V.A1.type3));
+  check("83. encode(parse(type-2)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type2)).equals(V.A1.type2));
+  // the emission is canonical deterministic CBOR by construction (parse re-decodes it).
+  check("84. encode output re-parses to the same certificate", pki.schema.c509.parse(pki.schema.c509.encode(V.A1.der)).certificateType === 3);
+  // fail-closed on a non-cert input.
+  check("85. encode of a non-cert non-result -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(5); }) === "c509/bad-input");
+  check("86. encode of garbage DER -> a typed c509/*", /^c509\//.test(codeSync(function () { return pki.schema.c509.encode(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])); })));
+
+  // the flagship forward transform across the EC arms: a v3 DER cert -> a smaller type-3 that reconstructs
+  // the source DER byte-for-byte (so the original signature still verifies).
+  var arms = ["ec-p256", "ec-p384", "ec-p521"];
+  for (var ai = 0; ai < arms.length; ai++) {
+    var s = signing.makeSigner(arms[ai]);
+    var der = await pki.x509.sign({ subject: [{ commonName: "dev" }, { countryName: "US" }], subjectPublicKey: s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], basicConstraints: { cA: false } } }, { key: s.key });
+    var c = pki.schema.c509.encode(der);
+    check("87." + ai + " " + arms[ai] + " type-3 reconstructs the source DER byte-exact + is smaller", pki.schema.c509.parse(c).reconstructedDer.equals(der) && c.length < der.length);
+  }
+  // fail-closed: type-3 is X.509 v3-only (a v1 cert), and v1 covers EC-only (an RSA cert).
+  var v1s = signing.makeSigner("ec-p256");
+  var v1der = await pki.x509.sign({ subject: [{ commonName: "v1" }], subjectPublicKey: v1s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z") }, { key: v1s.key });
+  check("90. a v1 cert (no extensions) -> c509/non-invertible (type-3 is v3-only)", codeSync(function () { return pki.schema.c509.encode(v1der); }) === "c509/non-invertible");
+  var rsas = signing.makeSigner("rsa");
+  var rsader = await pki.x509.sign({ subject: [{ commonName: "r" }], subjectPublicKey: rsas.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: rsas.key });
+  check("91. an RSA cert -> c509/non-invertible (v1 covers EC)", codeSync(function () { return pki.schema.c509.encode(rsader); }) === "c509/non-invertible");
+
+  // secondary-form re-emit coverage: a variant C509 built with V.mk -> parse -> re-encode byte-exact,
+  // exercising the encoder branches the A.1 KAT does not (null notAfter, printable / multi-attribute /
+  // 8-byte-EUI names, RSA keys, ~oid + [~oid, params] algorithms, ~oid extensions).
+  [["null notAfter", { 5: "f6" }],
+   ["printable single-CN array", { 3: "82206b5246432074657374204341" }],
+   ["multi-attribute Name array", { 6: "840162585823625553" }],
+   ["8-byte EUI-64 tag-48 commonName", { 6: "d830480123456789abcdef" }],
+   ["RSA bare-modulus key", { 0: "02", 7: "00", 8: "49010203040506070809" }],
+   ["RSA [modulus, exponent] key", { 0: "02", 7: "00", 8: "82490102030405060708094103" }],
+   ["~oid signatureAlgorithm", { 0: "02", 2: "432b6570" }],
+   ["[~oid, params] algorithm", { 0: "02", 2: "82432b65704105" }],
+   ["~oid extension non-critical", { 9: "82432b06014100" }],
+   ["~oid extension critical", { 9: "82432b0601814100" }],
+   ["critical keyUsage int-shortcut", { 9: "20" }],
+  ].forEach(function (tc, i) {
+    var cb = V.mk(tc[1]);
+    check("92." + i + " re-emit " + tc[0] + " byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(cb)).equals(cb));
+  });
 
   console.log("CHECKS " + helpers.getChecks());
 }

@@ -87,6 +87,7 @@ jobs:
           - csr-sign
           - attrcert-sign
           - crmf-build
+          - c509-encode
           - ocsp-verify
           - cms-decrypt
           - cms-decompress

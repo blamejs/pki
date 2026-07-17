@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.3",
+  "packageVersion": "0.3.4",
   "surface": {
     "C": {
       "kind": "object",
@@ -993,6 +993,67 @@
     "cbor": {
       "kind": "object",
       "members": {
+        "build": {
+          "kind": "object",
+          "members": {
+            "array": {
+              "kind": "function",
+              "arity": 1
+            },
+            "biguint": {
+              "kind": "function",
+              "arity": 1
+            },
+            "boolean": {
+              "kind": "function",
+              "arity": 1
+            },
+            "byteString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "int": {
+              "kind": "function",
+              "arity": 1
+            },
+            "map": {
+              "kind": "function",
+              "arity": 1
+            },
+            "nint": {
+              "kind": "function",
+              "arity": 1
+            },
+            "nullValue": {
+              "kind": "function",
+              "arity": 0
+            },
+            "oid": {
+              "kind": "function",
+              "arity": 1
+            },
+            "raw": {
+              "kind": "function",
+              "arity": 1
+            },
+            "tag": {
+              "kind": "function",
+              "arity": 2
+            },
+            "textString": {
+              "kind": "function",
+              "arity": 1
+            },
+            "time": {
+              "kind": "function",
+              "arity": 1
+            },
+            "uint": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
         "decode": {
           "kind": "function",
           "arity": 2
@@ -2336,6 +2397,10 @@
         "c509": {
           "kind": "object",
           "members": {
+            "encode": {
+              "kind": "function",
+              "arity": 1
+            },
             "parse": {
               "kind": "function",
               "arity": 1
@@ -2971,6 +3036,7 @@
     "pki.schema.attrcert.pemDecode": "0.1.14",
     "pki.schema.attrcert.pemEncode": "0.1.23",
     "pki.schema.c509.parse": "0.2.30",
+    "pki.schema.c509.encode": "0.3.4",
     "pki.schema.cmp.parse": "0.1.19",
     "pki.schema.cmp.pemDecode": "0.1.19",
     "pki.schema.cmp.pemEncode": "0.1.19",
