@@ -329,6 +329,9 @@ async function testMalformedValues() {
   check("clearance non-array classList -> attrcert/bad-input", await bad({ attributes: { clearance: { policyId: "2.5.29.32.0", classList: "secret" } } }) === "attrcert/bad-input");
   check("clearance empty securityCategories -> attrcert/bad-input", await bad({ attributes: { clearance: { policyId: "2.5.29.32.0", securityCategories: [] } } }) === "attrcert/bad-input");
   check("securityCategory bad shape -> attrcert/bad-input", await bad({ attributes: { clearance: { policyId: "2.5.29.32.0", securityCategories: [{ type: "1.2.3" }] } } }) === "attrcert/bad-input");
+  check("securityCategory malformed value DER -> attrcert/bad-input", await bad({ attributes: { clearance: { policyId: "2.5.29.32.0", securityCategories: [{ type: "1.2.3", value: Buffer.from([0x30, 0x05]) }] } } }) === "attrcert/bad-input");
+  check("securityCategory value with trailing bytes -> attrcert/bad-input", await bad({ attributes: { clearance: { policyId: "2.5.29.32.0", securityCategories: [{ type: "1.2.3", value: Buffer.from([0x05, 0x00, 0x05, 0x00]) }] } } }) === "attrcert/bad-input");
+  check("aaControls pathLenConstraint over uint31 -> attrcert/bad-input", await bad({ extensions: { aaControls: { pathLenConstraint: 0x80000000 } } }) === "attrcert/bad-input");
   // IetfAttrSyntax
   check("group empty values -> attrcert/bad-input", await bad({ attributes: { group: { values: [] } } }) === "attrcert/bad-input");
   check("group bad value kind -> attrcert/bad-input", await bad({ attributes: { group: { values: [{ nope: 1 }] } } }) === "attrcert/bad-input");
