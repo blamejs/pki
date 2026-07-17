@@ -296,6 +296,12 @@ async function testFailClosed() {
   check("pre-encoded basicConstraints with explicit cA=FALSE -> x509/bad-basic-constraints", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [bcFalseExplicit] }, { key: s.key })) === "x509/bad-basic-constraints");
   // a DN attribute value with characters invalid for its string type fails closed as a typed x509/bad-name.
   check("emailAddress with non-ASCII -> x509/bad-name", await codeOf(pki.x509.sign({ subject: [{ emailAddress: "tëst@example.com" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-name");
+  // an issuer certificate that is not a CA cannot sign certificates -> rejected.
+  var iss = makeSigner("ec-p256");
+  var notCaCert = pki.schema.x509.parse(await pki.x509.sign({ subject: "Not A CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { key: iss.key }));
+  check("non-CA issuer.cert -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: notCaCert, key: iss.key })) === "x509/bad-input");
+  var caNoKcs = pki.schema.x509.parse(await pki.x509.sign({ subject: "CRL-only CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: iss.key }));
+  check("CA issuer.cert without keyCertSign -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: caNoKcs, key: iss.key })) === "x509/bad-input");
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
