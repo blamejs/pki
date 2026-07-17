@@ -24,7 +24,7 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 
 ## Certification requests — RFC 2986 (PKCS#10)
 
-- **CSR parse / build / sign / verify** — *Targeted.* Certification requests with first-class attribute and extension helpers (subject alternative names, challenge password, requested extensions) so common requests do not require hand-assembling ASN.1.
+- **CSR parse / build / sign / verify** — *Parsing and signing shipped.* `pki.schema.csr.parse` decodes a PKCS#10 request, and `pki.csr.sign(spec, key, opts)` builds and signs one — self-signed by the subject's own key for proof of possession (no issuer), over any signature algorithm the registry resolves (RSA PKCS#1 v1.5 / PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, composite). First-class helpers accept strings and plain objects: a subject (which may be empty), a `challengePassword`, and an `extensionRequest` carrying the requested v3 extensions (subject alternative names, key usage, extended key usage, basic constraints, certificate policies, subject key identifier — or pre-encoded Extension DER) that a CA copies into the issued certificate. The produced request's proof-of-possession signature is verified against the subject key before it is returned (what `openssl req -verify` checks), and every emitted request round-trips through the parser and OpenSSL. RFC 2986 / RFC 2985.
 
 ## Certification path validation — RFC 5280
 

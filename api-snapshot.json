@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.0",
+  "packageVersion": "0.3.1",
   "surface": {
     "C": {
       "kind": "object",
@@ -1677,6 +1677,15 @@
         }
       }
     },
+    "csr": {
+      "kind": "object",
+      "members": {
+        "sign": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
     "ct": {
       "kind": "object",
       "members": {
@@ -2884,6 +2893,7 @@
     "pki.cms.decompress": "0.2.27",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
+    "pki.csr.sign": "0.3.1",
     "pki.ct.parseSctList": "0.1.20",
     "pki.ct.reconstructSignedData": "0.1.20",
     "pki.ct.verifySct": "0.2.12",

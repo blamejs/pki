@@ -93,14 +93,20 @@ async function run() {
   // PWRI oracle: wrong password -> uniform (check-byte mismatch indistinguishable).
   var pwriEnv = await pki.cms.encrypt(MSG, [{ password: "right" }], { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("PWRI wrong password -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(pwriEnv, { password: "wrong" }); })) === "cms/decrypt-failed");
-  // Bleichenbacher/MMA: THREE differently-broken v1.5 inputs -> IDENTICAL cms/decrypt-failed.
+  // Bleichenbacher/MMA (RFC 3218 implicit rejection): a corrupt-padding, a corrupt-mid, and a valid-
+  // padding-wrong-key v1.5 input each drive the countermeasure. The content cipher here is UNAUTHENTICATED
+  // (CBC), so a wrong/synthetic CEK cannot GUARANTEE a throw -- CBC padding is coincidentally valid ~1/256,
+  // and asserting an identical `cms/decrypt-failed` verdict on all three is therefore a probabilistic CI
+  // flake. The honest DETERMINISTIC security property is oracle-freedom by non-recovery: none of the
+  // differently-broken inputs ever recovers the plaintext (each fails uniformly OR yields non-plaintext
+  // garbage) -- the same distribution regardless of which byte was broken, so a padding error is not
+  // distinguishable from a content error. (The uniform hard verdict is separately pinned by the AEAD /
+  // AES-KW / PWRI / kemri cases above, whose failures DO authenticate.)
   var v15a = _osslV15(rsa, MSG);
   if (v15a) {
-    var codes = [];
-    codes.push(await codeOf(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a)), { key: rsa.key, cert: rsa.cert }); }));  // corrupt padding
-    codes.push(await codeOf(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a) + 5), { key: rsa.key, cert: rsa.cert }); }));  // corrupt mid
-    codes.push(await codeOf(function () { return pki.cms.decrypt(v15a, { key: makeRecipient("rsa").key, cert: rsa.cert }); }));  // valid-padding wrong key
-    check("v1.5 MMA: three differently-broken inputs yield the IDENTICAL cms/decrypt-failed (RFC 3218)", codes.every(function (c) { return c === "cms/decrypt-failed"; }));
+    check("v1.5 MMA corrupt-padding input never recovers the plaintext (RFC 3218)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a)), { key: rsa.key, cert: rsa.cert }); }));
+    check("v1.5 MMA corrupt-mid input never recovers the plaintext (RFC 3218)", await noPlaintext(function () { return pki.cms.decrypt(_flipByte(v15a, _encKeyOffset(v15a) + 5), { key: rsa.key, cert: rsa.cert }); }));
+    check("v1.5 MMA valid-padding wrong-key never recovers the plaintext (RFC 3218 implicit rejection)", await noPlaintext(function () { return pki.cms.decrypt(v15a, { key: makeRecipient("rsa").key, cert: rsa.cert }); }));
     check("v1.5: the correct key still round-trips (implicit rejection does not break the good path)", Buffer.compare((await pki.cms.decrypt(v15a, { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
   } else { helpers.skip && helpers.skip("openssl v1.5 fixture unavailable"); }
 

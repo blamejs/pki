@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.0 — 2026-07-17
+## v0.3.1 — 2026-07-17
+
+pki.csr.sign issues PKCS#10 certification requests -- self-signed by the subject key for proof of possession, over every signature algorithm the toolkit supports.
+
+### Added
+
+- pki.csr.sign(spec, key, opts) builds and signs a PKCS#10 certification request -- self-signed by the subject's own key for proof of possession -- and returns DER, or a PEM CERTIFICATE REQUEST with opts.pem. The subject may be empty; requested v3 extensions (subject alternative names, key usage, extended key usage, basic constraints, certificate policies, subject key identifier, or pre-encoded Extension DER) ride in a PKCS#9 extensionRequest attribute a CA copies into the issued certificate, and an optional challengePassword is carried too. The signing algorithm is resolved from the subject key: RSA PKCS#1 v1.5 / PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, or a composite arm. Request parsing remains pki.schema.csr.parse.
+
+### Fixed
+
+- The certificate and certification-request distinguished-name and extension encoders now reject an unrecognized attribute, extended-key-usage purpose, or certificate-policy name at build time with a typed error, rather than emitting a malformed object identifier -- an unknown name in a pki.x509.sign or pki.csr.sign spec fails closed instead of producing an unparseable structure.
+
+## v0.3.0 — 2026-07-16
 
 pki.x509.sign issues X.509 certificates -- self-signed or CA-signed, over every signature algorithm the toolkit supports, from RSA and ECDSA through EdDSA, ML-DSA, and SLH-DSA.
 
