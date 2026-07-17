@@ -76,6 +76,7 @@ jobs:
           - tsp-sign
           - x509-sign
           - csr-sign
+          - attrcert-sign
           - ocsp-verify
           - cms-decrypt
           - cms-decompress

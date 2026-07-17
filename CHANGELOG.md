@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.2 — 2026-07-17
+
+pki.attrcert.sign issues RFC 5755 attribute certificates -- an Attribute Authority binds a holder to privilege attributes and signs with any algorithm the toolkit supports.
+
+### Added
+
+- pki.attrcert.sign(spec, issuer, opts) builds and signs an RFC 5755 attribute certificate as an Attribute Authority -- and returns DER, or a PEM ATTRIBUTE CERTIFICATE with opts.pem. The holder is exactly one of an entity name, a baseCertificateID, a fromCertificate binding derived from a public-key certificate, or an object digest; the attributes are the sec. 4.4 privilege syntaxes (role, clearance, group, chargingIdentity, accessIdentity, authenticationInfo) or pre-encoded Attribute DER; the extensions are auditIdentity, targetInformation, noRevAvail, aaControls, acProxying, and authorityKeyIdentifier or pre-encoded Extension DER, each carried with its RFC 5755 criticality. The AA signs with RSA PKCS#1 v1.5 / PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, or a composite arm, and the signature is verified under the AA public key before the certificate is returned. Attribute-certificate parsing remains pki.schema.attrcert.parse.
+
 ## v0.3.1 — 2026-07-17
 
 pki.csr.sign issues PKCS#10 certification requests -- self-signed by the subject key for proof of possession, over every signature algorithm the toolkit supports.

@@ -1782,11 +1782,30 @@ function testNoDuplicateCodeBlocks() {
       // sign-scheme.js; each header binds a DIFFERENT domain (cms/ tsp/ x509/), so the glue recurs
       // without being further extractable. family-subset so any 3+ producing modules match.
       files: [
-        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>",
-        "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err",
+        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>",
+        "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err",
       ],
       mode: "family-subset",
       reason: "producing-module header: require(codec/oid/sign-scheme/guard/framework-error) + the two per-domain error factories (_err full-code, _signE domain-prefixed) + O()=oid.byName; the resolver/signer are shared in sign-scheme.js and each module binds a different domain -- nothing further extractable. Applies to the <top> require run and the shared _err factory shape.",
+    },
+    {
+      // The producing-module public entry point: sign(spec, ..., opts) returns
+      // Promise.resolve().then(function () { return _sign(...); }) so a synchronous config-time throw in
+      // _sign rejects the returned promise instead of throwing from the call site (an async boundary the
+      // callers await). A trivial three-line wrapper, identical by construction across producers.
+      files: ["lib/attrcert-sign.js:sign", "lib/csr-sign.js:sign", "lib/x509-sign.js:sign", "lib/cms-sign.js:sign", "lib/tsp-sign.js:sign"],
+      mode: "family-subset",
+      reason: "producing-module public entry: sign(...) wraps _sign in Promise.resolve().then() so a config-time throw rejects the promise rather than throwing synchronously; a three-line async-boundary wrapper with nothing to extract.",
+    },
+    {
+      // The per-attribute uniqueness + assembly idiom: a dedup helper that rejects a repeated
+      // AttributeType OID (seen[type]) then pushes Attribute ::= SEQUENCE { type OID, SET OF value }.
+      // attrcert-sign's `add` and csr-sign's `addAttr` share it (different domain codes); pki-build's
+      // assertValidExtension shares only the decode+throw shingle coincidentally. Each is a small
+      // domain-local helper, not further extractable without threading a per-domain error callback.
+      files: ["lib/attrcert-sign.js:add", "lib/csr-sign.js:addAttr", "lib/pki-build.js:assertValidExtension"],
+      mode: "family-subset",
+      reason: "attribute dedup+assembly idiom (reject a repeated AttributeType, push SEQUENCE{type, SET OF value}); attrcert `add` / csr `addAttr` share it with different domain codes, pki-build assertValidExtension shares only a coincidental decode+throw shingle -- domain-local, nothing cleanly extractable.",
     },
     // The v0.1.29 byte-input coercion-guard cluster is gone: the five boundaries
     // now delegate to lib/guard-bytes.js (guard.bytes.view / .source), so each
