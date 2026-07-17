@@ -302,6 +302,13 @@ async function testFailClosed() {
   check("non-CA issuer.cert -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: notCaCert, key: iss.key })) === "x509/bad-input");
   var caNoKcs = pki.schema.x509.parse(await pki.x509.sign({ subject: "CRL-only CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: iss.key }));
   check("CA issuer.cert without keyCertSign -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: caNoKcs, key: iss.key })) === "x509/bad-input");
+  // RFC 5280 sec. 4.2.1.9 -- a CA's basicConstraints MUST be critical.
+  var nonCritBcCa = pki.schema.x509.parse(await pki.x509.sign({ subject: "NonCrit CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, critical: false }, keyUsage: ["keyCertSign"] } }, { key: iss.key }));
+  check("issuer.cert with non-critical basicConstraints -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: nonCritBcCa, key: iss.key })) === "x509/bad-input");
+  // A pathLen=0 issuer forbids a CA below it but allows a leaf.
+  var pl0Ca = pki.schema.x509.parse(await pki.x509.sign({ subject: "PathLen0 CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign"] } }, { key: iss.key }));
+  check("pathLen=0 issuer issuing a CA -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "sub CA", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { cert: pl0Ca, key: iss.key })) === "x509/bad-input");
+  check("pathLen=0 issuer issuing a leaf is accepted", Buffer.isBuffer(await pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { cert: pl0Ca, key: iss.key })));
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
