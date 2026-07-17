@@ -75,13 +75,17 @@ async function testTagBoundary() {
   var t = certReq.children[1];   // CertTemplate SEQUENCE
   var byTag = {};
   t.children.forEach(function (c) { byTag[c.tagNumber] = c; });
-  check("issuer [3] is a constructed context tag (0xA3, IMPLICIT)", byTag[3].bytes[0] === 0xa3);
+  check("issuer [3] is a constructed context tag (0xA3)", byTag[3].bytes[0] === 0xa3);
   check("validity [4] is a constructed context tag (0xA4, IMPLICIT)", byTag[4].bytes[0] === 0xa4);
-  check("subject [5] is a constructed context tag (0xA5, IMPLICIT)", byTag[5].bytes[0] === 0xa5);
+  check("subject [5] is a constructed context tag (0xA5)", byTag[5].bytes[0] === 0xa5);
   check("publicKey [6] is a constructed context tag (0xA6, IMPLICIT)", byTag[6].bytes[0] === 0xa6);
   check("extensions [9] is a constructed context tag (0xA9, IMPLICIT)", byTag[9].bytes[0] === 0xa9);
-  // issuer [3] IMPLICIT: its children ARE the RDN SETs (a universal SET leads), not a wrapped SEQUENCE.
-  check("issuer [3] children ARE RDN SETs (IMPLICIT, not EXPLICIT-wrapped)", byTag[3].children[0].tagClass === "universal" && byTag[3].children[0].tagNumber === asn1.TAGS.SET);
+  // issuer [3] / subject [5] are EXPLICIT (Name is a CHOICE, X.680 sec. 31.2.7): the [3] wraps the
+  // RDNSequence SEQUENCE (its single child is a universal SEQUENCE), it does not replace the tag.
+  check("issuer [3] EXPLICIT-wraps the RDNSequence SEQUENCE (not IMPLICIT SET-led)", byTag[3].children.length === 1 && byTag[3].children[0].tagClass === "universal" && byTag[3].children[0].tagNumber === asn1.TAGS.SEQUENCE);
+  check("subject [5] EXPLICIT-wraps the RDNSequence SEQUENCE", byTag[5].children.length === 1 && byTag[5].children[0].tagNumber === asn1.TAGS.SEQUENCE);
+  // publicKey [6] IMPLICIT: its children ARE the SPKI fields (algorithm SEQUENCE leads), not a wrapped SPKI.
+  check("publicKey [6] IMPLICIT: children ARE the SPKI fields", byTag[6].children[0].tagClass === "universal" && byTag[6].children[0].tagNumber === asn1.TAGS.SEQUENCE && byTag[6].children.length === 2);
   // OptionalValidity notBefore [0] / notAfter [1] are EXPLICIT (Time is a CHOICE) -> a [0]/[1] wrapping a time.
   var val = byTag[4];
   check("validity notBefore [0] is an EXPLICIT wrapper (0xA0)", val.children[0].bytes[0] === 0xa0 && val.children[0].children.length === 1);
@@ -150,6 +154,7 @@ async function testProofOfPossession() {
   check("raVerified without the explicit flag -> crmf/bad-popo", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), pop: { type: "raVerified" } })) === "crmf/bad-popo");
   check("unsupported pop type -> crmf/bad-popo", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), pop: { type: "keyEncipherment" } }, { key: s.key })) === "crmf/bad-popo");
   check("signature POP without a key -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), pop: { type: "signature" } })) === "crmf/bad-input");
+  check("non-object pop selector -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), pop: "signature" }, { key: s.key })) === "crmf/bad-input");
   // wrong key (does not match the requested publicKey) -> the POP self-verify fails closed.
   var other = makeSigner("ec-p256");
   check("wrong requester key -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki) }, { key: other.key })) === "crmf/bad-input");
