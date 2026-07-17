@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.2.33 — 2026-07-16
+
+Attribute certificates now decode their RFC 5755 attribute values and attribute-certificate extensions, not just the certificate structure.
+
+### Added
+
+- pki.schema.attrcert.parse decodes the RFC 5755 section 4.4 attribute values -- role (RoleSyntax), clearance (Clearance, including the classification bit list and security categories), authenticationInfo and accessIdentity (SvceAuthInfo), and group and chargingIdentity (IetfAttrSyntax) -- and the section 4.3 attribute-certificate extensions -- auditIdentity, targetInformation and proxyInfo (Targets, with targetCert reusing the IssuerSerial decoder), noRevAvail, and aaControls. Each is surfaced additively (a decoded field alongside the raw value) through the parse consumer path; an unrecognized attribute type or extension id is preserved opaque, and a malformed recognized value fails closed with a typed error. Every GeneralName inside these structures is validated through the shared name decoder.
+
 ## v0.2.32 — 2026-07-16
 
 X.509 certificates now decode the Microsoft Active Directory Certificate Services enrollment extensions, and pki.lint's critical-extension check is aligned with certification-path validation.

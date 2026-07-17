@@ -98,7 +98,10 @@ function issuerV1(gns) { return generalNames(gns || [gnDirName("Legacy Issuer")]
 function issuerDefault() { return issuerV2({ issuerName: [gnDirName("Issuer CA")] }); }
 
 function attribute(typeOid, valueNodes) { return b.sequence([b.oid(typeOid), b.set(valueNodes)]); }
-function roleAttr() { return attribute(ROLE, [b.utf8("administrator")]); }
+// A structurally valid RoleSyntax ::= SEQUENCE { roleName [1] EXPLICIT GeneralName } (the value is now
+// decoded, so it must be well-formed): roleName = [1]{ [6] uniformResourceIdentifier }.
+function roleValue(uri) { return b.sequence([b.contextConstructed(1, b.contextPrimitive(6, Buffer.from(uri || "urn:role:administrator", "ascii")))]); }
+function roleAttr() { return attribute(ROLE, [roleValue()]); }
 function attributesDefault() { return b.sequence([roleAttr()]); }
 
 function ext(oidStr, valueBytes, critical) {
@@ -227,13 +230,16 @@ function testOptionalTail() {
 }
 
 function testTwoAttributes() {
-  var m = parse(attrCert({ attributesNode: b.sequence([roleAttr(), attribute(GROUP, [b.utf8("eng")]), attribute(CLEARANCE, [b.utf8("secret")])]) }));
+  // group = IetfAttrSyntax SEQUENCE { values SEQUENCE OF { UTF8String } }; clearance = SEQUENCE { policyId }.
+  var groupVal = b.sequence([b.sequence([b.utf8("eng")])]);
+  var clearanceVal = b.sequence([b.oid("2.16.840.1.101.2.1")]);
+  var m = parse(attrCert({ attributesNode: b.sequence([roleAttr(), attribute(GROUP, [groupVal]), attribute(CLEARANCE, [clearanceVal])]) }));
   check("three distinct attributes parse", m.attributes.length === 3 && m.attributes[1].name === "group" && m.attributes[2].name === "clearance");
 
   // clearance resolves by name on BOTH the RFC 5755 (2.5.4.55) and the legacy
   // RFC 3281 (2.5.1.5.55) arcs — RFC 5755 §4.4.6 says accept the legacy form for
   // decoding; the canonical name->OID reverse stays the RFC 5755 arc.
-  var mc = parse(attrCert({ attributesNode: b.sequence([attribute("2.5.1.5.55", [b.utf8("topsecret")])]) }));
+  var mc = parse(attrCert({ attributesNode: b.sequence([attribute("2.5.1.5.55", [b.sequence([b.oid("2.16.840.1.101.2.1")])])]) }));
   check("legacy clearance arc names via the consumer path", mc.attributes[0].name === "clearance");
   check("both clearance arcs resolve to name", pki.oid.name("2.5.4.55") === "clearance" && pki.oid.name("2.5.1.5.55") === "clearance");
   check("clearance canonical reverse is the RFC 5755 arc", pki.oid.byName("clearance") === "2.5.4.55");
@@ -374,7 +380,89 @@ function testInputCoercion() {
 }
 
 // ---- runner ----------------------------------------------------------
+// RFC 5755 sec. 4.4 attribute-VALUE decoders, driven through the shipped consumer path
+// (attrcert.parse -> attributes[i].decoded[j]).
+function attrDecoded(typeOid, valueDer) { return parse(attrCert({ attributesNode: b.sequence([attribute(typeOid, [valueDer])]) })).attributes[0].decoded[0]; }
+function attrCode(typeOid, valueDer) { return parseCode(attrCert({ attributesNode: b.sequence([attribute(typeOid, [valueDer])]) })); }
+function testAttributeValueDecoders() {
+  var AUTHINFO = "1.3.6.1.5.5.7.10.1", ACCESSID = "1.3.6.1.5.5.7.10.2", CHARGING = "1.3.6.1.5.5.7.10.3";
+
+  // RoleSyntax
+  var role = attrDecoded(ROLE, roleValue("urn:role:admin"));
+  check("av role: roleName {tagNumber:6, value}, no authority", role.roleName.tagNumber === 6 && role.roleName.value === "urn:role:admin" && role.roleAuthority === null);
+  var roleAuth = attrDecoded(ROLE, b.sequence([b.contextConstructed(0, gnDirName("Auth")), b.contextConstructed(1, b.contextPrimitive(6, Buffer.from("r", "ascii")))]));
+  check("av role: roleAuthority [0] GeneralNames decodes", roleAuth.roleAuthority && roleAuth.roleAuthority.names.length === 1);
+  check("av role: [1] primitive (IMPLICIT not EXPLICIT) -> bad-role", attrCode(ROLE, b.sequence([b.contextPrimitive(1, Buffer.from("x", "ascii"))])) === "attrcert/bad-role");
+  check("av role: roleName absent -> bad-role", attrCode(ROLE, b.sequence([])) === "attrcert/bad-role");
+
+  // Clearance
+  var cl = attrDecoded(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1")]));
+  check("av clearance: default classList synthesized {unclassified}", cl.classList.flags.unclassified === true && cl.securityCategories === null);
+  var clSecret = attrDecoded(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x08]), 3)]));
+  check("av clearance: present classList decodes named bit (secret)", clSecret.classList.flags.secret === true && clSecret.classList.names.indexOf("secret") !== -1);
+  check("av clearance: classList == DEFAULT {unclassified} -> bad-clearance (non-canonical)", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x40]), 6)])) === "attrcert/bad-clearance");
+
+  // SvceAuthInfo
+  var svc = attrDecoded(AUTHINFO, b.sequence([b.contextPrimitive(6, Buffer.from("svc", "ascii")), b.contextPrimitive(6, Buffer.from("id", "ascii")), b.octetString(Buffer.from([1, 2, 3]))]));
+  check("av authenticationInfo: service/ident/authInfo decode", svc.service.value === "svc" && svc.ident.value === "id" && svc.authInfo.length === 3);
+  var access = attrDecoded(ACCESSID, b.sequence([b.contextPrimitive(6, Buffer.from("svc", "ascii")), b.contextPrimitive(6, Buffer.from("id", "ascii"))]));
+  check("av accessIdentity: 2-child decodes (authInfo null)", access.authInfo === null);
+  check("av accessIdentity: authInfo present -> bad-access-identity", attrCode(ACCESSID, b.sequence([b.contextPrimitive(6, Buffer.from("s", "ascii")), b.contextPrimitive(6, Buffer.from("i", "ascii")), b.octetString(Buffer.from([1]))])) === "attrcert/bad-access-identity");
+
+  // IetfAttrSyntax
+  var grp = attrDecoded(GROUP, b.sequence([b.sequence([b.oid("1.2.3")])]));
+  check("av group: IetfAttrSyntax oid value CHOICE, homogeneous", grp.values[0].kind === "oid" && grp.values[0].value === "1.2.3" && grp.homogeneous === true && grp.policyAuthority === null);
+  check("av group: empty values -> bad-ietf-attr", attrCode(GROUP, b.sequence([b.sequence([])])) === "attrcert/bad-ietf-attr");
+  check("av group: a PrintableString value CHOICE -> bad-ietf-attr", attrCode(GROUP, b.sequence([b.sequence([b.printable("x")])])) === "attrcert/bad-ietf-attr");
+  var chg = attrDecoded(CHARGING, b.sequence([b.contextConstructed(0, gnDirName("PA")), b.sequence([b.octetString(Buffer.from([9])), b.utf8("s")])]));
+  check("av chargingIdentity: policyAuthority + mixed values -> homogeneous:false", chg.policyAuthority.names.length === 1 && chg.homogeneous === false && chg.values.length === 2);
+
+  // opaque fallback -- an unknown attribute type never fails the parse
+  var enc = parse(attrCert({ attributesNode: b.sequence([attribute("1.3.6.1.5.5.7.10.6", [b.octetString(Buffer.from([1]))])]) })).attributes[0];
+  check("av unknown type -> opaque fallback (parse succeeds)", enc.decoded[0].opaque === true && Buffer.isBuffer(enc.decoded[0].bytes));
+}
+
+// RFC 5755 sec. 4.3 AC-extension decoders, driven through attrcert.parse -> extensions[i].decoded.
+function extDecoded(oidStr, valueBytes) { return parse(attrCert({ extensions: [ext(oidStr, valueBytes)] })).extensions[0].decoded; }
+function extCode(oidStr, valueBytes) { return parseCode(attrCert({ extensions: [ext(oidStr, valueBytes)] })); }
+function testAcExtensionDecoders() {
+  var AUDIT = "1.3.6.1.5.5.7.1.4", TARGETINFO = "2.5.29.55", NOREV = "2.5.29.56", AACTRL = "1.3.6.1.5.5.7.1.6", PROXY = "1.3.6.1.5.5.7.1.10";
+
+  // acAuditIdentity
+  check("ext auditIdentity: OCTET STRING -> Buffer(len)", (function () { var d = extDecoded(AUDIT, b.octetString(Buffer.from([1, 2, 3]))); return Buffer.isBuffer(d) && d.length === 3; })());
+  check("ext auditIdentity: empty -> bad-audit-identity", extCode(AUDIT, b.octetString(Buffer.alloc(0))) === "attrcert/bad-audit-identity");
+  check("ext auditIdentity: non-OCTET-STRING -> bad-audit-identity", extCode(AUDIT, b.integer(0)) === "attrcert/bad-audit-identity");
+
+  // noRevAvail
+  check("ext noRevAvail: empty -> {noRevAvail:true}", extDecoded(NOREV, Buffer.alloc(0)).noRevAvail === true);
+  check("ext noRevAvail: NULL -> {noRevAvail:true}", extDecoded(NOREV, b.nullValue()).noRevAvail === true);
+  check("ext noRevAvail: BOOLEAN -> bad-no-rev-avail", extCode(NOREV, b.boolean(true)) === "attrcert/bad-no-rev-avail");
+
+  // targetInformation
+  var ti = extDecoded(TARGETINFO, b.sequence([b.contextConstructed(0, b.contextPrimitive(2, Buffer.from("d.com", "ascii")))]));
+  check("ext targetInformation: targetName [0] decodes", ti[0].kind === "targetName" && ti[0].name.tagNumber === 2 && ti[0].name.value === "d.com");
+  check("ext targetInformation: empty Targets -> bad-targets", extCode(TARGETINFO, b.sequence([])) === "attrcert/bad-targets");
+  check("ext targetInformation: unknown Target tag [3] -> bad-targets", extCode(TARGETINFO, b.sequence([b.contextConstructed(3, Buffer.alloc(0))])) === "attrcert/bad-targets");
+
+  // aaControls
+  var aac = extDecoded(AACTRL, b.sequence([b.integer(3), b.contextConstructed(0, b.oid("1.2.3")), b.contextConstructed(1, b.oid("1.2.4")), b.boolean(false)]));
+  check("ext aaControls: full decodes", aac.pathLenConstraint === 3 && aac.permittedAttrs[0] === "1.2.3" && aac.excludedAttrs[0] === "1.2.4" && aac.permitUnSpecified === false);
+  var aacMin = extDecoded(AACTRL, b.sequence([]));
+  check("ext aaControls: minimal (all defaults)", aacMin.pathLenConstraint === null && aacMin.permitUnSpecified === true);
+  check("ext aaControls: permitUnSpecified TRUE (== default) -> bad-aa-controls", extCode(AACTRL, b.sequence([b.boolean(true)])) === "attrcert/bad-aa-controls");
+
+  // acProxying (SEQUENCE OF Targets, reusing the shared Targets decoder)
+  var px = extDecoded(PROXY, b.sequence([b.sequence([b.contextConstructed(0, b.contextPrimitive(2, Buffer.from("a", "ascii")))]), b.sequence([b.contextConstructed(1, b.contextPrimitive(2, Buffer.from("b", "ascii")))])]));
+  check("ext acProxying: SEQUENCE OF Targets decodes", px.length === 2 && px[0][0].kind === "targetName" && px[1][0].kind === "targetGroup");
+  check("ext acProxying: empty inner Targets -> bad-targets (shared decoder)", extCode(PROXY, b.sequence([b.sequence([])])) === "attrcert/bad-targets");
+
+  // opaque fallback for an unknown extension OID
+  check("ext unknown OID -> opaque fallback", parse(attrCert({ extensions: [ext("1.2.3.4.5", b.nullValue())] })).extensions[0].decoded.opaque === true);
+}
+
 testAcceptV2();
+testAttributeValueDecoders();
+testAcExtensionDecoders();
 testHolderVariants();
 testIssuerProfile();
 testOptionalTail();
