@@ -376,6 +376,9 @@ function testBuildEncoder() {
   check("build-byteString round-trips", Buffer.compare(r.byteString(d(b.byteString(Buffer.from([1, 2, 3])))), Buffer.from([1, 2, 3])) === 0);
   check("build-oid round-trips", r.oid(d(b.oid("2.16.840.1.101.3.4.2.1"))) === "2.16.840.1.101.3.4.2.1");
   check("build-time round-trips to the epoch second", r.time(d(b.time(new Date("2013-03-21T20:04:00Z")))).getTime() === Date.parse("2013-03-21T20:04:00Z"));
+  // build.time never emits a tag-1 read.time would reject: an out-of-range epoch and an Invalid Date fail closed.
+  check("build-time rejects an out-of-range epoch (matches read.time's bound)", code(function () { b.time(8640000000001n); }) === "cbor/bad-time");
+  check("build-time rejects an Invalid Date", code(function () { b.time(new Date("nope")); }) === "cbor/bad-time");
   // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
   var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
