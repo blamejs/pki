@@ -430,7 +430,7 @@ function testAcExtensionDecoders() {
 
   // acAuditIdentity
   check("ext auditIdentity: OCTET STRING -> Buffer(len)", (function () { var d = extDecoded(AUDIT, b.octetString(Buffer.from([1, 2, 3]))); return Buffer.isBuffer(d) && d.length === 3; })());
-  check("ext auditIdentity: empty -> bad-audit-identity", extCode(AUDIT, b.octetString(Buffer.alloc(0))) === "attrcert/bad-audit-identity");
+  check("ext auditIdentity: empty (04 00) -> Buffer(0) accepted (unconstrained OCTET STRING)", (function () { var d = extDecoded(AUDIT, b.octetString(Buffer.alloc(0))); return Buffer.isBuffer(d) && d.length === 0; })());
   check("ext auditIdentity: non-OCTET-STRING -> bad-audit-identity", extCode(AUDIT, b.integer(0)) === "attrcert/bad-audit-identity");
 
   // noRevAvail
