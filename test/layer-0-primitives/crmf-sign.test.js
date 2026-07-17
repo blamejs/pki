@@ -159,11 +159,14 @@ async function testProofOfPossession() {
 
 async function testControlsAndRegInfo() {
   var s = makeSigner("ec-p256");
-  var der = await pki.crmf.build({ certTemplate: tpl(s.spki), controls: { regToken: "tok", oldCertID: { issuer: { directoryName: "CN=CA" }, serialNumber: 42n }, protocolEncrKey: s.spki }, regInfo: { utf8Pairs: "k?v", authenticator: "mothers-maiden" } }, { key: s.key });
+  var der = await pki.crmf.build({ certTemplate: tpl(s.spki), controls: { regToken: "tok", authenticator: "maiden", oldCertID: { issuer: { directoryName: "CN=CA" }, serialNumber: 42n }, protocolEncrKey: s.spki }, regInfo: { utf8Pairs: "k?v" } }, { key: s.key });
   var m = parse(der)[0];
-  check("controls round-trip (3 entries)", m.certReq.controls.length === 3);
-  check("regInfo round-trips (2 entries)", m.regInfo.length === 2);
+  check("controls round-trip (4 entries)", m.certReq.controls.length === 4);
+  check("regInfo round-trips (1 entry)", m.regInfo.length === 1);
   check("regToken control decodes to the OID", m.certReq.controls.some(function (c) { return c.name === "regToken"; }));
+  // controls (RFC 4211 sec. 6) and regInfo (sec. 7) are disjoint namespaces.
+  check("a control name in regInfo -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), regInfo: { regToken: "x" } }, { key: s.key })) === "crmf/bad-input");
+  check("a regInfo name in controls -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: { utf8Pairs: "x" } }, { key: s.key })) === "crmf/bad-input");
   check("empty controls object -> crmf/bad-controls", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: {} }, { key: s.key })) === "crmf/bad-controls");
   check("unknown control key -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: { notAControl: 1 } }, { key: s.key })) === "crmf/bad-input");
   check("duplicate control type -> crmf/bad-controls", await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki), controls: [_atv("regToken", "a"), _atv("regToken", "b")] }, { key: s.key })) === "crmf/bad-controls");
@@ -202,6 +205,10 @@ async function testFailClosed() {
   check("garbage publicKey -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: { subject: "d", publicKey: Buffer.from([1, 2, 3]) } }, { key: s.key })) === "crmf/bad-input");
   check("unknown certTemplate field -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: { notAField: 1, subject: "d", publicKey: s.spki } }, { key: s.key })) === "crmf/bad-input");
   check("malformed pre-encoded extension -> typed crmf/*", /^crmf\//.test(await codeOf(pki.crmf.build({ certTemplate: tpl(s.spki, { extensions: [pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("keyUsage")), pki.asn1.build.octetString(Buffer.from([0x30, 0x05]))]) ] }) }, { key: s.key })) || ""));
+  // subjectKeyIdentifier auto-derive (true) with no template publicKey has no key to hash.
+  check("SKI auto-derive without a template publicKey -> crmf/bad-input", await codeOf(pki.crmf.build({ certTemplate: { subject: "d", extensions: { subjectKeyIdentifier: true } }, pop: { type: "raVerified", raVerified: true } })) === "crmf/bad-input");
+  // a Buffer key id does NOT need the public key (a template without publicKey can still carry an explicit SKI).
+  check("SKI as a Buffer key id round-trips without a publicKey", parse(await pki.crmf.build({ certTemplate: { subject: "d", extensions: { subjectKeyIdentifier: Buffer.from([1, 2, 3, 4]) } }, pop: { type: "raVerified", raVerified: true } }))[0].certReq.certTemplate.extensions.length === 1);
 }
 
 // ---- coverage edges (reachable reject + omit branches) ---------------------
