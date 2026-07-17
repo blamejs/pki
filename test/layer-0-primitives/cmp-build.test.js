@@ -261,10 +261,15 @@ async function run() {
   check("24d. pollRep round-trips (certReqId + checkAfter + reason)", parse(await pki.cmp.build({ header: HDR, body: { pollRep: [{ certReqId: 0, checkAfter: 120, reason: ["still working"] }] } }, SIG)).body.arm === "pollRep");
   check("24e. krp KeyRecRepContent round-trips (status + caCerts + keyPairHist)", parse(await pki.cmp.build({ header: HDR, body: { krp: { status: { status: 0 }, caCerts: [CERT], keyPairHist: [{ certificate: CERT }] } } }, SIG)).body.arm === "krp");
   check("24f. pkiconf accepts true (PKIConfirmContent NULL)", parse(await pki.cmp.build({ header: HDR, body: { pkiconf: true } }, SIG)).body.arm === "pkiconf");
-  // encryptedCert [1] CHOICE + privateKey [0] + publicationInfo [1] (a privateKey bumps pvno to cmp2021(3)).
+  // encryptedCert [1] CHOICE + privateKey [0] + publicationInfo [1]. A deprecated EncryptedValue privateKey
+  // (a universal SEQUENCE) stays cmp2000(2) -- only the EnvelopedData [0] form bumps pvno to cmp2021(3).
   var encVal = asn1.build.sequence([asn1.build.integer(1n), asn1.build.octetString(Buffer.from([2, 3]))]);   // a minimal EncryptedValue-shaped SEQUENCE
-  check("24g. certifiedKeyPair encryptedCert + privateKey + publicationInfo round-trips (pvno 3)", parse(await pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { encryptedCert: encVal, privateKey: encVal, publicationInfo: asn1.build.sequence([asn1.build.integer(0n)]) } }] } } }, SIG)).header.pvno === 3);
-  check("24h. rp with crls round-trips", parse(await pki.cmp.build({ header: HDR, body: { rp: { status: [{ status: 0 }], crls: [asn1.build.sequence([asn1.build.integer(1n)])] } } }, SIG)).body.arm === "rp");
+  check("24g. certifiedKeyPair encryptedCert + EncryptedValue privateKey + publicationInfo stays pvno 2", parse(await pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { encryptedCert: encVal, privateKey: encVal, publicationInfo: asn1.build.sequence([asn1.build.integer(0n)]) } }] } } }, SIG)).header.pvno === 2);
+  var minimalCrl = asn1.build.sequence([
+    asn1.build.sequence([asn1.build.sequence([asn1.build.oid("1.2.840.10045.4.3.2")]), asn1.build.sequence([asn1.build.set([asn1.build.sequence([asn1.build.oid("2.5.4.3"), asn1.build.utf8("CA")])])]), asn1.build.utcTime(new Date("2026-01-01T00:00:00Z"))]),
+    asn1.build.sequence([asn1.build.oid("1.2.840.10045.4.3.2")]), asn1.build.bitString(Buffer.from([0]), 0),
+  ]);
+  check("24h. rp with a valid crls entry round-trips", parse(await pki.cmp.build({ header: HDR, body: { rp: { status: [{ status: 0 }], crls: [minimalCrl] } } }, SIG)).body.arm === "rp");
 
   // 25. CertResponse fail-closed gates (RFC 9810 sec. 5.3.4) + fail-closed misuse.
   check("25a. certifiedKeyPair under a rejection status -> cmp/bad-cert-response", await codeOf(pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 2 }, certifiedKeyPair: { certificate: CERT } }] } } }, SIG)) === "cmp/bad-cert-response");
@@ -272,6 +277,7 @@ async function run() {
   check("25c. a garbage certOrEncCert certificate -> cmp/bad-cert-response", await codeOf(pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { certificate: Buffer.from([0x30, 0x00]) } }] } } }, SIG)) === "cmp/bad-cert-response");
   check("25d. a ccp with more than one CertResponse -> cmp/bad-cert-rep", await codeOf(pki.cmp.build({ header: HDR, body: { ccp: { response: [{ certReqId: 0, status: { status: 0 } }, { certReqId: 1, status: { status: 0 } }] } } }, SIG)) === "cmp/bad-cert-rep");
   check("25e. an rp with an empty status array -> cmp/bad-rev-rep", await codeOf(pki.cmp.build({ header: HDR, body: { rp: { status: [] } } }, SIG)) === "cmp/bad-rev-rep");
+  check("25e2. a garbage rp crls entry -> cmp/bad-rev-rep (each must be a valid CRL)", await codeOf(pki.cmp.build({ header: HDR, body: { rp: { status: [{ status: 0 }], crls: [asn1.build.sequence([asn1.build.integer(1n)])] } } }, SIG)) === "cmp/bad-rev-rep");
   check("25f. a negative pollRep checkAfter -> cmp/bad-poll-rep", await codeOf(pki.cmp.build({ header: HDR, body: { pollRep: [{ certReqId: 0, checkAfter: -1 }] } }, SIG)) === "cmp/bad-poll-rep");
   check("25g. an error without pKIStatusInfo -> cmp/bad-error", await codeOf(pki.cmp.build({ header: HDR, body: { error: {} } }, SIG)) === "cmp/bad-error");
   check("25g2. an out-of-range PKIStatus (7) -> cmp/bad-error", await codeOf(pki.cmp.build({ header: HDR, body: { error: { pKIStatusInfo: { status: 7 } } } }, SIG)) === "cmp/bad-error");
