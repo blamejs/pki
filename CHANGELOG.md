@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.7 — 2026-07-17
+
+pki.lint gains seven RFC 5280 extension-criticality and CA-scope certificate lints.
+
+### Added
+
+- pki.lint.certificate flags seven RFC 5280 extension-criticality and CA-scope violations that parse but breach the certificate profile: basicConstraints (on a certificate-signing CA), nameConstraints, policyConstraints, and inhibitAnyPolicy must be marked critical (error); keyUsage should be critical (warn); nameConstraints must appear only in a CA certificate (error); and an end-entity certificate should carry a subjectKeyIdentifier (notice). The basicConstraints criticality rule applies only when the CA key validates certificate signatures (RFC 5280 4.2.1.9), so a CRL-signing-only CA carrying a non-critical basicConstraints is not falsely flagged.
+
 ## v0.3.6 — 2026-07-17
 
 pki.cmp.build gains the CA/responder side -- certificate, revocation, key-recovery, general, error, poll, and confirmation responses complete the RFC 9810 message surface.

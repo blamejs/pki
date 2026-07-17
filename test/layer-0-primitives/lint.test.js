@@ -74,6 +74,16 @@ function basicConstraints(ca, pathLen, critical) {
 function eku(names, critical) { return ext("extKeyUsage", !!critical, b.sequence(names.map(function (n) { return b.oid(oid.byName(n)); }))); }
 function ski(bytes) { return ext("subjectKeyIdentifier", false, b.octetString(bytes || Buffer.alloc(20, 1))); }
 function aki(keyId) { return ext("authorityKeyIdentifier", false, b.sequence([b.contextPrimitive(0, keyId || Buffer.alloc(20, 2))])); }
+// NameConstraints { permittedSubtrees [0] SEQUENCE OF GeneralSubtree { base dNSName } } -- a
+// valid value so extension-undecodable does not co-fire; the criticality rules read only .critical.
+function nameConstraints(critical) {
+  var subtree = b.sequence([b.contextPrimitive(2, Buffer.from("example.com", "ascii"))]);
+  return ext("nameConstraints", critical, b.sequence([b.contextConstructed(0, subtree)]));
+}
+// PolicyConstraints { requireExplicitPolicy [0] INTEGER 0 }.
+function policyConstraints(critical) { return ext("policyConstraints", critical, b.sequence([b.contextPrimitive(0, Buffer.from([0x00]))])); }
+// InhibitAnyPolicy ::= INTEGER (SkipCerts 0).
+function inhibitAnyPolicy(critical) { return ext("inhibitAnyPolicy", critical, b.integer(0n)); }
 // A minimal RDNSequence with a single CN.
 function dnCN(cn) { return b.sequence([b.set([b.sequence([b.oid(oid.byName("commonName")), b.utf8(cn)])])]); }
 var EMPTY_DN = b.sequence([]);
@@ -140,6 +150,72 @@ function run() {
     sevOf(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true)] })), "lint/rfc5280/ski-missing") === "notice");
   check("a non-self-signed cert without AKI -> aki-missing (notice)",
     has(pki.lint.certificate(makeCert({ subject: dnCN("leaf.example") })), "lint/rfc5280/aki-missing"));
+
+  // ---- RFC 5280 extension criticality + CA-scope coherence lints ----
+  // basicConstraints: a CA whose key validates certificate signatures (keyCertSign) MUST mark
+  // basicConstraints critical (4.2.1.9). A non-critical instance is an error.
+  var bcNotCrit = pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, false), keyUsage([5], true), ski()] }));
+  check("a CA (keyCertSign) with non-critical basicConstraints -> basic-constraints-not-critical (error)",
+    sevOf(bcNotCrit, "lint/rfc5280/basic-constraints-not-critical") === "error");
+  check("the basicConstraints fixture does not co-fire ca-without-keycertsign or ski-missing",
+    !has(bcNotCrit, "lint/rfc5280/ca-without-keycertsign") && !has(bcNotCrit, "lint/rfc5280/ski-missing"));
+  check("a critical basicConstraints does NOT flag basic-constraints-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski()] })), "lint/rfc5280/basic-constraints-not-critical"));
+  // RFC 5280 4.2.1.9: a CA key used EXCLUSIVELY for non-cert-signing (e.g. CRL signing) MAY carry a
+  // non-critical basicConstraints -> the rule is NA (no keyCertSign), not a false-positive error.
+  check("a CRL-signing-only CA (no keyCertSign) with non-critical BC is NA, not flagged",
+    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, false), keyUsage([6], true), ski()] })), "lint/rfc5280/basic-constraints-not-critical"));
+  // A CA with NO keyUsage cannot rule out certificate-signing, so MUST-critical still applies.
+  check("a CA with no keyUsage and non-critical basicConstraints -> basic-constraints-not-critical",
+    has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, false), ski()] })), "lint/rfc5280/basic-constraints-not-critical"));
+
+  // nameConstraints MUST be critical (4.2.1.10) -- in a CA so name-constraints-not-ca does not co-fire.
+  var ncNotCrit = pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski(), nameConstraints(false)] }));
+  check("a CA with non-critical nameConstraints -> name-constraints-not-critical (error)",
+    sevOf(ncNotCrit, "lint/rfc5280/name-constraints-not-critical") === "error");
+  check("the nameConstraints fixture does not co-fire unknown-critical-extension or extension-undecodable",
+    !has(ncNotCrit, "lint/rfc5280/unknown-critical-extension") && !has(ncNotCrit, "lint/rfc5280/extension-undecodable"));
+  check("a critical nameConstraints in a CA does NOT flag name-constraints-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski(), nameConstraints(true)] })), "lint/rfc5280/name-constraints-not-critical"));
+
+  // nameConstraints MUST appear only in a CA certificate (4.2.1.10) -- critical NC in a non-CA cert.
+  var ncNotCa = pki.lint.certificate(makeCert({ exts: [nameConstraints(true), aki()] }));
+  check("a critical nameConstraints in a non-CA cert -> name-constraints-not-ca (error)",
+    sevOf(ncNotCa, "lint/rfc5280/name-constraints-not-ca") === "error");
+  check("the non-CA nameConstraints fixture does not co-fire name-constraints-not-critical (it IS critical)",
+    !has(ncNotCa, "lint/rfc5280/name-constraints-not-critical"));
+  check("nameConstraints in a CA cert does NOT flag name-constraints-not-ca",
+    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski(), nameConstraints(true)] })), "lint/rfc5280/name-constraints-not-ca"));
+
+  // policyConstraints MUST be critical (4.2.1.11).
+  check("a non-critical policyConstraints -> policy-constraints-not-critical (error)",
+    sevOf(pki.lint.certificate(makeCert({ exts: [policyConstraints(false)] })), "lint/rfc5280/policy-constraints-not-critical") === "error");
+  check("a critical policyConstraints does NOT flag policy-constraints-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [policyConstraints(true)] })), "lint/rfc5280/policy-constraints-not-critical"));
+
+  // inhibitAnyPolicy MUST be critical (4.2.1.14).
+  check("a non-critical inhibitAnyPolicy -> inhibit-any-policy-not-critical (error)",
+    sevOf(pki.lint.certificate(makeCert({ exts: [inhibitAnyPolicy(false)] })), "lint/rfc5280/inhibit-any-policy-not-critical") === "error");
+  check("a critical inhibitAnyPolicy does NOT flag inhibit-any-policy-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [inhibitAnyPolicy(true)] })), "lint/rfc5280/inhibit-any-policy-not-critical"));
+
+  // keyUsage SHOULD be critical (4.2.1.3) -- a SHOULD, hence warn; present-gated (EE or CA).
+  check("a non-critical keyUsage -> key-usage-not-critical (warn)",
+    sevOf(pki.lint.certificate(makeCert({ exts: [keyUsage([0], false), aki()] })), "lint/rfc5280/key-usage-not-critical") === "warn");
+  check("a critical keyUsage does NOT flag key-usage-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), aki()] })), "lint/rfc5280/key-usage-not-critical"));
+  check("a cert with no keyUsage is NA for key-usage-not-critical",
+    !has(pki.lint.certificate(makeCert({ exts: [ski(), aki()] })), "lint/rfc5280/key-usage-not-critical"));
+
+  // end-entity SKI SHOULD be present (4.2.1.2) -- notice; distinct from the CA-only ski-missing.
+  var eeNoSki = pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), aki()] }));
+  check("an end-entity cert without SKI -> ski-missing-ee (notice)",
+    sevOf(eeNoSki, "lint/rfc5280/ski-missing-ee") === "notice");
+  check("the EE-SKI fixture carries an AKI so aki-missing does not blur it", !has(eeNoSki, "lint/rfc5280/aki-missing"));
+  check("an end-entity cert WITH an SKI does NOT flag ski-missing-ee",
+    !has(pki.lint.certificate(makeCert({ exts: [keyUsage([0], true), ski(), aki()] })), "lint/rfc5280/ski-missing-ee"));
+  check("a CA cert is NA for ski-missing-ee (the CA path is ski-missing)",
+    !has(pki.lint.certificate(makeCert({ exts: [basicConstraints(true, null, true), keyUsage([5], true), ski()] })), "lint/rfc5280/ski-missing-ee"));
 
   // ---- CABF TLS BR subset (applies to a TLS server cert) ----
   var tlsCert = makeCert({ subject: dnCN("example.com"), validity: VALID_OK, exts: [eku(["serverAuth"]), san([dnsName("example.com")], false), aki()] });

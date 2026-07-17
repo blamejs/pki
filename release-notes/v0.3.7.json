@@ -1,0 +1,10 @@
+{
+  "version": "0.3.7",
+  "headline": "pki.lint gains seven RFC 5280 extension-criticality and CA-scope certificate lints.",
+  "summary": "pki.lint.certificate now flags certificates that parse cleanly but violate RFC 5280's extension-criticality and CA-scope requirements -- profile faults the strict codec does not reject at parse. Five criticality lints fire when a MUST-critical extension is not marked critical: basicConstraints on a certificate-signing CA (4.2.1.9), nameConstraints (4.2.1.10), policyConstraints (4.2.1.11), and inhibitAnyPolicy (4.2.1.14) each raise an error, and keyUsage -- a SHOULD -- raises a warning (4.2.1.3). Two coherence lints cover extension scope: nameConstraints appearing outside a CA certificate is an error (4.2.1.10), and an end-entity certificate without a subjectKeyIdentifier is a notice (4.2.1.2). The basicConstraints rule honors the RFC's exception -- a CA key used exclusively for purposes other than signing certificates may carry a non-critical basicConstraints -- so a CRL-signing-only CA is not falsely flagged. The rules are new registry rows reached through the existing pki.lint.certificate surface; rules() and profiles() enumerate them and the public function surface is unchanged.",
+  "sections": {
+    "Added": [
+      "pki.lint.certificate flags seven RFC 5280 extension-criticality and CA-scope violations that parse but breach the certificate profile: basicConstraints (on a certificate-signing CA), nameConstraints, policyConstraints, and inhibitAnyPolicy must be marked critical (error); keyUsage should be critical (warn); nameConstraints must appear only in a CA certificate (error); and an end-entity certificate should carry a subjectKeyIdentifier (notice). The basicConstraints criticality rule applies only when the CA key validates certificate signatures (RFC 5280 4.2.1.9), so a CRL-signing-only CA carrying a non-critical basicConstraints is not falsely flagged."
+    ]
+  }
+}
