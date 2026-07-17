@@ -264,6 +264,12 @@ async function testFailClosed() {
   check("missing subjectPublicKey -> throws", await codeOf(pki.x509.sign({ subject: "x", notBefore: NB, notAfter: NA }, { key: s.key })) !== null);
   // a typo'd extension key is rejected at config-time (not silently dropped).
   check("unknown extension key -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { keyUsag: ["digitalSignature"] } }, { key: s.key })) === "x509/bad-input");
+  // a malformed subject SPKI is rejected at issuance (validated before it is embedded raw).
+  var B = pki.asn1.build;
+  check("non-DER subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: Buffer.from([1, 2, 3, 4]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");
+  check("structurally-wrong subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: B.sequence([B.integer(1n), B.integer(2n)]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");
+  // a malformed pre-encoded extension is rejected before signing.
+  check("malformed pre-encoded extension -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [B.sequence([B.integer(1n)])] }, { key: s.key })) === "x509/bad-input");
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
@@ -273,12 +279,23 @@ var os = require("node:os");
 var fsMod = require("node:fs");
 var pathMod = require("node:path");
 function _opensslAvailable() { try { cp.execFileSync("openssl", ["version"], { stdio: "ignore" }); return true; } catch { return false; } }
+// ML-DSA / SLH-DSA certificate support landed in OpenSSL 3.5; an older openssl cannot parse or verify a
+// PQC certificate, so those arms are only cross-checked when the openssl on PATH is >= 3.5.
+function _opensslHasPqc() {
+  try {
+    var v = cp.execFileSync("openssl", ["version"], { encoding: "utf8" });
+    var m = v.match(/OpenSSL\s+(\d+)\.(\d+)/);
+    return !!m && (Number(m[1]) > 3 || (Number(m[1]) === 3 && Number(m[2]) >= 5));
+  } catch { return false; }
+}
 
 async function testOpensslInterop() {
   if (!_opensslAvailable()) { helpers.skip("openssl not on PATH -- interop skipped (runs on the host gate)"); return; }
   // A self-signed cert we emit must parse (openssl x509 -text) AND verify (openssl verify) across a
-  // classical, an ECDSA, an EdDSA, and a post-quantum arm -- the independent-verifier gate.
-  var arms = ["rsa", "ec-p256", "ed25519", "ml-dsa-65", "slh-dsa-sha2-128f"];
+  // classical, an ECDSA, and an EdDSA arm -- and the post-quantum arms when openssl is >= 3.5.
+  var arms = ["rsa", "ec-p256", "ed25519"];
+  if (_opensslHasPqc()) arms.push("ml-dsa-65", "slh-dsa-sha2-128f");
+  else helpers.skip("openssl < 3.5 on PATH -- ML-DSA/SLH-DSA certificate interop not cross-checked");
   for (var i = 0; i < arms.length; i++) {
     var alg = arms[i];
     var s = makeSigner(alg);
