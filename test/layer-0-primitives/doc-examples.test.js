@@ -193,6 +193,8 @@ function fixturesFor(tag) {
     p7sDer: cmsDetachedDer, detachedBytes: cmsDetachedContent,
     // pki.cms.sign / pki.tsp.sign: a real signer certificate + PKCS#8 key + a digest.
     signerCertDer: signFixtureSigner.cert, signerKeyPkcs8: signFixtureSigner.key, sha256Digest: cmsSha256Digest,
+    // pki.x509.sign: the same real signer's SPKI, so the issuance example signs a real certificate.
+    signerSpki: signFixtureSigner.spki,
     // pki.ocsp: a leaf + issuer (the same real EC cert stands in for both) + a
     // responder cert/key, and a real signed BasicOCSPResponse (built in run()) so
     // buildRequest / sign / verify run the actual code path to a fail-closed verdict.

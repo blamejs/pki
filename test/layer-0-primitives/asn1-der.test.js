@@ -824,6 +824,7 @@ function run() {
   testTimeOutOfRange();
   testFractionalTimeAndImplicitInteger();
   testBitStringUnusedBits();
+  testNamedBitString();
   testUniversalStringScalarRange();
   testUtcTimeYearRange();
   testGeneralizedTimeYearPad();
@@ -836,6 +837,23 @@ function run() {
   testIntegerBufferMinimal();
   testOidSubIdentifierCap();
   testReadStringValidation();
+}
+
+// build.namedBitString -- the minimal DER NamedBitList (X.690 sec. 11.2.2): trailing zero bits removed,
+// unused-bit count set below the last set bit. Bit 0 = the MSB of the first octet.
+function testNamedBitString() {
+  var b = pki.asn1.build;
+  check("namedBitString [0] -> 03 02 07 80", hex(b.namedBitString([0])) === "03020780");                 // digitalSignature
+  check("namedBitString [5,6] -> 03 02 01 06", hex(b.namedBitString([5, 6])) === "03020106");            // keyCertSign + cRLSign, order-independent
+  check("namedBitString [6,5] order-independent", hex(b.namedBitString([6, 5])) === "03020106");
+  check("namedBitString [8] -> 03 03 07 00 80", hex(b.namedBitString([8])) === "0303070080");            // decipherOnly spills to a second octet
+  check("namedBitString [0,7] -> 03 02 00 81", hex(b.namedBitString([0, 7])) === "03020081");            // no unused bits
+  check("namedBitString [] -> 03 01 00 (empty)", hex(b.namedBitString([])) === "030100");                // no bits asserted
+  check("namedBitString rejects a negative position", code(function () { b.namedBitString([-1]); }) === "asn1/bad-bit-string");
+  check("namedBitString rejects a non-integer position", code(function () { b.namedBitString([1.5]); }) === "asn1/bad-bit-string");
+  check("namedBitString rejects a non-array", code(function () { b.namedBitString(5); }) === "asn1/bad-bit-string");
+  // the emitted BIT STRING decodes back through the strict reader (round-trips to a valid TLV).
+  check("namedBitString output is a decodable BIT STRING", pki.asn1.decode(b.namedBitString([5, 6])).tagNumber === 3);
 }
 
 module.exports = { run: run };

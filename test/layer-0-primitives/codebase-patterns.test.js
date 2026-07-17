@@ -156,6 +156,7 @@ var VALID_ALLOW_CLASSES = {
   "validator-without-enforcement": 1,
   "inline-structure-validator": 1,
   "nan-date-comparison-unguarded": 1,
+  "eddsa-verify-without-loworder-gate": 1,
   // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
   // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
   "swallow-unverified": 1,
@@ -1134,12 +1135,14 @@ function testNoUnusedUnderscoreFunctions() {
 
 function testNoRemovedNamespaceRefs() {
   // class: removed-namespace-ref
-  // The v0.1.7 rename removed pki.x509 (-> pki.schema.x509) and pki.asn1.schema
-  // (-> pki.schema.engine) with no compat shim. A consumer left calling a
-  // removed export crashes at runtime — the CLI (bin/pki.js) and the fuzz target
-  // both did, because the rename sweep covered lib/test/examples but not bin/ or
-  // fuzz/. No shipped source (lib + the consumer entry points) may reference the
-  // removed names; the sweep must be whole-repo.
+  // The v0.1.7 rename moved the x509 PARSE surface (parse / pemDecode / pemEncode) off pki.x509 to
+  // pki.schema.x509, and pki.asn1.schema to pki.schema.engine, with no compat shim. A consumer left
+  // calling a removed export crashes at runtime — the CLI (bin/pki.js) and the fuzz target both did,
+  // because the rename sweep covered lib/test/examples but not bin/ or fuzz/. pki.x509 has since been
+  // RE-INTRODUCED as the certificate-ISSUANCE producing namespace (pki.x509.sign), matching the
+  // pki.cms.sign / pki.tsp.sign convention, so the guard targets the removed parse MEMBERS
+  // specifically — pki.x509.{parse,pemDecode,pemEncode} still resolve nowhere and must never be
+  // referenced; the sweep must be whole-repo.
   var bad = [];
   var files = _libFiles().slice();
   ["bin", "fuzz", "scripts"].forEach(function (dir) {
@@ -1149,7 +1152,7 @@ function testNoRemovedNamespaceRefs() {
       });
     } catch (_e) { /* dir may be absent in some packagings */ }
   });
-  var re = /pki\.x509\b|pki\.asn1\.schema\b/;
+  var re = /pki\.x509\.(?:parse|pemDecode|pemEncode)\b|pki\.asn1\.schema\b/;
   for (var i = 0; i < files.length; i++) {
     var rel = _relPath(files[i]);
     var src;
@@ -1159,12 +1162,12 @@ function testNoRemovedNamespaceRefs() {
     for (var j = 0; j < lines.length; j++) {
       if (re.test(lines[j])) {
         bad.push({ file: rel, line: j + 1,
-          content: "references a removed namespace (pki.x509 -> pki.schema.x509, pki.asn1.schema -> pki.schema.engine) — the v0.1.7 rename left no compat shim; a whole-repo sweep must catch bin/ and fuzz/, not only lib/test" });
+          content: "references a removed parse export (pki.x509.parse/pemDecode/pemEncode -> pki.schema.x509, pki.asn1.schema -> pki.schema.engine) — the v0.1.7 rename left no compat shim; pki.x509.sign (issuance) is fine, but the parse members resolve nowhere; the sweep must catch bin/ and fuzz/, not only lib/test" });
       }
     }
   }
   bad = _filterMarkers(bad, "removed-namespace-ref");
-  _report("no shipped source references the removed pki.x509 / pki.asn1.schema namespaces", bad);
+  _report("no shipped source references the removed pki.x509 parse members / pki.asn1.schema namespace", bad);
 }
 
 function testFormatModulesComposeSchema() {
@@ -1770,6 +1773,20 @@ function testNoDuplicateCodeBlocks() {
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
     },
+    {
+      // The certificate/CMS/timestamp producing-module header: each signing module opens with the same
+      // idiom -- require the codec + oid + sign-scheme resolver + guard + framework-error, then declare
+      // the two per-domain error factories (`_err(code,msg,cause)` taking a full code + `_signE(kind,...)`
+      // prepending the domain, the (code,msg)-factory shape guard.time.assertValid and resolveSignScheme
+      // invoke) plus the `O(n) = oid.byName(n)` shorthand. The resolver + signer live once in
+      // sign-scheme.js; each header binds a DIFFERENT domain (cms/ tsp/ x509/), so the glue recurs
+      // without being further extractable. family-subset so any 3+ producing modules match.
+      files: [
+        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>",
+      ],
+      mode: "family-subset",
+      reason: "producing-module header: require(codec/oid/sign-scheme/guard/framework-error) + the two per-domain error factories (_err full-code, _signE domain-prefixed) + O()=oid.byName; the resolver/signer are shared in sign-scheme.js and each module binds a different domain -- nothing further extractable.",
+    },
     // The v0.1.29 byte-input coercion-guard cluster is gone: the five boundaries
     // now delegate to lib/guard-bytes.js (guard.bytes.view / .source), so each
     // per-module coercion is a one-line call with no shared shape to cluster.
@@ -2080,6 +2097,61 @@ function testNanDateComparisonUnguarded() {
   });
   bad = _filterMarkers(bad, "nan-date-comparison-unguarded");
   _report("no lib function compares a Date .getTime() against a bound without an isNaN guard (NaN-Date fail-open, codebase-wide)", bad);
+}
+
+// class: eddsa-verify-without-loworder-gate
+// A public Ed25519/Ed448 (OKP) key reaches a signature VERIFY (or the createPublicKey import that
+// feeds one) without first passing through the shared full-order / on-curve Edwards-point gate
+// (edwards-point.validate / validateSpki). node imports a low-order (e.g. all-zeroes) OKP key WITHOUT
+// complaint, and such a key VERIFIES a FORGED EdDSA signature (small-subgroup / twist). The gate is the
+// single home; every EdDSA verify sink must route through it. This class was fixed BY HAND across
+// webauthn (v0.2.6), composite-CMS + the path chain + jose (v0.2.18), and sigstore _pubFromSpki /
+// _rawVerify (v0.2.31 / this cut) -- a 3+ release recurrence whose shared home was routed to purely by
+// hand with NO tripwire, so a new verify sink in a never-reviewed file would fail open. Function-
+// granular (model: ocsp-responder-auth-reinlined). The gate-fn names are DERIVED off edwards-point.js
+// module.exports (single source of truth) so renaming validateSpki cannot silently green it. Rename-
+// proof anchors, not locals: node's asymmetricKeyType returns the literal "ed25519"/"ed448"; the
+// WebCrypto/COSE names are "Ed25519"/"Ed448"; the sinks are .verify( / subtle.verify / createPublicKey(.
+// A sink whose caller provably pre-validates marks allow:eddsa-verify-without-loworder-gate.
+function testEddsaVerifyGate() {
+  var epSrc = fs.readFileSync(path.join(LIB_ROOT, "edwards-point.js"), "utf8");
+  var epExports = (epSrc.match(/module\.exports\s*=\s*\{([^}]*)\}/) || ["", ""])[1];
+  var gateFns = (epExports.match(/([A-Za-z_$][\w$]*)\s*:/g) || []).map(function (m) { return m.replace(/\s*:\s*$/, ""); });
+  if (!gateFns.length) gateFns = ["validate", "validateSpki"];               // fallback if exports move
+  var gateCall = new RegExp("\\b(?:" + gateFns.join("|") + ")\\s*\\(");
+  var OKP = /\b(?:ed25519|ed448|Ed25519|Ed448)\b/;
+  var SINK = /\.verify\s*\(|subtle\.verify|createPublicKey\s*\(/;
+  // Excluded: edwards-point.js IS the gate; webcrypto.js is the thin SubtleCrypto ENGINE BELOW the gate
+  // -- its import/verify primitives are gated by their CONSUMERS (a verifier validates the point before
+  // handing the key to the engine), not by the engine, so gating inside it would be a layering inversion
+  // and would wrongly gate X25519/X448 key-agreement keys. A stripComments helper keeps string literals.
+  var SKIP = { "edwards-point.js": 1, "webcrypto.js": 1 };
+  function _strip(body) { return body.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " "); }
+  // Pass 1 (DERIVED): the gate is usually reached through a thin domain WRAPPER (webauthn
+  // _requireValidEdPoint calls edwards-point.validate), not the gate export directly. Collect every
+  // function that itself calls the gate; a verify sink that calls one of THEM is routed and safe. Reading
+  // the routers off the tree keeps a wrapper rename from silently desyncing enforcement.
+  var routers = {};
+  _libFiles().forEach(function (f) {
+    _functionRegions(fs.readFileSync(f, "utf8")).forEach(function (region) {
+      if (gateCall.test(_strip(region.body))) routers[region.name] = 1;
+    });
+  });
+  var gateRe = new RegExp("\\b(?:" + gateFns.concat(Object.keys(routers)).join("|") + ")\\s*\\(");
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    if (SKIP[path.basename(f)]) return;
+    var rel = path.relative(REPO_ROOT, f);
+    _functionRegions(fs.readFileSync(f, "utf8")).forEach(function (region) {
+      var body = _strip(region.body);
+      if (!OKP.test(body) || !SINK.test(body)) return;                       // only an OKP-handling verify/import sink
+      if (gateRe.test(body)) return;                                         // routes through the gate (or a wrapper) -> safe
+      bad.push({ file: rel, line: region.startLine,
+        content: "the function '" + region.name + "' verifies or imports an Ed25519/Ed448 (OKP) key without routing it through the edwards-point low-order/on-curve gate (" + gateFns.join(" / ") + ") -- node imports a low-order OKP key silently and it verifies a FORGED EdDSA signature; route the key through edwards-point.validate / validateSpki (directly or via a wrapper that does) before the verify sink, or mark allow:eddsa-verify-without-loworder-gate when the caller provably pre-validates" });
+    });
+  });
+  bad = _filterMarkers(bad, "eddsa-verify-without-loworder-gate");
+  _report("no lib function verifies/imports an Ed25519/Ed448 key without the edwards-point low-order gate (EdDSA forged-signature fail-open, codebase-wide)", bad);
 }
 
 // Split a source file into top-level function regions [{ name, startLine, body }].
@@ -2651,6 +2723,7 @@ function run() {
   testAlgorithmLookupNoDefault();
   testNumberNarrowsUnboundedInteger();
   testNanDateComparisonUnguarded();
+  testEddsaVerifyGate();
   testCborMapPairAccessOutsideCodec();
   testOcspResponderAuthReinlined();
   testGuardShapeReinlined();

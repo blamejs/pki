@@ -67,8 +67,7 @@ function makeSigner(alg, opts) {
 // profile require on a recipient certificate.
 var _KU_BIT = { digitalSignature: 0, keyEncipherment: 2, dataEncipherment: 3, keyAgreement: 4 };
 function keyUsageExt(bitName) {
-  var bit = _KU_BIT[bitName], byte = 0x80 >> bit, unused = 7 - bit;
-  var ku = b.bitString(Buffer.from([byte]), unused);
+  var ku = b.namedBitString([_KU_BIT[bitName]]);   // minimal single-bit NamedBitList (X.690 sec. 11.2.2)
   return b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(ku)]);
 }
 
