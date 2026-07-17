@@ -231,6 +231,9 @@ async function run() {
   // (rendered as text) would change the reconstructed DER; the verbatim path keeps it byte-exact.
   var t3bs = V.mk({ 6: "4401020304" });   // type-3, subject = a byte-string commonName
   check("83c. type-3 re-emit preserves a byte-string field verbatim", pki.schema.c509.encode(pki.schema.c509.parse(t3bs)).equals(t3bs));
+  // a Uint8Array parse input (not a Buffer) preserves the raw fields correctly (the field bytes come from
+  // the decoded root, not offset arithmetic on the caller's input buffer).
+  check("83d. Uint8Array parse input re-emits byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(new Uint8Array(V.A1.type3))).equals(V.A1.type3));
   // the emission is canonical deterministic CBOR by construction (parse re-decodes it).
   check("84. encode output re-parses to the same certificate", pki.schema.c509.parse(pki.schema.c509.encode(V.A1.der)).certificateType === 3);
   // fail-closed on a non-cert input.

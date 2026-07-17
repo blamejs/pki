@@ -402,6 +402,11 @@ function testBuildEncoder() {
   check("build-array rejects an indefinite-length item", code(function () { b.array([Buffer.from([0x9f, 0xff])]); }) === "cbor/bad-item");
   check("build-map rejects a malformed key item", code(function () { b.map([[Buffer.from([0xff]), b.uint(1n)]]); }) === "cbor/bad-item");
   check("build-tag rejects a malformed content item", code(function () { b.tag(2, Buffer.from([0x00, 0x00])); }) === "cbor/bad-item");
+  // a container never emits output beyond the decoder depth cap (a container adds one level, so a nested
+  // build past the cap fails at build time rather than emitting bytes the decoder would reject).
+  check("build-array rejects output beyond the decoder depth cap", code(function () { var cur = b.uint(1n); for (var i = 0; i < 66; i++) cur = b.array([cur]); }) === "cbor/bad-item");
+  var deep = b.uint(1n); for (var k = 0; k < 10; k++) deep = b.array([deep]);
+  check("build-array within the depth cap decodes", d(deep).majorType === 4);
 }
 
 function run() {
