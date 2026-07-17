@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.4 — 2026-07-17
+
+pki.schema.c509.encode produces C509 CBOR certificates -- a DER X.509 certificate compresses to a compact, byte-exact-invertible type-3 C509, and a deterministic-CBOR encoder joins pki.cbor.
+
+### Added
+
+- pki.schema.c509.encode(input) encodes a C509 certificate to deterministic-CBOR bytes -- a DER X.509 v3 certificate to a compact type-3 C509 (byte-exact-invertible, so the original signature verifies), or a pki.schema.c509.parse result re-emitted to its native array. Canonical deterministic CBOR with the registry integer shorthands and the C509 compressions; a certificate outside the invertible covered set throws a typed C509Error. Certificate parsing remains pki.schema.c509.parse.
+- pki.cbor.build is a deterministic-CBOR encoder (RFC 8949 section 4.2) -- the byte-exact inverse of pki.cbor.decode: shortest-form heads, definite lengths, sorted and unique map keys, over unsigned and negative integers, byte and text strings, arrays, maps, tags, and the tagged bignum / epoch-time / object-identifier leaves. Encoded output always re-decodes through the strict decoder.
+
 ## v0.3.3 — 2026-07-17
 
 pki.crmf.build issues RFC 4211 certificate request messages -- a CertReqMessages with a signature proof of possession, over every algorithm the toolkit supports.

@@ -347,6 +347,93 @@ function testMapGet() {
   check("mapGet-unsafe-number-key-typeerror", threw(function () { r.mapGet(im, Number.MAX_SAFE_INTEGER + 1); }) instanceof TypeError);
 }
 
+// ---- build: the deterministic-CBOR encoder, byte-exact inverse of decode ----
+
+function testBuildEncoder() {
+  var b = pki.cbor.build;
+  var d = pki.cbor.decode;
+  var r = pki.cbor.read;
+  function hex(x) { return x.toString("hex"); }
+  // shortest-form heads at every argument-width boundary (the exact mirror of the non-minimal-argument reject).
+  check("build-uint-0 -> 00", hex(b.uint(0n)) === "00");
+  check("build-uint-23 -> 17", hex(b.uint(23n)) === "17");
+  check("build-uint-24 -> 1818", hex(b.uint(24n)) === "1818");
+  check("build-uint-255 -> 18ff", hex(b.uint(255n)) === "18ff");
+  check("build-uint-256 -> 190100", hex(b.uint(256n)) === "190100");
+  check("build-uint-65536 -> 1a00010000", hex(b.uint(65536n)) === "1a00010000");
+  check("build-uint-epoch -> 1a63b0cd00", hex(b.uint(1672531200n)) === "1a63b0cd00");
+  check("build-uint-2^32 -> 1b0000000100000000", hex(b.uint(4294967296n)) === "1b0000000100000000");
+  check("build-int-neg1 -> 20", hex(b.int(-1n)) === "20");
+  check("build-int-neg500 -> 3901f3", hex(b.int(-500n)) === "3901f3");
+  check("build-byteString-33 head -> 5821", hex(b.byteString(Buffer.alloc(33))).slice(0, 4) === "5821");
+  check("build-textString hi -> 626869", hex(b.textString("hi")) === "626869");
+  check("build-bool-true -> f5", hex(b.boolean(true)) === "f5");
+  check("build-bool-false -> f4", hex(b.boolean(false)) === "f4");
+  check("build-null -> f6", hex(b.nullValue()) === "f6");
+  // round-trip through the strict decoder -- decode(build.x) accepts (canonical by construction).
+  check("build-uint round-trips", r.uint(d(b.uint(300000n))) === 300000n);
+  check("build-int round-trips", r.int(d(b.int(-42n))) === -42n);
+  check("build-byteString round-trips", Buffer.compare(r.byteString(d(b.byteString(Buffer.from([1, 2, 3])))), Buffer.from([1, 2, 3])) === 0);
+  check("build-oid round-trips", r.oid(d(b.oid("2.16.840.1.101.3.4.2.1"))) === "2.16.840.1.101.3.4.2.1");
+  check("build-time round-trips to the epoch second", r.time(d(b.time(new Date("2013-03-21T20:04:00Z")))).getTime() === Date.parse("2013-03-21T20:04:00Z"));
+  // build.time never emits a tag-1 read.time would reject: an out-of-range epoch and an Invalid Date fail closed.
+  check("build-time rejects an out-of-range epoch (matches read.time's bound)", code(function () { b.time(8640000000001n); }) === "cbor/bad-time");
+  check("build-time rejects an Invalid Date", code(function () { b.time(new Date("nope")); }) === "cbor/bad-time");
+  // read.time reads only a second-granularity integer tag-1, so build.time rejects a sub-second Date rather
+  // than silently dropping the milliseconds.
+  check("build-time rejects a sub-second Date", code(function () { b.time(new Date("2013-03-21T20:04:00.500Z")); }) === "cbor/bad-time");
+  check("build-time accepts a whole-second Date", r.time(d(b.time(new Date("2013-03-21T20:04:00.000Z")))).getTime() === Date.parse("2013-03-21T20:04:00Z"));
+  // build.raw is a pass-through for a pre-encoded item, but it still validates: a well-formed item passes,
+  // bytes the strict decoder rejects (a truncated head) fail closed rather than returning garbage.
+  check("build-raw passes a well-formed pre-encoded item through", b.raw(b.int(5n)).equals(b.int(5n)));
+  check("build-raw rejects bytes that are not a well-formed CBOR item", code(function () { b.raw(Buffer.from([0x18])); }) === "cbor/bad-item");
+  // a string leaf never emits an item beyond the decoder's total-size cap: a byte string one over the cap
+  // fails closed rather than producing bytes the strict reader would reject as too large.
+  var CBOR_CAP = require("../../lib/constants").LIMITS.CBOR_MAX_BYTES;
+  check("build-byteString rejects a value beyond the decoder size cap", code(function () { b.byteString(Buffer.alloc(CBOR_CAP + 1)); }) === "cbor/too-large");
+  // build.biguint mirrors read.biguint's bignum cap: a magnitude one byte over the cap fails closed rather
+  // than emitting a tag-2 bignum the strict reader would reject.
+  var BIGUINT_CAP = require("../../lib/constants").LIMITS.CBOR_MAX_BIGUINT_BYTES;
+  check("build-biguint rejects a magnitude beyond the bignum cap", code(function () { b.biguint((1n << BigInt((BIGUINT_CAP + 1) * 8)) - 1n); }) === "cbor/biguint-too-large");
+  // build.textString rejects an unpaired UTF-16 surrogate (Buffer.from would silently substitute U+FFFD),
+  // matching the decoder's well-formed-UTF-8 rule; a valid surrogate pair encodes and round-trips.
+  var loneHigh = String.fromCharCode(0xd800), loneLow = String.fromCharCode(0xdc00), pair = String.fromCharCode(0xd83d, 0xde00);
+  check("build-textString rejects a lone high surrogate", code(function () { b.textString(loneHigh); }) === "cbor/bad-utf8");
+  check("build-textString rejects a lone low surrogate", code(function () { b.textString(loneLow); }) === "cbor/bad-utf8");
+  check("build-textString accepts a valid surrogate pair", r.textString(d(b.textString(pair))) === pair);
+  // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
+  var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
+  check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
+  var m = b.map([[b.uint(2n), b.uint(20n)], [b.uint(1n), b.uint(10n)]]);
+  check("build-map sorts keys bytewise (1 before 2)", d(m).children[0][0].bytes[0] === 0x01);
+  // RFC 8949 sec. 4.2.1 is BYTEWISE, not the length-first sec. 4.2.3 order: for keys where the two differ
+  // (a 1-byte key 0x20 that is bytewise-GREATER than a 2-byte key 0x1818), bytewise puts the 2-byte key
+  // FIRST -- and the strict decoder (also bytewise) accepts the result, proving the encoder matches it.
+  var divergent = b.map([[b.int(-1n), b.uint(0n)], [b.uint(24n), b.uint(1n)]]);   // keys 0x20 and 0x1818
+  check("build-map uses bytewise (4.2.1), not length-first (4.2.3): 2-byte key sorts before the 1-byte key", d(divergent).children[0][0].bytes.length === 2);
+  var dm = d(divergent);
+  check("build-map bytewise output decodes (matches the strict decoder's ordering)", r.uint(r.mapGet(dm, 24)) === 1n && r.uint(r.mapGet(dm, -1)) === 0n);
+  check("build-map round-trips both entries", r.mapGet(d(m), 1) !== null && r.mapGet(d(m), 2) !== null);
+  check("build-map rejects a duplicate key", code(function () { b.map([[b.uint(1n), b.uint(1n)], [b.uint(1n), b.uint(2n)]]); }) === "cbor/duplicate-map-key");
+  // tag composition + the biguint preferred-serialization guard.
+  check("build-tag-2 biguint (>8 bytes)", r.biguint(d(b.biguint(1n << 100n))) === (1n << 100n));
+  check("build-biguint rejects a <=8-byte value (use uint)", code(function () { b.biguint(255n); }) === "cbor/bad-argument");
+  check("build-uint rejects a negative value", code(function () { b.uint(-1n); }) === "cbor/bad-argument");
+  check("build-nint rejects a non-negative value", code(function () { b.nint(0n); }) === "cbor/bad-argument");
+  check("build-array rejects a non-Buffer item", code(function () { b.array([5]); }) === "cbor/not-buffer");
+  // a container never embeds bytes the strict decoder would reject: a nested item must be one well-formed item.
+  check("build-array rejects a stray break byte item", code(function () { b.array([Buffer.from([0xff])]); }) === "cbor/bad-item");
+  check("build-array rejects an item with trailing bytes", code(function () { b.array([Buffer.from([0x00, 0x00])]); }) === "cbor/bad-item");
+  check("build-array rejects an indefinite-length item", code(function () { b.array([Buffer.from([0x9f, 0xff])]); }) === "cbor/bad-item");
+  check("build-map rejects a malformed key item", code(function () { b.map([[Buffer.from([0xff]), b.uint(1n)]]); }) === "cbor/bad-item");
+  check("build-tag rejects a malformed content item", code(function () { b.tag(2, Buffer.from([0x00, 0x00])); }) === "cbor/bad-item");
+  // a container never emits output beyond the decoder depth cap (a container adds one level, so a nested
+  // build past the cap fails at build time rather than emitting bytes the decoder would reject).
+  check("build-array rejects output beyond the decoder depth cap", code(function () { var cur = b.uint(1n); for (var i = 0; i < 66; i++) cur = b.array([cur]); }) === "cbor/bad-item");
+  var deep = b.uint(1n); for (var k = 0; k < 10; k++) deep = b.array([deep]);
+  check("build-array within the depth cap decodes", d(deep).majorType === 4);
+}
+
 function run() {
   testSurface();
   testAccept();
@@ -356,6 +443,7 @@ function run() {
   testReadMismatch();
   testConfig();
   testEdgeBranches();
+  testBuildEncoder();
   console.log("CHECKS " + helpers.getChecks());
 }
 

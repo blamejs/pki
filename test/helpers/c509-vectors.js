@@ -53,7 +53,7 @@ var C509_A1_TYPE2 = hex(
 
 // The 11 field encodings of the A.1 type-3 certificate, DERIVED from the decoded byte-exact fixture
 // (each child's raw bytes) so a coverage vector can override one field and rebuild a valid-framed C509
-// array without any hand-transcription risk (there is no C509 encoder; fixtures are assembled CBOR).
+// array without any hand-transcription risk (the fixtures are assembled from the decoded field bytes).
 var _cborDet = require("../../lib/cbor-det");
 var A1_FIELDS = _cborDet.decode(C509_A1_TYPE3).children.map(function (c) { return c.bytes.toString("hex"); });
 // mk(overrides) -> a C509 CBOR array (0x8b array(11)) with the given zero-based field hex overridden.

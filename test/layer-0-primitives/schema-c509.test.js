@@ -16,8 +16,9 @@ var check = helpers.check;
 var pki = helpers.pki;
 var V = require("../helpers/c509-vectors");
 var c509mod = require("../../lib/schema-c509");
+var signing = require("../helpers/signing");
 
-function run() {
+async function run() {
   // ==== A.1.1 -- the type-3 (CBOR re-encoded X.509) certificate decodes to the documented fields ====
   var c3 = pki.schema.c509.parse(V.A1.type3);
   check("1. type-3 A.1 decodes: certificateType 3", c3.certificateType === 3);
@@ -213,6 +214,133 @@ function run() {
   check("79. a non-critical ~oid extension value that is not a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f01" })); }) === "c509/bad-extensions");
   // a critical ~oid extension whose [bytes] wrap does not hold a byte string fails closed.
   check("80. a critical ~oid extension not wrapping a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f8101" })); }) === "c509/bad-extensions");
+
+  // ==== encode: the producing side (pki.schema.c509.encode, the byte-exact inverse of parse) ====
+  // AUTHORITATIVE KAT: the forward transform of the Appendix A.1 DER yields the draft canonical type-3
+  // (the MAC-address commonName compressed to a tag-48 EUI-48, the lone keyUsage as the int shortcut).
+  check("81. encode(A.1 DER) == the draft type-3 C509 byte-for-byte", pki.schema.c509.encode(V.A1.der).equals(V.A1.type3));
+  // a PEM string and a PEM-armored Buffer normalize to the same DER as the raw Buffer -- the self-verify
+  // compares against the coerced certificate DER, not the PEM text bytes.
+  var a1Pem = pki.schema.x509.pemEncode(V.A1.der, "CERTIFICATE");
+  check("81b. encode(PEM string) == encode(DER)", pki.schema.c509.encode(a1Pem).equals(V.A1.type3));
+  check("81c. encode(PEM-armored Buffer) == encode(DER)", pki.schema.c509.encode(Buffer.from(a1Pem, "utf8")).equals(V.A1.type3));
+  // re-emit: a parsed result re-encodes to identical bytes (both certificate types).
+  check("82. encode(parse(type-3)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type3)).equals(V.A1.type3));
+  check("83. encode(parse(type-2)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type2)).equals(V.A1.type2));
+  // a NATIVE (type-2) certificate is signed over its raw CBOR fields, so re-emit preserves them VERBATIM:
+  // a byte-string attribute value (which a re-derive would lossily render as text, invalidating the
+  // signature) round-trips byte-for-byte.
+  var t2bs = V.mk({ 0: "02", 6: "4401020304" });   // type-2, subject = a byte-string commonName
+  check("83b. type-2 re-emit preserves a byte-string field verbatim", pki.schema.c509.encode(pki.schema.c509.parse(t2bs)).equals(t2bs));
+  // a type-3 result re-emits its raw fields VERBATIM too -- a re-derivation of a byte-string attribute
+  // (rendered as text) would change the reconstructed DER; the verbatim path keeps it byte-exact.
+  var t3bs = V.mk({ 6: "4401020304" });   // type-3, subject = a byte-string commonName
+  check("83c. type-3 re-emit preserves a byte-string field verbatim", pki.schema.c509.encode(pki.schema.c509.parse(t3bs)).equals(t3bs));
+  // a Uint8Array parse input (not a Buffer) preserves the raw fields correctly (the field bytes come from
+  // the decoded root, not offset arithmetic on the caller's input buffer).
+  check("83d. Uint8Array parse input re-emits byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(new Uint8Array(V.A1.type3))).equals(V.A1.type3));
+  // the verbatim re-emit is not a blind byte copy: a caller who mutates the preserved raw fields to a
+  // malformed shape gets a fail-closed verdict, not garbage. A tampered certificate-type octet re-parses
+  // as an invalid type; a non-Buffer signatureValue is rejected at entry.
+  var prMut = pki.schema.c509.parse(V.A1.type3); prMut._fieldBytes = Buffer.concat([Buffer.from([0x05]), prMut._fieldBytes.subarray(1)]);
+  check("83e. a mutated re-emit field set fails closed (typed c509/*)", /^c509\//.test(codeSync(function () { return pki.schema.c509.encode(prMut); })));
+  var prSig = pki.schema.c509.parse(V.A1.type3); prSig.signatureValue = "not-a-buffer";
+  check("83f. a non-Buffer signatureValue re-emit -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(prSig); }) === "c509/bad-input");
+  // the emission is canonical deterministic CBOR by construction (parse re-decodes it).
+  check("84. encode output re-parses to the same certificate", pki.schema.c509.parse(pki.schema.c509.encode(V.A1.der)).certificateType === 3);
+  // fail-closed on a non-cert input.
+  check("85. encode of a non-cert non-result -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(5); }) === "c509/bad-input");
+  // an incomplete result object (passes the certificateType gate but is missing structured fields) fails
+  // closed with a typed verdict rather than a raw property-access crash.
+  check("85b. an incomplete result object -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode({ certificateType: 3 }); }) === "c509/bad-input");
+  check("85c. a result missing signatureValue -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode({ certificateType: 3, serialNumber: 1n, signatureAlgorithm: { name: "ecdsaWithSHA256" }, subjectPublicKeyAlgorithm: { name: "ecPublicKey", curve: "prime256v1" }, validity: { notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: null }, extensions: [] }); }) === "c509/bad-input");
+  // a hand-built result (no preserved field bytes) whose fields individually encode but yield an unparseable
+  // C509 (a non-minimal serial) fails closed via the structured-path self-verify, as the verbatim path does.
+  var hbBad = pki.schema.c509.parse(V.A1.type3); delete hbBad._fieldBytes; hbBad.serialNumberHex = "0001";
+  check("85d. a structured re-emit that cannot parse -> a typed c509/*", codeSync(function () { return pki.schema.c509.encode(hbBad); }) === "c509/non-minimal-serial");
+  check("86. encode of garbage DER -> a typed c509/*", /^c509\//.test(codeSync(function () { return pki.schema.c509.encode(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])); })));
+
+  // the flagship forward transform across the EC arms: a v3 DER cert -> a smaller type-3 that reconstructs
+  // the source DER byte-for-byte (so the original signature still verifies).
+  // These signers pair every curve with SHA-256 (a non-standard digest/curve pairing for P-384 / P-521), so
+  // the issuer curve is not derivable from the certificate -- supply it via opts.issuerCurve.
+  var arms = ["ec-p256", "ec-p384", "ec-p521"];
+  var armCurve = { "ec-p256": "P-256", "ec-p384": "P-384", "ec-p521": "P-521" };
+  for (var ai = 0; ai < arms.length; ai++) {
+    var s = signing.makeSigner(arms[ai]);
+    var der = await pki.x509.sign({ subject: [{ commonName: "dev" }, { countryName: "US" }], subjectPublicKey: s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], basicConstraints: { cA: false } } }, { key: s.key });
+    var c = pki.schema.c509.encode(der, { issuerCurve: armCurve[arms[ai]] });
+    check("87." + ai + " " + arms[ai] + " type-3 reconstructs the source DER byte-exact + is smaller", pki.schema.c509.parse(c).reconstructedDer.equals(der) && c.length < der.length);
+  }
+  // cross-curve: a P-384 CA signing a P-256 subject -- the signature r||s width is the ISSUER's curve (P-384),
+  // NOT the subject's P-256 key. The issuer signs with ecdsaWithSHA256 (a non-standard digest/curve pairing),
+  // so its curve is not derivable from the certificate and MUST be supplied via opts.issuerCurve; the
+  // reconstruction is then byte-exact. Omitting it fails closed rather than guessing the width.
+  var caP384 = signing.makeSigner("ec-p384"), subP256 = signing.makeSigner("ec-p256");
+  var xder = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subP256.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { name: [{ commonName: "CA" }], publicKey: caP384.spki, key: caP384.key });
+  check("88. cross-curve (P-384 CA, P-256 subject) with opts.issuerCurve reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(xder, { issuerCurve: "P-384" })).reconstructedDer.equals(xder));
+  check("88b. the same cert accepts the OID-form issuer curve name", pki.schema.c509.parse(pki.schema.c509.encode(xder, { issuerCurve: "secp384r1" })).reconstructedDer.equals(xder));
+  // a cert whose issuer curve is not derivable (r/s wider than the digest's standard curve) fails closed
+  // instead of guessing an ambiguous width.
+  check("88c. a non-standard digest/curve pairing without opts -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder); }) === "c509/non-invertible");
+  // an issuer curve too small to hold the signature r/s is rejected (a P-256 field cannot carry a P-384 r||s).
+  check("88d. an issuer curve too small for the signature -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-256" }); }) === "c509/non-invertible");
+  // an unrecognized issuer curve is a config-time reject.
+  check("88e. an unrecognized opts.issuerCurve -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-999" }); }) === "c509/bad-input");
+  // the signature algorithm does not always uniquely determine the curve: an ecdsaWithSHA384 signature whose
+  // r/s also fit the smaller P-256 field (a smaller-curve key signing with a larger digest) is ambiguous and
+  // requires opts.issuerCurve rather than resolving to the digest's standard P-384.
+  var ambS = signing.makeSigner("ec-p256");
+  var ambDer = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "amb" }], subjectPublicKey: ambS.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: ambS.key }));
+  var oid256 = Buffer.from("06082a8648ce3d040302", "hex"); var ambPos = [];   // ecdsaWithSHA256; last byte 02 -> 03 retargets to ecdsaWithSHA384
+  for (var op = ambDer.indexOf(oid256); op !== -1; op = ambDer.indexOf(oid256, op + 1)) ambPos.push(op);
+  ambPos.forEach(function (o) { ambDer[o + 9] = 0x03; });
+  check("88f. an ambiguous signature algorithm without opts -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(ambDer); }) === "c509/non-invertible");
+  check("88g. the ambiguous cert with opts.issuerCurve reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(ambDer, { issuerCurve: "P-256" })).reconstructedDer.equals(ambDer));
+
+  // fail-closed: type-3 is X.509 v3-only (a v1 cert), and v1 covers EC-only (an RSA cert).
+  var v1s = signing.makeSigner("ec-p256");
+  var v1der = await pki.x509.sign({ subject: [{ commonName: "v1" }], subjectPublicKey: v1s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z") }, { key: v1s.key });
+  check("90. a v1 cert (no extensions) -> c509/non-invertible (type-3 is v3-only)", codeSync(function () { return pki.schema.c509.encode(v1der); }) === "c509/non-invertible");
+  var rsas = signing.makeSigner("rsa");
+  var rsader = await pki.x509.sign({ subject: [{ commonName: "r" }], subjectPublicKey: rsas.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: rsas.key });
+  check("91. an RSA cert -> c509/non-invertible (v1 covers EC)", codeSync(function () { return pki.schema.c509.encode(rsader); }) === "c509/non-invertible");
+  // fail-closed: a pre-epoch validity date cannot be a C509 ~time (a non-negative CBOR epoch uint).
+  var preS = signing.makeSigner("ec-p256");
+  var preDer = await pki.x509.sign({ subject: [{ commonName: "pre" }], subjectPublicKey: preS.spki, notBefore: new Date("1960-01-01T00:00:00Z"), notAfter: new Date("1969-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: preS.key });
+  check("91b. a pre-epoch validity date -> c509/bad-validity", codeSync(function () { return pki.schema.c509.encode(preDer); }) === "c509/bad-validity");
+  // a certificate whose ECDSA signature value is not a SEQUENCE of two INTEGERs (the r INTEGER tag flipped to
+  // OCTET STRING) fails closed with a typed verdict rather than reading a non-INTEGER child's content.
+  var bsS = signing.makeSigner("ec-p256");
+  var bsDer = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "badsig" }], subjectPublicKey: bsS.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: bsS.key }));
+  var bsSig = pki.schema.x509.parse(bsDer).signatureValue.bytes;
+  bsDer[bsDer.indexOf(bsSig) + 2] = 0x04;   // the signature SEQUENCE's first INTEGER (r) tag -> OCTET STRING
+  check("91c. a non-INTEGER ECDSA signature child -> c509/bad-signature", codeSync(function () { return pki.schema.c509.encode(bsDer); }) === "c509/bad-signature");
+  // a keyUsage extension whose BIT STRING is not well-formed (invalid unused-bits count) cannot take the
+  // C509 keyUsage integer shortcut; the encoder falls back to a raw extension and still reconstructs exactly.
+  var kuS = signing.makeSigner("ec-p256");
+  var kuDer = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ku" }], subjectPublicKey: kuS.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: kuS.key }));
+  kuDer[kuDer.indexOf(Buffer.from("03020780", "hex")) + 2] = 0x09;   // keyUsage BIT STRING unused-bits 7 -> 9 (malformed)
+  check("91d. a malformed keyUsage BIT STRING falls back to a raw extension + reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(kuDer)).reconstructedDer.equals(kuDer));
+
+  // secondary-form re-emit coverage: a variant C509 built with V.mk -> parse -> re-encode byte-exact,
+  // exercising the encoder branches the A.1 KAT does not (null notAfter, printable / multi-attribute /
+  // 8-byte-EUI names, RSA keys, ~oid + [~oid, params] algorithms, ~oid extensions).
+  [["null notAfter", { 5: "f6" }],
+   ["printable single-CN array", { 3: "82206b5246432074657374204341" }],
+   ["multi-attribute Name array", { 6: "840162585823625553" }],
+   ["8-byte EUI-64 tag-48 commonName", { 6: "d830480123456789abcdef" }],
+   ["RSA bare-modulus key", { 0: "02", 7: "00", 8: "49010203040506070809" }],
+   ["RSA [modulus, exponent] key", { 0: "02", 7: "00", 8: "82490102030405060708094103" }],
+   ["~oid signatureAlgorithm", { 0: "02", 2: "432b6570" }],
+   ["[~oid, params] algorithm", { 0: "02", 2: "82432b65704105" }],
+   ["~oid extension non-critical", { 9: "82432b06014100" }],
+   ["~oid extension critical", { 9: "82432b0601814100" }],
+   ["critical keyUsage int-shortcut", { 9: "20" }],
+  ].forEach(function (tc, i) {
+    var cb = V.mk(tc[1]);
+    check("92." + i + " re-emit " + tc[0] + " byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(cb)).equals(cb));
+  });
 
   console.log("CHECKS " + helpers.getChecks());
 }
