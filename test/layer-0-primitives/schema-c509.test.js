@@ -287,6 +287,16 @@ async function run() {
   check("88d. an issuer curve too small for the signature -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-256" }); }) === "c509/non-invertible");
   // an unrecognized issuer curve is a config-time reject.
   check("88e. an unrecognized opts.issuerCurve -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-999" }); }) === "c509/bad-input");
+  // the signature algorithm does not always uniquely determine the curve: an ecdsaWithSHA384 signature whose
+  // r/s also fit the smaller P-256 field (a smaller-curve key signing with a larger digest) is ambiguous and
+  // requires opts.issuerCurve rather than resolving to the digest's standard P-384.
+  var ambS = signing.makeSigner("ec-p256");
+  var ambDer = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "amb" }], subjectPublicKey: ambS.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: ambS.key }));
+  var oid256 = Buffer.from("06082a8648ce3d040302", "hex"); var ambPos = [];   // ecdsaWithSHA256; last byte 02 -> 03 retargets to ecdsaWithSHA384
+  for (var op = ambDer.indexOf(oid256); op !== -1; op = ambDer.indexOf(oid256, op + 1)) ambPos.push(op);
+  ambPos.forEach(function (o) { ambDer[o + 9] = 0x03; });
+  check("88f. an ambiguous signature algorithm without opts -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(ambDer); }) === "c509/non-invertible");
+  check("88g. the ambiguous cert with opts.issuerCurve reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(ambDer, { issuerCurve: "P-256" })).reconstructedDer.equals(ambDer));
 
   // fail-closed: type-3 is X.509 v3-only (a v1 cert), and v1 covers EC-only (an RSA cert).
   var v1s = signing.makeSigner("ec-p256");
