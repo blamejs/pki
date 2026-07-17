@@ -71,6 +71,17 @@ async function run() {
   var mac = nodeCrypto.createHmac("sha256", key).update(reconM).digest();
   check("PBMAC1 protectionAlg is pbmac1 and the MAC recomputes independently (PBKDF2 + HMAC-SHA256)", mm.header.protectionAlg.name === "pbmac1" && mac.equals(mm.protection.bytes));
 
+  // A CA-response arm: openssl structural + round-trip. ip carries a CertRepMessage with a granting
+  // CertResponse embedding the CA's own certificate.
+  var sc = signing.makeSigner("ec-p256");
+  var ipDer = await pki.cmp.build({ header: HDR, body: { ip: { caPubs: [sc.cert], response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { certificate: sc.cert } }] } } }, { key: sc.key, cert: sc.cert });
+  ctx.withTmp(Buffer.from(ipDer), "cmp-ip.der", function (p) {
+    var t = ctx.runOpenssl(["asn1parse", "-inform", "DER", "-in", p], { allowNonZero: true });
+    check("openssl asn1parse structurally accepts the ip CertRepMessage response", t.code === 0);
+  });
+  var mIp = pki.schema.cmp.parse(ipDer);
+  check("ip CertRepMessage round-trips through the strict parser", mIp.body.arm === "ip" && !!mIp.body.decoded && verifyProtection(mIp, sc.spki) === true);
+
   // A flipped ProtectedPart byte fails the independent signature verify.
   var s2 = signing.makeSigner("ec-p256");
   var good = await pki.cmp.build({ header: HDR, body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "t" }], subjectPublicKey: s2.spki }, s2.key) } }, { key: s2.key, cert: s2.cert });

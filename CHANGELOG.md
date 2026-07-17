@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.6 — 2026-07-17
+
+pki.cmp.build gains the CA/responder side -- certificate, revocation, key-recovery, general, error, poll, and confirmation responses complete the RFC 9810 message surface.
+
+### Added
+
+- pki.cmp.build message.body now accepts the CA/responder-side arms: ip / cp / kup / ccp (a CertRepMessage -- caPubs plus a response of CertResponse entries, each carrying a PKIStatusInfo and, under a granting status, a certifiedKeyPair), rp (a RevRepContent), krp (a KeyRecRepContent), genp (a general response), error (an ErrorMsgContent), pollRep (a poll response), and pkiconf (the final confirmation). They reuse the request-side header, envelope, ProtectedPart, and signature / PBMAC1 protection, and round-trip through pki.schema.cmp.parse. The RFC 9810 section 5.3.4 rules are enforced (a certifiedKeyPair only under a granting status and never with a failInfo, a validated certificate CHOICE, a single-response ccp). The private-key-transport / KEM encrypted forms ride a pre-encoded escape hatch.
+
 ## v0.3.5 — 2026-07-17
 
 pki.cmp.build assembles protected RFC 9810 CMP PKIMessages -- certificate requests, confirmations, revocations, and general messages, protected by a sender-key signature or a PBMAC1 shared secret.
