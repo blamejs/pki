@@ -284,6 +284,12 @@ async function testFailClosed() {
   // a pre-encoded extension with an explicit critical=FALSE is non-canonical DER (DEFAULT must be omitted).
   var critFalse = B.sequence([B.oid(pki.oid.byName("keyUsage")), B.boolean(false), B.octetString(B.namedBitString([0]))]);
   check("pre-encoded extension with explicit critical=FALSE -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [critFalse] }, { key: s.key })) === "x509/bad-input");
+  // countryName must be a two-letter ISO 3166 code.
+  check("countryName not 2 chars -> x509/bad-name", await codeOf(pki.x509.sign({ subject: [{ countryName: "USA" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-name");
+  check("countryName of 2 chars accepted", Buffer.isBuffer(await pki.x509.sign({ subject: [{ countryName: "US" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })));
+  // a recognized array extension whose value is malformed -> typed x509/bad-input, not a raw asn1 error.
+  var badBc = B.sequence([B.oid(pki.oid.byName("basicConstraints")), B.octetString(Buffer.from([0x30, 0x05]))]);   // value is a truncated SEQUENCE
+  check("malformed basicConstraints value in the array form -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [badBc] }, { key: s.key })) === "x509/bad-input");
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
