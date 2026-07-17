@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.0 — 2026-07-17
+
+pki.x509.sign issues X.509 certificates -- self-signed or CA-signed, over every signature algorithm the toolkit supports, from RSA and ECDSA through EdDSA, ML-DSA, and SLH-DSA.
+
+### Added
+
+- pki.x509.sign(spec, issuer, opts) builds and signs an X.509 certificate -- self-signed (a signing key alone) or CA-signed (an explicit issuer name and public key, or an issuing certificate) -- and returns DER, or a PEM CERTIFICATE string with opts.pem. The signing algorithm is resolved from the key: RSA PKCS#1 v1.5, RSASSA-PSS (opts.pss), ECDSA P-256/P-384/P-521, Ed25519, Ed448, ML-DSA-44/65/87, the twelve SLH-DSA parameter sets, and the composite arms. The version, serial-number bounds, UTCTime/GeneralizedTime cutover, DER default omissions, and the CA cross-field rules are enforced; malformed input throws a typed CertificateError. Certificate parsing remains pki.schema.x509.parse.
+- pki.asn1.build.namedBitString(positions) encodes a minimal DER NamedBitList (X.690 section 11.2.2) -- the asserted bit positions with every trailing zero bit removed -- the single canonical home the keyUsage and PKIFailureInfo encoders now compose.
+
+### Security
+
+- The Sigstore bundle verifier now routes an Ed25519 or Ed448 key through the shared full-order, on-curve Edwards-point gate at the raw signature-verification sink, not only at key parsing -- a low-order or off-curve key that would verify a forged EdDSA signature is refused wherever a verify path handles one. This completes the defense across every EdDSA verification sink in the toolkit.
+
 ## v0.2.33 — 2026-07-16
 
 Attribute certificates now decode their RFC 5755 attribute values and attribute-certificate extensions, not just the certificate structure.

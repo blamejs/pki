@@ -83,6 +83,7 @@ jobs:
           - cms-verify
           - cms-sign
           - tsp-sign
+          - x509-sign
           - ocsp-verify
           - cms-decrypt
           - cms-decompress

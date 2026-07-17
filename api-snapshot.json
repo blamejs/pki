@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.33",
+  "packageVersion": "0.3.0",
   "surface": {
     "C": {
       "kind": "object",
@@ -833,6 +833,10 @@
               "arity": 1
             },
             "integer": {
+              "kind": "function",
+              "arity": 1
+            },
+            "namedBitString": {
               "kind": "function",
               "arity": 1
             },
@@ -2819,6 +2823,15 @@
           "members": {}
         }
       }
+    },
+    "x509": {
+      "kind": "object",
+      "members": {
+        "sign": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
     }
   },
   "sinceByPrimitive": {
@@ -2991,6 +3004,7 @@
     "pki.webauthn.verify": "0.2.5",
     "pki.webcrypto.CryptoKey": "0.1.0",
     "pki.webcrypto.subtle": "0.1.0",
-    "pki.webcrypto": "0.1.0"
+    "pki.webcrypto": "0.1.0",
+    "pki.x509.sign": "0.3.0"
   }
 }

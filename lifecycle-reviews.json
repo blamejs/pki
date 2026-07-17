@@ -1,620 +1,644 @@
 {
+  "pki.ct.parseLogList": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 6962 CT log-list trust surface ingests the log_list.json into constraint-carrying trusted logs (each log id recomputed as SHA-256 of its key, with state and temporal-interval gates), verified against the live browser log list, but the live-fetch client for the list is still Planned and the trust model continues to absorb refinements. Graduate once the log-list client surface is settled.",
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
+  },
+  "pki.ct.verifySctWithLogList": {
+    "decision": "keep-experimental",
+    "reason": "Resolves the log key from an SCT's log id against the pki.ct.parseLogList trusted set and enforces the log state and temporal-interval gates before delegating the signature check to verifySct; rides the same still-settling log-list trust surface. Graduate alongside pki.ct.parseLogList.",
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
+  },
+  "pki.ct.verifyLogListSignature": {
+    "decision": "keep-experimental",
+    "reason": "Verifies the detached log_list.sig over the raw log-list bytes against a caller-pinned signer key, cross-checked against openssl dgst -verify, but the surrounding log-list trust surface (parse plus a live-fetch client) is still settling. Graduate alongside pki.ct.parseLogList.",
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
+  },
+  "pki.schema.c509.parse": {
+    "decision": "keep-experimental",
+    "reason": "C509 (draft-ietf-cose-cbor-encoded-cert) is a moving Internet-Draft, not a published standard; the parser covers both certificate modes with byte-exact type-3 DER reconstruction and is proven against derived known-answer vectors, but the wire format can still change before the draft is finalized. Graduate once the C509 draft is published as an RFC.",
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
+  },
   "pki.smime.sign": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME message layer (multipart/signed clear-signed + application/pkcs7-mime opaque) is hardened and openssl-interop-proven, but the surrounding S/MIME surface is still growing (encryption, compression, capability negotiation) and the canonicalization/CTE handling continues to absorb interop refinements. Graduate once the full S/MIME message surface is settled.",
-    "reviewedAt": "0.2.31",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.smime.verify": {
     "decision": "keep-experimental",
     "reason": "Rides the same lib/mime.js canonicalizer and content-binding path as pki.smime.sign; graduate alongside it once the S/MIME message surface is settled.",
-    "reviewedAt": "0.2.31",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ct.encodeSctList": {
     "decision": "keep-experimental",
     "reason": "The RFC 6962 SCT producing surface (the TLS-encoded SignedCertificateTimestampList) is complete and round-trips through the shipped pki.ct.parseSctList, but it is not yet cross-checked against an independent CT log's own encoding in the integration harness. Graduate once an external CT toolchain validates a list it emits.",
-    "reviewedAt": "0.2.30",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ct.signSct": {
     "decision": "keep-experimental",
     "reason": "The RFC 6962 SCT signing surface rides the same producing-side path as pki.ct.encodeSctList and is not yet interop-proven against an independent CT verifier. Graduate alongside pki.ct.encodeSctList.",
-    "reviewedAt": "0.2.30",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.webauthn.parseAttestationObject": {
     "decision": "keep-experimental",
     "reason": "The attestation-object surface is hardened and covers the WebAuthn attestation-statement formats, but the format set is still growing and the aaguid->root binding via FIDO MDS is the caller's step rather than an in-toolkit surface. Graduate once the attestation-format coverage and the metadata-service trust-anchor binding are settled.",
-    "reviewedAt": "0.2.11",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.webauthn.verify": {
     "decision": "keep-experimental",
     "reason": "The attestation verifier's surface (opts, the returned trust path) tracks the still-growing attestation-format set and defers the trust-path-to-anchor chaining to the caller (pki.path.validate + FIDO MDS). Graduate alongside pki.webauthn.parseAttestationObject.",
-    "reviewedAt": "0.2.11",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.path.validate": {
     "decision": "keep-experimental",
     "reason": "The RFC 5280 \u00c2\u00a76 path-validation surface is broad and still hardening, and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.path.crlChecker": {
     "decision": "keep-experimental",
     "reason": "Rides the same SIG_ALGS verify bridge as pki.path.validate and the same not-yet-interop-proven revocation path. Graduate alongside pki.path.validate.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.engine.encode": {
     "decision": "keep-experimental",
     "reason": "The schema engine's encode direction backs the round-trip tests but has no external consumer that pins its API; the combinator surface is still absorbing new leaves. Graduate once the combinator set is settled and an operator-facing encode path depends on it.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.engine.embeddedDer": {
     "decision": "keep-experimental",
     "reason": "The embedded-DER leaf is part of the still-settling engine combinator surface; it has no external consumer pinning its return shape. Graduate alongside pki.schema.engine.encode once the leaf set is settled.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ct.parseSctList": {
     "decision": "keep-experimental",
     "reason": "The RFC 6962 signed-certificate-timestamp list parser is not yet interop-proven end-to-end: no test in the harness verifies an SCT it decodes against a production CT log's public key, so its return shape is not frozen. Graduate once an independent verifier cross-checks an SCT it parses.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ct.reconstructSignedData": {
     "decision": "keep-experimental",
     "reason": "Reconstructs the RFC 6962 digitally-signed structure that an SCT signature covers; it is unverified against an independent CT verifier end-to-end, the same interop gap as pki.ct.parseSctList. Graduate alongside pki.ct.parseSctList.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ct.verifySct": {
     "decision": "keep-experimental",
     "reason": "RFC 6962 sec. 3.2 SCT verification is settled in standard but not cross-implementation-interop-proven: the harness proves it via a self round-trip (real node crypto signs, verifySct verifies) and against real certificate SCT extensions, but no offline oracle signs an SCT for an independent cross-check, so the boolean/opts surface is not frozen. Graduate once the SCT-list encode/sign producing side and a production-CT-log SCT cross-check land.",
-    "reviewedAt": "0.2.18",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.smime.parseSigningCertificate": {
     "decision": "keep-experimental",
     "reason": "The RFC 5035 / RFC 8551 S/MIME ESS SigningCertificate decoder is not yet interop-proven: the openssl-cms oracle for the ESS signing-certificate attribute is available but no fixtures row is registered in the integration harness yet (auto-interop.test.js flags exactly this), so no independent implementation round-trips a structure it decodes. Graduate once an interop fixtures row exercises an ESS attribute through OpenSSL.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.smime.parseSigningCertificateV2": {
     "decision": "keep-experimental",
     "reason": "The RFC 5035 ESS SigningCertificateV2 decoder rides the same not-yet-registered ESS interop fixtures row as pki.schema.smime.parseSigningCertificate. Graduate alongside it once the OpenSSL round-trip lands.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.smime.parseSmimeCapabilities": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 SMIMECapabilities decoder's return shape is part of the S/MIME ESS attribute cohort that is not yet independently interop-verified (no OpenSSL/NSS round-trip of the attribute in the harness). Graduate alongside the ESS interop fixtures row.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.smime.decodeAttribute": {
     "decision": "keep-experimental",
     "reason": "The OID-dispatch entry that routes a CMS attribute to the ESS / SMIMECapabilities decoders; its return shape is frozen only once those decoders are interop-proven. Graduate alongside the ESS interop fixtures row.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.est.classifyResponse": {
     "decision": "keep-experimental",
     "reason": "The RFC 7030 / 8951 EST client codec is transport-agnostic and not yet interop-proven end-to-end against an EST server oracle in the integration harness (no offline EST server), so its return shape is not frozen. Graduate once an EST round-trip is validated by an independent server.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.est.parseCertsOnly": {
     "decision": "keep-experimental",
     "reason": "The RFC 7030 / 8951 EST client codec is transport-agnostic and not yet interop-proven end-to-end against an EST server oracle in the integration harness (no offline EST server), so its return shape is not frozen. Graduate once an EST round-trip is validated by an independent server.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.est.paths": {
     "decision": "keep-experimental",
     "reason": "The RFC 7030 / 8951 EST client codec is transport-agnostic and not yet interop-proven end-to-end against an EST server oracle in the integration harness (no offline EST server), so its return shape is not frozen. Graduate once an EST round-trip is validated by an independent server.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.est.transferDecode": {
     "decision": "keep-experimental",
     "reason": "The RFC 7030 / 8951 EST client codec is transport-agnostic and not yet interop-proven end-to-end against an EST server oracle in the integration harness (no offline EST server), so its return shape is not frozen. Graduate once an EST round-trip is validated by an independent server.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.est.transferEncode": {
     "decision": "keep-experimental",
     "reason": "The RFC 7030 / 8951 EST client codec is transport-agnostic and not yet interop-proven end-to-end against an EST server oracle in the integration harness (no offline EST server), so its return shape is not frozen. Graduate once an EST round-trip is validated by an independent server.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.assertTransition": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.validateProblem": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.validate": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.identify": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.keyAuthorization": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.http01": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.dns01": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.tlsAlpn01Extension": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.verifyTlsAlpn01": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.postAsGet": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.newAccount": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.externalAccountBinding": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.newOrder": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.finalize": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.challengeResponse": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.deactivate": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.revokeCert": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.keyChange": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.ariCertId": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.parseAriCertId": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.acme.validateRenewalInfo": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.decode": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.uint": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.nint": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.int": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.byteString": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.textString": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.array": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.map": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.boolean": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.nullValue": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.undefinedValue": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.float": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.biguint": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.time": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.oid": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface awaits its first composing consumer (C509 / WebAuthn / COSE) to prove the reader contract in situ; graduate with that consumer or on a dedicated review.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.merkle.leafHash": {
     "decision": "keep-experimental",
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.merkle.nodeHash": {
     "decision": "keep-experimental",
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.merkle.emptyRootHash": {
     "decision": "keep-experimental",
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.merkle.verifyInclusion": {
     "decision": "keep-experimental",
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.merkle.verifyConsistency": {
     "decision": "keep-experimental",
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.path.ocspChecker": {
     "decision": "keep-experimental",
     "reason": "Awaiting a dedicated stabilization review with an external interop oracle before the surface freezes.",
-    "reviewedAt": "0.2.5",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.trust.parseCertdata": {
     "decision": "keep-experimental",
     "reason": "The NSS certdata.txt trust-store parser's return shape (per-anchor trust bits + distrust metadata) is still absorbing fields as new root-program constraints are modeled; it has no external consumer pinning the object shape. Graduate once the anchor metadata surface is settled and cross-checked against an independent trust-store reader.",
-    "reviewedAt": "0.2.6",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.trust.parseCcadbCsv": {
     "decision": "keep-experimental",
     "reason": "The CCADB CSV trust-store parser shares the anchor metadata surface with pki.trust.parseCertdata and the same not-yet-frozen return shape. Graduate alongside it.",
-    "reviewedAt": "0.2.6",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.trust.anchor": {
     "decision": "keep-experimental",
     "reason": "Constructs the trust anchor that pki.path.validate consumes; its constraint surface tracks the still-experimental pki.path.validate. Graduate alongside pki.path.validate once the path-validation surface has stabilized and is interop-proven.",
-    "reviewedAt": "0.2.6",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.shbs.verify": {
     "decision": "keep-experimental",
     "reason": "The RFC 8554 LMS/HSS verify surface is standard-settled, but it is not yet interop-proven end-to-end: no HSS certificate fixture drives an accept/reject through pki.path.validate's auto-verify row, so the algorithm-identifier dispatch it would expose is not frozen. Graduate once an HSS signature fixture cross-checks against an independent LMS verifier in the integration harness.",
-    "reviewedAt": "0.2.7",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.shbs.verifyLms": {
     "decision": "keep-experimental",
     "reason": "The single-tree LMS verify entry point backs pki.shbs.verify's HSS layer and shares its not-yet-interop-proven status. Graduate alongside pki.shbs.verify once an independent LMS verifier cross-checks a signature it accepts.",
-    "reviewedAt": "0.2.7",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.hpke.setupS": {
     "decision": "keep-experimental",
     "reason": "The RFC 9180 base HPKE construction is standard-settled and proven against the Appendix A known-answer vectors, but the KEM registry is deliberately shaped to admit the ML-KEM and X-Wing PQ-hybrid KEMs as data-row additions once their HPKE bindings stabilize, which may extend the sender-context surface. Graduate once the post-quantum KEM set is settled.",
-    "reviewedAt": "0.2.8",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.hpke.setupR": {
     "decision": "keep-experimental",
     "reason": "Rides the same RFC 9180 KEM registry as pki.hpke.setupS and the same pending post-quantum KEM additions. Graduate alongside pki.hpke.setupS.",
-    "reviewedAt": "0.2.8",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.hpke.seal": {
     "decision": "keep-experimental",
     "reason": "The single-shot seal over an HPKE sender context; its surface tracks the still-experimental pki.hpke.setupS KEM registry. Graduate alongside pki.hpke.setupS once the post-quantum KEM set is settled.",
-    "reviewedAt": "0.2.8",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.hpke.open": {
     "decision": "keep-experimental",
     "reason": "The single-shot open over an HPKE recipient context; its surface tracks the still-experimental pki.hpke.setupR KEM registry. Graduate alongside pki.hpke.setupR.",
-    "reviewedAt": "0.2.8",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.sigstore.verifyBundle": {
     "decision": "keep-experimental",
     "reason": "The offline Sigstore-bundle verifier is proven against a real npm-provenance bundle, but the Sigstore bundle media type and the trusted-root format are still versioning upstream, so the accepted bundle shape is not yet frozen. Graduate once the bundle format version is settled and a second independent bundle source is cross-checked.",
-    "reviewedAt": "0.2.9",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.sigstore.parseBundle": {
     "decision": "keep-experimental",
     "reason": "The bundle reader that backs pki.sigstore.verifyBundle; its return shape tracks the still-versioning Sigstore bundle media type. Graduate alongside pki.sigstore.verifyBundle.",
-    "reviewedAt": "0.2.9",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.sigstore.pae": {
     "decision": "keep-experimental",
     "reason": "The DSSE pre-authentication-encoding helper exposed for the Sigstore verify surface; it graduates with the rest of pki.sigstore once the bundle format is frozen.",
-    "reviewedAt": "0.2.9",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.inspect.certificate": {
     "decision": "keep-experimental",
     "reason": "The rendered report is intentionally OpenSSL-familiar rather than a byte-frozen format (OpenSSL releases disagree), so the output contract is not yet pinned, and the inspection surface is still growing (CRL / CSR / CMS inspection is Targeted). Graduate once the full inspect surface lands and the rendered-output contract is frozen.",
-    "reviewedAt": "0.2.10",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.lint.certificate": {
     "decision": "keep-experimental",
     "reason": "The finding-id surface is frozen in the api-snapshot, but the rule COVERAGE is a representative v1 subset (the full CABF TLS corpus, the S/MIME BR profile, and the CRL / OCSP profiles are Targeted). Graduate once the rule corpus is broadened and cross-checked against a reference linter (zlint / pkilint).",
-    "reviewedAt": "0.2.10",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.lint.rules": {
     "decision": "keep-experimental",
     "reason": "Registry introspection for pki.lint.certificate; its shape tracks the still-expanding rule set. Graduate alongside pki.lint.certificate.",
-    "reviewedAt": "0.2.10",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.lint.profiles": {
     "decision": "keep-experimental",
     "reason": "Enumerates the lint profile names; the profile set will grow as the CABF / S/MIME / CRL / OCSP corpora land. Graduate alongside pki.lint.certificate.",
-    "reviewedAt": "0.2.10",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cms.verify": {
     "decision": "keep-experimental",
     "reason": "The SignedData verify surface is interop-proven for the classical signers, but the post-quantum acceptance rules (ML-DSA RFC 9882, SLH-DSA RFC 9814, composite ML-DSA) landed across the last three releases and the composite draft is still pre-RFC. Graduate together with pki.cms.sign once the PQC/composite signer set has seasoned a full review cycle and the composite spec reaches RFC.",
-    "reviewedAt": "0.2.20",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cms.sign": {
     "decision": "keep-experimental",
     "reason": "The CMS SignedData signing surface tracks pki.cms.verify: the post-quantum ML-DSA / SLH-DSA / composite ML-DSA signer arms landed across the last three releases and the composite draft is still pre-RFC. Graduate together with pki.cms.verify once the PQC/composite signer set has seasoned a full review cycle and the composite specification reaches RFC.",
-    "reviewedAt": "0.2.21",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.tsp.sign": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp-token producing surface composes pki.cms.sign; it graduates with the CMS signing surface it builds on, once that set has seasoned and the composite signer specification reaches RFC.",
-    "reviewedAt": "0.2.21",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.schema.tsp.parseRequest": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.25",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.tsp.request": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.25",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.tsp.parseRequest": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.25",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.tsp.response": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.25",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.tsp.parseResponse": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.25",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.tsp.verify": {
     "decision": "keep-experimental",
     "reason": "The RFC 3161 timestamp surface is interop-proven against openssl ts, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.25",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cbor.read.mapGet": {
     "decision": "keep-experimental",
     "reason": "The deterministic-CBOR read surface (pki.cbor) is still settling as its COSE / CWT / EAT / C509 consumers land; read.mapGet is a stable map-lookup leaf but its home namespace has no externally frozen consumer yet. Graduate alongside the pki.cbor read surface once the C509 profile and the COSE key/attestation consumers pin it.",
-    "reviewedAt": "0.2.26",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ocsp.buildRequest": {
     "decision": "keep-experimental",
     "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.28",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ocsp.sign": {
     "decision": "keep-experimental",
     "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.28",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ocsp.buildErrorResponse": {
     "decision": "keep-experimental",
     "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.28",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.ocsp.verify": {
     "decision": "keep-experimental",
     "reason": "The RFC 6960 OCSP producer + relying-party surface is interop-proven against openssl ocsp, but it composes the still-experimental pki.cms.sign / pki.cms.verify whose composite ML-DSA signer set is pre-RFC (draft-ietf-lamps-cms-composite-sigs); graduate alongside the CMS signing surface once that set is settled.",
-    "reviewedAt": "0.2.28",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.path.verifyOcspResponse": {
     "decision": "keep-experimental",
     "reason": "The lower-level RFC 6960 relying-party OCSP verify shares the path-validate verify bridge and the same not-yet-interop-proven-against-an-independent-validator revocation path as pki.path.validate; graduate alongside pki.path.validate.",
-    "reviewedAt": "0.2.28",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cms.encrypt": {
     "decision": "keep-experimental",
     "reason": "The CMS content-encryption surface (all five RFC 5652 recipient arms) is oracle-free and interop-proven against openssl cms, but its post-quantum ML-KEM KEMRecipientInfo arm rides recently-published RFCs (9629/9936) and the composite-KEM draft is unlanded; graduate once the enveloped surface's PQC recipient set is settled.",
-    "reviewedAt": "0.2.29",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cms.decrypt": {
     "decision": "keep-experimental",
     "reason": "The CMS content-decryption surface (all five recipient arms, oracle-free) is interop-proven against openssl cms, but its post-quantum ML-KEM KEMRecipientInfo arm rides recently-published RFCs (9629/9936) and the composite-KEM draft is unlanded; graduate alongside pki.cms.encrypt once the enveloped surface's PQC recipient set is settled.",
-    "reviewedAt": "0.2.29",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.smime.encrypt": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME encryption layer is bidirectionally interop-proven against openssl cms, but it is a thin frame over pki.cms.encrypt, whose post-quantum ML-KEM recipient arm rides recently-published specs and is itself kept experimental; graduate S/MIME encryption together with the CMS content-encryption surface it composes.",
-    "reviewedAt": "0.2.32",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.smime.decrypt": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME encryption layer is bidirectionally interop-proven against openssl cms, but it is a thin frame over pki.cms.encrypt, whose post-quantum ML-KEM recipient arm rides recently-published specs and is itself kept experimental; graduate S/MIME encryption together with the CMS content-encryption surface it composes.",
-    "reviewedAt": "0.2.32",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cms.compress": {
     "decision": "keep-experimental",
     "reason": "The RFC 3274 CMS CompressedData surface (ZLIB-only, decompression-bomb bounded) is interop-consistent, but it composes the still-experimental CMS content-type surface; graduate together with the CMS envelope/compress family.",
-    "reviewedAt": "0.2.33",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.cms.decompress": {
     "decision": "keep-experimental",
     "reason": "The RFC 3274 CMS CompressedData surface (ZLIB-only, decompression-bomb bounded) is interop-consistent, but it composes the still-experimental CMS content-type surface; graduate together with the CMS envelope/compress family.",
-    "reviewedAt": "0.2.33",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.smime.compress": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME compressed-data frame is a thin layer over pki.cms.compress, which is itself kept experimental; graduate together with the CMS compression surface it composes.",
-    "reviewedAt": "0.2.33",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   },
   "pki.smime.decompress": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME compressed-data frame is a thin layer over pki.cms.decompress, which is itself kept experimental; graduate together with the CMS compression surface it composes.",
-    "reviewedAt": "0.2.33",
-    "reviewBy": "0.3.0"
+    "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
   }
 }

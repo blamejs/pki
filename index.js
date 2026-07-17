@@ -40,6 +40,7 @@ var cms       = require("./lib/cms-verify");
 var smime     = require("./lib/smime");
 var tsp       = require("./lib/tsp-sign");
 var ocsp      = require("./lib/ocsp");
+var x509      = require("./lib/x509-sign");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -81,6 +82,11 @@ module.exports = {
   smime:     smime,
   tsp:       tsp,
   ocsp:      ocsp,
+  // `x509` is the certificate-issuance producing side -- pki.x509.sign builds and
+  // signs an X.509 certificate (RFC 5280 sec. 4), self-signed or CA-signed, over any
+  // signature algorithm the registry resolves (RSA/ECDSA/EdDSA/ML-DSA/SLH-DSA/composite).
+  // Parsing lives at pki.schema.x509.parse.
+  x509:      x509,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and
