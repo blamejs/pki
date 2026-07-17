@@ -254,6 +254,10 @@ async function run() {
   // closed with a typed verdict rather than a raw property-access crash.
   check("85b. an incomplete result object -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode({ certificateType: 3 }); }) === "c509/bad-input");
   check("85c. a result missing signatureValue -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode({ certificateType: 3, serialNumber: 1n, signatureAlgorithm: { name: "ecdsaWithSHA256" }, subjectPublicKeyAlgorithm: { name: "ecPublicKey", curve: "prime256v1" }, validity: { notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: null }, extensions: [] }); }) === "c509/bad-input");
+  // a hand-built result (no preserved field bytes) whose fields individually encode but yield an unparseable
+  // C509 (a non-minimal serial) fails closed via the structured-path self-verify, as the verbatim path does.
+  var hbBad = pki.schema.c509.parse(V.A1.type3); delete hbBad._fieldBytes; hbBad.serialNumberHex = "0001";
+  check("85d. a structured re-emit that cannot parse -> a typed c509/*", codeSync(function () { return pki.schema.c509.encode(hbBad); }) === "c509/non-minimal-serial");
   check("86. encode of garbage DER -> a typed c509/*", /^c509\//.test(codeSync(function () { return pki.schema.c509.encode(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])); })));
 
   // the flagship forward transform across the EC arms: a v3 DER cert -> a smaller type-3 that reconstructs
