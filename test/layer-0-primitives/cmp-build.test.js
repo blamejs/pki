@@ -216,6 +216,8 @@ async function run() {
   check("21r. a confirmWaitTime non-Date value -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: "soon" }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");
   check("21s. a certConf non-array -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: 5 } }, SIG)) === "cmp/bad-cert-status");
   check("21t. an unknown certConf hashAlg -> cmp/bad-name", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, hashAlg: "nope" }] } }, SIG)) === "cmp/bad-name");
+  check("21t3. a non-hash OID certConf hashAlg -> cmp/bad-name (must be a hash algorithm)", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, hashAlg: "rsaEncryption" }] } }, SIG)) === "cmp/bad-name");
+  check("21t4. a valid hash certConf hashAlg (sha384) bumps pvno + round-trips", parse(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(48, 1), certReqId: 0, hashAlg: "sha384" }] } }, SIG)).header.pvno === 3);
   check("21t2. a non-integer certConf certReqId -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 1.5 }] } }, SIG)) === "cmp/bad-cert-status");
   check("21u. a pollReq entry without certReqId -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{}] } }, SIG)) === "cmp/bad-poll-req");
   check("21u2. a non-integer pollReq certReqId -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 2.5 }] } }, SIG)) === "cmp/bad-poll-req");
