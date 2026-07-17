@@ -302,8 +302,13 @@ async function testFailClosed() {
   check("non-CA issuer.cert -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: notCaCert, key: iss.key })) === "x509/bad-input");
   var caNoKcs = pki.schema.x509.parse(await pki.x509.sign({ subject: "CRL-only CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: iss.key }));
   check("CA issuer.cert without keyCertSign -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: caNoKcs, key: iss.key })) === "x509/bad-input");
-  // RFC 5280 sec. 4.2.1.9 -- a CA's basicConstraints MUST be critical.
-  var nonCritBcCa = pki.schema.x509.parse(await pki.x509.sign({ subject: "NonCrit CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, critical: false }, keyUsage: ["keyCertSign"] } }, { key: iss.key }));
+  // RFC 5280 sec. 4.2.1.9 -- a CA's basicConstraints MUST be critical, on OUTPUT and on an issuer input.
+  check("issuing a CA with critical:false -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, critical: false }, keyUsage: ["keyCertSign"] } }, { key: s.key })) === "x509/bad-input");
+  // an externally-built CA with NON-critical basicConstraints is rejected as an issuer (x509.sign cannot mint one).
+  var Bf = pki.asn1.build, Of = pki.oid.byName;
+  var nonCritBc = Bf.sequence([Bf.oid(Of("basicConstraints")), Bf.octetString(Bf.sequence([Bf.boolean(true)]))]);   // cA=true, critical omitted
+  var kcsKu = Bf.sequence([Bf.oid(Of("keyUsage")), Bf.boolean(true), Bf.octetString(Bf.namedBitString([5]))]);
+  var nonCritBcCa = pki.schema.x509.parse(signing.minimalCert(iss.spki, { cn: "NonCrit CA", exts: [nonCritBc, kcsKu] }));
   check("issuer.cert with non-critical basicConstraints -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: nonCritBcCa, key: iss.key })) === "x509/bad-input");
   // A pathLen=0 issuer forbids a CA below it but allows a leaf.
   var pl0Ca = pki.schema.x509.parse(await pki.x509.sign({ subject: "PathLen0 CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign"] } }, { key: iss.key }));
