@@ -401,6 +401,7 @@ function testAttributeValueDecoders() {
   var clSecret = attrDecoded(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x08]), 3)]));
   check("av clearance: present classList decodes named bit (secret)", clSecret.classList.flags.secret === true && clSecret.classList.names.indexOf("secret") !== -1);
   check("av clearance: classList == DEFAULT {unclassified} -> bad-clearance (non-canonical)", attrCode(CLEARANCE, b.sequence([b.oid("2.16.840.1.101.2.1"), b.bitString(Buffer.from([0x40]), 6)])) === "attrcert/bad-clearance");
+  check("av clearance: legacy OID 2.5.1.5.55 decodes as clearance (RFC 5755 4.4.6)", attrDecoded("2.5.1.5.55", b.sequence([b.oid("2.16.840.1.101.2.1")])).classList.flags.unclassified === true);
 
   // SvceAuthInfo
   var svc = attrDecoded(AUTHINFO, b.sequence([b.contextPrimitive(6, Buffer.from("svc", "ascii")), b.contextPrimitive(6, Buffer.from("id", "ascii")), b.octetString(Buffer.from([1, 2, 3]))]));
@@ -438,11 +439,11 @@ function testAcExtensionDecoders() {
   check("ext noRevAvail: empty extnValue -> bad-no-rev-avail (NULL required, RFC 5755 4.3.6)", extCode(NOREV, Buffer.alloc(0)) === "attrcert/bad-no-rev-avail");
   check("ext noRevAvail: BOOLEAN -> bad-no-rev-avail", extCode(NOREV, b.boolean(true)) === "attrcert/bad-no-rev-avail");
 
-  // targetInformation
-  var ti = extDecoded(TARGETINFO, b.sequence([b.contextConstructed(0, b.contextPrimitive(2, Buffer.from("d.com", "ascii")))]));
-  check("ext targetInformation: targetName [0] decodes", ti[0].kind === "targetName" && ti[0].name.tagNumber === 2 && ti[0].name.value === "d.com");
-  check("ext targetInformation: empty Targets -> bad-targets", extCode(TARGETINFO, b.sequence([])) === "attrcert/bad-targets");
-  check("ext targetInformation: unknown Target tag [3] -> bad-targets", extCode(TARGETINFO, b.sequence([b.contextConstructed(3, Buffer.alloc(0))])) === "attrcert/bad-targets");
+  // targetInformation ::= SEQUENCE OF Targets (nested: outer SEQUENCE OF, each element a Targets)
+  var ti = extDecoded(TARGETINFO, b.sequence([b.sequence([b.contextConstructed(0, b.contextPrimitive(2, Buffer.from("d.com", "ascii")))])]));
+  check("ext targetInformation: SEQUENCE OF Targets, targetName [0] decodes", ti[0][0].kind === "targetName" && ti[0][0].name.tagNumber === 2 && ti[0][0].name.value === "d.com");
+  check("ext targetInformation: empty outer -> bad-targets", extCode(TARGETINFO, b.sequence([])) === "attrcert/bad-targets");
+  check("ext targetInformation: unknown Target tag [3] -> bad-targets", extCode(TARGETINFO, b.sequence([b.sequence([b.contextConstructed(3, Buffer.alloc(0))])])) === "attrcert/bad-targets");
 
   // aaControls
   var aac = extDecoded(AACTRL, b.sequence([b.integer(3), b.contextConstructed(0, b.oid("1.2.3")), b.contextConstructed(1, b.oid("1.2.4")), b.boolean(false)]));
@@ -454,7 +455,8 @@ function testAcExtensionDecoders() {
   // acProxying (SEQUENCE OF Targets, reusing the shared Targets decoder)
   var px = extDecoded(PROXY, b.sequence([b.sequence([b.contextConstructed(0, b.contextPrimitive(2, Buffer.from("a", "ascii")))]), b.sequence([b.contextConstructed(1, b.contextPrimitive(2, Buffer.from("b", "ascii")))])]));
   check("ext acProxying: SEQUENCE OF Targets decodes", px.length === 2 && px[0][0].kind === "targetName" && px[1][0].kind === "targetGroup");
-  check("ext acProxying: empty inner Targets -> bad-targets (shared decoder)", extCode(PROXY, b.sequence([b.sequence([])])) === "attrcert/bad-targets");
+  check("ext acProxying: empty inner Targets -> bad-targets (shared decoder)", extCode(PROXY, b.sequence([b.sequence([])])) === "attrcert/bad-proxy-info");
+  check("ext acProxying: targetCert [2] rejected (RFC 5755 7.4)", extCode(PROXY, b.sequence([b.sequence([b.contextConstructed(2, b.integer(1))])])) === "attrcert/bad-proxy-info");
 
   // opaque fallback for an unknown extension OID
   check("ext unknown OID -> opaque fallback", parse(attrCert({ extensions: [ext("1.2.3.4.5", b.nullValue())] })).extensions[0].decoded.opaque === true);
