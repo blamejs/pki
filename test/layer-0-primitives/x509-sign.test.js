@@ -314,6 +314,9 @@ async function testFailClosed() {
   var pl0Ca = pki.schema.x509.parse(await pki.x509.sign({ subject: "PathLen0 CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, pathLen: 0 }, keyUsage: ["keyCertSign"] } }, { key: iss.key }));
   check("pathLen=0 issuer issuing a CA -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "sub CA", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { cert: pl0Ca, key: iss.key })) === "x509/bad-input");
   check("pathLen=0 issuer issuing a leaf is accepted", Buffer.isBuffer(await pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { cert: pl0Ca, key: iss.key })));
+  // a self-issued CA rollover (subject == issuer) does not consume path length -> accepted at pathLen 0.
+  var rolloverKey = makeSigner("ed25519");
+  check("pathLen=0 issuer issuing a self-issued CA rollover is accepted", Buffer.isBuffer(await pki.x509.sign({ subject: "PathLen0 CA", subjectPublicKey: rolloverKey.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { cert: pl0Ca, key: iss.key })));
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
