@@ -287,9 +287,15 @@ async function testFailClosed() {
   // countryName must be a two-letter ISO 3166 code.
   check("countryName not 2 chars -> x509/bad-name", await codeOf(pki.x509.sign({ subject: [{ countryName: "USA" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-name");
   check("countryName of 2 chars accepted", Buffer.isBuffer(await pki.x509.sign({ subject: [{ countryName: "US" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })));
-  // a recognized array extension whose value is malformed -> typed x509/bad-input, not a raw asn1 error.
+  // a recognized array extension whose value is malformed is fully validated by its real decoder and
+  // fails closed with that decoder's typed x509/* code (not a raw asn1 error).
   var badBc = B.sequence([B.oid(pki.oid.byName("basicConstraints")), B.octetString(Buffer.from([0x30, 0x05]))]);   // value is a truncated SEQUENCE
-  check("malformed basicConstraints value in the array form -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [badBc] }, { key: s.key })) === "x509/bad-input");
+  check("malformed basicConstraints value in the array form -> x509/bad-basic-constraints", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [badBc] }, { key: s.key })) === "x509/bad-basic-constraints");
+  // a pre-encoded basicConstraints that encodes an explicit cA=FALSE is rejected by the real decoder.
+  var bcFalseExplicit = B.sequence([B.oid(pki.oid.byName("basicConstraints")), B.octetString(B.sequence([B.boolean(false)]))]);
+  check("pre-encoded basicConstraints with explicit cA=FALSE -> x509/bad-basic-constraints", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [bcFalseExplicit] }, { key: s.key })) === "x509/bad-basic-constraints");
+  // a DN attribute value with characters invalid for its string type fails closed as a typed x509/bad-name.
+  check("emailAddress with non-ASCII -> x509/bad-name", await codeOf(pki.x509.sign({ subject: [{ emailAddress: "tëst@example.com" }], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-name");
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
