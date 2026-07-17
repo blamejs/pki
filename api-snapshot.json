@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.2",
+  "packageVersion": "0.3.3",
   "surface": {
     "C": {
       "kind": "object",
@@ -831,6 +831,10 @@
             "ia5": {
               "kind": "function",
               "arity": 1
+            },
+            "implicit": {
+              "kind": "function",
+              "arity": 2
             },
             "integer": {
               "kind": "function",
@@ -1683,6 +1687,15 @@
         },
         "version": {
           "kind": "string"
+        }
+      }
+    },
+    "crmf": {
+      "kind": "object",
+      "members": {
+        "build": {
+          "kind": "function",
+          "arity": 3
         }
       }
     },
@@ -2903,6 +2916,7 @@
     "pki.cms.decompress": "0.2.27",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
+    "pki.crmf.build": "0.3.3",
     "pki.csr.sign": "0.3.1",
     "pki.ct.parseSctList": "0.1.20",
     "pki.ct.reconstructSignedData": "0.1.20",

@@ -1782,8 +1782,8 @@ function testNoDuplicateCodeBlocks() {
       // sign-scheme.js; each header binds a DIFFERENT domain (cms/ tsp/ x509/), so the glue recurs
       // without being further extractable. family-subset so any 3+ producing modules match.
       files: [
-        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>",
-        "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err",
+        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>",
+        "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err",
       ],
       mode: "family-subset",
       reason: "producing-module header: require(codec/oid/sign-scheme/guard/framework-error) + the two per-domain error factories (_err full-code, _signE domain-prefixed) + O()=oid.byName; the resolver/signer are shared in sign-scheme.js and each module binds a different domain -- nothing further extractable. Applies to the <top> require run and the shared _err factory shape.",
@@ -1806,6 +1806,18 @@ function testNoDuplicateCodeBlocks() {
       files: ["lib/attrcert-sign.js:add", "lib/csr-sign.js:addAttr", "lib/pki-build.js:assertValidExtension"],
       mode: "family-subset",
       reason: "attribute dedup+assembly idiom (reject a repeated AttributeType, push SEQUENCE{type, SET OF value}); attrcert `add` / csr `addAttr` share it with different domain codes, pki-build assertValidExtension shares only a coincidental decode+throw shingle -- domain-local, nothing cleanly extractable.",
+    },
+    {
+      // The pre-encoded-Extension-array handling idiom (decode -> assertValidExtension -> dedup extnID ->
+      // re-validate a recognized value via the decoder table). pki-build's `requestedExtensions` is the
+      // SHARED primitive csr/crmf compose; x509 `_buildExtensions` and attrcert `_buildExtensions` keep
+      // their own array handlers because each layers EXTRA domain rules the shared helper does not do
+      // (x509 the RFC 5280 CA cross-field gates keyCertSign=>cA + critical-BC; attrcert the RFC 5755
+      // mandated per-extension criticality), so they share the decode/validate shingle without being
+      // further extractable onto the shared helper.
+      files: ["lib/pki-build.js:requestedExtensions", "lib/x509-sign.js:_buildExtensions", "lib/attrcert-sign.js:_buildExtensions"],
+      mode: "family-subset",
+      reason: "pre-encoded-Extension-array decode+validate+dedup idiom; pki-build.requestedExtensions is the shared csr/crmf primitive, while x509/attrcert keep their own handlers because each adds domain rules the shared helper omits (x509 CA cross-field gates, attrcert RFC 5755 criticality) -- the shingle is shared, the extra rules are not extractable.",
     },
     // The v0.1.29 byte-input coercion-guard cluster is gone: the five boundaries
     // now delegate to lib/guard-bytes.js (guard.bytes.view / .source), so each
