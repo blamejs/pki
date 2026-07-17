@@ -265,6 +265,9 @@ async function run() {
   // (a universal SEQUENCE) stays cmp2000(2) -- only the EnvelopedData [0] form bumps pvno to cmp2021(3).
   var encVal = asn1.build.sequence([asn1.build.integer(1n), asn1.build.octetString(Buffer.from([2, 3]))]);   // a minimal EncryptedValue-shaped SEQUENCE
   check("24g. certifiedKeyPair encryptedCert + EncryptedValue privateKey + publicationInfo stays pvno 2", parse(await pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { encryptedCert: encVal, privateKey: encVal, publicationInfo: asn1.build.sequence([asn1.build.integer(0n)]) } }] } } }, SIG)).header.pvno === 2);
+  // an EnvelopedData [0] encryptedCert / privateKey IS a cmp2021 feature (pvno bump); the tag check mirrors the
+  // EncryptedValue case above. Driving it end-to-end needs a parser-accepted EnvelopedData; the bump condition
+  // (a context [0] top tag) is the identical detection on both the privateKey and encryptedCert CHOICE members.
   var minimalCrl = asn1.build.sequence([
     asn1.build.sequence([asn1.build.sequence([asn1.build.oid("1.2.840.10045.4.3.2")]), asn1.build.sequence([asn1.build.set([asn1.build.sequence([asn1.build.oid("2.5.4.3"), asn1.build.utf8("CA")])])]), asn1.build.utcTime(new Date("2026-01-01T00:00:00Z"))]),
     asn1.build.sequence([asn1.build.oid("1.2.840.10045.4.3.2")]), asn1.build.bitString(Buffer.from([0]), 0),
