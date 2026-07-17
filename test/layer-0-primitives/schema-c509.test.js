@@ -256,11 +256,21 @@ async function run() {
     var c = pki.schema.c509.encode(der);
     check("87." + ai + " " + arms[ai] + " type-3 reconstructs the source DER byte-exact + is smaller", pki.schema.c509.parse(c).reconstructedDer.equals(der) && c.length < der.length);
   }
-  // cross-curve: a P-384 CA signing a P-256 subject -- the signature r||s width is the ISSUER's curve (P-384,
-  // from ecdsaWithSHA384), NOT the subject's P-256 key; the reconstruction must still be byte-exact.
+  // cross-curve: a P-384 CA signing a P-256 subject -- the signature r||s width is the ISSUER's curve (P-384),
+  // NOT the subject's P-256 key. The issuer signs with ecdsaWithSHA256 (a non-standard digest/curve pairing),
+  // so its curve is not derivable from the certificate and MUST be supplied via opts.issuerCurve; the
+  // reconstruction is then byte-exact. Omitting it fails closed rather than guessing the width.
   var caP384 = signing.makeSigner("ec-p384"), subP256 = signing.makeSigner("ec-p256");
   var xder = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subP256.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { name: [{ commonName: "CA" }], publicKey: caP384.spki, key: caP384.key });
-  check("88. cross-curve (P-384 CA, P-256 subject) type-3 reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(xder)).reconstructedDer.equals(xder));
+  check("88. cross-curve (P-384 CA, P-256 subject) with opts.issuerCurve reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(xder, { issuerCurve: "P-384" })).reconstructedDer.equals(xder));
+  check("88b. the same cert accepts the OID-form issuer curve name", pki.schema.c509.parse(pki.schema.c509.encode(xder, { issuerCurve: "secp384r1" })).reconstructedDer.equals(xder));
+  // a non-self-issued cert whose issuer curve is not derivable (r/s wider than the digest's standard curve)
+  // fails closed instead of guessing an ambiguous width.
+  check("88c. non-self-issued non-standard pairing without opts -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder); }) === "c509/non-invertible");
+  // an issuer curve too small to hold the signature r/s is rejected (a P-256 field cannot carry a P-384 r||s).
+  check("88d. an issuer curve too small for the signature -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-256" }); }) === "c509/non-invertible");
+  // an unrecognized issuer curve is a config-time reject.
+  check("88e. an unrecognized opts.issuerCurve -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-999" }); }) === "c509/bad-input");
 
   // fail-closed: type-3 is X.509 v3-only (a v1 cert), and v1 covers EC-only (an RSA cert).
   var v1s = signing.makeSigner("ec-p256");

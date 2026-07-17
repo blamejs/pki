@@ -2399,7 +2399,7 @@
           "members": {
             "encode": {
               "kind": "function",
-              "arity": 1
+              "arity": 2
             },
             "parse": {
               "kind": "function",
