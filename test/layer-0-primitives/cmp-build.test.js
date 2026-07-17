@@ -96,6 +96,10 @@ async function run() {
 
   // ---- body arm content round-trips ----
   check("9. ir inner CertReqMessages re-decodes (>=1 message)", mi.body.decoded && mi.body.decoded.messages.length >= 1);
+  // the CRMF proof of possession uses the REQUESTED key (via body.ir.key), distinct from the protection key.
+  var reqK = makeSigner("ec-p256");
+  var distinctPop = await pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: reqK.spki }, key: reqK.key } } }, SIG);
+  check("9b. ir with a distinct requested-key POP round-trips (POP key != protection key)", parse(distinctPop).body.arm === "ir" && !!parse(distinctPop).body.decoded);
   var p10 = await pki.cmp.build({ header: HDR, body: { p10cr: await csrDer() } }, SIG);
   var mp = parse(p10);
   check("10a. p10cr arm; body.bytes re-parses via csr.parse (subject matches)", mp.body.arm === "p10cr" && pki.schema.csr.parse(mp.body.bytes).subject.dn.indexOf("c") !== -1);
@@ -159,6 +163,11 @@ async function run() {
   var recomputed = nodeCrypto.createHmac("sha256", derivedKey).update(reconM).digest();
   check("18a. PBMAC1 protectionAlg is pbmac1, octet-aligned (0 unused bits)", mm.header.protectionAlg.name === "pbmac1" && mm.protection.unusedBits === 0);
   check("18b. the PBMAC1 protection recomputes byte-identically (PBKDF2 + HMAC-SHA256)", recomputed.equals(mm.protection.bytes));
+  // the PBMAC1 HMAC AlgorithmIdentifiers carry NULL parameters (RFC 8018 App. B.1.1): the messageAuthScheme
+  // (the 2nd child of PBMAC1-params) is a 2-element SEQUENCE { OID, NULL }.
+  var pbmac1Params = asn1.decode(mm.header.protectionAlg.parameters);
+  var messageAuthScheme = pbmac1Params.children[1];
+  check("18c. the PBMAC1 messageAuthScheme HMAC algId has NULL parameters", messageAuthScheme.children.length === 2 && messageAuthScheme.children[1].tagNumber === asn1.TAGS.NULL);
   check("19a. a wrong-secret recompute does NOT match the emitted MAC", !nodeCrypto.createHmac("sha256", nodeCrypto.pbkdf2Sync(Buffer.from("wrong"), Buffer.alloc(16, 9), 2048, 32, "sha256")).update(reconM).digest().equals(mm.protection.bytes));
   check("19b. an empty mac.secret -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "" } })) === "cmp/bad-input");
   check("19c. a non-object mac -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: 5 })) === "cmp/bad-input");
@@ -198,6 +207,7 @@ async function run() {
   check("21r. a confirmWaitTime non-Date value -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: Object.assign({ generalInfo: [{ infoType: "confirmWaitTime", infoValue: "soon" }] }, HDR), body: irMsg.body }, SIG)) === "cmp/bad-info-value");
   check("21s. a certConf non-array -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: 5 } }, SIG)) === "cmp/bad-cert-status");
   check("21t. an unknown certConf hashAlg -> cmp/bad-name", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, hashAlg: "nope" }] } }, SIG)) === "cmp/bad-name");
+  check("21t2. a non-integer certConf certReqId -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 1.5 }] } }, SIG)) === "cmp/bad-cert-status");
   check("21u. a pollReq entry without certReqId -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{}] } }, SIG)) === "cmp/bad-poll-req");
   check("21v. an rr without certDetails -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{}] } }, SIG)) === "cmp/bad-rev-req");
   check("21w. an empty rr array -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [] } }, SIG)) === "cmp/bad-rev-req");
