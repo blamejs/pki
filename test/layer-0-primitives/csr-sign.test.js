@@ -175,6 +175,16 @@ async function testFailClosed() {
   check("pre-encoded extension with explicit critical=FALSE -> csr/bad-input", await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: [critFalse] }, { key: s.key })) === "csr/bad-input");
   var malformedBc = B.sequence([B.oid(pki.oid.byName("basicConstraints")), B.octetString(Buffer.from([0x30, 0x05]))]);   // truncated value
   check("malformed pre-encoded extension value -> typed csr/*", /^csr\//.test(await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: [malformedBc] }, { key: s.key })) || ""));
+  // opaque spec.attributes: the escape hatch is for UNRECOGNIZED types with a non-empty value SET only.
+  var okAttr = B.sequence([B.oid("1.2.3.4.5.6.7.8"), B.set([B.octetString(Buffer.from("v"))])]);   // custom type, one value
+  var okDer = await pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, attributes: [okAttr] }, { key: s.key });
+  check("valid unrecognized opaque attribute round-trips", pki.schema.csr.parse(okDer).attributes.length === 1);
+  var emptySetAttr = B.sequence([B.oid("1.2.3.4.5.6.7.8"), B.set([])]);   // SET SIZE(1..MAX) violated
+  check("opaque attribute with empty value SET -> csr/bad-input", await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, attributes: [emptySetAttr] }, { key: s.key })) === "csr/bad-input");
+  var extReqOpaque = B.sequence([B.oid(pki.oid.byName("extensionRequest")), B.set([B.sequence([])])]);
+  check("recognized extensionRequest via opaque attributes -> csr/bad-input", await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, attributes: [extReqOpaque] }, { key: s.key })) === "csr/bad-input");
+  var cpOpaque = B.sequence([B.oid(pki.oid.byName("challengePassword")), B.set([B.utf8("pw")])]);
+  check("recognized challengePassword via opaque attributes -> csr/bad-input", await codeOf(pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, attributes: [cpOpaque] }, { key: s.key })) === "csr/bad-input");
 }
 
 async function main() {
