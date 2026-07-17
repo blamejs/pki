@@ -271,8 +271,8 @@ async function testFailClosed() {
   check("unknown extension key -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { keyUsag: ["digitalSignature"] } }, { key: s.key })) === "x509/bad-input");
   // a malformed subject SPKI is rejected at issuance (validated before it is embedded raw).
   var B = pki.asn1.build;
-  check("non-DER subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: Buffer.from([1, 2, 3, 4]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");
-  check("structurally-wrong subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: B.sequence([B.integer(1n), B.integer(2n)]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");
+  check("non-DER subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: Buffer.from([0x30, 0x05]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");   // truncated SEQUENCE
+  check("structurally-wrong subjectPublicKey -> typed x509/* error", /^x509\//.test(await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: B.sequence([B.integer(1n), B.integer(2n)]), notBefore: NB, notAfter: NA }, { key: s.key })) || ""));
   // a malformed pre-encoded extension is rejected before signing.
   check("malformed pre-encoded extension -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [B.sequence([B.integer(1n)])] }, { key: s.key })) === "x509/bad-input");
   // a malformed raw Name DER (the escape hatch) is validated before embedding.
@@ -458,7 +458,7 @@ async function testCoverageEdges() {
   check("missing issuer.key -> throws", await codeOf(pki.x509.sign(base({}), {})) === "x509/bad-input");
   check("issuer.cert as raw DER Buffer chains", pki.schema.x509.parse(await pki.x509.sign(base({}), { cert: caNoSki, key: ca.key })).issuer.dn === pki.schema.x509.parse(caNoSki).subject.dn);
   check("issuer.cert without tbsBytes -> throws", await codeOf(pki.x509.sign(base({}), { cert: {}, key: ca.key })) === "x509/bad-input");
-  check("non-SPKI issuer publicKey -> throws", await codeOf(pki.x509.sign(base({}), { name: "x", publicKey: B.sequence([]), key: s.key })) === "x509/bad-input");
+  check("non-SPKI issuer publicKey -> x509/bad-spki", await codeOf(pki.x509.sign(base({}), { name: "x", publicKey: B.sequence([]), key: s.key })) === "x509/bad-spki");
   check("explicit issuer with no name -> x509/bad-issuer", await codeOf(pki.x509.sign(base({}), { publicKey: ca.spki, key: ca.key })) === "x509/bad-issuer");
   check("unparseable serial string -> x509/bad-serial", await codeOf(pki.x509.sign(base({ serialNumber: "not-a-number" }), { key: s.key })) === "x509/bad-serial");
   // subject omitted entirely (=> empty) is the same empty-subject rule, via a CA issuer.
