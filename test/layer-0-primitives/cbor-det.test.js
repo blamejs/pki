@@ -383,6 +383,10 @@ function testBuildEncoder() {
   // bytes the strict decoder rejects (a truncated head) fail closed rather than returning garbage.
   check("build-raw passes a well-formed pre-encoded item through", b.raw(b.int(5n)).equals(b.int(5n)));
   check("build-raw rejects bytes that are not a well-formed CBOR item", code(function () { b.raw(Buffer.from([0x18])); }) === "cbor/bad-item");
+  // a string leaf never emits an item beyond the decoder's total-size cap: a byte string one over the cap
+  // fails closed rather than producing bytes the strict reader would reject as too large.
+  var CBOR_CAP = require("../../lib/constants").LIMITS.CBOR_MAX_BYTES;
+  check("build-byteString rejects a value beyond the decoder size cap", code(function () { b.byteString(Buffer.alloc(CBOR_CAP + 1)); }) === "cbor/too-large");
   // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
   var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
