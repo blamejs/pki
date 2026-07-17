@@ -42,6 +42,7 @@ var tsp       = require("./lib/tsp-sign");
 var ocsp      = require("./lib/ocsp");
 var x509      = require("./lib/x509-sign");
 var csr       = require("./lib/csr-sign");
+var attrcert  = require("./lib/attrcert-sign");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -93,6 +94,10 @@ module.exports = {
   // possession, with requested extensions in a PKCS#9 extensionRequest attribute. Parsing
   // lives at pki.schema.csr.parse.
   csr:       csr,
+  // `attrcert` is the RFC 5755 attribute-certificate producing side -- pki.attrcert.sign
+  // builds and signs an AttributeCertificate binding a Holder to privilege attributes as an
+  // Attribute Authority (never self-signed). Parsing lives at pki.schema.attrcert.parse.
+  attrcert:  attrcert,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

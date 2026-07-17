@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.1",
+  "packageVersion": "0.3.2",
   "surface": {
     "C": {
       "kind": "object",
@@ -974,6 +974,15 @@
         "sequenceTlv": {
           "kind": "function",
           "arity": 1
+        }
+      }
+    },
+    "attrcert": {
+      "kind": "object",
+      "members": {
+        "sign": {
+          "kind": "function",
+          "arity": 3
         }
       }
     },
@@ -2869,6 +2878,7 @@
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",
     "pki.asn1.build": "0.1.0",
+    "pki.attrcert.sign": "0.3.2",
     "pki.cbor.decode": "0.1.27",
     "pki.cbor.read.uint": "0.1.27",
     "pki.cbor.read.nint": "0.1.27",
