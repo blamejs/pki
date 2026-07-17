@@ -234,6 +234,13 @@ async function run() {
   // a Uint8Array parse input (not a Buffer) preserves the raw fields correctly (the field bytes come from
   // the decoded root, not offset arithmetic on the caller's input buffer).
   check("83d. Uint8Array parse input re-emits byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(new Uint8Array(V.A1.type3))).equals(V.A1.type3));
+  // the verbatim re-emit is not a blind byte copy: a caller who mutates the preserved raw fields to a
+  // malformed shape gets a fail-closed verdict, not garbage. A tampered certificate-type octet re-parses
+  // as an invalid type; a non-Buffer signatureValue is rejected at entry.
+  var prMut = pki.schema.c509.parse(V.A1.type3); prMut._fieldBytes = Buffer.concat([Buffer.from([0x05]), prMut._fieldBytes.subarray(1)]);
+  check("83e. a mutated re-emit field set fails closed (typed c509/*)", /^c509\//.test(codeSync(function () { return pki.schema.c509.encode(prMut); })));
+  var prSig = pki.schema.c509.parse(V.A1.type3); prSig.signatureValue = "not-a-buffer";
+  check("83f. a non-Buffer signatureValue re-emit -> c509/bad-input", codeSync(function () { return pki.schema.c509.encode(prSig); }) === "c509/bad-input");
   // the emission is canonical deterministic CBOR by construction (parse re-decodes it).
   check("84. encode output re-parses to the same certificate", pki.schema.c509.parse(pki.schema.c509.encode(V.A1.der)).certificateType === 3);
   // fail-closed on a non-cert input.

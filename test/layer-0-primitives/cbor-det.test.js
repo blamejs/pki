@@ -379,6 +379,10 @@ function testBuildEncoder() {
   // build.time never emits a tag-1 read.time would reject: an out-of-range epoch and an Invalid Date fail closed.
   check("build-time rejects an out-of-range epoch (matches read.time's bound)", code(function () { b.time(8640000000001n); }) === "cbor/bad-time");
   check("build-time rejects an Invalid Date", code(function () { b.time(new Date("nope")); }) === "cbor/bad-time");
+  // build.raw is a pass-through for a pre-encoded item, but it still validates: a well-formed item passes,
+  // bytes the strict decoder rejects (a truncated head) fail closed rather than returning garbage.
+  check("build-raw passes a well-formed pre-encoded item through", b.raw(b.int(5n)).equals(b.int(5n)));
+  check("build-raw rejects bytes that are not a well-formed CBOR item", code(function () { b.raw(Buffer.from([0x18])); }) === "cbor/bad-item");
   // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
   var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
