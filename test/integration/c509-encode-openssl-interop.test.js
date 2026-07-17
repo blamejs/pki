@@ -20,6 +20,7 @@ var signing = require("../helpers/signing");
 
 async function run() {
   var arms = ["ec-p256", "ec-p384", "ec-p521"];
+  var armCurve = { "ec-p256": "P-256", "ec-p384": "P-384", "ec-p521": "P-521" };
   for (var i = 0; i < arms.length; i++) {
     var alg = arms[i];
     var s = signing.makeSigner(alg);
@@ -29,7 +30,8 @@ async function run() {
       extensions: { keyUsage: ["digitalSignature"], basicConstraints: { cA: false } },
     }, { key: s.key });
 
-    var c509 = pki.schema.c509.encode(der);
+    // these signers pair every curve with SHA-256, so the issuer curve is supplied explicitly.
+    var c509 = pki.schema.c509.encode(der, { issuerCurve: armCurve[alg] });
     var recon = pki.schema.c509.parse(c509).reconstructedDer;
     check(alg + " type-3 C509 is smaller than the source DER", c509.length < der.length);
     check(alg + " type-3 reconstructs the source DER byte-for-byte", recon.equals(der));

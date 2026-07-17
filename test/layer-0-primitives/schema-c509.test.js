@@ -249,11 +249,14 @@ async function run() {
 
   // the flagship forward transform across the EC arms: a v3 DER cert -> a smaller type-3 that reconstructs
   // the source DER byte-for-byte (so the original signature still verifies).
+  // These signers pair every curve with SHA-256 (a non-standard digest/curve pairing for P-384 / P-521), so
+  // the issuer curve is not derivable from the certificate -- supply it via opts.issuerCurve.
   var arms = ["ec-p256", "ec-p384", "ec-p521"];
+  var armCurve = { "ec-p256": "P-256", "ec-p384": "P-384", "ec-p521": "P-521" };
   for (var ai = 0; ai < arms.length; ai++) {
     var s = signing.makeSigner(arms[ai]);
     var der = await pki.x509.sign({ subject: [{ commonName: "dev" }, { countryName: "US" }], subjectPublicKey: s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], basicConstraints: { cA: false } } }, { key: s.key });
-    var c = pki.schema.c509.encode(der);
+    var c = pki.schema.c509.encode(der, { issuerCurve: armCurve[arms[ai]] });
     check("87." + ai + " " + arms[ai] + " type-3 reconstructs the source DER byte-exact + is smaller", pki.schema.c509.parse(c).reconstructedDer.equals(der) && c.length < der.length);
   }
   // cross-curve: a P-384 CA signing a P-256 subject -- the signature r||s width is the ISSUER's curve (P-384),
@@ -264,9 +267,9 @@ async function run() {
   var xder = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subP256.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { name: [{ commonName: "CA" }], publicKey: caP384.spki, key: caP384.key });
   check("88. cross-curve (P-384 CA, P-256 subject) with opts.issuerCurve reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(xder, { issuerCurve: "P-384" })).reconstructedDer.equals(xder));
   check("88b. the same cert accepts the OID-form issuer curve name", pki.schema.c509.parse(pki.schema.c509.encode(xder, { issuerCurve: "secp384r1" })).reconstructedDer.equals(xder));
-  // a non-self-issued cert whose issuer curve is not derivable (r/s wider than the digest's standard curve)
-  // fails closed instead of guessing an ambiguous width.
-  check("88c. non-self-issued non-standard pairing without opts -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder); }) === "c509/non-invertible");
+  // a cert whose issuer curve is not derivable (r/s wider than the digest's standard curve) fails closed
+  // instead of guessing an ambiguous width.
+  check("88c. a non-standard digest/curve pairing without opts -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder); }) === "c509/non-invertible");
   // an issuer curve too small to hold the signature r/s is rejected (a P-256 field cannot carry a P-384 r||s).
   check("88d. an issuer curve too small for the signature -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(xder, { issuerCurve: "P-256" }); }) === "c509/non-invertible");
   // an unrecognized issuer curve is a config-time reject.

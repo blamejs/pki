@@ -387,6 +387,10 @@ function testBuildEncoder() {
   // fails closed rather than producing bytes the strict reader would reject as too large.
   var CBOR_CAP = require("../../lib/constants").LIMITS.CBOR_MAX_BYTES;
   check("build-byteString rejects a value beyond the decoder size cap", code(function () { b.byteString(Buffer.alloc(CBOR_CAP + 1)); }) === "cbor/too-large");
+  // build.biguint mirrors read.biguint's bignum cap: a magnitude one byte over the cap fails closed rather
+  // than emitting a tag-2 bignum the strict reader would reject.
+  var BIGUINT_CAP = require("../../lib/constants").LIMITS.CBOR_MAX_BIGUINT_BYTES;
+  check("build-biguint rejects a magnitude beyond the bignum cap", code(function () { b.biguint((1n << BigInt((BIGUINT_CAP + 1) * 8)) - 1n); }) === "cbor/biguint-too-large");
   // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
   var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
