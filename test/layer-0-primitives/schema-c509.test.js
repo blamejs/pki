@@ -242,6 +242,12 @@ async function run() {
     var c = pki.schema.c509.encode(der);
     check("87." + ai + " " + arms[ai] + " type-3 reconstructs the source DER byte-exact + is smaller", pki.schema.c509.parse(c).reconstructedDer.equals(der) && c.length < der.length);
   }
+  // cross-curve: a P-384 CA signing a P-256 subject -- the signature r||s width is the ISSUER's curve (P-384,
+  // from ecdsaWithSHA384), NOT the subject's P-256 key; the reconstruction must still be byte-exact.
+  var caP384 = signing.makeSigner("ec-p384"), subP256 = signing.makeSigner("ec-p256");
+  var xder = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subP256.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { name: [{ commonName: "CA" }], publicKey: caP384.spki, key: caP384.key });
+  check("88. cross-curve (P-384 CA, P-256 subject) type-3 reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(xder)).reconstructedDer.equals(xder));
+
   // fail-closed: type-3 is X.509 v3-only (a v1 cert), and v1 covers EC-only (an RSA cert).
   var v1s = signing.makeSigner("ec-p256");
   var v1der = await pki.x509.sign({ subject: [{ commonName: "v1" }], subjectPublicKey: v1s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z") }, { key: v1s.key });
