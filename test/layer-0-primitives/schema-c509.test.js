@@ -282,6 +282,10 @@ async function run() {
   var rsas = signing.makeSigner("rsa");
   var rsader = await pki.x509.sign({ subject: [{ commonName: "r" }], subjectPublicKey: rsas.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: rsas.key });
   check("91. an RSA cert -> c509/non-invertible (v1 covers EC)", codeSync(function () { return pki.schema.c509.encode(rsader); }) === "c509/non-invertible");
+  // fail-closed: a pre-epoch validity date cannot be a C509 ~time (a non-negative CBOR epoch uint).
+  var preS = signing.makeSigner("ec-p256");
+  var preDer = await pki.x509.sign({ subject: [{ commonName: "pre" }], subjectPublicKey: preS.spki, notBefore: new Date("1960-01-01T00:00:00Z"), notAfter: new Date("1969-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: preS.key });
+  check("91b. a pre-epoch validity date -> c509/bad-validity", codeSync(function () { return pki.schema.c509.encode(preDer); }) === "c509/bad-validity");
 
   // secondary-form re-emit coverage: a variant C509 built with V.mk -> parse -> re-encode byte-exact,
   // exercising the encoder branches the A.1 KAT does not (null notAfter, printable / multi-attribute /
