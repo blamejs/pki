@@ -381,6 +381,13 @@ function testBuildEncoder() {
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
   var m = b.map([[b.uint(2n), b.uint(20n)], [b.uint(1n), b.uint(10n)]]);
   check("build-map sorts keys bytewise (1 before 2)", d(m).children[0][0].bytes[0] === 0x01);
+  // RFC 8949 sec. 4.2.1 is BYTEWISE, not the length-first sec. 4.2.3 order: for keys where the two differ
+  // (a 1-byte key 0x20 that is bytewise-GREATER than a 2-byte key 0x1818), bytewise puts the 2-byte key
+  // FIRST -- and the strict decoder (also bytewise) accepts the result, proving the encoder matches it.
+  var divergent = b.map([[b.int(-1n), b.uint(0n)], [b.uint(24n), b.uint(1n)]]);   // keys 0x20 and 0x1818
+  check("build-map uses bytewise (4.2.1), not length-first (4.2.3): 2-byte key sorts before the 1-byte key", d(divergent).children[0][0].bytes.length === 2);
+  var dm = d(divergent);
+  check("build-map bytewise output decodes (matches the strict decoder's ordering)", r.uint(r.mapGet(dm, 24)) === 1n && r.uint(r.mapGet(dm, -1)) === 0n);
   check("build-map round-trips both entries", r.mapGet(d(m), 1) !== null && r.mapGet(d(m), 2) !== null);
   check("build-map rejects a duplicate key", code(function () { b.map([[b.uint(1n), b.uint(1n)], [b.uint(1n), b.uint(2n)]]); }) === "cbor/duplicate-map-key");
   // tag composition + the biguint preferred-serialization guard.
