@@ -219,6 +219,11 @@ async function run() {
   // AUTHORITATIVE KAT: the forward transform of the Appendix A.1 DER yields the draft canonical type-3
   // (the MAC-address commonName compressed to a tag-48 EUI-48, the lone keyUsage as the int shortcut).
   check("81. encode(A.1 DER) == the draft type-3 C509 byte-for-byte", pki.schema.c509.encode(V.A1.der).equals(V.A1.type3));
+  // a PEM string and a PEM-armored Buffer normalize to the same DER as the raw Buffer -- the self-verify
+  // compares against the coerced certificate DER, not the PEM text bytes.
+  var a1Pem = pki.schema.x509.pemEncode(V.A1.der, "CERTIFICATE");
+  check("81b. encode(PEM string) == encode(DER)", pki.schema.c509.encode(a1Pem).equals(V.A1.type3));
+  check("81c. encode(PEM-armored Buffer) == encode(DER)", pki.schema.c509.encode(Buffer.from(a1Pem, "utf8")).equals(V.A1.type3));
   // re-emit: a parsed result re-encodes to identical bytes (both certificate types).
   check("82. encode(parse(type-3)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type3)).equals(V.A1.type3));
   check("83. encode(parse(type-2)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type2)).equals(V.A1.type2));
