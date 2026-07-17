@@ -257,6 +257,18 @@ async function run() {
     await codeOf(pki.path.build(Buffer.from([1, 2, 3]), { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   check("an unparseable candidate -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: [Buffer.from([1, 2, 3])], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+  // A claimed-parsed object (truthy tbsBytes) that lacks the real parsed-cert fields must fail
+  // closed as a typed path/bad-input, NOT a raw TypeError deep in the search. Cover the leaf,
+  // candidate, and certificate-form-anchor positions and each missing-field branch.
+  var Z = Buffer.alloc(0);
+  check("a bare { tbsBytes } leaf -> path/bad-input (not a raw TypeError)",
+    await codeOf(pki.path.build({ tbsBytes: Z }, { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+  check("a claimed-parsed candidate missing issuer -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [{ tbsBytes: Z, subject: { rdns: [], bytes: Z } }], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+  check("a claimed-parsed anchor missing subjectPublicKeyInfo -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] } }], time: T })) === "path/bad-input");
+  check("a claimed-parsed leaf with a non-array extensions -> path/bad-input",
+    await codeOf(pki.path.build({ tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] }, subjectPublicKeyInfo: { bytes: Z }, extensions: "nope" }, { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   check("a tuple anchor whose name lacks .rdns -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ name: {}, publicKey: anchorKp.spki, algorithm: "1.3.101.112" }], time: T })) === "path/bad-input");
   check("an oversized candidate pool -> path/bad-input",
