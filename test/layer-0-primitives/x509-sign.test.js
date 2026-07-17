@@ -302,6 +302,9 @@ async function testFailClosed() {
   check("non-CA issuer.cert -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: notCaCert, key: iss.key })) === "x509/bad-input");
   var caNoKcs = pki.schema.x509.parse(await pki.x509.sign({ subject: "CRL-only CA", subjectPublicKey: iss.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: iss.key }));
   check("CA issuer.cert without keyCertSign -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "leaf", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { cert: caNoKcs, key: iss.key })) === "x509/bad-input");
+  // basicConstraints spec is validated strictly (a truthy non-boolean cA, or an unknown field, is rejected).
+  check("basicConstraints cA non-boolean -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: 1 } } }, { key: s.key })) === "x509/bad-input");
+  check("unknown basicConstraints field -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, foo: 1 } } }, { key: s.key })) === "x509/bad-input");
   // RFC 5280 sec. 4.2.1.9 -- a CA's basicConstraints MUST be critical, on OUTPUT and on an issuer input.
   check("issuing a CA with critical:false -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true, critical: false }, keyUsage: ["keyCertSign"] } }, { key: s.key })) === "x509/bad-input");
   // an externally-built CA with NON-critical basicConstraints is rejected as an issuer (x509.sign cannot mint one).
