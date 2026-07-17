@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.5 — 2026-07-17
+
+pki.cmp.build assembles protected RFC 9810 CMP PKIMessages -- certificate requests, confirmations, revocations, and general messages, protected by a sender-key signature or a PBMAC1 shared secret.
+
+### Added
+
+- pki.cmp.build(message, opts) assembles a protected RFC 9810 CMP PKIMessage. message.header carries the sender / recipient GeneralNames (including the anonymous NULL-DN) and optional transaction metadata; message.body is a single-key arm -- ir / cr / kur (a CertReqMessages via pki.crmf.build), p10cr (a PKCS#10 CertificationRequest), certConf, pollReq, genm, or rr. Protection is exactly one of opts.{ key, cert } (a signature under the sender key, algorithm resolved from the certificate -- RSA / ECDSA / EdDSA / ML-DSA / SLH-DSA / composite) or opts.mac (a PBMAC1 shared-secret HMAC, RFC 9481 / RFC 9579), computed over the exact ProtectedPart DER and self-verified before return. Returns DER, or a PEM CMP block with opts.pem; malformed input throws a typed CmpError. Message parsing remains pki.schema.cmp.parse.
+- pki.crmf.buildCertTemplate(template) encodes a bare RFC 4211 CertTemplate (subject, public key, validity, requested extensions, version) to canonical DER -- the certTemplate interior of pki.crmf.build, exposed for the CMP rr revocation body whose certDetails names the certificate to revoke.
+
 ## v0.3.4 — 2026-07-17
 
 pki.schema.c509.encode produces C509 CBOR certificates -- a DER X.509 certificate compresses to a compact, byte-exact-invertible type-3 C509, and a deterministic-CBOR encoder joins pki.cbor.

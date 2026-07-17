@@ -44,6 +44,7 @@ var x509      = require("./lib/x509-sign");
 var csr       = require("./lib/csr-sign");
 var attrcert  = require("./lib/attrcert-sign");
 var crmf      = require("./lib/crmf-sign");
+var cmp       = require("./lib/cmp-build");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -103,6 +104,10 @@ module.exports = {
   // assembles a CertReqMessages (a CertTemplate + a signature proof of possession) for a CMP
   // or EST enrollment. Parsing lives at pki.schema.crmf.parse.
   crmf:      crmf,
+  // `cmp` is the RFC 9810 Certificate Management Protocol producing side -- pki.cmp.build assembles a
+  // protected PKIMessage (a certificate request / confirmation / revocation / general message).
+  // Parsing lives at pki.schema.cmp.parse.
+  cmp:       cmp,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and
