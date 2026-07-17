@@ -291,6 +291,13 @@ async function run() {
   var preS = signing.makeSigner("ec-p256");
   var preDer = await pki.x509.sign({ subject: [{ commonName: "pre" }], subjectPublicKey: preS.spki, notBefore: new Date("1960-01-01T00:00:00Z"), notAfter: new Date("1969-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: preS.key });
   check("91b. a pre-epoch validity date -> c509/bad-validity", codeSync(function () { return pki.schema.c509.encode(preDer); }) === "c509/bad-validity");
+  // a certificate whose ECDSA signature value is not a SEQUENCE of two INTEGERs (the r INTEGER tag flipped to
+  // OCTET STRING) fails closed with a typed verdict rather than reading a non-INTEGER child's content.
+  var bsS = signing.makeSigner("ec-p256");
+  var bsDer = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "badsig" }], subjectPublicKey: bsS.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: bsS.key }));
+  var bsSig = pki.schema.x509.parse(bsDer).signatureValue.bytes;
+  bsDer[bsDer.indexOf(bsSig) + 2] = 0x04;   // the signature SEQUENCE's first INTEGER (r) tag -> OCTET STRING
+  check("91c. a non-INTEGER ECDSA signature child -> c509/bad-signature", codeSync(function () { return pki.schema.c509.encode(bsDer); }) === "c509/bad-signature");
 
   // secondary-form re-emit coverage: a variant C509 built with V.mk -> parse -> re-encode byte-exact,
   // exercising the encoder branches the A.1 KAT does not (null notAfter, printable / multi-attribute /
