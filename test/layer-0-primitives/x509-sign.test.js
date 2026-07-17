@@ -270,6 +270,12 @@ async function testFailClosed() {
   check("structurally-wrong subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: B.sequence([B.integer(1n), B.integer(2n)]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");
   // a malformed pre-encoded extension is rejected before signing.
   check("malformed pre-encoded extension -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [B.sequence([B.integer(1n)])] }, { key: s.key })) === "x509/bad-input");
+  // a malformed raw Name DER (the escape hatch) is validated before embedding.
+  check("non-DER raw subject Name -> x509/bad-name", await codeOf(pki.x509.sign({ subject: Buffer.from([1, 2, 3]), subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-name");
+  check("structurally-wrong raw Name (RDN not a SET) -> x509/bad-name", await codeOf(pki.x509.sign({ subject: B.sequence([B.integer(1n)]), subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-name");
+  // duplicate extension in the array form is rejected (RFC 5280 sec. 4.2).
+  var kuExt = B.sequence([B.oid(pki.oid.byName("keyUsage")), B.octetString(B.namedBitString([0]))]);
+  check("duplicate extension in the array form -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kuExt, kuExt] }, { key: s.key })) === "x509/bad-input");
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
