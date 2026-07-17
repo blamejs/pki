@@ -1782,8 +1782,8 @@ function testNoDuplicateCodeBlocks() {
       // sign-scheme.js; each header binds a DIFFERENT domain (cms/ tsp/ x509/), so the glue recurs
       // without being further extractable. family-subset so any 3+ producing modules match.
       files: [
-        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>",
-        "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err",
+        "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>",
+        "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err",
       ],
       mode: "family-subset",
       reason: "producing-module header: require(codec/oid/sign-scheme/guard/framework-error) + the two per-domain error factories (_err full-code, _signE domain-prefixed) + O()=oid.byName; the resolver/signer are shared in sign-scheme.js and each module binds a different domain -- nothing further extractable. Applies to the <top> require run and the shared _err factory shape.",
@@ -1796,6 +1796,25 @@ function testNoDuplicateCodeBlocks() {
       files: ["lib/attrcert-sign.js:sign", "lib/csr-sign.js:sign", "lib/x509-sign.js:sign", "lib/cms-sign.js:sign", "lib/tsp-sign.js:sign"],
       mode: "family-subset",
       reason: "producing-module public entry: sign(...) wraps _sign in Promise.resolve().then() so a config-time throw rejects the promise rather than throwing synchronously; a three-line async-boundary wrapper with nothing to extract.",
+    },
+    {
+      // Producing-module structural-encoder + orchestrator bodies: each encodes a DIFFERENT ASN.1 structure
+      // (a PKIHeader, a Holder, a CertReqMsg, a CertTemplate, a proof of possession, a challenge password)
+      // with the same combinator glue -- validate the spec keys, build a `children` array, conditionally
+      // push the present optionals, return `b.sequence(children)` -- plus the `_sign`/`_build` orchestrators
+      // that `Promise.resolve().then` a config-time throw and await the shared sign-scheme. The structures
+      // differ per domain; the glue is the shared pki-build combinator surface, not further extractable
+      // without threading each structure's field set through a callback. family-subset so any 3+ producer
+      // bodies match (a fifth producer, cmp-build, joined the family).
+      files: [
+        "lib/attrcert-sign.js:sign", "lib/attrcert-sign.js:_sign", "lib/attrcert-sign.js:_encodeHolder", "lib/attrcert-sign.js:_buildExtensions",
+        "lib/cmp-build.js:_encodeHeader", "lib/cmp-build.js:_resolveProtection", "lib/cmp-build.js:_build",
+        "lib/crmf-sign.js:_buildCertReqMsg", "lib/crmf-sign.js:_encodeCertTemplate", "lib/crmf-sign.js:_buildProofOfPossession",
+        "lib/csr-sign.js:sign", "lib/csr-sign.js:_sign", "lib/csr-sign.js:_challengePassword",
+        "lib/x509-sign.js:sign",
+      ],
+      mode: "family-subset",
+      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper; the structures differ per domain and the glue is the pki-build combinator surface, not further extractable.",
     },
     {
       // The per-attribute uniqueness + assembly idiom: a dedup helper that rejects a repeated

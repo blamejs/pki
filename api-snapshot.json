@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.4",
+  "packageVersion": "0.3.5",
   "surface": {
     "C": {
       "kind": "object",
@@ -1125,6 +1125,15 @@
         }
       }
     },
+    "cmp": {
+      "kind": "object",
+      "members": {
+        "build": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
     "cms": {
       "kind": "object",
       "members": {
@@ -1757,6 +1766,10 @@
         "build": {
           "kind": "function",
           "arity": 3
+        },
+        "buildCertTemplate": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -2973,6 +2986,7 @@
     "pki.cbor.read.biguint": "0.1.27",
     "pki.cbor.read.time": "0.1.27",
     "pki.cbor.read.oid": "0.1.27",
+    "pki.cmp.build": "0.3.5",
     "pki.cms.verify": "0.2.14",
     "pki.cms.sign": "0.2.15",
     "pki.cms.encrypt": "0.2.23",
@@ -2982,6 +2996,7 @@
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.crmf.build": "0.3.3",
+    "pki.crmf.buildCertTemplate": "0.3.5",
     "pki.csr.sign": "0.3.1",
     "pki.ct.parseSctList": "0.1.20",
     "pki.ct.reconstructSignedData": "0.1.20",
