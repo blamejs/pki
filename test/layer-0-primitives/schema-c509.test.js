@@ -227,6 +227,10 @@ async function run() {
   // signature) round-trips byte-for-byte.
   var t2bs = V.mk({ 0: "02", 6: "4401020304" });   // type-2, subject = a byte-string commonName
   check("83b. type-2 re-emit preserves a byte-string field verbatim", pki.schema.c509.encode(pki.schema.c509.parse(t2bs)).equals(t2bs));
+  // a type-3 result re-emits its raw fields VERBATIM too -- a re-derivation of a byte-string attribute
+  // (rendered as text) would change the reconstructed DER; the verbatim path keeps it byte-exact.
+  var t3bs = V.mk({ 6: "4401020304" });   // type-3, subject = a byte-string commonName
+  check("83c. type-3 re-emit preserves a byte-string field verbatim", pki.schema.c509.encode(pki.schema.c509.parse(t3bs)).equals(t3bs));
   // the emission is canonical deterministic CBOR by construction (parse re-decodes it).
   check("84. encode output re-parses to the same certificate", pki.schema.c509.parse(pki.schema.c509.encode(V.A1.der)).certificateType === 3);
   // fail-closed on a non-cert input.
