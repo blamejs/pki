@@ -379,6 +379,10 @@ function testBuildEncoder() {
   // build.time never emits a tag-1 read.time would reject: an out-of-range epoch and an Invalid Date fail closed.
   check("build-time rejects an out-of-range epoch (matches read.time's bound)", code(function () { b.time(8640000000001n); }) === "cbor/bad-time");
   check("build-time rejects an Invalid Date", code(function () { b.time(new Date("nope")); }) === "cbor/bad-time");
+  // read.time reads only a second-granularity integer tag-1, so build.time rejects a sub-second Date rather
+  // than silently dropping the milliseconds.
+  check("build-time rejects a sub-second Date", code(function () { b.time(new Date("2013-03-21T20:04:00.500Z")); }) === "cbor/bad-time");
+  check("build-time accepts a whole-second Date", r.time(d(b.time(new Date("2013-03-21T20:04:00.000Z")))).getTime() === Date.parse("2013-03-21T20:04:00Z"));
   // build.raw is a pass-through for a pre-encoded item, but it still validates: a well-formed item passes,
   // bytes the strict decoder rejects (a truncated head) fail closed rather than returning garbage.
   check("build-raw passes a well-formed pre-encoded item through", b.raw(b.int(5n)).equals(b.int(5n)));
