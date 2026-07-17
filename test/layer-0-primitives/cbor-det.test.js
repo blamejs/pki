@@ -395,6 +395,12 @@ function testBuildEncoder() {
   // than emitting a tag-2 bignum the strict reader would reject.
   var BIGUINT_CAP = require("../../lib/constants").LIMITS.CBOR_MAX_BIGUINT_BYTES;
   check("build-biguint rejects a magnitude beyond the bignum cap", code(function () { b.biguint((1n << BigInt((BIGUINT_CAP + 1) * 8)) - 1n); }) === "cbor/biguint-too-large");
+  // build.textString rejects an unpaired UTF-16 surrogate (Buffer.from would silently substitute U+FFFD),
+  // matching the decoder's well-formed-UTF-8 rule; a valid surrogate pair encodes and round-trips.
+  var loneHigh = String.fromCharCode(0xd800), loneLow = String.fromCharCode(0xdc00), pair = String.fromCharCode(0xd83d, 0xde00);
+  check("build-textString rejects a lone high surrogate", code(function () { b.textString(loneHigh); }) === "cbor/bad-utf8");
+  check("build-textString rejects a lone low surrogate", code(function () { b.textString(loneLow); }) === "cbor/bad-utf8");
+  check("build-textString accepts a valid surrogate pair", r.textString(d(b.textString(pair))) === pair);
   // array + map compose; map keys are sorted + deduped (decode enforces the same, so decode accepts).
   var arr = b.array([b.uint(1n), b.textString("a"), b.byteString(Buffer.from([0xaa]))]);
   check("build-array head + child count", hex(arr).slice(0, 2) === "83" && d(arr).children.length === 3);
