@@ -127,6 +127,7 @@ async function run() {
   check("13e. opts.pem string label emits that PEM block", typeof (await pki.cmp.build(irMsg, Object.assign({ pem: "CMP" }, SIG))) === "string");
   check("13f. opts.extraCerts adds certificates to extraCerts [1]", parse(await pki.cmp.build(irMsg, Object.assign({ extraCerts: [s.cert] }, SIG))).extraCerts.length === 2);
   check("13g. a non-array opts.extraCerts -> cmp/bad-extra-certs", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: "x" }, SIG))) === "cmp/bad-extra-certs");
+  check("13h. a garbage opts.extraCerts entry -> cmp/bad-extra-certs (each must be a valid certificate)", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])] }, SIG))) === "cmp/bad-extra-certs");
   check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
   var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");
@@ -185,6 +186,7 @@ async function run() {
   check("19f. a bad mac.prf -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", prf: "MD5" } })) === "cmp/bad-input");
   check("19g. a non-integer mac.iterationCount -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1.5 } })) === "cmp/bad-input");
   check("19h. a non-integer mac.keyLength -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 0 } })) === "cmp/bad-input");
+  check("19h2. a below-minimum mac.iterationCount -> cmp/bad-input (RFC 8018 floor)", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 100 } })) === "cmp/bad-input");
   // work factors are bounded BEFORE deriving -- a huge iterationCount / keyLength / salt fails closed.
   check("19j. an over-cap mac.iterationCount -> cmp/bad-input (PBKDF2 DoS bound)", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 10000001 } })) === "cmp/bad-input");
   check("19k. an over-cap mac.keyLength -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 4096 } })) === "cmp/bad-input");
