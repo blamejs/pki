@@ -222,6 +222,11 @@ async function run() {
   // re-emit: a parsed result re-encodes to identical bytes (both certificate types).
   check("82. encode(parse(type-3)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type3)).equals(V.A1.type3));
   check("83. encode(parse(type-2)) round-trips byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(V.A1.type2)).equals(V.A1.type2));
+  // a NATIVE (type-2) certificate is signed over its raw CBOR fields, so re-emit preserves them VERBATIM:
+  // a byte-string attribute value (which a re-derive would lossily render as text, invalidating the
+  // signature) round-trips byte-for-byte.
+  var t2bs = V.mk({ 0: "02", 6: "4401020304" });   // type-2, subject = a byte-string commonName
+  check("83b. type-2 re-emit preserves a byte-string field verbatim", pki.schema.c509.encode(pki.schema.c509.parse(t2bs)).equals(t2bs));
   // the emission is canonical deterministic CBOR by construction (parse re-decodes it).
   check("84. encode output re-parses to the same certificate", pki.schema.c509.parse(pki.schema.c509.encode(V.A1.der)).certificateType === 3);
   // fail-closed on a non-cert input.
