@@ -75,7 +75,7 @@ async function run() {
   check("6b. p10cr body arm octet is 0xA4 ([4])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { p10cr: await csrDer() } }, SIG)) === 0xa4);
   check("6c. cr body arm octet is 0xA2 ([2])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { cr: irMsg.body.ir } }, SIG)) === 0xa2);
   check("6d. kur body arm octet is 0xA7 ([7])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { kur: irMsg.body.ir } }, SIG)) === 0xa7);
-  check("6e. rr body arm octet is 0xAB ([11], NOT [15]/0xAF)", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { subject: [{ commonName: "r" }] } }] } }, SIG)) === 0xab);
+  check("6e. rr body arm octet is 0xAB ([11], NOT [15]/0xAF)", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)) === 0xab);
   check("6f. genm body arm octet is 0xB5 ([21])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)) === 0xb5);
   check("6g. certConf body arm octet is 0xB8 ([24])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0 }] } }, SIG)) === 0xb8);
   check("6h. pollReq body arm octet is 0xB9 ([25])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 0 }] } }, SIG)) === 0xb9);
@@ -111,6 +111,11 @@ async function run() {
   check("11c. certConf statusInfo with failInfo bits round-trips (minimal NamedBitList)", parse(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, statusInfo: { status: 2, failInfo: ["badPOP", "badCertId"] } }] } }, SIG)).body.arm === "certConf");
   check("11d. an unknown failInfo bit name -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, statusInfo: { status: 2, failInfo: ["notabit"] } }] } }, SIG)) === "cmp/bad-cert-status");
   check("12. pollReq round-trips with certReqId -1", parse(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: -1 }] } }, SIG)).body.arm === "pollReq");
+  // certReqId is an unbounded INTEGER: a bigint beyond 2^53 is accepted (not rejected as a non-safe-integer).
+  var bigId = 12345678901234567890n;
+  check("12b. a bigint pollReq certReqId (unbounded) round-trips", parse(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: bigId }] } }, SIG)).body.arm === "pollReq");
+  check("12c. a non-integer pollReq certReqId (2.5) -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 2.5 }] } }, SIG)) === "cmp/bad-poll-req");
+  check("12d. a bigint certConf certReqId (unbounded) round-trips", parse(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: bigId }] } }, SIG)).body.arm === "certConf");
   check("13a. genm round-trips a bare id-it query", parse(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)).body.arm === "genm");
   check("13b. a mis-typed fixed-syntax id-it value -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "implicitConfirm", infoValue: new Date() }] } }, SIG)) === "cmp/bad-info-value");
   // generalInfo [8] carrying the three fixed-syntax id-it values (implicitConfirm NULL, confirmWaitTime GT,
@@ -122,7 +127,7 @@ async function run() {
   check("13e. opts.pem string label emits that PEM block", typeof (await pki.cmp.build(irMsg, Object.assign({ pem: "CMP" }, SIG))) === "string");
   check("13f. opts.extraCerts adds certificates to extraCerts [1]", parse(await pki.cmp.build(irMsg, Object.assign({ extraCerts: [s.cert] }, SIG))).extraCerts.length === 2);
   check("13g. a non-array opts.extraCerts -> cmp/bad-extra-certs", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: "x" }, SIG))) === "cmp/bad-extra-certs");
-  check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { subject: [{ commonName: "r" }] } }] } }, SIG)).body.arm === "rr");
+  check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
   var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");
   // header key-identifier optionals + a genm id-it carrying a pre-encoded infoValue + full cr/kur round-trips.
@@ -216,13 +221,14 @@ async function run() {
   check("21u2. a non-integer pollReq certReqId -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 2.5 }] } }, SIG)) === "cmp/bad-poll-req");
   check("21v. an rr without certDetails -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{}] } }, SIG)) === "cmp/bad-rev-req");
   check("21w. an empty rr array -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [] } }, SIG)) === "cmp/bad-rev-req");
+  check("21w2. an rr certDetails without issuer/serialNumber -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { subject: [{ commonName: "x" }] } }] } }, SIG)) === "cmp/bad-rev-req");
   check("21x. a genm non-array -> cmp/bad-info-type-and-value", await codeOf(pki.cmp.build({ header: HDR, body: { genm: 5 } }, SIG)) === "cmp/bad-info-type-and-value");
   check("21y. a missing message.header -> cmp/bad-input", await codeOf(pki.cmp.build({ body: irMsg.body }, SIG)) === "cmp/bad-input");
   check("21z. a missing message.body -> cmp/bad-input", await codeOf(pki.cmp.build({ header: HDR }, SIG)) === "cmp/bad-input");
   check("21aa. build without opts -> cmp/bad-input (protection required)", await codeOf(pki.cmp.build(irMsg)) === "cmp/bad-input");
   // an rr carrying crlEntryDetails (a pre-encoded Extensions DER) + a random-salt PBMAC1 (no salt supplied).
   var crlExts = asn1.build.sequence([asn1.build.sequence([asn1.build.oid("2.5.29.21"), asn1.build.octetString(Buffer.from("0a0101", "hex"))])]);   // Extensions { reasonCode keyCompromise }
-  check("21bb. rr with crlEntryDetails round-trips", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { subject: [{ commonName: "r" }] }, crlEntryDetails: crlExts }] } }, SIG)).body.arm === "rr");
+  check("21bb. rr with crlEntryDetails round-trips", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).body.arm === "rr");
   check("21cc. PBMAC1 with a random (unsupplied) salt round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
 
   // ---- orchestrator dispatch ----
