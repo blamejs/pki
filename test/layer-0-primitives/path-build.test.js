@@ -190,6 +190,11 @@ async function run() {
   var leaf8 = await mkCert({ signer: midKp, subjectKp: leaf8Kp, issuerName: "Mid", subjectName: "Leaf8" });
   var code8b = await codeOf(pki.path.build(leaf8, { candidates: [interA, interMid], trustAnchors: [anchorCert], time: T, maxDepth: 1 }));
   check("V-BUILD-8 a maxDepth below the required chain length throws path/no-path", code8b === "path/no-path");
+  // A forwarded maxPathCerts bounds the chain length build hands to validate: the 2-intermediate
+  // chain (path length 3) under maxPathCerts:2 must fail closed as path/no-path (build never
+  // assembles an over-length path), NOT leak validate's path/bad-input.
+  var code8c = await codeOf(pki.path.build(leaf8, { candidates: [interA, interMid], trustAnchors: [anchorCert], time: T, maxPathCerts: 2 }));
+  check("V-BUILD-8 a chain longer than maxPathCerts fails as path/no-path (not validate's path/bad-input)", code8c === "path/no-path");
 
   // ---- V-BUILD-9: entry-point bad input ----
   check("V-BUILD-9 non-array candidates -> path/bad-input",
