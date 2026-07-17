@@ -85,7 +85,7 @@ The clearest differentiator: the classical toolkit this library replaces has no 
 
 ## Attribute certificates — RFC 5755
 
-- **Attribute certificates** — *Shipped (v2 parse).* `pki.schema.parse` detects and decodes an RFC 5755 v2 attribute certificate — the `AttributeCertificateInfo` (holder, issuer, validity, attributes, extensions), the signature algorithm, and the signature — surfacing the raw `acinfo` bytes a signature verifier hashes. The obsolete v1 profile is recognized and declined with a typed error. Attribute-certificate *building* remains planned. RFC 5755.
+- **Attribute certificates** — *Shipped (v2 parse + value decoding).* `pki.schema.parse` detects and decodes an RFC 5755 v2 attribute certificate — the `AttributeCertificateInfo` (holder, issuer, validity, attributes, extensions), the signature algorithm, and the signature — surfacing the raw `acinfo` bytes a signature verifier hashes. The RFC 5755 §4.4 attribute values (role, clearance, service-authentication/access identity, group, charging identity) and §4.3 extensions (audit identity, target/proxy information, no-revocation-available, AA controls) are decoded to structured values additively (a `decoded` field alongside the raw bytes), with every embedded GeneralName validated, an unrecognized type preserved opaque, and a malformed recognized value failing closed. The obsolete v1 profile is recognized and declined with a typed error. Attribute-certificate *building* remains planned. RFC 5755.
 
 ## Enrollment and lifecycle protocols
 

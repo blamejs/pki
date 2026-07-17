@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.2.32",
+  "packageVersion": "0.2.33",
   "surface": {
     "C": {
       "kind": "object",

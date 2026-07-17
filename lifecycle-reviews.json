@@ -592,5 +592,29 @@
     "reason": "The RFC 8551 S/MIME encryption layer is bidirectionally interop-proven against openssl cms, but it is a thin frame over pki.cms.encrypt, whose post-quantum ML-KEM recipient arm rides recently-published specs and is itself kept experimental; graduate S/MIME encryption together with the CMS content-encryption surface it composes.",
     "reviewedAt": "0.2.32",
     "reviewBy": "0.3.0"
+  },
+  "pki.cms.compress": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3274 CMS CompressedData surface (ZLIB-only, decompression-bomb bounded) is interop-consistent, but it composes the still-experimental CMS content-type surface; graduate together with the CMS envelope/compress family.",
+    "reviewedAt": "0.2.33",
+    "reviewBy": "0.3.0"
+  },
+  "pki.cms.decompress": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 3274 CMS CompressedData surface (ZLIB-only, decompression-bomb bounded) is interop-consistent, but it composes the still-experimental CMS content-type surface; graduate together with the CMS envelope/compress family.",
+    "reviewedAt": "0.2.33",
+    "reviewBy": "0.3.0"
+  },
+  "pki.smime.compress": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8551 S/MIME compressed-data frame is a thin layer over pki.cms.compress, which is itself kept experimental; graduate together with the CMS compression surface it composes.",
+    "reviewedAt": "0.2.33",
+    "reviewBy": "0.3.0"
+  },
+  "pki.smime.decompress": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8551 S/MIME compressed-data frame is a thin layer over pki.cms.decompress, which is itself kept experimental; graduate together with the CMS compression surface it composes.",
+    "reviewedAt": "0.2.33",
+    "reviewBy": "0.3.0"
   }
 }
