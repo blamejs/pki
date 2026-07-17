@@ -454,6 +454,24 @@ async function testKeyMatchAndTimeAndSan() {
   var nonCriticalSan = B.sequence([B.oid(oidB("subjectAltName")), B.octetString(sanVal)]);   // no critical flag
   check("empty subject with a NON-critical pre-encoded SAN -> x509/bad-input",
     await codeOf(pki.x509.sign({ subject: [], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [nonCriticalSan] }, caIssuer)) === "x509/bad-input");
+
+  // (Fix) a WebCrypto CryptoKey signer is bound to the issuer public key by the post-sign verify.
+  var subtle = pki.webcrypto.subtle;
+  var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var ckSpki = Buffer.from(await subtle.exportKey("spki", kp.publicKey));
+  check("CryptoKey signer produces a chaining certificate", Buffer.isBuffer(await pki.x509.sign({ subject: "ck", subjectPublicKey: ckSpki, notBefore: NB, notAfter: NA }, { key: kp.privateKey })));
+  var kp2 = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  check("mismatched CryptoKey signer -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "ck", subjectPublicKey: ckSpki, notBefore: NB, notAfter: NA }, { name: "CA", publicKey: ckSpki, key: kp2.privateKey })) === "x509/bad-input");
+
+  // (Fix) the CA cross-field rules apply to the pre-encoded array form too.
+  var kcsKu = B.sequence([B.oid(oidB("keyUsage")), B.boolean(true), B.octetString(B.namedBitString([5]))]);   // keyCertSign
+  var bcFalse = B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([]))]);   // cA absent (FALSE)
+  check("array keyCertSign without cA=TRUE -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcFalse] }, { key: s.key })) === "x509/bad-input");
+  var bcTrue = B.sequence([B.oid(oidB("basicConstraints")), B.boolean(true), B.octetString(B.sequence([B.boolean(true), B.integer(1n)]))]);   // cA=TRUE, pathLen 1
+  check("array pathLen with cA=TRUE + keyCertSign is accepted",
+    Buffer.isBuffer(await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcTrue] }, { key: s.key })));
 }
 
 async function main() {
