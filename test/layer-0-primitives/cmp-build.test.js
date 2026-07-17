@@ -106,6 +106,10 @@ async function run() {
   check("10b. a non-CSR DER p10cr -> a typed cmp/* or csr/*", /^(cmp|csr)\//.test(await codeOf(pki.cmp.build({ header: HDR, body: { p10cr: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) } }, SIG))));
   check("11a. certConf round-trips (empty CertConfirmContent legal)", parse(await pki.cmp.build({ header: HDR, body: { certConf: [] } }, SIG)).body.arm === "certConf");
   check("11b. certConf with a rejection statusInfo round-trips", parse(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, statusInfo: { status: 2, statusString: ["rejected"] } }] } }, SIG)).body.arm === "certConf");
+  // statusInfo.failInfo (a PKIFailureInfo NamedBitList) round-trips -- the parser validates minimal bits, so a
+  // successful re-parse cross-checks the bit positions against the parser's own failInfo decoder.
+  check("11c. certConf statusInfo with failInfo bits round-trips (minimal NamedBitList)", parse(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, statusInfo: { status: 2, failInfo: ["badPOP", "badCertId"] } }] } }, SIG)).body.arm === "certConf");
+  check("11d. an unknown failInfo bit name -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, statusInfo: { status: 2, failInfo: ["notabit"] } }] } }, SIG)) === "cmp/bad-cert-status");
   check("12. pollReq round-trips with certReqId -1", parse(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: -1 }] } }, SIG)).body.arm === "pollReq");
   check("13a. genm round-trips a bare id-it query", parse(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)).body.arm === "genm");
   check("13b. a mis-typed fixed-syntax id-it value -> cmp/bad-info-value", await codeOf(pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "implicitConfirm", infoValue: new Date() }] } }, SIG)) === "cmp/bad-info-value");
@@ -209,6 +213,7 @@ async function run() {
   check("21t. an unknown certConf hashAlg -> cmp/bad-name", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0, hashAlg: "nope" }] } }, SIG)) === "cmp/bad-name");
   check("21t2. a non-integer certConf certReqId -> cmp/bad-cert-status", await codeOf(pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 1.5 }] } }, SIG)) === "cmp/bad-cert-status");
   check("21u. a pollReq entry without certReqId -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{}] } }, SIG)) === "cmp/bad-poll-req");
+  check("21u2. a non-integer pollReq certReqId -> cmp/bad-poll-req", await codeOf(pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 2.5 }] } }, SIG)) === "cmp/bad-poll-req");
   check("21v. an rr without certDetails -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{}] } }, SIG)) === "cmp/bad-rev-req");
   check("21w. an empty rr array -> cmp/bad-rev-req", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [] } }, SIG)) === "cmp/bad-rev-req");
   check("21x. a genm non-array -> cmp/bad-info-type-and-value", await codeOf(pki.cmp.build({ header: HDR, body: { genm: 5 } }, SIG)) === "cmp/bad-info-type-and-value");
