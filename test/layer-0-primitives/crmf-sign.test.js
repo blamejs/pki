@@ -181,6 +181,10 @@ async function testBatchAndVersion() {
   var mp = parse(batch);
   check("batch builds a SEQUENCE OF 2 CertReqMsg, order-preserved", mp.length === 2 && mp[0].certReq.certReqId === 0n && mp[1].certReq.certReqId === 1n);
   check("empty messages array -> crmf/bad-input", await codeOf(pki.crmf.build({ messages: [] }, { key: s.key })) === "crmf/bad-input");
+  check("messages not an array -> crmf/bad-input", await codeOf(pki.crmf.build({ messages: 5 }, { key: s.key })) === "crmf/bad-input");
+  // a batch envelope carries ONLY `messages` -- a stray field (e.g. a mis-nested certTemplate) is rejected.
+  check("stray field beside messages -> crmf/bad-input", await codeOf(pki.crmf.build({ messages: [{ certTemplate: tpl(s.spki) }], certTemplate: tpl(s.spki) }, { key: s.key })) === "crmf/bad-input");
+  check("nested messages in a batch element -> crmf/bad-input", await codeOf(pki.crmf.build({ messages: [{ messages: [] }] }, { key: s.key })) === "crmf/bad-input");
   check("version 2 round-trips", parse(await pki.crmf.build({ certTemplate: { version: 2, subject: "d", publicKey: s.spki } }, { key: s.key }))[0].certReq.certTemplate.version === 2n);
   check("version != 2 -> crmf/bad-version", await codeOf(pki.crmf.build({ certTemplate: { version: 1, subject: "d", publicKey: s.spki } }, { key: s.key })) === "crmf/bad-version");
   // CA-assigned / deprecated template fields are not accepted keys (a requester must not dictate them).
