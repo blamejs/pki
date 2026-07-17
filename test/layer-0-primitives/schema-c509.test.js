@@ -316,6 +316,12 @@ async function run() {
   var bsSig = pki.schema.x509.parse(bsDer).signatureValue.bytes;
   bsDer[bsDer.indexOf(bsSig) + 2] = 0x04;   // the signature SEQUENCE's first INTEGER (r) tag -> OCTET STRING
   check("91c. a non-INTEGER ECDSA signature child -> c509/bad-signature", codeSync(function () { return pki.schema.c509.encode(bsDer); }) === "c509/bad-signature");
+  // a keyUsage extension whose BIT STRING is not well-formed (invalid unused-bits count) cannot take the
+  // C509 keyUsage integer shortcut; the encoder falls back to a raw extension and still reconstructs exactly.
+  var kuS = signing.makeSigner("ec-p256");
+  var kuDer = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ku" }], subjectPublicKey: kuS.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: kuS.key }));
+  kuDer[kuDer.indexOf(Buffer.from("03020780", "hex")) + 2] = 0x09;   // keyUsage BIT STRING unused-bits 7 -> 9 (malformed)
+  check("91d. a malformed keyUsage BIT STRING falls back to a raw extension + reconstructs byte-exact", pki.schema.c509.parse(pki.schema.c509.encode(kuDer)).reconstructedDer.equals(kuDer));
 
   // secondary-form re-emit coverage: a variant C509 built with V.mk -> parse -> re-encode byte-exact,
   // exercising the encoder branches the A.1 KAT does not (null notAfter, printable / multi-attribute /
