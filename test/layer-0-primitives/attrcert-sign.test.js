@@ -198,6 +198,8 @@ async function testSerial() {
   check("zero serial -> attrcert/bad-serial", await codeOf(pki.attrcert.sign(spec({ serialNumber: 0n }), aaOf(aa))) === "attrcert/bad-serial");
   check("negative serial -> attrcert/bad-serial", await codeOf(pki.attrcert.sign(spec({ serialNumber: -1n }), aaOf(aa))) === "attrcert/bad-serial");
   check("21-octet serial -> attrcert/bad-serial", await codeOf(pki.attrcert.sign(spec({ serialNumber: Buffer.alloc(21, 0xaa) }), aaOf(aa))) === "attrcert/bad-serial");
+  // a numeric serial above 2^53-1 loses float precision -> reject (pass a BigInt/hex/Buffer instead).
+  check("unsafe-integer numeric serial -> attrcert/bad-serial", await codeOf(pki.attrcert.sign(spec({ serialNumber: 0x20000000000000 }), aaOf(aa))) === "attrcert/bad-serial");
 }
 
 // ---- attribute value syntaxes -----------------------------------------------
@@ -227,16 +229,18 @@ async function testExtensionSyntaxes() {
   var der = await pki.attrcert.sign(spec({ extensions: {
     auditIdentity: Buffer.from("audit-tag"),
     targetInformation: [{ targetName: { dNSName: "t.example" } }],
-    noRevAvail: true, aaControls: { permitUnSpecified: false }, authorityKeyIdentifier: true,
+    noRevAvail: true, aaControls: { permitUnSpecified: false }, acProxying: [{ targetName: { dNSName: "p.example" } }],
+    authorityKeyIdentifier: true,
   } }), aaOf(aa));
   var p = pki.schema.attrcert.parse(der);
   var byName = {};
   p.extensions.forEach(function (x) { byName[pki.oid.name(x.oid)] = x; });
   check("auditIdentity critical=TRUE (RFC 5755 sec. 4.3.1)", byName.acAuditIdentity && byName.acAuditIdentity.critical === true);
   check("targetInformation critical=TRUE (RFC 5755 sec. 4.3.2)", byName.targetInformation && byName.targetInformation.critical === true);
-  check("noRevAvail non-critical", byName.noRevAvail && byName.noRevAvail.critical === false);
-  check("aaControls non-critical", byName.aaControls && byName.aaControls.critical === false);
-  check("authorityKeyIdentifier non-critical + auto-derived", byName.authorityKeyIdentifier && byName.authorityKeyIdentifier.critical === false);
+  check("noRevAvail non-critical (RFC 5755 sec. 4.3.6)", byName.noRevAvail && byName.noRevAvail.critical === false);
+  check("aaControls critical=TRUE (RFC 5755 sec. 7.4, safer default)", byName.aaControls && byName.aaControls.critical === true);
+  check("acProxying critical=TRUE (RFC 5755 sec. 7.2)", byName.acProxying && byName.acProxying.critical === true);
+  check("authorityKeyIdentifier non-critical (RFC 5755 sec. 4.3.3) + auto-derived", byName.authorityKeyIdentifier && byName.authorityKeyIdentifier.critical === false);
   check("noRevAvail decodes", byName.noRevAvail.decoded.noRevAvail === true);
   check("targetInformation decodes a targetName", byName.targetInformation.decoded[0][0].kind === "targetName");
   check("unknown extension key -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ extensions: { notAnExt: 1 } }), aaOf(aa))) === "attrcert/bad-input");
