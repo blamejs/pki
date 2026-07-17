@@ -404,6 +404,35 @@ async function testCoverageEdges() {
   check("subject omitted -> empty-subject rule (needs SAN)", await codeOf(pki.x509.sign({ subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, caIssuer)) === "x509/bad-input");
 }
 
+async function testKeyMatchAndTimeAndSan() {
+  var B = pki.asn1.build, oidB = pki.oid.byName;
+  // (Fix) the signing key must correspond to the issuer public key -- a mismatched but same-algorithm
+  // key pair would produce a certificate that does not chain, so it is rejected.
+  var a = makeSigner("ec-p256"), a2 = makeSigner("ec-p256");
+  check("mismatched same-algorithm signing key -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: a.spki, notBefore: NB, notAfter: NA }, { name: "CA", publicKey: a.spki, key: a2.key })) === "x509/bad-input");
+  check("matching key pair still signs",
+    Buffer.isBuffer(await pki.x509.sign({ subject: "x", subjectPublicKey: a.spki, notBefore: NB, notAfter: NA }, { name: "CA", publicKey: a.spki, key: a.key })));
+
+  // (Fix) a validity date before 1950 uses GeneralizedTime (UTCTime cannot represent pre-1950 years).
+  var s = makeSigner("ed25519");
+  var derPre = await pki.x509.sign({ subject: "pre1950", subjectPublicKey: s.spki, notBefore: new Date("1940-06-01T00:00:00Z"), notAfter: NA }, { key: s.key });
+  var valPre = asn1.decode(derPre).children[0].children[3];   // v1: validity at index 3
+  check("pre-1950 notBefore encodes as GeneralizedTime", valPre.children[0].tagClass === "universal" && valPre.children[0].tagNumber === 24);
+  check("pre-1950 notBefore round-trips to 1940", pki.schema.x509.parse(derPre).validity.notBefore.getUTCFullYear() === 1940);
+
+  // (Fix) an empty subject accepts a critical SAN supplied in the pre-encoded array form.
+  var ca = makeSigner("ec-p256");
+  var caIssuer = { name: "SAN CA", publicKey: ca.spki, key: ca.key };
+  var sanVal = B.sequence([B.contextPrimitive(2, Buffer.from("host.example", "latin1"))]);   // GeneralNames { dNSName }
+  var criticalSan = B.sequence([B.oid(oidB("subjectAltName")), B.boolean(true), B.octetString(sanVal)]);
+  var derSan = await pki.x509.sign({ subject: [], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [criticalSan] }, caIssuer);
+  check("empty subject with a pre-encoded critical SAN (array form) is accepted", pki.schema.x509.parse(derSan).subject.dn === "");
+  var nonCriticalSan = B.sequence([B.oid(oidB("subjectAltName")), B.octetString(sanVal)]);   // no critical flag
+  check("empty subject with a NON-critical pre-encoded SAN -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: [], subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [nonCriticalSan] }, caIssuer)) === "x509/bad-input");
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -421,6 +450,7 @@ async function main() {
   await testGeneralNameForms();
   await testInputForms();
   await testCoverageEdges();
+  await testKeyMatchAndTimeAndSan();
   await testFailClosed();
   await testOpensslInterop();
   console.log("CHECKS " + helpers.getChecks());
