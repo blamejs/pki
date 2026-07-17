@@ -6,10 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.3.7 — 2026-07-17
 
-pki.lint gains seven RFC 5280 extension-criticality and CA-scope certificate lints.
+Certification path building arrives as pki.path.build, and pki.lint gains seven RFC 5280 extension-criticality and CA-scope lints.
 
 ### Added
 
+- pki.path.build(leaf, opts) discovers the ordered certification path from a leaf up to a trust anchor over an untrusted pool of candidate CA certificates, then validates it -- the discovering complement of pki.path.validate. Candidates are matched by RFC 5280 name chaining, prioritized by the RFC 4158 heuristics (subjectKeyIdentifier/authorityKeyIdentifier match, anchor-adjacent issuer, CA and keyCertSign, validity), and searched depth-first with backtracking; every accept flows through pki.path.validate, so a name or key-identifier match is only an ordering hint and building never weakens a path-validation check. The search is bounded (a chain-length cap, a total-work cap on candidate expansions, and an identity-tuple visited-set) so a cross-certificate cycle or Bridge-CA fan-out terminates deterministically; the trust store accepts anchor tuples or self-signed root certificates, opts.validate:false returns the ordered path unvalidated, and the verdict is cross-checked against openssl verify. AIA caIssuers fetching is offline-only (supply fetched issuers in opts.candidates). RFC 4158 / RFC 5280.
 - pki.lint.certificate flags seven RFC 5280 extension-criticality and CA-scope violations that parse but breach the certificate profile: basicConstraints (on a certificate-signing CA), nameConstraints, policyConstraints, and inhibitAnyPolicy must be marked critical (error); keyUsage should be critical (warn); nameConstraints must appear only in a CA certificate (error); and an end-entity certificate should carry a subjectKeyIdentifier (notice). The basicConstraints criticality rule applies only when the CA key validates certificate signatures (RFC 5280 4.2.1.9), so a CRL-signing-only CA carrying a non-critical basicConstraints is not falsely flagged.
 
 ## v0.3.6 — 2026-07-17
