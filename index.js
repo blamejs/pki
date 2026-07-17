@@ -41,6 +41,7 @@ var smime     = require("./lib/smime");
 var tsp       = require("./lib/tsp-sign");
 var ocsp      = require("./lib/ocsp");
 var x509      = require("./lib/x509-sign");
+var csr       = require("./lib/csr-sign");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -87,6 +88,11 @@ module.exports = {
   // signature algorithm the registry resolves (RSA/ECDSA/EdDSA/ML-DSA/SLH-DSA/composite).
   // Parsing lives at pki.schema.x509.parse.
   x509:      x509,
+  // `csr` is the PKCS#10 certification-request producing side -- pki.csr.sign builds and
+  // signs a CertificationRequest (RFC 2986), self-signed by the subject key for proof of
+  // possession, with requested extensions in a PKCS#9 extensionRequest attribute. Parsing
+  // lives at pki.schema.csr.parse.
+  csr:       csr,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and
