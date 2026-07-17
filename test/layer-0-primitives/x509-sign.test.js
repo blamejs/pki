@@ -141,6 +141,11 @@ async function testCompositeArm() {
   var c = pki.schema.x509.parse(der);
   var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchor: anchorFor(c) });
   check("composite self-signed cert verifies", res.valid === true);
+  // a mismatched composite signer (a different composite key pair claiming this SPKI) fails the
+  // post-sign composite verify -- the certificate would not chain.
+  var cs2 = makeCompositeSigner(arm);
+  check("mismatched composite signer -> x509/bad-input",
+    await codeOf(pki.x509.sign({ subject: "composite", subjectPublicKey: cs.spki, notBefore: NB, notAfter: NA }, { name: "CA", publicKey: cs.spki, key: cs2.key })) === "x509/bad-input");
 }
 
 // ---- version coherence -----------------------------------------------------
@@ -276,6 +281,9 @@ async function testFailClosed() {
   // duplicate extension in the array form is rejected (RFC 5280 sec. 4.2).
   var kuExt = B.sequence([B.oid(pki.oid.byName("keyUsage")), B.octetString(B.namedBitString([0]))]);
   check("duplicate extension in the array form -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kuExt, kuExt] }, { key: s.key })) === "x509/bad-input");
+  // a pre-encoded extension with an explicit critical=FALSE is non-canonical DER (DEFAULT must be omitted).
+  var critFalse = B.sequence([B.oid(pki.oid.byName("keyUsage")), B.boolean(false), B.octetString(B.namedBitString([0]))]);
+  check("pre-encoded extension with explicit critical=FALSE -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [critFalse] }, { key: s.key })) === "x509/bad-input");
 }
 
 // ---- OpenSSL interop (a new certificate wire format -> an independent verifier) ----
