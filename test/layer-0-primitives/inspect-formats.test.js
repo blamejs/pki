@@ -66,6 +66,19 @@ async function run() {
   var extrasR = pki.inspect.crl(extrasCrl);
   check("CRL AKI crlExtension delegates to _extension (keyid) + cRLNumber decimal 9", has(extrasR, "keyid") && has(extrasR, "9"));
   check("CRL entry invalidityDate (pre-decoded Date) renders via _date", has(extrasR, "Invalidity Date") && has(extrasR, "Jan 10"));
+  // pki.oid.register() can override a built-in extension name. The decoder pre-decodes
+  // cRLNumber/reasonCode/invalidityDate by STABLE OID, so ext.name diverges from the canonical
+  // while ext.oid and the pre-decoded value stay canonical -- the report must dispatch on ext.oid,
+  // not the mutable name, or _extension gets a BigInt/Number/Date and renders it as empty/wrong.
+  var renamedCrl = pki.schema.crl.parse(revokedCrl);
+  renamedCrl.crlExtensions.forEach(function (e) { if (e.oid === oid.byName("cRLNumber")) e.name = "x-crlnum"; });
+  renamedCrl.revokedCertificates.forEach(function (rc2) { (rc2.crlEntryExtensions || []).forEach(function (e) { if (e.oid === oid.byName("reasonCode")) e.name = "x-reason"; }); });
+  var renamedR = pki.inspect.crl(renamedCrl);
+  check("CRL cRLNumber renders by stable OID even when its display name is overridden", has(renamedR, "42"));
+  check("CRL entry reasonCode renders by stable OID even when its display name is overridden", has(renamedR, "keyCompromise"));
+  var renamedExtras = pki.schema.crl.parse(extrasCrl);
+  renamedExtras.revokedCertificates.forEach(function (rc2) { (rc2.crlEntryExtensions || []).forEach(function (e) { if (e.oid === oid.byName("invalidityDate")) e.name = "x-invdate"; }); });
+  check("CRL entry invalidityDate renders by stable OID even when its display name is overridden", has(pki.inspect.crl(renamedExtras), "Jan 10"));
 
   // ---- CSR ----
   var csrDer = await pki.csr.sign({ subject: [{ commonName: "t.example" }], subjectPublicKey: s.spki }, s.key);
@@ -77,6 +90,12 @@ async function run() {
   // extensionRequest: requested extensions render through the shared _extension (identical to a cert's).
   var csrExtR = pki.inspect.csr(await pki.csr.sign({ subject: [{ commonName: "e.example" }], subjectPublicKey: s.spki, extensionRequest: { subjectAltName: [{ dNSName: "e.example" }] } }, s.key));
   check("CSR extensionRequest -> 'Requested Extensions:' + DNS SAN", has(csrExtR, "Requested Extensions:") && has(csrExtR, "DNS:e.example"));
+  // extensionRequest dispatch keys on the STABLE OID: a pki.oid.register() name override must not
+  // drop the "Requested Extensions" rendering (attr.type + attr.extensions stay canonical).
+  var extReqCsr = pki.schema.csr.parse(await pki.csr.sign({ subject: [{ commonName: "o.example" }], subjectPublicKey: s.spki, extensionRequest: { subjectAltName: [{ dNSName: "o.example" }] } }, s.key));
+  extReqCsr.attributes.forEach(function (a) { if (a.type === oid.byName("extensionRequest")) a.name = "x-extreq"; });
+  check("CSR extensionRequest renders by stable OID even when its display name is overridden",
+    has(pki.inspect.csr(extReqCsr), "Requested Extensions:") && has(pki.inspect.csr(extReqCsr), "DNS:o.example"));
   // RSA CSR renders Modulus + Exponent (the reused _keyBlock RSA arm).
   var rsa = signing.makeSigner("rsa");
   var rsaCsr = pki.inspect.csr(await pki.csr.sign({ subject: [{ commonName: "rsa.example" }], subjectPublicKey: rsa.spki }, rsa.key));
@@ -95,6 +114,13 @@ async function run() {
   // Signed attributes render via _attrValue (the attached signer carries content-type / message-digest / signing-time).
   check("CMS signed attributes render (contentType + messageDigest via _attrValue)",
     has(cmsR, "Signed Attributes:") && has(cmsR, "contentType") && has(cmsR, "messageDigest"));
+  // _attrValue keys on the STABLE OID: overriding the signed-attr display names must still decode
+  // contentType -> a name ("data") and signingTime -> a date ("... GMT"), not fall back to hex.
+  var saCms = pki.schema.cms.parse(attached);
+  saCms.signerInfos.forEach(function (si) { (si.signedAttrs || []).forEach(function (a) { a.name = "x-" + a.name; }); });
+  var saBlock = pki.inspect.cms(saCms).split("Signed Attributes:")[1] || "";
+  check("CMS signed-attr values decode by stable OID even when the attr display names are overridden",
+    saBlock.indexOf("data") !== -1 && /GMT/.test(saBlock));
   // subjectKeyIdentifier sid (the [0] arm): a signer cert bearing an SKI, signed with sid:"ski".
   var skiSigner = signing.makeSigner("ec-p256", { ski: true });
   var skiCms = await pki.cms.sign(Buffer.from("hi"), [{ cert: skiSigner.cert, key: skiSigner.key }], { detached: false, sid: "ski" });
