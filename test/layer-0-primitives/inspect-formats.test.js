@@ -148,6 +148,13 @@ async function run() {
     pki.inspect.any(pkcs7Pem).split("\n")[0] === "CMS ContentInfo:");
   check("inspect.cms accepts a PKCS7-labeled PEM directly (label-agnostic coercion)",
     pki.inspect.cms(pkcs7Pem).split("\n")[0] === "CMS ContentInfo:");
+  // The fs.readFileSync path: a PEM-armored Buffer (not a string) under an alias label must unwrap
+  // exactly like the string and like any(), not hit the format parser's canonical-label check.
+  check("inspect.cms accepts a PKCS7-labeled PEM as a Buffer (label-agnostic coercion)",
+    pki.inspect.cms(Buffer.from(pkcs7Pem)).split("\n")[0] === "CMS ContentInfo:");
+  var aliasCrlPem = "-----BEGIN CRL-----\n" + Buffer.from(revokedCrl).toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END CRL-----\n";
+  check("inspect.crl accepts an aliased-label ('CRL', not 'X509 CRL') PEM Buffer (label-agnostic coercion)",
+    pki.inspect.crl(Buffer.from(aliasCrlPem)).length > 0);
   // A CMS ContentInfo with a private/unregistered contentType OID (cms/unknown-content-type) also
   // renders the outer summary, not inspect/bad-cms.
   var unkCms = b.sequence([b.oid("1.3.6.1.4.1.99999.7"), b.explicit(0, b.octetString(Buffer.from("x")))]);
