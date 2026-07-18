@@ -137,6 +137,8 @@ async function run() {
   // CompressedData (a non-SignedData shape) renders a summary with its compression algorithm.
   var compressed = await pki.cms.compress(Buffer.from("compress me ".repeat(20)));
   check("CMS CompressedData renders a non-throwing summary (Compression Algorithm)", has(pki.inspect.cms(compressed), "Compression Algorithm:"));
+  check("inspect.cms accepts a pre-parsed CompressedData object (non-SignedData fast path renders)",
+    has(pki.inspect.cms(pki.schema.cms.parse(compressed)), "Compression Algorithm:"));
   // A deferred CMS content type (id-data) is a VALID ContentInfo the parser defers -> outer
   // summary, not inspect/bad-cms.
   var idData = b.sequence([b.oid(oid.byName("data")), b.explicit(0, b.octetString(Buffer.from("payload")))]);
@@ -172,6 +174,8 @@ async function run() {
     await codeOf(Promise.resolve().then(function () { return pki.inspect.crl({ thisUpdate: new Date() }); })) === "inspect/bad-input");
   check("a partial pre-parsed SignedData object (contentType/name only) -> inspect/bad-input (not a partial render)",
     await codeOf(Promise.resolve().then(function () { return pki.inspect.cms({ contentType: "1.2.840.113549.1.7.2", contentTypeName: "signedData" }); })) === "inspect/bad-input");
+  check("a partial pre-parsed EnvelopedData object (type/name/version but no structural fields) -> inspect/bad-input",
+    await codeOf(Promise.resolve().then(function () { return pki.inspect.cms({ contentType: oid.byName("envelopedData"), contentTypeName: "envelopedData", version: 0 }); })) === "inspect/bad-input");
   // any on an out-of-scope but detectable format (pkcs8) throws inspect/unsupported-format.
   var pkcs8 = require("node:crypto").generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" });
   check("any on an out-of-scope format -> inspect/unsupported-format",
