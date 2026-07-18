@@ -142,6 +142,14 @@ async function run() {
   var pkcs7Pem = "-----BEGIN PKCS7-----\n" + Buffer.from(attached).toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END PKCS7-----\n";
   check("any() routes a PKCS7-labeled CMS PEM (label-agnostic detect -> DER route)",
     pki.inspect.any(pkcs7Pem).split("\n")[0] === "CMS ContentInfo:");
+  // A CMS ContentInfo with a private/unregistered contentType OID (cms/unknown-content-type) also
+  // renders the outer summary, not inspect/bad-cms.
+  var unkCms = b.sequence([b.oid("1.3.6.1.4.1.99999.7"), b.explicit(0, b.octetString(Buffer.from("x")))]);
+  check("inspect.cms on an unregistered contentType renders an outer summary (no throw)",
+    has(pki.inspect.cms(unkCms), "Content Type: 1.3.6.1.4.1.99999.7") && has(pki.inspect.cms(unkCms), "outer ContentInfo only"));
+  // any() preserves its error contract: a non-decodable Buffer -> inspect/bad-input (not a raw SchemaError).
+  check("any() on a non-decodable Buffer -> inspect/bad-input (detectFormat error wrapped)",
+    await codeOf(Promise.resolve().then(function () { return pki.inspect.any(Buffer.from([0xff])); })) === "inspect/bad-input");
 
   // ---- fail-closed coercion ----
   check("inspect.crl(42) -> inspect/bad-input", await codeOf(Promise.resolve().then(function () { return pki.inspect.crl(42); })) === "inspect/bad-input");
