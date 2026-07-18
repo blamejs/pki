@@ -61,7 +61,7 @@
   },
   "pki.path.validate": {
     "decision": "keep-experimental",
-    "reason": "The RFC 5280 \u00c2\u00a76 path-validation surface is broad and still hardening, and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
+    "reason": "The RFC 5280 Â§6 path-validation surface is broad and still hardening, and it is not yet interop-proven against an independent path validator in the integration harness. Graduate once the verify surface has stabilized and an external validator cross-checks a path it accepts/rejects.",
     "reviewedAt": "0.3.0",
     "reviewBy": "0.4.0"
   },
@@ -639,6 +639,12 @@
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME compressed-data frame is a thin layer over pki.cms.decompress, which is itself kept experimental; graduate together with the CMS compression surface it composes.",
     "reviewedAt": "0.3.0",
+    "reviewBy": "0.4.0"
+  },
+  "pki.attrcert.sign": {
+    "decision": "keep-experimental",
+    "reason": "RFC 5755 attribute-certificate issuance is interop-proven (openssl), but its builder opts (the attribute value shapes, the holder and issuer forms, the extension set) are still settling as the attribute-certificate consuming and verifying surface fills in; graduating would freeze those input shapes prematurely. Graduate once the attribute-certificate surface is complete and the builder opts are frozen.",
+    "reviewedAt": "0.3.8",
     "reviewBy": "0.4.0"
   }
 }

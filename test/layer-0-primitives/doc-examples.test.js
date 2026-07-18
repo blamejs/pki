@@ -181,7 +181,7 @@ function fixturesFor(tag) {
     key: undefined, priv: undefined, oldKey: undefined, newKey: undefined, macKey: undefined,
     nonce: "aGVsbG8", url: "https://ca/o", orderUrl: "https://ca/o/1", challUrl: "https://ca/chall/1",
     authzUrl: "https://ca/authz/1", kid: "https://ca/acct/1",
-    certDer: certDer, csrDer: csrDer, identifiers: [{ type: "dns", value: "example.org" }],
+    certDer: certDer, csrDer: csrDer, crlDer: crlDer, cmsDer: cmsDer, identifiers: [{ type: "dns", value: "example.org" }],
     // pki.sigstore: a real bundle + trust material so verifyBundle's example runs
     // the full offline verification path.
     bundle: sigstoreBundle, sigstoreTrust: sigstoreTrust,

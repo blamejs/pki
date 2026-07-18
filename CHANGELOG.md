@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.8 — 2026-07-18
+
+Human-readable inspection extends to CRLs, CSRs, and CMS messages, with a pki.schema.detectFormat companion.
+
+### Added
+
+- pki.inspect.crl / .csr / .cms render a certificate revocation list, a PKCS#10 certification request, and a CMS message as OpenSSL-familiar text reports (openssl crl -text / req -text / cms -cmsout -print), and pki.inspect.any detects the format of a DER/PEM input and routes it to the matching report. Each composes the certificate inspector's shipped field renderers, resolves every extension/attribute/algorithm/content-type OID through the registry (unknown -> dotted, undecodable value -> raw octets), and is best-effort: a malformed part hex-dumps rather than failing the report, and only entry-point coercion throws (inspect/bad-crl / inspect/bad-csr / inspect/bad-cms / inspect/unsupported-format). Cross-checked field-for-field against OpenSSL. RFC 5280 / RFC 2986 / RFC 5652.
+- pki.schema.detectFormat(input) returns the registered PKI format name a DER Buffer or PEM string encodes -- one of pki.schema.all() -- without parsing it, or null when it matches no registered format. The detection half of pki.schema.parse, over the same authoritative format ordering.
+
 ## v0.3.7 — 2026-07-17
 
 Certification path building arrives as pki.path.build, and pki.lint gains seven RFC 5280 extension-criticality and CA-scope lints.
