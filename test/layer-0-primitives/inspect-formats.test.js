@@ -161,6 +161,8 @@ async function run() {
   check("inspect.csr('bad PEM') -> inspect/bad-input", await codeOf(Promise.resolve().then(function () { return pki.inspect.csr("-----BEGIN CERTIFICATE REQUEST-----\nnot base64!\n-----END CERTIFICATE REQUEST-----"); })) === "inspect/bad-input");
   check("a spoofed pre-parsed CRL object (marker only) -> inspect/bad-input",
     await codeOf(Promise.resolve().then(function () { return pki.inspect.crl({ thisUpdate: new Date() }); })) === "inspect/bad-input");
+  check("a partial pre-parsed SignedData object (contentType/name only) -> inspect/bad-input (not a partial render)",
+    await codeOf(Promise.resolve().then(function () { return pki.inspect.cms({ contentType: "1.2.840.113549.1.7.2", contentTypeName: "signedData" }); })) === "inspect/bad-input");
   // any on an out-of-scope but detectable format (pkcs8) throws inspect/unsupported-format.
   var pkcs8 = require("node:crypto").generateKeyPairSync("ed25519").privateKey.export({ format: "der", type: "pkcs8" });
   check("any on an out-of-scope format -> inspect/unsupported-format",
