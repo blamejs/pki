@@ -100,6 +100,10 @@ async function run() {
   var skiCms = await pki.cms.sign(Buffer.from("hi"), [{ cert: skiSigner.cert, key: skiSigner.key }], { detached: false, sid: "ski" });
   check("CMS subjectKeyIdentifier sid -> 'Subject Key Identifier:' (the [0] arm, not issuer/serial)",
     has(pki.inspect.cms(skiCms), "Subject Key Identifier:"));
+  // Dispatch is on the stable contentType OID, not the mutable display name: a SignedData whose
+  // contentTypeName an app overrode still renders the full SignedData report.
+  var renamed = pki.schema.cms.parse(attached); renamed.contentTypeName = "customSignedName";
+  check("CMS dispatches on the contentType OID, not the display name", has(pki.inspect.cms(renamed), "SignerInfo:") && has(pki.inspect.cms(renamed), "Digest Algorithms:"));
   // multi-signer (valid-but-unusual): each SignerInfo block renders.
   var s2 = signing.makeSigner("ed25519");
   var multi = await pki.cms.sign(Buffer.from("hi"), [{ cert: s.cert, key: s.key }, { cert: s2.cert, key: s2.key }], { detached: false });
