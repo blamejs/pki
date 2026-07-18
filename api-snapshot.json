@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.7",
+  "packageVersion": "0.3.8",
   "surface": {
     "C": {
       "kind": "object",
@@ -2171,7 +2171,23 @@
     "inspect": {
       "kind": "object",
       "members": {
+        "any": {
+          "kind": "function",
+          "arity": 1
+        },
         "certificate": {
+          "kind": "function",
+          "arity": 1
+        },
+        "cms": {
+          "kind": "function",
+          "arity": 1
+        },
+        "crl": {
+          "kind": "function",
+          "arity": 1
+        },
+        "csr": {
           "kind": "function",
           "arity": 1
         },
@@ -2529,6 +2545,10 @@
               "arity": 1
             }
           }
+        },
+        "detectFormat": {
+          "kind": "function",
+          "arity": 1
         },
         "engine": {
           "kind": "object",
@@ -3034,6 +3054,10 @@
     "pki.hpke.seal": "0.2.2",
     "pki.hpke.open": "0.2.2",
     "pki.inspect.certificate": "0.2.4",
+    "pki.inspect.crl": "0.3.8",
+    "pki.inspect.csr": "0.3.8",
+    "pki.inspect.cms": "0.3.8",
+    "pki.inspect.any": "0.3.8",
     "pki.jose.base64url.encode": "0.1.25",
     "pki.jose.base64url.decode": "0.1.25",
     "pki.jose.parseJson": "0.1.25",
@@ -3064,6 +3088,7 @@
     "pki.path.build": "0.3.7",
     "pki.schema.all": "0.1.7",
     "pki.schema.parse": "0.1.7",
+    "pki.schema.detectFormat": "0.3.8",
     "pki.schema.attrcert.parse": "0.1.14",
     "pki.schema.attrcert.pemDecode": "0.1.14",
     "pki.schema.attrcert.pemEncode": "0.1.23",
