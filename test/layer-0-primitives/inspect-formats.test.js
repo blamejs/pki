@@ -133,6 +133,15 @@ async function run() {
   // CompressedData (a non-SignedData shape) renders a summary with its compression algorithm.
   var compressed = await pki.cms.compress(Buffer.from("compress me ".repeat(20)));
   check("CMS CompressedData renders a non-throwing summary (Compression Algorithm)", has(pki.inspect.cms(compressed), "Compression Algorithm:"));
+  // A deferred CMS content type (id-data) is a VALID ContentInfo the parser defers -> outer
+  // summary, not inspect/bad-cms.
+  var idData = b.sequence([b.oid(oid.byName("data")), b.explicit(0, b.octetString(Buffer.from("payload")))]);
+  check("inspect.cms on a deferred content type (id-data) renders an outer summary (no throw)",
+    has(pki.inspect.cms(idData), "Content Type: data") && has(pki.inspect.cms(idData), "outer ContentInfo only"));
+  // any() routes a label-mismatched PEM (a SignedData armored PKCS7, not CMS) by the detected DER.
+  var pkcs7Pem = "-----BEGIN PKCS7-----\n" + Buffer.from(attached).toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END PKCS7-----\n";
+  check("any() routes a PKCS7-labeled CMS PEM (label-agnostic detect -> DER route)",
+    pki.inspect.any(pkcs7Pem).split("\n")[0] === "CMS ContentInfo:");
 
   // ---- fail-closed coercion ----
   check("inspect.crl(42) -> inspect/bad-input", await codeOf(Promise.resolve().then(function () { return pki.inspect.crl(42); })) === "inspect/bad-input");
