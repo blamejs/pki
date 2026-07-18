@@ -257,36 +257,58 @@ async function run() {
     await codeOf(pki.path.build(Buffer.from([1, 2, 3]), { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   check("an unparseable candidate -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: [Buffer.from([1, 2, 3])], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
-  // A claimed-parsed object (truthy tbsBytes) that lacks ANY nested parsed-cert field the search
-  // or anchor conversion dereferences must fail closed as a typed path/bad-input, NOT a raw
-  // TypeError. Cover every nested-field branch (missing subject / subject.rdns / subject.bytes /
-  // issuer / issuer.rdns / subjectPublicKeyInfo / spki.bytes / extensions), then the candidate
-  // and certificate-form-anchor positions.
+  // A claimed-parsed object (truthy tbsBytes) must carry the COMPLETE parsed-certificate shape
+  // build produces and hands to validate; ANY missing/mistyped field fails closed as a typed
+  // path/bad-input, never a raw TypeError in the search or inside validate. `full` is the minimal
+  // valid shape; each badShapes entry breaks exactly one field so that field's check is exercised.
   var Z = Buffer.alloc(0);
-  var okSubj = { rdns: [], bytes: Z }, okIss = { rdns: [] };
+  var full = {
+    tbsBytes: Z, serialNumberHex: "01", signatureAlgorithm: { oid: "1.2" }, signatureValue: { bytes: Z },
+    validity: { notBefore: NB, notAfter: NA }, issuer: { rdns: [] }, subject: { rdns: [], bytes: Z },
+    subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [],
+  };
+  function bad(over) { return Object.assign({}, full, over); }
   var badShapes = [
-    { tbsBytes: Z },                                                                    // missing subject
-    { tbsBytes: Z, subject: { bytes: Z } },                                             // missing subject.rdns
-    { tbsBytes: Z, subject: { rdns: [] } },                                             // missing subject.bytes
-    { tbsBytes: Z, subject: okSubj },                                                   // missing issuer
-    { tbsBytes: Z, subject: okSubj, issuer: {} },                                       // missing issuer.rdns
-    { tbsBytes: Z, subject: okSubj, issuer: okIss },                                    // missing subjectPublicKeyInfo
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: {} },          // missing spki.bytes
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z } }, // missing spki.algorithm
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: {} } }, // spki.algorithm.oid not a string
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: "x" }, // extensions not an array
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [null] }, // extension entry not an object
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [{ critical: false }] }, // extension entry missing .oid
-    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [{ oid: "1.2" }] }, // extension entry missing a Buffer .value
+    bad({ tbsBytes: "x" }),                                             // tbsBytes not a Buffer
+    bad({ serialNumberHex: 5 }),                                        // serialNumberHex not a string
+    bad({ signatureAlgorithm: null }),                                 // missing signatureAlgorithm
+    bad({ signatureAlgorithm: {} }),                                   // signatureAlgorithm.oid not a string
+    bad({ signatureValue: null }),                                     // missing signatureValue
+    bad({ signatureValue: {} }),                                       // signatureValue.bytes not a Buffer
+    bad({ validity: null }),                                           // missing validity
+    bad({ validity: { notAfter: NA } }),                               // validity.notBefore not a Date
+    bad({ validity: { notBefore: NB } }),                              // validity.notAfter not a Date
+    bad({ issuer: null }),                                             // missing issuer
+    bad({ issuer: {} }),                                               // issuer.rdns not an array
+    bad({ subject: null }),                                            // missing subject
+    bad({ subject: { bytes: Z } }),                                    // subject.rdns not an array
+    bad({ subject: { rdns: [] } }),                                    // subject.bytes not a Buffer
+    bad({ subjectPublicKeyInfo: null }),                               // missing subjectPublicKeyInfo
+    bad({ subjectPublicKeyInfo: {} }),                                 // spki.bytes not a Buffer
+    bad({ subjectPublicKeyInfo: { bytes: Z } }),                       // missing spki.algorithm
+    bad({ subjectPublicKeyInfo: { bytes: Z, algorithm: {} } }),        // spki.algorithm.oid not a string
+    bad({ extensions: "x" }),                                          // extensions not an array
+    bad({ extensions: [null] }),                                       // extension entry not an object
+    bad({ extensions: [{ value: Z }] }),                               // extension entry missing .oid
+    bad({ extensions: [{ oid: "1.2" }] }),                             // extension entry missing a Buffer .value
   ];
   for (var bi = 0; bi < badShapes.length; bi++) {
-    check("a claimed-parsed leaf with a malformed nested field (#" + bi + ") -> path/bad-input",
+    check("a claimed-parsed leaf with a malformed field (#" + bi + ") -> path/bad-input",
       await codeOf(pki.path.build(badShapes[bi], { candidates: [], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   }
   check("a malformed claimed-parsed candidate -> path/bad-input",
-    await codeOf(pki.path.build(leaf, { candidates: [{ tbsBytes: Z }], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
+    await codeOf(pki.path.build(leaf, { candidates: [bad({ subject: null })], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   check("a malformed certificate-form anchor -> path/bad-input",
-    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ tbsBytes: Z }], time: T })) === "path/bad-input");
+    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [bad({ subject: null })], time: T })) === "path/bad-input");
+
+  // A ready anchor TUPLE is a caller option: a malformed tuple (bad name.rdns / publicKey / algorithm
+  // types) fails closed at entry as path/bad-input, not a downstream no-path or soft valid:false.
+  check("an anchor tuple with a non-array name.rdns -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ name: { rdns: "bad" }, publicKey: Z, algorithm: "1.2" }], time: T })) === "path/bad-input");
+  check("an anchor tuple with a non-Buffer publicKey -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ name: { rdns: [] }, publicKey: "x", algorithm: "1.2" }], time: T })) === "path/bad-input");
+  check("an anchor tuple with a non-string algorithm -> path/bad-input",
+    await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [{ name: { rdns: [] }, publicKey: Z, algorithm: 5 }], time: T })) === "path/bad-input");
 
   // maxPathCerts:1 permits exactly a leaf directly under an anchor (a zero-hop search): the bound
   // must not throw before the anchor is checked, whether maxDepth is omitted or explicitly 0.
