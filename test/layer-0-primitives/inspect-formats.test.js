@@ -66,6 +66,16 @@ async function run() {
   var extrasR = pki.inspect.crl(extrasCrl);
   check("CRL AKI crlExtension delegates to _extension (keyid) + cRLNumber decimal 9", has(extrasR, "keyid") && has(extrasR, "9"));
   check("CRL entry invalidityDate (pre-decoded Date) renders via _date", has(extrasR, "Invalidity Date") && has(extrasR, "Jan 10"));
+  // deltaCRLIndicator (raw-Buffer INTEGER BaseCRLNumber, not pre-decoded) renders in decimal so an
+  // operator can relate the delta CRL to its base -- not the raw DER hex the generic fallback prints.
+  var deltaCrl = mkCrl({ version: 1n, crlExtensions: [ext(oid.byName("deltaCRLIndicator"), b.integer(42n), true), ext(oid.byName("cRLNumber"), b.integer(43n))] });
+  check("CRL deltaCRLIndicator renders the base CRL number in decimal (decoded INTEGER, not DER hex)",
+    has(pki.inspect.crl(deltaCrl), "BaseCRLNumber: 42"));
+  // A deltaCRLIndicator whose value is not a bare INTEGER is best-effort: fall through to the shared
+  // _extension (hex), never throw the report.
+  var badDelta = mkCrl({ version: 1n, crlExtensions: [ext(oid.byName("deltaCRLIndicator"), b.octetString(Buffer.from("x")), true), ext(oid.byName("cRLNumber"), b.integer(1n))] });
+  check("CRL malformed deltaCRLIndicator falls through to hex (best-effort, no throw, no BaseCRLNumber)",
+    pki.inspect.crl(badDelta).length > 0 && !has(pki.inspect.crl(badDelta), "BaseCRLNumber:"));
   // pki.oid.register() can override a built-in extension name. The decoder pre-decodes
   // cRLNumber/reasonCode/invalidityDate by STABLE OID, so ext.name diverges from the canonical
   // while ext.oid and the pre-decoded value stay canonical -- the report must dispatch on ext.oid,
