@@ -265,7 +265,7 @@ async function run() {
   var full = {
     tbsBytes: Z, serialNumberHex: "01", signatureAlgorithm: { oid: "1.2" }, signatureValue: { bytes: Z },
     validity: { notBefore: NB, notAfter: NA }, issuer: { rdns: [] }, subject: { rdns: [], bytes: Z },
-    subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [],
+    subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" }, publicKey: { bytes: Z, unusedBits: 0 } }, extensions: [],
   };
   function bad(over) { return Object.assign({}, full, over); }
   var badShapes = [
@@ -287,6 +287,9 @@ async function run() {
     bad({ subjectPublicKeyInfo: {} }),                                 // spki.bytes not a Buffer
     bad({ subjectPublicKeyInfo: { bytes: Z } }),                       // missing spki.algorithm
     bad({ subjectPublicKeyInfo: { bytes: Z, algorithm: {} } }),        // spki.algorithm.oid not a string
+    bad({ subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } } }),                          // missing spki.publicKey
+    bad({ subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" }, publicKey: {} } }),           // spki.publicKey.bytes not a Buffer
+    bad({ subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" }, publicKey: { bytes: Z } } }), // spki.publicKey.unusedBits not a number
     bad({ extensions: "x" }),                                          // extensions not an array
     bad({ extensions: [null] }),                                       // extension entry not an object
     bad({ extensions: [{ value: Z }] }),                               // extension entry missing .oid
