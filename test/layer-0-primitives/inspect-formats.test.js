@@ -165,6 +165,15 @@ async function run() {
   check("CMS CompressedData renders a non-throwing summary (Compression Algorithm)", has(pki.inspect.cms(compressed), "Compression Algorithm:"));
   check("inspect.cms accepts a pre-parsed CompressedData object (non-SignedData fast path renders)",
     has(pki.inspect.cms(pki.schema.cms.parse(compressed)), "Compression Algorithm:"));
+  // AuthEnvelopedData (AES-GCM, the default pki.cms.encrypt output) and EnvelopedData (AES-CBC)
+  // through the parsed-object fast path: the shape predicate keys on the field the build actually
+  // surfaces (encryptedContentInfo), not the internal schema field name (authEncryptedContentInfo).
+  var aeadDer = await pki.cms.encrypt(Buffer.from("x"), [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  var envDer = await pki.cms.encrypt(Buffer.from("x"), [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  check("inspect.cms accepts a pre-parsed AuthEnvelopedData object (AES-GCM encrypt fast path)",
+    pki.inspect.cms(pki.schema.cms.parse(aeadDer)).split("\n")[0] === "CMS ContentInfo:");
+  check("inspect.cms accepts a pre-parsed EnvelopedData object (AES-CBC encrypt fast path)",
+    pki.inspect.cms(pki.schema.cms.parse(envDer)).split("\n")[0] === "CMS ContentInfo:");
   // A deferred CMS content type (id-data) is a VALID ContentInfo the parser defers -> outer
   // summary, not inspect/bad-cms.
   var idData = b.sequence([b.oid(oid.byName("data")), b.explicit(0, b.octetString(Buffer.from("payload")))]);
