@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.6",
+  "packageVersion": "0.3.7",
   "surface": {
     "C": {
       "kind": "object",
@@ -90,6 +90,12 @@
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
+              "kind": "number"
+            },
+            "PATH_BUILD_MAX_CANDIDATES": {
+              "kind": "number"
+            },
+            "PATH_BUILD_MAX_DEPTH": {
               "kind": "number"
             },
             "PATH_MAX_CERTS": {
@@ -1253,6 +1259,12 @@
             "OID_MAX_SUBIDENTIFIER_BYTES": {
               "kind": "number"
             },
+            "PATH_BUILD_MAX_CANDIDATES": {
+              "kind": "number"
+            },
+            "PATH_BUILD_MAX_DEPTH": {
+              "kind": "number"
+            },
             "PATH_MAX_CERTS": {
               "kind": "number"
             },
@@ -2365,6 +2377,10 @@
             }
           }
         },
+        "build": {
+          "kind": "function",
+          "arity": 2
+        },
         "crlChecker": {
           "kind": "function",
           "arity": 1
@@ -3045,6 +3061,7 @@
     "pki.path.crlChecker": "0.1.16",
     "pki.path.ocspChecker": "0.1.32",
     "pki.path.verifyOcspResponse": "0.2.22",
+    "pki.path.build": "0.3.7",
     "pki.schema.all": "0.1.7",
     "pki.schema.parse": "0.1.7",
     "pki.schema.attrcert.parse": "0.1.14",
