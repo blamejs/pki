@@ -263,15 +263,21 @@ async function run() {
   // issuer / issuer.rdns / subjectPublicKeyInfo / spki.bytes / extensions), then the candidate
   // and certificate-form-anchor positions.
   var Z = Buffer.alloc(0);
+  var okSubj = { rdns: [], bytes: Z }, okIss = { rdns: [] };
   var badShapes = [
-    { tbsBytes: Z },
-    { tbsBytes: Z, subject: { bytes: Z } },
-    { tbsBytes: Z, subject: { rdns: [] } },
-    { tbsBytes: Z, subject: { rdns: [], bytes: Z } },
-    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: {} },
-    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] } },
-    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] }, subjectPublicKeyInfo: {} },
-    { tbsBytes: Z, subject: { rdns: [], bytes: Z }, issuer: { rdns: [] }, subjectPublicKeyInfo: { bytes: Z }, extensions: "x" },
+    { tbsBytes: Z },                                                                    // missing subject
+    { tbsBytes: Z, subject: { bytes: Z } },                                             // missing subject.rdns
+    { tbsBytes: Z, subject: { rdns: [] } },                                             // missing subject.bytes
+    { tbsBytes: Z, subject: okSubj },                                                   // missing issuer
+    { tbsBytes: Z, subject: okSubj, issuer: {} },                                       // missing issuer.rdns
+    { tbsBytes: Z, subject: okSubj, issuer: okIss },                                    // missing subjectPublicKeyInfo
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: {} },          // missing spki.bytes
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z } }, // missing spki.algorithm
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: {} } }, // spki.algorithm.oid not a string
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: "x" }, // extensions not an array
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [null] }, // extension entry not an object
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [{ critical: false }] }, // extension entry missing .oid
+    { tbsBytes: Z, subject: okSubj, issuer: okIss, subjectPublicKeyInfo: { bytes: Z, algorithm: { oid: "1.2" } }, extensions: [{ oid: "1.2" }] }, // extension entry missing a Buffer .value
   ];
   for (var bi = 0; bi < badShapes.length; bi++) {
     check("a claimed-parsed leaf with a malformed nested field (#" + bi + ") -> path/bad-input",
