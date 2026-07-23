@@ -305,6 +305,11 @@ async function testPreEncodedExtProfile() {
   // A pre-encoded invalidityDate with a GeneralizedTime tag but malformed content is rejected (parsed, not tag-only).
   check("pre-encoded entry invalidityDate with malformed content -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("invalidityDate", false, Buffer.from([0x18, 0x04, 0x41, 0x41, 0x41, 0x41]))] }] }, issuerOf(s))) === "crl/bad-input");
+  // certificateIssuer (indirect CRLs) is deferred until crlChecker handles indirect CRLs -- rejected on both forms.
+  check("object-form certificateIssuer entry -> crl/bad-input (deferred)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, certificateIssuer: [{ directoryName: "CN=Other CA" }] }] }, issuerOf(s))) === "crl/bad-input");
+  check("pre-encoded certificateIssuer entry -> crl/bad-input (deferred)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("certificateIssuer", true, B.sequence([]))] }] }, issuerOf(s))) === "crl/bad-input");
 }
 
 async function main() {
