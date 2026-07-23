@@ -46,6 +46,7 @@ var attrcert  = require("./lib/attrcert-sign");
 var crmf      = require("./lib/crmf-sign");
 var cmp       = require("./lib/cmp-build");
 var crl       = require("./lib/crl-sign");
+var key       = require("./lib/key");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -113,6 +114,10 @@ module.exports = {
   // over any registry algorithm, pki.crl.verify checks a CRL signature through the one path-validation
   // signature engine, and pki.crl.isRevoked looks a serial up. Parsing lives at pki.schema.crl.parse.
   crl:       crl,
+  // `key` is the key-material lifecycle domain -- pki.key.encrypt / decrypt a private key under RFC 8018
+  // PBES2 (EncryptedPrivateKeyInfo), pki.key.export / import a PKCS#8 private or SPKI public key, and
+  // pki.key.generate / publicFromPrivate over every WebCrypto algorithm. Parsing lives at pki.schema.pkcs8.
+  key:       key,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

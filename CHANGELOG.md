@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.10 — 2026-07-23
+
+pki.key exports, imports, and PBES2-encrypts private keys (RFC 5958, RFC 8018) over every WebCrypto algorithm.
+
+### Added
+
+- pki.key.encrypt(privateKey, password, opts) encrypts a PKCS#8 private key (DER, PEM, or an extractable CryptoKey) into an RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2. opts selects the cipher (aes-256-cbc default, aes-192-cbc, aes-128-cbc), the pseudorandom function (hmacWithSHA256 default, SHA-384, SHA-512, SHA-1), the iteration count (default 600000, bounded by the decryptor's cap), and the salt (16 random octets by default); opts.pem returns an ENCRYPTED PRIVATE KEY string. The plaintext is validated as a well-formed PKCS#8 structure before encryption and the output is re-parsed before return. A default pseudorandom function is omitted and keyLength is omitted, so the parameters are byte-exact with OpenSSL. RFC 5958 sec. 3, RFC 8018.
+- pki.key.decrypt(encrypted, password, opts) decrypts an RFC 5958 EncryptedPrivateKeyInfo (DER or ENCRYPTED PRIVATE KEY PEM), returning the inner PrivateKeyInfo re-validated through pki.schema.pkcs8.parse. Only PBES2 with a PBKDF2 key-derivation function and an AES-CBC scheme is accepted -- PBES1, PBMAC1, scrypt, and any other algorithm are refused. The salt and iteration count are bounded before any key derivation (opts.maxIterations lowers the cap for this call, never raises it), a malformed parameter set or wrong-length IV is a distinct typed error, and -- because a MAC-less PBES2-CBC decrypt must not be a padding oracle (RFC 8018 sec. 8) -- a wrong password and a valid pad that is not a private key both surface the single uniform decrypt-failed. RFC 5958 sec. 3, RFC 8018.
+- pki.key.export(key, opts) exports an extractable CryptoKey to DER or PEM: a private key as PKCS#8, a public key as SubjectPublicKeyInfo. The encoding is delegated to WebCrypto, so the algorithm-specific parameters are correct -- RSA an explicit NULL, EC a named curve, Ed25519/Ed448/X25519/X448 parameters absent (RFC 8410 sec. 3). RFC 5958, RFC 5280 sec. 4.1.2.7.
+- pki.key.import(input, opts) imports a DER or PEM PKCS#8 private key, SPKI public key, or (with opts.password) an ENCRYPTED PRIVATE KEY into a CryptoKey, auto-detecting the structure. The WebCrypto algorithm is inferred for the algorithms that name exactly one (Ed25519, Ed448, X25519, X448, ML-DSA, ML-KEM, SLH-DSA); RSA and EC are ambiguous between signing and key agreement, so opts.algorithm is required for them -- import fails closed rather than guess a use.
+- pki.key.generate(algorithm, opts) generates a key pair over the WebCrypto engine -- RSA, ECDSA/ECDH, Ed25519/Ed448, X25519/X448, and the FIPS post-quantum ML-DSA and ML-KEM -- with usages defaulting to the algorithm's natural set. pki.key.publicFromPrivate(privateKey) derives the SubjectPublicKeyInfo public key from a private key.
+- pki.errors.KeyError is the typed error for the pki.key domain (key/bad-input, key/unsupported-algorithm, key/bad-algorithm-parameters, key/iteration-limit, key/bad-version, key/decrypt-failed).
+
 ## v0.3.9 — 2026-07-23
 
 pki.crl builds, signs, and verifies X.509 certificate revocation lists (RFC 5280 sec. 5) over any registry algorithm.

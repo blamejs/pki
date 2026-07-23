@@ -95,6 +95,16 @@ security-only patches after the next major releases.
   integrity, confidentiality, or authentication (RFC 8551 §2.4.5) — the decompress
   verdict has no `authenticated` / `valid` field, so a caller cannot mistake
   size-reduction for protection; sign or encrypt the result if you need it.
+- **PBES2 private-key decryption is not a padding oracle (CWE-208).** `pki.key.decrypt`
+  (RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2) reads the attacker-controlled
+  PBKDF2 salt and iteration count, and validates the parameter structure and IV length,
+  BEFORE any key derivation — an over-cap salt/iteration (`opts.maxIterations` lowers the
+  cap, never raises it), a malformed parameter set, or a wrong-length IV is a distinct
+  typed reject with no derivation work performed. Because a MAC-less PBES2-CBC decrypt has
+  no integrity tag, every secret-dependent failure — a wrong password and a valid PKCS#7
+  pad whose plaintext is not a `PrivateKeyInfo` — collapses to the single uniform
+  `key/decrypt-failed` (RFC 8018 §8), so an attacker cannot distinguish the two. PBES1,
+  PBMAC1, and scrypt are refused, not silently accepted.
 - **Encoding malleability.** Every textual encoding an operator hands the
   toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
   transfer), hex, a JSON document, a dotted-decimal OID string — is decoded

@@ -1867,7 +1867,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-decrypt.js:_normCertDer", "lib/cms-decrypt.js:_normKeyDer", "lib/cms-decrypt.js:_toDer",
         "lib/cms-encrypt.js:_normCertDer", "lib/ocsp.js:_normCertDer", "lib/ocsp.js:_toDer",
         "lib/sign-scheme.js:_normPkcs8", "lib/cms-compress.js:_toDer",
-        "lib/cms-decrypt.js:<top>", "lib/cms-encrypt.js:<top>", "lib/ocsp.js:<top>", "lib/cms-compress.js:<top>",
+        "lib/cms-decrypt.js:<top>", "lib/cms-encrypt.js:<top>", "lib/ocsp.js:<top>", "lib/cms-compress.js:<top>", "lib/key.js:<top>",
       ],
       mode: "family-subset",
       reason: "per-domain cert/key/input-to-DER normalizers (own PEM decoder + typed error code), the same thin-wrapper class as the allowlisted pemDecode/pemEncode; not further extractable.",

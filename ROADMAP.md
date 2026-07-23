@@ -47,8 +47,8 @@ The parser and algorithm layers are the load-bearing decisions the rest of the l
 
 ## Keys and credential stores
 
-- **PKCS#8 private keys and SPKI public keys** — *Targeted.* Import/export of private-key and public-key info, including encrypted private keys. RFC 5958 / RFC 5280.
-- **Password-based encryption** — *Targeted.* PBES2 and PBKDF2 parameter handling with UTF-8 password encoding (correct for non-ASCII passwords) and tunable, standards-compliant salt and iteration counts. RFC 8018.
+- **PKCS#8 private keys and SPKI public keys** — *Shipped.* `pki.key.export` / `pki.key.import` move a private key as PKCS#8 or a public key as SubjectPublicKeyInfo, with the algorithm parameters delegated to the encoder so RSA carries an explicit NULL, EC a named curve, and Ed25519/Ed448/X25519/X448 omit parameters; `pki.key.generate` and `pki.key.publicFromPrivate` produce and derive keys over RSA, EC, the Edwards and Montgomery curves, and the post-quantum ML-DSA / ML-KEM. RFC 5958 / RFC 5280.
+- **Password-based encryption** — *Shipped.* `pki.key.encrypt` / `pki.key.decrypt` protect a private key as an RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2 (PBKDF2 + AES-CBC), with UTF-8 password encoding (correct for non-ASCII passwords), byte-exact-with-OpenSSL parameters (a default pseudorandom function and keyLength omitted), salt and iteration counts bounded against a denial-of-service cap before any derivation, and a fail-closed decrypt that is not a padding oracle. PBES1, PBMAC1, and scrypt are refused. RFC 8018.
 - **PKCS#12 (PFX)** — *Shipped (parse).* Parse key-and-certificate stores: authenticated safe, cert/CRL/key/secret bags, shrouded key bags (algorithm surfaced, ciphertext opaque), nested safe contents, `friendlyName` / `localKeyId` attributes, and MAC integrity surfaced with the exact MACed byte range — RFC 9579 PBMAC1 recognized. BER content regions (indefinite lengths, constructed octet strings) accepted exactly where §4.1 requires them; interoperability with OpenSSL is a release acceptance gate. Building, MAC verification, and bag decryption ride the PBES2 work above. RFC 7292.
 
 ## Post-quantum and hybrid cryptography

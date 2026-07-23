@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.9",
+  "packageVersion": "0.3.10",
   "surface": {
     "C": {
       "kind": "object",
@@ -1966,6 +1966,10 @@
           "kind": "function",
           "arity": 3
         },
+        "KeyError": {
+          "kind": "function",
+          "arity": 3
+        },
         "LintError": {
           "kind": "function",
           "arity": 3
@@ -2247,6 +2251,35 @@
           "arity": 1
         },
         "verify": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
+    "key": {
+      "kind": "object",
+      "members": {
+        "decrypt": {
+          "kind": "function",
+          "arity": 3
+        },
+        "encrypt": {
+          "kind": "function",
+          "arity": 3
+        },
+        "export": {
+          "kind": "function",
+          "arity": 2
+        },
+        "generate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "import": {
+          "kind": "function",
+          "arity": 2
+        },
+        "publicFromPrivate": {
           "kind": "function",
           "arity": 2
         }
@@ -3085,6 +3118,12 @@
     "pki.jose.verify": "0.1.25",
     "pki.jose.sign": "0.1.25",
     "pki.jose.thumbprint": "0.1.25",
+    "pki.key.encrypt": "0.3.10",
+    "pki.key.decrypt": "0.3.10",
+    "pki.key.export": "0.3.10",
+    "pki.key.import": "0.3.10",
+    "pki.key.generate": "0.3.10",
+    "pki.key.publicFromPrivate": "0.3.10",
     "pki.lint.certificate": "0.2.10",
     "pki.lint.rules": "0.2.10",
     "pki.lint.profiles": "0.2.10",
