@@ -45,6 +45,7 @@ var csr       = require("./lib/csr-sign");
 var attrcert  = require("./lib/attrcert-sign");
 var crmf      = require("./lib/crmf-sign");
 var cmp       = require("./lib/cmp-build");
+var crl       = require("./lib/crl-sign");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -108,6 +109,10 @@ module.exports = {
   // protected PKIMessage (a certificate request / confirmation / revocation / general message).
   // Parsing lives at pki.schema.cmp.parse.
   cmp:       cmp,
+  // `crl` is the RFC 5280 sec. 5 CRL producing side -- pki.crl.sign builds and signs a CertificateList
+  // over any registry algorithm, pki.crl.verify checks a CRL signature through the one path-validation
+  // signature engine, and pki.crl.isRevoked looks a serial up. Parsing lives at pki.schema.crl.parse.
+  crl:       crl,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

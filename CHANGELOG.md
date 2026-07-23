@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.9 — 2026-07-23
+
+pki.crl builds, signs, and verifies X.509 certificate revocation lists (RFC 5280 sec. 5) over any registry algorithm.
+
+### Added
+
+- pki.crl.sign(spec, issuer, opts) builds and signs an X.509 CRL (RFC 5280 sec. 5): thisUpdate/nextUpdate, an optional crlNumber, a revoked list (each entry a serialNumber and revocationDate with an optional reason, invalidityDate, or certificateIssuer), and an extensions object (authorityKeyIdentifier, issuingDistributionPoint, deltaCRLIndicator, freshestCRL, authorityInfoAccess) or an array of pre-encoded Extension DER. The issuer is a CA certificate + key, or an explicit name + public key + key. The signature algorithm is resolved from the issuer key, so RSA (PKCS#1 v1.5 / PSS via opts.pss), ECDSA, EdDSA, ML-DSA, SLH-DSA, and the composite arms all sign without a per-algorithm branch. The version is derived from the extension set (v2 when any CRL or entry extension is present, else v1), an empty revocation list omits the field, the reason code is an ENUMERATED, an invalidity date is always a GeneralizedTime, and per-extension criticality is fixed by the profile. Returns DER or a PEM X509 CRL; the produced signature is verified under the issuer key before return, and every emitted CRL round-trips through pki.schema.crl.parse and is accepted by OpenSSL across the classical and post-quantum arms. RFC 5280 sec. 5.
+- pki.crl.verify(crl, issuer) verifies a CRL's signature over its exact tbsCertList bytes against the issuer public key (a { cert }, a { publicKey } SPKI DER, or a raw SPKI Buffer), composing the one path-validation signature engine pki.path.crlChecker uses -- the RFC 9814 algorithm-confusion and Edwards low-order-point gates included -- and failing closed to false. It checks the signature only; issuer authorization, currency, and distribution-point scope remain pki.path.crlChecker.
+- pki.crl.isRevoked(crl, serialNumber) returns the revoked-certificate entry a CRL lists for a serial number, or null when the serial is not listed.
+
 ## v0.3.8 — 2026-07-18
 
 Human-readable inspection extends to CRLs, CSRs, and CMS messages, with a pki.schema.detectFormat companion.

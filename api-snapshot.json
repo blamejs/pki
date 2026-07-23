@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.8",
+  "packageVersion": "0.3.9",
   "surface": {
     "C": {
       "kind": "object",
@@ -1772,6 +1772,23 @@
         }
       }
     },
+    "crl": {
+      "kind": "object",
+      "members": {
+        "isRevoked": {
+          "kind": "function",
+          "arity": 2
+        },
+        "sign": {
+          "kind": "function",
+          "arity": 3
+        },
+        "verify": {
+          "kind": "function",
+          "arity": 3
+        }
+      }
+    },
     "crmf": {
       "kind": "object",
       "members": {
@@ -2409,6 +2426,10 @@
           "kind": "function",
           "arity": 2
         },
+        "verifyCrlSignature": {
+          "kind": "function",
+          "arity": 2
+        },
         "verifyOcspResponse": {
           "kind": "function",
           "arity": 5
@@ -3031,6 +3052,9 @@
     "pki.cms.decompress": "0.2.27",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
+    "pki.crl.sign": "0.3.9",
+    "pki.crl.verify": "0.3.9",
+    "pki.crl.isRevoked": "0.3.9",
     "pki.crmf.build": "0.3.3",
     "pki.crmf.buildCertTemplate": "0.3.5",
     "pki.csr.sign": "0.3.1",
