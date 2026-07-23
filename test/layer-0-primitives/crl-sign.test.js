@@ -310,6 +310,11 @@ async function testPreEncodedExtProfile() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, certificateIssuer: [{ directoryName: "CN=Other CA" }] }] }, issuerOf(s))) === "crl/bad-input");
   check("pre-encoded certificateIssuer entry -> crl/bad-input (deferred)",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("certificateIssuer", true, B.sequence([]))] }] }, issuerOf(s))) === "crl/bad-input");
+  // An indirect-CRL IDP (indirectCRL) is deferred until crlChecker handles indirect CRLs -- rejected on both forms.
+  check("issuingDistributionPoint indirectCRL:true -> crl/bad-idp (deferred)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { issuingDistributionPoint: { onlyContainsUserCerts: true, indirectCRL: true } } }, issuerOf(s))) === "crl/bad-idp");
+  check("pre-encoded indirect-CRL IDP -> crl/bad-idp (deferred)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(4, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
 }
 
 async function main() {
