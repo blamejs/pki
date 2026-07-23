@@ -281,6 +281,12 @@ async function testPreEncodedExtProfile() {
   // The entry-extension escape hatch is held to the same profile: reasonCode MUST be non-critical (sec. 5.3.1).
   check("pre-encoded critical entry reasonCode -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("reasonCode", true, B.enumerated(1n))] }] }, issuerOf(s))) === "crl/bad-input");
+  // freshestCRL: a distribution point with an empty fullName is rejected (GeneralNames is SIZE(1..MAX)).
+  check("freshestCRL DP with an empty fullName -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { freshestCRL: [{ fullName: [] }] } }, issuerOf(s))) === "crl/bad-input");
+  // A pre-encoded freshestCRL co-present with a pre-encoded delta indicator is rejected (sec. 5.2.6).
+  check("pre-encoded freshestCRL in a pre-encoded delta CRL -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n)), extDer("freshestCRL", false, B.sequence([]))] }, issuerOf(s))) === "crl/bad-input");
 }
 
 async function main() {

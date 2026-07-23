@@ -75,7 +75,9 @@ async function run() {
       var bad = Buffer.from(crlDer); bad[bad.length - 1] ^= 0xff;
       var badFile = path.join(dir, "bad.der"); fs.writeFileSync(badFile, bad);
       var vb = ctx.runOpenssl(["crl", "-inform", "DER", "-in", badFile, "-CAfile", caFile, "-noout"], { allowNonZero: true });
-      check("openssl crl -CAfile REJECTS a toolkit " + alg + " CRL with a flipped signature byte", vb.code !== 0);
+      // Assert the rejection is specifically a signature VERIFICATION failure (openssl prints "verify failure"),
+      // not some unrelated non-zero exit (a parse error would also be non-zero but would not prove the sig check ran).
+      check("openssl crl -CAfile REJECTS a toolkit " + alg + " CRL with a flipped signature byte", vb.code !== 0 && /verify\s*fail/i.test(vb.stderr + vb.stdout));
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }
