@@ -315,6 +315,13 @@ async function testPreEncodedExtProfile() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { issuingDistributionPoint: { onlyContainsUserCerts: true, indirectCRL: true } } }, issuerOf(s))) === "crl/bad-idp");
   check("pre-encoded indirect-CRL IDP -> crl/bad-idp (deferred)",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(4, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
+  // The pre-encoded IDP is held to the same sec. 5.2.5 profile as the object form.
+  check("pre-encoded empty IDP -> crl/bad-idp",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([]))] }, issuerOf(s))) === "crl/bad-idp");
+  check("pre-encoded IDP with two scope booleans -> crl/bad-idp",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(1, Buffer.from([0xff])), B.contextPrimitive(2, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
+  check("pre-encoded IDP with onlyContainsAttributeCerts -> crl/bad-idp",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(5, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
 }
 
 async function main() {
