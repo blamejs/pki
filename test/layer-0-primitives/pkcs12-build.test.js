@@ -261,7 +261,10 @@ async function testVerifyHardening() {
   }
   var salt = Buffer.alloc(8, 5);
   var overCap = craft(salt, pki.constants.LIMITS.PBKDF2_MAX_ITERATIONS + 1, 32, "hmacWithSHA256", "hmacWithSHA256", Buffer.alloc(32));
-  check("verifyMac rejects an over-hard-cap iteration count -> pkcs12/iteration-limit", (await codeOf(pki.pkcs12.verifyMac(overCap, "1234"))) === "pkcs12/iteration-limit");
+  check("verifyMac rejects an over-hard-cap PBMAC1 iteration count -> pkcs12/iteration-limit", (await codeOf(pki.pkcs12.verifyMac(overCap, "1234"))) === "pkcs12/iteration-limit");
+  // the classic App B MAC (a synchronous KDF loop) has a far lower iteration cap than PBMAC1's native PBKDF2.
+  var classicOver = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 2000001 } }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("build rejects a classic MAC iteration count over its lower cap -> pkcs12/bad-input", classicOver === "pkcs12/bad-input");
   // an over-cap salt and an over-cap PBMAC1 keyLength are rejected before derivation.
   var bigSalt = craft(Buffer.alloc(pki.constants.LIMITS.PBKDF2_MAX_SALT + 1, 1), 2048, 32, "hmacWithSHA256", "hmacWithSHA256", Buffer.alloc(32));
   check("verifyMac rejects an over-cap salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.verifyMac(bigSalt, "1234"))) === "pkcs12/bad-input");
