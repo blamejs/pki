@@ -47,6 +47,7 @@ var crmf      = require("./lib/crmf-sign");
 var cmp       = require("./lib/cmp-build");
 var crl       = require("./lib/crl-sign");
 var key       = require("./lib/key");
+var pkcs12    = require("./lib/pkcs12-build");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
@@ -118,6 +119,11 @@ module.exports = {
   // PBES2 (EncryptedPrivateKeyInfo), pki.key.export / import a PKCS#8 private or SPKI public key, and
   // pki.key.generate / publicFromPrivate over every WebCrypto algorithm. Parsing lives at pki.schema.pkcs8.
   key:       key,
+  // `pkcs12` is the RFC 7292 / RFC 9579 PKCS#12 (.p12/.pfx) producing side -- pki.pkcs12.build assembles a
+  // password-integrity store (key/cert/crl/secret bags in an AuthenticatedSafe, shrouded keys + cert safes
+  // under PBES2, a classic HMAC or PBMAC1 MAC), and pki.pkcs12.verifyMac checks a store's MAC. Parsing lives
+  // at pki.schema.pkcs12.parse.
+  pkcs12:    pkcs12,
   // `merkle` is the RFC 6962 / RFC 9162 Merkle-tree proof-verification core --
   // pki.merkle.leafHash / nodeHash / emptyRootHash build the domain-separated
   // (0x00 leaf / 0x01 node) SHA-256 tree hashes; pki.merkle.verifyInclusion and

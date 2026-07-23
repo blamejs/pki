@@ -102,6 +102,25 @@ function testPrimitiveContracts() {
   check("parsePbkdf2Params validates opts.maxIterations (NaN would disable the cap)", codeFrom(function () { pbes2.parsePbkdf2Params(asn1.decode(b.sequence([b.octetString(Buffer.alloc(16, 1)), b.integer(1000n)])), { maxIterations: NaN }, E, "t"); }) === "t/bad-input");
 }
 
+// ---- pbes2Encrypt (the shared higher-level PBES2 encrypt) ------------------
+function testPbes2Encrypt() {
+  var nc = require("node:crypto");
+  var pw = Buffer.from("pw", "utf8");
+  // round-trip with an explicit salt + iv + iterations, decrypted via the sibling cbcDecrypt.
+  var salt = Buffer.alloc(8, 3), iv = Buffer.alloc(16, 4), pt = Buffer.from("sixteen-byte-pt!");
+  var r = pbes2.pbes2Encrypt(pw, pt, { cipher: "aes256-CBC", salt: salt, iv: iv, iterations: 4096 }, E, "t");
+  var key = nc.pbkdf2Sync(pw, salt, 4096, 32, "sha256");
+  check("pbes2Encrypt round-trips through cbcDecrypt", pbes2.cbcDecrypt(key, iv, r.ct, 256).equals(pt));
+  var params = asn1.decode(r.algId);
+  check("pbes2Encrypt algId names pbes2 + the AES-CBC scheme", asn1.read.oid(params.children[0]) === byName("pbes2"));
+  // default cipher/salt/iv path (no explicit opts) still produces a decodable structure.
+  var r2 = pbes2.pbes2Encrypt(pw, pt, {}, E, "t");
+  check("pbes2Encrypt defaults produce a PBES2 algId", asn1.read.oid(asn1.decode(r2.algId).children[0]) === byName("pbes2"));
+  // an unsupported cipher fails closed -- both a known-but-non-CBC scheme and an unknown name.
+  check("pbes2Encrypt rejects a non-AES-CBC cipher", codeFrom(function () { pbes2.pbes2Encrypt(pw, pt, { cipher: "aes256-GCM" }, E, "t"); }) === "t/bad-input");
+  check("pbes2Encrypt rejects an unknown cipher name", codeFrom(function () { pbes2.pbes2Encrypt(pw, pt, { cipher: "bogus" }, E, "t"); }) === "t/bad-input");
+}
+
 // ---- cross-consumer: the same shared home serves cms and key ---------------
 async function testSharedHome() {
   // A PBES2 structure pki.cms.encrypt emits and one pki.key.encrypt emits share the identical AlgorithmId
@@ -115,6 +134,7 @@ async function testSharedHome() {
 async function main() {
   await testParamByteExactness();
   testPrimitiveContracts();
+  testPbes2Encrypt();
   await testSharedHome();
   console.log("CHECKS " + helpers.getChecks());
 }

@@ -105,6 +105,14 @@ security-only patches after the next major releases.
   pad whose plaintext is not a `PrivateKeyInfo` — collapses to the single uniform
   `key/decrypt-failed` (RFC 8018 §8), so an attacker cannot distinguish the two. PBES1,
   PBMAC1, and scrypt are refused, not silently accepted.
+- **PKCS#12 MAC integrity (CWE-347/CWE-208).** `pki.pkcs12.verifyMac` recomputes a store's classic Appendix B
+  HMAC or RFC 9579 PBMAC1 over the exact AuthenticatedSafe byte range (`macedBytes`, excluding the OCTET
+  STRING header — the canonical off-by-the-header MAC trap) and compares it in constant time
+  (`guard.crypto.constantTimeEqual`), so a wrong password leaks no timing or length signal, and it throws a
+  typed error on a MAC-less or public-key-integrity store rather than returning a falsy verdict. `pki.pkcs12.build`
+  encodes every password the PKCS#12 way (BMPString+NULL for the Appendix B KDF, UTF-8 for the PBES2 bags and
+  PBMAC1) so the output is not silently unopenable elsewhere, refuses a <=160-bit PBMAC1 digest (RFC 9579), and
+  never emits a non-canonical DEFAULT-1 MacData iterations.
 - **Encoding malleability.** Every textual encoding an operator hands the
   toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
   transfer), hex, a JSON document, a dotted-decimal OID string — is decoded

@@ -118,10 +118,11 @@ async function testDecryptFailClosed() {
   var rsaDer = makeSigner("rsa").key;
   var enc = await pki.key.encrypt(rsaDer, "pw");
 
-  // #7 wrong password and #8 valid-pad-non-PrivateKeyInfo are indistinguishable (uniform verdict).
+  // #7 wrong password -> the uniform decrypt-failed verdict (the #8 valid-pad-non-PrivateKeyInfo pair, which
+  // must surface the SAME code, is driven deterministically in testEncryptCorners -- a random ciphertext-byte
+  // flip is not a reliable #8 probe because a flip inside the raw privateKey OCTET STRING content leaves a
+  // structurally valid PrivateKeyInfo, which a MAC-less PBES2-CBC decrypt cannot and does not detect).
   check("#7 wrong password -> key/decrypt-failed", (await codeOf(pki.key.decrypt(enc, "wrong"))) === "key/decrypt-failed");
-  var tampered = Buffer.from(enc); tampered[tampered.length - 20] ^= 0xff;
-  check("#8 tampered ciphertext -> same key/decrypt-failed", (await codeOf(pki.key.decrypt(tampered, "pw"))) === "key/decrypt-failed");
 
   // #6 iteration cap enforced BEFORE derivation (a fast typed fail, no pbkdf2 work).
   var overCap = pbes2Epki("pbkdf2", b.sequence([b.octetString(Buffer.alloc(16, 1)), b.integer(10000001n)]), "aes256-CBC");
