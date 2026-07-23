@@ -121,6 +121,8 @@ async function testMacFailClosed() {
   var spec = { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] };
   // #13 a DEFAULT-1 MacData iterations cannot be DER-encoded -- reject up front.
   check("#13 mac.iterations = 1 -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { iterations: 1 } }))) === "pkcs12/bad-input");
+  check("#13 mac.iterations non-integer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { iterations: 1.5 } }))) === "pkcs12/bad-input");
+  check("#13 mac.iterations over the cap -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { iterations: pki.constants.LIMITS.PBKDF2_MAX_ITERATIONS + 1 } }))) === "pkcs12/bad-input");
   // #14 SHA-1 is forbidden in PBMAC1 (RFC 9579 sec. 5/7).
   check("#14 PBMAC1 with sha1 -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha1" } }))) === "pkcs12/unsupported-algorithm");
   // classic HMAC with SHA-1 IS allowed (legacy interop), so this must NOT throw.
@@ -229,7 +231,50 @@ async function testEdges() {
   check("an empty MAC salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { salt: Buffer.alloc(0) } }))) === "pkcs12/bad-input");
 }
 
+// ---- verifyMac DoS bound + independent PBMAC1 messageAuthScheme -----------
+async function testVerifyHardening() {
+  var nc = require("node:crypto");
+  var pbes2 = require("../../lib/pbes2");
+  var s = signer();
+  var spec = { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] };
+
+  // A hostile store's iteration count must be bounded BEFORE deriving. opts.maxIterations lowers the cap.
+  var p = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", iterations: 2048 } });
+  check("verifyMac with maxIterations below the count -> pkcs12/iteration-limit", (await codeOf(pki.pkcs12.verifyMac(p, "1234", { maxIterations: 1000 }))) === "pkcs12/iteration-limit");
+  check("verifyMac without a cap still verifies", (await pki.pkcs12.verifyMac(p, "1234")) === true);
+
+  // Craft a store around a real AuthenticatedSafe: an over-the-hard-cap PBMAC1 iteration count is rejected
+  // before any derivation (a hostile store cannot force a multi-second CPU burn).
+  var noMac = await pki.pkcs12.build(spec, { mac: false });
+  var authSafeCI = asn1.decode(noMac).children[1];
+  var macedBytes = pki.schema.pkcs12.parse(noMac).macedBytes;
+  function craft(salt, iter, keyLen, prfName, macName, macBytes) {
+    var di = b.sequence([pbes2.pbmac1AlgId({ salt: salt, iterationCount: iter, keyLength: keyLen, prfName: prfName, macName: macName }), b.octetString(macBytes)]);
+    return b.sequence([b.integer(3n), authSafeCI.bytes, b.sequence([di, b.octetString(salt), b.integer(BigInt(iter))])]);
+  }
+  var salt = Buffer.alloc(8, 5);
+  var overCap = craft(salt, pki.constants.LIMITS.PBKDF2_MAX_ITERATIONS + 1, 32, "hmacWithSHA256", "hmacWithSHA256", Buffer.alloc(32));
+  check("verifyMac rejects an over-hard-cap iteration count -> pkcs12/iteration-limit", (await codeOf(pki.pkcs12.verifyMac(overCap, "1234"))) === "pkcs12/iteration-limit");
+  // an over-cap salt and an over-cap PBMAC1 keyLength are rejected before derivation.
+  var bigSalt = craft(Buffer.alloc(pki.constants.LIMITS.PBKDF2_MAX_SALT + 1, 1), 2048, 32, "hmacWithSHA256", "hmacWithSHA256", Buffer.alloc(32));
+  check("verifyMac rejects an over-cap salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.verifyMac(bigSalt, "1234"))) === "pkcs12/bad-input");
+  var bigKeyLen = craft(salt, 2048, 4096, "hmacWithSHA256", "hmacWithSHA256", Buffer.alloc(32));
+  check("verifyMac rejects an over-cap PBMAC1 keyLength -> pkcs12/bad-input", (await codeOf(pki.pkcs12.verifyMac(bigKeyLen, "1234"))) === "pkcs12/bad-input");
+  check("verifyMac with an invalid maxIterations -> pkcs12/bad-input", (await codeOf(pki.pkcs12.verifyMac(p, "1234", { maxIterations: NaN }))) === "pkcs12/bad-input");
+
+  // RFC 9579 A.2 shape: a SHA-512 PBKDF2 prf with a SHA-256 HMAC messageAuthScheme. verifyMac must key the
+  // HMAC by the messageAuthScheme, not the prf -- so it must compute HMAC-SHA256(PBKDF2-SHA512(pw), maced).
+  var iter = 2048, keyLen = 32, pw = Buffer.from("1234", "utf8");
+  var dk = nc.pbkdf2Sync(pw, salt, iter, keyLen, "sha512");
+  var mac = nc.createHmac("sha256", dk).update(macedBytes).digest();
+  var differing = craft(salt, iter, keyLen, "hmacWithSHA512", "hmacWithSHA256", mac);
+  check("verifyMac honors a differing PBMAC1 prf / messageAuthScheme (SHA-512 PRF + SHA-256 HMAC)", (await pki.pkcs12.verifyMac(differing, "1234")) === true);
+  // the same store with the wrong password still fails.
+  check("the differing-scheme store fails on a wrong password", (await pki.pkcs12.verifyMac(differing, "nope")) === false);
+}
+
 async function main() {
+  await testVerifyHardening();
   await testEdges();
   await testClassicRoundTrip();
   await testPbmac1RoundTrip();
