@@ -23,6 +23,12 @@
     "reviewedAt": "0.3.0",
     "reviewBy": "0.4.0"
   },
+  "pki.schema.c509.encode": {
+    "decision": "keep-experimental",
+    "reason": "The C509 producing side (a DER X.509 certificate compressed to a byte-exact-invertible type-3 C509 over the deterministic-CBOR encoder) rides the same draft-ietf-cose-cbor-encoded-cert wire format as pki.schema.c509.parse, which can still change before the draft is finalized. Graduate alongside pki.schema.c509.parse once the C509 draft is published as an RFC.",
+    "reviewedAt": "0.3.10",
+    "reviewBy": "0.4.0"
+  },
   "pki.smime.sign": {
     "decision": "keep-experimental",
     "reason": "The RFC 8551 S/MIME message layer (multipart/signed clear-signed + application/pkcs7-mime opaque) is hardened and openssl-interop-proven, but the surrounding S/MIME surface is still growing (encryption, compression, capability negotiation) and the canonicalization/CTE handling continues to absorb interop refinements. Graduate once the full S/MIME message surface is settled.",
