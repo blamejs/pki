@@ -441,6 +441,14 @@ function testIa5SevenBit() {
   // 0x41) must be rejected on the INPUT, not slip past a post-conversion check.
   check("build.ia5 rejects a truncation-prone code point (U+0141)",
     code(function () { b.ia5(String.fromCharCode(0x141)); }) === "asn1/bad-ia5-string");
+  // build.bmpString: UTF-16BE, tag 0x1e, no NULL terminator (the terminator is an App. B.1 password
+  // artifact, not part of the ASN.1 value); an unpaired surrogate is rejected (the inverse of _decodeUtf16be).
+  check("build.bmpString(\"Beavis\") is the exact 14-byte TLV",
+    b.bmpString("Beavis").toString("hex") === "1e0c004200650061007600690073");
+  check("build.bmpString rejects an unpaired surrogate",
+    code(function () { b.bmpString(String.fromCharCode(0xD800)); }) === "asn1/bad-bmp-string");
+  check("build.bmpString round-trips through decode",
+    pki.asn1.read.string(pki.asn1.decode(b.bmpString(String.fromCharCode(0x63, 0x61, 0x66, 0xe9)))) === String.fromCharCode(0x63, 0x61, 0x66, 0xe9));
 }
 
 function testSetSorted() {

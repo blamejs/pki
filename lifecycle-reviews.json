@@ -658,5 +658,17 @@
     "reason": "RFC 4211 CRMF CertReqMessages issuance is composed into the CMP enrollment surface, but its builder opts (the CertTemplate field set, the proof-of-possession forms, the registration controls and regInfo) are still settling as the CMP request/response surface fills in; graduating would freeze those input shapes prematurely. Graduate once the CMP enrollment surface is complete and the builder opts are frozen.",
     "reviewedAt": "0.3.9",
     "reviewBy": "0.4.0"
+  },
+  "pki.cmp.build": {
+    "decision": "keep-experimental",
+    "reason": "RFC 9810 CMP PKIMessage building assembles the full request + CA/responder message surface, but the surrounding CMP capabilities (HTTP transfer RFC 9811, the lightweight-profile RFC 9483 validation rules, incoming-message MAC/signature verification) are still Planned, and the builder's message/opts shapes continue to absorb refinements as they land; graduating would freeze those input shapes prematurely. Graduate once the CMP transfer + verification surface is complete.",
+    "reviewedAt": "0.3.11",
+    "reviewBy": "0.4.0"
+  },
+  "pki.crmf.buildCertTemplate": {
+    "decision": "keep-experimental",
+    "reason": "The thin CertTemplate encoder export rides the same still-settling RFC 4211 CertTemplate field set as pki.crmf.build; graduate alongside pki.crmf.build once the CMP enrollment surface is complete and the builder opts are frozen.",
+    "reviewedAt": "0.3.11",
+    "reviewBy": "0.4.0"
   }
 }

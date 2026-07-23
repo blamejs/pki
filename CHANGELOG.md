@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.11 — 2026-07-23
+
+pki.pkcs12 builds and MAC-verifies password-integrity PKCS#12 (.p12/.pfx) stores (RFC 7292, RFC 9579).
+
+### Added
+
+- pki.pkcs12.build(spec, opts) builds a password-integrity PKCS#12 store. spec is { key, cert, ca?, friendlyName?, localKeyId? } (one PBES2-encrypted cert safe plus one shrouded-key safe) or { safeContents: [...] }, where each element is a plaintext or PBES2-encrypted SafeContents of key / shroudedKey / cert / crl / secret / nested safeContents bags; keys and certs are validated before wrapping. opts.mac selects a classic Appendix B HMAC (default) or an RFC 9579 PBMAC1 over SHA-256/384/512, or false for a MAC-less store; opts.password is the shared privacy + integrity password; opts.pem returns a PEM PKCS12 string. Shrouded keys and cert safes are encrypted under RFC 8018 PBES2 (AES-128/192/256-CBC). Passwords are BMPString+NULL encoded for the classic MAC and UTF-8 for the PBES2 bags and PBMAC1, so the output opens in OpenSSL and NSS; the MAC covers the exact AuthenticatedSafe byte range, a DEFAULT-1 MacData iterations and a <=160-bit PBMAC1 digest are rejected, and the store is re-parsed before return. RFC 7292, RFC 9579, RFC 8018.
+- pki.pkcs12.verifyMac(pfx, password, opts) verifies a password-integrity store's MAC. pfx is a pki.schema.pkcs12.parse result, a DER Buffer, or a PEM string; the password is BMPString+NULL (classic) or UTF-8 (PBMAC1) encoded, the MAC is recomputed over the store's exact AuthenticatedSafe byte range with the store's own MAC parameters, and constant-time-compared to the stored value. Returns true / false for the password match; throws Pkcs12Error on a MAC-less or public-key-integrity store, or an unsupported MAC algorithm. RFC 7292 sec. 5.1, RFC 9579.
+- pki.asn1.build.bmpString(str) encodes a JS string as a universal BMPString (UTF-16BE) TLV, rejecting an unpaired surrogate code point.
+
 ## v0.3.10 — 2026-07-23
 
 pki.key exports, imports, and PBES2-encrypts private keys (RFC 5958, RFC 8018) over every WebCrypto algorithm.
