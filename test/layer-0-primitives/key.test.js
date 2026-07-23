@@ -260,6 +260,13 @@ async function testOptionsAndUsages() {
   var mk = await pki.key.generate({ name: "ML-KEM-768" });
   check("import infers a private ML-KEM key", (await pki.key.import(await pki.key.export(mk.privateKey))).type === "private");
 
+  // SLH-DSA is signing-only (unambiguous) -- import infers it, both public and private, with no opts.algorithm.
+  var slh = await pki.key.generate({ name: "SLH-DSA-SHA2-128F" });
+  var slhPub = await pki.key.import(await pki.key.export(slh.publicKey));
+  check("import infers an SLH-DSA public key", slhPub.type === "public" && /^SLH-DSA/.test(slhPub.algorithm.name));
+  var slhPriv = await pki.key.import(await pki.key.export(slh.privateKey));
+  check("import infers an SLH-DSA private key", slhPriv.type === "private" && /^SLH-DSA/.test(slhPriv.algorithm.name));
+
   // RSA-OAEP generate + import (the encrypt/decrypt usages arms, both public and private).
   var oaep = await pki.key.generate({ name: "RSA-OAEP", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
   var oaepPub = await pki.key.import(await pki.key.export(oaep.publicKey), { algorithm: { name: "RSA-OAEP", hash: "SHA-256" } });
