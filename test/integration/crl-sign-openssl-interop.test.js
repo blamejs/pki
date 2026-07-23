@@ -68,16 +68,16 @@ async function run() {
       check("openssl crl -text renders the GeneralizedTime Invalidity Date for " + alg, /Invalidity Date/i.test(t.stdout));
 
       // ---- (b) openssl verifies the CRL signature against the issuing CA ----
+      // `openssl crl -CAfile` prints "verify OK" / "verify failure" as its verdict; the EXIT CODE is unreliable
+      // for the CRL verify result (some builds return 0 even on a verification failure), so assert on the text.
       var v = ctx.runOpenssl(["crl", "-inform", "DER", "-in", crlFile, "-CAfile", caFile, "-noout"], { allowNonZero: true });
-      check("openssl crl -CAfile verifies the toolkit-issued " + alg + " CRL signature", v.code === 0 && /verify OK/i.test(v.stdout + v.stderr));
+      check("openssl crl -CAfile verifies the toolkit-issued " + alg + " CRL signature", /verify OK/i.test(v.stdout + v.stderr));
 
       // ---- (c) a flipped signature byte is REJECTED ----
       var bad = Buffer.from(crlDer); bad[bad.length - 1] ^= 0xff;
       var badFile = path.join(dir, "bad.der"); fs.writeFileSync(badFile, bad);
       var vb = ctx.runOpenssl(["crl", "-inform", "DER", "-in", badFile, "-CAfile", caFile, "-noout"], { allowNonZero: true });
-      // Assert the rejection is specifically a signature VERIFICATION failure (openssl prints "verify failure"),
-      // not some unrelated non-zero exit (a parse error would also be non-zero but would not prove the sig check ran).
-      check("openssl crl -CAfile REJECTS a toolkit " + alg + " CRL with a flipped signature byte", vb.code !== 0 && /verify\s*fail/i.test(vb.stderr + vb.stdout));
+      check("openssl crl -CAfile REJECTS a toolkit " + alg + " CRL with a flipped signature byte", /verify\s*fail/i.test(vb.stderr + vb.stdout));
     } finally {
       try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* best-effort */ }
     }

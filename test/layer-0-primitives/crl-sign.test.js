@@ -287,6 +287,15 @@ async function testPreEncodedExtProfile() {
   // A pre-encoded freshestCRL co-present with a pre-encoded delta indicator is rejected (sec. 5.2.6).
   check("pre-encoded freshestCRL in a pre-encoded delta CRL -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n)), extDer("freshestCRL", false, B.sequence([]))] }, issuerOf(s))) === "crl/bad-input");
+  // Value validation on the escape hatch: a pre-encoded cRLNumber whose value is not an INTEGER is rejected.
+  check("pre-encoded cRLNumber with a non-INTEGER value -> crl/bad-crl-number",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("cRLNumber", false, B.boolean(true))] }, issuerOf(s))) === "crl/bad-crl-number");
+  // A pre-encoded entry reasonCode with a reserved value (7) is rejected.
+  check("pre-encoded entry reasonCode value 7 -> crl/bad-reason-code",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("reasonCode", false, B.enumerated(7n))] }] }, issuerOf(s))) === "crl/bad-reason-code");
+  // A pre-encoded entry invalidityDate encoded as UTCTime (not GeneralizedTime) is rejected.
+  check("pre-encoded entry invalidityDate as UTCTime -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("invalidityDate", false, B.utcTime(new Date("2026-01-01T00:00:00Z")))] }] }, issuerOf(s))) === "crl/bad-input");
 }
 
 async function main() {
