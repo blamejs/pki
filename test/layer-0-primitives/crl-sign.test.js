@@ -252,6 +252,37 @@ async function testIssuerCertCrlSign() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: caNoCrlSign, key: s.key })) === "crl/bad-input");
 }
 
+// ---- sec. 5.2 -- the pre-encoded Extension escape hatch is held to the profile (criticality + delta rules) ----
+
+async function testPreEncodedExtProfile() {
+  var s = makeSigner("ec-p256");
+  var B = pki.asn1.build;
+  function extDer(name, critical, valueDer) {
+    var kids = [B.oid(byName(name))];
+    if (critical) kids.push(B.boolean(true));
+    kids.push(B.octetString(valueDer));
+    return B.sequence(kids);
+  }
+  // cRLNumber MUST be non-critical (sec. 5.2.3) -- a critical pre-encoded one is rejected.
+  check("pre-encoded critical cRLNumber -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("cRLNumber", true, B.integer(1n))] }, issuerOf(s))) === "crl/bad-input");
+  // deltaCRLIndicator MUST be critical (sec. 5.2.4) -- a non-critical pre-encoded one is rejected.
+  check("pre-encoded non-critical deltaCRLIndicator -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", false, B.integer(2n))] }, issuerOf(s))) === "crl/bad-input");
+  // A pre-encoded (critical) delta with NO cRLNumber anywhere -> rejected (sec. 5.2.3/5.2.4).
+  check("pre-encoded delta without a cRLNumber -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n))] }, issuerOf(s))) === "crl/bad-input");
+  // A pre-encoded (critical) delta whose base (5) is >= spec.crlNumber (5) -> rejected.
+  check("pre-encoded delta with cRLNumber <= baseCRLNumber -> crl/bad-crl-number",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(5n))] }, issuerOf(s))) === "crl/bad-crl-number");
+  // A conforming pre-encoded delta (critical, base 2) + spec.crlNumber 5 is accepted.
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: [extDer("deltaCRLIndicator", true, B.integer(2n))] }, issuerOf(s)));
+  check("conforming pre-encoded delta + spec.crlNumber accepted", (crlExt(c, "deltaCRLIndicator") || {}).critical === true);
+  // The entry-extension escape hatch is held to the same profile: reasonCode MUST be non-critical (sec. 5.3.1).
+  check("pre-encoded critical entry reasonCode -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("reasonCode", true, B.enumerated(1n))] }] }, issuerOf(s))) === "crl/bad-input");
+}
+
 async function main() {
   await testRoundTrip();
   await testEmptyListOmitsRevoked();
@@ -267,6 +298,7 @@ async function main() {
   await testDeltaAndFreshest();
   await testDeltaRequiresCrlNumber();
   await testIssuerCertCrlSign();
+  await testPreEncodedExtProfile();
   await testPemAndIsRevoked();
   await testFailClosed();
   console.log("CHECKS " + helpers.getChecks());
