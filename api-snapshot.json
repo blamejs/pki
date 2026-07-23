@@ -2426,10 +2426,6 @@
           "kind": "function",
           "arity": 2
         },
-        "verifyCrlSignature": {
-          "kind": "function",
-          "arity": 2
-        },
         "verifyOcspResponse": {
           "kind": "function",
           "arity": 5

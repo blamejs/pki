@@ -226,6 +226,9 @@ async function testFailClosed() {
   check("nextUpdate before thisUpdate -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: NU, nextUpdate: TU }, issuerOf(s))) === "crl/bad-input");
   check("revoked entry without a serialNumber -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ revocationDate: RD }] }, issuerOf(s))) === "crl/bad-input");
   check("unknown CRL extension key -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { bogus: 1 } }, issuerOf(s))) === "crl/bad-input");
+  // RFC 5280 sec. 5.1.2.6 -- a CRL must not list the same serial number twice.
+  check("duplicate revoked serial number -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }, { serialNumber: 5n, revocationDate: RD }] }, issuerOf(s))) === "crl/bad-input");
 }
 
 // ---- sec. 5.2.3 / 5.2.4 -- a delta CRL MUST carry a cRLNumber greater than its baseCRLNumber ----
