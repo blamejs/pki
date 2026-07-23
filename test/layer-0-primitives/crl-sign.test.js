@@ -296,6 +296,12 @@ async function testPreEncodedExtProfile() {
   // A pre-encoded entry invalidityDate encoded as UTCTime (not GeneralizedTime) is rejected.
   check("pre-encoded entry invalidityDate as UTCTime -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("invalidityDate", false, B.utcTime(new Date("2026-01-01T00:00:00Z")))] }] }, issuerOf(s))) === "crl/bad-input");
+  // The removeFromCRL(8)-delta-only rule applies to the entry escape hatch too.
+  check("pre-encoded entry removeFromCRL(8) in a full CRL -> crl/bad-reason-code",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("reasonCode", false, B.enumerated(8n))] }] }, issuerOf(s))) === "crl/bad-reason-code");
+  // A pre-encoded invalidityDate with a GeneralizedTime tag but malformed content is rejected (parsed, not tag-only).
+  check("pre-encoded entry invalidityDate with malformed content -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: [extDer("invalidityDate", false, Buffer.from([0x18, 0x04, 0x41, 0x41, 0x41, 0x41]))] }] }, issuerOf(s))) === "crl/bad-input");
 }
 
 async function main() {
