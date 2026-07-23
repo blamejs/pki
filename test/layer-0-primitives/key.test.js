@@ -243,6 +243,9 @@ async function testOptionsAndUsages() {
 
   // generate: a symmetric algorithm succeeds but is not a key pair -> the non-pair guard.
   check("generate of a symmetric algorithm -> key/bad-input (not a key pair)", (await codeOf(pki.key.generate({ name: "AES-GCM", length: 256 }, { usages: ["encrypt", "decrypt"] }))) === "key/bad-input");
+  // a nameless algorithm object reaches the null-name default-usages guard, then fails typed (never a raw fault).
+  check("generate with a nameless algorithm -> typed error", typeof (await codeOf(pki.key.generate({}))) === "string");
+  check("import with a nameless opts.algorithm -> typed error", typeof (await codeOf(pki.key.import(edSpki, { algorithm: {} }))) === "string");
   // generate: an unknown algorithm -> the generateKey catch propagates the typed WebCrypto fault.
   var bogusCode = await codeOf(pki.key.generate("Bogus-Alg"));
   check("generate of an unknown algorithm -> a typed PkiError propagates", typeof bogusCode === "string" && bogusCode.indexOf("/") !== -1);
@@ -305,6 +308,21 @@ async function testEncryptCorners() {
   // import of an SPKI naming an unregistered algorithm OID -> fail closed (cannot infer, oid unnamed).
   var bogusSpki = b.sequence([b.sequence([b.oid("1.2.3.4.5.6.7.8")]), b.bitString(Buffer.from([4, 1, 2]), 0)]);
   check("import of an unregistered-algorithm SPKI -> key/unsupported-algorithm", (await codeOf(pki.key.import(bogusSpki))) === "key/unsupported-algorithm");
+
+  // an SPKI whose algorithm field is not a well-formed AlgorithmIdentifier SEQUENCE -> typed reject during
+  // inference, never a raw children[] dereference.
+  var malformedAlgSpki = b.sequence([b.sequence([]), b.bitString(Buffer.from([4, 1, 2]), 0)]);          // empty alg SEQUENCE
+  check("import of a malformed-algorithm SPKI -> key/bad-input (not a raw fault)", (await codeOf(pki.key.import(malformedAlgSpki))) === "key/bad-input");
+  var nonSeqAlgSpki = b.sequence([b.octetString(Buffer.from([1])), b.bitString(Buffer.from([4, 1, 2]), 0)]); // alg is not a SEQUENCE
+  check("import of a non-SEQUENCE-algorithm SPKI -> key/bad-input", (await codeOf(pki.key.import(nonSeqAlgSpki))) === "key/bad-input");
+  var nonOidAlgSpki = b.sequence([b.sequence([b.integer(5n)]), b.bitString(Buffer.from([4, 1, 2]), 0)]);    // alg SEQ but first element is not an OID
+  check("import of an SPKI whose algorithm is not an OID -> key/bad-input", (await codeOf(pki.key.import(nonOidAlgSpki))) === "key/bad-input");
+
+  // a caller opts.algorithm with a non-canonical case must land on the correct usage class (WebCrypto
+  // matches names case-insensitively) -- a lowercase X25519 imports with deriveBits, not the signing default.
+  var x25519Priv = await pki.key.export((await pki.key.generate("X25519")).privateKey);
+  var lc = await pki.key.import(x25519Priv, { algorithm: { name: "x25519" } });
+  check("import with a lowercase algorithm name lands on the right usages", lc.type === "private" && lc.algorithm.name === "X25519");
 }
 
 async function main() {
