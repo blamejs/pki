@@ -148,6 +148,10 @@ async function testFailClosedInputs() {
   check("a keyBag with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a shroudedKey with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a null bag -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [null] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a null safeContents entry -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [null] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a non-object safeContents entry -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: ["nope"] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("spec.ca that is not an array -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ key: s.key, cert: s.cert, ca: "nope" }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a non-object opts.mac -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", mac: "yes" }))) === "pkcs12/bad-input");
   // a shroudedKey with no encrypt block inherits opts.password + the default cipher (the bag.encrypt || {} arm).
   var pdef = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key }] }] }, { password: "1234" });
   check("a shroudedKey with no encrypt block uses opts.password + defaults", (await pki.pkcs12.verifyMac(pdef, "1234")) === true);
