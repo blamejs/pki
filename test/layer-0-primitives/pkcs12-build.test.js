@@ -233,8 +233,9 @@ async function testEdges() {
   // a MAC-specific password (mac.password) overrides the shared password; an explicit MAC salt is honored.
   var pmacpw = await pki.pkcs12.build(spec, { password: "privpw", mac: { password: "macpw", salt: Buffer.alloc(8, 2) } });
   check("mac.password overrides the shared password", (await pki.pkcs12.verifyMac(pmacpw, "macpw")) === true && (await pki.pkcs12.verifyMac(pmacpw, "privpw")) === false);
-  // an empty MAC salt is rejected.
+  // an empty or over-cap MAC salt is rejected on build.
   check("an empty MAC salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { salt: Buffer.alloc(0) } }))) === "pkcs12/bad-input");
+  check("an over-cap MAC salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { salt: Buffer.alloc(pki.constants.LIMITS.PBKDF2_MAX_SALT + 1) } }))) === "pkcs12/bad-input");
 }
 
 // ---- verifyMac DoS bound + independent PBMAC1 messageAuthScheme -----------
@@ -280,6 +281,9 @@ async function testVerifyHardening() {
   // a downgraded SHA-1 PBMAC1 store is refused on verify (RFC 9579 sec. 5/7 forbids a <= 160-bit digest).
   var sha1Store = craft(salt, iter, keyLen, "hmacWithSHA1", "hmacWithSHA1", Buffer.alloc(20));
   check("verifyMac refuses a SHA-1 PBMAC1 -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.verifyMac(sha1Store, "1234"))) === "pkcs12/unsupported-algorithm");
+  // a below-floor PBMAC1 keyLength is refused on verify too (RFC 9579 sec. 9).
+  var shortKl = craft(salt, iter, 10, "hmacWithSHA256", "hmacWithSHA256", Buffer.alloc(32));
+  check("verifyMac refuses a below-floor PBMAC1 keyLength -> pkcs12/bad-input", (await codeOf(pki.pkcs12.verifyMac(shortKl, "1234"))) === "pkcs12/bad-input");
 }
 
 async function main() {
