@@ -228,6 +228,30 @@ async function testFailClosed() {
   check("unknown CRL extension key -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { bogus: 1 } }, issuerOf(s))) === "crl/bad-input");
 }
 
+// ---- sec. 5.2.3 / 5.2.4 -- a delta CRL MUST carry a cRLNumber greater than its baseCRLNumber ----
+
+async function testDeltaRequiresCrlNumber() {
+  var s = makeSigner("ec-p256");
+  check("delta CRL with no cRLNumber -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { deltaCRLIndicator: 3n } }, issuerOf(s))) === "crl/bad-input");
+  check("delta CRL whose cRLNumber == baseCRLNumber -> crl/bad-crl-number",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 3n, extensions: { deltaCRLIndicator: 3n } }, issuerOf(s))) === "crl/bad-crl-number");
+  var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n, extensions: { deltaCRLIndicator: 3n } }, issuerOf(s)));
+  check("delta CRL with cRLNumber > baseCRLNumber accepted", (crlExt(c, "deltaCRLIndicator") || {}).critical === true && (crlExt(c, "cRLNumber") || {}).value === 5n);
+}
+
+// ---- sec. 4.2.1.3 -- an issuer cert whose keyUsage omits cRLSign cannot sign a CRL ----
+
+async function testIssuerCertCrlSign() {
+  var s = makeSigner("ec-p256");
+  var base = { subjectPublicKey: s.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z") };
+  var caCrlSign = pki.schema.x509.parse(await pki.x509.sign(Object.assign({ subject: "CA cRLSign", extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, base), { key: s.key }));
+  check("issuer cert asserting cRLSign signs a CRL", Buffer.isBuffer(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: caCrlSign, key: s.key })));
+  var caNoCrlSign = pki.schema.x509.parse(await pki.x509.sign(Object.assign({ subject: "CA no cRLSign", extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "digitalSignature"] } }, base), { key: s.key }));
+  check("issuer cert whose keyUsage omits cRLSign -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: caNoCrlSign, key: s.key })) === "crl/bad-input");
+}
+
 async function main() {
   await testRoundTrip();
   await testEmptyListOmitsRevoked();
@@ -241,6 +265,8 @@ async function main() {
   await testVerifyAlgorithmConfusion();
   await testIdpGates();
   await testDeltaAndFreshest();
+  await testDeltaRequiresCrlNumber();
+  await testIssuerCertCrlSign();
   await testPemAndIsRevoked();
   await testFailClosed();
   console.log("CHECKS " + helpers.getChecks());

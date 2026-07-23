@@ -1785,7 +1785,7 @@
         },
         "verify": {
           "kind": "function",
-          "arity": 3
+          "arity": 2
         }
       }
     },

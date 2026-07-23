@@ -1812,7 +1812,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/crmf-sign.js:_buildCertReqMsg", "lib/crmf-sign.js:_encodeCertTemplate", "lib/crmf-sign.js:_buildProofOfPossession",
         "lib/csr-sign.js:sign", "lib/csr-sign.js:_sign", "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:addAttr",
         "lib/x509-sign.js:sign", "lib/x509-sign.js:_sign",
-        "lib/crl-sign.js:_sign", "lib/crl-sign.js:_idpValue", "lib/crl-sign.js:_buildCrlExtensions", "lib/crl-sign.js:_buildRevoked",
+        "lib/crl-sign.js:_sign", "lib/crl-sign.js:_idpValue", "lib/crl-sign.js:_buildCrlExtensions", "lib/crl-sign.js:_buildRevoked", "lib/crl-sign.js:_assertIssuerCanSignCrl",
       ],
       mode: "family-subset",
       reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
