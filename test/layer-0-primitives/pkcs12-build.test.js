@@ -152,6 +152,8 @@ async function testFailClosedInputs() {
   var pdef = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key }] }] }, { password: "1234" });
   check("a shroudedKey with no encrypt block uses opts.password + defaults", (await pki.pkcs12.verifyMac(pdef, "1234")) === true);
   check("a certBag with non-cert bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a crlBag with non-CRL bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "crl", crl: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a secret bag with a garbage secretTypeId -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "not an oid", secretValue: b.octetString(Buffer.from("x")) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("an empty store -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a bad spec -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({}, { password: "1234" }))) === "pkcs12/bad-input");
   check("a secret bag with no secretValue -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "data" }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
@@ -200,6 +202,9 @@ async function testBagTypes() {
   // convenience (OpenSSL-style) form
   var conv = await pki.pkcs12.build({ key: s.key, cert: s.cert, friendlyName: "k" }, { password: "1234" });
   check("convenience form { key, cert } builds + verifies", (await pki.pkcs12.verifyMac(conv, "1234")) === true);
+  // an arbitrary (unregistered) dotted-decimal secretTypeId OID is preserved verbatim.
+  var pdotted = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "1.2.3.4.5", secretValue: b.octetString(Buffer.from("s")) }] }] }, { password: "1234" });
+  check("a secret bag with an arbitrary OID secretTypeId round-trips", (await pki.pkcs12.verifyMac(pdotted, "1234")) === true && pki.schema.pkcs12.parse(pdotted).safeBags[0].secretTypeId === "1.2.3.4.5");
 }
 
 // ---- option/verifyMac reachable edges --------------------------------------
