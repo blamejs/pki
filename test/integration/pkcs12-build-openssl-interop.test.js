@@ -48,12 +48,19 @@ async function run() {
     check("openssl decrypts + lists the toolkit classic PKCS#12 (shrouded key)", /BEGIN PRIVATE KEY/.test(info.stdout));
 
     // ---- (b) OURS (PBMAC1) -> OpenSSL verifies + lists ----
-    var oursPbmac1 = await pki.pkcs12.build({ safeContents: [{ bags: [
-      { type: "cert", cert: s.cert }, { type: "shroudedKey", key: s.key, encrypt: { password: PW } } ] }] },
-      { password: PW, mac: { algorithm: "pbmac1", hash: "sha256" } });
-    var opFile = path.join(dir, "ours-pbmac1.p12"); fs.writeFileSync(opFile, oursPbmac1);
-    var pinfo = ctx.runOpenssl(["pkcs12", "-in", opFile, "-info", "-nodes", "-passin", "pass:" + PW], { allowNonZero: true });
-    check("openssl verifies + lists the toolkit PBMAC1 PKCS#12", pinfo.code === 0 && /BEGIN CERTIFICATE/.test(pinfo.stdout));
+    // RFC 9579 PBMAC1 support in `openssl pkcs12` lands in OpenSSL 3.4; the service gate accepts older
+    // builds, so probe for it and skip (never fail) the PBMAC1 cross-check when it is absent.
+    var pbmac1Supported = /-?pbmac1/i.test((function () { var h = ctx.runOpenssl(["pkcs12", "-help"], { allowNonZero: true }); return (h.stdout || "") + (h.stderr || ""); })());
+    if (pbmac1Supported) {
+      var oursPbmac1 = await pki.pkcs12.build({ safeContents: [{ bags: [
+        { type: "cert", cert: s.cert }, { type: "shroudedKey", key: s.key, encrypt: { password: PW } } ] }] },
+        { password: PW, mac: { algorithm: "pbmac1", hash: "sha256" } });
+      var opFile = path.join(dir, "ours-pbmac1.p12"); fs.writeFileSync(opFile, oursPbmac1);
+      var pinfo = ctx.runOpenssl(["pkcs12", "-in", opFile, "-info", "-nodes", "-passin", "pass:" + PW], { allowNonZero: true });
+      check("openssl verifies + lists the toolkit PBMAC1 PKCS#12", pinfo.code === 0 && /BEGIN CERTIFICATE/.test(pinfo.stdout));
+    } else {
+      ctx.skip("openssl < 3.4 -- no `pkcs12 -pbmac1_pbkdf2`, RFC 9579 PBMAC1 interop not cross-checked");
+    }
 
     // ---- (c) OpenSSL-exported store -> the toolkit parses + verifies its MAC ----
     var oClassic = path.join(dir, "openssl-classic.p12");

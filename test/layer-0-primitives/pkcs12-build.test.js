@@ -125,6 +125,7 @@ async function testMacFailClosed() {
   check("#13 mac.iterations over the cap -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { iterations: pki.constants.LIMITS.PBKDF2_MAX_ITERATIONS + 1 } }))) === "pkcs12/bad-input");
   // #14 SHA-1 is forbidden in PBMAC1 (RFC 9579 sec. 5/7).
   check("#14 PBMAC1 with sha1 -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha1" } }))) === "pkcs12/unsupported-algorithm");
+  check("#14 PBMAC1 keyLength over the cap -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", keyLength: 2000 } }))) === "pkcs12/bad-input");
   // classic HMAC with SHA-1 IS allowed (legacy interop), so this must NOT throw.
   check("#14 classic HMAC with sha1 is allowed", typeof (await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha1" } })) === "object");
 }
@@ -271,6 +272,9 @@ async function testVerifyHardening() {
   check("verifyMac honors a differing PBMAC1 prf / messageAuthScheme (SHA-512 PRF + SHA-256 HMAC)", (await pki.pkcs12.verifyMac(differing, "1234")) === true);
   // the same store with the wrong password still fails.
   check("the differing-scheme store fails on a wrong password", (await pki.pkcs12.verifyMac(differing, "nope")) === false);
+  // a downgraded SHA-1 PBMAC1 store is refused on verify (RFC 9579 sec. 5/7 forbids a <= 160-bit digest).
+  var sha1Store = craft(salt, iter, keyLen, "hmacWithSHA1", "hmacWithSHA1", Buffer.alloc(20));
+  check("verifyMac refuses a SHA-1 PBMAC1 -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.verifyMac(sha1Store, "1234"))) === "pkcs12/unsupported-algorithm");
 }
 
 async function main() {
