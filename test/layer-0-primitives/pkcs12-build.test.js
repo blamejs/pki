@@ -158,6 +158,7 @@ async function testFailClosedInputs() {
   check("a certBag with non-cert bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a crlBag with non-CRL bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "crl", crl: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a secret bag with a garbage secretTypeId -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "not an oid", secretValue: b.octetString(Buffer.from("x")) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a non-string secretTypeId -> pkcs12/bad-input (domain-wrapped, not oid/*)", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: 42, secretValue: b.octetString(Buffer.from("x")) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("an empty store -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a bad spec -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({}, { password: "1234" }))) === "pkcs12/bad-input");
   check("a secret bag with no secretValue -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "data" }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
