@@ -132,6 +132,23 @@ async function testFailClosed() {
   var k1 = Buffer.alloc(32, 0x41);
   var two = await pki.cms.authenticate(MSG, [{ kek: k1, kekId: Buffer.from("a") }, { kek: k1, kekId: Buffer.from("b") }], {});
   check("#9 two ambiguous kekri candidates all fail -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(two, { kek: Buffer.alloc(32, 0x99) }); })) === "cms/decrypt-failed");
+
+  // an UNDERSIZED conveyed MAC key (a ktri can wrap any length) is refused fail-closed. Craft it by
+  // RSA-OAEP-wrapping an 8-octet key and splicing it (+ the matching bare-content HMAC) into a real
+  // ktri message -- both splice regions are fixed-length (the OAEP ciphertext = modulus size, the mac
+  // = the SHA-256 output), so the DER stays valid.
+  var rk = makeRecipient("rsa");
+  var kaut = await pki.cms.authenticate(MSG, [{ cert: rk.cert }], { authenticatedAttributes: false });
+  var kp = pki.schema.cms.parse(kaut);
+  var origEnc = Buffer.from(kp.recipientInfos[0].encryptedKey), origMac = Buffer.from(kp.mac);
+  var shortKey = Buffer.alloc(8, 0x11);
+  var pub = await subtle.importKey("spki", rk.spki, { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  var shortEnc = Buffer.from(await subtle.encrypt({ name: "RSA-OAEP" }, pub, shortKey));
+  var newMac = nodeCrypto.createHmac("sha256", shortKey).update(MSG).digest();
+  var crafted = Buffer.from(kaut);
+  shortEnc.copy(crafted, crafted.indexOf(origEnc));
+  newMac.copy(crafted, crafted.indexOf(origMac));
+  check("#9 an undersized (8-octet) conveyed MAC key -> cms/decrypt-failed", (await codeOf(function () { return pki.cms.decrypt(crafted, { key: rk.key, cert: rk.cert }); })) === "cms/decrypt-failed");
 }
 
 // ---- 12 macAlgorithm strictness (distinct pass-through code) ----------------
