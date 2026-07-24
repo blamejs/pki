@@ -140,10 +140,11 @@ async function testAttributes() {
   check("#15 localKeyId round-trips as the exact OCTET STRING", Buffer.isBuffer(bag.localKeyId) && bag.localKeyId.equals(lki));
 }
 
-// ---- #11 public-key integrity is refused (deferred) + fail-closed inputs ---
+// ---- #11 public-key integrity config-time rejects + fail-closed inputs ------
+// (the public-key integrity round-trip surface lives in pkcs12-public-key.test.js)
 async function testFailClosedInputs() {
   var s = signer();
-  check("#11 public-key integrity -> pkcs12/unsupported-algorithm (deferred)", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/unsupported-algorithm");
+  check("#11 public-key integrity with no signer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/bad-input");
   check("an unknown bag type -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "bogus" }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a keyBag with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a shroudedKey with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");

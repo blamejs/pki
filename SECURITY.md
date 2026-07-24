@@ -116,10 +116,15 @@ security-only patches after the next major releases.
   decrypts any bag (RFC 7292 sec. 5.1): a store whose password MAC fails returns nothing — the wrong-password
   verdict is the MAC gate (`pkcs12/mac-mismatch`), never a per-bag decrypt error that could leak which bag or
   which byte differed. It refuses a MAC-less store unless the caller explicitly opts in (`allowUnauthenticated`,
-  surfaced as `macVerified: false`), refuses a public-key-integrity store, and — because a PBES2 bag decrypt
-  after a valid MAC is still MAC-less at the cipher layer — collapses every post-MAC decrypt failure into the
-  uniform `pkcs12/decrypt-failed`. The bag KDF iteration/salt work factors are bounded before derivation
-  (`opts.maxIterations` lowers the cap).
+  surfaced as `macVerified: false`), and — because a PBES2 bag decrypt
+  after a valid MAC is still MAC-less at the cipher layer — collapses every post-integrity decrypt failure into
+  the uniform `pkcs12/decrypt-failed`. The bag KDF iteration/salt work factors are bounded before derivation
+  (`opts.maxIterations` lowers the cap). For a **public-key-integrity store** (an `id-signedData` authSafe, RFC
+  7292 sec. 4) `open` verifies the CMS SignedData signature over the AuthenticatedSafe FIRST and returns
+  nothing on a failure (`pkcs12/signature-invalid`), exactly as the MAC gate does for password mode. The signer
+  is surfaced as a per-signer verdict (`signers`) but NOT chained to a trust anchor — a valid signature
+  authenticates the store's INTEGRITY, not the signer's identity; anchoring `signers[i].cert` is the caller's
+  `pki.path.validate` step (the out-of-path signer contract shared with CMS / TSP / OCSP-delegate verification).
 - **Encoding malleability.** Every textual encoding an operator hands the
   toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
   transfer), hex, a JSON document, a dotted-decimal OID string — is decoded

@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.14 — 2026-07-24
+## v0.3.15 — 2026-07-24
+
+PKCS#12 public-key integrity is produced and verified (RFC 7292 sec. 4).
+
+### Added
+
+- pki.pkcs12.build produces a public-key-integrity PKCS#12 store (RFC 7292 sec. 4). With opts.integrity { mode: 'public-key', signer: { cert, key, digestAlgorithm?, pss? } | signers: [ ... ], sid?, signingTime?, certificates? } it wraps the AuthenticatedSafe in a CMS SignedData whose id-data eContent is the byte-exact AuthenticatedSafe, signed by any pki.cms.sign signer algorithm (RSA PKCS#1 v1.5 / RSASSA-PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, composite ML-DSA), with no MacData. Combining opts.mac with public-key integrity, or building with no signer, is a config-time pkcs12/bad-integrity-mode or pkcs12/bad-input. Privacy is unchanged: opts.password still PBES2-encrypts the bags.
+- pki.pkcs12.open verifies a public-key-integrity store. It runs pki.cms.verify over the store's CMS SignedData authSafe FIRST -- the integrity gate, exactly as the MAC is for password mode -- and returns nothing on a failure (pkcs12/signature-invalid), before decrypting any bag. The result bundle gains signers, the per-signer verdict [{ ok, sid, cert }] (null in password / MAC-less mode); the signer certificate is surfaced but never chained to a trust anchor -- anchoring it is the caller's pki.path.validate step. opts.signerCerts supplies the signer certificate for a store built with certificates: false. The bags then decrypt under the caller password exactly as in password mode (privacy is independent of integrity); a wrong bag password is the uniform pkcs12/decrypt-failed.
+
+## v0.3.14 — 2026-07-23
 
 CMS AuthenticatedData is produced and verified (RFC 5652 sec. 9).
 
