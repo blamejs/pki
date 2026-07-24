@@ -286,6 +286,13 @@ async function testAuthScopeAndScheme() {
   // a non-standard 2xx (201/203/206) with a valid certs-only body must NOT be decoded and accepted --
   // only 200 (and 202-retry) are valid EST responses.
   check("#28 a non-standard 2xx status is rejected, not parsed as certificates", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport({ status: 203, headers: ct("application/pkcs7-mime"), body: pki.est.transferEncode(certsOnly([S.cert])) }) }))) === "est/http-error");
+  // an injected transport using ordinary HTTP header casing is handled (the verb normalizes headers).
+  var tcap = fakeTransport([{ status: 302, headers: { Location: "https://ca.example/.well-known/est/cacerts?x=1" }, body: "" }, cacertsOK([S.cert])]);
+  var rcap = await pki.est.cacerts(BASE, { transport: tcap });
+  check("#28 a capitalized Location header is followed (headers normalized)", rcap.certificates.length === 1 && tcap.calls.length === 2);
+  var tcapAuth = fakeTransport([{ status: 401, headers: { "WWW-Authenticate": "Basic realm=\"est\"" }, body: "" }, enrollOK([S.cert])]);
+  var rcapAuth = await pki.est.simpleenroll(BASE, CSR, { transport: tcapAuth, username: "u", password: "p" });
+  check("#28 a capitalized WWW-Authenticate is honored (headers normalized)", rcapAuth.certificate.equals(S.cert) && /^Basic /.test(tcapAuth.calls[1].headers.authorization));
 }
 
 async function main() {

@@ -27,7 +27,7 @@ async function selfSigned(cn) {
     notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
     extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyEncipherment", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
   }, { key: s.key });
-  return { certPem: pki.schema.x509.pemEncode(certDer, "CERTIFICATE"), keyPem: pki.schema.pkcs8.pemEncode(s.key, "PRIVATE KEY") };
+  return { certDer: certDer, certPem: pki.schema.x509.pemEncode(certDer, "CERTIFICATE"), keyPem: pki.schema.pkcs8.pemEncode(s.key, "PRIVATE KEY") };
 }
 
 function startServer(tls, handler, extra) {
@@ -78,6 +78,19 @@ async function testHappy() {
     // a body is written for ANY body-bearing method, not only POST.
     var rput = await t({ method: "PUT", url: urlFor(s.port), body: Buffer.from("PUTBODY"), tls: { anchors: [tls.certPem], servername: "localhost" } });
     check("7 a PUT body is transmitted, not silently dropped", rput.headers["x-echo"] === "PUTBODY");
+  } finally { s.srv.close(); }
+}
+
+// ---- a raw DER trust anchor is accepted (converted to PEM) -----------------
+async function testDerAnchor() {
+  var tls = await selfSigned("Loopback A");
+  var s = await startServer(tls, function (req, res) { res.end("der"); });
+  try {
+    var t = pki.transport.https({});
+    // the toolkit's native anchor form is a DER Buffer (what pki.est.cacerts returns); node's `ca`
+    // needs PEM, so a DER anchor must be converted, not silently ignored (which would fail auth).
+    var r = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certDer], servername: "localhost" } });
+    check("14e a raw DER trust anchor is accepted (converted to PEM)", r.status === 200 && r.body.toString() === "der");
   } finally { s.srv.close(); }
 }
 
@@ -208,6 +221,7 @@ async function main() {
   await testHappy();
   await testIdentityHookCannotBypass();
   await testTlsDefaultsHonored();
+  await testDerAnchor();
   await testIpv6BracketHost();
   await testServerAuthFailed();
   await testSizeCap();
