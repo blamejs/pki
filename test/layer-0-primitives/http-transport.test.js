@@ -150,9 +150,24 @@ async function testErrorFactoryParam() {
   check("14 a parameterized transport surfaces the caller's code prefix", (await codeOf(t({ method: "GET", url: "http://x/y" }))) === "acme/insecure-url");
 }
 
+// ---- a caller checkServerIdentity cannot disable name verification ---------
+async function testIdentityHookCannotBypass() {
+  var tls = await selfSigned("Loopback A");
+  var s = await startServer(tls, function (req, res) { res.end("x"); });
+  try {
+    var t = pki.transport.https({});
+    // the cert's SAN is 'localhost'; connecting with a mismatched servername must fail closed EVEN
+    // when the caller's checkServerIdentity returns undefined (accept) -- node's default RFC 6125
+    // check runs first and its rejection is never bypassed.
+    var code = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "wrong.invalid", checkServerIdentity: function () { return undefined; } } }));
+    check("14b an accepting checkServerIdentity cannot disable hostname verification", code === "transport/server-auth-failed");
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
   await testHappy();
+  await testIdentityHookCannotBypass();
   await testServerAuthFailed();
   await testSizeCap();
   await testTimeout();

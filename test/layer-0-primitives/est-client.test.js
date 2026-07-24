@@ -266,10 +266,30 @@ async function testMoreBranches() {
   check("#27 credentials are STRIPPED on the cross-origin redirect", !tleak.calls[2].headers.authorization && rleak.certificates.length === 1);
 }
 
+// ---- credential-scope + auth-scheme hardening ------------------------------
+async function testAuthScopeAndScheme() {
+  // a 401 arriving AFTER a cross-origin redirect is a different server -- credentials MUST NOT be
+  // built and sent there, even though the client has them (the redirect-then-401 leak).
+  var tredir = fakeTransport([
+    { status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" },
+    { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" },
+  ]);
+  check("#28 a 401 after a cross-origin redirect refuses to send credentials", (await codeOf(pki.est.cacerts(BASE, { transport: tredir, username: "u", password: "p" }))) === "est/auth-required");
+  check("#28 no credentials reached the redirected origin", tredir.calls.every(function (c) { return !(c.headers && c.headers.authorization); }));
+  // a Digest/Bearer challenge that merely CONTAINS 'basic' in a parameter is not a Basic challenge.
+  check("#28 a Digest challenge with 'basic' in a param is not answered with Basic", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": "Digest realm=\"basic\"" }, body: "" }), username: "u", password: "p" }))) === "est/auth-required");
+  check("#28 a Bearer challenge naming 'basic' is not answered with Basic", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": "Bearer error=\"basic required\"" }, body: "" }), username: "u", password: "p" }))) === "est/auth-required");
+  // a genuine Basic challenge inside a comma-separated challenge list IS honored.
+  var tlist = fakeTransport([{ status: 401, headers: { "www-authenticate": "Digest realm=\"x\", Basic realm=\"y\"" }, body: "" }, enrollOK([S.cert])]);
+  var rlist = await pki.est.simpleenroll(BASE, CSR, { transport: tlist, username: "u", password: "p" });
+  check("#28 a Basic challenge in a comma-separated list is honored", rlist.certificate.equals(S.cert) && /^Basic /.test(tlist.calls[1].headers.authorization));
+}
+
 async function main() {
   await setup();
   await testCsrFormsAndDefaultTransport();
   await testMoreBranches();
+  await testAuthScopeAndScheme();
   await testCacertsHappy();
   await testEnrollHappy();
   await testReenrollHappy();
