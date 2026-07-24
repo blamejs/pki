@@ -200,6 +200,8 @@ async function testIo() {
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.integer(5n)] }); })) === "cms/bad-input");
   check("#cfg an attribute with a valid OID but a non-SET value -> bad-input",
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.integer(1n)])] }); })) === "cms/bad-input");
+  check("#cfg an attribute with an empty SET OF value -> bad-input (RFC 5652 SIZE 1..MAX)",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.setOf([])])] }); })) === "cms/bad-input");
 }
 
 async function run() {
