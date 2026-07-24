@@ -112,7 +112,14 @@ security-only patches after the next major releases.
   typed error on a MAC-less or public-key-integrity store rather than returning a falsy verdict. `pki.pkcs12.build`
   encodes every password the PKCS#12 way (BMPString+NULL for the Appendix B KDF, UTF-8 for the PBES2 bags and
   PBMAC1) so the output is not silently unopenable elsewhere, refuses a <=160-bit PBMAC1 digest (RFC 9579), and
-  never emits a non-canonical DEFAULT-1 MacData iterations.
+  never emits a non-canonical DEFAULT-1 MacData iterations. `pki.pkcs12.open` verifies that MAC BEFORE it
+  decrypts any bag (RFC 7292 sec. 5.1): a store whose password MAC fails returns nothing — the wrong-password
+  verdict is the MAC gate (`pkcs12/mac-mismatch`), never a per-bag decrypt error that could leak which bag or
+  which byte differed. It refuses a MAC-less store unless the caller explicitly opts in (`allowUnauthenticated`,
+  surfaced as `macVerified: false`), refuses a public-key-integrity store, and — because a PBES2 bag decrypt
+  after a valid MAC is still MAC-less at the cipher layer — collapses every post-MAC decrypt failure into the
+  uniform `pkcs12/decrypt-failed`. The bag KDF iteration/salt work factors are bounded before derivation
+  (`opts.maxIterations` lowers the cap).
 - **Encoding malleability.** Every textual encoding an operator hands the
   toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
   transfer), hex, a JSON document, a dotted-decimal OID string — is decoded
