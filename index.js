@@ -53,6 +53,7 @@ var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
 var sigstore  = require("./lib/sigstore");
 var est        = require("./lib/est");
+var transport  = require("./lib/http-transport");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
 var trust      = require("./lib/trust");
@@ -143,11 +144,17 @@ module.exports = {
   // keyless Fulcio signature over a DSSE-wrapped in-toto SLSA attestation with a
   // Rekor inclusion proof -- offline, zero-dep, against caller-pinned trust.
   sigstore:  sigstore,
-  // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the
-  // transport-agnostic client codecs (base64 transfer, multipart splitter),
-  // certs-only + serverkeygen validators over CMS, the enroll-attribute builders,
-  // and the HTTP response classifier. No socket; fail-closed.
+  // `est` is RFC 7030 / 8951 / 9908 Enrollment over Secure Transport -- the thin
+  // client verbs (pki.est.cacerts / simpleenroll / simplereenroll) over pki.transport,
+  // plus the transport-agnostic codecs they compose (base64 transfer, multipart
+  // splitter, certs-only + serverkeygen validators over CMS, the enroll-attribute
+  // builders, the HTTP response classifier). est opens no socket; fail-closed.
   est:       est,
+  // `transport` is the shared fail-closed node:https transport the enrollment clients
+  // drive -- pki.transport.https(defaults) returns a transport(request) -> {status,
+  // headers, body}. The toolkit's sole socket choke point: explicit trust anchors,
+  // rejectUnauthorized always on, a TLS floor, a streaming response cap, and a timeout.
+  transport: transport,
   // `jose` is the RFC 7515 Flattened JWS + RFC 7638 JWK-thumbprint layer: a strict
   // base64url codec, a bounded duplicate-key-rejecting JSON reader, profiled
   // sign/verify (ACME-outer / EAB-inner / keyChange-inner), and an alg registry
