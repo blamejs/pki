@@ -75,7 +75,31 @@ async function testHappy() {
     check("7 the request body reached the server", r.headers["x-echo"] === "PING");
     check("7 the negotiated TLS protocol is surfaced", /^TLSv1\.[23]$/.test(r.tls.protocol));
     check("7 the peer certificate DER is surfaced", Buffer.isBuffer(r.tls.peerCertificate));
+    // a body is written for ANY body-bearing method, not only POST.
+    var rput = await t({ method: "PUT", url: urlFor(s.port), body: Buffer.from("PUTBODY"), tls: { anchors: [tls.certPem], servername: "localhost" } });
+    check("7 a PUT body is transmitted, not silently dropped", rput.headers["x-echo"] === "PUTBODY");
   } finally { s.srv.close(); }
+}
+
+// ---- an IPv6-literal URL reaches TLS (square brackets stripped) -------------
+async function testIpv6BracketHost() {
+  var probe = require("node:net").createServer();
+  var ok6 = await new Promise(function (res) { probe.once("error", function () { res(false); }); probe.listen(0, "::1", function () { probe.close(); res(true); }); });
+  if (!ok6) { helpers.skip("IPv6 loopback unavailable in this environment"); return; }
+  var tls = await selfSigned("Loopback A");   // SAN is 'localhost', not ::1
+  var srv = https.createServer({ cert: tls.certPem, key: tls.keyPem }, function (req, res) { res.end("v6"); });
+  var port = await new Promise(function (res) { srv.listen(0, "::1", function () { res(srv.address().port); }); });
+  try {
+    var t = pki.transport.https({});
+    // Without the bracket strip, node would pass "[::1]" as a hostname and getaddrinfo would fail
+    // (a DNS-shaped transport-error). Stripping the brackets makes node CONNECT to ::1 and reach the
+    // TLS handshake; the localhost cert does not match ::1, so it fails at identity verification --
+    // server-auth-failed proves the request reached TLS rather than failing name resolution. (The
+    // identity-match encoding for an IPv6 IP SAN is node-version-sensitive, so this asserts the
+    // reached-TLS behaviour, not a positive match.)
+    var code = await codeOf(t({ method: "GET", url: "https://[::1]:" + port + "/x", tls: { anchors: [tls.certPem] } }));
+    check("14d an IPv6-literal URL reaches TLS (brackets stripped from the node hostname)", code === "transport/server-auth-failed");
+  } finally { srv.close(); }
 }
 
 // ---- server authentication failure (wrong anchor) --------------------------
@@ -184,6 +208,7 @@ async function main() {
   await testHappy();
   await testIdentityHookCannotBypass();
   await testTlsDefaultsHonored();
+  await testIpv6BracketHost();
   await testServerAuthFailed();
   await testSizeCap();
   await testTimeout();
