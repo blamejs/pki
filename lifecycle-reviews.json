@@ -676,5 +676,35 @@
     "reason": "RFC 4158 certification-path building (leaf -> anchor over an untrusted candidate pool, every accept flowing through pki.path.validate, DoS-bounded). The offline discovery surface is hardened and openssl-cross-checked, but AIA caIssuers fetching is still Planned, so the surface will grow before it settles. Graduate once the path-discovery surface (including AIA fetch) is settled.",
     "reviewedAt": "0.3.13",
     "reviewBy": "0.4.0"
+  },
+  "pki.inspect.crl": {
+    "decision": "keep-experimental",
+    "reason": "The human-readable inspection surface renders a parsed structure in an OpenSSL-familiar (but deliberately not version-pinned) form over the strict parsers and the shared field renderers; the format is stable but the inspection surface continues to grow (new structures, new extension renderers), so it stays experimental until that surface settles.",
+    "reviewedAt": "0.3.14",
+    "reviewBy": "0.4.0"
+  },
+  "pki.inspect.csr": {
+    "decision": "keep-experimental",
+    "reason": "The human-readable inspection surface renders a parsed structure in an OpenSSL-familiar (but deliberately not version-pinned) form over the strict parsers and the shared field renderers; the format is stable but the inspection surface continues to grow (new structures, new extension renderers), so it stays experimental until that surface settles.",
+    "reviewedAt": "0.3.14",
+    "reviewBy": "0.4.0"
+  },
+  "pki.inspect.cms": {
+    "decision": "keep-experimental",
+    "reason": "The human-readable inspection surface renders a parsed structure in an OpenSSL-familiar (but deliberately not version-pinned) form over the strict parsers and the shared field renderers; the format is stable but the inspection surface continues to grow (new structures, new extension renderers), so it stays experimental until that surface settles.",
+    "reviewedAt": "0.3.14",
+    "reviewBy": "0.4.0"
+  },
+  "pki.inspect.any": {
+    "decision": "keep-experimental",
+    "reason": "The human-readable inspection surface renders a parsed structure in an OpenSSL-familiar (but deliberately not version-pinned) form over the strict parsers and the shared field renderers; the format is stable but the inspection surface continues to grow (new structures, new extension renderers), so it stays experimental until that surface settles.",
+    "reviewedAt": "0.3.14",
+    "reviewBy": "0.4.0"
+  },
+  "pki.schema.detectFormat": {
+    "decision": "keep-experimental",
+    "reason": "The human-readable inspection surface renders a parsed structure in an OpenSSL-familiar (but deliberately not version-pinned) form over the strict parsers and the shared field renderers; the format is stable but the inspection surface continues to grow (new structures, new extension renderers), so it stays experimental until that surface settles.",
+    "reviewedAt": "0.3.14",
+    "reviewBy": "0.4.0"
   }
 }
