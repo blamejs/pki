@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.16 — 2026-07-24
+
+The EST enrollment client ships -- pki.est fetches CA certificates and enrolls certificates over the wire (RFC 7030), on a new shared node:https transport.
+
+### Added
+
+- pki.est.cacerts(baseUrl, opts?), pki.est.simpleenroll(baseUrl, csr, opts?), and pki.est.simplereenroll(baseUrl, csr, opts?) -- the thin RFC 7030 client verbs over pki.transport. cacerts returns the raw, unordered CA certificate set; simpleenroll submits a PKCS#10 CSR (a DER Buffer or PEM) and returns the issued certificate (chosen by public-key match) with its chain; simplereenroll additionally requires opts.oldCert and enforces the byte-identical Subject + SubjectAltName re-enroll check before the request. A 202 is surfaced as { retry, retryAfterSeconds } and never slept on. Trust is fail-closed: an https URL and an explicit opts.tls.anchors (or opts.tls.useSystemStore) are required, HTTP Basic credentials are answered only after the server is authenticated and are dropped on a cross-origin redirect, and a downgrade, redirect loop, oversized response, or unmatched issued certificate each fails closed with a typed est/* error.
+- pki.transport -- the shared, fail-closed node:https transport the enrollment clients drive. pki.transport.https(defaults) returns a transport(request) -> Promise<{ status, headers, body }>. It is the toolkit's only socket: rejectUnauthorized is always on with no disable path, an explicit trust anchor or a system-store opt-in is required, TLS is floored at 1.2, the response body is bounded while it streams (LIMITS.HTTP_MAX_RESPONSE_BYTES, tightenable downward), and connect/read is bounded by a timeout. It carries no HTTP or protocol semantics -- status, content-type, redirect, and authentication decisions live in the message layer -- so it is reused verbatim across enrollment protocols. errors.TransportError is its default fault type; a protocol client may parameterize it to surface domain codes.
+
 ## v0.3.15 — 2026-07-24
 
 PKCS#12 public-key integrity is produced and verified (RFC 7292 sec. 4).

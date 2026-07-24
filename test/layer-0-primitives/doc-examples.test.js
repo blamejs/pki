@@ -136,6 +136,16 @@ var cmsDetachedContent = Buffer.from("hello CMS SignedData verification");
 var signFixtureSigner = require("../helpers/signing").makeSigner("ec-p256");
 var cmsSha256Digest = require("node:crypto").createHash("sha256").update("hello").digest();
 
+// pki.est.simplereenroll fixture: a structural PKCS#10 whose subject + SPKI are byte-identical to
+// signFixtureSigner.cert and which carries no SAN, so reenrollGuard's RFC 7030 sec. 4.2.2 identity
+// check passes and the example reaches the (injected) transport.
+var estReenTbs = pki.asn1.decode(signFixtureSigner.cert).children[0];
+var estRenewCsr = b.sequence([
+  b.sequence([b.integer(0n), estReenTbs.children[5].bytes, estReenTbs.children[6].bytes, b.contextConstructed(0, Buffer.alloc(0))]),
+  b.sequence([b.oid("1.2.840.10045.4.3.2")]),
+  b.bitString(Buffer.from([1, 2, 3]), 0),
+]);
+
 // Per-namespace { der, pemText, label }. A parse example gets a format-appropriate
 // valid input so the happy path actually runs; where a perfect input is heavy the
 // worst case is a typed PkiError, which the contract allows.
@@ -163,8 +173,10 @@ function fixturesFor(tag) {
     der: der, input: der, bytes: der, node: pki.asn1.decode(certDer),
     pemText: toPem(der, label), pemString: toPem(der, label), pem: toPem(der, label),
     tokenDer: tstToken, tokenBytes: tstToken,
-    // EST fixtures: a certs-only bag for est.parseCertsOnly's example.
-    caCertsDer: caCertsDer, roundTripped: null,
+    // EST fixtures: a certs-only bag for est.parseCertsOnly / cacerts, a re-enroll CSR (subject +
+    // SAN identical to signerCertDer) for simplereenroll's identity guard, and a trust anchor for
+    // the pki.transport.https example (a live GET to the reserved-TLD host fails closed offline).
+    caCertsDer: caCertsDer, roundTripped: null, renewCsr: estRenewCsr, caPem: signFixtureSigner.cert,
     // RFC 6962 SCT-list extension value (inner DER OCTET STRING) for the pki.ct examples.
     sctExtValue: sctListDer,
     // the stand-in "your error class" some engine examples pass as ctx.E — a
