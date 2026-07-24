@@ -1828,6 +1828,17 @@ function testNoDuplicateCodeBlocks() {
       reason: "attribute dedup+assembly idiom (reject a repeated AttributeType, push SEQUENCE{type, SET OF value}); attrcert `add` / csr `addAttr` share it with different domain codes, pki-build assertValidExtension shares only a coincidental decode+throw shingle -- domain-local, nothing cleanly extractable.",
     },
     {
+      // The trivial Buffer-coercion helper: accept a Buffer as-is, widen a Uint8Array with Buffer.from,
+      // else throw the caller's domain "must be a Buffer" error. cms-sign / cms-verify keep an identical
+      // `_toBuf` (cms/bad-input); pki-build's `reqDer` is the same three lines under a different domain
+      // code. A 3-line coercion with a per-domain error string is not worth threading through a shared
+      // callback -- guard.bytes.view already owns the SECURITY-relevant detached-view case, this is only
+      // the Uint8Array-widen ergonomic.
+      files: ["lib/cms-sign.js:_toBuf", "lib/cms-verify.js:_toBuf", "lib/pki-build.js:reqDer"],
+      mode: "family-subset",
+      reason: "trivial Buffer-coercion helper (Buffer as-is, Uint8Array -> Buffer.from, else a domain 'must be a Buffer' throw); cms-sign/cms-verify `_toBuf` and pki-build `reqDer` are the same three lines under different domain codes -- domain-local, nothing cleanly extractable beyond guard.bytes.view (which owns the detached-view security case).",
+    },
+    {
       // The pre-encoded-Extension-array handling idiom (decode -> assertValidExtension -> dedup extnID ->
       // re-validate a recognized value via the decoder table). pki-build's `requestedExtensions` is the
       // SHARED primitive csr/crmf compose; x509 `_buildExtensions` and attrcert `_buildExtensions` keep
