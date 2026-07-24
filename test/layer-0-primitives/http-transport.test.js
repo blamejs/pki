@@ -94,6 +94,19 @@ async function testDerAnchor() {
   } finally { s.srv.close(); }
 }
 
+// a DER anchor whose own bytes contain the "-----BEGIN" marker (in the subject) must still be wrapped:
+// PEM is detected by the armor PREFIX, never an anywhere-substring that a DER field could spoof.
+async function testDerAnchorWithArmorBytes() {
+  var tls = await selfSigned("-----BEGIN sneaky");   // the subject CN embeds the PEM armor bytes
+  check("14f fixture: the DER anchor really contains the -----BEGIN marker", tls.certDer.indexOf("-----BEGIN") > 0);
+  var s = await startServer(tls, function (req, res) { res.end("armor"); });
+  try {
+    var t = pki.transport.https({});
+    var r = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certDer], servername: "localhost" } });
+    check("14f a DER anchor containing the PEM armor bytes is still wrapped and accepted", r.status === 200 && r.body.toString() === "armor");
+  } finally { s.srv.close(); }
+}
+
 // ---- an IPv6-literal URL reaches TLS (square brackets stripped) -------------
 async function testIpv6BracketHost() {
   var probe = require("node:net").createServer();
@@ -222,6 +235,7 @@ async function main() {
   await testIdentityHookCannotBypass();
   await testTlsDefaultsHonored();
   await testDerAnchor();
+  await testDerAnchorWithArmorBytes();
   await testIpv6BracketHost();
   await testServerAuthFailed();
   await testSizeCap();
