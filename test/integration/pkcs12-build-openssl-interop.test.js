@@ -67,10 +67,25 @@ async function run() {
     var ec = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW,
       "-macalg", "sha256", "-keypbe", "AES-256-CBC", "-certpbe", "AES-256-CBC", "-iter", "2048", "-name", "t", "-out", oClassic], { allowNonZero: true });
     check("openssl exports a classic PKCS#12", ec.code === 0);
-    var parsedClassic = pki.schema.pkcs12.parse(fs.readFileSync(oClassic));
+    var oClassicDer = fs.readFileSync(oClassic);
+    var parsedClassic = pki.schema.pkcs12.parse(oClassicDer);
     check("the toolkit parses the OpenSSL classic PKCS#12", parsedClassic.integrityMode === "password" && parsedClassic.mac.kind === "hmac");
     check("pki.pkcs12.verifyMac accepts the OpenSSL classic PKCS#12", (await pki.pkcs12.verifyMac(parsedClassic, PW)) === true);
     check("pki.pkcs12.verifyMac rejects a wrong password on the OpenSSL store", (await pki.pkcs12.verifyMac(parsedClassic, "wrong")) === false);
+    // ---- (d) pki.pkcs12.open reads + DECRYPTS the OpenSSL store (the UTF-8 PBES2 password pin) ----
+    var openedClassic = await pki.pkcs12.open(oClassicDer, PW);
+    check("pki.pkcs12.open decrypts the OpenSSL classic store (a key + a cert)", openedClassic.macVerified === true && openedClassic.keys.length >= 1 && openedClassic.certs.length >= 1);
+    check("pki.pkcs12.open recovers a well-formed PKCS#8 key from the OpenSSL store", pki.schema.pkcs8.parse(openedClassic.keys[0].pkcs8) != null);
+    check("pki.pkcs12.open recovers a well-formed cert from the OpenSSL store", pki.schema.x509.parse(openedClassic.certs[0].cert) != null);
+    check("pki.pkcs12.open on the OpenSSL store fails at the MAC gate for a wrong password", (await (async function () { try { await pki.pkcs12.open(oClassicDer, "wrong"); return "no-throw"; } catch (e) { return e && e.code; } })()) === "pkcs12/mac-mismatch");
+
+    // ---- (e) a legacy-PBE (App. C) OpenSSL store is refused fail-closed on open ----
+    var oLegacy = path.join(dir, "openssl-legacy.p12");
+    var el = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW, "-legacy", "-name", "t", "-out", oLegacy], { allowNonZero: true });
+    if (el.code === 0) {
+      var legacyCode = null; try { await pki.pkcs12.open(fs.readFileSync(oLegacy), PW); } catch (e) { legacyCode = e && e.code; }
+      check("pki.pkcs12.open REFUSES a legacy-PBE (App. C) OpenSSL store fail-closed", legacyCode === "pkcs12/unsupported-algorithm");
+    } else { ctx.skip("openssl could not export a -legacy store -- legacy-PBE refusal not cross-checked"); }
 
     var oPbmac1 = path.join(dir, "openssl-pbmac1.p12");
     var ep = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW,

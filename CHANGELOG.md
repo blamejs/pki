@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.12 — 2026-07-24
+
+pki.pkcs12.open reads and decrypts a password-integrity PKCS#12 store (RFC 7292, RFC 9579).
+
+### Added
+
+- pki.pkcs12.open(pfx, password, opts) reads a password-integrity PKCS#12 store. It verifies the classic Appendix B HMAC or RFC 9579 PBMAC1 MAC before decrypting (RFC 7292 sec. 5.1), then PBES2-decrypts every privacy safe and pkcs8ShroudedKeyBag, returning { integrityMode, macVerified, keys, certs, crls, secrets } -- private keys as re-validated PKCS#8 DER, certificates/CRLs/secrets as raw DER, all carrying friendlyName and localKeyId, and nested safeContents recursively. A wrong password fails at the MAC gate (pkcs12/mac-mismatch); a MAC-less store is refused (pkcs12/no-integrity) unless opts.allowUnauthenticated is set; a public-key-integrity store and a legacy (non-PBES2) bag are refused; a post-MAC decrypt failure is the uniform pkcs12/decrypt-failed. opts.maxIterations lowers the KDF/MAC iteration cap for the call, and opts.keys 'crypto' imports each private key to a WebCrypto CryptoKey (opts.importAlgorithm for the ambiguous RSA/EC arms). pfx accepts a DER Buffer, PEM string, or a pki.schema.pkcs12.parse result. RFC 7292 sec. 5.1, RFC 9579, RFC 8018.
+
 ## v0.3.11 — 2026-07-23
 
 pki.pkcs12 builds and MAC-verifies password-integrity PKCS#12 (.p12/.pfx) stores (RFC 7292, RFC 9579).
