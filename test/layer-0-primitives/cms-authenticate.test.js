@@ -172,6 +172,15 @@ async function testIo() {
   check("#cfg empty recipients -> bad-input", (await codeOf(function () { return pki.cms.authenticate(MSG, [], {}); })) === "cms/bad-input");
   check("#cfg non-id-data contentType with authenticatedAttributes:false -> bad-input",
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { contentType: "signedData", authenticatedAttributes: false }); })) === "cms/bad-input");
+  // an unsupported digestAlgorithm the verifier could not recompute is refused (the no-orphan rule).
+  check("#cfg unsupported digestAlgorithm -> bad-input",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { digestAlgorithm: "sha1" }); })) === "cms/bad-input");
+  // a caller-supplied authAttr duplicating the auto-built content-type attribute is refused (RFC 5652
+  // attribute uniqueness), and a malformed authAttr is refused.
+  check("#cfg duplicate authenticated attribute type -> bad-input",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("contentType")), b.setOf([b.oid(O("data"))])])] }); })) === "cms/bad-input");
+  check("#cfg malformed authenticated attribute -> bad-input",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.integer(5n)] }); })) === "cms/bad-input");
 }
 
 async function run() {
