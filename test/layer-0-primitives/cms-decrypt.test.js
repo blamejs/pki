@@ -284,7 +284,11 @@ async function run() {
   var v15Ktri = bp.sequence([bp.integer(0n), bp.sequence([bp.sequence([]), bp.integer(1n)]), bp.sequence([bp.oid(O("rsaEncryption")), NL]), bp.octetString(Buffer.alloc(128))]);
   var v15EciNoSsl = bp.sequence([bp.oid(O("data")), bp.sequence([bp.oid(O("aes256-CBC")), bp.octetString(Buffer.alloc(16))]), bp.contextPrimitive(0, Buffer.alloc(16))]);
   var v15EnvNoSsl = bp.sequence([bp.oid(O("envelopedData")), bp.explicit(0, bp.sequence([bp.integer(0n), bp.setOf([v15Ktri]), v15EciNoSsl]))]);
-  check("v1.5 ktri with a decode fault -> cms/decrypt-failed (implicit rejection, no oracle)", (await codeOf(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); })) === "cms/decrypt-failed");
+  // The recovered content is CBC (unauthenticated) under a fresh RANDOM CEK, so a wrong key cannot be
+  // guaranteed to THROW -- PKCS#7 padding is coincidentally valid ~1/256 of the time -- hence the
+  // deterministic property is noPlaintext (uniform cms/decrypt-failed OR non-plaintext garbage), never
+  // a distinguishable padding error (RFC 3218 sec. 2.3.2).
+  check("v1.5 ktri with a decode fault -> no plaintext (implicit rejection, no oracle)", await noPlaintext(function () { return pki.cms.decrypt(v15EnvNoSsl, { key: rsa.key, cert: rsa.cert }, { recipientIndex: 0 }); }));
 
   // ---- EncryptedData + PBES2 distinct-code reject arms ----
   function encData3(algNode, hasContent) {

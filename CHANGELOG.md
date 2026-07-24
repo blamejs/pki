@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.13 — 2026-07-24
+## v0.3.14 — 2026-07-24
+
+CMS AuthenticatedData is produced and verified (RFC 5652 sec. 9).
+
+### Added
+
+- pki.cms.authenticate(content, recipients, opts) produces a CMS AuthenticatedData (RFC 5652 sec. 9): cleartext content authenticated by an HMAC-SHA-256/384/512 MAC, with the fresh MAC key wrapped for each recipient through the same RecipientInfo model pki.cms.encrypt uses (key-transport RSAES-OAEP, key-agreement ECDH/X25519/X448, ML-KEM ori, password pwri, key-wrap kekri). By default it MACs the authenticated attributes (content-type + message-digest of the content) re-tagged to the EXPLICIT SET OF (sec. 9.2); opts.authenticatedAttributes false MACs the content octets directly (id-data only). opts.macAlgorithm selects the HMAC hash and opts.digestAlgorithm the message-digest hash. Returns a DER Buffer or, with opts.pem, a PEM string. RFC 5652 sec. 9, RFC 2104, RFC 4231.
+- pki.cms.decrypt verifies a CMS AuthenticatedData. It recovers the MAC key through the matching RecipientInfo, recomputes the HMAC over the exact RFC 5652 section 9.2 preimage, and -- when authenticated attributes are present -- independently recomputes digest(content) and confirms it equals the message-digest attribute (section 9.3, do not trust the originator's digest), before releasing the content with authenticated true and macAlgorithm / digestAlgorithm in place of contentEncryptionAlgorithm. Every secret-dependent failure -- a wrong recipient key, a forged or tampered MAC, a message-digest mismatch -- collapses to the one uniform cms/decrypt-failed verdict, so a MAC failure is indistinguishable from a key-unwrap failure and leaks no unwrap-success bit. A weak or unknown macAlgorithm (HMAC-SHA-1) is refused with a distinct cms/unsupported-algorithm before any key step.
+
+## v0.3.13 — 2026-07-23
 
 CMS gains countersignatures and unsigned attributes (RFC 5652 sec. 11.4).
 

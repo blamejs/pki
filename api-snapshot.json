@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.13",
+  "packageVersion": "0.3.14",
   "surface": {
     "C": {
       "kind": "object",
@@ -1147,6 +1147,10 @@
     "cms": {
       "kind": "object",
       "members": {
+        "authenticate": {
+          "kind": "function",
+          "arity": 3
+        },
         "compress": {
           "kind": "function",
           "arity": 2
@@ -3102,6 +3106,7 @@
     "pki.cms.sign": "0.2.15",
     "pki.cms.countersign": "0.3.13",
     "pki.cms.encrypt": "0.2.23",
+    "pki.cms.authenticate": "0.3.14",
     "pki.cms.decrypt": "0.2.23",
     "pki.cms.compress": "0.2.27",
     "pki.cms.decompress": "0.2.27",
