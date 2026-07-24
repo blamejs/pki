@@ -179,8 +179,10 @@ async function testIo() {
   // attribute uniqueness), and a malformed authAttr is refused.
   check("#cfg duplicate authenticated attribute type -> bad-input",
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("contentType")), b.setOf([b.oid(O("data"))])])] }); })) === "cms/bad-input");
-  check("#cfg malformed authenticated attribute -> bad-input",
+  check("#cfg a non-SEQUENCE authenticated attribute -> bad-input",
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.integer(5n)] }); })) === "cms/bad-input");
+  check("#cfg an attribute with a valid OID but a non-SET value -> bad-input",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.integer(1n)])] }); })) === "cms/bad-input");
 }
 
 async function run() {
