@@ -283,6 +283,9 @@ async function testAuthScopeAndScheme() {
   var tlist = fakeTransport([{ status: 401, headers: { "www-authenticate": "Digest realm=\"x\", Basic realm=\"y\"" }, body: "" }, enrollOK([S.cert])]);
   var rlist = await pki.est.simpleenroll(BASE, CSR, { transport: tlist, username: "u", password: "p" });
   check("#28 a Basic challenge in a comma-separated list is honored", rlist.certificate.equals(S.cert) && /^Basic /.test(tlist.calls[1].headers.authorization));
+  // a non-standard 2xx (201/203/206) with a valid certs-only body must NOT be decoded and accepted --
+  // only 200 (and 202-retry) are valid EST responses.
+  check("#28 a non-standard 2xx status is rejected, not parsed as certificates", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport({ status: 203, headers: ct("application/pkcs7-mime"), body: pki.est.transferEncode(certsOnly([S.cert])) }) }))) === "est/http-error");
 }
 
 async function main() {

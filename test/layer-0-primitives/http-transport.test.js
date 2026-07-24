@@ -164,10 +164,26 @@ async function testIdentityHookCannotBypass() {
   } finally { s.srv.close(); }
 }
 
+// ---- factory tls defaults are honored on a request with no per-request tls -
+async function testTlsDefaultsHonored() {
+  var tls = await selfSigned("Loopback A");
+  var s = await startServer(tls, function (req, res) { res.end("ok"); });
+  try {
+    var idChecks = 0;
+    // a reusable transport binds tls defaults (anchors + servername + checkServerIdentity); a request
+    // that carries no per-request tls must still use them (else SNI defaults to the 127.0.0.1 IP and
+    // name verification fails against the localhost SAN, and the default hook never runs).
+    var t = pki.transport.https({ tls: { anchors: [tls.certPem], servername: "localhost", checkServerIdentity: function () { idChecks++; return undefined; } } });
+    var r = await t({ method: "GET", url: urlFor(s.port) });
+    check("14c factory tls defaults (servername + checkServerIdentity) apply without per-request tls", r.status === 200 && idChecks >= 1);
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
   await testHappy();
   await testIdentityHookCannotBypass();
+  await testTlsDefaultsHonored();
   await testServerAuthFailed();
   await testSizeCap();
   await testTimeout();
