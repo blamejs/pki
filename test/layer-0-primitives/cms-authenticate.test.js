@@ -202,6 +202,10 @@ async function testIo() {
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.integer(1n)])] }); })) === "cms/bad-input");
   check("#cfg an attribute with an empty SET OF value -> bad-input (RFC 5652 SIZE 1..MAX)",
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.setOf([])])] }); })) === "cms/bad-input");
+  // a RECOGNIZED attribute with extra RFC 5652 constraints (a signing-time whose value is not a Time)
+  // is caught by the self-verify at build time, not left to fail the recipient's parser.
+  check("#cfg a signing-time authenticated attr with a non-Time value -> rejected at build",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.setOf([b.integer(5n)])])] }); })) === "cms/bad-signing-time-attr");
 }
 
 // ---- non-AES-sized MAC key from another implementation (AES-KW unwrap-as-HMAC) ----
