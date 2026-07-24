@@ -204,7 +204,27 @@ async function testIo() {
     (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { authAttrs: [b.sequence([b.oid(O("signingTime")), b.setOf([])])] }); })) === "cms/bad-input");
 }
 
+// ---- non-AES-sized MAC key from another implementation (AES-KW unwrap-as-HMAC) ----
+async function testNonAesMacKey() {
+  var kek = Buffer.alloc(32, 0x5c);
+  var macKey = Buffer.alloc(64, 0x42);   // a 64-octet HMAC-SHA-512 key -- NOT an AES key size (16/24/32)
+  var kekKey = await subtle.importKey("raw", kek, { name: "AES-KW" }, false, ["wrapKey"]);
+  var mk = await subtle.importKey("raw", macKey, { name: "HMAC", hash: "SHA-512" }, true, ["sign"]);
+  var wrapped = Buffer.from(await subtle.wrapKey("raw", mk, kekKey, { name: "AES-KW" }));
+  // hand-build a kekri AuthenticatedData (absent authAttrs -> MAC over the content directly).
+  var kekri = b.sequence([b.integer(4n), b.sequence([b.octetString(Buffer.from("k"))]), b.sequence([b.oid(O("aes256-wrap"))]), b.octetString(wrapped)]);
+  var strip = function (der) { var l = der[1]; return der.subarray(l < 0x80 ? 2 : 2 + (l & 0x7f)); };
+  var kekriTagged = b.contextConstructed(2, strip(kekri));   // [2] IMPLICIT KEKRecipientInfo
+  var mac = nodeCrypto.createHmac("sha512", macKey).update(MSG).digest();
+  var eci = b.sequence([b.oid(O("data")), b.explicit(0, b.octetString(MSG))]);
+  var authData = b.sequence([b.integer(0n), b.setOf([kekriTagged]), b.sequence([b.oid(O("hmacWithSHA512"))]), eci, b.octetString(mac)]);
+  var ci = b.sequence([b.oid(O("authData")), b.explicit(0, authData)]);
+  var d = await pki.cms.decrypt(ci, { kek: kek });
+  check("a 64-octet (non-AES-size) HMAC-SHA-512 MAC key wrapped via AES-KW is recovered + authenticated", d.authenticated === true && Buffer.compare(d.content, MSG) === 0);
+}
+
 async function run() {
+  await testNonAesMacKey();
   await testRoundTripAndKat();
   await testPreimageNegative();
   await testPerArm();
