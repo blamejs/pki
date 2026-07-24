@@ -4,7 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.12 — 2026-07-24
+## v0.3.13 — 2026-07-24
+
+CMS gains countersignatures and unsigned attributes (RFC 5652 sec. 11.4).
+
+### Added
+
+- pki.cms.countersign(cms, signers, opts) adds RFC 5652 section 11.4 countersignatures to a CMS SignedData. Each countersigner is the same { cert, key, digestAlgorithm?, pss? } descriptor pki.cms.sign takes (RSA, RSASSA-PSS, ECDSA, EdDSA, ML-DSA, SLH-DSA, or composite ML-DSA), and its signature covers the countersigned SignerInfo's signature octets under the section 11.4 preimage -- message-digest bound to those octets, content-type omitted. opts.signerIndex selects which primary signer(s) to countersign (an index, an array, or 'all'), opts.countersignatureOf countersigns an existing countersignature (a nested countersignature), opts.signedAttributes false signs the target signature directly, and the countersigner certificate is embedded by default. The countersigned SignedData's original bytes are preserved so the primary signature verifies unchanged, and multiple countersignatures on one signer land as multiple values of the one id-countersignature attribute. Returns a DER Buffer or, with opts.pem, a PEM string. RFC 5652 sec. 11.4.
+- pki.cms.verify surfaces countersignatures and unsigned attributes per signer. Each res.signers[i] carries countersignatures -- an array of per-countersignature verdicts { ok, sid, cert, digestAlgorithm, ... }, each verified over the exact RFC 5652 section 11.4 preimage, nested for a countersignature of a countersignature -- and unsignedAttrs, the decoded unsigned attributes with their type names. Both are unauthenticated by definition (an unsigned attribute is outside the signature) and never change signers[i].ok or res.valid; a present-but-invalid countersignature is surfaced ok:false, never silently dropped.
+- pki.cms.sign gains an unsignedAttributes option: an array of { type, values } unsigned attributes placed in each SignerInfo, outside the signature. It is the vehicle for attaching an RFC 3161 timestamp token (id-aa-timeStampToken) or another unsigned attribute at signing time. content-type, message-digest, and signing-time are rejected as unsigned attributes (RFC 5652 sec. 11), as is a duplicate attribute type.
+
+## v0.3.12 — 2026-07-23
 
 pki.pkcs12.open reads and decrypts a password-integrity PKCS#12 store (RFC 7292, RFC 9579).
 

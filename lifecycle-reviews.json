@@ -670,5 +670,11 @@
     "reason": "The thin CertTemplate encoder export rides the same still-settling RFC 4211 CertTemplate field set as pki.crmf.build; graduate alongside pki.crmf.build once the CMP enrollment surface is complete and the builder opts are frozen.",
     "reviewedAt": "0.3.11",
     "reviewBy": "0.4.0"
+  },
+  "pki.path.build": {
+    "decision": "keep-experimental",
+    "reason": "RFC 4158 certification-path building (leaf -> anchor over an untrusted candidate pool, every accept flowing through pki.path.validate, DoS-bounded). The offline discovery surface is hardened and openssl-cross-checked, but AIA caIssuers fetching is still Planned, so the surface will grow before it settles. Graduate once the path-discovery surface (including AIA fetch) is settled.",
+    "reviewedAt": "0.3.13",
+    "reviewBy": "0.4.0"
   }
 }

@@ -725,6 +725,24 @@ function testCountersignatureValues() {
   check("two countersignature instances accepted", mTwo.signerInfos[0].unsignedAttrs.length === 2);
 }
 
+// ---- walkCountersignature export: the countersign VERIFY entry (ENGINE-GAP) --
+// pki.cms.verify walks each id-countersignature value into a SignerInfo shape it can verify; the
+// export routes through the ONE COUNTERSIGNATURE_SIGNER_INFO definition + its §11.4 validation.
+function testWalkCountersignatureExport() {
+  var cmsLib = require("../../lib/schema-cms.js");
+  function csValue(o) {
+    o = o || {};
+    return b.sequence([b.integer(1n), iasn("Countersigner", 3), algId(SHA256),
+      implicitSetOf(0, o.signedAttrs || [messageDigestAttr([7])]),
+      algId(SHA256), b.octetString(Buffer.from([9, 9]))]);
+  }
+  var si = cmsLib.walkCountersignature(pki.asn1.decode(csValue()));
+  check("walkCountersignature returns a SignerInfo shape", Buffer.isBuffer(si.signature) && Buffer.isBuffer(si.signedAttrsBytes));
+  check("walkCountersignature signature surfaces the raw octets", si.signature.length === 2 && si.signature[0] === 9 && si.signedAttrsBytes[0] === 0xA0);
+  check("walkCountersignature routes through mode countersig (content-type rejected)",
+    code(function () { cmsLib.walkCountersignature(pki.asn1.decode(csValue({ signedAttrs: [contentTypeAttr(ID_DATA), messageDigestAttr([7])] }))); }) === "cms/misplaced-attr");
+}
+
 // ---- KEMRecipientInfo (RFC 9629 via ori [4], ML-KEM RFC 9936) ----------
 function testKemRecipientInfo() {
   var m = parse(envCI({ version: 3, recips: [oriKem({})] }));
@@ -1033,6 +1051,7 @@ function run() {
   testDerAttrsUnderBer();
   testAttrPlacementRules();
   testCountersignatureValues();
+  testWalkCountersignatureExport();
   testKemRecipientInfo();
   testAuthenticatedData();
   testAuthEnvelopedData();
