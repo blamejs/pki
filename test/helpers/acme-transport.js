@@ -133,9 +133,11 @@ function acmeServer(opts) {
       var loc = opts.accountLocation || URLS.account;
       // accountNonceInvalid: the 201 carries a non-base64url Replay-Nonce the client must DISCARD.
       if (opts.accountNonceInvalid) return { status: 201, headers: { "replay-nonce": "invalid nonce!!", "content-type": "application/json", location: loc }, body: JSON.stringify(opts.account || { status: "valid" }) };
+      // accountBodyBuffer: a RAW Buffer body (e.g. with malformed UTF-8) to exercise strict decoding.
+      if (opts.accountBodyBuffer) return withNonce({ status: 201, headers: { "content-type": "application/json", location: loc }, body: opts.accountBodyBuffer });
       return withNonce(json(201, opts.account || { status: "valid" }, { location: loc }));
     }
-    if (path === "/new-order") return withNonce(json(201, opts.order || orderObj("pending"), { location: URLS.order }));
+    if (path === "/new-order") return withNonce(json(opts.newOrderStatus || 201, opts.order || orderObj("pending"), { location: URLS.order }));
     if (path === "/authz/1") {
       var azStatus = "pending";
       if (opts.authzStates) { authzPoll = Math.min(authzPoll + 1, opts.authzStates.length - 1); azStatus = opts.authzStates[authzPoll]; }

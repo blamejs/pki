@@ -481,6 +481,19 @@ async function testReadyAndRelativeRedirect() {
     return pki.acme.client("https://acme.example/directory ", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
   check("#13 a non-canonical resource URL (missing //) is rejected", (await codeOf(Promise.resolve().then(function () { return acmeOv.getOrder("https:acme.example/order/1"); }))) === "acme/bad-url");
+
+  // (m) a JSON response body with malformed UTF-8 fails closed (the strict RFC 8259 UTF-8 validation runs
+  // on the raw wire bytes, not a lossy replacement-char decode).
+  var badUtf8 = Buffer.concat([Buffer.from('{"status":"valid","_x":"'), Buffer.from([0xff]), Buffer.from('"}')]);
+  var sUtf8 = A.acmeServer({ accountBodyBuffer: badUtf8 });
+  var acmeUtf8 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sUtf8));
+  check("#13 a malformed-UTF-8 JSON response fails closed", (await codeOf(acmeUtf8.newAccount({}))) === "acme/bad-response");
+
+  // (n) newOrder requires 201 Created (RFC 8555 sec. 7.4) -- a 200 is a non-conforming response.
+  var s200o = A.acmeServer({ newOrderStatus: 200 });
+  var acme200o = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s200o));
+  await acme200o.newAccount({});
+  check("#13 a 200 from newOrder fails closed (201 required)", (await codeOf(acme200o.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] }))) === "acme/unexpected-status");
 }
 
 async function main() {
