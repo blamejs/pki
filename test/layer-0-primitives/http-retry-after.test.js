@@ -36,6 +36,8 @@ function run() {
   // an rfc850 two-digit year is interpreted RELATIVE TO the receipt year (HTTP sliding window), not a
   // fixed 70 cutoff: at a 2069 receipt, `70` is 2070 (one year ahead), not 1970.
   check("an rfc850 year uses the receipt-relative sliding window", retryAfter.httpDateMs("Sunday, 06-Nov-70 08:49:37 GMT", Date.UTC(2069, 5, 15)) === Date.UTC(2070, 10, 6, 8, 49, 37));
+  // an old two-digit year stays in the PAST (never advanced a century): at a 2090 receipt, `25` is 2025.
+  check("an old rfc850 year is kept in the past, not advanced", retryAfter.httpDateMs("Sunday, 06-Nov-25 08:49:37 GMT", Date.UTC(2090, 0, 1)) === Date.UTC(2025, 10, 6, 8, 49, 37));
 
   // a malformed value fails closed: with a factory it is the caller's typed code; with none it is a
   // TypeError (the fallback that keeps the parser usable outside a PkiError domain).

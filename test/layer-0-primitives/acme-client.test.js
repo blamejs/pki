@@ -570,6 +570,19 @@ async function testReadyAndRelativeRedirect() {
   var acmeProb200 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sProb200));
   await acmeProb200.newAccount({});
   check("#13 a 2xx problem+json response is surfaced as a server problem", (await codeOf(acmeProb200.revokeCert({ certificate: signing.makeSigner("ec-p256", { cn: "p.example" }).cert }))) === "acme/server-problem");
+
+  // (w) explanatory text outside the PEM certificate chain fails closed (RFC 8555 sec. 7.4.2 forbids it).
+  var chainCert = signing.makeSigner("ec-p256", { cn: "chain.example" }).cert;
+  var chainPem = "-----BEGIN CERTIFICATE-----\n" + Buffer.from(chainCert).toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END CERTIFICATE-----";
+  var sText = A.acmeServer({ certPems: ["Here is your certificate:\n" + chainPem] });
+  var acmeText = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sText));
+  await acmeText.newAccount({});
+  check("#13 explanatory text outside the PEM chain fails closed", (await codeOf(acmeText.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  // a clean chain (whitespace-separated PEM only) still downloads.
+  var sClean = A.acmeServer({ certPems: [chainPem] });
+  var acmeClean = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sClean));
+  await acmeClean.newAccount({});
+  check("#13 a clean PEM chain downloads", Buffer.isBuffer((await acmeClean.downloadCertificate(A.URLS.certificate)).certificate));
 }
 
 async function main() {
