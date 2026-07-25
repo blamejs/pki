@@ -297,15 +297,16 @@ async function testAuditHardening() {
   await acmeBadBody.newAccount({});
   check("#11 a non-JSON problem body still surfaces acme/server-problem", (await codeOf(acmeBadBody.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] }))) === "acme/server-problem");
 
-  // (k) keyChange VALIDATES the account response before rotating: a malformed / non-account 200 body
-  // fails closed (RFC 8555 sec. 7.3.5), so the session is never left on a key the server did not accept.
+  // (k) a 200 keyChange COMMITS the rollover server-side, so the client rotates to stay in sync even when
+  // the (optional, informational) account body is malformed -- it does NOT fail closed and desynchronize.
   var sKC = A.acmeServer({ keyChangeBody: "not-json{" });
   var acmeKC = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sKC));
   await acmeKC.newAccount({});
   var neuKC = await A.makeAccount();
-  check("#11 keyChange with a malformed account body fails closed", (await codeOf(acmeKC.keyChange({ newKey: neuKC.key, newJwk: neuKC.jwk, newAlg: "ES256" }))) === "acme/bad-response");
-  // the session key was NOT rotated -- a subsequent authenticated request still succeeds.
-  check("#11 a failed keyChange leaves the working key intact", (await acmeKC.revokeCert({ certificate: signing.makeSigner("ec-p256", { cn: "kc.example" }).cert })) === true);
+  var kcMal = await acmeKC.keyChange({ newKey: neuKC.key, newJwk: neuKC.jwk, newAlg: "ES256" });
+  check("#11 keyChange with a malformed body still rotates (account best-effort null)", kcMal.account === null && kcMal.url === A.URLS.account);
+  // a subsequent authenticated request still works (the client is rotated and in sync with the server).
+  check("#11 the session key is usable after the rollover", (await acmeKC.revokeCert({ certificate: signing.makeSigner("ec-p256", { cn: "kc.example" }).cert })) === true);
   // a BODYLESS 200 is a valid rollover (RFC 8555 sec. 7.3.5 requires only the status): the key rotates.
   var sKcEmpty = A.acmeServer({ keyChangeBody: "" });
   var acmeKcE = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sKcEmpty));
@@ -547,6 +548,12 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a backslash in the path is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/dir\\ectory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+  // a URL with dot-segments in the path (the transport would normalize them away) is rejected.
+  check("#13 a URL with path dot-segments is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/a/../directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  // a path with a dot INSIDE a segment name (not a dot-segment) is accepted.
+  check("#13 a URL with a dot inside a path segment is accepted", typeof pki.acme.client("https://acme.example/a.b/directory", A.clientOpts(ACCT, A.acmeServer({}))).newAccount === "function");
 
   // (t) a CROSS-origin request resets the origin-specific servername + checkServerIdentity (pinned to the
   // trusted host), while the trusted origin keeps them.
