@@ -397,6 +397,33 @@ async function testReadyAndRelativeRedirect() {
   var sMalLoc = A.acmeServer({ redirects: { "/dir-malloc": "http://" } });
   var acmeMalLoc = pki.acme.client(A.URLS.base + "/dir-malloc", A.clientOpts(ACCT, sMalLoc));
   check("#13 an unresolvable redirect Location fails closed", (await codeOf(acmeMalLoc.newAccount({}))) === "acme/bad-redirect");
+
+  // (d) an mTLS client credential is STRIPPED on a CROSS-origin redirect (open-redirect leak) but KEPT on
+  // a same-origin one.
+  var mk = Buffer.from([1, 2, 3]);
+  var sXo = A.acmeServer({ redirects: { "/dir-xo": "https://other.example/directory" } });
+  var acmeXo = pki.acme.client(A.URLS.base + "/dir-xo", A.clientOpts(ACCT, sXo, { tls: { anchors: [ACCT.spki], cert: mk, key: mk } }));
+  await acmeXo.newAccount({});
+  var xoReqs = sXo.calls.filter(function (c) { return new URL(c.url).origin === "https://other.example"; });
+  check("#13 a cross-origin redirect strips the mTLS cert/key", xoReqs.length > 0 && xoReqs.every(function (c) { return (c.tls || {}).cert == null && (c.tls || {}).key == null; }));
+  var sSo = A.acmeServer({ redirects: { "/dir-so": "/directory" } });
+  var acmeSo = pki.acme.client(A.URLS.base + "/dir-so", A.clientOpts(ACCT, sSo, { tls: { anchors: [ACCT.spki], cert: mk, key: mk } }));
+  await acmeSo.newAccount({});
+  var soDir = sSo.calls.filter(function (c) { return new URL(c.url).pathname === "/directory"; })[0];
+  check("#13 a same-origin redirect keeps the mTLS cert/key", soDir && (soDir.tls || {}).cert != null && (soDir.tls || {}).key != null);
+
+  // (e) an unexpected 2xx on a POST fails closed (a verb must not act on an incomplete result).
+  var revCertS = signing.makeSigner("ec-p256", { cn: "revoke4.example" }).cert;
+  var s202 = A.acmeServer({ revokeStatus: 202 });
+  var acme202 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s202));
+  await acme202.newAccount({});
+  check("#13 an unexpected 2xx POST status fails closed", (await codeOf(acme202.revokeCert({ certificate: revCertS }))) === "acme/unexpected-status");
+
+  // (f) a certificate download with the wrong media type fails closed even if the body is parseable PEM.
+  var sCt = A.acmeServer({ certContentType: "text/plain" });
+  var acmeCt = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sCt));
+  await acmeCt.newAccount({});
+  check("#13 a wrong cert media type fails closed", (await codeOf(acmeCt.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
 }
 
 async function main() {

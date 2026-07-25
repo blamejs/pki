@@ -145,11 +145,11 @@ function acmeServer(opts) {
     }
     if (path === "/cert/1") {
       if (opts.certRequiresPemAccept && String((request.headers || {}).accept || "").indexOf("application/pem-certificate-chain") === -1) return withNonce(problem(406, "malformed", "the certificate resource requires Accept: application/pem-certificate-chain"));
-      return withNonce(pemChain(certPems));
+      return withNonce(pemChain(certPems, opts.certContentType ? { "content-type": opts.certContentType } : {}));
     }
     if (path === "/acct/1") return withNonce(json(200, opts.accountAfter || { status: "deactivated" }));
     if (path === "/key-change") return withNonce({ status: 200, headers: {}, body: opts.keyChangeBody !== undefined ? opts.keyChangeBody : "" });
-    if (path === "/revoke-cert") return withNonce({ status: 200, headers: {}, body: "" });
+    if (path === "/revoke-cert") return withNonce({ status: opts.revokeStatus || 200, headers: {}, body: "" });
 
     return withNonce({ status: 404, headers: {}, body: "no route " + method + " " + path });
   }
