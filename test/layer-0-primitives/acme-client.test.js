@@ -432,6 +432,18 @@ async function testReadyAndRelativeRedirect() {
   await acmeOv.newAccount({ termsOfServiceAgreed: true, url: "https://evil.example/x", nonce: "Zm9vYmFyYmF6" });
   var ovHdr = jwsProtected(sOv.calls.filter(function (c) { return c.url === A.URLS.newAccount; })[0].body);
   check("#13 payload options cannot override the JWS url/nonce", ovHdr.url === A.URLS.newAccount && ovHdr.nonce !== "Zm9vYmFyYmF6");
+
+  // (h) pollAuthorization reaches a terminal state a pending authorization can legitimately enter
+  // (deactivated by the client, or expired) rather than rejecting the transition (RFC 8555 sec. 7.1.6).
+  var sDeact = A.acmeServer({ authzStates: ["pending", "deactivated"] });
+  var acmeDeact = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sDeact));
+  await acmeDeact.newAccount({});
+  var az = await acmeDeact.pollAuthorization(A.URLS.authz);
+  check("#13 pollAuthorization returns a pending->deactivated terminal", az.status === "deactivated");
+  var sExp = A.acmeServer({ authzStates: ["pending", "expired"] });
+  var acmeExp = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sExp));
+  await acmeExp.newAccount({});
+  check("#13 pollAuthorization returns a pending->expired terminal", (await acmeExp.pollAuthorization(A.URLS.authz)).status === "expired");
 }
 
 async function main() {

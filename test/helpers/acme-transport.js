@@ -72,6 +72,7 @@ function acmeServer(opts) {
   var dir = opts.directory || directory();
   var orderStates = opts.orderStates || ["pending", "ready", "valid"];
   var orderPoll = -1;   // index into orderStates for GET /order/1
+  var authzPoll = -1;   // index into opts.authzStates for GET /authz/1 (when set)
   var badLeft = opts.badNonceRounds || 0;
   var EXPIRES = "2030-01-01T00:00:00Z";
   var TOKEN = Buffer.from("acme-challenge-token-000001").toString("base64url");   // canonical base64url, > 128 bits
@@ -135,7 +136,11 @@ function acmeServer(opts) {
       return withNonce(json(201, opts.account || { status: "valid" }, { location: loc }));
     }
     if (path === "/new-order") return withNonce(json(201, opts.order || orderObj("pending"), { location: URLS.order }));
-    if (path === "/authz/1") return withNonce(json(200, { status: "pending", identifier: orderIdentifiers[0], challenges: challenges }));
+    if (path === "/authz/1") {
+      var azStatus = "pending";
+      if (opts.authzStates) { authzPoll = Math.min(authzPoll + 1, opts.authzStates.length - 1); azStatus = opts.authzStates[authzPoll]; }
+      return withNonce(json(200, { status: azStatus, expires: EXPIRES, identifier: orderIdentifiers[0], challenges: challenges }));
+    }
     if (path === "/chal/1") return withNonce(json(200, challengeObj("processing")));
     if (path === "/order/1/finalize") return withNonce(json(200, orderObj("processing")));
     if (path === "/order/1") {
