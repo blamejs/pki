@@ -442,10 +442,12 @@ async function testReadyAndRelativeRedirect() {
   await acmeDeact.newAccount({});
   var az = await acmeDeact.pollAuthorization(A.URLS.authz);
   check("#13 pollAuthorization returns a pending->deactivated terminal", az.status === "deactivated");
+  // pending -> expired is NOT a valid transition (expired is an outgoing state from valid, RFC 8555
+  // sec. 7.1.6); the poller rejects it rather than accepting the terminal.
   var sExp = A.acmeServer({ authzStates: ["pending", "expired"] });
   var acmeExp = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sExp));
   await acmeExp.newAccount({});
-  check("#13 pollAuthorization returns a pending->expired terminal", (await acmeExp.pollAuthorization(A.URLS.authz)).status === "expired");
+  check("#13 pollAuthorization rejects an invalid pending->expired transition", (await codeOf(acmeExp.pollAuthorization(A.URLS.authz))) === "acme/bad-transition");
 
   // (i) a verb whose RFC success status is 200 rejects a 201 (only newAccount/newOrder may return 201).
   var revCertI = signing.makeSigner("ec-p256", { cn: "revoke5.example" }).cert;
@@ -518,12 +520,12 @@ async function testReadyAndRelativeRedirect() {
   finally { global.setTimeout = realST; }
   check("#13 an oversized Retry-After sleep is split below Node's setTimeout ceiling", maxDelay > 0 && maxDelay <= 2147483647);
 
-  // (q) an authorization may transition pending -> revoked directly (a CA revoking it mid-poll, RFC 8555
-  // sec. 7.1.6); the poller returns the terminal rather than rejecting the transition.
+  // (q) pending -> revoked is NOT valid (revoked is an outgoing state from valid, RFC 8555 sec. 7.1.6);
+  // the poller rejects the transition rather than accepting the terminal.
   var sRev = A.acmeServer({ authzStates: ["pending", "revoked"] });
   var acmeRev = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sRev));
   await acmeRev.newAccount({});
-  check("#13 pollAuthorization returns a pending->revoked terminal", (await acmeRev.pollAuthorization(A.URLS.authz)).status === "revoked");
+  check("#13 pollAuthorization rejects an invalid pending->revoked transition", (await codeOf(acmeRev.pollAuthorization(A.URLS.authz))) === "acme/bad-transition");
 
   // (r) a URL with a fragment is rejected (the transport drops the fragment; the JWS url would retain it).
   check("#13 a URL with a fragment is rejected", (await codeOf(Promise.resolve().then(function () {
@@ -554,6 +556,13 @@ async function testReadyAndRelativeRedirect() {
   var sAbsLoc = A.acmeServer({ accountLocation: "https://ACME.EXAMPLE/acct/1" });
   var acmeAbsLoc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sAbsLoc));
   check("#13 an absolute Location's exact spelling is preserved as the kid", (await acmeAbsLoc.newAccount({})).url === "https://ACME.EXAMPLE/acct/1");
+
+  // (v) an application/problem+json body is an ERROR even with a 2xx status (a CA/proxy returning a
+  // problem with a bogus 200): the verb surfaces acme/server-problem rather than reporting success.
+  var sProb200 = A.acmeServer({ problemOn: { "/revoke-cert": { status: 200, headers: { "content-type": "application/problem+json" }, body: JSON.stringify({ type: "urn:ietf:params:acme:error:malformed", detail: "nope" }) } } });
+  var acmeProb200 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sProb200));
+  await acmeProb200.newAccount({});
+  check("#13 a 2xx problem+json response is surfaced as a server problem", (await codeOf(acmeProb200.revokeCert({ certificate: signing.makeSigner("ec-p256", { cn: "p.example" }).cert }))) === "acme/server-problem");
 }
 
 async function main() {
