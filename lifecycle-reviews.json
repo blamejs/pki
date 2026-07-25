@@ -724,5 +724,41 @@
     "reason": "RFC 5280 sec. 5 CRL issuance/verification is hardened and openssl-interop-proven, but the CRL builder options (the extension escape hatch, delta/indirect scope) and the shared path-validation verify seam are still settling alongside the broader revocation surface; graduate once the CRL builder/verify surface is settled.",
     "reviewedAt": "0.3.15",
     "reviewBy": "0.4.0"
+  },
+  "pki.key.encrypt": {
+    "decision": "keep-experimental",
+    "reason": "The key-material lifecycle domain (PKCS#8 export/import and RFC 8018 PBES2 encrypt/decrypt) is hardened and openssl-interop-proven, but the surface is still settling as the enrollment clients that consume it land (EST now, ACME/CMP next); graduate once the key-material import/inference surface is locked against those consumers.",
+    "reviewedAt": "0.3.16",
+    "reviewBy": "0.4.0"
+  },
+  "pki.key.decrypt": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same RFC 8018 PBES2 surface as pki.key.encrypt (uniform key/decrypt-failed, no padding oracle); graduate alongside pki.key.encrypt once the key-material lifecycle surface is locked.",
+    "reviewedAt": "0.3.16",
+    "reviewBy": "0.4.0"
+  },
+  "pki.key.export": {
+    "decision": "keep-experimental",
+    "reason": "PKCS#8 / SPKI export rides the still-settling key-material lifecycle surface consumed by the enrollment clients; graduate alongside pki.key.encrypt.",
+    "reviewedAt": "0.3.16",
+    "reviewBy": "0.4.0"
+  },
+  "pki.key.import": {
+    "decision": "keep-experimental",
+    "reason": "PKCS#8 / SPKI import with algorithm inference rides the still-settling key-material lifecycle surface; the inference surface continues to absorb refinement as new consumers land. Graduate alongside pki.key.encrypt.",
+    "reviewedAt": "0.3.16",
+    "reviewBy": "0.4.0"
+  },
+  "pki.key.generate": {
+    "decision": "keep-experimental",
+    "reason": "Keypair generation across every WebCrypto algorithm rides the same key-material lifecycle surface; graduate alongside pki.key.encrypt.",
+    "reviewedAt": "0.3.16",
+    "reviewBy": "0.4.0"
+  },
+  "pki.key.publicFromPrivate": {
+    "decision": "keep-experimental",
+    "reason": "Deriving an SPKI public key from a PKCS#8 private key rides the same key-material lifecycle surface; graduate alongside pki.key.encrypt.",
+    "reviewedAt": "0.3.16",
+    "reviewBy": "0.4.0"
   }
 }

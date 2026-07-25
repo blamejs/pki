@@ -353,6 +353,19 @@ security-only patches after the next major releases.
   request-to-response recipient-arm coherence. The issued certificate is picked
   by a public-key match (`findIssuedCert`), never a positional guess (RFC 5272
   forbids assuming an order).
+- **EST transport is fail-closed on the wire (CWE-295 / CWE-319 / CWE-770 /
+  CWE-522).** The `pki.est` network verbs run over `pki.transport`, the toolkit's
+  single socket choke point, and there is no code path that disables TLS server
+  authentication: `rejectUnauthorized` is always on, an explicit trust anchor (or
+  a deliberate system-store opt-in) is required — a request with neither fails
+  closed rather than trusting an unpinned server — and TLS is floored at 1.2. A
+  request URL, and every redirect target, must be `https`: a scheme downgrade is
+  refused, a cross-origin redirect on an enroll POST needs an explicit opt-in, and
+  the redirect chain is bounded. HTTP Basic credentials are answered only after the
+  server is authenticated and are dropped on any cross-origin redirect, so they are
+  never carried to another origin. The response body is bounded while it streams
+  (aborted the instant it crosses the cap, before it reaches a decoder), a stalled
+  socket times out, and a 202 Retry-After is surfaced to the caller, never slept on.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms
