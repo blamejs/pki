@@ -548,9 +548,13 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a backslash in the path is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/dir\\ectory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
-  // a URL with dot-segments in the path (the transport would normalize them away) is rejected.
+  // a URL with dot-segments in the path (the transport would normalize them away) is rejected -- literal
+  // or PERCENT-ENCODED.
   check("#13 a URL with path dot-segments is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/a/../directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a URL with percent-encoded dot-segments is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/a/%2e%2e/directory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
   // a path with a dot INSIDE a segment name (not a dot-segment) is accepted.
   check("#13 a URL with a dot inside a path segment is accepted", typeof pki.acme.client("https://acme.example/a.b/directory", A.clientOpts(ACCT, A.acmeServer({}))).newAccount === "function");
