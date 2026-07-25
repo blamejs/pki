@@ -496,6 +496,11 @@ async function testReadyAndRelativeRedirect() {
   var acme200o = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s200o));
   await acme200o.newAccount({});
   check("#13 a 200 from newOrder fails closed (201 required)", (await codeOf(acme200o.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] }))) === "acme/unexpected-status");
+
+  // (o) a RELATIVE account Location (a valid HTTP URI-reference) is resolved against the request URL.
+  var sRelLoc = A.acmeServer({ accountLocation: "/acct/1" });
+  var acmeRelLoc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sRelLoc));
+  check("#13 a relative account Location is resolved against the request URL", (await acmeRelLoc.newAccount({})).url === A.URLS.account);
 }
 
 async function main() {
