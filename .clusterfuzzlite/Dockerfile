@@ -15,7 +15,7 @@
 # The base is digest-pinned for a reproducible fuzz toolchain
 # (Dependabot bumps it via the docker ecosystem entry for
 # /.clusterfuzzlite).
-FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:31cecc1650da50167719d407504126e596dabee3060c50f9a75b65e98dc60527
+FROM gcr.io/oss-fuzz-base/base-builder-javascript@sha256:2fa7bd9b6bdc62c6db956134399df92e9a7eb9dc761e669afc4e5b3a0b887542
 
 # The whole repo is the fuzzed project: each harness require("..")s the
 # toolkit root, which ships zero npm runtime dependencies.
