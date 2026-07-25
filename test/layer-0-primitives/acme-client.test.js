@@ -501,6 +501,20 @@ async function testReadyAndRelativeRedirect() {
   var sRelLoc = A.acmeServer({ accountLocation: "/acct/1" });
   var acmeRelLoc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sRelLoc));
   check("#13 a relative account Location is resolved against the request URL", (await acmeRelLoc.newAccount({})).url === A.URLS.account);
+
+  // (p) the DEFAULT poll sleeper splits an oversized (but valid, sub-year) Retry-After so a single
+  // setTimeout never exceeds Node's 32-bit ceiling (which clamps to 1ms and rapidly re-polls).
+  var base = Date.UTC(2026, 0, 1);
+  var bigDate = new Date(Date.UTC(2026, 0, 31)).toUTCString();   // 30 days ahead -> delay ms > 2^31-1
+  var sBig = A.acmeServer({ orderStates: ["processing", "valid"], pollRetryAfter: bigDate });
+  var acmeBig = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sBig, { clock: function () { return base; }, sleep: undefined }));
+  await acmeBig.newAccount({});
+  var realST = global.setTimeout;
+  var maxDelay = 0;
+  global.setTimeout = function (fn, d) { maxDelay = Math.max(maxDelay, d || 0); return realST(fn, 0); };
+  try { await acmeBig.pollOrder(A.URLS.order, { onRetryAfter: function () {} }); }
+  finally { global.setTimeout = realST; }
+  check("#13 an oversized Retry-After sleep is split below Node's setTimeout ceiling", maxDelay > 0 && maxDelay <= 2147483647);
 }
 
 async function main() {
