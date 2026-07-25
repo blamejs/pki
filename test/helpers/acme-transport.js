@@ -12,6 +12,12 @@
 
 var fakeTransport = require("./fake-transport").fakeTransport;
 var subtle = require("../../lib/webcrypto").webcrypto.subtle;
+var signing = require("./signing");
+
+// A real (structurally parseable) X.509 certificate PEM -- the default download chain, so the client's
+// strict per-certificate parse accepts it (a test wanting a non-cert body passes its own certPems).
+function certToPem(der) { return "-----BEGIN CERTIFICATE-----\n" + Buffer.from(der).toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END CERTIFICATE-----"; }
+var REAL_CERT_PEM = certToPem(signing.makeSigner("ec-p256", { cn: "leaf.example" }).cert);
 
 var BASE = "https://acme.example";
 var URLS = {
@@ -71,7 +77,7 @@ function acmeServer(opts) {
   var TOKEN = Buffer.from("acme-challenge-token-000001").toString("base64url");   // canonical base64url, > 128 bits
   var challenges = opts.challenges || [{ type: "http-01", url: URLS.challenge, status: "pending", token: TOKEN }];
   var orderIdentifiers = opts.identifiers || [{ type: "dns", value: "example.org" }];
-  var certPems = opts.certPems || ["-----BEGIN CERTIFICATE-----\nMIIBLEAF\n-----END CERTIFICATE-----"];
+  var certPems = opts.certPems || [REAL_CERT_PEM];
   // strictNonce mode: only a nonce the server issued in a POST-response or a badNonce error is valid;
   // nonces harvested off unauthenticated GETs (directory, renewalInfo) are decoys. This distinguishes a
   // retry that consumes the error's fresh nonce (accepted) from one that reuses a staler pooled nonce.
@@ -127,7 +133,11 @@ function acmeServer(opts) {
     if (path === "/authz/1") return withNonce(json(200, { status: "pending", identifier: orderIdentifiers[0], challenges: challenges }));
     if (path === "/chal/1") return withNonce(json(200, challengeObj("processing")));
     if (path === "/order/1/finalize") return withNonce(json(200, orderObj("processing")));
-    if (path === "/order/1") { orderPoll = Math.min(orderPoll + 1, orderStates.length - 1); return withNonce(json(200, orderObj(orderStates[orderPoll]))); }
+    if (path === "/order/1") {
+      orderPoll = Math.min(orderPoll + 1, orderStates.length - 1);
+      var extraHdr = opts.pollRetryAfter ? { "retry-after": opts.pollRetryAfter } : {};
+      return withNonce(json(200, orderObj(orderStates[orderPoll]), extraHdr));
+    }
     if (path === "/cert/1") {
       if (opts.certRequiresPemAccept && String((request.headers || {}).accept || "").indexOf("application/pem-certificate-chain") === -1) return withNonce(problem(406, "malformed", "the certificate resource requires Accept: application/pem-certificate-chain"));
       return withNonce(pemChain(certPems));

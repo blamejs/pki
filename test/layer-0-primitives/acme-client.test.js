@@ -302,6 +302,54 @@ async function testAuditHardening() {
   check("#11 keyChange resolves with a null account on a non-JSON body", kc.account === null && kc.url === A.URLS.account);
 }
 
+// ---- 12 review hardening: cert-parse, receipt clock, order binding, account, poll caps ----
+async function testReviewHardening() {
+  // (a) a downloaded certificate is STRUCTURALLY parsed, not just armor-decoded: PEM wrapping arbitrary
+  // base64 is rejected; a real certificate downloads and is returned as DER.
+  var sBad = A.acmeServer({ certPems: ["-----BEGIN CERTIFICATE-----\nMIIBLEAF\n-----END CERTIFICATE-----"] });
+  var acmeBad = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sBad));
+  await acmeBad.newAccount({});
+  check("#12 a downloaded non-X.509 certificate body is rejected", (await codeOf(acmeBad.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  var sOk = A.acmeServer({});
+  var acmeOk = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sOk));
+  await acmeOk.newAccount({});
+  check("#12 a real downloaded certificate is parsed + returned as DER", Buffer.isBuffer((await acmeOk.downloadCertificate(A.URLS.certificate)).certificate));
+
+  // (b) an HTTP-date Retry-After delay is computed at the RESPONSE RECEIPT time (an injectable clock),
+  // not collapsed to 1s: the surfaced delay reflects (date - receipt).
+  var clockMs = Date.UTC(2026, 9, 21, 7, 27, 0);
+  var seen = [];
+  var sHd = A.acmeServer({ orderStates: ["processing", "valid"], pollRetryAfter: "Wed, 21 Oct 2026 07:29:00 GMT" });
+  var acmeHd = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sHd, { clock: function () { return clockMs; } }));
+  await acmeHd.newAccount({});
+  await acmeHd.pollOrder(A.URLS.order, { onRetryAfter: function (d) { seen.push(d); } });
+  check("#12 an HTTP-date Retry-After is computed at receipt time via the clock", seen.length > 0 && seen[0] === 120);
+
+  // (c) finalize is bound to the ORDER's identifiers -- a caller cannot loosen the sec. 7.4 check by
+  // passing a matching-but-wrong identifier set.
+  var sFb = A.acmeServer({});
+  var acmeFb = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sFb));
+  await acmeFb.newAccount({});
+  var ordFb = await acmeFb.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] });
+  var evilKp = signing.makeSigner("ec-p256", { cn: "evil.example" });
+  var evilCsr = await pki.csr.sign({ subject: "evil.example", subjectPublicKey: evilKp.spki, extensionRequest: { subjectAltName: [{ dNSName: "evil.example" }] } }, { key: evilKp.key });
+  check("#12 a caller identifier override cannot bypass the order binding", (await codeOf(acmeFb.finalize(ordFb.order, { csr: evilCsr, identifiers: [{ type: "dns", value: "evil.example" }] }))) === "acme/csr-identifier-mismatch");
+
+  // (d) newAccount validates the account object BEFORE committing the kid: a malformed account fails
+  // closed and no authenticated operation proceeds.
+  var sMa = A.acmeServer({ account: {} });
+  var acmeMa = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sMa));
+  check("#12 a malformed newAccount object fails closed", (await codeOf(acmeMa.newAccount({}))) !== "NO-THROW");
+  check("#12 the kid was not committed on a malformed account", (await codeOf(acmeMa.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] }))) === "acme/no-account");
+
+  // (e) per-call poll overrides are validated through the same bounds as the constructor budget.
+  var sCap = A.acmeServer({ orderStates: ["processing", "processing", "valid"] });
+  var acmeCap = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sCap));
+  await acmeCap.newAccount({});
+  check("#12 an over-ceiling per-call maxPolls is rejected", (await codeOf(acmeCap.pollOrder(A.URLS.order, { maxPolls: 999999 }))) === "acme/bad-input");
+  check("#12 a non-finite per-call maxTotalWait is rejected", (await codeOf(acmeCap.pollOrder(A.URLS.order, { maxTotalWait: Infinity }))) === "acme/bad-input");
+}
+
 async function main() {
   await setup();
   await testHappyFlow();
@@ -309,6 +357,7 @@ async function main() {
   await testRenewalInfo();
   await testOversized();
   await testAuditHardening();
+  await testReviewHardening();
   await testFinalize();
   await testBadNonceRetry();
   await testBadNonceStorm();
