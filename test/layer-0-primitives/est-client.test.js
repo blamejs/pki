@@ -113,6 +113,8 @@ async function test202Surfaced() {
   var r = await pki.est.simpleenroll(BASE, CSR, { transport: t });
   check("#5 a 202 surfaces retry (not a cert)", r.retry === true && r.retryAfterSeconds === 120);
   check("#5 the verb returned after one call (no internal sleep/loop)", t.calls.length === 1);
+  // 202 is an ENROLLMENT response; a /cacerts 202 is nonconforming (RFC 7030 sec. 4.1.3) -> fail closed.
+  check("#5 a 202 from cacerts is rejected (202 is enrollment-only)", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport({ status: 202, headers: { "retry-after": "120" }, body: "" }) }))) === "est/http-error");
 }
 
 // ---- 6/7 URL scheme gates precede the transport -----------------------------
@@ -123,6 +125,11 @@ async function testUrlGates() {
   var t2 = fakeTransport(cacertsOK([S.cert]));
   check("#7 an unparseable URL is refused", (await codeOf(pki.est.cacerts("not a url", { transport: t2 }))) === "est/bad-url");
   check("#7 the transport was never called on a bad URL", t2.calls.length === 0);
+  // a query / fragment on the base URL would corrupt the concatenated operation path -> refused.
+  var tq = fakeTransport(cacertsOK([S.cert]));
+  check("#7 a base URL with a query component is refused", (await codeOf(pki.est.cacerts("https://ca.example?tenant=x", { transport: tq }))) === "est/bad-url");
+  check("#7 a base URL with a fragment component is refused", (await codeOf(pki.est.cacerts("https://ca.example#frag", { transport: fakeTransport(cacertsOK([S.cert])) }))) === "est/bad-url");
+  check("#7 the transport was never called on a query/fragment base", tq.calls.length === 0);
 }
 
 // ---- 8 default transport requires an explicit anchor (no socket) ------------
