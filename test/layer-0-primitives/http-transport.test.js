@@ -256,10 +256,29 @@ async function testSystemStoreLoaded() {
   } finally { s.srv.close(); }
 }
 
+// ---- a per-request identity check is not bypassed by socket reuse ----------
+async function testSocketNotReusedAcrossIdentityPolicy() {
+  var tls = await selfSigned("Loopback A");
+  var s = await startServer(tls, function (req, res) { res.end("ok"); });
+  try {
+    var t = pki.transport.https({});
+    // request 1 (accepting hook) succeeds and would leave a pooled keep-alive socket.
+    var r1 = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost", checkServerIdentity: function () { return undefined; } } });
+    // request 2 tightens with a REJECTING hook: a reused socket would skip the handshake identity
+    // check and return 200. Fail-closed, and the caller-hook's own error surfaces as the cause --
+    // proving the hook actually ran on request 2 (a fresh connection, not the pooled socket).
+    var threw = false, causeMsg = null;
+    try { await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost", checkServerIdentity: function () { return new Error("pinned mismatch"); } } }); }
+    catch (e) { threw = true; causeMsg = e.cause && String(e.cause.message); }
+    check("14i a per-request identity hook fires on every request (no socket-reuse bypass)", r1.status === 200 && threw && causeMsg === "pinned mismatch");
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
   await testConnectStallTimeout();
   await testSystemStoreLoaded();
+  await testSocketNotReusedAcrossIdentityPolicy();
   await testHappy();
   await testIdentityHookCannotBypass();
   await testTlsDefaultsHonored();
