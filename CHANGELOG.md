@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.17 — 2026-07-25
+
+Refresh two development-only tooling dependencies to clear newly-disclosed advisories.
+
+### Security
+
+- Refresh the development/fuzzing-only brace-expansion (5.0.7 -> 5.0.8, GHSA-mh99-v99m-4gvg) and tar (7.5.19 -> 7.5.22, GHSA-r292-9mhp-454m) tooling dependencies to versions clear of two newly-disclosed advisories. Both are used only by the development and fuzzing harnesses and are never part of the published package (the toolkit has zero runtime dependencies), so installed contents are unchanged.
+
 ## v0.3.16 — 2026-07-24
 
 The EST enrollment client ships -- pki.est fetches CA certificates and enrolls certificates over the wire (RFC 7030), on a new shared node:https transport.
