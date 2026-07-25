@@ -188,6 +188,7 @@ function fixturesFor(tag) {
     // contract accepts a completed run OR a PkiError). certDer is a real cert with
     // no acmeIdentifier / AKI, so verifyTlsAlpn01 and ariCertId throw a typed fault.
     accountJwk: JOSE_EC_JWK, jwk: JOSE_EC_JWK, oldJwk: JOSE_EC_JWK, newJwk: JOSE_EC_JWK,
+    accountKey: acmeAccountKey, transport: acmeTransport,
     token: "DGyRejmCefe7v4NfDGDKfA",
     orderObj: {}, jws: {}, hdr: {},
     key: undefined, priv: undefined, oldKey: undefined, newKey: undefined, macKey: undefined,
@@ -238,6 +239,10 @@ var ocspResponseDer = null;
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples
 // (thumbprint, key authorization, the challenge computations) run against it.
 var JOSE_EC_JWK = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" };
+// pki.acme.client fixtures: a real EC account private key + a routing fake ACME server (the same
+// helper the client vectors drive), so the client @example runs the real directory -> account ->
+// order flow end to end rather than failing closed at construction. Built at run() start (async).
+var acmeAccountKey = null, acmeTransport = null;
 
 // Concatenated source of every test/**/*.test.js EXCEPT this harness, so a
 // primitive path mentioned only here can never satisfy its own TESTED gate.
@@ -280,6 +285,10 @@ async function run() {
   var ctSigKp = ctCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   ctLogListSig = ctCrypto.sign("sha256", ctLogListJson, ctSigKp.privateKey);
   ctSignerSpki = ctSigKp.publicKey.export({ format: "der", type: "spki" });
+
+  var acmeHelper = require("../helpers/acme-transport");
+  acmeAccountKey = (await acmeHelper.makeAccount()).key;
+  acmeTransport = acmeHelper.acmeServer({}).transport;
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 

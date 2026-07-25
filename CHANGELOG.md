@@ -4,7 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.17 — 2026-07-25
+## v0.3.18 — 2026-07-25
+
+The ACME client ships -- pki.acme drives the full RFC 8555 certificate-issuance flow over the shared node:https transport.
+
+### Added
+
+- pki.acme.client(directoryUrl, opts) -- a stateful RFC 8555 ACME client over the shared pki.transport. newAccount / newOrder / getOrder / getAuthorization / getChallenge / respondToChallenge / finalize / pollOrder / pollAuthorization / downloadCertificate drive the issuance flow; revokeCert (RFC 8555 sec. 7.6, account-key or certificate-key signed), keyChange (sec. 7.3.5 account key rotation), deactivateAccount / deactivateAuthorization, and renewalInfo (ARI, RFC 9773) round out the account and certificate lifecycle. Signs every request with the account key (opts.accountKey / accountJwk / alg); reads are POST-as-GET; a problem+json response surfaces as a typed acme/server-problem.
+- Fail-closed transport defaults for the client: HTTPS is required for the directory URL and every server-returned URL (acme/insecure-url), the default transport rejects a connection with no explicit trust anchor unless tls.useSystemStore is set (acme/no-trust-anchors), each JWS carries a fresh single-use nonce with a bounded badNonce retry, the poll loop is bounded by maxPolls and a total-wait budget and sleeps on a Retry-After via an injectable sleeper, and every response body is capped (acme/response-too-large).
+
+### Fixed
+
+- The EST enrollment client now measures a string response body as UTF-8 -- the width it is decoded at -- so a non-ASCII body cannot undercount its byte length and slip past the response-size cap. The built-in node:https transport was unaffected (it returns raw bytes); this hardens a custom injected transport that returns string bodies.
+
+## v0.3.17 — 2026-07-24
 
 Refresh two development-only tooling dependencies to clear newly-disclosed advisories.
 

@@ -178,6 +178,12 @@ async function testOversizedBody() {
   var t = fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime", "content-length": "101" }, body: "x".repeat(101) });
   // The oversize gate fires before transferDecode/cms.parse -- NOT est/bad-base64.
   check("#13 an oversized response is rejected before decode", (await codeOf(pki.est.cacerts(BASE, { transport: t, maxResponseBytes: 100 }))) === "est/response-too-large");
+  // an injected STRING body is measured as UTF-8, not latin1: a non-ASCII body whose UTF-8 length exceeds
+  // the cap but whose latin1 length does not must still be rejected before decode. U+1F600 = 2 UTF-16 units
+  // (latin1) but 4 UTF-8 bytes, so 40 of them are 80 latin1 bytes but 160 UTF-8 bytes.
+  var emojiBody = String.fromCodePoint(0x1f600).repeat(40);
+  var tUtf8 = fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: emojiBody });
+  check("#13 a non-ASCII string body is measured as UTF-8 against the cap", (await codeOf(pki.est.cacerts(BASE, { transport: tUtf8, maxResponseBytes: 100 }))) === "est/response-too-large");
 }
 
 // ---- 14 no credentials before authorization ---------------------------------
