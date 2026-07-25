@@ -529,6 +529,25 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a fragment is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/directory#frag", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+
+  // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
+  // rejected, so the signed and requested URLs cannot differ.
+  check("#13 a URL with whitespace in the path is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/dir ectory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a URL with a backslash in the path is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/dir\\ectory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+
+  // (t) a CROSS-origin request resets the origin-specific servername + checkServerIdentity (pinned to the
+  // trusted host), while the trusted origin keeps them.
+  var sSni = A.acmeServer({ directory: A.directory({ newAccount: "https://other.example/new-account" }) });
+  var acmeSni = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sSni, { tls: { anchors: [ACCT.spki], servername: "acme.example", checkServerIdentity: function () {} } }));
+  await acmeSni.newAccount({});
+  var naSni = sSni.calls.filter(function (c) { return c.url === "https://other.example/new-account"; })[0];
+  check("#13 a cross-origin request resets servername + checkServerIdentity", naSni && (naSni.tls || {}).servername == null && (naSni.tls || {}).checkServerIdentity == null);
+  var dirSni = sSni.calls.filter(function (c) { return c.url === A.URLS.directory; })[0];
+  check("#13 the trusted origin keeps the servername override", dirSni && (dirSni.tls || {}).servername === "acme.example");
 }
 
 async function main() {
