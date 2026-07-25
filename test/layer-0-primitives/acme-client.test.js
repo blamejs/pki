@@ -548,6 +548,12 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a cross-origin request resets servername + checkServerIdentity", naSni && (naSni.tls || {}).servername == null && (naSni.tls || {}).checkServerIdentity == null);
   var dirSni = sSni.calls.filter(function (c) { return c.url === A.URLS.directory; })[0];
   check("#13 the trusted origin keeps the servername override", dirSni && (dirSni.tls || {}).servername === "acme.example");
+
+  // (u) an ABSOLUTE Location with a normalization-sensitive spelling (an uppercase host) is the account
+  // kid VERBATIM (RFC 8555 sec. 6.4/7.3), not a URL.href-normalized value.
+  var sAbsLoc = A.acmeServer({ accountLocation: "https://ACME.EXAMPLE/acct/1" });
+  var acmeAbsLoc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sAbsLoc));
+  check("#13 an absolute Location's exact spelling is preserved as the kid", (await acmeAbsLoc.newAccount({})).url === "https://ACME.EXAMPLE/acct/1");
 }
 
 async function main() {
