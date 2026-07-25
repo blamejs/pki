@@ -386,6 +386,20 @@ security-only patches after the next major releases.
   single-entry SubjectAltName (RFC 8737), a wildcard is one leading label on a
   `dns` identifier only, and the ARI certID preserves the serial's DER
   sign-padding byte so it matches what the CA computes (RFC 9773).
+- **ACME client transport is fail-closed on the wire (CWE-295 / CWE-319 /
+  CWE-770 / CWE-294).** `pki.acme.client` drives a live directory over the same
+  `pki.transport` socket choke point, with no path that disables TLS server
+  authentication: `rejectUnauthorized` is always on, an explicit trust anchor (or
+  a system-store opt-in) is required, and TLS is floored at 1.2. The directory URL
+  and every server-returned URL — account, order, authorization, challenge,
+  finalize, certificate, and the ARI path — must be `https`; an `http` URL from a
+  compromised or downgraded directory is refused rather than fetched. Every
+  authenticated request carries a fresh single-use anti-replay nonce bound to that
+  URL, harvested only from a validated `Replay-Nonce`, with a bounded `badNonce`
+  retry so a nonce-replay error cannot loop. Reads are POST-as-GET, the poll loop
+  is bounded by a poll count and a total-wait budget, a `Retry-After` is surfaced
+  (bounded) rather than blindly slept on, and every response body is size-capped
+  before it reaches a JSON or PEM decoder.
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's

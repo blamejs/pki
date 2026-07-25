@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.17",
+  "packageVersion": "0.3.18",
   "surface": {
     "C": {
       "kind": "object",
@@ -622,6 +622,10 @@
         "challengeResponse": {
           "kind": "function",
           "arity": 1
+        },
+        "client": {
+          "kind": "function",
+          "arity": 2
         },
         "deactivate": {
           "kind": "function",
@@ -3111,6 +3115,7 @@
     "pki.acme.ariCertId": "0.1.25",
     "pki.acme.parseAriCertId": "0.1.25",
     "pki.acme.validateRenewalInfo": "0.1.25",
+    "pki.acme.client": "0.3.18",
     "pki.asn1.decode": "0.1.0",
     "pki.asn1.read.oid": "0.1.15",
     "pki.asn1.encode": "0.1.0",

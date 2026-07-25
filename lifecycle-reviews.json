@@ -772,5 +772,11 @@
     "reason": "Rides the same still-settling PKCS#12 store surface as pki.pkcs12.build (the classic App B.2 vs PBMAC1 MAC verification, the work-factor caps); graduate alongside pki.pkcs12.build.",
     "reviewedAt": "0.3.17",
     "reviewBy": "0.4.0"
+  },
+  "pki.pkcs12.open": {
+    "decision": "keep-experimental",
+    "reason": "The high-level open/parse over the same still-settling PKCS#12 store surface as pki.pkcs12.build: the public-key PRIVACY (id-envelopedData bags) mode is deferred-with-condition and the legacy-PBE (Appendix C) bag decryption is Planned, so the OpenResult shape can still gain fields. Graduate alongside pki.pkcs12.build once the full store surface is settled.",
+    "reviewedAt": "0.3.18",
+    "reviewBy": "0.4.0"
   }
 }
