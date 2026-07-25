@@ -37,9 +37,13 @@ async function testHappyFlow() {
   check("#1 getAuthorization returns the challenge list", authz.challenges.length === 1 && authz.challenges[0].type === "http-01");
   var chal = await acme.respondToChallenge(authz.challenges[0].url);
   check("#1 respondToChallenge posts to the challenge URL", chal.status === "processing");
-  var ready = await acme.pollOrder(ord.url, { onRetryAfter: function () {} });
-  check("#1 pollOrder walks to a terminal (valid) state", ready.status === "valid" && ready.certificate === A.URLS.certificate);
-  var dl = await acme.downloadCertificate(ready.certificate);
+  var readyOrder = await acme.pollOrder(ord.url, { onRetryAfter: function () {} });
+  check("#1 pollOrder returns when the order is ready to finalize", readyOrder.status === "ready");
+  var finalized = await acme.finalize(readyOrder, { csr: CSR });
+  check("#1 finalize submits the CSR", finalized.status === "processing" || finalized.status === "valid");
+  var valid = await acme.pollOrder(ord.url, { onRetryAfter: function () {} });
+  check("#1 pollOrder walks to a terminal (valid) state", valid.status === "valid" && valid.certificate === A.URLS.certificate);
+  var dl = await acme.downloadCertificate(valid.certificate);
   check("#1 downloadCertificate returns the leaf + chain", Buffer.isBuffer(dl.certificate) && Array.isArray(dl.chain));
   // every post-account POST is kid-signed with the captured account URL; each carries its own nonce.
   var posts = s.calls.filter(function (c) { return c.method === "POST"; });
@@ -256,7 +260,7 @@ async function testAuditHardening() {
   var revCert = signing.makeSigner("ec-p256", { cn: "revoke.example" }).cert;
   var sRev = A.acmeServer({ badNonceRounds: 1 });
   var acmeRev = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sRev));
-  check("#11 a cert-key revoke retries a badNonce (RFC 8555 sec. 6.5)", (await acmeRev.revokeCert({ certificate: revCert, certKey: revKp.key, certJwk: revKp.jwk })) === true);
+  check("#11 a cert-key revoke retries a badNonce (RFC 8555 sec. 6.5)", (await acmeRev.revokeCert({ certificate: revCert, certKey: revKp.key, certJwk: revKp.jwk, certAlg: "ES256" })) === true);
 
   // (g) the badNonce retry consumes the ERROR response's fresh nonce, not a staler pooled one. Seed the
   // pool with two decoy nonces (a renewalInfo GET harvests directory + ARI nonces); a strict server
@@ -270,7 +274,7 @@ async function testAuditHardening() {
   var acmeStrict = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sStrict));
   await acmeStrict.renewalInfo(certDer);   // seeds two decoy nonces into the pool
   check("#11 a badNonce retry uses the error's fresh nonce over a stale pooled one (sec. 6.5)",
-    (await acmeStrict.revokeCert({ certificate: revCert2, certKey: revKp2.key, certJwk: revKp2.jwk })) === true);
+    (await acmeStrict.revokeCert({ certificate: revCert2, certKey: revKp2.key, certJwk: revKp2.jwk, certAlg: "ES256" })) === true);
 
   // (h) the single-use nonce pool is bounded: many unauthenticated renewalInfo harvests do not grow it
   // without bound (CWE-770), and a subsequent authenticated verb still succeeds.
@@ -371,6 +375,28 @@ async function testReviewHardening() {
   check("#12 revokeCert with only certKey is rejected", (await codeOf(acmeInc.revokeCert({ certificate: revCertG, certKey: kp.key }))) === "acme/bad-input");
   check("#12 revokeCert with only certJwk is rejected", (await codeOf(acmeInc.revokeCert({ certificate: revCertG, certJwk: kp.jwk }))) === "acme/bad-input");
   check("#12 revokeCert with NEITHER cert-key field uses the account key", (await acmeInc.revokeCert({ certificate: revCertG })) === true);
+  check("#12 revokeCert cert-key mode without certAlg is rejected", (await codeOf(acmeInc.revokeCert({ certificate: revCertG, certKey: kp.key, certJwk: kp.jwk }))) === "acme/bad-input");
+}
+
+// ---- 13 review hardening (round 3): order-ready terminal, relative redirect ----
+async function testReadyAndRelativeRedirect() {
+  // (a) pollOrder RETURNS on `ready` (the stable pre-finalize state) rather than spinning to exhaustion.
+  var sReady = A.acmeServer({ orderStates: ["pending", "ready"], maxPolls: 5 });
+  var acmeReady = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sReady));
+  await acmeReady.newAccount({});
+  var ord = await acmeReady.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] });
+  var r = await acmeReady.pollOrder(ord.url, { maxPolls: 5 });
+  check("#13 pollOrder returns at the stable ready state (no exhaustion)", r.status === "ready");
+
+  // (b) a RELATIVE redirect Location is resolved against the request URL, then https-gated.
+  var sRel = A.acmeServer({ redirects: { "/dir-relative": "/directory" } });
+  var acmeRel = pki.acme.client(A.URLS.base + "/dir-relative", A.clientOpts(ACCT, sRel));
+  check("#13 a relative redirect Location is resolved and followed", (await acmeRel.newAccount({})).url === A.URLS.account);
+
+  // (c) a Location that cannot resolve to a valid URL (even relative) fails closed.
+  var sMalLoc = A.acmeServer({ redirects: { "/dir-malloc": "http://" } });
+  var acmeMalLoc = pki.acme.client(A.URLS.base + "/dir-malloc", A.clientOpts(ACCT, sMalLoc));
+  check("#13 an unresolvable redirect Location fails closed", (await codeOf(acmeMalLoc.newAccount({}))) === "acme/bad-redirect");
 }
 
 async function main() {
@@ -381,6 +407,7 @@ async function main() {
   await testOversized();
   await testAuditHardening();
   await testReviewHardening();
+  await testReadyAndRelativeRedirect();
   await testFinalize();
   await testBadNonceRetry();
   await testBadNonceStorm();

@@ -44,6 +44,12 @@ function run() {
     return retryAfter.parse("Wed, 21 Oct 2099 07:28:00 GMT", { now: Date.UTC(2026, 0, 1), E: E, code: E_CODE });
   }) === E_CODE);
 
+  // a sub-second-ahead HTTP-date rounds the delay UP to the next whole second (never 0, which would retry
+  // before the server's requested time); a past date clamps to 0.
+  var base = Date.UTC(2026, 9, 21, 7, 28, 0);
+  check("a sub-second-ahead date rounds up to 1s (not 0)", retryAfter.parse("Wed, 21 Oct 2026 07:28:00 GMT", { now: base - 300, E: E, code: E_CODE }).retryAfterSeconds === 1);
+  check("a past Retry-After date clamps the delay to 0", retryAfter.parse("Wed, 21 Oct 2026 07:28:00 GMT", { now: base + 5000, E: E, code: E_CODE }).retryAfterSeconds === 0);
+
   // an HTTP-date with an impossible calendar day is rejected (round-trip check), returning NaN.
   check("an impossible calendar date returns NaN", isNaN(retryAfter.httpDateMs("Wed, 31 Feb 2026 00:00:00 GMT")));
 
