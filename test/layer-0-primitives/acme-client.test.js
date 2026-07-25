@@ -444,6 +444,24 @@ async function testReadyAndRelativeRedirect() {
   var acmeExp = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sExp));
   await acmeExp.newAccount({});
   check("#13 pollAuthorization returns a pending->expired terminal", (await acmeExp.pollAuthorization(A.URLS.authz)).status === "expired");
+
+  // (i) a verb whose RFC success status is 200 rejects a 201 (only newAccount/newOrder may return 201).
+  var revCertI = signing.makeSigner("ec-p256", { cn: "revoke5.example" }).cert;
+  var s201 = A.acmeServer({ revokeStatus: 201 });
+  var acme201 = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s201));
+  await acme201.newAccount({});
+  check("#13 a 201 on a 200-only verb fails closed", (await codeOf(acme201.revokeCert({ certificate: revCertI }))) === "acme/unexpected-status");
+
+  // (j) the certificate media type is matched as an EXACT token -- a lookalike does not slip through.
+  var sLook = A.acmeServer({ certContentType: "application/pem-certificate-chain-evil" });
+  var acmeLook = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sLook));
+  await acmeLook.newAccount({});
+  check("#13 a lookalike cert media type fails closed", (await codeOf(acmeLook.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  // and the exact token WITH parameters is accepted.
+  var sParam = A.acmeServer({ certContentType: "application/pem-certificate-chain; charset=utf-8" });
+  var acmeParam = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sParam));
+  await acmeParam.newAccount({});
+  check("#13 the exact media type with parameters is accepted", Buffer.isBuffer((await acmeParam.downloadCertificate(A.URLS.certificate)).certificate));
 }
 
 async function main() {

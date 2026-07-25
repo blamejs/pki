@@ -397,9 +397,9 @@ security-only patches after the next major releases.
   authenticated request carries a fresh single-use anti-replay nonce bound to that
   URL, harvested only from a validated `Replay-Nonce`, with a bounded `badNonce`
   retry so a nonce-replay error cannot loop. Reads are POST-as-GET, the poll loop
-  is bounded by a poll count and a total-wait budget, a `Retry-After` is surfaced
-  (bounded) rather than blindly slept on, and every response body is size-capped
-  before it reaches a JSON or PEM decoder.
+  is bounded by a poll count and a total-wait budget and sleeps on a `Retry-After`
+  through an injectable sleeper (so the delay is bounded, not attacker-unbounded),
+  and every response body is size-capped before it reaches a JSON or PEM decoder.
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's
