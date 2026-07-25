@@ -293,6 +293,10 @@ async function testAuthScopeAndScheme() {
   var tcapAuth = fakeTransport([{ status: 401, headers: { "WWW-Authenticate": "Basic realm=\"est\"" }, body: "" }, enrollOK([S.cert])]);
   var rcapAuth = await pki.est.simpleenroll(BASE, CSR, { transport: tcapAuth, username: "u", password: "p" });
   check("#28 a capitalized WWW-Authenticate is honored (headers normalized)", rcapAuth.certificate.equals(S.cert) && /^Basic /.test(tcapAuth.calls[1].headers.authorization));
+  // a comma + Basic INSIDE a quoted auth-param is not a Basic challenge (the list is tokenized honoring quotes).
+  check("#28 a comma+Basic inside a quoted auth-param is not treated as a Basic challenge", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": "Digest realm=\"x, Basic required\"" }, body: "" }), username: "u", password: "p" }))) === "est/auth-required");
+  // a non-boolean tls.useSystemStore (e.g. a "false" string from JSON/env) is not an opt-in -> fail closed.
+  check("#28 a non-boolean useSystemStore is not a trust opt-in", (await codeOf(pki.est.cacerts(BASE, { tls: { useSystemStore: "false" } }))) === "est/no-trust-anchors");
 }
 
 async function main() {

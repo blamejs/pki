@@ -45,6 +45,7 @@ async function testConfigGates() {
   check("1 an http: URL is refused", (await codeOf(t({ method: "GET", url: "http://ca.example/x" }))) === "transport/insecure-url");
   check("2 an unparseable URL is refused", (await codeOf(t({ method: "GET", url: "::::" }))) === "transport/bad-url");
   check("3 no explicit anchor and no useSystemStore is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x" }))) === "transport/no-trust-anchors");
+  check("3b a non-boolean useSystemStore ('false' string) is not a trust opt-in", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { useSystemStore: "false" } }))) === "transport/no-trust-anchors");
   check("4 a sub-floor minVersion is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")], minVersion: "TLSv1.1" } }))) === "transport/bad-input");
   check("5 a negative maxResponseBytes is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: -5 }))) === "transport/bad-input");
   check("6 a maxResponseBytes above the ceiling is refused (tighten-only)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", tls: { anchors: [Buffer.from("x")] }, maxResponseBytes: pki.C.LIMITS.HTTP_MAX_RESPONSE_BYTES + 1 }))) === "transport/bad-input");
