@@ -348,6 +348,29 @@ async function testReviewHardening() {
   await acmeCap.newAccount({});
   check("#12 an over-ceiling per-call maxPolls is rejected", (await codeOf(acmeCap.pollOrder(A.URLS.order, { maxPolls: 999999 }))) === "acme/bad-input");
   check("#12 a non-finite per-call maxTotalWait is rejected", (await codeOf(acmeCap.pollOrder(A.URLS.order, { maxTotalWait: Infinity }))) === "acme/bad-input");
+
+  // (f) a safe-method (GET) redirect is FOLLOWED to its https Location, honoring the maxRedirects budget:
+  // a directory served behind a 301 works; a redirect past the budget fails closed.
+  var sRedir = A.acmeServer({ redirects: { "/dir-redirect": A.URLS.directory } });
+  var acmeRedir = pki.acme.client(A.URLS.base + "/dir-redirect", A.clientOpts(ACCT, sRedir));
+  check("#12 a directory behind a 301 redirect is followed", (await acmeRedir.newAccount({})).url === A.URLS.account);
+  var sRedir0 = A.acmeServer({ redirects: { "/dir-redirect": A.URLS.directory } });
+  var acmeRedir0 = pki.acme.client(A.URLS.base + "/dir-redirect", A.clientOpts(ACCT, sRedir0, { maxRedirects: 0 }));
+  check("#12 a redirect past the maxRedirects budget fails closed", (await codeOf(acmeRedir0.newAccount({}))) === "acme/too-many-redirects");
+  var sBadR = A.acmeServer({ redirectNoLocationPath: "/dir-badredir" });
+  var acmeBadR = pki.acme.client(A.URLS.base + "/dir-badredir", A.clientOpts(ACCT, sBadR));
+  check("#12 a redirect with no Location header fails closed", (await codeOf(acmeBadR.newAccount({}))) === "acme/bad-redirect");
+
+  // (g) revokeCert cert-key mode requires BOTH certKey and certJwk: an incomplete pair must NOT silently
+  // fall through to the account-key path.
+  var kp = await A.makeAccount();
+  var revCertG = signing.makeSigner("ec-p256", { cn: "revoke3.example" }).cert;
+  var sInc = A.acmeServer({});
+  var acmeInc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sInc));
+  await acmeInc.newAccount({});
+  check("#12 revokeCert with only certKey is rejected", (await codeOf(acmeInc.revokeCert({ certificate: revCertG, certKey: kp.key }))) === "acme/bad-input");
+  check("#12 revokeCert with only certJwk is rejected", (await codeOf(acmeInc.revokeCert({ certificate: revCertG, certJwk: kp.jwk }))) === "acme/bad-input");
+  check("#12 revokeCert with NEITHER cert-key field uses the account key", (await acmeInc.revokeCert({ certificate: revCertG })) === true);
 }
 
 async function main() {

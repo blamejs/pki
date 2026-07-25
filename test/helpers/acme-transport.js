@@ -101,6 +101,11 @@ function acmeServer(opts) {
     var method = request.method;
     var withNonce = function (r) { r.headers = Object.assign({ "replay-nonce": nextNonce() }, r.headers || {}); return r; };
 
+    // an optional redirect map { fromPath: toUrl } -> a 301 a safe-method request follows (or loops).
+    if (opts.redirects && opts.redirects[path]) return { status: 301, headers: { location: opts.redirects[path] }, body: "" };
+    // a malformed 301 with NO Location header, to exercise the client's fail-closed redirect handling.
+    if (opts.redirectNoLocationPath === path) return { status: 301, headers: {}, body: "" };
+
     // GET directory / HEAD newNonce (unauthenticated). In strictNonce mode the directory + renewalInfo
     // responses carry a DECOY nonce (harvested by the client, rejected on a POST) to seed the pool.
     if (path === "/directory") return opts.strictNonce ? withNonce(json(200, dir)) : json(200, dir);
