@@ -583,6 +583,21 @@ async function testReadyAndRelativeRedirect() {
   var acmeClean = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sClean));
   await acmeClean.newAccount({});
   check("#13 a clean PEM chain downloads", Buffer.isBuffer((await acmeClean.downloadCertificate(A.URLS.certificate)).certificate));
+
+  // (x) an ERROR status from newNonce (a rate limit) fails closed rather than using the error's nonce.
+  var sBadNonce = A.acmeServer({ newNonceStatus: 429 });
+  var acmeBadNonce = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sBadNonce));
+  check("#13 a newNonce error status fails closed", (await codeOf(acmeBadNonce.newAccount({}))) === "acme/server-problem");
+
+  // (y) the ARI certID is appended to the PATH before any query string (RFC 9773), not concatenated after.
+  var akiR = require("node:crypto").createHash("sha1").update("issuerR").digest();
+  var certR = signing.makeSigner("ec-p256", { cn: "ari.example", serial: 0x2a, exts: [akiExt(akiR)] }).cert;
+  var certIdR = pki.acme.ariCertId(certR);
+  var sAri = A.acmeServer({ directory: A.directory({ renewalInfo: "https://acme.example/renewal-info?tenant=1" }) });
+  var acmeAri = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sAri));
+  await acmeAri.renewalInfo(certR);
+  var ariCall = sAri.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/renewal-info/") === 0; })[0];
+  check("#13 the ARI certID is in the path with the query preserved", ariCall && new URL(ariCall.url).pathname === "/renewal-info/" + certIdR && new URL(ariCall.url).search === "?tenant=1");
 }
 
 async function main() {

@@ -110,7 +110,7 @@ function acmeServer(opts) {
     // GET directory / HEAD newNonce (unauthenticated). In strictNonce mode the directory + renewalInfo
     // responses carry a DECOY nonce (harvested by the client, rejected on a POST) to seed the pool.
     if (path === "/directory") return opts.strictNonce ? withNonce(json(200, dir)) : json(200, dir);
-    if (path === "/new-nonce") return withNonce({ status: 200, headers: {} });
+    if (path === "/new-nonce") return withNonce({ status: opts.newNonceStatus || 200, headers: {} });
     if (path === "/renewal-info" || path.indexOf("/renewal-info/") === 0) {
       var ri = opts.renewalInfoResponse || json(200, { suggestedWindow: { start: "2027-01-01T00:00:00Z", end: "2027-01-15T00:00:00Z" } });
       return opts.strictNonce ? withNonce(ri) : ri;
