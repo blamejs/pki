@@ -312,12 +312,24 @@ async function testRedirectCredentialScope() {
   check("#29 a 303 converts the follow to GET with no body", t303.calls[1].method === "GET" && (t303.calls[1].body == null || t303.calls[1].body === "") && r303.certificate.equals(S.cert));
 }
 
+// ---- an ambiguous issued certificate (multiple key matches) is rejected ----
+async function testAmbiguousIssued() {
+  // a second, distinct certificate minted from the SAME key as the CSR -> two response certs match
+  // the submitted public key; with no issuance ordering, the issued cert is ambiguous.
+  var dup = await pki.x509.sign(
+    { subject: "renewed", subjectPublicKey: S.spki, serialNumber: 0x9999, notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z") },
+    { key: S.key });
+  var t = fakeTransport(enrollOK([S.cert, dup]));
+  check("#30 two certificates matching the CSR key are rejected as ambiguous", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: t }))) === "est/ambiguous-issued-cert");
+}
+
 async function main() {
   await setup();
   await testCsrFormsAndDefaultTransport();
   await testMoreBranches();
   await testAuthScopeAndScheme();
   await testRedirectCredentialScope();
+  await testAmbiguousIssued();
   await testCacertsHappy();
   await testEnrollHappy();
   await testReenrollHappy();
