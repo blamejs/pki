@@ -477,12 +477,14 @@ async function testReadyAndRelativeRedirect() {
   var dirTrust = sXoDir.calls.filter(function (c) { return c.url === A.URLS.directory; })[0];
   check("#13 mTLS is kept for the trusted directory origin", dirTrust && (dirTrust.tls || {}).cert != null);
 
-  // (l) a non-canonical URL the parser would silently repair is rejected (the signed url must equal the
-  // connected url).
-  check("#13 a non-canonical directory URL (trailing space) is rejected", (await codeOf(Promise.resolve().then(function () {
-    return pki.acme.client("https://acme.example/directory ", A.clientOpts(ACCT, A.acmeServer({})));
+  // (l) a valid URL WHATWG would normalize (a default :443 port, an uppercase host) is ACCEPTED -- a
+  // conforming CA may emit either spelling; the transport re-parses it for the connection.
+  var acme443 = pki.acme.client("https://acme.example:443/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  check("#13 a default-port (:443) directory URL is accepted", (await acme443.newAccount({})).url === A.URLS.account);
+  // a genuinely unparseable URL (a space in the authority) still fails closed.
+  check("#13 an unparseable URL is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://ex ample/directory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
-  check("#13 a non-canonical resource URL (missing //) is rejected", (await codeOf(Promise.resolve().then(function () { return acmeOv.getOrder("https:acme.example/order/1"); }))) === "acme/bad-url");
 
   // (m) a JSON response body with malformed UTF-8 fails closed (the strict RFC 8259 UTF-8 validation runs
   // on the raw wire bytes, not a lossy replacement-char decode).
