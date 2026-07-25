@@ -223,15 +223,15 @@ async function testAuditHardening() {
   check("#11 an http directory resource fails closed (acme/insecure-url)", (await codeOf(acmeHttp.newAccount({}))) === "acme/insecure-url");
   check("#11 no request reached an http endpoint", sHttp.calls.every(function (c) { return new URL(c.url).protocol === "https:"; }));
 
-  // (c) _clientUrl preserves the exact server URL: a non-canonical Location (:443) is the kid verbatim
-  // (RFC 8555 sec. 6.4/7.3), not a URL.href-normalized value.
-  var sLoc = A.acmeServer({ accountLocation: "https://acme.example:443/acct/1" });
+  // (c) _clientUrl preserves the exact (canonical) server URL: a non-default port the server chose is the
+  // kid verbatim (RFC 8555 sec. 6.4/7.3), not a URL.href-normalized value.
+  var sLoc = A.acmeServer({ accountLocation: "https://acme.example:8443/acct/1" });
   var acmeLoc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sLoc));
   var acctLoc = await acmeLoc.newAccount({});
-  check("#11 the account URL is the exact server Location, not normalized", acctLoc.url === "https://acme.example:443/acct/1");
+  check("#11 the account URL is the exact server Location, not normalized", acctLoc.url === "https://acme.example:8443/acct/1");
   await acmeLoc.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] });
   var orderPost = sLoc.calls.filter(function (c) { return c.url === A.URLS.newOrder; })[0];
-  check("#11 the kid in a following JWS is the exact Location", jwsProtected(orderPost.body).kid === "https://acme.example:443/acct/1");
+  check("#11 the kid in a following JWS is the exact Location", jwsProtected(orderPost.body).kid === "https://acme.example:8443/acct/1");
 
   // (d) downloadCertificate advertises the pem-certificate-chain media type (sec. 7.4.2); a server that
   // content-negotiates on the cert resource still returns the chain.
@@ -462,6 +462,25 @@ async function testReadyAndRelativeRedirect() {
   var acmeParam = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sParam));
   await acmeParam.newAccount({});
   check("#13 the exact media type with parameters is accepted", Buffer.isBuffer((await acmeParam.downloadCertificate(A.URLS.certificate)).certificate));
+
+  // (k) the mTLS credential is bound to the CONFIGURED directory origin: a directory-advertised
+  // cross-origin URL (a compromised/redirected directory) does NOT receive the client certificate/key,
+  // while the trusted directory origin does.
+  var mk2 = Buffer.from([9, 8, 7]);
+  var sXoDir = A.acmeServer({ directory: A.directory({ newAccount: "https://other.example/new-account" }) });
+  var acmeXoDir = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sXoDir, { tls: { anchors: [ACCT.spki], cert: mk2, key: mk2 } }));
+  await acmeXoDir.newAccount({});
+  var naXo = sXoDir.calls.filter(function (c) { return c.url === "https://other.example/new-account"; })[0];
+  check("#13 mTLS is stripped for a directory-advertised cross-origin URL", naXo && (naXo.tls || {}).cert == null && (naXo.tls || {}).key == null);
+  var dirTrust = sXoDir.calls.filter(function (c) { return c.url === A.URLS.directory; })[0];
+  check("#13 mTLS is kept for the trusted directory origin", dirTrust && (dirTrust.tls || {}).cert != null);
+
+  // (l) a non-canonical URL the parser would silently repair is rejected (the signed url must equal the
+  // connected url).
+  check("#13 a non-canonical directory URL (trailing space) is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory ", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a non-canonical resource URL (missing //) is rejected", (await codeOf(Promise.resolve().then(function () { return acmeOv.getOrder("https:acme.example/order/1"); }))) === "acme/bad-url");
 }
 
 async function main() {
