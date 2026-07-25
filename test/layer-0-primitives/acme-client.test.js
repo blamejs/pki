@@ -424,6 +424,14 @@ async function testReadyAndRelativeRedirect() {
   var acmeCt = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sCt));
   await acmeCt.newAccount({});
   check("#13 a wrong cert media type fails closed", (await codeOf(acmeCt.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+
+  // (g) caller PAYLOAD options cannot override the client-owned JWS session fields (url / nonce): the
+  // protected header stays bound to the actual request, not a value spread from a lower-level config.
+  var sOv = A.acmeServer({});
+  var acmeOv = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sOv));
+  await acmeOv.newAccount({ termsOfServiceAgreed: true, url: "https://evil.example/x", nonce: "Zm9vYmFyYmF6" });
+  var ovHdr = jwsProtected(sOv.calls.filter(function (c) { return c.url === A.URLS.newAccount; })[0].body);
+  check("#13 payload options cannot override the JWS url/nonce", ovHdr.url === A.URLS.newAccount && ovHdr.nonce !== "Zm9vYmFyYmF6");
 }
 
 async function main() {
