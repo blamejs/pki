@@ -515,6 +515,18 @@ async function testReadyAndRelativeRedirect() {
   try { await acmeBig.pollOrder(A.URLS.order, { onRetryAfter: function () {} }); }
   finally { global.setTimeout = realST; }
   check("#13 an oversized Retry-After sleep is split below Node's setTimeout ceiling", maxDelay > 0 && maxDelay <= 2147483647);
+
+  // (q) an authorization may transition pending -> revoked directly (a CA revoking it mid-poll, RFC 8555
+  // sec. 7.1.6); the poller returns the terminal rather than rejecting the transition.
+  var sRev = A.acmeServer({ authzStates: ["pending", "revoked"] });
+  var acmeRev = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sRev));
+  await acmeRev.newAccount({});
+  check("#13 pollAuthorization returns a pending->revoked terminal", (await acmeRev.pollAuthorization(A.URLS.authz)).status === "revoked");
+
+  // (r) a URL with a fragment is rejected (the transport drops the fragment; the JWS url would retain it).
+  check("#13 a URL with a fragment is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory#frag", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
 }
 
 async function main() {
