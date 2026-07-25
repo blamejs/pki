@@ -230,8 +230,36 @@ async function testTlsDefaultsHonored() {
   } finally { s.srv.close(); }
 }
 
+// ---- a stalled connection setup is bounded by the wall-clock timeout -------
+async function testConnectStallTimeout() {
+  // a raw TCP server accepts the connection but never speaks TLS, so the handshake (connection setup,
+  // before any HTTP response) stalls; the independent wall-clock timer must still fire.
+  var raw = require("node:net").createServer(function () { /* accept, never respond */ });
+  var port = await new Promise(function (res) { raw.listen(0, "127.0.0.1", function () { res(raw.address().port); }); });
+  try {
+    var t = pki.transport.https({});
+    var code = await codeOf(t({ method: "GET", url: "https://127.0.0.1:" + port + "/x", tls: { anchors: [Buffer.from("-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----")] }, timeout: 400 }));
+    check("14g a stalled connection setup is bounded by the wall-clock timeout", code === "transport/timeout");
+  } finally { raw.close(); }
+}
+
+// ---- useSystemStore loads a real CA store ----------------------------------
+async function testSystemStoreLoaded() {
+  var tls = await selfSigned("Loopback A");
+  var s = await startServer(tls, function (req, res) { res.end("x"); });
+  try {
+    var t = pki.transport.https({});
+    // useSystemStore loads the OS system + bundled CA store; a self-signed loopback cert is not in it,
+    // so authentication fails closed -- the loader ran and the store is real, not a trust-all fallback.
+    var code = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: { useSystemStore: true, servername: "localhost" } }));
+    check("14h useSystemStore loads the system store (a self-signed cert outside it fails closed)", code === "transport/server-auth-failed");
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
+  await testConnectStallTimeout();
+  await testSystemStoreLoaded();
   await testHappy();
   await testIdentityHookCannotBypass();
   await testTlsDefaultsHonored();
