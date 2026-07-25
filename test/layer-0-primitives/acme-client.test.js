@@ -297,13 +297,15 @@ async function testAuditHardening() {
   await acmeBadBody.newAccount({});
   check("#11 a non-JSON problem body still surfaces acme/server-problem", (await codeOf(acmeBadBody.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] }))) === "acme/server-problem");
 
-  // (k) keyChange succeeds even when the server's 200 body is not JSON (the account view is best-effort).
+  // (k) keyChange VALIDATES the account response before rotating: a malformed / non-account 200 body
+  // fails closed (RFC 8555 sec. 7.3.5), so the session is never left on a key the server did not accept.
   var sKC = A.acmeServer({ keyChangeBody: "not-json{" });
   var acmeKC = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sKC));
   await acmeKC.newAccount({});
   var neuKC = await A.makeAccount();
-  var kc = await acmeKC.keyChange({ newKey: neuKC.key, newJwk: neuKC.jwk, newAlg: "ES256" });
-  check("#11 keyChange resolves with a null account on a non-JSON body", kc.account === null && kc.url === A.URLS.account);
+  check("#11 keyChange with a malformed account body fails closed", (await codeOf(acmeKC.keyChange({ newKey: neuKC.key, newJwk: neuKC.jwk, newAlg: "ES256" }))) === "acme/bad-response");
+  // the session key was NOT rotated -- a subsequent authenticated request still succeeds.
+  check("#11 a failed keyChange leaves the working key intact", (await acmeKC.revokeCert({ certificate: signing.makeSigner("ec-p256", { cn: "kc.example" }).cert })) === true);
 }
 
 // ---- 12 review hardening: cert-parse, receipt clock, order binding, account, poll caps ----

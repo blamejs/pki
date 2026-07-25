@@ -155,7 +155,7 @@ function acmeServer(opts) {
       return withNonce(pemChain(certPems, opts.certContentType ? { "content-type": opts.certContentType } : {}));
     }
     if (path === "/acct/1") return withNonce(json(200, opts.accountAfter || { status: "deactivated" }));
-    if (path === "/key-change") return withNonce({ status: 200, headers: {}, body: opts.keyChangeBody !== undefined ? opts.keyChangeBody : "" });
+    if (path === "/key-change") return withNonce({ status: 200, headers: { "content-type": "application/json" }, body: opts.keyChangeBody !== undefined ? opts.keyChangeBody : JSON.stringify({ status: "valid" }) });
     if (path === "/revoke-cert") return withNonce({ status: opts.revokeStatus || 200, headers: {}, body: "" });
 
     return withNonce({ status: 404, headers: {}, body: "no route " + method + " " + path });
