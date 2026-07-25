@@ -760,5 +760,17 @@
     "reason": "Deriving an SPKI public key from a PKCS#8 private key rides the same key-material lifecycle surface; graduate alongside pki.key.encrypt.",
     "reviewedAt": "0.3.16",
     "reviewBy": "0.4.0"
+  },
+  "pki.pkcs12.build": {
+    "decision": "keep-experimental",
+    "reason": "RFC 7292 / RFC 9579 PKCS#12 production is hardened and openssl-interop-proven across both integrity modes (password MAC and public-key signature), but the store surface is still settling: the public-key PRIVACY (id-envelopedData bags) mode is deferred-with-condition and the password-encoding wart vs the ecosystem (BMPString classic vs UTF-8 modern) continues to be validated. Graduate once the full PKCS#12 store surface (privacy + integrity) is settled.",
+    "reviewedAt": "0.3.17",
+    "reviewBy": "0.4.0"
+  },
+  "pki.pkcs12.verifyMac": {
+    "decision": "keep-experimental",
+    "reason": "Rides the same still-settling PKCS#12 store surface as pki.pkcs12.build (the classic App B.2 vs PBMAC1 MAC verification, the work-factor caps); graduate alongside pki.pkcs12.build.",
+    "reviewedAt": "0.3.17",
+    "reviewBy": "0.4.0"
   }
 }
