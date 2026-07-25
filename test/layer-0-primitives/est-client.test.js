@@ -299,11 +299,25 @@ async function testAuthScopeAndScheme() {
   check("#28 a non-boolean useSystemStore is not a trust opt-in", (await codeOf(pki.est.cacerts(BASE, { tls: { useSystemStore: "false" } }))) === "est/no-trust-anchors");
 }
 
+// ---- redirect credential scope + 303 method conversion --------------------
+async function testRedirectCredentialScope() {
+  // the mTLS client identity is origin-bound: a cross-origin redirect strips tls.cert/key (like Basic).
+  var tmtls = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, cacertsOK([S.cert])]);
+  var rmtls = await pki.est.cacerts(BASE, { transport: tmtls, tls: { anchors: [S.cert], cert: Buffer.from("CLIENTCERT"), key: Buffer.from("CLIENTKEY") } });
+  check("#29 the mTLS cert/key are presented on the original origin", !!(tmtls.calls[0].tls.cert && tmtls.calls[0].tls.key));
+  check("#29 the mTLS cert/key are stripped on a cross-origin redirect", !tmtls.calls[1].tls.cert && !tmtls.calls[1].tls.key && rmtls.certificates.length === 1);
+  // a 303 See Other converts the follow to a GET with no body (no duplicate CSR re-POST).
+  var t303 = fakeTransport([{ status: 303, headers: { location: "https://ca.example/.well-known/est/simpleenroll?x=1" }, body: "" }, enrollOK([S.cert])]);
+  var r303 = await pki.est.simpleenroll(BASE, CSR, { transport: t303 });
+  check("#29 a 303 converts the follow to GET with no body", t303.calls[1].method === "GET" && (t303.calls[1].body == null || t303.calls[1].body === "") && r303.certificate.equals(S.cert));
+}
+
 async function main() {
   await setup();
   await testCsrFormsAndDefaultTransport();
   await testMoreBranches();
   await testAuthScopeAndScheme();
+  await testRedirectCredentialScope();
   await testCacertsHappy();
   await testEnrollHappy();
   await testReenrollHappy();
