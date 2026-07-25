@@ -306,6 +306,13 @@ async function testAuditHardening() {
   check("#11 keyChange with a malformed account body fails closed", (await codeOf(acmeKC.keyChange({ newKey: neuKC.key, newJwk: neuKC.jwk, newAlg: "ES256" }))) === "acme/bad-response");
   // the session key was NOT rotated -- a subsequent authenticated request still succeeds.
   check("#11 a failed keyChange leaves the working key intact", (await acmeKC.revokeCert({ certificate: signing.makeSigner("ec-p256", { cn: "kc.example" }).cert })) === true);
+  // a BODYLESS 200 is a valid rollover (RFC 8555 sec. 7.3.5 requires only the status): the key rotates.
+  var sKcEmpty = A.acmeServer({ keyChangeBody: "" });
+  var acmeKcE = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sKcEmpty));
+  await acmeKcE.newAccount({});
+  var neuE = await A.makeAccount();
+  var kcE = await acmeKcE.keyChange({ newKey: neuE.key, newJwk: neuE.jwk, newAlg: "ES256" });
+  check("#11 a bodyless keyChange 200 succeeds and rotates the key", kcE.account === null && kcE.url === A.URLS.account);
 }
 
 // ---- 12 review hardening: cert-parse, receipt clock, order binding, account, poll caps ----

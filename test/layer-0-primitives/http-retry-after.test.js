@@ -33,6 +33,10 @@ function run() {
   // the obsolete asctime-date (no GMT token; parsed as UTC, not local).
   check("an asctime date parses as UTC", retryAfter.httpDateMs("Sun Nov  6 08:49:37 1994") === Date.UTC(1994, 10, 6, 8, 49, 37));
 
+  // an rfc850 two-digit year is interpreted RELATIVE TO the receipt year (HTTP sliding window), not a
+  // fixed 70 cutoff: at a 2069 receipt, `70` is 2070 (one year ahead), not 1970.
+  check("an rfc850 year uses the receipt-relative sliding window", retryAfter.httpDateMs("Sunday, 06-Nov-70 08:49:37 GMT", Date.UTC(2069, 5, 15)) === Date.UTC(2070, 10, 6, 8, 49, 37));
+
   // a malformed value fails closed: with a factory it is the caller's typed code; with none it is a
   // TypeError (the fallback that keeps the parser usable outside a PkiError domain).
   check("a malformed value with a factory throws the caller's code", codeOf(function () { return retryAfter.parse("not-a-delay", { E: E, code: E_CODE }); }) === E_CODE);
