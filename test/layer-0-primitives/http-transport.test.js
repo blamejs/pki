@@ -274,8 +274,27 @@ async function testSocketNotReusedAcrossIdentityPolicy() {
   } finally { s.srv.close(); }
 }
 
+// ---- the doubling accumulator reassembles a chunked body exactly ----------
+async function testChunkedBodyAccumulation() {
+  var tls = await selfSigned("Loopback A");
+  var big = Buffer.alloc(50000);
+  for (var i = 0; i < big.length; i++) big[i] = i & 0xff;
+  var s = await startServer(tls, function (req, res) {
+    res.writeHead(200, { "content-type": "application/octet-stream", "transfer-encoding": "chunked" });
+    // many small writes force the accumulator through several grow + copy cycles at odd offsets.
+    for (var off = 0; off < big.length; off += 137) res.write(big.subarray(off, Math.min(off + 137, big.length)));
+    res.end();
+  });
+  try {
+    var t = pki.transport.https({});
+    var r = await t({ method: "GET", url: urlFor(s.port), tls: { anchors: [tls.certPem], servername: "localhost" } });
+    check("14j a chunked body is reassembled byte-exactly by the doubling accumulator", r.status === 200 && r.body.length === 50000 && r.body.equals(big));
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
+  await testChunkedBodyAccumulation();
   await testConnectStallTimeout();
   await testSystemStoreLoaded();
   await testSocketNotReusedAcrossIdentityPolicy();
