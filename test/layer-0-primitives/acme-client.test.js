@@ -558,6 +558,29 @@ async function testReadyAndRelativeRedirect() {
   }))) === "acme/bad-url");
   // a path with a dot INSIDE a segment name (not a dot-segment) is accepted.
   check("#13 a URL with a dot inside a path segment is accepted", typeof pki.acme.client("https://acme.example/a.b/directory", A.clientOpts(ACCT, A.acmeServer({}))).newAccount === "function");
+  // an authority-only URL with NO path (`https://acme.example`) is rejected: the transport requests `/`, so
+  // the verbatim signed `url` (no slash) would differ from the request target (RFC 8555 sec. 6.4).
+  check("#13 an authority-only URL (no path) is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  // an authority-only URL carrying only a query (`https://acme.example?x=1`) is likewise rejected: the
+  // transport inserts the `/` the raw path omits.
+  check("#13 an authority-only URL with only a query is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example?x=1", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+
+  // an injected STRING response body is measured as UTF-8 (the bytes _jsonInput re-encodes it to), not
+  // latin1: a body of multi-byte emoji whose UTF-8 length exceeds the cap but whose latin1 length does not
+  // must still be rejected before the decoder (CWE-770). U+1F600 is 2 UTF-16 units (latin1) but 4 UTF-8.
+  var emoji = String.fromCodePoint(0x1f600);
+  var padded = JSON.stringify(A.directory({ _pad: emoji.repeat(80) }));
+  var capUtf8 = Buffer.byteLength(padded, "latin1") + 20;   // over the latin1 count, well under the UTF-8 count
+  var routeUtf8 = require("../helpers/fake-transport").fakeTransport(function (req) {
+    if (new URL(req.url).pathname === "/directory") return { status: 200, headers: { "content-type": "application/json" }, body: padded };
+    return { status: 500, headers: {}, body: "" };
+  });
+  var acmeUtf8Cap = pki.acme.client(A.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", transport: routeUtf8, maxResponseBytes: capUtf8 });
+  check("#13 an injected string body is measured as UTF-8 against the cap", (await codeOf(acmeUtf8Cap.newAccount({}))) === "acme/response-too-large");
 
   // (t) a CROSS-origin request resets the origin-specific servername + checkServerIdentity (pinned to the
   // trusted host), while the trusted origin keeps them.
