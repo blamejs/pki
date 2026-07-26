@@ -548,6 +548,7 @@ async function testDottedOidPurposes() {
   check("#119 a registered EKU name still resolves alongside a dotted OID", purposeOids.indexOf(serverAuth) !== -1);
   check("#119 an unknown EKU name (not a dotted OID) still fails closed", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["notAPurpose"] }), { key: s.key })) === "x509/bad-input");
   check("#119 a malformed dotted EKU OID fails closed", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["1.2.bad"] }), { key: s.key })) === "x509/bad-input");
+  check("#119 a lexically-dotted but arc-invalid OID surfaces the producer's bad-input, not oid/*", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["1.40"] }), { key: s.key })) === "x509/bad-input");
   var privPolicy = "1.3.6.1.4.1.99999.1";
   var derP = await pki.x509.sign(base({ certificatePolicies: ["anyPolicy", privPolicy] }), { key: s.key });
   var cp = pki.schema.x509.parse(derP).extensions.filter(function (x) { return (x.name || x.oid) === "certificatePolicies"; })[0];

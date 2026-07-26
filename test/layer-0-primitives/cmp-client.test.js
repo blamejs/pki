@@ -48,6 +48,11 @@ async function run() {
   check("1 the request is POST with content-type application/pkixcmp", s1.transport.calls[0].method === "POST" && s1.transport.calls[0].headers["content-type"] === A.PKIXCMP);
   check("1 the protected request bytes are POSTed verbatim", Buffer.isBuffer(s1.transport.calls[0].body) && s1.transport.calls[0].body.equals(f.irDer));
   check("1 the raw response DER + content-type are surfaced", Buffer.isBuffer(r1.responseBytes) && r1.responseBytes.equals(f.ipDer) && r1.contentType.indexOf("application/pkixcmp") === 0);
+  // a typed-array (Uint8Array) response body from an injected transport is preserved byte-for-byte and
+  // parsed, not stringified to "48,130,..." garbage.
+  var s1u = A.cmpOpts({ status: 200, headers: { "content-type": A.PKIXCMP }, body: new Uint8Array(f.ipDer) });
+  var r1u = await pki.cmp.transfer(BASE, f.irDer, s1u.opts);
+  check("1 a Uint8Array response body is preserved and parsed", r1u.response.body.arm === "ip" && r1u.responseBytes.equals(f.ipDer));
 
   // 2. PEM message input is transfer-decoded and POSTed as the SAME DER (protection intact).
   var irPem = pki.schema.cmp.pemEncode(f.irDer, "CMP");
@@ -147,6 +152,9 @@ async function run() {
   check("15 no POST on an invalid request message", s15g.transport.calls.length === 0);
   var s15e = A.cmpOpts(A.pkixcmp(200, f.ipDer));
   check("15 an empty request buffer -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, Buffer.alloc(0), s15e.opts))) === "cmp/bad-input");
+  // a malformed / non-PEM string message normalizes to cmp/bad-input (not a leaked PemError) at the boundary.
+  var s15p = A.cmpOpts(A.pkixcmp(200, f.ipDer));
+  check("15 a non-PEM string message -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, "not a pem block", s15p.opts))) === "cmp/bad-input");
 
   // 16. a 200 body over maxResponseBytes -> cmp/response-too-large before decode.
   var s16 = A.cmpOpts(A.pkixcmp(200, f.ipDer), { maxResponseBytes: 10 });
@@ -180,6 +188,8 @@ async function run() {
   check("20 an http base is BUILT (the transport enforces scheme, not this builder)", pki.cmp.wellKnownUrl("http://ca.example") === "http://ca.example/.well-known/cmp");
   check("20 a base with a non-root path -> cmp/bad-url (well-known is authority-rooted, RFC 8615)", (function () { try { pki.cmp.wellKnownUrl("https://ca.example/tenant"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   check("20 an authority-only base with a trailing slash is accepted", pki.cmp.wellKnownUrl("https://ca.example/") === "https://ca.example/.well-known/cmp");
+  check("20 a non-http(s) base with an opaque origin (file://) -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("file:///"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  check("20 a data: base -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("data:text/plain,x"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
 
   // 21. budget guards run before the wire.
   var s21 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
