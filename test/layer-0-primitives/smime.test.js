@@ -388,6 +388,10 @@ async function run() {
   var dupFrom = Buffer.from(hpSigned.toString("latin1").replace("From: a@ex.example\r\n", "From: a@ex.example\r\nFrom: mallory@evil.example\r\n"), "latin1");
   var dfv = await pki.smime.verify(dupFrom);
   check("97i. a duplicate outer From is flagged fromMismatch (not silently the first)", dfv.valid === true && dfv.headerProtection.fromMismatch === true);
+  // a REMOVED outer From (a transport/attacker strips it, leaving the protected inner From) is a mismatch too.
+  var noOuterFrom = Buffer.from(hpSigned.toString("latin1").replace("From: a@ex.example\r\n", ""), "latin1");
+  var nofv = await pki.smime.verify(noOuterFrom);
+  check("97i. a missing outer From (with a protected inner From) is flagged fromMismatch", nofv.valid === true && nofv.headerProtection.fromMismatch === true);
 
   // (o) a duplicate hp parameter is ambiguous (a parser could honor either) -> fail closed.
   var dupHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"cipher\"; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
