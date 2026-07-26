@@ -435,8 +435,10 @@ async function run() {
   var dt = mkTransport(function (url) { if (url.indexOf("A.der") >= 0) return cert200(dA); if (url.indexOf("B.der") >= 0) return cert200(dB); throw new Error("unknown"); });
   check("AIA D1: the total fetch budget is a SILENT cap -> path/no-path (never aborts a build), transport <= budget", (await codeOf(pki.path.build(dLeaf, { candidates: [], trustAnchors: [dRoot], time: T, fetchAia: true, transport: dt, maxAiaFetches: 1 }))) === "path/no-path" && dt.calls.length <= 1);
   // D0 AVAILABILITY (audit: budget-exhaustion must not deny a valid STATIC path): a leaf with a valid pool path
-  // whose issuer also has many same-name decoys (each advertising an AIA URL) must still build. Anchor-adjacent
-  // certs do not trigger a fetch (no wasted budget), and even non-anchor dead-end fetches only cap, never abort.
+  // whose issuer also has many same-name decoys (each anchor-adjacent but unable to sign, each advertising a
+  // dead AIA URL) must still build. The decoys' failed-anchor branches DO fall back to their AIA (a CA key
+  // rollover must not be starved), but every such fetch is bounded by the total budget and never denies the
+  // valid static path -- aInter is a pool cert reached without any fetch.
   var d0Decoys = [];
   for (var d0i = 0; d0i < 15; d0i++) { var d0kp = await freshKeys(); d0Decoys.push(await mkCert({ signer: aRootKp, subjectKp: d0kp, issuerName: "AiaRoot", subjectName: "AiaInter", extensions: caExts([aiaCaIssuersUri("https://ca.example/decoy" + d0i)]) })); }
   var d0Pool = [aInter].concat(d0Decoys);
@@ -444,7 +446,7 @@ async function run() {
   var d0Offline = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T });
   var d0Fetch = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T, fetchAia: true, transport: d0t });
   check("AIA D0: fetchAia does NOT deny a valid static path that budget-burning decoys would exhaust (valid:true both ways)", d0Offline.valid === true && d0Fetch.valid === true);
-  check("AIA D0: anchor-adjacent certs never trigger a fetch (no wasted budget)", d0t.calls.length === 0);
+  check("AIA D0: the same-DN decoys' failed-anchor fallbacks stay within the total fetch budget (bounded, never unbounded)", d0t.calls.length <= 10);
   // D7 STALE-POOL-CERT FALLBACK (RFC 4158 sec. 7.2 local-before-remote is LAZY, not skip-if-any-local-match): the
   // pool holds a DECOY whose subject == the leaf's issuer DN but with a different key -- it name-chains to the
   // anchor yet cannot sign the leaf. The local decoy branch is explored FIRST and dead-ends in validation; only
@@ -456,6 +458,23 @@ async function run() {
   var d7 = await pki.path.build(aLeaf, { candidates: [d7Decoy], trustAnchors: [aRoot], time: T, fetchAia: true, transport: d7t });
   check("AIA D7: a stale same-DN pool cert that fails validation no longer starves AIA fallback (valid via the fetched issuer)", d7.valid === true && d7.aiaFetches === 1 && Buffer.from(d7.path[0].subjectPublicKeyInfo.bytes).equals(aInterKp.spki));
   check("AIA D7: the local decoy branch is explored BEFORE the network fetch (one GET, local-before-remote)", d7t.calls.length === 1);
+  // D8 ZERO PER-CERT CAP: maxAiaPerCert:0 (explicitly accepted by the option guard) must DISABLE per-certificate
+  // fetching -- not fetch the first eligible URI and only then notice the cap. transport uncalled -> path/no-path.
+  var d8t = mkTransport(function () { return cert200(aInter); });
+  check("AIA D8: maxAiaPerCert:0 collects no URL -> no fetch at all (transport uncalled)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: d8t, maxAiaPerCert: 0 })))) === "path/no-path" && d8t.calls.length === 0);
+  // D9 CA-KEY-ROLLOVER FALLBACK (the fallback is gated on `success` being unset, NOT on the issuer name failing to
+  // match an anchor): the leaf's issuer DN matches the anchor, but the anchor's NEW key does not validate the leaf
+  // (the leaf was signed by the OLD key). The missing self-issued rollover intermediate -- same DN, the OLD key,
+  // itself signed by the NEW (anchor) key -- is reachable only via AIA. Direct validation fails; the fallback then
+  // fetches the rollover cert and the chain validates. A name match to an anchor must NOT suppress the fallback.
+  var d9NewKp = await freshKeys(), d9OldKp = await freshKeys(), d9LeafKp = await freshKeys();
+  var d9Anchor = await mkCert({ signer: d9NewKp, subjectKp: d9NewKp, issuerName: "RollRoot", subjectName: "RollRoot", extensions: caExts() });
+  var d9Inter = await mkCert({ signer: d9NewKp, subjectKp: d9OldKp, issuerName: "RollRoot", subjectName: "RollRoot", extensions: caExts() });   // self-issued, OLD key, signed by NEW
+  var d9Leaf = await mkCert({ signer: d9OldKp, subjectKp: d9LeafKp, issuerName: "RollRoot", subjectName: "RollLeaf", extensions: [aiaCaIssuersUri("https://ca.example/rollover.der")] });
+  var d9t = mkTransport(function () { return cert200(d9Inter); });
+  var d9 = await pki.path.build(d9Leaf, { candidates: [], trustAnchors: [d9Anchor], time: T, fetchAia: true, transport: d9t });
+  check("AIA D9: a name match to an anchor whose key fails direct validation still falls back to AIA (rollover chain validates)", d9.valid === true && d9.aiaFetches === 1 && d9.path.length === 2);
+  check("AIA D9: the fetched rollover intermediate carries the old key and is on the built path", Buffer.from(d9.path[0].subjectPublicKeyInfo.bytes).equals(d9OldKp.spki));
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });

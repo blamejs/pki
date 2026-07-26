@@ -15,6 +15,7 @@ var pki = helpers.pki;
 var check = helpers.check;
 var signing = require("../helpers/signing");
 var https = require("node:https");
+var dns = require("node:dns");
 
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
 
@@ -304,8 +305,53 @@ async function testChunkedBodyAccumulation() {
   } finally { s.srv.close(); }
 }
 
+// ---- the resolution-time SSRF classifier + filter, unit-driven over a fake resolver (every branch) ----------
+async function testResolutionFilterUnits() {
+  var ht = require("../../lib/http-transport");
+  check("isBlockedIp: v4 private/loopback/link-local/reserved blocked", ["10.0.0.1", "127.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1"].every(ht.isBlockedIp));
+  check("isBlockedIp: v4 public allowed (range edges)", !ht.isBlockedIp("8.8.8.8") && !ht.isBlockedIp("172.32.0.1") && !ht.isBlockedIp("192.169.0.1") && !ht.isBlockedIp("100.128.0.1"));
+  check("isBlockedIp: v6 loopback/unspecified/mapped/ULA/link-local blocked", ["::1", "::", "::ffff:127.0.0.1", "fc00::1", "fe80::1"].every(ht.isBlockedIp));
+  check("isBlockedIp: v6 public allowed + a non-IP is not classified", !ht.isBlockedIp("2001:db8::1") && !ht.isBlockedIp("example.com"));
+  function resolver(err, addr, fam) { return function (h, o, cb) { cb(err, addr, fam); }; }
+  function drive(lookupFn) { return new Promise(function (res) { lookupFn("host", {}, function (e, a) { res({ e: e, a: a }); }); }); }
+  var errIn = new Error("dns fail");
+  check("guardedLookup: a resolve error passes through unchanged", (await drive(ht._makeGuardedLookup(resolver(errIn)))).e === errIn);
+  var pass = await drive(ht._makeGuardedLookup(resolver(null, "8.8.8.8", 4)));
+  check("guardedLookup: a single public address passes (pinned)", pass.e == null && pass.a === "8.8.8.8");
+  check("guardedLookup: a single private address is blocked", (await drive(ht._makeGuardedLookup(resolver(null, "127.0.0.1", 4)))).e.pkiBlockedAddress === true);
+  check("guardedLookup: an all-array with any private entry is blocked", (await drive(ht._makeGuardedLookup(resolver(null, [{ address: "8.8.8.8", family: 4 }, { address: "10.0.0.1", family: 4 }])))).e.pkiBlockedAddress === true);
+  var passArr = await drive(ht._makeGuardedLookup(resolver(null, [{ address: "8.8.8.8", family: 4 }])));
+  check("guardedLookup: an all-array of public addresses passes", passArr.e == null && Array.isArray(passArr.a));
+}
+
+// ---- blockPrivateAddresses: DNS-resolution SSRF (a hostname pointing at an internal address) -----------------
+// The literal-address check alone misses a DNS NAME that resolves to a private / loopback / link-local address;
+// blockPrivateAddresses installs a resolution-time filter that refuses -- and pins -- such a result. Proven on a
+// loopback-resolving hostname (localhost -> 127.0.0.1 / ::1), the reachable stand-in for an internal service.
+async function testBlockPrivateAddresses() {
+  var tls = await selfSigned("Block Priv");
+  // Bind the loopback server to exactly where localhost resolves, so the control request reaches it regardless of
+  // the v4/v6 resolution order; the cert SAN is 'localhost', so connecting by that name verifies.
+  var lh = await new Promise(function (res) { dns.lookup("localhost", function (e, addr) { res(e ? "127.0.0.1" : addr); }); });
+  var s = await new Promise(function (resolve) {
+    var srv = https.createServer({ cert: tls.certPem, key: tls.keyPem }, function (req, res) { res.end("OK"); });
+    srv.on("clientError", function () { /* a rejected handshake is not this test's point */ });
+    srv.listen(0, lh, function () { resolve({ srv: srv, port: srv.address().port }); });
+  });
+  try {
+    var t = pki.transport.https({ tls: { anchors: [tls.certPem], servername: "localhost" } });
+    var url = "https://localhost:" + s.port + "/x";   // a DNS NAME (not a literal) that resolves to a loopback address
+    var ok = await t({ method: "GET", url: url });
+    check("blockPrivateAddresses off: a loopback-resolving hostname connects (the literal check alone misses it)", ok.status === 200);
+    check("blockPrivateAddresses on: a hostname resolving to a loopback address is refused (transport/blocked-address)",
+      (await codeOf(t({ method: "GET", url: url, blockPrivateAddresses: true }))) === "transport/blocked-address");
+  } finally { s.srv.close(); }
+}
+
 async function main() {
   await testConfigGates();
+  await testResolutionFilterUnits();
+  await testBlockPrivateAddresses();
   await testChunkedBodyAccumulation();
   await testConnectStallTimeout();
   await testSystemStoreLoaded();
