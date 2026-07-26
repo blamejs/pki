@@ -446,6 +446,13 @@ async function testInputForms() {
   var pemKey = ca.keyObject.export({ type: "pkcs8", format: "pem" });
   check("PEM signing key accepted", Buffer.isBuffer(await pki.x509.sign({ subject: caName, subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA }, { key: pemKey })));
 
+  // issue #120: a pki.webcrypto RSASSA-PKCS1-v1_5 CryptoKey is accepted as issuer.key -- the WebCrypto
+  // algorithm-name match is ASCII-case-folded, and pki.webcrypto now emits the standard-cased name, so the
+  // toolkit's OWN CryptoKey works as the signer (previously it threw on the RSASSA-PKCS1-V1_5 vs -v1_5 casing).
+  var wcKp = await pki.webcrypto.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, hash: "SHA-256" }, true, ["sign", "verify"]);
+  var wcSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", wcKp.publicKey));
+  check("#120 a pki.webcrypto RSASSA-PKCS1-v1_5 CryptoKey signs a certificate", Buffer.isBuffer(await pki.x509.sign({ subject: caName, subjectPublicKey: wcSpki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: wcKp.privateKey })));
+
   // raw Name DER as subject (the escape hatch) round-trips.
   var rawName = B.sequence([B.set([B.sequence([B.oid(oidB("commonName")), B.utf8("Raw DN")])])]);
   check("raw Name DER subject round-trips", /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawName }), { key: s.key })).subject.dn));

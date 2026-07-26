@@ -509,6 +509,12 @@
     "reviewedAt": "0.3.0",
     "reviewBy": "0.4.0"
   },
+  "pki.cms.authenticate": {
+    "decision": "keep-experimental",
+    "reason": "RFC 5652 sec. 9 AuthenticatedData (HMAC-SHA-256/384/512 over the sec. 9.2 preimage, the MAC key wrapped per recipient) is interop-proven against an independent OpenSSL HMAC, but it rides the same still-seasoning RecipientInfo surface as pki.cms.encrypt/decrypt (the post-quantum ML-KEM KEMRecipientInfo and the recipient-oracle-freedom contract). Graduate alongside the CMS content-recipient set once it has settled.",
+    "reviewedAt": "0.3.20",
+    "reviewBy": "0.4.0"
+  },
   "pki.cms.countersign": {
     "decision": "keep-experimental",
     "reason": "RFC 5652 sec. 11.4 countersignatures + unsigned attributes are interop-proven (openssl dgst / pkeyutl verifying over the exact sec. 11.4 preimage), but they ride the same SignedData signer surface as pki.cms.sign / pki.cms.verify whose post-quantum / composite acceptance rules are still seasoning and whose composite draft is pre-RFC. Graduate alongside pki.cms.sign once the CMS signer set has settled.",

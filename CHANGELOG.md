@@ -4,7 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.19 — 2026-07-26
+## v0.3.20 — 2026-07-26
+
+PKCS#12 public-key privacy ships -- encrypt a store's contents to a recipient public key with pki.pkcs12.build/open, plus a webcrypto RSA algorithm-name fix.
+
+### Added
+
+- PKCS#12 public-key privacy (RFC 7292 sec. 3.1): pki.pkcs12.build encrypts a SafeContents to recipient public keys -- per-safeContents recipients: [{ cert }|{ password }|{ kek, kekId }, ...] with an optional contentEncryptionAlgorithm (aes-128|192|256-cbc, default 256; GCM/AEAD rejected), or the opts.recipientCerts convenience that envelopes the cert + key. It emits an id-envelopedData ContentInfo via pki.cms.encrypt, so every recipient type (RSA-OAEP, ECDH, X25519, X448, AES-KW, ML-KEM) and multiple recipients per safe carry through. Privacy is independent of the integrity mode; combining a password (encrypt) and recipients on one safe is rejected.
+- pki.pkcs12.open gains opts.recipientKey (+ opts.recipientCert or recipientIndex) to decrypt an id-envelopedData safe via pki.cms.decrypt, AFTER the MAC / SignedData integrity gate. The recipient key is a privacy credential only -- never a MAC key, signer, or bag password. A wrong key, a tampered envelope, or a decrypt that yields non-SafeContents bytes all collapse to a uniform pkcs12/decrypt-failed (oracle-free); an enveloped safe with no recipientKey is pkcs12/no-recipient-key.
+
+### Fixed
+
+- pki.webcrypto now emits the WebCrypto-registered casing on a CryptoKey's algorithm.name for RSASSA-PKCS1-v1_5 (lowercase v), matching the standard and the mixed-case Ed25519 / Ed448 it already emitted -- so the toolkit's own RSASSA-PKCS1-v1_5 CryptoKey can be passed as an x509 signer key. The x509 signer's algorithm-name match is now ASCII-case-folded as well (WebCrypto algorithm names are case-insensitive), so a CryptoKey from any source with equivalent casing is accepted.
+
+## v0.3.19 — 2026-07-25
 
 The CMP HTTP transfer client ships -- pki.cmp.transfer carries a protected PKIMessage to a CMP endpoint over the shared node:https transport (RFC 9811).
 

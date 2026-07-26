@@ -125,6 +125,14 @@ security-only patches after the next major releases.
   is surfaced as a per-signer verdict (`signers`) but NOT chained to a trust anchor — a valid signature
   authenticates the store's INTEGRITY, not the signer's identity; anchoring `signers[i].cert` is the caller's
   `pki.path.validate` step (the out-of-path signer contract shared with CMS / TSP / OCSP-delegate verification).
+  For **public-key privacy** (an `id-envelopedData` safe encrypting the SafeContents to a recipient public key,
+  RFC 7292 sec. 3.1) `open` decrypts only AFTER the integrity gate — the MAC or SignedData covers the whole
+  AuthenticatedSafe, including the enveloped element, so a tamper is caught by integrity FIRST and the recipient
+  decrypt is never reached — and collapses every recipient-side fault (a wrong `recipientKey`, a tampered
+  envelope, a CBC unpad failure, a decrypt that yields non-SafeContents bytes) into the uniform
+  `pkcs12/decrypt-failed`, exposing no padding / recipient / structure oracle. The recipient private key is a
+  PRIVACY credential only — never a MAC key, a signature-verification input, or a PBES2 password — and the
+  recipient certificate is not trust-chained.
 - **Encoding malleability.** Every textual encoding an operator hands the
   toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
   transfer), hex, a JSON document, a dotted-decimal OID string — is decoded
