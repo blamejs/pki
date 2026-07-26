@@ -351,6 +351,25 @@ async function run() {
   var noBody = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\""), signers, { entity: true });
   check("97. an HP payload with no blank-line separator is still detected", (await pki.smime.verify(noBody)).headerProtection.mode === "clear");
 
+  // (i) a non-ASCII (RFC 6532) protected header value round-trips intact (not latin1-mangled).
+  var utf8Subj = "caf" + String.fromCharCode(0xe9);   // "cafe" with an acute e
+  var utf8Hp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: utf8Subj } });
+  check("97b. a UTF-8 protected header value round-trips intact (RFC 6532)", (await pki.smime.verify(utf8Hp)).protectedHeaders.Subject === utf8Subj);
+  var utf8Enc = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: utf8Subj }, hcp: "hcp_no_confidentiality" });
+  check("97b. a UTF-8 value round-trips through encrypt/decrypt", (await pki.smime.decrypt(utf8Enc, { key: rcpt.key, cert: rcpt.cert })).protectedHeaders.Subject === utf8Subj);
+
+  // (j) opts.entity + protectHeaders is rejected (an unsupported combination, not a silent re-wrap).
+  check("97c. opts.entity with protectHeaders -> smime/bad-input (unsupported combination)", (await codeOf(function () { return pki.smime.sign(Buffer.from("Content-Type: application/json\r\n\r\n{}"), signers, { entity: true, protectHeaders: true }); })) === "smime/bad-input");
+
+  // (k) an unknown opts.hcp policy name is rejected, not silently treated as baseline.
+  check("97d. an unknown opts.hcp policy -> smime/bad-input", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "x" }, hcp: "hcp_bogus" }); })) === "smime/bad-input");
+  // an hp= that appears only inside a quoted param value (not as the hp parameter) is NOT header protection.
+  var fpHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; name=\"x; hp=y\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("97e. an hp= inside a quoted param value is not treated as header protection", (await pki.smime.verify(fpHp)).protectedHeaders === null);
+  // a DECRYPT of an encrypted message whose payload declares hp="clear" contradicts the envelope -> fail closed.
+  var clearInCipher = await pki.smime.encrypt(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), [{ cert: rcpt.cert }], { entity: true });
+  check("97f. decrypt of a payload claiming hp=clear (a signed-only marker) -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.decrypt(clearInCipher, { key: rcpt.key, cert: rcpt.cert }); })) === "smime/bad-header-protection");
+
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
   check("98. protectHeaders with no opts.headers still emits hp + verifies", /hp="clear"/.test(emptyHp.toString("latin1")) && (await pki.smime.verify(emptyHp)).headerProtection.present === true);
