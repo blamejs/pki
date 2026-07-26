@@ -148,6 +148,8 @@ async function run() {
   check("20 a label containing '/' -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { label: "a/b" }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   check("20 an operation with a dot-segment -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { operation: ".." }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   check("20 an http base is BUILT (the transport enforces scheme, not this builder)", pki.cmp.wellKnownUrl("http://ca.example") === "http://ca.example/.well-known/cmp");
+  check("20 a base with a non-root path -> cmp/bad-url (well-known is authority-rooted, RFC 8615)", (function () { try { pki.cmp.wellKnownUrl("https://ca.example/tenant"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  check("20 an authority-only base with a trailing slash is accepted", pki.cmp.wellKnownUrl("https://ca.example/") === "https://ca.example/.well-known/cmp");
 
   // 21. budget guards run before the wire.
   var s21 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
