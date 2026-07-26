@@ -93,11 +93,17 @@ async function run() {
   check("6 a 400 text/html (no CMP body) -> cmp/http-error", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s6a.opts))) === "cmp/http-error");
   var s6b = A.cmpOpts(A.resp(500, "", null));
   check("6 a 500 empty body -> cmp/http-error", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s6b.opts))) === "cmp/http-error");
+  // a 4xx/5xx WITH the pkixcmp content-type but an UNDECODABLE body -> cmp/http-error (the parse-catch arm).
+  var s6c = A.cmpOpts(A.pkixcmp(500, Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])));
+  check("6 a 500 pkixcmp with an undecodable body -> cmp/http-error", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s6c.opts))) === "cmp/http-error");
 
   // 7. wrong content-type on a 200 -> cmp/bad-content-type; body not decoded.
   var s7 = A.cmpOpts(A.resp(200, f.ipDer, "text/plain"));
   check("7 a 200 text/plain <ip> -> cmp/bad-content-type", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s7.opts))) === "cmp/bad-content-type");
   check("7 the body was not decoded (one call, no follow)", s7.transport.calls.length === 1);
+  // a 200 with NO content-type header at all -> cmp/bad-content-type (the ctype-absent default arm).
+  var s7b = A.cmpOpts({ status: 200, headers: {}, body: f.ipDer });
+  check("7 a 200 with no content-type header -> cmp/bad-content-type", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s7b.opts))) === "cmp/bad-content-type");
 
   // 8. the legacy application/pkixcmp-poll type is handled like application/pkixcmp (M9).
   var s8 = A.cmpOpts(A.pkixcmpPoll(200, f.ipDer));
@@ -131,6 +137,7 @@ async function run() {
 
   // 14. default transport with no anchors/useSystemStore -> cmp/no-trust-anchors (no socket).
   check("14 default transport, no trust anchor -> cmp/no-trust-anchors", (await codeOf(pki.cmp.transfer(BASE, f.irDer, {}))) === "cmp/no-trust-anchors");
+  check("14 with the opts argument omitted entirely -> cmp/no-trust-anchors", (await codeOf(pki.cmp.transfer(BASE, f.irDer))) === "cmp/no-trust-anchors");
 
   // 15. a non-DER/PEM message -> cmp/bad-input before the wire.
   var s15 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
@@ -207,6 +214,11 @@ async function run() {
   check("20 an unpaired-surrogate operation -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { operation: String.fromCharCode(0xdc00) }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   // a mistyped option key is rejected (not silently ignored, which would target the default endpoint).
   check("20 an unknown wellKnownUrl option (typo) -> cmp/bad-input", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { lable: "myca" }); return null; } catch (e) { return e.code; } })() === "cmp/bad-input");
+  check("20 an unparseable base -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl(":::"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  // a base whose path WHATWG normalizes to "/" (a literal or percent-encoded dot-segment) is still rejected:
+  // the raw path is inspected before normalization, so a supplied path cannot silently target the root.
+  check("20 a dot-segment base (/tenant/..) -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example/tenant/.."); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  check("20 a percent-encoded-dot base (/%2e) -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example/%2e"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
 
   // 21. budget guards run before the wire.
   var s21 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
@@ -214,6 +226,17 @@ async function run() {
   var s21b = A.cmpOpts(A.pkixcmp(200, f.ipDer));
   check("21 maxResponseBytes:-1 -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, f.irDer, Object.assign({}, s21b.opts, { maxResponseBytes: -1 })))) === "cmp/bad-input");
   check("21 no POST on a bad budget", s21.transport.calls.length === 0 && s21b.transport.calls.length === 0);
+  // an unknown transfer opt key is rejected (config typo fails closed), like build/wellKnownUrl.
+  var s21u = A.cmpOpts(A.pkixcmp(200, f.ipDer));
+  check("21 an unknown transfer opt -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, f.irDer, Object.assign({}, s21u.opts, { bogusOpt: 1 })))) === "cmp/bad-input");
+  check("21 no POST on an unknown opt", s21u.transport.calls.length === 0);
+  // defensive transport-contract guards: a transport returning undefined, or a null body, fails closed
+  // (not a crash) -- covers the res/headers/body null-default arms.
+  var calls21n = [];
+  var nullTransport = function (req) { calls21n.push(req); return Promise.resolve(undefined); };
+  check("21 a transport returning undefined -> cmp/unexpected-status (no crash)", (await codeOf(pki.cmp.transfer(BASE, f.irDer, { transport: nullTransport, tls: { anchors: [A.CERT_DER] } }))) === "cmp/unexpected-status");
+  var nullBody = A.cmpOpts({ status: 200, headers: { "content-type": A.PKIXCMP }, body: null });
+  check("21 a 200 pkixcmp with a null body -> cmp/empty-response", (await codeOf(pki.cmp.transfer(BASE, f.irDer, nullBody.opts))) === "cmp/empty-response");
 
   // 22. the socket path over the REAL pki.transport.https loopback (verification ON).
   var tlsSrv = await selfSigned("cmp-loopback");
