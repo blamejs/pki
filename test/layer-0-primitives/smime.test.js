@@ -599,6 +599,11 @@ async function run() {
   var repv = await pki.smime.verify(legRepeatOK, LEG_ON);
   check("105f. a legacy part D with a legally repeated field (Received) is still surfaced, not rejected", repv.headerProtection.legacy != null && legVal(repv, "Subject") === "repeated-received" && legVal(repv, "From") === "alice@in.example");
   check("105f. BOTH Received occurrences are preserved in legacy.headers (not last-wins)", legCount(repv, "Received") === 2 && repv.headerProtection.legacy.headers[0].name === "Received" && repv.headerProtection.legacy.headers[0].value === "from mx1 by mx2");
+  // a repeated field whose name collides with an Object.prototype member (Constructor / __proto__) must NOT be
+  // mistaken for a singleton via a prototype-chain lookup -- it is a repeatable optional field, still surfaced.
+  var legProto = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: alice@in.example\r\nSubject: proto\r\nConstructor: a\r\nConstructor: b\r\n__proto__: x\r\n__proto__: y\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
+  var protov = await pki.smime.verify(legProto, LEG_ON);
+  check("105g. a repeated field colliding with an Object.prototype name (Constructor/__proto__) is not a false singleton", protov.headerProtection.legacy != null && legVal(protov, "Subject") === "proto" && legCount(protov, "Constructor") === 2 && legCount(protov, "__proto__") === 2);
 
   // (dup Content-Type) the C2-C4 classification reads only the FIRST Content-Type (mime.parse surfaces the
   // first field), so a part with TWO Content-Type fields is ambiguous: a later one could carry hp= or a crypto
