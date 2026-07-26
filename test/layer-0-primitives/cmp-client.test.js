@@ -176,6 +176,17 @@ async function run() {
   await pki.cmp.transfer(BASE, f.irDer, s19.opts);
   check("19 the content-type stays application/pkixcmp despite an opts.headers override", s19.transport.calls[0].headers["content-type"] === A.PKIXCMP);
   check("19 an unrelated custom header is still forwarded", s19.transport.calls[0].headers["x-extra"] === "1");
+  // request-framing headers (content-length, transfer-encoding) and a case-variant content-type from
+  // opts.headers are stripped: the verb sets the media type and the transport computes Content-Length, so a
+  // caller cannot desync the request framing (HTTP smuggling) or override the media type through casing.
+  var s19h = A.cmpOpts(A.pkixcmp(200, f.ipDer), { headers: { "Content-Length": "3", "Transfer-Encoding": "chunked", "Content-Type": "text/plain", "x-keep": "1" } });
+  await pki.cmp.transfer(BASE, f.irDer, s19h.opts);
+  var sentH = s19h.transport.calls[0].headers;
+  var lowerH = {}; Object.keys(sentH).forEach(function (k) { lowerH[k.toLowerCase()] = sentH[k]; });
+  check("19 a caller-supplied content-length is stripped", lowerH["content-length"] === undefined);
+  check("19 a caller-supplied transfer-encoding is stripped", lowerH["transfer-encoding"] === undefined);
+  check("19 a case-variant content-type cannot override the media type", lowerH["content-type"] === A.PKIXCMP && Object.keys(sentH).filter(function (k) { return k.toLowerCase() === "content-type"; }).length === 1);
+  check("19 an unrelated custom header survives the strip", lowerH["x-keep"] === "1");
 
   // 20. wellKnownUrl RFC 9811 sec. 3.4 forms + fail-closed rejects.
   check("20 base -> /.well-known/cmp", pki.cmp.wellKnownUrl("https://ca.example") === "https://ca.example/.well-known/cmp");
