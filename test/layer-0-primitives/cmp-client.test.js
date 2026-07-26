@@ -205,6 +205,8 @@ async function run() {
   // cmp/bad-url, not a raw untyped URIError. The surrogate is built at runtime (source stays pure ASCII).
   check("20 an unpaired-surrogate label -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { label: String.fromCharCode(0xd800) }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   check("20 an unpaired-surrogate operation -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { operation: String.fromCharCode(0xdc00) }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  // a mistyped option key is rejected (not silently ignored, which would target the default endpoint).
+  check("20 an unknown wellKnownUrl option (typo) -> cmp/bad-input", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { lable: "myca" }); return null; } catch (e) { return e.code; } })() === "cmp/bad-input");
 
   // 21. budget guards run before the wire.
   var s21 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
