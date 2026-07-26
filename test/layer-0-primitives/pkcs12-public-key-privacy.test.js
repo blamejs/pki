@@ -75,6 +75,18 @@ async function run() {
   // rejects it rather than emit a store the toolkit's own reader cannot process.
   check("5 a password (pwri) recipient on a privacy safe is rejected", (await codeOf(buildEnveloped(payload, [{ password: "secret" }], { contentEncryptionAlgorithm: "aes-256-cbc" }))) === "pkcs12/bad-input");
   check("5 a KEK (kekri) recipient on a privacy safe is rejected", (await codeOf(buildEnveloped(payload, [{ kek: Buffer.alloc(32, 7), kekId: Buffer.from("k") }], { contentEncryptionAlgorithm: "aes-256-cbc" }))) === "pkcs12/bad-input");
+  // A PRESENT-but-falsy recipients (null / false / "") is a config error that intended public-key privacy -- it
+  // must fail closed, NEVER silently fall through to a plaintext id-data safe that emits the key bag in cleartext
+  // (privacy silently downgraded to none). Validate the field whenever present, not only when truthy.
+  check("5 a null recipients on a privacy safe is rejected (never silent plaintext)", (await codeOf(buildEnveloped(payload, null, {}))) === "pkcs12/bad-input");
+  check("5 a false recipients on a privacy safe is rejected (never silent plaintext)", (await codeOf(buildEnveloped(payload, false, {}))) === "pkcs12/bad-input");
+  check("5 an empty-string recipients on a privacy safe is rejected (never silent plaintext)", (await codeOf(buildEnveloped(payload, "", {}))) === "pkcs12/bad-input");
+  // The sibling privacy directive: a present-but-falsy `encrypt` (password) must not silently downgrade to a
+  // plaintext safe either -- omit the field entirely for a plaintext safe.
+  check("5 a present-but-falsy encrypt on a safe is rejected (never silent plaintext)", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: payload.cert }, { type: "key", key: payload.key }], encrypt: null }] }, { password: "P" }))) === "pkcs12/bad-input");
+  check("5 a truthy non-object encrypt on a safe is rejected", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: payload.cert }], encrypt: "not-an-object" }] }, { password: "P" }))) === "pkcs12/bad-input");
+  // encrypt (password) and recipients (public-key) are two different privacy types -- one ContentInfo is one type.
+  check("5 combining encrypt (password) and recipients on one safe is rejected", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: payload.cert }], recipients: [{ cert: rsaR.cert }], encrypt: { password: "x" } }] }, { password: "P" }))) === "pkcs12/bad-input");
 
   // ---- 6. independent cms.decrypt over the surfaced ContentInfo byte-equals open's recovered SafeContents ----
   var ci = envelopedContentInfo(pfx1);
