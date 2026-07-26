@@ -583,10 +583,17 @@ async function run() {
   var legBadD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nthis-inner-header-line-has-no-colon\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
   check("105. a legacy candidate whose inner part D is unparseable -> legacy null (fail-soft, no throw)", (await pki.smime.verify(legBadD, LEG_ON)).headerProtection.legacy === null);
 
-  // (dup) a legacy wrap whose part D has a DUPLICATE Non-Structural field is ambiguous -> fail SOFT to null
-  // (the legacy path never throws, unlike the standard path's smime/bad-header-protection on a declared-hp dup).
+  // (dup singleton) a legacy wrap whose part D duplicates a SINGLETON field (RFC 5322 sec. 3.6 max-1: Subject,
+  // From, To, Date, Message-ID, ...) is ambiguous -> fail SOFT to null (the legacy path never throws).
   var legDupD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: one\r\nSubject: two\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("105b. a legacy part D with a duplicate protected field -> legacy null (fail-soft, no throw)", (await pki.smime.verify(legDupD, LEG_ON)).headerProtection.legacy === null);
+  check("105b. a legacy part D with a duplicate SINGLETON field (Subject) -> legacy null (fail-soft, no throw)", (await pki.smime.verify(legDupD, LEG_ON)).headerProtection.legacy === null);
+  // A legally REPEATABLE field (RFC 5322 sec. 3.6 -- Received and other trace fields, Resent-*, Comments,
+  // Keywords, optional/X-*) occurs many times in a real delivered message; its repetition must NOT reject the
+  // inference (every received message carries multiple Received headers), or legacy detection would fail on
+  // essentially all real-world mail. The singleton fields still surface; the repeated field does not reject.
+  var legRepeatOK = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nReceived: from mx1 by mx2\r\nReceived: from src by mx1\r\nFrom: alice@in.example\r\nSubject: repeated-received\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
+  var repv = await pki.smime.verify(legRepeatOK, LEG_ON);
+  check("105f. a legacy part D with a legally repeated field (Received) is still surfaced, not rejected", repv.headerProtection.legacy != null && repv.headerProtection.legacy.headers.Subject === "repeated-received" && repv.headerProtection.legacy.headers.From === "alice@in.example");
 
   // (dup Content-Type) the C2-C4 classification reads only the FIRST Content-Type (mime.parse surfaces the
   // first field), so a part with TWO Content-Type fields is ambiguous: a later one could carry hp= or a crypto
