@@ -714,11 +714,46 @@ function testMsCaExtensions() {
   check("ms: inspect renders a major-only template (minor defaults to 0)", /1\.4\.9 v5\.0/.test(rTplMaj));
 }
 
+// The authorityInfoAccess (RFC 5280 sec. 4.2.2.1) extension decoder: AuthorityInfoAccessSyntax
+// SEQUENCE SIZE(1..MAX) OF AccessDescription { accessMethod OID, accessLocation GeneralName }. The AIA
+// caIssuers path-building fetcher composes this; it also serves OCSP responder discovery. Drives the SHIPPED
+// consumer path (certExtensionDecoders(ns).byOid[oid](value)) -- the same OID-keyed table path validation uses.
+function testAuthorityInfoAccess() {
+  var b = pki.asn1.build;
+  var NS = pkix.makeNS("path", pki.errors.PathError, oidReg);
+  var dec = pkix.certExtensionDecoders(NS).byOid[oidReg.byName("authorityInfoAccess")];
+  var caIssuers = oidReg.byName("caIssuers"), ocsp = oidReg.byName("ocsp");
+  function uriGN(url) { return b.contextPrimitive(6, Buffer.from(url, "latin1")); }
+  function ad(method, gn) { return b.sequence([b.oid(method), gn]); }
+
+  // A1: a single caIssuers URI decodes to { accessMethod, accessLocation { tag, value } }.
+  var a1 = dec(b.sequence([ad(caIssuers, uriGN("https://ca.example/issuer.der"))]));
+  check("AIA A1: a single caIssuers URI decodes to accessMethod + accessLocation{tag,value}", a1.length === 1 && a1[0].accessMethod === caIssuers && a1[0].accessLocation.tag === 6 && a1[0].accessLocation.value === "https://ca.example/issuer.der");
+  // A2: id-ad-ocsp is decoded DISTINCTLY from caIssuers (by accessMethod); the builder's filter, not the decoder, ignores ocsp.
+  var a2 = dec(b.sequence([ad(ocsp, uriGN("https://ocsp.example")), ad(caIssuers, uriGN("https://ca.example/i.p7c"))]));
+  check("AIA A2: id-ad-ocsp decodes distinctly from caIssuers (by accessMethod)", a2.length === 2 && a2[0].accessMethod === ocsp && a2[1].accessMethod === caIssuers);
+  // A3: a non-URI (rfc822Name [1]) and a non-https URI [6] both decode -- fetchability (tag===6 && https) is filtered in the builder, not the decoder.
+  var a3 = dec(b.sequence([ad(caIssuers, b.contextPrimitive(1, Buffer.from("ca@example", "latin1"))), ad(caIssuers, uriGN("http://ca.example/i.der"))]));
+  check("AIA A3: a non-URI accessLocation and a non-https URI both decode (fetchability filtered later)", a3[0].accessLocation.tag === 1 && a3[0].accessLocation.value === "ca@example" && a3[1].accessLocation.tag === 6 && a3[1].accessLocation.value === "http://ca.example/i.der");
+  // A4: multiple caIssuers instances (RFC 5280 sec. 4.2.2.1 MAY) decode in wire order.
+  var a4 = dec(b.sequence([ad(caIssuers, uriGN("https://a.example/i")), ad(caIssuers, uriGN("https://b.example/i")), ad(caIssuers, uriGN("https://c.example/i"))]));
+  check("AIA A4: multiple caIssuers instances decode in order", a4.length === 3 && a4[0].accessLocation.value === "https://a.example/i" && a4[2].accessLocation.value === "https://c.example/i");
+  // A5: SIZE(1..MAX) + malformed AccessDescription fail closed.
+  check("AIA A5: an empty AuthorityInfoAccessSyntax SEQUENCE -> typed reject (SIZE(1..MAX))", code(function () { dec(b.sequence([])); }) === "path/bad-extension-value");
+  check("AIA A5: an AccessDescription that is not a 2-element SEQUENCE -> typed reject", code(function () { dec(b.sequence([b.sequence([b.oid(caIssuers)])])); }) === "path/bad-extension-value");
+  check("AIA A5: an AccessDescription whose accessMethod is not an OID -> typed reject", code(function () { dec(b.sequence([b.sequence([uriGN("https://x"), uriGN("https://y")])])); }) === "path/bad-extension-value");
+  // A6: a control byte in the URI trips the generalName CVE-2009-2408 guard.
+  check("AIA A6: a control byte in a caIssuers URI -> typed reject (CVE-2009-2408 guard)", code(function () { dec(b.sequence([ad(caIssuers, uriGN("https://a" + String.fromCharCode(1) + "b"))])); }) === "path/bad-extension-value");
+  // orchestrator: a non-SEQUENCE extension value fails closed.
+  check("AIA: a non-SEQUENCE extension value -> typed reject", code(function () { dec(b.oid(caIssuers)); }) === "path/bad-extension-value");
+}
+
 function run() {
   testParseFields();
   testExtensions();
   testQcStatements();
   testMsCaExtensions();
+  testAuthorityInfoAccess();
   testPem();
   testRejects();
   testShortTbsWithVersion();

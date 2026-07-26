@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.25 — 2026-07-26
+
+pki.path.build can now fetch a missing intermediate over the network -- opt in with `fetchAia` and it discovers the issuer from a certificate's AIA caIssuers URL, so a chain with a gap in the supplied pool still builds.
+
+### Added
+
+- pki.path.build accepts opts.fetchAia: true to discover a missing intermediate from a certificate's AIA caIssuers URL (RFC 5280 sec. 4.2.2.1) over pki.transport, triggered only on a pool miss (RFC 4158 sec. 7.2). The result gains aiaFetches (the count of network GETs). opts.transport injects the transport for offline use; opts.tls carries the TLS trust for the AIA host (distinct from opts.trustAnchors); opts.maxAiaFetches / opts.maxAiaPerCert / opts.aiaTimeout / opts.maxResponseBytes bound the fetch. Off by default -- the default build is byte-identical offline. RFC 5280 sec. 4.2.2.1, RFC 4158 sec. 6.3 / sec. 8.1.
+- pki.inspect renders the authorityInfoAccess extension (RFC 5280 sec. 4.2.2.1) -- the CA Issuers and OCSP access descriptions with their URLs -- instead of a hex dump.
+
+### Changed
+
+- The AIA fetch is fail-closed and SSRF-bounded: an http/ldap/ftp/file/mailto or non-URI caIssuers accessLocation, or an id-ad-ocsp access method, is never fetched (no socket); a total fetch budget silently caps fetching (never a throw that denies a buildable path); a per-certificate URL cap, a build-wide URL dedupe on the normalized URL, a response-size cap, and a per-response certificate-count cap bound the work; no redirect is followed. Every fetch fault -- a transport error, a non-200, an oversize or non-certificate body -- is a silent skip, so an unreachable or hostile AIA endpoint never fails a build that the pool could still complete.
+
 ## v0.3.24 — 2026-07-26
 
 pki.smime.verify / decrypt can now recognize a legacy (RFC 8551) header-protected message -- opt in with `legacyHeaderProtection` and the real headers of an older `message/rfc822`-wrapped message are surfaced, safely separated from the authenticated header set.

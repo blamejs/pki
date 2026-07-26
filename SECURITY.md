@@ -463,6 +463,34 @@ security-only patches after the next major releases.
   reach a different signature host. Each response is size-capped before the
   trust chain, and the surfaced `timestamp` lets a caller police freshness
   without a hidden clock.
+- **AIA caIssuers fetching is SSRF-bounded and trust-preserving (CWE-918 /
+    CWE-770 / CWE-295).** `pki.path.build` fetches a missing intermediate from a
+  certificate's Authority Information Access `caIssuers` URL only when the caller
+  opts in (`opts.fetchAia: true`; the default build is fully offline) and only on
+  a pool miss. Because the fetch URL comes from an UNTRUSTED certificate, the
+  surface is bounded against server-side request forgery and amplification: only an
+  `https:` `uniformResourceIdentifier` accessLocation is fetched (an `http` /
+  `ldap` / `ftp` / `file` / `mailto` URL, or a non-URI GeneralName, is skipped
+  before any socket), only the `id-ad-caIssuers` access method (never
+  `id-ad-ocsp`), a build-wide total fetch budget enforced as a SILENT cap (on
+  reaching it the builder stops fetching — never a throw, so a fetch bound can
+  never deny a path the static pool could build), a per-certificate URL cap, a
+  build-wide URL dedupe on the normalized URL (a mesh pointing many certs at one
+  URL fetches once), a streaming response-size cap plus a per-response
+  certificate-count cap (so a bundle cannot force tens of thousands of parses),
+  and NO redirect following (only a `200` with an in-cap body is a certificate
+  source). Every fetch fault — a transport error, a non-200, an oversize or
+  non-certificate body — is a silent SKIP: the search continues over the pool,
+  never a spurious build failure. The
+  fetch runs over the same fail-closed `pki.transport` (`rejectUnauthorized` always
+  on; an explicit anchor or system-store opt-in required), and its TLS trust
+  (`opts.tls`) is DISTINCT from `opts.trustAnchors` — the web-PKI trust for the
+  HTTPS connection is never conflated with the PKI trust store the built path
+  validates against. Most important: a fetched certificate is UNTRUSTED pool
+  material — it is scored, deduped, and accepted through the exact same
+  `pki.path.validate` §6.1 gate as any candidate, and is NEVER added to the trust
+  anchors, so a fetched self-signed or anchor-looking certificate can never
+  complete a chain by itself (RFC 4158 §6.6).
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's

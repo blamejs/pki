@@ -97,6 +97,35 @@ async function mkCert(o) {
   return b.sequence([tbs, algIdDer(a), b.bitString(sig, 0)]);
 }
 function caExts(extra) { return [bcExt(true), kuExt([KU_KEY_CERT_SIGN])].concat(extra || []); }
+// authorityInfoAccess (RFC 5280 sec. 4.2.2.1): SEQUENCE OF AccessDescription { accessMethod, accessLocation }.
+// Each entry is [methodOid, GeneralName]; a URI accessLocation is [6] IA5String. Non-critical (MUST).
+function aiaExt(entries) {
+  return ext("1.3.6.1.5.5.7.1.1", false, b.sequence(entries.map(function (e) {
+    var gn = e.tag === 6 ? b.contextPrimitive(6, Buffer.from(e.value, "latin1"))
+      : e.tag === 1 ? b.contextPrimitive(1, Buffer.from(e.value, "latin1"))
+      : b.contextPrimitive(e.tag, Buffer.from(e.value, "latin1"));
+    return b.sequence([b.oid(e.method || pki.oid.byName("caIssuers")), gn]);
+  })));
+}
+function aiaCaIssuersUri(url) { return aiaExt([{ method: pki.oid.byName("caIssuers"), tag: 6, value: url }]); }
+// A call-counting injectable transport. `handler(url) -> {status,headers,body}` or a thrown/rejected error.
+// t.calls records every url requested (the SSRF/dedupe assertions read the count).
+function mkTransport(handler) {
+  var calls = [];
+  var t = function (req) { calls.push(req.url); return Promise.resolve().then(function () { return handler(req.url, req); }); };
+  t.calls = calls;
+  return t;
+}
+function cert200(der, contentType) { return { status: 200, headers: { "content-type": contentType || "application/pkix-cert" }, body: der }; }
+// A degenerate certs-only SignedData (RFC 5272 sec. 4.1): version 1, empty digestAlgorithms, id-data
+// eContentInfo (no eContent), the [0] certificates field (DER-sorted, mirroring the SET-OF ordering), empty
+// signerInfos -- the same shape the EST test builds, so pki.schema.cms.parseCertsOnly accepts it.
+function certsOnlyCms(certDers) {
+  var sd = [b.integer(1n), b.set([]), b.sequence([b.oid(pki.oid.byName("data"))])];
+  if (certDers.length) sd.push(b.contextConstructed(0, Buffer.concat(certDers.slice().sort(Buffer.compare))));
+  sd.push(b.set([]));
+  return b.sequence([b.oid(pki.oid.byName("signedData")), b.explicit(0, b.sequence(sd))]);
+}
 
 async function run() {
   // ---- V-BUILD-1: a three-cert pool builds + validates ----
@@ -344,6 +373,101 @@ async function run() {
   var rDegrade = await pki.path.build(leafSan, { candidates: [interBadKu, interCtrl, interSan], trustAnchors: [anchorCert], time: T });
   check("a SAN-bearing cert + a malformed-keyUsage decoy + a control-byte-DN decoy: the real path still builds",
     rDegrade.valid === true && Buffer.from(rDegrade.path[0].subjectPublicKeyInfo.bytes).equals(sanKp.spki));
+
+  // ==== AIA caIssuers network fetching (RFC 5280 sec. 4.2.2.1, opt-in over an INJECTED offline transport) ====
+  var aRootKp = await freshKeys(), aInterKp = await freshKeys(), aLeafKp = await freshKeys();
+  var aRoot = await mkCert({ signer: aRootKp, subjectKp: aRootKp, issuerName: "AiaRoot", subjectName: "AiaRoot", extensions: caExts() });
+  var aInter = await mkCert({ signer: aRootKp, subjectKp: aInterKp, issuerName: "AiaRoot", subjectName: "AiaInter", extensions: caExts() });
+  var AIA_URL = "https://ca.example/inter.der";
+  var aLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri(AIA_URL)] });
+  var aBase = { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true };
+
+  // B1 DISCOVERY: an EMPTY pool builds via the AIA-fetched intermediate; it is accepted THROUGH validate.
+  var b1t = mkTransport(function () { return cert200(aInter); });
+  var b1 = await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b1t }));
+  check("AIA B1: an empty pool builds via an AIA-fetched intermediate (valid:true, path length 2)", b1.valid === true && b1.path.length === 2);
+  check("AIA B1: the fetched intermediate is on the built path (accepted through validate, not a raw insert)", Buffer.from(b1.path[0].subjectPublicKeyInfo.bytes).equals(aInterKp.spki));
+  check("AIA B1: aiaFetches counts the single GET and only the caIssuers URL was fetched", b1.aiaFetches === 1 && b1t.calls.length === 1 && b1t.calls[0] === AIA_URL);
+  check("AIA B1: WITHOUT fetchAia the same empty-pool build fails path/no-path (the fetch is load-bearing)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T }))) === "path/no-path");
+  // B2 CERTS-ONLY CMS response supplies the intermediate.
+  var b2t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms([aInter]) }; });
+  check("AIA B2: a certs-only CMS response supplies the intermediate (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b2t }))).valid === true);
+  // B3 CONTENT-TYPE IS A HINT (RFC 5280 sec. 4.2.2.1): a mislabeled body still parses by structure, both ways.
+  var b3a = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkix-cert" }, body: certsOnlyCms([aInter]) }; });
+  check("AIA B3: a certs-only body mislabeled application/pkix-cert still parses (structure-sniff)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b3a }))).valid === true);
+  var b3b = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: aInter }; });
+  check("AIA B3: a single DER cert mislabeled application/pkcs7-mime still parses", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b3b }))).valid === true);
+
+  // C1 SSRF SCHEME GATE: a non-https caIssuers URL is NEVER fetched (no socket); the verdict is the no-AIA case.
+  var cHttpLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "http://internal.example/inter.der" }, { tag: 6, value: "ldap://ca.example/cn=x" }, { tag: 6, value: "file:///etc/passwd" }])] });
+  var c1t = mkTransport(function () { return cert200(aInter); });
+  check("AIA C1: http/ldap/file caIssuers URLs are never fetched -> path/no-path, transport uncalled (no socket)", (await codeOf(pki.path.build(cHttpLeaf, Object.assign({}, aBase, { transport: c1t })))) === "path/no-path" && c1t.calls.length === 0);
+  // C2 an id-ad-ocsp accessMethod is never fetched (only caIssuers).
+  var cOcspLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ method: pki.oid.byName("ocsp"), tag: 6, value: "https://ocsp.example/x" }])] });
+  var c2t = mkTransport(function () { return cert200(aInter); });
+  check("AIA C2: an id-ad-ocsp accessMethod is never fetched (only id-ad-caIssuers)", (await codeOf(pki.path.build(cOcspLeaf, Object.assign({}, aBase, { transport: c2t })))) === "path/no-path" && c2t.calls.length === 0);
+  // C3 an unparseable caIssuers URI (valid IA5String but not a WHATWG URL, e.g. no scheme) is skipped before any socket.
+  var cBadUrlLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "notaurl-no-scheme" }])] });
+  var c3t = mkTransport(function () { return cert200(aInter); });
+  check("AIA C3: an unparseable caIssuers URI is skipped -> path/no-path, transport uncalled", (await codeOf(pki.path.build(cBadUrlLeaf, Object.assign({}, aBase, { transport: c3t })))) === "path/no-path" && c3t.calls.length === 0);
+
+  // D1 BUDGET is a SILENT CAP, not a throw: a chain needing more fetches than maxAiaFetches stops fetching at
+  // the budget (never a throw that denies a buildable path). Here no path exists within a 1-fetch budget, so the
+  // verdict is path/no-path and the transport is called at most maxAiaFetches times (bounded).
+  var dRootKp = await freshKeys(), dBKp = await freshKeys(), dAKp = await freshKeys(), dLeafKp = await freshKeys();
+  var dRoot = await mkCert({ signer: dRootKp, subjectKp: dRootKp, issuerName: "DRoot", subjectName: "DRoot", extensions: caExts() });
+  var dB = await mkCert({ signer: dRootKp, subjectKp: dBKp, issuerName: "DRoot", subjectName: "DInterB", extensions: caExts() });
+  var dA = await mkCert({ signer: dBKp, subjectKp: dAKp, issuerName: "DInterB", subjectName: "DInterA", extensions: caExts([aiaCaIssuersUri("https://ca.example/B.der")]) });
+  var dLeaf = await mkCert({ signer: dAKp, subjectKp: dLeafKp, issuerName: "DInterA", subjectName: "DLeaf", extensions: [aiaCaIssuersUri("https://ca.example/A.der")] });
+  var dt = mkTransport(function (url) { if (url.indexOf("A.der") >= 0) return cert200(dA); if (url.indexOf("B.der") >= 0) return cert200(dB); throw new Error("unknown"); });
+  check("AIA D1: the total fetch budget is a SILENT cap -> path/no-path (never aborts a build), transport <= budget", (await codeOf(pki.path.build(dLeaf, { candidates: [], trustAnchors: [dRoot], time: T, fetchAia: true, transport: dt, maxAiaFetches: 1 }))) === "path/no-path" && dt.calls.length <= 1);
+  // D0 AVAILABILITY (audit: budget-exhaustion must not deny a valid STATIC path): a leaf with a valid pool path
+  // whose issuer also has many same-name decoys (each advertising an AIA URL) must still build. Anchor-adjacent
+  // certs do not trigger a fetch (no wasted budget), and even non-anchor dead-end fetches only cap, never abort.
+  var d0Decoys = [];
+  for (var d0i = 0; d0i < 15; d0i++) { var d0kp = await freshKeys(); d0Decoys.push(await mkCert({ signer: aRootKp, subjectKp: d0kp, issuerName: "AiaRoot", subjectName: "AiaInter", extensions: caExts([aiaCaIssuersUri("https://ca.example/decoy" + d0i)]) })); }
+  var d0Pool = [aInter].concat(d0Decoys);
+  var d0t = mkTransport(function () { return { status: 404, headers: {}, body: Buffer.alloc(0) }; });
+  var d0Offline = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T });
+  var d0Fetch = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T, fetchAia: true, transport: d0t });
+  check("AIA D0: fetchAia does NOT deny a valid static path that budget-burning decoys would exhaust (valid:true both ways)", d0Offline.valid === true && d0Fetch.valid === true);
+  check("AIA D0: anchor-adjacent certs never trigger a fetch (no wasted budget)", d0t.calls.length === 0);
+  // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
+  var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
+  var d2t = mkTransport(function () { throw new Error("all fail"); });
+  await codeOf(pki.path.build(d2Leaf, Object.assign({}, aBase, { transport: d2t, maxAiaPerCert: 2 })));
+  check("AIA D2: the per-cert URL cap (maxAiaPerCert) bounds GETs for one certificate", d2t.calls.length === 2);
+  // D3 URL DEDUPE + NORMALIZATION: byte-identical AND normalization-equivalent (leading/trailing whitespace)
+  // caIssuers URLs collapse to a SINGLE fetch, and the transport receives the NORMALIZED url it was validated against.
+  var d3Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "https://ca.example/same" }, { tag: 6, value: " https://ca.example/same " }, { tag: 6, value: "https://ca.example/same" }])] });
+  var d3t = mkTransport(function () { throw new Error("fail"); });
+  await codeOf(pki.path.build(d3Leaf, Object.assign({}, aBase, { transport: d3t })));
+  check("AIA D3: byte-identical + whitespace-variant caIssuers URLs collapse to one fetch of the normalized URL", d3t.calls.length === 1 && d3t.calls[0] === "https://ca.example/same");
+  // D4 CERTIFICATE-COUNT CAP: a huge certs-only bundle is bounded by COUNT (not only bytes) -- it still builds
+  // via the capped fetched certs (a hostile TLS-trusted server cannot force O(bundle) certificate parses).
+  var d4t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms(new Array(400).fill(aInter)) }; });
+  check("AIA D4: a huge certs-only bundle still builds via the count-capped fetched certs (bounded parse work)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: d4t }))).valid === true);
+
+  // E FAIL-CLOSED SKIP: every fetch fault is a skip (the DFS continues), never a spurious/raw throw.
+  check("AIA E1: a transport rejection is a skip -> path/no-path (never a raw throw)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { throw new Error("network down"); }) })))) === "path/no-path");
+  check("AIA E2: a non-200 status is a skip", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return { status: 404, headers: {}, body: aInter }; }) })))) === "path/no-path");
+  check("AIA E3: an over-cap response body is a skip", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return { status: 200, headers: {}, body: Buffer.alloc(100) }; }), maxResponseBytes: 10 })))) === "path/no-path");
+  check("AIA E4: a non-certificate body (neither DER cert nor certs-only CMS) is a skip", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return { status: 200, headers: {}, body: Buffer.from("not a certificate at all") }; }) })))) === "path/no-path");
+  check("AIA E5: a certs-only CMS carrying no certificate is a skip", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms([]) }; }) })))) === "path/no-path");
+
+  // F NO TRUST BYPASS: a fetched cert is untrusted pool material -- it must pass validate, and is never an anchor.
+  var fDecoyKp = await freshKeys();
+  var fDecoyInter = await mkCert({ signer: aRootKp, subjectKp: fDecoyKp, issuerName: "AiaRoot", subjectName: "AiaInter", extensions: caExts() });   // same DN as the real inter, WRONG key (did not sign the leaf)
+  var f1 = await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { return cert200(fDecoyInter); }) }));
+  check("AIA F1: a fetched cert that fails validate is NOT accepted (valid:false via validate, not a raw insert)", f1.valid === false);
+
+  // G OPT-OUT + TLS TRUST.
+  var g1t = mkTransport(function () { throw new Error("MUST NOT be called when fetchAia is off"); });
+  var g1 = await pki.path.build(aLeaf, { candidates: [aInter], trustAnchors: [aRoot], time: T, transport: g1t });   // fetchAia ABSENT
+  check("AIA G1: fetchAia absent -> transport NEVER called, aiaFetches 0 (opt-out is byte-identical offline)", g1.valid === true && g1t.calls.length === 0 && g1.aiaFetches === 0);
+  check("AIA G2: fetchAia:true with the DEFAULT transport + no tls trust -> fetch fails closed (no-trust-anchors), skipped", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true }))) === "path/no-path");
+  var g3t = mkTransport(function () { return cert200(aInter); });
+  check("AIA G3: at the depth cap (maxDepth 0) no fetch is attempted (transport uncalled)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: g3t, maxDepth: 0 })))) === "path/no-path" && g3t.calls.length === 0);
 
   console.log("CHECKS " + helpers.getChecks());
 }
