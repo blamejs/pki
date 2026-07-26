@@ -18,12 +18,17 @@
  */
 var pki = require("..");
 
+function isPki(e) { return e instanceof pki.errors.PkiError; }
+
 module.exports.fuzz = async function (data) {
   var buf = Buffer.from(data);
-  try {
-    await pki.smime.verify(buf);
-    await pki.smime.verify(buf, { legacyHeaderProtection: true });   // exercise the sec. 4.10 nested message/rfc822 parse
-  } catch (e) {
-    if (!(e instanceof pki.errors.PkiError)) throw e;
-  }
+  // Two INDEPENDENT invocations: the legacy-enabled call must run even when the baseline verify throws on
+  // malformed MIME/CMS, or the sec. 4.10 nested message/rfc822 parse would be unreachable (a thrown baseline
+  // would jump straight past it). The `legacy_rfc8551hp.bin` seed carries a valid signature over a message/rfc822
+  // wrap, so this path reaches the nested part-C/part-D parse and the outer-header confidentiality/mismatch scan;
+  // mutating its unsigned outer section keeps the signature valid and fuzzes that surface.
+  try { await pki.smime.verify(buf); }
+  catch (e) { if (!isPki(e)) throw e; }
+  try { await pki.smime.verify(buf, { legacyHeaderProtection: true }); }
+  catch (e) { if (!isPki(e)) throw e; }
 };
