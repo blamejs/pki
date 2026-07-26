@@ -58,7 +58,8 @@ async function testHappy() {
   var tls = await selfSigned("Loopback A");
   var s = await startServer(tls, function (req, res) {
     var chunks = []; req.on("data", function (c) { chunks.push(c); }); req.on("end", function () {
-      res.writeHead(200, { "Content-Type": "application/pkcs7-mime", "X-Echo": String(Buffer.concat(chunks)) });
+      res.writeHead(200, { "Content-Type": "application/pkcs7-mime", "X-Echo": String(Buffer.concat(chunks)),
+        "X-Req-CL": String(req.headers["content-length"] || ""), "X-Req-TE": String(req.headers["transfer-encoding"] || "") });
       res.end("PONG");
     });
   });
@@ -74,6 +75,10 @@ async function testHappy() {
     check("7 the body is returned as a Buffer", Buffer.isBuffer(r.body) && r.body.toString() === "PONG");
     check("7 response headers are lowercased", r.headers["content-type"] === "application/pkcs7-mime");
     check("7 the request body reached the server", r.headers["x-echo"] === "PING");
+    // the POST is framed length-delimited (a fixed Content-Length from the body), not Transfer-Encoding:
+    // chunked -- strict enrollment / CMP appliances require a fixed-length DER POST.
+    check("7 the POST carries a fixed Content-Length matching the body", r.headers["x-req-cl"] === "4");
+    check("7 the POST is not sent Transfer-Encoding: chunked", r.headers["x-req-te"] === "");
     check("7 the negotiated TLS protocol is surfaced", /^TLSv1\.[23]$/.test(r.tls.protocol));
     check("7 the peer certificate DER is surfaced", Buffer.isBuffer(r.tls.peerCertificate));
     // a body is written for ANY body-bearing method, not only POST.
