@@ -631,6 +631,21 @@ async function run() {
   var lev = await pki.smime.decrypt(legEnc, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
   check("108. decrypt legacy-detects an encrypted message/rfc822 wrap under legacy (mode cipher, present false)", lev.headerProtection.present === false && lev.protectedHeaders === null && lev.headerProtection.legacy != null && lev.headerProtection.legacy.mode === "cipher" && legVal(lev, "Subject") === "smime-one-part-complex-rfc8551hp");
   check("108. the legacy confidential set names the obscured Subject, not the exposed (verbatim outer) From", lev.headerProtection.legacy.confidential.indexOf("Subject") >= 0 && lev.headerProtection.legacy.confidential.indexOf("From") < 0);
+  // (confidentiality of a REPEATED field) an encrypted legacy message repeats a legal field with one obscured
+  // and one exposed value (Keywords: secret / Keywords: public); the outer section exposes ONLY "public". A
+  // last-wins map would keep only "public" and wrongly report Keywords non-confidential -- leaking "secret" if a
+  // caller replies/forwards. The per-occurrence (multiset) match reports Keywords confidential (secret is hidden).
+  var partCkw = Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: alice@in.example\r\nSubject: kw-test\r\nKeywords: secret\r\nKeywords: public\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1");
+  var kwEncRaw = await pki.smime.encrypt(partCkw, [{ cert: rcpt.cert }], { entity: true });
+  var kwEnc = Buffer.from("From: alice@in.example\r\nKeywords: public\r\n" + kwEncRaw.toString("latin1"), "latin1");
+  var kwv = await pki.smime.decrypt(kwEnc, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
+  check("108b. a repeated field with one obscured occurrence is confidential even when another occurrence is exposed", kwv.headerProtection.legacy != null && kwv.headerProtection.legacy.confidential.indexOf("Keywords") >= 0 && legCount(kwv, "Keywords") === 2);
+  // ...and a repeated field whose occurrences are ALL exposed verbatim outside is not confidential.
+  var partCkw2 = Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: alice@in.example\r\nSubject: [obscured]\r\nKeywords: a\r\nKeywords: b\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1");
+  var kw2EncRaw = await pki.smime.encrypt(partCkw2, [{ cert: rcpt.cert }], { entity: true });
+  var kw2Enc = Buffer.from("From: alice@in.example\r\nKeywords: a\r\nKeywords: b\r\n" + kw2EncRaw.toString("latin1"), "latin1");
+  var kw2v = await pki.smime.decrypt(kw2Enc, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
+  check("108c. a repeated field with every occurrence exposed verbatim outside is not confidential", kw2v.headerProtection.legacy.confidential.indexOf("Keywords") < 0 && kw2v.headerProtection.legacy.confidential.indexOf("Subject") >= 0);
 
   // (V10) the signed-and-encrypted (C.3.17) form: the non-recursive decrypt yields a signed-data blob, not a
   // message/rfc822 -> the documented deferral holds (legacy stays null rather than a mis-labelled inference).
