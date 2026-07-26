@@ -16,6 +16,7 @@ The CMP HTTP transfer client ships -- pki.cmp.transfer carries a protected PKIMe
 ### Changed
 
 - pki.x509.sign now accepts a subjectAltName iPAddress entry as a dotted-quad IPv4 or colon-hex IPv6 string -- packed to its 4- or 16-octet network form internally -- in addition to a pre-packed Buffer, matching the string ergonomics of dNSName and uniformResourceIdentifier. This applies to every GeneralName consumer (certificates, CRLs, CMP, attribute certificates).
+- extendedKeyUsage and certificatePolicies now accept a raw dotted-decimal OID string directly, in addition to a registered purpose/policy name -- so an unregistered KeyPurposeId or private policy OID (a BIMI VMC purpose, a document-signing EKU, a vendor-specific purpose) can be supplied inline without first calling pki.oid.register or hand-encoding the extension. A token that is neither a registered name nor a well-formed dotted OID still fails closed.
 
 ## v0.3.18 — 2026-07-25
 

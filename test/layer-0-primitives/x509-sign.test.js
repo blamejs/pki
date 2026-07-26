@@ -534,6 +534,28 @@ async function testKeyMatchAndTimeAndSan() {
     Buffer.isBuffer(await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcTrue] }, { key: s.key })));
 }
 
+// issue #119: extendedKeyUsage / certificatePolicies accept a raw dotted-OID (an unregistered KeyPurposeId
+// or private policy OID -- BIMI, document-signing, vendor purposes) alongside registered names.
+async function testDottedOidPurposes() {
+  var s = makeSigner("ec-p256");
+  function base(exts) { return { subject: "eku", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts }; }
+  var bimi = "1.3.6.1.5.5.7.3.31";                 // id-kp-BrandIndicatorforMessageIdentification (unregistered here)
+  var serverAuth = "1.3.6.1.5.5.7.3.1";            // the registered id-kp-serverAuth OID
+  var der = await pki.x509.sign(base({ extendedKeyUsage: ["serverAuth", bimi] }), { key: s.key });
+  var eku = pki.schema.x509.parse(der).extensions.filter(function (x) { return (x.name || x.oid) === "extKeyUsage"; })[0];
+  var purposeOids = asn1.decode(eku.value).children.map(function (n) { return asn1.read.oid(n); });
+  check("#119 a dotted-OID extendedKeyUsage purpose is emitted verbatim", purposeOids.indexOf(bimi) !== -1);
+  check("#119 a registered EKU name still resolves alongside a dotted OID", purposeOids.indexOf(serverAuth) !== -1);
+  check("#119 an unknown EKU name (not a dotted OID) still fails closed", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["notAPurpose"] }), { key: s.key })) === "x509/bad-input");
+  check("#119 a malformed dotted EKU OID fails closed", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["1.2.bad"] }), { key: s.key })) === "x509/bad-input");
+  var privPolicy = "1.3.6.1.4.1.99999.1";
+  var derP = await pki.x509.sign(base({ certificatePolicies: ["anyPolicy", privPolicy] }), { key: s.key });
+  var cp = pki.schema.x509.parse(derP).extensions.filter(function (x) { return (x.name || x.oid) === "certificatePolicies"; })[0];
+  var policyOids = asn1.decode(cp.value).children.map(function (pi) { return asn1.read.oid(pi.children[0]); });
+  check("#119 a dotted-OID certificatePolicy is emitted verbatim", policyOids.indexOf(privPolicy) !== -1);
+  check("#119 an unknown certificate policy name still fails closed", await codeOf(pki.x509.sign(base({ certificatePolicies: ["notAPolicy"] }), { key: s.key })) === "x509/bad-input");
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -549,6 +571,7 @@ async function main() {
   await testCaCrossField();
   await testExtensionSurface();
   await testGeneralNameForms();
+  await testDottedOidPurposes();
   await testInputForms();
   await testCoverageEdges();
   await testKeyMatchAndTimeAndSan();
