@@ -163,6 +163,17 @@ async function testLegacyPbe() {
   check("#L10 an unregistered legacy PBE OID -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.open(s653, "test123", { allowUnauthenticated: true }))) === "pkcs12/unsupported-algorithm");
   var s656 = Buffer.from(nm); s656[oidOff + 12] = 0x2f;   // corrupt the pkcs-12PbeParams SEQUENCE tag
   check("#L11 a malformed pkcs-12PbeParams -> pkcs12/bad-der", (await codeOf(pki.pkcs12.open(s656, "test123", { allowUnauthenticated: true }))) === "pkcs12/bad-der");
+  // Dispatch is by the IMMUTABLE OID, not the display name: renaming the built-in 3DES OID via the public oid
+  // registry must NOT break a valid store (a name-keyed dispatch would refuse it). Restore for test isolation.
+  var oid3des = pki.oid.byName("pbeWithSHAAnd3-KeyTripleDES-CBC");
+  pki.oid.register(oid3des, "z-renamed-3des");
+  var openedAfterRename;
+  try {
+    openedAfterRename = await pki.pkcs12.open(b(F.triple3des), "test123").then(function (r) { return r.keys.length === 1; }, function () { return false; });
+  } finally {
+    pki.oid.register(oid3des, "pbeWithSHAAnd3-KeyTripleDES-CBC");   // restore for test isolation, even if the open rejected
+  }
+  check("#L12 a -legacy store opens after its OID is renamed (dispatch by immutable OID, not display name)", openedAfterRename === true);
 }
 
 async function main() {
