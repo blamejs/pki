@@ -60,6 +60,14 @@ async function run() {
     var s3 = A.cmpOpts(A.pkixcmp(st, f.ipDer));
     check("3 a " + st + " response -> cmp/unexpected-status (not decoded)", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s3.opts))) === "cmp/unexpected-status");
   }
+  // a missing / non-numeric / out-of-range HTTP status carrying a valid CMP error body is NOT a forwardable
+  // 4xx/5xx failure -- the status must be a real HTTP code, else fail closed (cmp/unexpected-status).
+  var s3s = A.cmpOpts({ status: "500", headers: { "content-type": A.PKIXCMP }, body: f.errorDer });
+  check("3 a string-valued status with a CMP error body -> cmp/unexpected-status", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s3s.opts))) === "cmp/unexpected-status");
+  var s3i = A.cmpOpts({ status: 100, headers: { "content-type": A.PKIXCMP }, body: f.errorDer });
+  check("3 a 1xx informational status with a CMP error body -> cmp/unexpected-status", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s3i.opts))) === "cmp/unexpected-status");
+  var s3h = A.cmpOpts({ status: 700, headers: { "content-type": A.PKIXCMP }, body: f.errorDer });
+  check("3 an out-of-range (>599) status -> cmp/unexpected-status", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s3h.opts))) === "cmp/unexpected-status");
 
   // 4/5. a 4xx/5xx carrying a well-formed CMP error body is FORWARDED (M4): resolves, status surfaced.
   var s4 = A.cmpOpts(A.pkixcmp(400, f.errorDer));
@@ -132,6 +140,13 @@ async function run() {
   var s15d = A.cmpOpts(A.pkixcmp(200, f.ipDer));
   check("15 a detached request byte view -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, detachedU8, s15d.opts))) === "cmp/bad-input");
   check("15 no POST on a detached message", s15d.transport.calls.length === 0);
+  // a well-formed Buffer that is NOT a PKIMessage (arbitrary / empty bytes) is validated locally as
+  // cmp/bad-input rather than crossing the network seam (transfer accepts a DER PKIMessage).
+  var s15g = A.cmpOpts(A.pkixcmp(200, f.ipDer));
+  check("15 a non-PKIMessage request buffer -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, Buffer.from([1, 2, 3]), s15g.opts))) === "cmp/bad-input");
+  check("15 no POST on an invalid request message", s15g.transport.calls.length === 0);
+  var s15e = A.cmpOpts(A.pkixcmp(200, f.ipDer));
+  check("15 an empty request buffer -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, Buffer.alloc(0), s15e.opts))) === "cmp/bad-input");
 
   // 16. a 200 body over maxResponseBytes -> cmp/response-too-large before decode.
   var s16 = A.cmpOpts(A.pkixcmp(200, f.ipDer), { maxResponseBytes: 10 });
