@@ -583,6 +583,18 @@ async function run() {
   var legDupD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: one\r\nSubject: two\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
   check("105b. a legacy part D with a duplicate protected field -> protectedHeaders null (fail-soft, no throw)", (await pki.smime.verify(legDupD, LEG_ON)).protectedHeaders === null);
 
+  // (dup Content-Type) the C2-C4 classification reads only the FIRST Content-Type (mime.parse surfaces the
+  // first field), so a part with TWO Content-Type fields is ambiguous: a later one could carry hp= or a crypto
+  // media type the first-field checks miss. A duplicate Content-Type on part C OR part D -> fail SOFT to null,
+  // matching the standard path's duplicate-Content-Type reject, so the classification cannot depend on which
+  // field a parser happens to read.
+  var legDupCtHpD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nContent-Type: text/plain\r\nContent-Type: text/plain; hp=\"clear\"\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
+  check("105c. part D with a duplicate Content-Type whose LATER field carries hp= -> protectedHeaders null (not first-field legacy)", (await pki.smime.verify(legDupCtHpD, LEG_ON)).protectedHeaders === null);
+  var legDupCtCryptoD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nContent-Type: text/plain\r\nContent-Type: application/pkcs7-mime; smime-type=signed-data\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
+  check("105d. part D with a duplicate Content-Type whose LATER field is a crypto layer -> protectedHeaders null (C3 cannot be evaded)", (await pki.smime.verify(legDupCtCryptoD, LEG_ON)).protectedHeaders === null);
+  var legDupCtC = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\nContent-Type: text/plain\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
+  check("105e. part C with a duplicate Content-Type -> protectedHeaders null (C2 cannot depend on the first field)", (await pki.smime.verify(legDupCtC, LEG_ON)).protectedHeaders === null);
+
   // (empty) a legacy wrap whose part D carries no Non-Structural fields has nothing to surface -> null.
   var legEmpty = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nContent-Type: text/plain; charset=us-ascii\r\n\r\njust a body\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
   check("106. a legacy wrap whose part D has no Non-Structural fields -> protectedHeaders null", (await pki.smime.verify(legEmpty, LEG_ON)).protectedHeaders === null);
