@@ -161,8 +161,8 @@ async function testLegacyPbe() {
   var nm = b(F.nomac3des), oidOff = nm.indexOf(Buffer.from("060a2a864886f70d010c0103", "hex"));   // the pbeWithSHAAnd3-KeyTripleDES-CBC OID DER
   var s653 = Buffer.from(nm); s653[oidOff + 11] = 0x63;   // last arc 3 -> 99: an unregistered PBE OID
   check("#L10 an unregistered legacy PBE OID -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.open(s653, "test123", { allowUnauthenticated: true }))) === "pkcs12/unsupported-algorithm");
-  var s656 = Buffer.from(nm); s656[oidOff + 12] = 0x2f;   // corrupt the pkcs-12PbeParams SEQUENCE tag
-  check("#L11 a malformed pkcs-12PbeParams -> pkcs12/bad-der", (await codeOf(pki.pkcs12.open(s656, "test123", { allowUnauthenticated: true }))) === "pkcs12/bad-der");
+  var s656 = Buffer.from(nm); s656[oidOff + 12] = 0x2f;   // corrupt the params SEQUENCE tag -> the store parser rejects it
+  check("#L11 a store with a corrupt params tag is rejected by the parser -> pkcs12/bad-der", (await codeOf(pki.pkcs12.open(s656, "test123", { allowUnauthenticated: true }))) === "pkcs12/bad-der");
   // Dispatch is by the IMMUTABLE OID, not the display name: renaming the built-in 3DES OID via the public oid
   // registry must NOT break a valid store (a name-keyed dispatch would refuse it). Restore for test isolation.
   var oid3des = pki.oid.byName("pbeWithSHAAnd3-KeyTripleDES-CBC");
@@ -207,6 +207,22 @@ async function testLegacyPbe() {
   var rc2Store = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(rc2Safe)])))]))]);
   var rc2Msg = await pki.pkcs12.open(rc2Store, "test123", { allowUnauthenticated: true }).then(function () { return "OPENED"; }, function (e) { return e.message; });
   check("#L15 an RC2 decrypt failure gives the uniform opaque message (no CBC padding oracle)", rc2Msg === "decryption failed");
+  // A legacy AlgorithmIdentifier that OMITS its parameters must be a typed pkcs12 fault, not a leaked asn1/*
+  // error (asn1.decode of the absent parameters would otherwise throw asn1/not-buffer straight to the caller).
+  var noParamsEncAlg = Bld.sequence([Bld.oid(pki.oid.byName("pbeWithSHAAnd3-KeyTripleDES-CBC"))]);   // no params child
+  var npEpki = Bld.sequence([Bld.raw(noParamsEncAlg), Bld.octetString(Buffer.alloc(16, 7))]);
+  var npBag = Bld.sequence([Bld.oid(pki.oid.byName("pkcs8ShroudedKeyBag")), Bld.explicit(0, Bld.raw(npEpki))]);
+  var npSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(npBag)])))]);
+  var npStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(npSafe)])))]))]);
+  check("#L16 a legacy bag with no parameters -> pkcs12/bad-algorithm-parameters (not a leaked asn1/* error)", (await codeOf(pki.pkcs12.open(npStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/bad-algorithm-parameters");
+  // A well-formed but non-SEQUENCE params (an INTEGER the store parser accepts as ANY) fails the pkcs-12PbeParams
+  // shape check -> the same typed pkcs12/bad-algorithm-parameters.
+  var wrongEncAlg = Bld.sequence([Bld.oid(pki.oid.byName("pbeWithSHAAnd3-KeyTripleDES-CBC")), Bld.integer(5)]);   // params is an INTEGER, not the SEQUENCE
+  var wpEpki = Bld.sequence([Bld.raw(wrongEncAlg), Bld.octetString(Buffer.alloc(16, 7))]);
+  var wpBag = Bld.sequence([Bld.oid(pki.oid.byName("pkcs8ShroudedKeyBag")), Bld.explicit(0, Bld.raw(wpEpki))]);
+  var wpSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(wpBag)])))]);
+  var wpStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(wpSafe)])))]))]);
+  check("#L17 a non-SEQUENCE pkcs-12PbeParams -> pkcs12/bad-algorithm-parameters", (await codeOf(pki.pkcs12.open(wpStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/bad-algorithm-parameters");
 }
 
 async function main() {
