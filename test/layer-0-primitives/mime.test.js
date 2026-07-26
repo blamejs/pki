@@ -88,6 +88,9 @@ function run() {
   check("32. buildEntity rejects an over-998-octet field line", fault(function () { mime.buildEntity([{ name: "Subject", value: new Array(1000).join("x") }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
   var atLimit = new Array(990).join("x"); // "Subject" (7) + ": " (2) + 989 = 998 octets exactly
   check("33. buildEntity accepts a field line at the 998-octet limit", mime.parse(mime.buildEntity([{ name: "Subject", value: atLimit }], Buffer.alloc(0), E, "m/bad"), E, "m/bad").header("Subject") === atLimit);
+  // RFC 5322 comments: a `;` / `=` inside a `(...)` comment is CFWS, not a structural parameter separator.
+  check("34. paramCount ignores an hp= inside a MIME comment", mime.paramCount("text/plain; charset=us-ascii (note; hp=fake)", "hp") === 0 && mime.paramCount("text/plain; hp=x (c)", "hp") === 1);
+  check("35. a MIME comment with a ; does not create a spurious parameter", Object.keys(mime.parse(Buffer.from("Content-Type: text/plain; charset=us-ascii (a; b=c)\r\n\r\nx"), E, "m/bad").contentType.params).length === 1);
 
   console.log("CHECKS " + helpers.getChecks());
 }
