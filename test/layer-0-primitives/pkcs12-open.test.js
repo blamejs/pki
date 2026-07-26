@@ -187,6 +187,16 @@ async function testLegacyPbe() {
   var certSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(safeBag)])))]);
   var berStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(certSafe)])))]))]);
   check("#L13 a conforming BER legacy store (constructed OCTET STRING salt) decodes + decrypts (RFC 7292 sec. 4.1)", (await codeOf(pki.pkcs12.open(berStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/decrypt-failed");
+  // The legacy KDF work is bounded by an AGGREGATE budget across the whole open(), not just a per-bag cap: a
+  // 3DES bag at 350k iterations passes the 1e6 per-bag cap but its 3 * 350k = 1.05M SHA-1 rounds exceed the
+  // aggregate budget -- so it fails closed BEFORE the KDF runs (a hostile many-bag store cannot reset the cap).
+  var hiParams = Bld.sequence([Bld.octetString(Buffer.from("0011223344556677", "hex")), Bld.integer(350000)]);
+  var hiEncAlg = Bld.sequence([Bld.oid(pki.oid.byName("pbeWithSHAAnd3-KeyTripleDES-CBC")), Bld.raw(hiParams)]);
+  var hiEpki = Bld.sequence([Bld.raw(hiEncAlg), Bld.octetString(Buffer.alloc(16, 7))]);
+  var hiBag = Bld.sequence([Bld.oid(pki.oid.byName("pkcs8ShroudedKeyBag")), Bld.explicit(0, Bld.raw(hiEpki))]);
+  var hiSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(hiBag)])))]);
+  var hiStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(hiSafe)])))]))]);
+  check("#L14 legacy KDF work over the aggregate budget -> pkcs12/iteration-limit (not the per-bag cap)", (await codeOf(pki.pkcs12.open(hiStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/iteration-limit");
 }
 
 async function main() {
