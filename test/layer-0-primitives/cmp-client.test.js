@@ -68,6 +68,12 @@ async function run() {
   var s5 = A.cmpOpts(A.pkixcmp(500, f.errorDer));
   var r5 = await pki.cmp.transfer(BASE, f.irDer, s5.opts);
   check("5 a 500 with a CMP error body resolves { status:500, body.arm:'error' }", r5.status === 500 && r5.response.body.arm === "error");
+  // a 4xx/5xx carrying a NON-error CMP body (a granting ip / a pkiconf) is contradictory -- only a CMP error
+  // message is a forwardable verdict on an HTTP failure; otherwise cmp/http-error (the HTTP failure stands).
+  var s5b = A.cmpOpts(A.pkixcmp(500, f.ipDer));
+  check("5 a 500 with a non-error CMP body -> cmp/http-error (only an error arm is forwarded)", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s5b.opts))) === "cmp/http-error");
+  var s5c = A.cmpOpts(A.pkixcmp(400, f.pkiconfDer));
+  check("5 a 400 with a pkiconf body -> cmp/http-error", (await codeOf(pki.cmp.transfer(BASE, f.irDer, s5c.opts))) === "cmp/http-error");
 
   // 6. a 4xx/5xx with NO CMP body throws cmp/http-error carrying the numeric status.
   var s6a = A.cmpOpts(A.resp(400, "<html>bad</html>", "text/html"));
@@ -117,6 +123,15 @@ async function run() {
   var s15 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
   check("15 a non-DER/PEM message -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, 12345, s15.opts))) === "cmp/bad-input");
   check("15 the config gate precedes the wire (no POST)", s15.transport.calls.length === 0);
+  // a DETACHED request byte view (its backing ArrayBuffer transferred away) reads as length 0; it must be
+  // rejected (cmp/bad-input) rather than POSTing an empty body in place of the protected message.
+  var ab = new ArrayBuffer(f.irDer.length);
+  new Uint8Array(ab).set(f.irDer);
+  var detachedU8 = new Uint8Array(ab);
+  structuredClone(ab, { transfer: [ab] });   // detaches ab -> detachedU8 now reads length 0
+  var s15d = A.cmpOpts(A.pkixcmp(200, f.ipDer));
+  check("15 a detached request byte view -> cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, detachedU8, s15d.opts))) === "cmp/bad-input");
+  check("15 no POST on a detached message", s15d.transport.calls.length === 0);
 
   // 16. a 200 body over maxResponseBytes -> cmp/response-too-large before decode.
   var s16 = A.cmpOpts(A.pkixcmp(200, f.ipDer), { maxResponseBytes: 10 });
