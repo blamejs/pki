@@ -409,6 +409,11 @@ async function run() {
   check("97m. a quoted hp= in the caller Content-Type is not a duplicate hp param", (await pki.smime.verify(quotedHp)).protectedHeaders.Subject === "ok");
   // (s) a repeated protected field NAME is rejected by the PRODUCER (an unsupported shape it cannot re-consume).
   check("97n. duplicate opts.headers field names -> smime/bad-input (producer rejects)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ name: "Received", value: "a" }, { name: "Received", value: "b" }] }); })) === "smime/bad-input");
+  // (t) a CRLF in opts.contentType is rejected on the NON-HP path too (the header-injection guard is universal).
+  check("97o. a CRLF-injected opts.contentType (non-HP) -> smime/bad-header", (await codeOf(function () { return pki.smime.sign(HB, signers, { contentType: "text/plain\r\nBcc: mallory@evil.example" }); })) === "smime/bad-header");
+  check("97o. a CRLF-injected opts.contentType on encrypt (non-HP) -> smime/bad-header", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { contentType: "text/plain\r\nBcc: x" }); })) === "smime/bad-header");
+  // (u) a caller-supplied hp parameter in opts.contentType conflicts with the one HP sets -> reject at sign.
+  check("97p. a caller hp= in opts.contentType with protectHeaders -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; hp=\"cipher\"", headers: { Subject: "x" } }); })) === "smime/bad-input");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
