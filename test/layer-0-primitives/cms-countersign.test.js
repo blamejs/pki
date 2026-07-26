@@ -117,7 +117,7 @@ async function testForbiddenContentType() {
 // ---- 4 UNSIGNED-ATTR-SURFACED-NOT-AUTHENTICATED ----------------------------
 async function testUnsignedAttrNotAuthenticated() {
   var s = makeSigner("ec-p256");
-  var opaque = b.sequence([b.oid(O("data")), b.octetString(Buffer.from("ts"))]);   // a stand-in unsigned attr value
+  var opaque = b.sequence([b.oid(O("data")), b.octetString(Buffer.from("unsigned-attr-marker"))]);   // a stand-in unsigned attr value; a distinctive multi-byte marker so flipRegion's indexOf cannot collide with a coincidental byte pair in the random signature
   var out = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key }, {
     unsignedAttributes: [{ type: "timeStampToken", values: [opaque] }],
   });
@@ -127,7 +127,7 @@ async function testUnsignedAttrNotAuthenticated() {
   check("#4 unsigned attribute surfaced decoded", ua != null && ua.values.length === 1);
   check("#4 unsigned attribute typeName resolved", ua && ua.typeName === "timeStampToken");
   // Mutating the unsigned attribute does NOT change the top-level verdict (it is not signed).
-  var mutated = flipRegion(out, Buffer.from("ts"));
+  var mutated = flipRegion(out, Buffer.from("unsigned-attr-marker"));
   var res2 = await pki.cms.verify(mutated);
   check("#4 mutating an unsigned attribute leaves res.valid unchanged", res2.valid === true && res2.signers[0].ok === true);
 }

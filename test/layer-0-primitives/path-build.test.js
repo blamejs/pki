@@ -445,6 +445,17 @@ async function run() {
   var d0Fetch = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T, fetchAia: true, transport: d0t });
   check("AIA D0: fetchAia does NOT deny a valid static path that budget-burning decoys would exhaust (valid:true both ways)", d0Offline.valid === true && d0Fetch.valid === true);
   check("AIA D0: anchor-adjacent certs never trigger a fetch (no wasted budget)", d0t.calls.length === 0);
+  // D7 STALE-POOL-CERT FALLBACK (RFC 4158 sec. 7.2 local-before-remote is LAZY, not skip-if-any-local-match): the
+  // pool holds a DECOY whose subject == the leaf's issuer DN but with a different key -- it name-chains to the
+  // anchor yet cannot sign the leaf. The local decoy branch is explored FIRST and dead-ends in validation; only
+  // then is the leaf's AIA fetched as a fallback, and the real intermediate completes the path. A same-DN pool
+  // cert must never STARVE the fetch (the pre-fix `scored.length === 0` gate did exactly that).
+  var d7DecoyKp = await freshKeys();
+  var d7Decoy = await mkCert({ signer: aRootKp, subjectKp: d7DecoyKp, issuerName: "AiaRoot", subjectName: "AiaInter", extensions: caExts() });
+  var d7t = mkTransport(function () { return cert200(aInter); });
+  var d7 = await pki.path.build(aLeaf, { candidates: [d7Decoy], trustAnchors: [aRoot], time: T, fetchAia: true, transport: d7t });
+  check("AIA D7: a stale same-DN pool cert that fails validation no longer starves AIA fallback (valid via the fetched issuer)", d7.valid === true && d7.aiaFetches === 1 && Buffer.from(d7.path[0].subjectPublicKeyInfo.bytes).equals(aInterKp.spki));
+  check("AIA D7: the local decoy branch is explored BEFORE the network fetch (one GET, local-before-remote)", d7t.calls.length === 1);
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });
