@@ -403,6 +403,13 @@ async function run() {
   var ctorHp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Constructor: "custom" } });
   check("97l. a header named Constructor is protected + surfaced (not falsely Structural)", (await pki.smime.verify(ctorHp)).protectedHeaders.Constructor === "custom");
 
+  // (r) a quoted "hp=" inside the caller's Content-Type is NOT a duplicate hp parameter (quote-aware) --
+  // sign and verify must agree (the library never rejects a message it emits).
+  var quotedHp = await pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; charset=\"a; hp=fake\"", headers: { Subject: "ok" } });
+  check("97m. a quoted hp= in the caller Content-Type is not a duplicate hp param", (await pki.smime.verify(quotedHp)).protectedHeaders.Subject === "ok");
+  // (s) a repeated protected field NAME is rejected by the PRODUCER (an unsupported shape it cannot re-consume).
+  check("97n. duplicate opts.headers field names -> smime/bad-input (producer rejects)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ name: "Received", value: "a" }, { name: "Received", value: "b" }] }); })) === "smime/bad-input");
+
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
   check("98. protectHeaders with no opts.headers still emits hp + verifies", /hp="clear"/.test(emptyHp.toString("latin1")) && (await pki.smime.verify(emptyHp)).headerProtection.present === true);
