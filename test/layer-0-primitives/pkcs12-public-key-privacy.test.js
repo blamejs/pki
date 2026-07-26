@@ -71,6 +71,10 @@ async function run() {
   var ctInfoOid = asn1.decode(pfx1);   // structural sanity: the store parses
   check("4 the built store parses (id-envelopedData element present)", !!ctInfoOid && m3.encryptedSafes[0].type === "envelopedData");
   check("5 an AEAD/GCM content alg on a privacy safe is rejected", (await codeOf(buildEnveloped(payload, [{ cert: rsaR.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" }))) === "pkcs12/bad-input");
+  // a non-certificate recipient (password/kek) is NOT public-key privacy and open cannot reopen it, so build
+  // rejects it rather than emit a store the toolkit's own reader cannot process.
+  check("5 a password (pwri) recipient on a privacy safe is rejected", (await codeOf(buildEnveloped(payload, [{ password: "secret" }], { contentEncryptionAlgorithm: "aes-256-cbc" }))) === "pkcs12/bad-input");
+  check("5 a KEK (kekri) recipient on a privacy safe is rejected", (await codeOf(buildEnveloped(payload, [{ kek: Buffer.alloc(32, 7), kekId: Buffer.from("k") }], { contentEncryptionAlgorithm: "aes-256-cbc" }))) === "pkcs12/bad-input");
 
   // ---- 6. independent cms.decrypt over the surfaced ContentInfo byte-equals open's recovered SafeContents ----
   var ci = envelopedContentInfo(pfx1);
@@ -82,9 +86,7 @@ async function run() {
 
   // ---- 8. oracle uniformity: wrong key, tampered ciphertext, non-SafeContents plaintext -> IDENTICAL code ----
   var cWrong = await codeOf(pki.pkcs12.open(pfx1, "P", { recipientKey: other.key, recipientCert: rsaR.cert }));
-  // (a tampered-ciphertext store is built under NO integrity so the recipient decrypt is actually reached)
-  var pfxNoInt = await buildEnveloped(payload, [{ cert: rsaR.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }, { mac: false, password: undefined });
-  check("8 wrong-key and a tamper both surface the same uniform pkcs12/decrypt-failed", cWrong === "pkcs12/decrypt-failed");
+  check("8 a wrong recipient key surfaces the uniform pkcs12/decrypt-failed (oracle-free)", cWrong === "pkcs12/decrypt-failed");
 
   // ---- 10. no recipient key -> pkcs12/no-recipient-key (NOT the stale unsupported-algorithm, NOT a silent drop) ----
   check("10 an id-envelopedData store opened with no recipientKey -> pkcs12/no-recipient-key", (await codeOf(pki.pkcs12.open(pfx1, "P"))) === "pkcs12/no-recipient-key");
