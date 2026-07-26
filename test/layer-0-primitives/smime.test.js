@@ -414,6 +414,9 @@ async function run() {
   check("97o. a CRLF-injected opts.contentType on encrypt (non-HP) -> smime/bad-header", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { contentType: "text/plain\r\nBcc: x" }); })) === "smime/bad-header");
   // (u) a caller-supplied hp parameter in opts.contentType conflicts with the one HP sets -> reject at sign.
   check("97p. a caller hp= in opts.contentType with protectHeaders -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; hp=\"cipher\"", headers: { Subject: "x" } }); })) === "smime/bad-input");
+  // (v) whitespace before the Content-Type colon (which mime.parse trims) is detected as HP, not downgraded.
+  var wspColon = await pki.smime.sign(Buffer.from("Content-Type : text/plain; hp=\"clear\"\r\nSubject: WSP subject\r\n\r\nbody\n"), signers, { entity: true });
+  check("97q. a Content-Type with whitespace before the colon is still detected as HP (no downgrade)", (await pki.smime.verify(wspColon)).protectedHeaders.Subject === "WSP subject");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
