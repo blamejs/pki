@@ -646,6 +646,13 @@ async function run() {
   var kw2Enc = Buffer.from("From: alice@in.example\r\nKeywords: a\r\nKeywords: b\r\n" + kw2EncRaw.toString("latin1"), "latin1");
   var kw2v = await pki.smime.decrypt(kw2Enc, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
   check("108c. a repeated field with every occurrence exposed verbatim outside is not confidential", kw2v.headerProtection.legacy.confidential.indexOf("Keywords") < 0 && kw2v.headerProtection.legacy.confidential.indexOf("Subject") >= 0);
+  // multiset COUNTING (not set membership): 3 identical inner Keywords, only 2 exposed outside -> the third is
+  // confidential (each outer occurrence accounts for at most one inner). This also exercises the O(N+M) index path.
+  var partCkw3 = Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: alice@in.example\r\nSubject: [obscured]\r\nKeywords: x\r\nKeywords: x\r\nKeywords: x\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1");
+  var kw3EncRaw = await pki.smime.encrypt(partCkw3, [{ cert: rcpt.cert }], { entity: true });
+  var kw3Enc = Buffer.from("From: alice@in.example\r\nKeywords: x\r\nKeywords: x\r\n" + kw3EncRaw.toString("latin1"), "latin1");
+  var kw3v = await pki.smime.decrypt(kw3Enc, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
+  check("108d. multiset counting: 3 identical inner occurrences with only 2 exposed outside -> confidential", kw3v.headerProtection.legacy.confidential.indexOf("Keywords") >= 0 && legCount(kw3v, "Keywords") === 3);
 
   // (V10) the signed-and-encrypted (C.3.17) form: the non-recursive decrypt yields a signed-data blob, not a
   // message/rfc822 -> the documented deferral holds (legacy stays null rather than a mis-labelled inference).
