@@ -383,6 +383,12 @@ async function run() {
   var dupCt = await pki.smime.sign(Buffer.from("Content-Type: text/plain\r\nContent-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
   check("97h. a duplicate Content-Type with an hp claim -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupCt); })) === "smime/bad-header-protection");
 
+  // (n) a DUPLICATE outer From (an attacker appends a second, forged one after the matching original) is
+  // flagged fromMismatch -- header() returns only the first, so every occurrence must be inspected.
+  var dupFrom = Buffer.from(hpSigned.toString("latin1").replace("From: a@ex.example\r\n", "From: a@ex.example\r\nFrom: mallory@evil.example\r\n"), "latin1");
+  var dfv = await pki.smime.verify(dupFrom);
+  check("97i. a duplicate outer From is flagged fromMismatch (not silently the first)", dfv.valid === true && dfv.headerProtection.fromMismatch === true);
+
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
   check("98. protectHeaders with no opts.headers still emits hp + verifies", /hp="clear"/.test(emptyHp.toString("latin1")) && (await pki.smime.verify(emptyHp)).headerProtection.present === true);
