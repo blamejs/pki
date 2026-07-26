@@ -197,6 +197,16 @@ async function testLegacyPbe() {
   var hiSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(hiBag)])))]);
   var hiStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(hiSafe)])))]))]);
   check("#L14 legacy KDF work over the aggregate budget -> pkcs12/iteration-limit (not the per-bag cap)", (await codeOf(pki.pkcs12.open(hiStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/iteration-limit");
+  // No CBC padding oracle: an RC2 bag whose decrypt fails on an invalid pad must give the SAME opaque error
+  // MESSAGE (not just code) as a valid-pad-wrong-content failure, so the message cannot distinguish pad validity.
+  var rc2Params = Bld.sequence([Bld.octetString(Buffer.from("0011223344556677", "hex")), Bld.integer(2048)]);
+  var rc2EncAlg = Bld.sequence([Bld.oid(pki.oid.byName("pbeWithSHAAnd40BitRC2-CBC")), Bld.raw(rc2Params)]);
+  var rc2Epki = Bld.sequence([Bld.raw(rc2EncAlg), Bld.octetString(Buffer.alloc(16, 7))]);   // garbage ct -> an RC2 pad failure
+  var rc2Bag = Bld.sequence([Bld.oid(pki.oid.byName("pkcs8ShroudedKeyBag")), Bld.explicit(0, Bld.raw(rc2Epki))]);
+  var rc2Safe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(rc2Bag)])))]);
+  var rc2Store = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(rc2Safe)])))]))]);
+  var rc2Msg = await pki.pkcs12.open(rc2Store, "test123", { allowUnauthenticated: true }).then(function () { return "OPENED"; }, function (e) { return e.message; });
+  check("#L15 an RC2 decrypt failure gives the uniform opaque message (no CBC padding oracle)", rc2Msg === "decryption failed");
 }
 
 async function main() {
