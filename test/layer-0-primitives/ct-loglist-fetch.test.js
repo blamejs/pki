@@ -111,6 +111,14 @@ async function run() {
   var t9b = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { url: "https://ct.example.test/logs" });
   check("9. a non-.json url with no explicit sigUrl -> ct/bad-input", (await code(function () { return pki.ct.fetchLogList(t9b.opts); })) === "ct/bad-input");
   check("9. no socket reached when sigUrl cannot be derived", t9b.transport.calls.length === 0);
+  // an http url is refused BEFORE the wire -- the https gate runs across the injectable seam, so an insecure
+  // URL never reaches the transport (a generic injected transport cannot be steered to cleartext).
+  var t9c = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { url: "http://ct.example.test/log_list.json" });
+  check("9. an http url is refused (ct/insecure-url) even with an injected transport", (await code(function () { return pki.ct.fetchLogList(t9c.opts); })) === "ct/insecure-url");
+  check("9. no socket reached on an insecure url", t9c.transport.calls.length === 0);
+  var t9d = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { sigUrl: "http://ct.example.test/log_list.sig" });
+  check("9. an http explicit sigUrl is refused (ct/insecure-url)", (await code(function () { return pki.ct.fetchLogList(t9d.opts); })) === "ct/insecure-url");
+  check("9. no socket reached on an insecure sigUrl", t9d.transport.calls.length === 0);
 
   // ==== 10. default sigUrl derivation (Build #3) ===================================================
   var t10 = ctx.ctFetchOpts(fx, ctx.okRoutes(fx));   // no sigUrl -> derived .json -> .sig
