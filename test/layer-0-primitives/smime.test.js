@@ -431,6 +431,13 @@ async function run() {
   var tamperedFold = Buffer.from(signedFold.toString("latin1").replace("\r\n hp=", "\r hp="), "latin1");
   var rf = await pki.smime.verify(tamperedFold);
   check("97u. a bare-CR fold before hp still verifies AND still surfaces header protection (no signal strip)", rf.valid === true && rf.protectedHeaders != null && rf.protectedHeaders.Subject === "folded hp");
+  // (w) a transport that rewrites the payload's header/body separator (CRLFCRLF) to bare CRs still verifies
+  // (the canonicalizer repairs it) -- HP detection AND parsing run on that same canonical form, so a valid
+  // message surfaces its authenticated headers rather than false-rejecting as an unparseable block.
+  var signedSep = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\nSubject: sep test\r\n\r\nbody\n"), signers, { entity: true });
+  var tamperedSep = Buffer.from(signedSep.toString("latin1").replace("sep test\r\n\r\nbody", "sep test\r\rbody"), "latin1");
+  var rs = await pki.smime.verify(tamperedSep).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97v. a bare-CR header/body separator still verifies AND surfaces HP (parse the canonical entity)", rs.valid === true && rs.protectedHeaders != null && rs.protectedHeaders.Subject === "sep test");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
