@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.23 — 2026-07-26
+
+pki.pkcs12.open now reads legacy PKCS#12 stores -- decrypt the RFC 7292 Appendix C 3DES and RC2 bags an `openssl pkcs12 -legacy` (and NSS) store uses, so an older .p12/.pfx opens instead of being refused.
+
+### Added
+
+- pki.pkcs12.open decrypts the RFC 7292 Appendix C legacy PBE bags: pbeWithSHAAnd3-KeyTripleDES-CBC, pbeWithSHAAnd2-KeyTripleDES-CBC, pbeWithSHAAnd128BitRC2-CBC, and pbeWithSHAAnd40BitRC2-CBC. This lets an `openssl pkcs12 -legacy` or NSS store -- whose default key bag is 3DES and default cert bag is 40-bit RC2 -- open, where before it was refused. The cipher key and IV are derived with the PKCS#12 Appendix B method over the BMPString+NULL password; a wrong password is caught by the MAC gate (or, for a MAC-less store, is the uniform pkcs12/decrypt-failed). The iteration count is DoS-capped before the key derivation runs. RFC 7292, RFC 2268, RFC 8018.
+- An in-tree RFC 2268 RC2-CBC (lib/rc2.js) fills the gap left by OpenSSL 3.x moving RC2 to its legacy provider (Node's crypto can no longer decrypt it). It is own code with no new runtime dependency, pinned to the RFC 2268 Section 5 known-answer vectors and cross-checked against real OpenSSL -legacy RC2-40 and RC2-128 stores.
+
+### Changed
+
+- The legacy RC4 PBE schemes (pbeWithSHAAnd128BitRC4 / pbeWithSHAAnd40BitRC4) remain refused, now with a message that names the scheme and the remediation (re-export the store under AES-256-CBC or PBE-SHA1-3DES).
+
 ## v0.3.22 — 2026-07-26
 
 S/MIME header protection ships -- cover the message headers (Subject, From, To, ...) under the CMS signature or encryption with pki.smime, RFC 9788.

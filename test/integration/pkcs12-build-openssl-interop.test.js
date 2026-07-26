@@ -79,13 +79,20 @@ async function run() {
     check("pki.pkcs12.open recovers a well-formed cert from the OpenSSL store", pki.schema.x509.parse(openedClassic.certs[0].cert) != null);
     check("pki.pkcs12.open on the OpenSSL store fails at the MAC gate for a wrong password", (await (async function () { try { await pki.pkcs12.open(oClassicDer, "wrong"); return "no-throw"; } catch (e) { return e && e.code; } })()) === "pkcs12/mac-mismatch");
 
-    // ---- (e) a legacy-PBE (App. C) OpenSSL store is refused fail-closed on open ----
+    // ---- (e) a legacy-PBE (RFC 7292 App. C) OpenSSL store opens: the default -legacy store is a 3DES key bag
+    // + a 40-bit RC2 cert bag; a -descert store is both bags 3DES. Both decrypt via the App. B KDF + 3DES / RC2.
     var oLegacy = path.join(dir, "openssl-legacy.p12");
     var el = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW, "-legacy", "-name", "t", "-out", oLegacy], { allowNonZero: true });
     if (el.code === 0) {
-      var legacyCode = null; try { await pki.pkcs12.open(fs.readFileSync(oLegacy), PW); } catch (e) { legacyCode = e && e.code; }
-      check("pki.pkcs12.open REFUSES a legacy-PBE (App. C) OpenSSL store fail-closed", legacyCode === "pkcs12/unsupported-algorithm");
-    } else { ctx.skip("openssl could not export a -legacy store -- legacy-PBE refusal not cross-checked"); }
+      var rl = await pki.pkcs12.open(fs.readFileSync(oLegacy), PW);
+      check("pki.pkcs12.open reads a default -legacy store (3DES key + 40-bit RC2 cert)", rl.keys.length === 1 && rl.certs.length === 1 && !!pki.schema.pkcs8.parse(rl.keys[0].pkcs8) && !!pki.schema.x509.parse(rl.certs[0].cert));
+      var oDescert = path.join(dir, "openssl-legacy-3des.p12");
+      var ed = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW, "-legacy", "-keypbe", "PBE-SHA1-3DES", "-certpbe", "PBE-SHA1-3DES", "-name", "t", "-out", oDescert], { allowNonZero: true });
+      if (ed.code === 0) {
+        var rd = await pki.pkcs12.open(fs.readFileSync(oDescert), PW);
+        check("pki.pkcs12.open reads a -legacy 3DES-both store (24-byte 3DES key = App. B c=2 KDF)", rd.keys.length === 1 && rd.certs.length === 1);
+      }
+    } else { ctx.skip("openssl could not export a -legacy store -- legacy-PBE read not cross-checked"); }
 
     var oPbmac1 = path.join(dir, "openssl-pbmac1.p12");
     var ep = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW,
