@@ -77,6 +77,13 @@ function run() {
   check("27. buildEntity with a null body emits an empty body", mime.parse(mime.buildEntity([{ name: "X-A", value: "1" }], null, E, "m/bad"), E, "m/bad").body.length === 0);
   check("28. buildEntity routes a value through the header guard (CR/LF injection reject)", fault(function () { mime.buildEntity([{ name: "Subject", value: "a\r\nBcc: x" }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
   check("29. buildEntity rejects a bad field name", fault(function () { mime.buildEntity([{ name: "Bad Name", value: "v" }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+  // buildEntity serializes the guard-VALIDATED value, never a second (possibly stateful) coercion of the input.
+  var n = 0, stateful = { toString: function () { n++; return n === 1 ? "safe" : "safe\r\nBcc: injected"; } };
+  var stBuilt = mime.buildEntity([{ name: "X-H", value: stateful }], Buffer.alloc(0), E, "m/bad");
+  check("30. buildEntity serializes the guard-validated value (no stateful-toString re-injection)", mime.parse(stBuilt, E, "m/bad").header("Bcc") === null && mime.parse(stBuilt, E, "m/bad").header("X-H") === "safe");
+  // paramCount honors RFC 2045 quoted-pair escaping: a backslash-escaped quote inside a value does not end it.
+  check("31. paramCount honors quoted-pair escapes", mime.paramCount("text/plain; charset=\"a\\\"; hp=fake\"", "hp") === 0);
+  check("31. paramCount counts a real repeated parameter", mime.paramCount("text/plain; hp=\"x\"; hp=\"y\"", "hp") === 2);
 
   console.log("CHECKS " + helpers.getChecks());
 }

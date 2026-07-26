@@ -417,6 +417,9 @@ async function run() {
   // (v) whitespace before the Content-Type colon (which mime.parse trims) is detected as HP, not downgraded.
   var wspColon = await pki.smime.sign(Buffer.from("Content-Type : text/plain; hp=\"clear\"\r\nSubject: WSP subject\r\n\r\nbody\n"), signers, { entity: true });
   check("97q. a Content-Type with whitespace before the colon is still detected as HP (no downgrade)", (await pki.smime.verify(wspColon)).protectedHeaders.Subject === "WSP subject");
+  // (w) a quoted-pair-escaped "hp=" inside opts.contentType is not mistaken for a caller hp parameter (quoted-pair aware).
+  var escHp = await pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; charset=\"a\\\"; hp=fake\"", headers: { Subject: "esc ok" } });
+  check("97r. a quoted-pair-escaped hp= in opts.contentType is not a caller hp param (sign succeeds)", (await pki.smime.verify(escHp)).protectedHeaders.Subject === "esc ok");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
