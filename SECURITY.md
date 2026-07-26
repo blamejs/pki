@@ -216,6 +216,22 @@ security-only patches after the next major releases.
   explicit unauthenticated verdict alongside the content — not a bare, trustworthy-looking
   result — and can reject it. Callers that require integrity should check `authenticated`
   (or send AES-GCM AuthEnvelopedData, the encrypt default).
+- **S/MIME header protection: injection + downgrade + outer-header trust
+  (CWE-93 / CWE-345).** `pki.smime` header protection (RFC 9788) inlines the
+  protected headers on the Cryptographic Payload so the CMS signature/encryption
+  covers them. Every header field a composer emits routes through one fail-closed
+  guard: a CR / LF / NUL in a field value, or a field name outside RFC 5322 ftext,
+  is rejected (`smime/bad-header`) — so a caller-supplied Subject cannot inject a
+  Bcc, split the message, or forge a multipart boundary. On receive, the AUTHENTICATED
+  inner headers are surfaced distinctly (`protectedHeaders`) from the untrusted outer
+  display headers and never silently merged, so a transport that rewrites an outer
+  header cannot change the verified set (an outer From that disagrees is flagged
+  `fromMismatch`). A payload whose declared `hp` marker is malformed, invalid, or
+  contradicts the cryptographic envelope (a signed message claiming `hp="cipher"`)
+  fails closed with `smime/bad-header-protection` rather than being treated as
+  unprotected — there is no silent downgrade path. For an encrypted message the
+  Header Confidentiality Policy keeps the real header values (Subject, Comments,
+  Keywords) only inside the ciphertext, never in the outer section.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node

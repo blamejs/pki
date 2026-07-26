@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.22 — 2026-07-26
+
+S/MIME header protection ships -- cover the message headers (Subject, From, To, ...) under the CMS signature or encryption with pki.smime, RFC 9788.
+
+### Added
+
+- pki.smime.sign / pki.smime.encrypt gain opts.protectHeaders (RFC 9788 header protection) with opts.headers -- an object { Name: value } or an array [{ name, value }] of the Non-Structural fields to protect (Subject / From / To / Date / ...). Signed protection marks the payload hp="clear" and copies the fields to the outer display headers; encrypted protection marks it hp="cipher", inlines the REAL values inside the ciphertext, and emits only the Header-Confidentiality-Policy-processed outer copies -- opts.hcp selects "hcp_baseline" (default: obscure Subject to [...], remove Comments/Keywords) or "hcp_no_confidentiality". The CMS crypto is unchanged, so any signer / recipient algorithm carries through. RFC 9788.
+- pki.smime.verify / pki.smime.decrypt return protectedHeaders (the authenticated inner header set, or null when the message is not header-protected) and headerProtection { present, mode, fromMismatch }. The inner protected headers are surfaced distinctly from the untrusted outer headers, and fromMismatch flags an outer From that disagrees with the protected one. A payload declaring hp that is malformed, carries an invalid value, or contradicts the cryptographic envelope (a signed message claiming hp="cipher") fails closed with smime/bad-header-protection -- never a silent downgrade. RFC 9788.
+- Every MIME header field pki.smime emits routes through a fail-closed header-field guard: a CR / LF / NUL in a field value, or a field name outside RFC 5322 ftext, is rejected with smime/bad-header, so a caller-supplied Subject can never inject a Bcc header or split the message (CWE-93).
+
 ## v0.3.21 — 2026-07-26
 
 A Certificate Transparency log-list live-fetch client ships -- pki.ct.fetchLogList fetches and verifies the CT log list over HTTPS before trusting a single log.

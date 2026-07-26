@@ -70,6 +70,14 @@ function run() {
   var padded = mime.splitMultipart(Buffer.from("--B \t\r\nfirst\r\n--B--\r\n"), "B", E, "m/bad");
   check("25. trailing LWSP transport-padding on a delimiter is accepted", padded.length === 1 && padded[0].toString() === "first");
 
+  // ---- buildEntity: serialize fields + body, route each field through the header-injection guard, canonicalize ----
+  var built = mime.buildEntity([{ name: "Content-Type", value: "text/plain" }, { name: "Subject", value: "Hi" }], Buffer.from("body\n"), E, "m/bad");
+  var pb = mime.parse(built, E, "m/bad");
+  check("26. buildEntity emits parseable headers + a CRLF-canonical body", pb.header("Subject") === "Hi" && pb.body.toString() === "body\r\n");
+  check("27. buildEntity with a null body emits an empty body", mime.parse(mime.buildEntity([{ name: "X-A", value: "1" }], null, E, "m/bad"), E, "m/bad").body.length === 0);
+  check("28. buildEntity routes a value through the header guard (CR/LF injection reject)", fault(function () { mime.buildEntity([{ name: "Subject", value: "a\r\nBcc: x" }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+  check("29. buildEntity rejects a bad field name", fault(function () { mime.buildEntity([{ name: "Bad Name", value: "v" }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
