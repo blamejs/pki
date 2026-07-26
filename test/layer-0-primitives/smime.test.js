@@ -446,6 +446,9 @@ async function run() {
   // (y) a signed entity with NO Content-Type field is not header-protected (the probe finds no Content-Type line).
   var noCt = await pki.smime.sign(Buffer.from("Subject: no ct\r\n\r\nbody\n"), signers, { entity: true });
   check("97x. a signed entity without a Content-Type is not treated as header-protected", (await pki.smime.verify(noCt)).protectedHeaders === null);
+  // (z) a MIME comment BETWEEN Content-Type parameters is CFWS -- the real hp parameter is still detected (no downgrade).
+  var cfws = await pki.smime.sign(Buffer.from("Content-Type: text/plain; (note) hp=\"clear\"\r\nSubject: cfws\r\n\r\nbody\n"), signers, { entity: true });
+  check("97y. a comment between Content-Type parameters does not hide hp (no downgrade)", (await pki.smime.verify(cfws)).protectedHeaders != null && (await pki.smime.verify(cfws)).protectedHeaders.Subject === "cfws");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });

@@ -91,6 +91,11 @@ function run() {
   // RFC 5322 comments: a `;` / `=` inside a `(...)` comment is CFWS, not a structural parameter separator.
   check("34. paramCount ignores an hp= inside a MIME comment", mime.paramCount("text/plain; charset=us-ascii (note; hp=fake)", "hp") === 0 && mime.paramCount("text/plain; hp=x (c)", "hp") === 1);
   check("35. a MIME comment with a ; does not create a spurious parameter", Object.keys(mime.parse(Buffer.from("Content-Type: text/plain; charset=us-ascii (a; b=c)\r\n\r\nx"), E, "m/bad").contentType.params).length === 1);
+  // RFC 5322 CFWS: a comment BETWEEN parameter tokens is whitespace -- it is not part of the parameter name or value.
+  check("36. paramCount ignores a comment before the parameter name", mime.paramCount("text/plain; (note) hp=\"clear\"", "hp") === 1);
+  check("37. a comment around a parameter is stripped from its name and value", (function () { var p = mime.parse(Buffer.from("Content-Type: text/plain; (c) charset=utf-8 (d)\r\n\r\nx"), E, "m/bad").contentType.params; return p.charset === "utf-8"; })());
+  // a quoted-pair inside a comment is consumed: an escaped ')' does not close the comment early (both bytes dropped).
+  check("38. a quoted-pair inside a comment does not close it early", mime.parse(Buffer.from("Content-Type: text/plain; hp=x (a\\)b)\r\n\r\nz"), E, "m/bad").contentType.params.hp === "x");
 
   console.log("CHECKS " + helpers.getChecks());
 }
