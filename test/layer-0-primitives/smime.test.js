@@ -420,6 +420,9 @@ async function run() {
   // (w) a quoted-pair-escaped "hp=" inside opts.contentType is not mistaken for a caller hp parameter (quoted-pair aware).
   var escHp = await pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; charset=\"a\\\"; hp=fake\"", headers: { Subject: "esc ok" } });
   check("97r. a quoted-pair-escaped hp= in opts.contentType is not a caller hp param (sign succeeds)", (await pki.smime.verify(escHp)).protectedHeaders.Subject === "esc ok");
+  // (x) leading whitespace before Content-Type (which mime.parse trims) is still detected as HP (no downgrade).
+  var leadWsp = await pki.smime.sign(Buffer.from(" Content-Type: text/plain; hp=\"clear\"\r\nSubject: lead ws\r\n\r\nbody\n"), signers, { entity: true });
+  check("97s. leading whitespace before Content-Type is still detected as HP (no downgrade)", (await pki.smime.verify(leadWsp)).protectedHeaders.Subject === "lead ws");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
