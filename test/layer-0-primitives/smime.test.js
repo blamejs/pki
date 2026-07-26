@@ -591,6 +591,10 @@ async function run() {
   // From, To, Date, Message-ID, ...) is ambiguous -> fail SOFT to null (the legacy path never throws).
   var legDupD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: one\r\nSubject: two\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
   check("105b. a legacy part D with a duplicate SINGLETON field (Subject) -> legacy null (fail-soft, no throw)", (await pki.smime.verify(legDupD, LEG_ON)).headerProtection.legacy === null);
+  // Return-Path is the envelope sender: RFC 5321 sec. 4.4 restricts a delivered message to a single one, so a
+  // duplicate is as ambiguous as a duplicate From (a consumer could pick a different envelope sender) -> null.
+  var legDupRP = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nReturn-Path: <a@in.example>\r\nReturn-Path: <b@evil.example>\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
+  check("105h. a legacy part D with two Return-Path fields (ambiguous envelope sender) -> legacy null", (await pki.smime.verify(legDupRP, LEG_ON)).headerProtection.legacy === null);
   // A legally REPEATABLE field (RFC 5322 sec. 3.6 -- Received and other trace fields, Resent-*, Comments,
   // Keywords, optional/X-*) occurs many times in a real delivered message; its repetition must NOT reject the
   // inference (every received message carries multiple Received headers), or legacy detection would fail on
