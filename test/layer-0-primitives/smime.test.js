@@ -343,6 +343,7 @@ async function run() {
   check("95. hcp_no_confidentiality leaves the outer Subject visible", /(^|\r\n)Subject:\s*Visible/.test(encNoConf.toString("latin1")));
   // fail-closed input shapes
   check("96. a malformed opts.headers array entry -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ value: "no name" }] }); })) === "smime/bad-input");
+  check("96. a null opts.headers array entry -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [null] }); })) === "smime/bad-input");
   check("96. a non-object opts.headers -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: 42 }); })) === "smime/bad-input");
   check("96. a non-string opts.hcp -> smime/bad-input", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "x" }, hcp: 5 }); })) === "smime/bad-input");
   check("96. a Structural header in opts.headers -> smime/bad-input (only Non-Structural fields protected)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Type": "text/html" } }); })) === "smime/bad-input");
@@ -449,6 +450,12 @@ async function run() {
   // (z) a MIME comment BETWEEN Content-Type parameters is CFWS -- the real hp parameter is still detected (no downgrade).
   var cfws = await pki.smime.sign(Buffer.from("Content-Type: text/plain; (note) hp=\"clear\"\r\nSubject: cfws\r\n\r\nbody\n"), signers, { entity: true });
   check("97y. a comment between Content-Type parameters does not hide hp (no downgrade)", (await pki.smime.verify(cfws)).protectedHeaders != null && (await pki.smime.verify(cfws)).protectedHeaders.Subject === "cfws");
+  // (aa) opts.headers is snapshotted ONCE: an accessor/Proxy returning a different value on each read cannot make the
+  // signed inner header diverge from the displayed outer copy (the authenticated value must be the one displayed).
+  var reads = 0, proxyHeaders = { get Subject() { reads++; return "S" + reads; } };
+  var signedProxy = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: proxyHeaders });
+  var vp = await pki.smime.verify(signedProxy);
+  check("97z. an accessor-valued protected header is read once (signed inner == displayed outer)", signedProxy.toString("latin1").split("Subject: " + vp.protectedHeaders.Subject).length - 1 === 2);
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
