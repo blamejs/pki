@@ -420,11 +420,11 @@ security-only patches after the next major releases.
   verdict distinct from every parse-domain code). The signer key is pinned
   out-of-band, never trust-on-first-use and never fetched from the list's own
   origin; there is no baked-in vendor URL or key. The fetch is https-only even
-  across an injected transport, and when the detached signature is hosted on a
-  separate origin the log-list endpoint's origin-bound credentials (an
-  `Authorization` / `Cookie` header, the mTLS client certificate) are stripped
-  from the cross-origin signature request. Each response is size-capped before
-  the trust chain, and the surfaced `timestamp` lets a caller police freshness
+  across an injected transport, and the detached signature must share the
+  log-list origin, so the log-list endpoint's origin-bound credentials (an
+  `Authorization` / `Cookie` header, the mTLS client certificate) can never
+  reach a different signature host. Each response is size-capped before the
+  trust chain, and the surfaced `timestamp` lets a caller police freshness
   without a hidden clock.
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is

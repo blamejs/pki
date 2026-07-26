@@ -139,21 +139,12 @@ async function run() {
   check("11. both are GET", t11.transport.calls[0].method === "GET" && t11.transport.calls[1].method === "GET");
   check("11. neither GET carries a body", t11.transport.calls[0].body == null && t11.transport.calls[1].body == null);
 
-  // ==== 11b. cross-origin credential strip -- origin-bound creds never leak to a separate sig host ====
-  function hdr(h, name) { return h[name] !== undefined ? h[name] : h[name.toLowerCase()]; }
-  var xoSig = "https://sig-cdn.example.test/log_list.sig";
-  var routesXO = {}; routesXO[JSON_URL] = ctx.resp(200, fx.json, "application/json"); routesXO[xoSig] = ctx.resp(200, fx.sig, "application/octet-stream");
-  var txo = ctx.routeByUrl(routesXO);
-  await got(function () { return pki.ct.fetchLogList({ transport: txo, url: JSON_URL, sigUrl: xoSig, signerKey: fx.signerKey, tls: { cert: Buffer.from("c"), key: Buffer.from("k") }, headers: { Authorization: "Bearer SECRET", Cookie: "s=1", Accept: "application/json" } }); });
-  check("11b. the JSON GET carries the Authorization header", hdr(txo.calls[0].headers, "Authorization") === "Bearer SECRET");
-  check("11b. a cross-origin sig GET STRIPS Authorization + Cookie", hdr(txo.calls[1].headers, "Authorization") === undefined && hdr(txo.calls[1].headers, "Cookie") === undefined);
-  check("11b. a cross-origin sig GET keeps a non-credential header (Accept)", hdr(txo.calls[1].headers, "Accept") === "application/json");
-  check("11b. the JSON GET presents the mTLS client cert", txo.calls[0].tls && Buffer.isBuffer(txo.calls[0].tls.cert));
-  check("11b. a cross-origin sig GET STRIPS the mTLS client cert/key", txo.calls[1].tls && txo.calls[1].tls.cert === undefined && txo.calls[1].tls.key === undefined);
-  // same-origin: no strip (the credentials are for that origin)
-  var tso = ctx.routeByUrl(ctx.okRoutes(fx));
-  await got(function () { return pki.ct.fetchLogList({ transport: tso, url: JSON_URL, signerKey: fx.signerKey, headers: { Authorization: "Bearer S" } }); });
-  check("11b. a same-origin sig GET keeps the Authorization header", hdr(tso.calls[1].headers, "Authorization") === "Bearer S");
+  // ==== 11b. the detached signature must SHARE the log-list origin (no cross-origin credential/TLS leak) ====
+  // A cross-origin sigUrl is refused BEFORE the wire, so a caller's Authorization/Cookie header or mTLS client
+  // cert configured for the log-list host can never reach a different signature host.
+  var t11b = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { sigUrl: "https://sig-cdn.example.test/log_list.sig" });
+  check("11b. a cross-origin sigUrl is refused (ct/bad-input) before the wire", (await code(function () { return pki.ct.fetchLogList(t11b.opts); })) === "ct/bad-input");
+  check("11b. no socket reached on a cross-origin sigUrl", t11b.transport.calls.length === 0);
 
   // ==== 12. stale timestamp SURFACED, not rejected (M9, Build #6) ===================================
   var stale = ctx.makeFixture({ timestamp: "2019-01-01T00:00:00Z" });
