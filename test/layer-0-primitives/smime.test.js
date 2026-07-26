@@ -464,6 +464,10 @@ async function run() {
   var upperHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"CLEAR\"\r\nSubject: upper hp\r\n\r\nbody\n"), signers, { entity: true });
   var vUpper = await pki.smime.verify(upperHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
   check("97aa. an uppercase hp value is recognized as header protection (case-insensitive keyword)", vUpper.protectedHeaders != null && vUpper.protectedHeaders.Subject === "upper hp");
+  // (cc) a bare hp attribute with no value is a malformed HP declaration -- fail closed, never a silent downgrade.
+  var bareHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp\r\nSubject: bare\r\n\r\nbody\n"), signers, { entity: true });
+  var vBare = await pki.smime.verify(bareHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97bb. a bare hp parameter (no value) fails closed (smime/bad-header-protection), not a silent downgrade", vBare.err === "smime/bad-header-protection");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });

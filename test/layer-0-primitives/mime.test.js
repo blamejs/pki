@@ -96,6 +96,9 @@ function run() {
   check("37. a comment around a parameter is stripped from its name and value", (function () { var p = mime.parse(Buffer.from("Content-Type: text/plain; (c) charset=utf-8 (d)\r\n\r\nx"), E, "m/bad").contentType.params; return p.charset === "utf-8"; })());
   // a quoted-pair inside a comment is consumed: an escaped ')' does not close the comment early (both bytes dropped).
   check("38. a quoted-pair inside a comment does not close it early", mime.parse(Buffer.from("Content-Type: text/plain; hp=x (a\\)b)\r\n\r\nz"), E, "m/bad").contentType.params.hp === "x");
+  // hasParam names a parameter with OR without a value (a bare "; hp" still names hp); comment-aware, media type ignored.
+  check("39. hasParam detects a parameter with or without a value", mime.hasParam("text/plain; hp", "hp") === true && mime.hasParam("text/plain; hp=\"clear\"", "hp") === true && mime.hasParam("text/plain; charset=utf-8", "hp") === false);
+  check("40. hasParam ignores a bare attribute inside a comment", mime.hasParam("text/plain; charset=x (hp)", "hp") === false);
 
   console.log("CHECKS " + helpers.getChecks());
 }
