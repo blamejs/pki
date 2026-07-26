@@ -446,8 +446,8 @@ async function run() {
   // (x) an hp= inside a MIME comment in the Content-Type is NOT the hp parameter (comment-aware probe + parse):
   // an ordinary commented Content-Type must not opt a valid signature into HP processing / false-reject.
   var commented = await pki.smime.sign(Buffer.from("Content-Type: text/plain; charset=us-ascii (note; hp=fake)\r\nSubject: c\r\n\r\nbody\n"), signers, { entity: true });
-  var rc = await pki.smime.verify(commented).then(function (r) { return r; }, function (e) { return { err: e.code }; });
-  check("97w. an hp= inside a MIME comment does not opt into HP (valid signature returned, not false-rejected)", rc.valid === true && rc.protectedHeaders === null);
+  var rcm = await pki.smime.verify(commented).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97w. an hp= inside a MIME comment does not opt into HP (valid signature returned, not false-rejected)", rcm.valid === true && rcm.protectedHeaders === null);
   // (y) a signed entity with NO Content-Type field is not header-protected (the probe finds no Content-Type line).
   var noCt = await pki.smime.sign(Buffer.from("Subject: no ct\r\n\r\nbody\n"), signers, { entity: true });
   check("97x. a signed entity without a Content-Type is not treated as header-protected", (await pki.smime.verify(noCt)).protectedHeaders === null);
