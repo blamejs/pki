@@ -468,6 +468,22 @@ async function run() {
   var bareHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp\r\nSubject: bare\r\n\r\nbody\n"), signers, { entity: true });
   var vBare = await pki.smime.verify(bareHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
   check("97bb. a bare hp parameter (no value) fails closed (smime/bad-header-protection), not a silent downgrade", vBare.err === "smime/bad-header-protection");
+  // (dd) a bare hp attribute in opts.contentType is rejected at the producer (would else emit "hp; hp=\"clear\"").
+  check("97cc. a bare hp attribute in opts.contentType is rejected (producer)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; hp", headers: { Subject: "x" } }); })) === "smime/bad-input");
+  // (ee) a bare+valued hp duplicate ("hp; hp=\"clear\"") is an ambiguous duplicate -- the verifier fails closed.
+  var bvDupHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp; hp=\"clear\"\r\nSubject: d\r\n\r\nbody\n"), signers, { entity: true });
+  var vDup = await pki.smime.verify(bvDupHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97dd. a bare+valued hp duplicate fails closed (verifier)", vDup.err === "smime/bad-header-protection");
+  // (ff) the protected-From mismatch is compared BYTE-EXACT: a legacy-8bit signed From (octet 0x80) and an
+  // attacker-modified outer From (octet 0x81) both lossy-decode to the same replacement char, so a lossy
+  // compare would miss the tamper -- the byte-preserving compare trips fromMismatch.
+  var b80 = String.fromCharCode(0x80), b81 = String.fromCharCode(0x81);
+  var innerFromEnt = "Content-Type: text/plain; hp=\"clear\"\r\nFrom: " + b80 + "@e.example\r\nSubject: s\r\n\r\nbody\n";
+  var signedFromMsg = await pki.smime.sign(Buffer.from(innerFromEnt, "latin1"), signers, { entity: true });
+  var sfs = signedFromMsg.toString("latin1"), sep = sfs.indexOf("\r\n\r\n");
+  var tamperedFrom = Buffer.from(sfs.slice(0, sep) + "\r\nFrom: " + b81 + "@e.example" + sfs.slice(sep), "latin1");
+  var vFrom = await pki.smime.verify(tamperedFrom).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97ee. a one-octet-different invalid-UTF8 outer From trips fromMismatch (byte-exact compare)", vFrom.valid === true && vFrom.headerProtection != null && vFrom.headerProtection.fromMismatch === true);
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });

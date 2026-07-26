@@ -99,6 +99,8 @@ function run() {
   // hasParam names a parameter with OR without a value (a bare "; hp" still names hp); comment-aware, media type ignored.
   check("39. hasParam detects a parameter with or without a value", mime.hasParam("text/plain; hp", "hp") === true && mime.hasParam("text/plain; hp=\"clear\"", "hp") === true && mime.hasParam("text/plain; charset=utf-8", "hp") === false);
   check("40. hasParam ignores a bare attribute inside a comment", mime.hasParam("text/plain; charset=x (hp)", "hp") === false);
+  // paramNameCount counts bare AND valued occurrences of an attribute name (paramCount counts only valued).
+  check("41. paramNameCount counts bare and valued attribute occurrences", mime.paramNameCount("text/plain; hp; hp=\"clear\"", "hp") === 2 && mime.paramNameCount("text/plain; charset=utf-8", "hp") === 0);
 
   console.log("CHECKS " + helpers.getChecks());
 }
