@@ -471,7 +471,12 @@ security-only patches after the next major releases.
   surface is bounded against server-side request forgery and amplification: only an
   `https:` `uniformResourceIdentifier` accessLocation is fetched (an `http` /
   `ldap` / `ftp` / `file` / `mailto` URL, or a non-URI GeneralName, is skipped
-  before any socket), only the `id-ad-caIssuers` access method (never
+  before any socket), NEVER a private / loopback / link-local IP LITERAL
+  destination (RFC 1918, `127.0.0.0/8`, `169.254.0.0/16` cloud-metadata, IPv6
+  `::1` / `fc00::/7` / `fe80::/10` — so an untrusted certificate cannot drive an
+  authenticated GET to an internal service; a DNS-name destination is governed by
+  the operator's injected `opts.transport` policy), only the `id-ad-caIssuers`
+  access method (never
   `id-ad-ocsp`), a build-wide total fetch budget enforced as a SILENT cap (on
   reaching it the builder stops fetching — never a throw, so a fetch bound can
   never deny a path the static pool could build), a per-certificate URL cap, a

@@ -410,6 +410,19 @@ async function run() {
   var cBadUrlLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "notaurl-no-scheme" }])] });
   var c3t = mkTransport(function () { return cert200(aInter); });
   check("AIA C3: an unparseable caIssuers URI is skipped -> path/no-path, transport uncalled", (await codeOf(pki.path.build(cBadUrlLeaf, Object.assign({}, aBase, { transport: c3t })))) === "path/no-path" && c3t.calls.length === 0);
+  // C4 SSRF PRIVATE-ADDRESS BLOCK: an https caIssuers URL to a loopback / link-local / RFC1918 IP LITERAL is
+  // never fetched (an untrusted cert must not drive an authenticated GET to an internal service / cloud metadata).
+  var privHosts = ["127.0.0.1", "169.254.169.254", "10.0.0.5", "172.16.0.1", "192.168.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1", "[::1]", "[::]", "[fc00::1]", "[fe80::1]", "[::ffff:127.0.0.1]"];
+  var cPrivLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt(privHosts.map(function (h) { return { tag: 6, value: "https://" + h + "/i" }; }))] });
+  var c4t = mkTransport(function () { return cert200(aInter); });
+  check("AIA C4: private/loopback/link-local/reserved IP-literal caIssuers URLs (v4 + v6) are never fetched (SSRF, transport uncalled)", (await codeOf(pki.path.build(cPrivLeaf, Object.assign({}, aBase, { transport: c4t, maxAiaPerCert: 20 })))) === "path/no-path" && c4t.calls.length === 0);
+  // C5 PUBLIC IP-literal destinations (v4 AND v6) ARE fetchable (the block is private-only) -- the guard is a scalpel.
+  var cPubLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri("https://8.8.8.8/i.der")] });
+  var c5t = mkTransport(function () { return cert200(aInter); });
+  check("AIA C5: a public IPv4-literal caIssuers URL IS fetched (block is private-only) -> valid", (await pki.path.build(cPubLeaf, Object.assign({}, aBase, { transport: c5t }))).valid === true && c5t.calls.length === 1);
+  var cPub6Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri("https://[2001:db8::1]/i.der")] });
+  var c6t = mkTransport(function () { return cert200(aInter); });
+  check("AIA C6: a public IPv6-literal caIssuers URL IS fetched (block is private-only) -> valid", (await pki.path.build(cPub6Leaf, Object.assign({}, aBase, { transport: c6t }))).valid === true && c6t.calls.length === 1);
 
   // D1 BUDGET is a SILENT CAP, not a throw: a chain needing more fetches than maxAiaFetches stops fetching at
   // the budget (never a throw that denies a buildable path). Here no path exists within a 1-fetch budget, so the
@@ -447,6 +460,16 @@ async function run() {
   // via the capped fetched certs (a hostile TLS-trusted server cannot force O(bundle) certificate parses).
   var d4t = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: certsOnlyCms(new Array(400).fill(aInter)) }; });
   check("AIA D4: a huge certs-only bundle still builds via the count-capped fetched certs (bounded parse work)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: d4t }))).valid === true);
+  // D5 DEDUPE BEFORE THE PER-CERT CAP: a duplicate-flood must not crowd out a usable LATER URL (the cap counts
+  // DISTINCT urls). [dup x3, real] with maxAiaPerCert:3 -> the real URL is still tried -> valid.
+  var d5Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "https://ca.example/dup" }, { tag: 6, value: "https://ca.example/dup" }, { tag: 6, value: "https://ca.example/dup" }, { tag: 6, value: "https://ca.example/real" }])] });
+  var d5t = mkTransport(function (url) { return url.indexOf("real") >= 0 ? cert200(aInter) : { status: 404, headers: {}, body: Buffer.alloc(0) }; });
+  check("AIA D5: a duplicate-flood does not crowd out a usable later URL (per-cert cap counts distinct urls) -> valid", (await pki.path.build(d5Leaf, Object.assign({}, aBase, { transport: d5t, maxAiaPerCert: 3 }))).valid === true);
+  // D6 FRAGMENT DEDUPE: fragment-only variants (never sent on the wire) collapse to ONE fetch of the fragment-free URL.
+  var d6Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "https://ca.example/i#one" }, { tag: 6, value: "https://ca.example/i#two" }])] });
+  var d6t = mkTransport(function () { throw new Error("fail"); });
+  await codeOf(pki.path.build(d6Leaf, Object.assign({}, aBase, { transport: d6t })));
+  check("AIA D6: fragment-only URL variants collapse to a single fetch of the fragment-free URL", d6t.calls.length === 1 && d6t.calls[0] === "https://ca.example/i");
 
   // E FAIL-CLOSED SKIP: every fetch fault is a skip (the DFS continues), never a spurious/raw throw.
   check("AIA E1: a transport rejection is a skip -> path/no-path (never a raw throw)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: mkTransport(function () { throw new Error("network down"); }) })))) === "path/no-path");
