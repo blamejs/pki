@@ -348,6 +348,10 @@ async function run() {
   check("96. a non-string opts.hcp -> smime/bad-input", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "x" }, hcp: 5 }); })) === "smime/bad-input");
   check("96. a Structural header in opts.headers -> smime/bad-input (only Non-Structural fields protected)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Type": "text/html" } }); })) === "smime/bad-input");
   check("96. MIME-Version in opts.headers -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "MIME-Version": "1.0" } }); })) === "smime/bad-input");
+  // RFC 9787 sec. 1.1.1: a Structural field is MIME-Version OR any name beginning with "Content-" -- the prefix
+  // rule catches EVERY Content-* field (Content-ID / -Description / -Language / ...), not just an enumerated subset.
+  check("96. Content-Language (a Content-* field) in opts.headers -> smime/bad-input (Structural prefix rule)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Language": "en" } }); })) === "smime/bad-input");
+  check("96. Content-ID / Content-Description are Structural (begin with Content-) -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Description": "d" } }); })) === "smime/bad-input" && (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-ID": "<x>" } }); })) === "smime/bad-input");
   // an HP payload with no blank-line separator is still detected (the _declaresHp no-separator arm)
   var noBody = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\""), signers, { entity: true });
   check("97. an HP payload with no blank-line separator is still detected", (await pki.smime.verify(noBody)).headerProtection.mode === "clear");
