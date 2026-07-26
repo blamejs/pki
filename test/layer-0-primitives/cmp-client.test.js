@@ -219,6 +219,8 @@ async function run() {
   // the raw path is inspected before normalization, so a supplied path cannot silently target the root.
   check("20 a dot-segment base (/tenant/..) -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example/tenant/.."); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   check("20 a percent-encoded-dot base (/%2e) -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example/%2e"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  // a backslash after the authority (WHATWG rewrites it to a path separator) is rejected, not swallowed.
+  check("20 a backslash-path base -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example\\tenant"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
 
   // 21. budget guards run before the wire.
   var s21 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
