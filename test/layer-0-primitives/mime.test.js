@@ -84,6 +84,10 @@ function run() {
   // paramCount honors RFC 2045 quoted-pair escaping: a backslash-escaped quote inside a value does not end it.
   check("31. paramCount honors quoted-pair escapes", mime.paramCount("text/plain; charset=\"a\\\"; hp=fake\"", "hp") === 0);
   check("31. paramCount counts a real repeated parameter", mime.paramCount("text/plain; hp=\"x\"; hp=\"y\"", "hp") === 2);
+  // RFC 5322 sec. 2.1.1: an emitted field line over 998 octets is rejected (a relay could re-fold it, changing signed bytes).
+  check("32. buildEntity rejects an over-998-octet field line", fault(function () { mime.buildEntity([{ name: "Subject", value: new Array(1000).join("x") }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+  var atLimit = new Array(990).join("x"); // "Subject" (7) + ": " (2) + 989 = 998 octets exactly
+  check("33. buildEntity accepts a field line at the 998-octet limit", mime.parse(mime.buildEntity([{ name: "Subject", value: atLimit }], Buffer.alloc(0), E, "m/bad"), E, "m/bad").header("Subject") === atLimit);
 
   console.log("CHECKS " + helpers.getChecks());
 }

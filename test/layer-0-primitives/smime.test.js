@@ -423,6 +423,8 @@ async function run() {
   // (x) leading whitespace before Content-Type (which mime.parse trims) is still detected as HP (no downgrade).
   var leadWsp = await pki.smime.sign(Buffer.from(" Content-Type: text/plain; hp=\"clear\"\r\nSubject: lead ws\r\n\r\nbody\n"), signers, { entity: true });
   check("97s. leading whitespace before Content-Type is still detected as HP (no downgrade)", (await pki.smime.verify(leadWsp)).protectedHeaders.Subject === "lead ws");
+  // (u) an over-998-octet protected header line is rejected at sign -- a relay re-fold would change the signed bytes (RFC 5322 sec. 2.1.1).
+  check("97t. an over-length protected header line is rejected at sign (RFC 5322 998-octet cap)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: new Array(1000).join("x") } }); })) === "smime/bad-header");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });

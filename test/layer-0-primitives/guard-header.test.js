@@ -38,6 +38,11 @@ function run() {
   check("12. a name with a control byte rejects", code(function () { guard.header.assertField("Sub" + CH(9) + "ject", "v", E, C); }) === C);
   check("13. a name with a non-ASCII byte rejects", code(function () { guard.header.assertField("Subj" + CH(0xe9) + "ct", "v", E, C); }) === C);
 
+  // ---- line-length cap (RFC 5322 sec. 2.1.1, 998 octets excluding CRLF) ----
+  check("14. a serialized field line over 998 octets rejects", code(function () { guard.header.assertField("Subject", new Array(1000).join("x"), E, C); }) === C);
+  check("15. a serialized field line at the 998-octet limit is accepted", guard.header.assertField("Subject", new Array(990).join("x"), E, C).length === 989);
+  check("16. the line cap counts UTF-8 octets, not chars (a 500-char / 1000-octet value rejects)", code(function () { guard.header.assertField("X", new Array(501).join(CH(0xe9)), E, C); }) === C);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
