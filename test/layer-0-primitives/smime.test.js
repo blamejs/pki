@@ -525,8 +525,11 @@ async function run() {
   // A legacy RFC 8551 header-protected message wraps the real message as a message/rfc822 Cryptographic
   // Payload with NO hp= parameter anywhere. sec. 4.10.1 identifies it by four conjunctive conditions;
   // sec. 4.10.2 surfaces part D's (the inner message's) headers with the mode inferred from the envelope.
-  // Detect-ONLY, opt-in (opts.legacyHeaderProtection), and fail-SOFT to protectedHeaders:null so an
-  // ordinary signed/forwarded message/rfc822 is never mis-surfaced as this message's own protected set.
+  // Detect-ONLY, opt-in (opts.legacyHeaderProtection). CRUCIAL SAFETY PROPERTY: a legacy RFC8551HP message is
+  // structurally INDISTINGUISHABLE from an ordinary signed/forwarded message/rfc822, so the inference is NEVER
+  // placed in protectedHeaders and NEVER sets present:true -- it is surfaced ONLY under headerProtection.legacy
+  // (its own { headers, mode, fromMismatch, confidential } object). A caller keying trust off present /
+  // protectedHeaders can never mistake the opt-in heuristic for this message's authenticated headers.
   var LEG_ON = { legacyHeaderProtection: true };
   // part D: an ordinary RFC 5322 message -- Non-Structural From/To/Subject/Date + its own Structural Content-Type.
   var partD = "From: alice@in.example\r\nTo: bob@in.example\r\nSubject: smime-one-part-complex-rfc8551hp\r\nDate: Mon, 1 Jan 2024 00:00:00 +0000\r\nContent-Type: text/plain; charset=us-ascii\r\n\r\nThe real body.\r\n";
@@ -538,50 +541,52 @@ async function run() {
   var legSigned = Buffer.from("From: alice@in.example\r\nTo: bob@in.example\r\nSubject: [obscured]\r\n" + legSignedRaw.toString("latin1"), "latin1");
   var lv = await pki.smime.verify(legSigned, LEG_ON);
   check("99. a legacy pkcs7-mime message/rfc822 wrap verifies valid", lv.valid === true);
-  check("99. legacy detection surfaces the inner Subject from part D", lv.protectedHeaders != null && lv.protectedHeaders.Subject === "smime-one-part-complex-rfc8551hp");
-  check("99. legacy surfaces the inner From + To + Date", lv.protectedHeaders != null && lv.protectedHeaders.From === "alice@in.example" && lv.protectedHeaders.To === "bob@in.example" && lv.protectedHeaders.Date === "Mon, 1 Jan 2024 00:00:00 +0000");
-  check("99. the mode is inferred clear (signed-only) and legacy:true", lv.headerProtection.present === true && lv.headerProtection.mode === "clear" && lv.headerProtection.legacy === true);
-  check("99. a signed-only legacy message has no confidential fields", lv.headerProtection.confidential.length === 0);
-  check("99. a matching outer From is not a mismatch", lv.headerProtection.fromMismatch === false);
-  check("99. part D's Structural Content-Type is not surfaced as a protected field", ("Content-Type" in lv.protectedHeaders) === false);
+  // SAFE-BY-DEFAULT: the inferred set is NOT in protectedHeaders and present stays false (a naive consumer is never misled).
+  check("99. a legacy inference never populates protectedHeaders and never sets present:true", lv.protectedHeaders === null && lv.headerProtection.present === false);
+  check("99. the inferred inner Subject is surfaced under headerProtection.legacy.headers", lv.headerProtection.legacy != null && lv.headerProtection.legacy.headers.Subject === "smime-one-part-complex-rfc8551hp");
+  check("99. legacy.headers surfaces the inner From + To + Date", lv.headerProtection.legacy.headers.From === "alice@in.example" && lv.headerProtection.legacy.headers.To === "bob@in.example" && lv.headerProtection.legacy.headers.Date === "Mon, 1 Jan 2024 00:00:00 +0000");
+  check("99. the mode is inferred clear (signed-only)", lv.headerProtection.legacy.mode === "clear");
+  check("99. a signed-only legacy inference has no confidential fields", lv.headerProtection.legacy.confidential.length === 0);
+  check("99. a matching outer From is not a mismatch", lv.headerProtection.legacy.fromMismatch === false);
+  check("99. part D's Structural Content-Type is not surfaced as a legacy header", ("Content-Type" in lv.headerProtection.legacy.headers) === false);
 
-  // default-OFF tripwire: without the opt, the legacy-shaped message stays protectedHeaders:null (safe deferral),
-  // and the standard HP surface reports legacy:false.
+  // default-OFF tripwire: without the opt, the legacy-shaped message stays fully unprotected (legacy:null),
+  // and the standard HP surface reports legacy:null.
   var lvOff = await pki.smime.verify(legSigned);
-  check("100. legacy detection is OFF by default: protectedHeaders null, legacy false", lvOff.protectedHeaders === null && lvOff.headerProtection.present === false && lvOff.headerProtection.legacy === false);
-  check("100. the standard HP surface reports legacy:false", hv.headerProtection.legacy === false);
+  check("100. legacy detection is OFF by default: protectedHeaders null, present false, legacy null", lvOff.protectedHeaders === null && lvOff.headerProtection.present === false && lvOff.headerProtection.legacy === null);
+  check("100. the standard HP surface reports legacy:null", hv.headerProtection.legacy === null);
 
   // (V2) a legacy multipart/signed wrap: part C = the first body part.
   var legMpRaw = await pki.smime.sign(partC, signers, { entity: true, form: "multipart" });
   var legMp = Buffer.from("From: alice@in.example\r\n" + legMpRaw.toString("latin1"), "latin1");
   var lmv = await pki.smime.verify(legMp, LEG_ON);
-  check("101. a legacy multipart/signed message/rfc822 wrap surfaces the inner headers (mode clear, legacy true)", lmv.valid === true && lmv.protectedHeaders != null && lmv.protectedHeaders.Subject === "smime-one-part-complex-rfc8551hp" && lmv.headerProtection.mode === "clear" && lmv.headerProtection.legacy === true);
+  check("101. a legacy multipart/signed message/rfc822 wrap surfaces the inner headers under legacy (mode clear, present false)", lmv.valid === true && lmv.protectedHeaders === null && lmv.headerProtection.present === false && lmv.headerProtection.legacy != null && lmv.headerProtection.legacy.headers.Subject === "smime-one-part-complex-rfc8551hp" && lmv.headerProtection.legacy.mode === "clear");
 
   // (V4/C3) part D that is ITSELF a Cryptographic Layer is not legacy (a genuinely nested signed/encrypted .eml).
   var mkLeg = function (pd) { return pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\n" + pd, "latin1"), signers, { entity: true, form: "pkcs7-mime" }); };
   var fpPkcs7 = await pki.smime.verify(await mkLeg("From: a@in.example\r\nSubject: fwd\r\nContent-Type: application/pkcs7-mime; smime-type=signed-data\r\nContent-Transfer-Encoding: base64\r\n\r\nAAAA\r\n"), LEG_ON);
-  check("102. part D that is application/pkcs7-mime is NOT mis-detected as legacy (C3)", fpPkcs7.valid === true && fpPkcs7.protectedHeaders === null && fpPkcs7.headerProtection.legacy === false);
+  check("102. part D that is application/pkcs7-mime is NOT mis-detected as legacy (C3)", fpPkcs7.valid === true && fpPkcs7.protectedHeaders === null && fpPkcs7.headerProtection.legacy === null);
   var fpMpSigned = await pki.smime.verify(await mkLeg("Subject: fwd\r\nContent-Type: multipart/signed; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n"), LEG_ON);
-  check("102. part D that is multipart/signed is NOT mis-detected as legacy (C3)", fpMpSigned.protectedHeaders === null && fpMpSigned.headerProtection.legacy === false);
+  check("102. part D that is multipart/signed is NOT mis-detected as legacy (C3)", fpMpSigned.protectedHeaders === null && fpMpSigned.headerProtection.legacy === null);
   var fpMpEnc = await pki.smime.verify(await mkLeg("Subject: fwd\r\nContent-Type: multipart/encrypted; boundary=b\r\n\r\n--b\r\nContent-Type: text/plain\r\n\r\nx\r\n--b--\r\n"), LEG_ON);
-  check("102. part D that is multipart/encrypted is NOT mis-detected as legacy (C3)", fpMpEnc.protectedHeaders === null && fpMpEnc.headerProtection.legacy === false);
+  check("102. part D that is multipart/encrypted is NOT mis-detected as legacy (C3)", fpMpEnc.protectedHeaders === null && fpMpEnc.headerProtection.legacy === null);
 
   // (V5/C4) an hp= on part D means the message is NOT legacy (sec. 4.1: ignore hp outside the payload root).
   var hpDv = await pki.smime.verify(await mkLeg("From: a@in.example\r\nSubject: x\r\nContent-Type: text/plain; hp=\"clear\"\r\n\r\nbody\r\n"), LEG_ON);
-  check("103. hp= on part D -> not legacy (C4): protectedHeaders null, legacy false", hpDv.protectedHeaders === null && hpDv.headerProtection.legacy === false);
+  check("103. hp= on part D -> not legacy (C4): legacy null", hpDv.protectedHeaders === null && hpDv.headerProtection.legacy === null);
 
   // (V6/C2) a non-message/rfc822 payload is not legacy even with the opt on.
   var lvPlain = await pki.smime.verify(plain, LEG_ON);
-  check("104. a non-message/rfc822 payload with the opt on -> protectedHeaders null (C2)", lvPlain.protectedHeaders === null && lvPlain.headerProtection.legacy === false);
+  check("104. a non-message/rfc822 payload with the opt on -> legacy null (C2)", lvPlain.protectedHeaders === null && lvPlain.headerProtection.legacy === null);
 
   // (V7) a legacy candidate whose inner part D is UNPARSEABLE fails SOFT to null (no throw) -- swallow on its own line.
   var legBadD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nthis-inner-header-line-has-no-colon\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("105. a legacy candidate whose inner part D is unparseable -> protectedHeaders null (fail-soft, no throw)", (await pki.smime.verify(legBadD, LEG_ON)).protectedHeaders === null);
+  check("105. a legacy candidate whose inner part D is unparseable -> legacy null (fail-soft, no throw)", (await pki.smime.verify(legBadD, LEG_ON)).headerProtection.legacy === null);
 
   // (dup) a legacy wrap whose part D has a DUPLICATE Non-Structural field is ambiguous -> fail SOFT to null
   // (the legacy path never throws, unlike the standard path's smime/bad-header-protection on a declared-hp dup).
   var legDupD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: one\r\nSubject: two\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("105b. a legacy part D with a duplicate protected field -> protectedHeaders null (fail-soft, no throw)", (await pki.smime.verify(legDupD, LEG_ON)).protectedHeaders === null);
+  check("105b. a legacy part D with a duplicate protected field -> legacy null (fail-soft, no throw)", (await pki.smime.verify(legDupD, LEG_ON)).headerProtection.legacy === null);
 
   // (dup Content-Type) the C2-C4 classification reads only the FIRST Content-Type (mime.parse surfaces the
   // first field), so a part with TWO Content-Type fields is ambiguous: a later one could carry hp= or a crypto
@@ -589,21 +594,22 @@ async function run() {
   // matching the standard path's duplicate-Content-Type reject, so the classification cannot depend on which
   // field a parser happens to read.
   var legDupCtHpD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nContent-Type: text/plain\r\nContent-Type: text/plain; hp=\"clear\"\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("105c. part D with a duplicate Content-Type whose LATER field carries hp= -> protectedHeaders null (not first-field legacy)", (await pki.smime.verify(legDupCtHpD, LEG_ON)).protectedHeaders === null);
+  check("105c. part D with a duplicate Content-Type whose LATER field carries hp= -> legacy null (not first-field legacy)", (await pki.smime.verify(legDupCtHpD, LEG_ON)).headerProtection.legacy === null);
   var legDupCtCryptoD = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nContent-Type: text/plain\r\nContent-Type: application/pkcs7-mime; smime-type=signed-data\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("105d. part D with a duplicate Content-Type whose LATER field is a crypto layer -> protectedHeaders null (C3 cannot be evaded)", (await pki.smime.verify(legDupCtCryptoD, LEG_ON)).protectedHeaders === null);
+  check("105d. part D with a duplicate Content-Type whose LATER field is a crypto layer -> legacy null (C3 cannot be evaded)", (await pki.smime.verify(legDupCtCryptoD, LEG_ON)).headerProtection.legacy === null);
   var legDupCtC = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\nContent-Type: text/plain\r\n\r\nFrom: a@in.example\r\nSubject: x\r\nContent-Type: text/plain\r\n\r\nbody\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("105e. part C with a duplicate Content-Type -> protectedHeaders null (C2 cannot depend on the first field)", (await pki.smime.verify(legDupCtC, LEG_ON)).protectedHeaders === null);
+  check("105e. part C with a duplicate Content-Type -> legacy null (C2 cannot depend on the first field)", (await pki.smime.verify(legDupCtC, LEG_ON)).headerProtection.legacy === null);
 
   // (empty) a legacy wrap whose part D carries no Non-Structural fields has nothing to surface -> null.
   var legEmpty = await pki.smime.sign(Buffer.from("Content-Type: message/rfc822\r\n\r\nContent-Type: text/plain; charset=us-ascii\r\n\r\njust a body\r\n", "latin1"), signers, { entity: true, form: "pkcs7-mime" });
-  check("106. a legacy wrap whose part D has no Non-Structural fields -> protectedHeaders null", (await pki.smime.verify(legEmpty, LEG_ON)).protectedHeaders === null);
+  check("106. a legacy wrap whose part D has no Non-Structural fields -> legacy null", (await pki.smime.verify(legEmpty, LEG_ON)).headerProtection.legacy === null);
 
-  // (V8) fromMismatch: an outer From differing from (or missing against) part D's inner From is flagged.
+  // (V8) fromMismatch: an outer From differing from (or missing against) part D's inner From is flagged on the
+  // legacy sub-object (a forwarded .eml's inner sender differs from the actual outer sender -> the caller is warned).
   var mmv = await pki.smime.verify(Buffer.from("From: mallory@evil.example\r\n" + legSignedRaw.toString("latin1"), "latin1"), LEG_ON);
-  check("107. a legacy outer From differing from part D's inner From is flagged fromMismatch (inner From unchanged)", mmv.headerProtection.legacy === true && mmv.headerProtection.fromMismatch === true && mmv.protectedHeaders.From === "alice@in.example");
+  check("107. a legacy outer From differing from the inner From is flagged legacy.fromMismatch (inner From unchanged)", mmv.headerProtection.legacy != null && mmv.headerProtection.legacy.fromMismatch === true && mmv.headerProtection.legacy.headers.From === "alice@in.example");
   var legNoFrom = await pki.smime.verify(legSignedRaw, LEG_ON);
-  check("107. a legacy message with no outer From (a protected inner From) is flagged fromMismatch", legNoFrom.headerProtection.legacy === true && legNoFrom.headerProtection.fromMismatch === true);
+  check("107. a legacy message with no outer From (an inferred inner From) is flagged legacy.fromMismatch", legNoFrom.headerProtection.legacy != null && legNoFrom.headerProtection.legacy.fromMismatch === true);
 
   // (V9) cipher: decrypt legacy-detects an ENCRYPTED message/rfc822 wrap (authEnveloped -> authenticated). The
   // confidential set is derived from part A (the visible outer section): a field copied verbatim outside is
@@ -611,15 +617,15 @@ async function run() {
   var legEncRaw = await pki.smime.encrypt(partC, [{ cert: rcpt.cert }], { entity: true });
   var legEnc = Buffer.from("From: alice@in.example\r\nSubject: [obscured]\r\n" + legEncRaw.toString("latin1"), "latin1");
   var lev = await pki.smime.decrypt(legEnc, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
-  check("108. decrypt legacy-detects an encrypted message/rfc822 wrap: mode cipher, legacy true", lev.headerProtection.present === true && lev.headerProtection.mode === "cipher" && lev.headerProtection.legacy === true && lev.protectedHeaders.Subject === "smime-one-part-complex-rfc8551hp");
-  check("108. the confidential set names the obscured Subject, not the exposed (verbatim outer) From", lev.headerProtection.confidential.indexOf("Subject") >= 0 && lev.headerProtection.confidential.indexOf("From") < 0);
+  check("108. decrypt legacy-detects an encrypted message/rfc822 wrap under legacy (mode cipher, present false)", lev.headerProtection.present === false && lev.protectedHeaders === null && lev.headerProtection.legacy != null && lev.headerProtection.legacy.mode === "cipher" && lev.headerProtection.legacy.headers.Subject === "smime-one-part-complex-rfc8551hp");
+  check("108. the legacy confidential set names the obscured Subject, not the exposed (verbatim outer) From", lev.headerProtection.legacy.confidential.indexOf("Subject") >= 0 && lev.headerProtection.legacy.confidential.indexOf("From") < 0);
 
   // (V10) the signed-and-encrypted (C.3.17) form: the non-recursive decrypt yields a signed-data blob, not a
-  // message/rfc822 -> the documented deferral holds (protectedHeaders stays null rather than mis-labelled clear).
+  // message/rfc822 -> the documented deferral holds (legacy stays null rather than a mis-labelled inference).
   var signedInner = await pki.smime.sign(partC, signers, { entity: true, form: "pkcs7-mime" });
   var encOfSigned = await pki.smime.encrypt(signedInner, [{ cert: rcpt.cert }], { entity: true });
   var c317 = await pki.smime.decrypt(encOfSigned, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
-  check("109. a signed-then-encrypted (C.3.17) wrap: decrypt yields a signed-data blob, not message/rfc822 -> deferral holds (null)", c317.protectedHeaders === null && c317.headerProtection.legacy === false);
+  check("109. a signed-then-encrypted (C.3.17) wrap: decrypt yields a signed-data blob, not message/rfc822 -> deferral holds (legacy null)", c317.protectedHeaders === null && c317.headerProtection.legacy === null);
 
   console.log("CHECKS " + helpers.getChecks());
 }
