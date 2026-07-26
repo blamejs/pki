@@ -507,6 +507,13 @@ async function run() {
   check("97kk. a protected header value's surrounding whitespace round-trips exactly", (await pki.smime.verify(wsHp)).protectedHeaders["X-Token"] === "  spaced  ");
   // (jj) HP-Outer is reserved for the library; a caller cannot supply it in opts.headers.
   check("97ll. a caller-supplied HP-Outer in opts.headers is rejected (reserved field)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "HP-Outer": "From: x" } }); })) === "smime/bad-input");
+  // (kk) the confidential determination is OCTET-EXACT: a protected field whose only difference from its HP-Outer
+  // value is an invalid-UTF8 octet (0x80 vs 0x81) was obscured, so it must be confidential -- a lossy decode would
+  // collapse both to the replacement char and wrongly mark it exposed (a reply/forward leak). Reuse b80/b81.
+  var confEntity = "Content-Type: text/plain; charset=utf-8; hp=\"cipher\"\r\nX-Sec: " + b80 + "@x\r\nHP-Outer: X-Sec: " + b81 + "@x\r\n\r\nbody\n";
+  var confEnc = await pki.smime.encrypt(Buffer.from(confEntity, "latin1"), [{ cert: eRsa.cert }], { entity: true });
+  var confDec = await pki.smime.decrypt(confEnc, { key: eRsa.key, cert: eRsa.cert });
+  check("97mm. a field obscured by only an invalid-UTF8 octet is confidential (octet-exact HP-Outer compare)", confDec.headerProtection.confidential.indexOf("X-Sec") >= 0);
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
