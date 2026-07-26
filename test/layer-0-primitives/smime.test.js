@@ -460,6 +460,10 @@ async function run() {
   var signedProxy = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: proxyHeaders });
   var vp = await pki.smime.verify(signedProxy);
   check("97z. an accessor-valued protected header is read once (signed inner == displayed outer)", signedProxy.toString("latin1").split("Subject: " + vp.protectedHeaders.Subject).length - 1 === 2);
+  // (bb) the hp keyword is case-insensitive (RFC 2045 sec. 5.1): a peer that emits hp="CLEAR" is still recognized.
+  var upperHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"CLEAR\"\r\nSubject: upper hp\r\n\r\nbody\n"), signers, { entity: true });
+  var vUpper = await pki.smime.verify(upperHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97aa. an uppercase hp value is recognized as header protection (case-insensitive keyword)", vUpper.protectedHeaders != null && vUpper.protectedHeaders.Subject === "upper hp");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
