@@ -419,9 +419,13 @@ security-only patches after the next major releases.
   change to a validly-structured list fails closed as `ct/log-list-untrusted`, a
   verdict distinct from every parse-domain code). The signer key is pinned
   out-of-band, never trust-on-first-use and never fetched from the list's own
-  origin; there is no baked-in vendor URL or key. Each response is size-capped
-  before the trust chain, and the surfaced `timestamp` lets a caller police
-  freshness without a hidden clock.
+  origin; there is no baked-in vendor URL or key. The fetch is https-only even
+  across an injected transport, and when the detached signature is hosted on a
+  separate origin the log-list endpoint's origin-bound credentials (an
+  `Authorization` / `Cookie` header, the mTLS client certificate) are stripped
+  from the cross-origin signature request. Each response is size-capped before
+  the trust chain, and the surfaced `timestamp` lets a caller police freshness
+  without a hidden clock.
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's
