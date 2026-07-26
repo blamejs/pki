@@ -509,6 +509,12 @@
     "reviewedAt": "0.3.0",
     "reviewBy": "0.4.0"
   },
+  "pki.cms.countersign": {
+    "decision": "keep-experimental",
+    "reason": "RFC 5652 sec. 11.4 countersignatures + unsigned attributes are interop-proven (openssl dgst / pkeyutl verifying over the exact sec. 11.4 preimage), but they ride the same SignedData signer surface as pki.cms.sign / pki.cms.verify whose post-quantum / composite acceptance rules are still seasoning and whose composite draft is pre-RFC. Graduate alongside pki.cms.sign once the CMS signer set has settled.",
+    "reviewedAt": "0.3.19",
+    "reviewBy": "0.4.0"
+  },
   "pki.cms.verify": {
     "decision": "keep-experimental",
     "reason": "The SignedData verify surface is interop-proven for the classical signers, but the post-quantum acceptance rules (ML-DSA RFC 9882, SLH-DSA RFC 9814, composite ML-DSA) landed across the last three releases and the composite draft is still pre-RFC. Graduate together with pki.cms.sign once the PQC/composite signer set has seasoned a full review cycle and the composite spec reaches RFC.",

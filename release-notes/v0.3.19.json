@@ -1,0 +1,14 @@
+{
+  "version": "0.3.19",
+  "headline": "The CMP HTTP transfer client ships -- pki.cmp.transfer carries a protected PKIMessage to a CMP endpoint over the shared node:https transport (RFC 9811).",
+  "summary": "pki.cmp.transfer(url, message, opts) POSTs a DER PKIMessage built and protected by pki.cmp.build and returns the parsed response PKIMessage, composing the shared pki.transport. RFC 9811 transfers every CMP exchange identically, so one stateless verb carries initialization, certification, key-update, p10cr, confirmation, polling, revocation, and general-message requests. It is fail-closed by default -- https-only, an explicit trust anchor required, and a size cap plus timeout on every request -- and forwards a CMP error PKIMessage carried on an HTTP 4xx/5xx as the authoritative, integrity-protected verdict rather than discarding it. pki.cmp.wellKnownUrl builds the RFC 9811 /.well-known/cmp request-URIs. Separately, a pki.x509.sign subjectAltName iPAddress entry now also accepts a dotted-quad / colon-hex string, matching the ergonomics of dNSName.",
+  "sections": {
+    "Added": [
+      "pki.cmp.transfer(url, message, opts) -- the RFC 9811 HTTP transfer verb: POST a DER (or PEM) PKIMessage over the shared pki.transport and return the parsed response { response, responseBytes, status, contentType, tls }. The message is sent verbatim so its message-layer protection is preserved, and the response is classified fail-closed: HTTP 200 with an application/pkixcmp body is parsed; another 2xx is rejected (RFC 9811 requires 200); a 3xx is not followed; a 4xx/5xx carrying a CMP error PKIMessage forwards that integrity-protected verdict with the HTTP status surfaced as data, while a 4xx/5xx with no CMP body is an error. Protection is surfaced, not verified -- the caller checks it. Composes pki.cmp.build + pki.schema.cmp.parse over pki.transport; the default transport is https-only and refuses an unpinned server.",
+      "pki.cmp.wellKnownUrl(base, opts) -- build an RFC 9811 sec. 3.4 /.well-known/cmp request-URI, optionally with a { label, operation } path. Each label/operation is a single safe path segment; a base carrying a query or fragment, or a segment containing a separator or dot-segment, is refused so the resource cannot be silently retargeted."
+    ],
+    "Changed": [
+      "pki.x509.sign now accepts a subjectAltName iPAddress entry as a dotted-quad IPv4 or colon-hex IPv6 string -- packed to its 4- or 16-octet network form internally -- in addition to a pre-packed Buffer, matching the string ergonomics of dNSName and uniformResourceIdentifier. This applies to every GeneralName consumer (certificates, CRLs, CMP, attribute certificates)."
+    ]
+  }
+}

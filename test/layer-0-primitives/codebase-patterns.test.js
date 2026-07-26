@@ -1792,10 +1792,11 @@ function testNoDuplicateCodeBlocks() {
       // The producing-module public entry point: sign(spec, ..., opts) returns
       // Promise.resolve().then(function () { return _sign(...); }) so a synchronous config-time throw in
       // _sign rejects the returned promise instead of throwing from the call site (an async boundary the
-      // callers await). A trivial three-line wrapper, identical by construction across producers.
-      files: ["lib/attrcert-sign.js:sign", "lib/csr-sign.js:sign", "lib/x509-sign.js:sign", "lib/cms-sign.js:sign", "lib/tsp-sign.js:sign"],
+      // callers await). A trivial three-line wrapper, identical by construction across producers -- the
+      // CMP transfer verb (transfer -> _transfer) shares the same async-boundary wrapper.
+      files: ["lib/attrcert-sign.js:sign", "lib/csr-sign.js:sign", "lib/x509-sign.js:sign", "lib/cms-sign.js:sign", "lib/tsp-sign.js:sign", "lib/cmp-build.js:transfer"],
       mode: "family-subset",
-      reason: "producing-module public entry: sign(...) wraps _sign in Promise.resolve().then() so a config-time throw rejects the promise rather than throwing synchronously; a three-line async-boundary wrapper with nothing to extract.",
+      reason: "producing-module / network-verb public entry: sign(...) (or cmp transfer(...)) wraps its _impl in Promise.resolve().then() so a config-time throw rejects the promise rather than throwing synchronously; a three-line async-boundary wrapper with nothing to extract.",
     },
     {
       // Producing-module structural-encoder + orchestrator bodies: each encodes a DIFFERENT ASN.1 structure
@@ -1816,6 +1817,19 @@ function testNoDuplicateCodeBlocks() {
       ],
       mode: "family-subset",
       reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
+    },
+    {
+      // The thin network-client entry body: pki.acme / pki.est / pki.cmp each validate the request URL,
+      // apply the default-transport trust-anchor gate (no injected transport -> require an explicit anchor
+      // or useSystemStore, else */no-trust-anchors, then build pki.transport.https), cap the timeout +
+      // maxResponseBytes budgets via guard.limits.cap with the domain error factory, map opts.tls -> the
+      // request tls shape, and issue the request over the shared transport. The transport / guard / budget
+      // primitives live once (http-transport.js / guard-limits.js); each client binds a DIFFERENT domain
+      // (acme/ est/ cmp/) and a different protocol shape (a stateful session, functional verbs, a stateless
+      // transfer), so the anchor-gate + budget glue recurs without being further extractable.
+      files: ["lib/acme.js:client", "lib/est.js:_client", "lib/cmp-build.js:_transfer"],
+      mode: "family-subset",
+      reason: "network-client entry glue: URL parse + default-transport trust-anchor gate (explicit anchor|useSystemStore else */no-trust-anchors, then pki.transport.https) + guard.limits.cap timeout/maxResponseBytes budgets + opts.tls->request.tls mapping. The transport/guard/budget primitives are shared in http-transport.js / guard-limits.js; each client binds a different domain and protocol shape (acme stateful session, est functional verbs, cmp stateless transfer), so the glue recurs without being further extractable.",
     },
     {
       // The per-attribute uniqueness + assembly idiom: a dedup helper that rejects a repeated
