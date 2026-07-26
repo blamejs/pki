@@ -364,7 +364,7 @@ async function run() {
   // (k) an unknown opts.hcp policy name is rejected, not silently treated as baseline.
   check("97d. an unknown opts.hcp policy -> smime/bad-input", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "x" }, hcp: "hcp_bogus" }); })) === "smime/bad-input");
   // an hp= that appears only inside a quoted param value (not as the hp parameter) is NOT header protection.
-  var fpHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; name=\"x; hp=y\"\r\n\r\nbody\n"), signers, { entity: true });
+  var fpHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; charset=\"a hp=b\"\r\n\r\nbody\n"), signers, { entity: true });
   check("97e. an hp= inside a quoted param value is not treated as header protection", (await pki.smime.verify(fpHp)).protectedHeaders === null);
   // a DECRYPT of an encrypted message whose payload declares hp="clear" contradicts the envelope -> fail closed.
   var clearInCipher = await pki.smime.encrypt(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), [{ cert: rcpt.cert }], { entity: true });
@@ -388,6 +388,16 @@ async function run() {
   var dupFrom = Buffer.from(hpSigned.toString("latin1").replace("From: a@ex.example\r\n", "From: a@ex.example\r\nFrom: mallory@evil.example\r\n"), "latin1");
   var dfv = await pki.smime.verify(dupFrom);
   check("97i. a duplicate outer From is flagged fromMismatch (not silently the first)", dfv.valid === true && dfv.headerProtection.fromMismatch === true);
+
+  // (o) a duplicate hp parameter is ambiguous (a parser could honor either) -> fail closed.
+  var dupHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"cipher\"; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("97j. a duplicate hp parameter -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupHp); })) === "smime/bad-header-protection");
+  // (p) a duplicate INNER protected From is ambiguous (last-wins overwrite hides the first) -> fail closed.
+  var dupInnerFrom = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\nFrom: attacker@ex.example\r\nFrom: victim@ex.example\r\n\r\nbody\n"), signers, { entity: true });
+  check("97k. a duplicate inner protected From -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupInnerFrom); })) === "smime/bad-header-protection");
+  // (q) a Non-Structural header whose name collides with an Object.prototype key is NOT treated as Structural.
+  var ctorHp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Constructor: "custom" } });
+  check("97l. a header named Constructor is protected + surfaced (not falsely Structural)", (await pki.smime.verify(ctorHp)).protectedHeaders.Constructor === "custom");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
