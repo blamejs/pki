@@ -425,6 +425,12 @@ async function run() {
   check("97s. leading whitespace before Content-Type is still detected as HP (no downgrade)", (await pki.smime.verify(leadWsp)).protectedHeaders.Subject === "lead ws");
   // (u) an over-998-octet protected header line is rejected at sign -- a relay re-fold would change the signed bytes (RFC 5322 sec. 2.1.1).
   check("97t. an over-length protected header line is rejected at sign (RFC 5322 998-octet cap)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: new Array(1000).join("x") } }); })) === "smime/bad-header");
+  // (v) a transport that rewrites the CRLF fold before a folded hp param to a bare CR keeps the signature valid
+  // (the canonicalizer maps bare CR -> CRLF) -- the hp signal must survive too (no attacker-strippable downgrade).
+  var signedFold = await pki.smime.sign(Buffer.from("Content-Type: text/plain;\r\n hp=\"clear\"\r\nSubject: folded hp\r\n\r\nbody\n"), signers, { entity: true });
+  var tamperedFold = Buffer.from(signedFold.toString("latin1").replace("\r\n hp=", "\r hp="), "latin1");
+  var rf = await pki.smime.verify(tamperedFold);
+  check("97u. a bare-CR fold before hp still verifies AND still surfaces header protection (no signal strip)", rf.valid === true && rf.protectedHeaders != null && rf.protectedHeaders.Subject === "folded hp");
 
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
