@@ -84,6 +84,13 @@ async function testHappy() {
     // a body is written for ANY body-bearing method, not only POST.
     var rput = await t({ method: "PUT", url: urlFor(s.port), body: Buffer.from("PUTBODY"), tls: { anchors: [tls.certPem], servername: "localhost" } });
     check("7 a PUT body is transmitted, not silently dropped", rput.headers["x-echo"] === "PUTBODY");
+    // a caller that supplies Transfer-Encoding: chunked with a body must not leave BOTH framing headers on
+    // the request (node rejects Content-Length + Transfer-Encoding together); the transport strips it and
+    // frames length-delimited, so the request still completes.
+    var rte = await t({ method: "POST", url: urlFor(s.port), headers: { "Transfer-Encoding": "chunked" }, body: Buffer.from("PING"),
+      tls: { anchors: [tls.certPem], servername: "localhost" } });
+    check("7 a caller Transfer-Encoding is stripped and the request completes", rte.status === 200 && rte.headers["x-echo"] === "PING");
+    check("7 the request is framed by Content-Length, not chunked", rte.headers["x-req-cl"] === "4" && rte.headers["x-req-te"] === "");
   } finally { s.srv.close(); }
 }
 
