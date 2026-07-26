@@ -201,6 +201,10 @@ async function run() {
   check("20 an authority-only base with a trailing slash is accepted", pki.cmp.wellKnownUrl("https://ca.example/") === "https://ca.example/.well-known/cmp");
   check("20 a non-http(s) base with an opaque origin (file://) -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("file:///"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
   check("20 a data: base -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("data:text/plain,x"); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  // an unencodable label/operation (an unpaired UTF-16 surrogate from malformed config) normalizes to
+  // cmp/bad-url, not a raw untyped URIError. The surrogate is built at runtime (source stays pure ASCII).
+  check("20 an unpaired-surrogate label -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { label: String.fromCharCode(0xd800) }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
+  check("20 an unpaired-surrogate operation -> cmp/bad-url", (function () { try { pki.cmp.wellKnownUrl("https://ca.example", { operation: String.fromCharCode(0xdc00) }); return null; } catch (e) { return e.code; } })() === "cmp/bad-url");
 
   // 21. budget guards run before the wire.
   var s21 = A.cmpOpts(A.pkixcmp(200, f.ipDer));
