@@ -68,6 +68,9 @@
             "DER_MAX_ITEMS": {
               "kind": "number"
             },
+            "HEADER_LINE_MAX_OCTETS": {
+              "kind": "number"
+            },
             "HSS_MAX_LEVELS": {
               "kind": "number"
             },
@@ -1260,6 +1263,9 @@
               "kind": "number"
             },
             "DER_MAX_ITEMS": {
+              "kind": "number"
+            },
+            "HEADER_LINE_MAX_OCTETS": {
               "kind": "number"
             },
             "HSS_MAX_LEVELS": {

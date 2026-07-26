@@ -485,6 +485,29 @@ async function run() {
   var vFrom = await pki.smime.verify(tamperedFrom).then(function (r) { return r; }, function (e) { return { err: e.code }; });
   check("97ee. a one-octet-different invalid-UTF8 outer From trips fromMismatch (byte-exact compare)", vFrom.valid === true && vFrom.headerProtection != null && vFrom.headerProtection.fromMismatch === true);
 
+  // (gg) RFC 9788 sec. 2.2: an ENCRYPTED header-protected payload embeds HP-Outer records for each Non-Structural
+  // field left visible in the outer section (exact outer value), and NONE for a field the HCP removed. decrypt
+  // consumes them: they never surface as a protected header, and per sec. 4.3.1 the confidential set is the fields
+  // NOT copied verbatim to the outer (obscured or removed).
+  var hoEnc = await pki.smime.encrypt(Buffer.from("secret\n"), [{ cert: eRsa.cert }], { protectHeaders: true, hcp: "hcp_baseline", headers: { Subject: "Real subject", From: "Bob <bob@e.example>", To: "Alice <alice@e.example>", Keywords: "Contract" } });
+  var hoDec = await pki.smime.decrypt(hoEnc, { key: eRsa.key, cert: eRsa.cert });
+  var hoPayload = hoDec.content.toString("latin1");
+  check("97ff. an encrypted HP payload carries HP-Outer for exposed fields and none for HCP-removed ones (RFC 9788 sec. 2.2)", /^HP-Outer: From: Bob <bob@e.example>$/m.test(hoPayload) && /^HP-Outer: To: Alice <alice@e.example>$/m.test(hoPayload) && /^HP-Outer: Subject: \[\.\.\.\]$/m.test(hoPayload) && /^HP-Outer: Keywords:/m.test(hoPayload) === false);
+  check("97gg. decrypt never surfaces HP-Outer as a protected header, and surfaces the real fields", ("HP-Outer" in hoDec.protectedHeaders) === false && hoDec.protectedHeaders.Subject === "Real subject" && hoDec.protectedHeaders.Keywords === "Contract");
+  check("97hh. the confidential set (sec. 4.3.1) is the obscured/removed fields, not the verbatim ones", hoDec.headerProtection.confidential.indexOf("Subject") >= 0 && hoDec.headerProtection.confidential.indexOf("Keywords") >= 0 && hoDec.headerProtection.confidential.indexOf("From") < 0 && hoDec.headerProtection.confidential.indexOf("To") < 0);
+  // (hh) a conformant encrypted message carrying MULTIPLE HP-Outer records decrypts cleanly (not false-rejected
+  // as a duplicate field), and a signed-only (clear) payload carries no HP-Outer.
+  var multiHoEntity = "Content-Type: text/plain; charset=utf-8; hp=\"cipher\"\r\nFrom: bob@e.example\r\nSubject: Real\r\nHP-Outer: From: bob@e.example\r\nHP-Outer: Subject: [...]\r\nHP-Outer: malformed-no-inner-colon\r\n\r\nbody\n";
+  var multiHoEnc = await pki.smime.encrypt(Buffer.from(multiHoEntity, "latin1"), [{ cert: eRsa.cert }], { entity: true });
+  var multiHoDec = await pki.smime.decrypt(multiHoEnc, { key: eRsa.key, cert: eRsa.cert }).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97ii. a multi-HP-Outer conformant message decrypts cleanly (not a false duplicate reject)", multiHoDec.err === undefined && multiHoDec.headerProtection.present === true && ("HP-Outer" in multiHoDec.protectedHeaders) === false && multiHoDec.headerProtection.confidential.indexOf("Subject") >= 0 && multiHoDec.headerProtection.confidential.indexOf("From") < 0);
+  check("97jj. a signed-only (clear) header-protected message carries no HP-Outer (RFC 9788 sec. 2.2)", /HP-Outer:/i.test((await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "S" } })).toString("latin1")) === false);
+  // (ii) a protected header value's leading/trailing whitespace is preserved (mime.parse trims value, rawValue does not).
+  var wsHp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "X-Token": "  spaced  " } });
+  check("97kk. a protected header value's surrounding whitespace round-trips exactly", (await pki.smime.verify(wsHp)).protectedHeaders["X-Token"] === "  spaced  ");
+  // (jj) HP-Outer is reserved for the library; a caller cannot supply it in opts.headers.
+  check("97ll. a caller-supplied HP-Outer in opts.headers is rejected (reserved field)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "HP-Outer": "From: x" } }); })) === "smime/bad-input");
+
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
   check("98. protectHeaders with no opts.headers still emits hp + verifies", /hp="clear"/.test(emptyHp.toString("latin1")) && (await pki.smime.verify(emptyHp)).headerProtection.present === true);

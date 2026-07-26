@@ -231,7 +231,11 @@ security-only patches after the next major releases.
   fails closed with `smime/bad-header-protection` rather than being treated as
   unprotected — there is no silent downgrade path. For an encrypted message the
   Header Confidentiality Policy keeps the real header values (Subject, Comments,
-  Keywords) only inside the ciphertext, never in the outer section.
+  Keywords) only inside the ciphertext, never in the outer section, and the
+  authenticated `HP-Outer` records (RFC 9788 §2.2) inside the ciphertext document
+  which fields were left visible — so `decrypt` derives the end-to-end-confidential
+  set (`headerProtection.confidential`) from signed/encrypted data alone, letting a
+  caller reply or forward without leaking a confidential header (§6.1).
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
