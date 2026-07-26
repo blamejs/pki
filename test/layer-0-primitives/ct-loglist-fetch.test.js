@@ -164,6 +164,15 @@ async function run() {
   var c14 = await code(function () { return pki.ct.fetchLogList({ transport: t14, url: JSON_URL, signerKey: fx.signerKey }); });
   check("14. an injected transport fault surfaces unchanged", c14 === "ct/timeout");
   check("14. the client does not re-GET after a fault (calls.length === 1)", t14.calls.length === 1);
+  // an injected transport that rejects with an ORDINARY (untyped) Error is wrapped as a typed
+  // ct/transport-error -- the documented typed-error contract holds even for a custom transport that simply
+  // forwards a raw fetch/socket failure; an already-typed PkiError (vector 14 above) is preserved unchanged.
+  var rawReject = {}; rawReject[JSON_URL] = function () { return Promise.reject(new Error("ECONNREFUSED")); };
+  var traw = ctx.routeByUrl(rawReject);
+  check("14. a raw (untyped) transport rejection is wrapped as ct/transport-error", (await code(function () { return pki.ct.fetchLogList({ transport: traw, url: JSON_URL, signerKey: fx.signerKey }); })) === "ct/transport-error");
+  // a SYNCHRONOUS throw from an injected transport is likewise wrapped (never a raw error crossing the boundary)
+  var syncThrow = function () { throw new Error("boom"); };
+  check("14. a synchronous transport throw is wrapped as ct/transport-error", (await code(function () { return pki.ct.fetchLogList({ transport: syncThrow, url: JSON_URL, signerKey: fx.signerKey }); })) === "ct/transport-error");
 
   // ==== 15. config budget guards (M5/M11) ==========================================================
   var t15a = ctx.ctFetchOpts(fx, ctx.okRoutes(fx), { timeout: NaN });
