@@ -83,6 +83,15 @@ async function testClassicalSign() {
 
   var pkcs1 = await _signVerify({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, hash: "SHA-256" });
   check("RSASSA-PKCS1-v1_5 verifies + rejects tamper", pkcs1.ok === true && pkcs1.tampered === false);
+
+  // issue #120: a CryptoKey emits the WebCrypto-REGISTERED casing on algorithm.name (lowercase v, mixed-case
+  // Ed), not the internal upper-cased matching form -- so a consumer comparing it to a certificate key
+  // algorithm (e.g. the x509 signer) matches. Regressed if _stdName is not applied on emit.
+  check("#120 RSASSA-PKCS1-v1_5 emits the standard-cased algorithm.name", pkcs1.kp.privateKey.algorithm.name === "RSASSA-PKCS1-v1_5" && pkcs1.kp.publicKey.algorithm.name === "RSASSA-PKCS1-v1_5");
+  check("#120 Ed25519 keeps its standard mixed-case algorithm.name", ed.kp.privateKey.algorithm.name === "Ed25519");
+  var pkcs1Spki = Buffer.from(await subtle.exportKey("spki", pkcs1.kp.publicKey));
+  var imp120 = await subtle.importKey("spki", pkcs1Spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]);
+  check("#120 importKey RSASSA-PKCS1-v1_5 emits the standard-cased algorithm.name", imp120.algorithm.name === "RSASSA-PKCS1-v1_5");
 }
 
 async function testPqcSign() {
