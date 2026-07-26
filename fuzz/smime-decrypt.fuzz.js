@@ -40,6 +40,8 @@ module.exports.fuzz = async function (data) {
   var buf = Buffer.from(data);
   var km = KMS[data[0] % KMS.length];
   try {
-    await pki.smime.decrypt(buf, km, { strictSmimeType: (data[0] & 0x80) !== 0 });
+    // The flag byte also toggles opts.legacyHeaderProtection, driving the RFC 9788 sec. 4.10 legacy path
+    // (a nested message/rfc822 parse of the decrypted payload) on hostile plaintext when a recipient arm opens it.
+    await pki.smime.decrypt(buf, km, { strictSmimeType: (data[0] & 0x80) !== 0, legacyHeaderProtection: (data[0] & 0x40) !== 0 });
   } catch (e) { if (!isPki(e)) throw e; }
 };

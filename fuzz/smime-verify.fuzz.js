@@ -12,6 +12,9 @@
  * multipart boundary walk), the RFC 8551 sec. 3.1.1 canonicalizer, the base64
  * transfer-encoding decode, and the delegation into the CMS verify path -- a
  * distinct surface from fuzz/smime-parse.fuzz.js (the ESS attribute decoders).
+ * With opts.legacyHeaderProtection it also drives the RFC 9788 sec. 4.10 legacy
+ * detection path, which parses the recovered Cryptographic Payload as a nested
+ * message/rfc822 (part C) and its inner message (part D) -- both attacker-shaped.
  */
 var pki = require("..");
 
@@ -19,6 +22,7 @@ module.exports.fuzz = async function (data) {
   var buf = Buffer.from(data);
   try {
     await pki.smime.verify(buf);
+    await pki.smime.verify(buf, { legacyHeaderProtection: true });   // exercise the sec. 4.10 nested message/rfc822 parse
   } catch (e) {
     if (!(e instanceof pki.errors.PkiError)) throw e;
   }

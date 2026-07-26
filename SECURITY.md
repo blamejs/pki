@@ -235,7 +235,17 @@ security-only patches after the next major releases.
   authenticated `HP-Outer` records (RFC 9788 §2.2) inside the ciphertext document
   which fields were left visible — so `decrypt` derives the end-to-end-confidential
   set (`headerProtection.confidential`) from signed/encrypted data alone, letting a
-  caller reply or forward without leaking a confidential header (§6.1).
+  caller reply or forward without leaking a confidential header (§6.1). Inbound
+  detection of the *legacy* RFC 8551 `message/rfc822` wrap (RFC 9788 §4.10) is
+  opt-in (`opts.legacyHeaderProtection`) and fail-safe: it applies only after the
+  signature/AEAD verdict succeeds, requires all four §4.10.1 identification
+  conditions, marks the result `headerProtection.legacy: true` (a structurally
+  inferred, weaker provenance that a caller cannot confuse with a cryptographically
+  declared `hp=` set), and — because the inference is heuristic — anything not
+  precisely identified (an ordinary forwarded `message/rfc822`, a nested crypto
+  layer, an `hp=` on the inner message) stays `protectedHeaders: null` rather than
+  being surfaced, so no forwarded attachment is ever mis-presented as this message's
+  own protected headers.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node

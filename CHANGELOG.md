@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.24 — 2026-07-26
+
+pki.smime.verify / decrypt can now recognize a legacy (RFC 8551) header-protected message -- opt in with `legacyHeaderProtection` and the real headers of an older `message/rfc822`-wrapped message are surfaced instead of read as unprotected.
+
+### Added
+
+- pki.smime.verify and pki.smime.decrypt accept opts.legacyHeaderProtection: true to detect and surface a legacy RFC 8551 header-protected message (RFC 9788 sec. 4.10) -- a signed or encrypted payload that is a bare message/rfc822 wrap with no hp= parameter. On a precise match the inner message's Non-Structural headers become protectedHeaders, headerProtection.legacy is true, the mode is inferred from the envelope (clear signed / cipher encrypted), and an encrypted message's confidential set is computed against the visible outer headers. RFC 9788 sec. 4.10.1 / sec. 4.10.2, RFC 8551.
+- headerProtection now carries a legacy boolean on every verify / decrypt result: true only for a legacy message recovered via legacyHeaderProtection, false for a standard hp= set and for a non-protected message -- so a structurally inferred set is never conflated with a cryptographically declared one.
+
+### Changed
+
+- Detection is opt-in and fail-safe. Without legacyHeaderProtection the behavior is unchanged: a legacy-form message reads as protectedHeaders: null (never mis-authenticated). With the option set, a message that is not precisely identified -- an ordinary forwarded message/rfc822, an inner part that is itself a signed/encrypted layer, or an inner part declaring hp= -- also stays protectedHeaders: null rather than being surfaced. The signed-and-encrypted legacy form (RFC 9788 Appendix C.3.17) surfaces as clear via the caller's re-verify step, a documented limitation of the non-recursive layered API.
+
 ## v0.3.23 — 2026-07-26
 
 pki.pkcs12.open now reads legacy PKCS#12 stores -- decrypt the RFC 7292 Appendix C 3DES and RC2 bags an `openssl pkcs12 -legacy` (and NSS) store uses, so an older .p12/.pfx opens instead of being refused.
