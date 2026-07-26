@@ -174,6 +174,19 @@ async function testLegacyPbe() {
     pki.oid.register(oid3des, "pbeWithSHAAnd3-KeyTripleDES-CBC");   // restore for test isolation, even if the open rejected
   }
   check("#L12 a -legacy store opens after its OID is renamed (dispatch by immutable OID, not display name)", openedAfterRename === true);
+  // PKCS#12 content is normatively BER (RFC 7292 sec. 4.1): a conforming legacy store may encode
+  // pkcs-12PbeParams with a constructed OCTET STRING salt. It must DECODE (and reach the decrypt -- here a
+  // garbage ciphertext then fails as the uniform pkcs12/decrypt-failed), not be rejected by a strict-DER params
+  // decode. Built with the asn1 builders (a raw BER params child), MAC-less so the bag decrypt path runs.
+  var Bld = pki.asn1.build;
+  var berSalt = Buffer.concat([Buffer.from([0x24, 0x0a, 0x04, 0x08]), Buffer.from("0011223344556677", "hex")]);   // constructed OCTET STRING salt
+  var berParams = Buffer.concat([Buffer.from([0x30, 0x10]), berSalt, Buffer.from([0x02, 0x02, 0x08, 0x00])]);      // SEQUENCE { <constructed salt>, INTEGER 2048 }
+  var encAlg = Bld.sequence([Bld.oid(pki.oid.byName("pbeWithSHAAnd3-KeyTripleDES-CBC")), Bld.raw(berParams)]);
+  var epki = Bld.sequence([Bld.raw(encAlg), Bld.octetString(Buffer.alloc(16, 7))]);   // garbage ciphertext, valid 3DES length
+  var safeBag = Bld.sequence([Bld.oid(pki.oid.byName("pkcs8ShroudedKeyBag")), Bld.explicit(0, Bld.raw(epki))]);
+  var certSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(safeBag)])))]);
+  var berStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(certSafe)])))]))]);
+  check("#L13 a conforming BER legacy store (constructed OCTET STRING salt) decodes + decrypts (RFC 7292 sec. 4.1)", (await codeOf(pki.pkcs12.open(berStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/decrypt-failed");
 }
 
 async function main() {
