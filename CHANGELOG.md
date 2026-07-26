@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.20 — 2026-07-26
+## v0.3.21 — 2026-07-26
+
+A Certificate Transparency log-list live-fetch client ships -- pki.ct.fetchLogList fetches and verifies the CT log list over HTTPS before trusting a single log.
+
+### Added
+
+- pki.ct.fetchLogList(opts) -- fetch the Certificate Transparency log list live and return the trusted-log set only after the detached signature verifies against the caller-pinned distributor key. It GETs opts.url (the log_list.json) and the detached opts.sigUrl (the log_list.sig, by default opts.url with a .json path suffix rewritten to .sig) over the shared pki.transport (or an injected opts.transport), verifies pki.ct.verifyLogListSignature over the raw JSON bytes against opts.signerKey, and only on a valid signature ingests the same bytes through pki.ct.parseLogList -- returning { logs, byLogId, version, timestamp, raw, status, contentType, tls }. No baked-in vendor URL and no baked-in key (both are caller-pinned); explicit TLS trust (an anchor set or an opts.tls.useSystemStore opt-in, rejectUnauthorized always on); each GET is size-capped before verify/parse; every fetch / verify / parse failure is a typed CtError. RFC 6962.
+- pki.ct.parseLogList now also returns the document's version (a string or null) and timestamp (the parsed log_list_timestamp as a Date, or null when absent/unparseable) -- the freshness surface a caller polices, read leniently from the same document. Existing callers of the { logs, byLogId } shape are unaffected.
+
+## v0.3.20 — 2026-07-25
 
 PKCS#12 public-key privacy ships -- encrypt a store's contents to a recipient public key with pki.pkcs12.build/open, plus a webcrypto RSA algorithm-name fix.
 

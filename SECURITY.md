@@ -408,6 +408,24 @@ security-only patches after the next major releases.
   is bounded by a poll count and a total-wait budget and sleeps on a `Retry-After`
   through an injectable sleeper (so the delay is bounded, not attacker-unbounded),
   and every response body is size-capped before it reaches a JSON or PEM decoder.
+- **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /
+  CWE-770).** `pki.ct.fetchLogList` fetches the `log_list.json` and its detached
+  `log_list.sig` over the same fail-closed `pki.transport` (`rejectUnauthorized`
+  always on, an explicit anchor or system-store opt-in required, TLS floored at
+  1.2), then verifies the detached signature over the RAW fetched bytes against a
+  caller-PINNED distributor key before it parses: `pki.ct.parseLogList` runs only
+  on a valid signature, over the SAME buffer that was verified, so an unverified —
+  or tampered — document is never parsed, read, cached, or surfaced (a one-byte
+  change to a validly-structured list fails closed as `ct/log-list-untrusted`, a
+  verdict distinct from every parse-domain code). The signer key is pinned
+  out-of-band, never trust-on-first-use and never fetched from the list's own
+  origin; there is no baked-in vendor URL or key. The fetch is https-only even
+  across an injected transport, and the detached signature must share the
+  log-list origin, so the log-list endpoint's origin-bound credentials (an
+  `Authorization` / `Cookie` header, the mTLS client certificate) can never
+  reach a different signature host. Each response is size-capped before the
+  trust chain, and the surfaced `timestamp` lets a caller police freshness
+  without a hidden clock.
 - **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
   content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
   bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's

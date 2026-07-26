@@ -68,6 +68,13 @@ async function run() {
   // the M3 binding is independently observable: SHA-256(key) === logIdHex for every parsed log
   check("4. SHA-256(log.key) equals log.logIdHex (the recomputed identity binding)", crypto.createHash("sha256").update(list.logs[0].key).digest("hex") === list.logs[0].logIdHex);
   check("5. a usable log parses as trusted", list.logs[0].trusted === true);
+  // The additive version + timestamp surface (read leniently from the same doc; the staleness surface the
+  // live-fetch client returns): present -> the string + a Date; absent/unparseable -> null with NO throw.
+  check("5b. version + log_list_timestamp are surfaced from the document", list.version === "3" && list.timestamp instanceof Date && list.timestamp.toISOString() === "2024-01-01T00:00:00.000Z");
+  var noTs = pki.ct.parseLogList(Buffer.from(JSON.stringify({ operators: [{ name: "Op", logs: [], tiled_logs: [] }] })));
+  check("5c. an absent version + timestamp yield null (no throw for an existing caller)", noTs.version === null && noTs.timestamp === null);
+  var badTs = pki.ct.parseLogList(Buffer.from(JSON.stringify({ version: 3, log_list_timestamp: "not-a-date", operators: [{ name: "Op", logs: [], tiled_logs: [] }] })));
+  check("5d. a non-string version + unparseable timestamp yield null (lenient, no throw)", badTs.version === null && badTs.timestamp === null);
 
   // ==== End-to-end resolve+verify (the headline, M9/M10/M11) ========================================
   var sct = signedSct(L);

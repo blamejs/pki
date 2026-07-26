@@ -1814,22 +1814,25 @@ function testNoDuplicateCodeBlocks() {
         "lib/csr-sign.js:sign", "lib/csr-sign.js:_sign", "lib/csr-sign.js:_challengePassword", "lib/csr-sign.js:addAttr",
         "lib/x509-sign.js:sign", "lib/x509-sign.js:_sign",
         "lib/crl-sign.js:_sign", "lib/crl-sign.js:_idpValue", "lib/crl-sign.js:_buildCrlExtensions", "lib/crl-sign.js:_buildRevoked", "lib/crl-sign.js:_assertIssuerCanSignCrl",
+        "lib/ct.js:fetchLogList",
       ],
       mode: "family-subset",
-      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
+      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the ct fetch verb shares the same validate-opts + async-orchestrate shingle (it composes rather than encodes, but the glue tokens coincide). The structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
     },
     {
-      // The thin network-client entry body: pki.acme / pki.est / pki.cmp each validate the request URL,
-      // apply the default-transport trust-anchor gate (no injected transport -> require an explicit anchor
-      // or useSystemStore, else */no-trust-anchors, then build pki.transport.https), cap the timeout +
-      // maxResponseBytes budgets via guard.limits.cap with the domain error factory, map opts.tls -> the
-      // request tls shape, and issue the request over the shared transport. The transport / guard / budget
-      // primitives live once (http-transport.js / guard-limits.js); each client binds a DIFFERENT domain
-      // (acme/ est/ cmp/) and a different protocol shape (a stateful session, functional verbs, a stateless
-      // transfer), so the anchor-gate + budget glue recurs without being further extractable.
-      files: ["lib/acme.js:client", "lib/est.js:_client", "lib/cmp-build.js:_transfer"],
+      // The thin network-client entry + response body: pki.acme / pki.est / pki.cmp / pki.ct each validate
+      // the request URL, apply the default-transport trust-anchor gate (no injected transport -> require an
+      // explicit anchor or useSystemStore, else */no-trust-anchors, then build pki.transport.https), cap the
+      // timeout + maxResponseBytes budgets via guard.limits.cap with the domain error factory, map opts.tls
+      // -> the request tls shape, and issue the request over the shared transport; the response body is then
+      // re-viewed through guard.bytes.view + size-rechecked identically (the _fetchBody / _sendFollowing /
+      // _transfer response glue). The transport / guard / budget primitives live once (http-transport.js /
+      // guard-limits.js); each client binds a DIFFERENT domain (acme/ est/ cmp/ ct/) and a different protocol
+      // shape (a stateful session, functional verbs, a stateless transfer, a fetch-then-verify), so the
+      // anchor-gate + budget + response-normalize glue recurs without being further extractable.
+      files: ["lib/acme.js:client", "lib/acme.js:_sendFollowing", "lib/est.js:_client", "lib/cmp-build.js:_transfer", "lib/ct.js:fetchLogList", "lib/ct.js:_fetchBody"],
       mode: "family-subset",
-      reason: "network-client entry glue: URL parse + default-transport trust-anchor gate (explicit anchor|useSystemStore else */no-trust-anchors, then pki.transport.https) + guard.limits.cap timeout/maxResponseBytes budgets + opts.tls->request.tls mapping. The transport/guard/budget primitives are shared in http-transport.js / guard-limits.js; each client binds a different domain and protocol shape (acme stateful session, est functional verbs, cmp stateless transfer), so the glue recurs without being further extractable.",
+      reason: "network-client entry + response glue: URL parse + default-transport trust-anchor gate (explicit anchor|useSystemStore else */no-trust-anchors, then pki.transport.https) + guard.limits.cap timeout/maxResponseBytes budgets + opts.tls->request.tls mapping + the response-body re-view (guard.bytes.view) and size recheck. The transport/guard/budget primitives are shared in http-transport.js / guard-limits.js; each client binds a different domain and protocol shape (acme stateful session, est functional verbs, cmp stateless transfer, ct fetch-then-verify), so the glue recurs without being further extractable.",
     },
     {
       // The per-attribute uniqueness + assembly idiom: a dedup helper that rejects a repeated
