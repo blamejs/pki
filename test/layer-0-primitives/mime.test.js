@@ -70,6 +70,38 @@ function run() {
   var padded = mime.splitMultipart(Buffer.from("--B \t\r\nfirst\r\n--B--\r\n"), "B", E, "m/bad");
   check("25. trailing LWSP transport-padding on a delimiter is accepted", padded.length === 1 && padded[0].toString() === "first");
 
+  // ---- buildEntity: serialize fields + body, route each field through the header-injection guard, canonicalize ----
+  var built = mime.buildEntity([{ name: "Content-Type", value: "text/plain" }, { name: "Subject", value: "Hi" }], Buffer.from("body\n"), E, "m/bad");
+  var pb = mime.parse(built, E, "m/bad");
+  check("26. buildEntity emits parseable headers + a CRLF-canonical body", pb.header("Subject") === "Hi" && pb.body.toString() === "body\r\n");
+  check("27. buildEntity with a null body emits an empty body", mime.parse(mime.buildEntity([{ name: "X-A", value: "1" }], null, E, "m/bad"), E, "m/bad").body.length === 0);
+  check("28. buildEntity routes a value through the header guard (CR/LF injection reject)", fault(function () { mime.buildEntity([{ name: "Subject", value: "a\r\nBcc: x" }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+  check("29. buildEntity rejects a bad field name", fault(function () { mime.buildEntity([{ name: "Bad Name", value: "v" }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+  // buildEntity serializes the guard-VALIDATED value, never a second (possibly stateful) coercion of the input.
+  var n = 0, stateful = { toString: function () { n++; return n === 1 ? "safe" : "safe\r\nBcc: injected"; } };
+  var stBuilt = mime.buildEntity([{ name: "X-H", value: stateful }], Buffer.alloc(0), E, "m/bad");
+  check("30. buildEntity serializes the guard-validated value (no stateful-toString re-injection)", mime.parse(stBuilt, E, "m/bad").header("Bcc") === null && mime.parse(stBuilt, E, "m/bad").header("X-H") === "safe");
+  // paramCount honors RFC 2045 quoted-pair escaping: a backslash-escaped quote inside a value does not end it.
+  check("31. paramCount honors quoted-pair escapes", mime.paramCount("text/plain; charset=\"a\\\"; hp=fake\"", "hp") === 0);
+  check("31. paramCount counts a real repeated parameter", mime.paramCount("text/plain; hp=\"x\"; hp=\"y\"", "hp") === 2);
+  // RFC 5322 sec. 2.1.1: an emitted field line over 998 octets is rejected (a relay could re-fold it, changing signed bytes).
+  check("32. buildEntity rejects an over-998-octet field line", fault(function () { mime.buildEntity([{ name: "Subject", value: new Array(1000).join("x") }], Buffer.alloc(0), E, "m/bad"); }) === "m/bad");
+  var atLimit = new Array(990).join("x"); // "Subject" (7) + ": " (2) + 989 = 998 octets exactly
+  check("33. buildEntity accepts a field line at the 998-octet limit", mime.parse(mime.buildEntity([{ name: "Subject", value: atLimit }], Buffer.alloc(0), E, "m/bad"), E, "m/bad").header("Subject") === atLimit);
+  // RFC 5322 comments: a `;` / `=` inside a `(...)` comment is CFWS, not a structural parameter separator.
+  check("34. paramCount ignores an hp= inside a MIME comment", mime.paramCount("text/plain; charset=us-ascii (note; hp=fake)", "hp") === 0 && mime.paramCount("text/plain; hp=x (c)", "hp") === 1);
+  check("35. a MIME comment with a ; does not create a spurious parameter", Object.keys(mime.parse(Buffer.from("Content-Type: text/plain; charset=us-ascii (a; b=c)\r\n\r\nx"), E, "m/bad").contentType.params).length === 1);
+  // RFC 5322 CFWS: a comment BETWEEN parameter tokens is whitespace -- it is not part of the parameter name or value.
+  check("36. paramCount ignores a comment before the parameter name", mime.paramCount("text/plain; (note) hp=\"clear\"", "hp") === 1);
+  check("37. a comment around a parameter is stripped from its name and value", (function () { var p = mime.parse(Buffer.from("Content-Type: text/plain; (c) charset=utf-8 (d)\r\n\r\nx"), E, "m/bad").contentType.params; return p.charset === "utf-8"; })());
+  // a quoted-pair inside a comment is consumed: an escaped ')' does not close the comment early (both bytes dropped).
+  check("38. a quoted-pair inside a comment does not close it early", mime.parse(Buffer.from("Content-Type: text/plain; hp=x (a\\)b)\r\n\r\nz"), E, "m/bad").contentType.params.hp === "x");
+  // hasParam names a parameter with OR without a value (a bare "; hp" still names hp); comment-aware, media type ignored.
+  check("39. hasParam detects a parameter with or without a value", mime.hasParam("text/plain; hp", "hp") === true && mime.hasParam("text/plain; hp=\"clear\"", "hp") === true && mime.hasParam("text/plain; charset=utf-8", "hp") === false);
+  check("40. hasParam ignores a bare attribute inside a comment", mime.hasParam("text/plain; charset=x (hp)", "hp") === false);
+  // paramNameCount counts bare AND valued occurrences of an attribute name (paramCount counts only valued).
+  check("41. paramNameCount counts bare and valued attribute occurrences", mime.paramNameCount("text/plain; hp; hp=\"clear\"", "hp") === 2 && mime.paramNameCount("text/plain; charset=utf-8", "hp") === 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

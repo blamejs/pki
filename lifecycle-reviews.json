@@ -1,4 +1,28 @@
 {
+  "pki.transport.https": {
+    "decision": "keep-experimental",
+    "reason": "The shared fail-closed node:https transport is the toolkit's sole socket choke point, still actively hardened as each new protocol client composes it and surfaces a new fail-closed requirement (the est/acme/cmp credential-origin and request-framing work, the ct log-list https-gate and cross-origin credential-strip). Graduate once the network-client transport contract is settled across every consumer.",
+    "reviewedAt": "0.3.22",
+    "reviewBy": "0.4.0"
+  },
+  "pki.est.cacerts": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 7030 EST enrollment verbs ride the still-experimental shared pki.transport and the network-client surface that is still absorbing hardening as ACME / CMP / CT clients compose the same transport. Graduate alongside pki.transport.https once the surface is settled.",
+    "reviewedAt": "0.3.22",
+    "reviewBy": "0.4.0"
+  },
+  "pki.est.simpleenroll": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 7030 EST enrollment verbs ride the still-experimental shared pki.transport and the network-client surface that is still absorbing hardening as ACME / CMP / CT clients compose the same transport. Graduate alongside pki.transport.https once the surface is settled.",
+    "reviewedAt": "0.3.22",
+    "reviewBy": "0.4.0"
+  },
+  "pki.est.simplereenroll": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 7030 EST enrollment verbs ride the still-experimental shared pki.transport and the network-client surface that is still absorbing hardening as ACME / CMP / CT clients compose the same transport. Graduate alongside pki.transport.https once the surface is settled.",
+    "reviewedAt": "0.3.22",
+    "reviewBy": "0.4.0"
+  },
   "pki.ct.parseLogList": {
     "decision": "keep-experimental",
     "reason": "The RFC 6962 CT log-list trust surface ingests the log_list.json into constraint-carrying trusted logs (each log id recomputed as SHA-256 of its key, with state and temporal-interval gates), verified against the live browser log list, but the live-fetch client for the list is still Planned and the trust model continues to absorb refinements. Graduate once the log-list client surface is settled.",

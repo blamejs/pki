@@ -269,6 +269,258 @@ async function run() {
   check("84. compress of a non-Buffer -> a typed error", /^(smime|cms)\//.test(await codeOf(function () { return pki.smime.compress(42); })));
   check("85. compress forwards opts.level to cms.compress", (await pki.smime.decompress(await pki.smime.compress(CMP, { level: 9 }))).content.indexOf(Buffer.from("the quick brown fox")) >= 0);
 
+  // ==== HP: RFC 9788 header protection over the shipped sign/encrypt path ===========================
+  // HP sign/encrypt produce the FULL message (outer display headers + the crypto envelope whose inner
+  // Cryptographic Payload root carries the protected header copies + hp="clear"/"cipher"); verify/decrypt
+  // surface the AUTHENTICATED inner set as res.protectedHeaders + res.headerProtection{present,mode,fromMismatch}.
+  var rcpt = makeRecipient("rsa");
+  var HB = Buffer.from("the message body\n");
+
+  // (a) signed HP (hp="clear") round-trip: verify surfaces the authenticated inner headers.
+  var hpSigned = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "Real subject", From: "a@ex.example", To: "b@ex.example" } });
+  var hv = await pki.smime.verify(hpSigned);
+  check("86. a signed-HP message verifies valid", hv.valid === true);
+  check("86. verify surfaces the authenticated inner Subject", hv.protectedHeaders != null && hv.protectedHeaders.Subject === "Real subject");
+  check("86. verify surfaces the inner From + To", hv.protectedHeaders != null && hv.protectedHeaders.From === "a@ex.example" && hv.protectedHeaders.To === "b@ex.example");
+  check("86. headerProtection is present with mode clear (signed-only)", hv.headerProtection != null && hv.headerProtection.present === true && hv.headerProtection.mode === "clear");
+  check("86. the payload root carries hp=\"clear\"", /hp="?clear"?/.test(hpSigned.toString("latin1")));
+
+  // (b) encrypted HP (hp="cipher") + hcp_baseline: the real Subject lives ONLY inside the ciphertext.
+  var hpEnc = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "Secret contract terms", From: "a@ex.example" }, hcp: "hcp_baseline" });
+  check("87. the encrypted-HP outer Subject is obscured to [...]", /(^|\r\n)Subject:\s*\[\.\.\.\]\s*(\r\n|$)/.test(hpEnc.toString("latin1")));
+  check("87. the real Subject appears NOWHERE in the outer/enveloped bytes", hpEnc.toString("latin1").indexOf("Secret contract terms") < 0);
+  var hd = await pki.smime.decrypt(hpEnc, { key: rcpt.key, cert: rcpt.cert });
+  check("87. decrypt recovers the real inner Subject", hd.protectedHeaders != null && hd.protectedHeaders.Subject === "Secret contract terms");
+  check("87. decrypt reports headerProtection mode cipher", hd.headerProtection != null && hd.headerProtection.mode === "cipher");
+
+  // (c) injection (the #1 fragile area): a CR / LF / NUL in a value or a bad field NAME -> smime/bad-header.
+  check("88. a CRLF-injected header value is rejected (smime/bad-header)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "x\r\nBcc: mallory@evil" } }); })) === "smime/bad-header");
+  check("88. a bare LF in a header value is rejected", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "x\nBcc: e" } }); })) === "smime/bad-header");
+  check("88. a bare CR in a header value is rejected", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "x\rBcc: e" } }); })) === "smime/bad-header");
+  check("88. a NUL in a header value is rejected", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "x" + String.fromCharCode(0) + "y" } }); })) === "smime/bad-header");
+  check("88. a field NAME with an embedded colon is rejected", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Sub:ject": "x" } }); })) === "smime/bad-header");
+  check("88. a field NAME with a space is rejected", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Bad Name": "x" } }); })) === "smime/bad-header");
+
+  // (d) BACKWARD COMPAT (the tripwire): no protectHeaders -> no hp, protectedHeaders null.
+  var plain = await pki.smime.sign(HB, signers);
+  check("89. a non-HP signed message emits no hp parameter", plain.toString("latin1").indexOf("hp=") < 0);
+  var pv = await pki.smime.verify(plain);
+  check("89. verify of a non-HP message reports protectedHeaders null", pv.protectedHeaders == null && (pv.headerProtection == null || pv.headerProtection.present === false));
+
+  // (e) tamper-invariance: mutate ONLY the OUTER From (the first occurrence, before the crypto envelope) --
+  // the inner From is inside the signed part, so protectedHeaders is unchanged and the mismatch is flagged.
+  var outerTampered = Buffer.from(hpSigned.toString("latin1").replace("a@ex.example", "mallory@evil.example"), "latin1");
+  var tv = await pki.smime.verify(outerTampered);
+  check("90. tampering the OUTER From leaves the authenticated inner From unchanged + still valid", tv.valid === true && tv.protectedHeaders != null && tv.protectedHeaders.From === "a@ex.example");
+  check("90. an outer From differing from the inner From is flagged fromMismatch", tv.headerProtection.fromMismatch === true);
+
+  // (f) downgrade / contradiction (fail-closed, MUST 2/16): the hp mode is bound to the actual envelope.
+  var badVal = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"bogus\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("91. a payload with an invalid hp value -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(badVal); })) === "smime/bad-header-protection");
+  var cipherOnSigned = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"cipher\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("91. a SIGNED message whose payload claims hp=cipher -> smime/bad-header-protection (no encryption layer)", (await codeOf(function () { return pki.smime.verify(cipherOnSigned); })) === "smime/bad-header-protection");
+  var malformed = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\nNoColonHeaderLine\r\n\r\nbody\n"), signers, { entity: true });
+  check("91. a payload DECLARING hp with a malformed header block -> smime/bad-header-protection (no silent downgrade)", (await codeOf(function () { return pki.smime.verify(malformed); })) === "smime/bad-header-protection");
+
+  // (g) canonicalization: a transport that mangles a CRLF in the signed HP part still verifies + surfaces the
+  // same inner headers (the shared RFC 8551 sec. 3.1.1 canonicalizer repairs both signer + verifier sides).
+  var mangled = Buffer.from(hpSigned.toString("latin1").replace("the message body\r\n", "the message body\n"), "latin1");
+  var mv = await pki.smime.verify(mangled);
+  check("92. a CRLF->LF-mangled HP part still verifies + surfaces the same inner Subject", mv.valid === true && mv.protectedHeaders != null && mv.protectedHeaders.Subject === "Real subject");
+
+  // (h) alternate opts.headers forms + HCP variants + 8-bit body + fail-closed input shapes (branch coverage).
+  var arrHp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ name: "Subject", value: "Arr subject" }, { name: "From", value: "a@ex.example" }] });
+  check("93. opts.headers as an array of { name, value } works", (await pki.smime.verify(arrHp)).protectedHeaders.Subject === "Arr subject");
+  var eightBit = await pki.smime.sign(Buffer.from("caf" + String.fromCharCode(0xe9) + " body\n", "latin1"), signers, { protectHeaders: true, headers: { Subject: "8bit" } });
+  check("93. an 8-bit HP body round-trips (Content-Transfer-Encoding 8bit)", /hp="clear"/.test(eightBit.toString("latin1")) && (await pki.smime.verify(eightBit)).protectedHeaders.Subject === "8bit");
+  // encrypt HP + hcp_baseline removes Comments/Keywords from the outer section, recovers them inside
+  var hpEncC = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "S", Comments: "secret comment", Keywords: "kw" } });
+  var hpEncCs = hpEncC.toString("latin1");
+  check("94. hcp_baseline removes Comments/Keywords from the outer section", !/(^|\r\n)Comments:/i.test(hpEncCs) && !/(^|\r\n)Keywords:/i.test(hpEncCs) && hpEncCs.indexOf("secret comment") < 0);
+  var hpEncCd = await pki.smime.decrypt(hpEncC, { key: rcpt.key, cert: rcpt.cert });
+  check("94. decrypt recovers the removed Comments/Keywords from the ciphertext", hpEncCd.protectedHeaders.Comments === "secret comment" && hpEncCd.protectedHeaders.Keywords === "kw");
+  var encNoConf = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "Visible" }, hcp: "hcp_no_confidentiality" });
+  check("95. hcp_no_confidentiality leaves the outer Subject visible", /(^|\r\n)Subject:\s*Visible/.test(encNoConf.toString("latin1")));
+  // fail-closed input shapes
+  check("96. a malformed opts.headers array entry -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ value: "no name" }] }); })) === "smime/bad-input");
+  check("96. a null opts.headers array entry -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [null] }); })) === "smime/bad-input");
+  check("96. a non-object opts.headers -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: 42 }); })) === "smime/bad-input");
+  check("96. a non-string opts.hcp -> smime/bad-input", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "x" }, hcp: 5 }); })) === "smime/bad-input");
+  check("96. a Structural header in opts.headers -> smime/bad-input (only Non-Structural fields protected)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Type": "text/html" } }); })) === "smime/bad-input");
+  check("96. MIME-Version in opts.headers -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "MIME-Version": "1.0" } }); })) === "smime/bad-input");
+  // RFC 9787 sec. 1.1.1: a Structural field is MIME-Version OR any name beginning with "Content-" -- the prefix
+  // rule catches EVERY Content-* field (Content-ID / -Description / -Language / ...), not just an enumerated subset.
+  check("96. Content-Language (a Content-* field) in opts.headers -> smime/bad-input (Structural prefix rule)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Language": "en" } }); })) === "smime/bad-input");
+  check("96. Content-ID / Content-Description are Structural (begin with Content-) -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-Description": "d" } }); })) === "smime/bad-input" && (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "Content-ID": "<x>" } }); })) === "smime/bad-input");
+  // an HP payload with no blank-line separator is still detected (the _declaresHp no-separator arm)
+  var noBody = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\""), signers, { entity: true });
+  check("97. an HP payload with no blank-line separator is still detected", (await pki.smime.verify(noBody)).headerProtection.mode === "clear");
+
+  // (i) a non-ASCII (RFC 6532) protected header value round-trips intact (not latin1-mangled).
+  var utf8Subj = "caf" + String.fromCharCode(0xe9);   // "cafe" with an acute e
+  var utf8Hp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: utf8Subj } });
+  check("97b. a UTF-8 protected header value round-trips intact (RFC 6532)", (await pki.smime.verify(utf8Hp)).protectedHeaders.Subject === utf8Subj);
+  var utf8Enc = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: utf8Subj }, hcp: "hcp_no_confidentiality" });
+  check("97b. a UTF-8 value round-trips through encrypt/decrypt", (await pki.smime.decrypt(utf8Enc, { key: rcpt.key, cert: rcpt.cert })).protectedHeaders.Subject === utf8Subj);
+
+  // (j) opts.entity + protectHeaders is rejected (an unsupported combination, not a silent re-wrap).
+  check("97c. opts.entity with protectHeaders -> smime/bad-input (unsupported combination)", (await codeOf(function () { return pki.smime.sign(Buffer.from("Content-Type: application/json\r\n\r\n{}"), signers, { entity: true, protectHeaders: true }); })) === "smime/bad-input");
+
+  // (k) an unknown opts.hcp policy name is rejected, not silently treated as baseline.
+  check("97d. an unknown opts.hcp policy -> smime/bad-input", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "x" }, hcp: "hcp_bogus" }); })) === "smime/bad-input");
+  // an hp= that appears only inside a quoted param value (not as the hp parameter) is NOT header protection.
+  var fpHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; charset=\"a hp=b\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("97e. an hp= inside a quoted param value is not treated as header protection", (await pki.smime.verify(fpHp)).protectedHeaders === null);
+  // a DECRYPT of an encrypted message whose payload declares hp="clear" contradicts the envelope -> fail closed.
+  var clearInCipher = await pki.smime.encrypt(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), [{ cert: rcpt.cert }], { entity: true });
+  check("97f. decrypt of a payload claiming hp=clear (a signed-only marker) -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.decrypt(clearInCipher, { key: rcpt.key, cert: rcpt.cert }); })) === "smime/bad-header-protection");
+
+  // (l) protectedHeaders are AUTHENTICATED: an INVALID signature (a tampered signed inner part) or an
+  // unauthenticated (AES-CBC) decrypt must NOT surface the inner fields as protected.
+  var innerTampered = Buffer.from(utf8Hp); var mi = innerTampered.indexOf(Buffer.from("the message body")); innerTampered[mi] ^= 0x20;
+  var itv = await pki.smime.verify(innerTampered);
+  check("97g. a tampered signed HP part -> valid:false AND protectedHeaders null (not the altered values)", itv.valid === false && itv.protectedHeaders === null && itv.headerProtection.present === false);
+  var cbcHp = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "S" }, contentEncryptionAlgorithm: "aes-256-cbc" });
+  var cbcD = await pki.smime.decrypt(cbcHp, { key: rcpt.key, cert: rcpt.cert });
+  check("97g. an unauthenticated (AES-CBC) HP decrypt does NOT surface protectedHeaders", cbcD.authenticated === false && cbcD.protectedHeaders === null);
+
+  // (m) a duplicate Content-Type with an hp claim is a malformed wrap -> fail closed, not a silent downgrade.
+  var dupCt = await pki.smime.sign(Buffer.from("Content-Type: text/plain\r\nContent-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("97h. a duplicate Content-Type with an hp claim -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupCt); })) === "smime/bad-header-protection");
+
+  // (n) a DUPLICATE outer From (an attacker appends a second, forged one after the matching original) is
+  // flagged fromMismatch -- header() returns only the first, so every occurrence must be inspected.
+  var dupFrom = Buffer.from(hpSigned.toString("latin1").replace("From: a@ex.example\r\n", "From: a@ex.example\r\nFrom: mallory@evil.example\r\n"), "latin1");
+  var dfv = await pki.smime.verify(dupFrom);
+  check("97i. a duplicate outer From is flagged fromMismatch (not silently the first)", dfv.valid === true && dfv.headerProtection.fromMismatch === true);
+  // a REMOVED outer From (a transport/attacker strips it, leaving the protected inner From) is a mismatch too.
+  var noOuterFrom = Buffer.from(hpSigned.toString("latin1").replace("From: a@ex.example\r\n", ""), "latin1");
+  var nofv = await pki.smime.verify(noOuterFrom);
+  check("97i. a missing outer From (with a protected inner From) is flagged fromMismatch", nofv.valid === true && nofv.headerProtection.fromMismatch === true);
+
+  // (o) a duplicate hp parameter is ambiguous (a parser could honor either) -> fail closed.
+  var dupHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"cipher\"; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("97j. a duplicate hp parameter -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupHp); })) === "smime/bad-header-protection");
+  // (p) a duplicate INNER protected From is ambiguous (last-wins overwrite hides the first) -> fail closed.
+  var dupInnerFrom = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\nFrom: attacker@ex.example\r\nFrom: victim@ex.example\r\n\r\nbody\n"), signers, { entity: true });
+  check("97k. a duplicate inner protected From -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupInnerFrom); })) === "smime/bad-header-protection");
+  // (q) a Non-Structural header whose name collides with an Object.prototype key is NOT treated as Structural.
+  var ctorHp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Constructor: "custom" } });
+  check("97l. a header named Constructor is protected + surfaced (not falsely Structural)", (await pki.smime.verify(ctorHp)).protectedHeaders.Constructor === "custom");
+
+  // (r) a quoted "hp=" inside the caller's Content-Type is NOT a duplicate hp parameter (quote-aware) --
+  // sign and verify must agree (the library never rejects a message it emits).
+  var quotedHp = await pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; charset=\"a; hp=fake\"", headers: { Subject: "ok" } });
+  check("97m. a quoted hp= in the caller Content-Type is not a duplicate hp param", (await pki.smime.verify(quotedHp)).protectedHeaders.Subject === "ok");
+  // (s) a repeated protected field NAME is rejected by the PRODUCER (an unsupported shape it cannot re-consume).
+  check("97n. duplicate opts.headers field names -> smime/bad-input (producer rejects)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ name: "Received", value: "a" }, { name: "Received", value: "b" }] }); })) === "smime/bad-input");
+  // (t) a CRLF in opts.contentType is rejected on the NON-HP path too (the header-injection guard is universal).
+  check("97o. a CRLF-injected opts.contentType (non-HP) -> smime/bad-header", (await codeOf(function () { return pki.smime.sign(HB, signers, { contentType: "text/plain\r\nBcc: mallory@evil.example" }); })) === "smime/bad-header");
+  check("97o. a CRLF-injected opts.contentType on encrypt (non-HP) -> smime/bad-header", (await codeOf(function () { return pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { contentType: "text/plain\r\nBcc: x" }); })) === "smime/bad-header");
+  // (u) a caller-supplied hp parameter in opts.contentType conflicts with the one HP sets -> reject at sign.
+  check("97p. a caller hp= in opts.contentType with protectHeaders -> smime/bad-input", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; hp=\"cipher\"", headers: { Subject: "x" } }); })) === "smime/bad-input");
+  // (v) whitespace before the Content-Type colon (which mime.parse trims) is detected as HP, not downgraded.
+  var wspColon = await pki.smime.sign(Buffer.from("Content-Type : text/plain; hp=\"clear\"\r\nSubject: WSP subject\r\n\r\nbody\n"), signers, { entity: true });
+  check("97q. a Content-Type with whitespace before the colon is still detected as HP (no downgrade)", (await pki.smime.verify(wspColon)).protectedHeaders.Subject === "WSP subject");
+  // (w) a quoted-pair-escaped "hp=" inside opts.contentType is not mistaken for a caller hp parameter (quoted-pair aware).
+  var escHp = await pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; charset=\"a\\\"; hp=fake\"", headers: { Subject: "esc ok" } });
+  check("97r. a quoted-pair-escaped hp= in opts.contentType is not a caller hp param (sign succeeds)", (await pki.smime.verify(escHp)).protectedHeaders.Subject === "esc ok");
+  // (x) leading whitespace before Content-Type (which mime.parse trims) is still detected as HP (no downgrade).
+  var leadWsp = await pki.smime.sign(Buffer.from(" Content-Type: text/plain; hp=\"clear\"\r\nSubject: lead ws\r\n\r\nbody\n"), signers, { entity: true });
+  check("97s. leading whitespace before Content-Type is still detected as HP (no downgrade)", (await pki.smime.verify(leadWsp)).protectedHeaders.Subject === "lead ws");
+  // (u) an over-998-octet protected header line is rejected at sign -- a relay re-fold would change the signed bytes (RFC 5322 sec. 2.1.1).
+  check("97t. an over-length protected header line is rejected at sign (RFC 5322 998-octet cap)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: new Array(1000).join("x") } }); })) === "smime/bad-header");
+  // (v) a transport that rewrites the CRLF fold before a folded hp param to a bare CR keeps the signature valid
+  // (the canonicalizer maps bare CR -> CRLF) -- the hp signal must survive too (no attacker-strippable downgrade).
+  var signedFold = await pki.smime.sign(Buffer.from("Content-Type: text/plain;\r\n hp=\"clear\"\r\nSubject: folded hp\r\n\r\nbody\n"), signers, { entity: true });
+  var tamperedFold = Buffer.from(signedFold.toString("latin1").replace("\r\n hp=", "\r hp="), "latin1");
+  var rf = await pki.smime.verify(tamperedFold);
+  check("97u. a bare-CR fold before hp still verifies AND still surfaces header protection (no signal strip)", rf.valid === true && rf.protectedHeaders != null && rf.protectedHeaders.Subject === "folded hp");
+  // (w) a transport that rewrites the payload's header/body separator (CRLFCRLF) to bare CRs still verifies
+  // (the canonicalizer repairs it) -- HP detection AND parsing run on that same canonical form, so a valid
+  // message surfaces its authenticated headers rather than false-rejecting as an unparseable block.
+  var signedSep = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\nSubject: sep test\r\n\r\nbody\n"), signers, { entity: true });
+  var tamperedSep = Buffer.from(signedSep.toString("latin1").replace("sep test\r\n\r\nbody", "sep test\r\rbody"), "latin1");
+  var rs = await pki.smime.verify(tamperedSep).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97v. a bare-CR header/body separator still verifies AND surfaces HP (parse the canonical entity)", rs.valid === true && rs.protectedHeaders != null && rs.protectedHeaders.Subject === "sep test");
+  // (x) an hp= inside a MIME comment in the Content-Type is NOT the hp parameter (comment-aware probe + parse):
+  // an ordinary commented Content-Type must not opt a valid signature into HP processing / false-reject.
+  var commented = await pki.smime.sign(Buffer.from("Content-Type: text/plain; charset=us-ascii (note; hp=fake)\r\nSubject: c\r\n\r\nbody\n"), signers, { entity: true });
+  var rcm = await pki.smime.verify(commented).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97w. an hp= inside a MIME comment does not opt into HP (valid signature returned, not false-rejected)", rcm.valid === true && rcm.protectedHeaders === null);
+  // (y) a signed entity with NO Content-Type field is not header-protected (the probe finds no Content-Type line).
+  var noCt = await pki.smime.sign(Buffer.from("Subject: no ct\r\n\r\nbody\n"), signers, { entity: true });
+  check("97x. a signed entity without a Content-Type is not treated as header-protected", (await pki.smime.verify(noCt)).protectedHeaders === null);
+  // (z) a MIME comment BETWEEN Content-Type parameters is CFWS -- the real hp parameter is still detected (no downgrade).
+  var cfws = await pki.smime.sign(Buffer.from("Content-Type: text/plain; (note) hp=\"clear\"\r\nSubject: cfws\r\n\r\nbody\n"), signers, { entity: true });
+  check("97y. a comment between Content-Type parameters does not hide hp (no downgrade)", (await pki.smime.verify(cfws)).protectedHeaders != null && (await pki.smime.verify(cfws)).protectedHeaders.Subject === "cfws");
+  // (aa) opts.headers is snapshotted ONCE: an accessor/Proxy returning a different value on each read cannot make the
+  // signed inner header diverge from the displayed outer copy (the authenticated value must be the one displayed).
+  var reads = 0, proxyHeaders = { get Subject() { reads++; return "S" + reads; } };
+  var signedProxy = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: proxyHeaders });
+  var vp = await pki.smime.verify(signedProxy);
+  check("97z. an accessor-valued protected header is read once (signed inner == displayed outer)", signedProxy.toString("latin1").split("Subject: " + vp.protectedHeaders.Subject).length - 1 === 2);
+  // (bb) the hp keyword is case-insensitive (RFC 2045 sec. 5.1): a peer that emits hp="CLEAR" is still recognized.
+  var upperHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp=\"CLEAR\"\r\nSubject: upper hp\r\n\r\nbody\n"), signers, { entity: true });
+  var vUpper = await pki.smime.verify(upperHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97aa. an uppercase hp value is recognized as header protection (case-insensitive keyword)", vUpper.protectedHeaders != null && vUpper.protectedHeaders.Subject === "upper hp");
+  // (cc) a bare hp attribute with no value is a malformed HP declaration -- fail closed, never a silent downgrade.
+  var bareHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp\r\nSubject: bare\r\n\r\nbody\n"), signers, { entity: true });
+  var vBare = await pki.smime.verify(bareHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97bb. a bare hp parameter (no value) fails closed (smime/bad-header-protection), not a silent downgrade", vBare.err === "smime/bad-header-protection");
+  // (dd) a bare hp attribute in opts.contentType is rejected at the producer (would else emit "hp; hp=\"clear\"").
+  check("97cc. a bare hp attribute in opts.contentType is rejected (producer)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, contentType: "text/plain; hp", headers: { Subject: "x" } }); })) === "smime/bad-input");
+  // (ee) a bare+valued hp duplicate ("hp; hp=\"clear\"") is an ambiguous duplicate -- the verifier fails closed.
+  var bvDupHp = await pki.smime.sign(Buffer.from("Content-Type: text/plain; hp; hp=\"clear\"\r\nSubject: d\r\n\r\nbody\n"), signers, { entity: true });
+  var vDup = await pki.smime.verify(bvDupHp).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97dd. a bare+valued hp duplicate fails closed (verifier)", vDup.err === "smime/bad-header-protection");
+  // (ff) the protected-From mismatch is compared BYTE-EXACT: a legacy-8bit signed From (octet 0x80) and an
+  // attacker-modified outer From (octet 0x81) both lossy-decode to the same replacement char, so a lossy
+  // compare would miss the tamper -- the byte-preserving compare trips fromMismatch.
+  var b80 = String.fromCharCode(0x80), b81 = String.fromCharCode(0x81);
+  var innerFromEnt = "Content-Type: text/plain; hp=\"clear\"\r\nFrom: " + b80 + "@e.example\r\nSubject: s\r\n\r\nbody\n";
+  var signedFromMsg = await pki.smime.sign(Buffer.from(innerFromEnt, "latin1"), signers, { entity: true });
+  var sfs = signedFromMsg.toString("latin1"), sep = sfs.indexOf("\r\n\r\n");
+  var tamperedFrom = Buffer.from(sfs.slice(0, sep) + "\r\nFrom: " + b81 + "@e.example" + sfs.slice(sep), "latin1");
+  var vFrom = await pki.smime.verify(tamperedFrom).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97ee. a one-octet-different invalid-UTF8 outer From trips fromMismatch (byte-exact compare)", vFrom.valid === true && vFrom.headerProtection != null && vFrom.headerProtection.fromMismatch === true);
+
+  // (gg) RFC 9788 sec. 2.2: an ENCRYPTED header-protected payload embeds HP-Outer records for each Non-Structural
+  // field left visible in the outer section (exact outer value), and NONE for a field the HCP removed. decrypt
+  // consumes them: they never surface as a protected header, and per sec. 4.3.1 the confidential set is the fields
+  // NOT copied verbatim to the outer (obscured or removed).
+  var hoEnc = await pki.smime.encrypt(Buffer.from("secret\n"), [{ cert: eRsa.cert }], { protectHeaders: true, hcp: "hcp_baseline", headers: { Subject: "Real subject", From: "Bob <bob@e.example>", To: "Alice <alice@e.example>", Keywords: "Contract" } });
+  var hoDec = await pki.smime.decrypt(hoEnc, { key: eRsa.key, cert: eRsa.cert });
+  var hoPayload = hoDec.content.toString("latin1");
+  check("97ff. an encrypted HP payload carries HP-Outer for exposed fields and none for HCP-removed ones (RFC 9788 sec. 2.2)", /^HP-Outer: From: Bob <bob@e.example>$/m.test(hoPayload) && /^HP-Outer: To: Alice <alice@e.example>$/m.test(hoPayload) && /^HP-Outer: Subject: \[\.\.\.\]$/m.test(hoPayload) && /^HP-Outer: Keywords:/m.test(hoPayload) === false);
+  check("97gg. decrypt never surfaces HP-Outer as a protected header, and surfaces the real fields", ("HP-Outer" in hoDec.protectedHeaders) === false && hoDec.protectedHeaders.Subject === "Real subject" && hoDec.protectedHeaders.Keywords === "Contract");
+  check("97hh. the confidential set (sec. 4.3.1) is the obscured/removed fields, not the verbatim ones", hoDec.headerProtection.confidential.indexOf("Subject") >= 0 && hoDec.headerProtection.confidential.indexOf("Keywords") >= 0 && hoDec.headerProtection.confidential.indexOf("From") < 0 && hoDec.headerProtection.confidential.indexOf("To") < 0);
+  // (hh) a conformant encrypted message carrying MULTIPLE HP-Outer records decrypts cleanly (not false-rejected
+  // as a duplicate field), and a signed-only (clear) payload carries no HP-Outer.
+  var multiHoEntity = "Content-Type: text/plain; charset=utf-8; hp=\"cipher\"\r\nFrom: bob@e.example\r\nSubject: Real\r\nHP-Outer: From: bob@e.example\r\nHP-Outer: Subject: [...]\r\nHP-Outer: malformed-no-inner-colon\r\n\r\nbody\n";
+  var multiHoEnc = await pki.smime.encrypt(Buffer.from(multiHoEntity, "latin1"), [{ cert: eRsa.cert }], { entity: true });
+  var multiHoDec = await pki.smime.decrypt(multiHoEnc, { key: eRsa.key, cert: eRsa.cert }).then(function (r) { return r; }, function (e) { return { err: e.code }; });
+  check("97ii. a multi-HP-Outer conformant message decrypts cleanly (not a false duplicate reject)", multiHoDec.err === undefined && multiHoDec.headerProtection.present === true && ("HP-Outer" in multiHoDec.protectedHeaders) === false && multiHoDec.headerProtection.confidential.indexOf("Subject") >= 0 && multiHoDec.headerProtection.confidential.indexOf("From") < 0);
+  check("97jj. a signed-only (clear) header-protected message carries no HP-Outer (RFC 9788 sec. 2.2)", /HP-Outer:/i.test((await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { Subject: "S" } })).toString("latin1")) === false);
+  // (ii) a protected header value's leading/trailing whitespace is preserved (mime.parse trims value, rawValue does not).
+  var wsHp = await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "X-Token": "  spaced  " } });
+  check("97kk. a protected header value's surrounding whitespace round-trips exactly", (await pki.smime.verify(wsHp)).protectedHeaders["X-Token"] === "  spaced  ");
+  // (jj) HP-Outer is reserved for the library; a caller cannot supply it in opts.headers.
+  check("97ll. a caller-supplied HP-Outer in opts.headers is rejected (reserved field)", (await codeOf(function () { return pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "HP-Outer": "From: x" } }); })) === "smime/bad-input");
+  // (kk) the confidential determination is OCTET-EXACT: a protected field whose only difference from its HP-Outer
+  // value is an invalid-UTF8 octet (0x80 vs 0x81) was obscured, so it must be confidential -- a lossy decode would
+  // collapse both to the replacement char and wrongly mark it exposed (a reply/forward leak). Reuse b80/b81.
+  var confEntity = "Content-Type: text/plain; charset=utf-8; hp=\"cipher\"\r\nX-Sec: " + b80 + "@x\r\nHP-Outer: X-Sec: " + b81 + "@x\r\n\r\nbody\n";
+  var confEnc = await pki.smime.encrypt(Buffer.from(confEntity, "latin1"), [{ cert: eRsa.cert }], { entity: true });
+  var confDec = await pki.smime.decrypt(confEnc, { key: eRsa.key, cert: eRsa.cert });
+  check("97mm. a field obscured by only an invalid-UTF8 octet is confidential (octet-exact HP-Outer compare)", confDec.headerProtection.confidential.indexOf("X-Sec") >= 0);
+
+  // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
+  var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
+  check("98. protectHeaders with no opts.headers still emits hp + verifies", /hp="clear"/.test(emptyHp.toString("latin1")) && (await pki.smime.verify(emptyHp)).headerProtection.present === true);
+  check("98. an object header with a null value is emitted empty", (await pki.smime.verify(await pki.smime.sign(HB, signers, { protectHeaders: true, headers: { "X-Empty": null } }))).protectedHeaders["X-Empty"] === "");
+  check("98. an array header with a null value is emitted empty", (await pki.smime.verify(await pki.smime.sign(HB, signers, { protectHeaders: true, headers: [{ name: "X-Empty", value: null }] }))).protectedHeaders["X-Empty"] === "");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
