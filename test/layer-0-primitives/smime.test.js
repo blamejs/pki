@@ -370,6 +370,19 @@ async function run() {
   var clearInCipher = await pki.smime.encrypt(Buffer.from("Content-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), [{ cert: rcpt.cert }], { entity: true });
   check("97f. decrypt of a payload claiming hp=clear (a signed-only marker) -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.decrypt(clearInCipher, { key: rcpt.key, cert: rcpt.cert }); })) === "smime/bad-header-protection");
 
+  // (l) protectedHeaders are AUTHENTICATED: an INVALID signature (a tampered signed inner part) or an
+  // unauthenticated (AES-CBC) decrypt must NOT surface the inner fields as protected.
+  var innerTampered = Buffer.from(utf8Hp); var mi = innerTampered.indexOf(Buffer.from("the message body")); innerTampered[mi] ^= 0x20;
+  var itv = await pki.smime.verify(innerTampered);
+  check("97g. a tampered signed HP part -> valid:false AND protectedHeaders null (not the altered values)", itv.valid === false && itv.protectedHeaders === null && itv.headerProtection.present === false);
+  var cbcHp = await pki.smime.encrypt(HB, [{ cert: rcpt.cert }], { protectHeaders: true, headers: { Subject: "S" }, contentEncryptionAlgorithm: "aes-256-cbc" });
+  var cbcD = await pki.smime.decrypt(cbcHp, { key: rcpt.key, cert: rcpt.cert });
+  check("97g. an unauthenticated (AES-CBC) HP decrypt does NOT surface protectedHeaders", cbcD.authenticated === false && cbcD.protectedHeaders === null);
+
+  // (m) a duplicate Content-Type with an hp claim is a malformed wrap -> fail closed, not a silent downgrade.
+  var dupCt = await pki.smime.sign(Buffer.from("Content-Type: text/plain\r\nContent-Type: text/plain; hp=\"clear\"\r\n\r\nbody\n"), signers, { entity: true });
+  check("97h. a duplicate Content-Type with an hp claim -> smime/bad-header-protection", (await codeOf(function () { return pki.smime.verify(dupCt); })) === "smime/bad-header-protection");
+
   // protectHeaders with no/empty headers (an hp marker + no protected fields) + null header values.
   var emptyHp = await pki.smime.sign(HB, signers, { protectHeaders: true });
   check("98. protectHeaders with no opts.headers still emits hp + verifies", /hp="clear"/.test(emptyHp.toString("latin1")) && (await pki.smime.verify(emptyHp)).headerProtection.present === true);
