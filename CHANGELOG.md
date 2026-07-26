@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.24 — 2026-07-26
+
+pki.smime.verify / decrypt can now recognize a legacy (RFC 8551) header-protected message -- opt in with `legacyHeaderProtection` and the real headers of an older `message/rfc822`-wrapped message are surfaced, safely separated from the authenticated header set.
+
+### Added
+
+- pki.smime.verify and pki.smime.decrypt accept opts.legacyHeaderProtection: true to detect a legacy RFC 8551 header-protected message (RFC 9788 sec. 4.10) -- a signed or encrypted payload that is a bare message/rfc822 wrap with no hp= parameter. On a precise match the inner message's Non-Structural headers are surfaced under headerProtection.legacy = { headers, mode, fromMismatch, confidential }, with the mode inferred from the envelope and an encrypted message's confidential set computed against the visible outer headers. RFC 9788 sec. 4.10.1 / sec. 4.10.2, RFC 8551.
+- headerProtection.legacy is null on every verify / decrypt result unless a legacy message was detected via legacyHeaderProtection. The inferred set is intentionally kept separate from the authenticated protectedHeaders (which stays null) and from present (which stays false), since a legacy message is indistinguishable from a forwarded message/rfc822 -- so a consumer keying trust off present/protectedHeaders is never misled by the opt-in heuristic, and consuming headerProtection.legacy.headers is an explicit, fromMismatch-checkable choice.
+
+### Changed
+
+- Detection is opt-in and safe-by-default. Without legacyHeaderProtection the behavior is unchanged: a legacy-form message reads as protectedHeaders: null, present: false, legacy: null (never mis-authenticated). With the option set, a message that is not precisely identified -- an ordinary forwarded message/rfc822 that fails a condition, an inner part that is itself a signed/encrypted layer, an inner part declaring hp=, or a part with a duplicate Content-Type -- reports legacy: null. The signed-and-encrypted legacy form (RFC 9788 Appendix C.3.17) surfaces as clear via the caller's re-verify step, a documented limitation of the non-recursive layered API.
+
 ## v0.3.23 — 2026-07-26
 
 pki.pkcs12.open now reads legacy PKCS#12 stores -- decrypt the RFC 7292 Appendix C 3DES and RC2 bags an `openssl pkcs12 -legacy` (and NSS) store uses, so an older .p12/.pfx opens instead of being refused.

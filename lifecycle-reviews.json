@@ -185,6 +185,12 @@
     "reviewedAt": "0.3.0",
     "reviewBy": "0.4.0"
   },
+  "pki.acme.client": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 8555 ACME order-orchestration client rides the still-experimental shared pki.transport.https, whose fail-closed contract is still being hardened as each protocol client (EST / CMP / CT) composes it. Its returned order/account state shapes are still settling alongside the ACME message layer. Graduate once the network-client transport contract and the message-layer return shapes are settled.",
+    "reviewedAt": "0.3.24",
+    "reviewBy": "0.4.0"
+  },
   "pki.acme.assertTransition": {
     "decision": "keep-experimental",
     "reason": "The RFC 8555 ACME message layer returns the toolkit's own decoded message shapes (order / account / authorization / challenge objects, problem documents, the state-machine transition verdicts), which are still settling as the transport client surface fills in; graduating would freeze those return shapes. Graduate once the message-layer return shapes are frozen alongside the node:https client.",

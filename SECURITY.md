@@ -235,7 +235,24 @@ security-only patches after the next major releases.
   authenticated `HP-Outer` records (RFC 9788 §2.2) inside the ciphertext document
   which fields were left visible — so `decrypt` derives the end-to-end-confidential
   set (`headerProtection.confidential`) from signed/encrypted data alone, letting a
-  caller reply or forward without leaking a confidential header (§6.1).
+  caller reply or forward without leaking a confidential header (§6.1). Inbound
+  detection of the *legacy* RFC 8551 `message/rfc822` wrap (RFC 9788 §4.10) is
+  opt-in (`opts.legacyHeaderProtection`) and safe-by-default. A legacy RFC8551HP
+  message is structurally **indistinguishable** from an ordinary forwarded
+  `message/rfc822` (RFC 9788 §4.10.2 states the inference is "not based on any
+  strong end-to-end guarantees"), so the toolkit never conflates the two: a legacy
+  inference is surfaced ONLY under `headerProtection.legacy` (its own
+  `{ headers, mode, fromMismatch, confidential }` object), NEVER in
+  `protectedHeaders`, and NEVER sets `present: true`. A consumer that keys trust off
+  `present` / `protectedHeaders` — the authenticated, cryptographically-declared
+  (`hp=`) set — therefore cannot be tricked into treating a forwarded attachment's
+  From/Subject as this message's own headers; consuming the inferred set is an
+  explicit choice (read `headerProtection.legacy.headers`) and comes with
+  `legacy.fromMismatch`, which flags a forwarded message whose inner sender differs
+  from the outer one. Detection applies only after the signature/AEAD verdict
+  succeeds and requires all four §4.10.1 conditions; a nested crypto layer, an
+  `hp=` on the inner message, a non-`message/rfc822` payload, or a duplicate
+  Content-Type on either part reports `legacy: null`.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
