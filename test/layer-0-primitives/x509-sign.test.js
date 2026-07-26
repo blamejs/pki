@@ -402,6 +402,22 @@ async function testGeneralNameForms() {
   check("iPAddress wrong length -> throws", await codeOf(pki.x509.sign(base([{ iPAddress: Buffer.from([1, 2, 3]) }]), { key: s.key })) === "x509/bad-input");
   check("non-ASCII rfc822Name -> throws", await codeOf(pki.x509.sign(base([{ rfc822Name: "nÖn@ascii" }]), { key: s.key })) === "x509/bad-input");
   check("empty SAN list -> throws", await codeOf(pki.x509.sign(base([]), { key: s.key })) === "x509/bad-input");
+
+  // issue #116: an iPAddress SAN may be given as a dotted-quad / colon-hex STRING (packed internally),
+  // matching dNSName/URI ergonomics -- not only a pre-packed Buffer. The string must produce the exact
+  // same GeneralNames octets as the equivalent Buffer.
+  function sanValue(der) {
+    var c = pki.schema.x509.parse(der);
+    return c.extensions.filter(function (x) { return (x.name || x.oid) === "subjectAltName"; })[0].value;
+  }
+  var ipStr4 = await pki.x509.sign(base([{ iPAddress: "10.0.0.1" }]), { key: s.key });
+  var ipBuf4 = await pki.x509.sign(base([{ iPAddress: Buffer.from([10, 0, 0, 1]) }]), { key: s.key });
+  check("iPAddress IPv4 string packs to the same octets as the Buffer form", Buffer.compare(sanValue(ipStr4), sanValue(ipBuf4)) === 0);
+  var ipStr6 = await pki.x509.sign(base([{ iPAddress: "2001:db8::1" }]), { key: s.key });
+  var ipBuf6 = await pki.x509.sign(base([{ iPAddress: Buffer.concat([Buffer.from([0x20, 0x01, 0x0d, 0xb8]), Buffer.alloc(11), Buffer.from([0x01])]) }]), { key: s.key });
+  check("iPAddress IPv6 string packs to the same 16 octets as the Buffer form", Buffer.compare(sanValue(ipStr6), sanValue(ipBuf6)) === 0);
+  check("invalid iPAddress string -> throws", await codeOf(pki.x509.sign(base([{ iPAddress: "not.an.ip" }]), { key: s.key })) === "x509/bad-input");
+  check("out-of-range iPAddress octet string -> throws", await codeOf(pki.x509.sign(base([{ iPAddress: "999.0.0.1" }]), { key: s.key })) === "x509/bad-input");
 }
 
 async function testInputForms() {
@@ -518,6 +534,29 @@ async function testKeyMatchAndTimeAndSan() {
     Buffer.isBuffer(await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: [kcsKu, bcTrue] }, { key: s.key })));
 }
 
+// issue #119: extendedKeyUsage / certificatePolicies accept a raw dotted-OID (an unregistered KeyPurposeId
+// or private policy OID -- BIMI, document-signing, vendor purposes) alongside registered names.
+async function testDottedOidPurposes() {
+  var s = makeSigner("ec-p256");
+  function base(exts) { return { subject: "eku", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: exts }; }
+  var bimi = "1.3.6.1.5.5.7.3.31";                 // id-kp-BrandIndicatorforMessageIdentification (unregistered here)
+  var serverAuth = "1.3.6.1.5.5.7.3.1";            // the registered id-kp-serverAuth OID
+  var der = await pki.x509.sign(base({ extendedKeyUsage: ["serverAuth", bimi] }), { key: s.key });
+  var eku = pki.schema.x509.parse(der).extensions.filter(function (x) { return (x.name || x.oid) === "extKeyUsage"; })[0];
+  var purposeOids = asn1.decode(eku.value).children.map(function (n) { return asn1.read.oid(n); });
+  check("#119 a dotted-OID extendedKeyUsage purpose is emitted verbatim", purposeOids.indexOf(bimi) !== -1);
+  check("#119 a registered EKU name still resolves alongside a dotted OID", purposeOids.indexOf(serverAuth) !== -1);
+  check("#119 an unknown EKU name (not a dotted OID) still fails closed", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["notAPurpose"] }), { key: s.key })) === "x509/bad-input");
+  check("#119 a malformed dotted EKU OID fails closed", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["1.2.bad"] }), { key: s.key })) === "x509/bad-input");
+  check("#119 a lexically-dotted but arc-invalid OID surfaces the producer's bad-input, not oid/*", await codeOf(pki.x509.sign(base({ extendedKeyUsage: ["1.40"] }), { key: s.key })) === "x509/bad-input");
+  var privPolicy = "1.3.6.1.4.1.99999.1";
+  var derP = await pki.x509.sign(base({ certificatePolicies: ["anyPolicy", privPolicy] }), { key: s.key });
+  var cp = pki.schema.x509.parse(derP).extensions.filter(function (x) { return (x.name || x.oid) === "certificatePolicies"; })[0];
+  var policyOids = asn1.decode(cp.value).children.map(function (pi) { return asn1.read.oid(pi.children[0]); });
+  check("#119 a dotted-OID certificatePolicy is emitted verbatim", policyOids.indexOf(privPolicy) !== -1);
+  check("#119 an unknown certificate policy name still fails closed", await codeOf(pki.x509.sign(base({ certificatePolicies: ["notAPolicy"] }), { key: s.key })) === "x509/bad-input");
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -533,6 +572,7 @@ async function main() {
   await testCaCrossField();
   await testExtensionSurface();
   await testGeneralNameForms();
+  await testDottedOidPurposes();
   await testInputForms();
   await testCoverageEdges();
   await testKeyMatchAndTimeAndSan();

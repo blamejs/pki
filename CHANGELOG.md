@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.19 — 2026-07-26
+
+The CMP HTTP transfer client ships -- pki.cmp.transfer carries a protected PKIMessage to a CMP endpoint over the shared node:https transport (RFC 9811).
+
+### Added
+
+- pki.cmp.transfer(url, message, opts) -- the RFC 9811 HTTP transfer verb: POST a DER (or PEM) PKIMessage over the shared pki.transport and return the parsed response { response, responseBytes, status, contentType, tls }. The message is sent verbatim so its message-layer protection is preserved, and the response is classified fail-closed: HTTP 200 with an application/pkixcmp body is parsed; another 2xx is rejected (RFC 9811 requires 200); a 3xx is not followed; a 4xx/5xx carrying a CMP error PKIMessage forwards that integrity-protected verdict with the HTTP status surfaced as data, while a 4xx/5xx with no CMP body is an error. Protection is surfaced, not verified -- the caller checks it. Composes pki.cmp.build + pki.schema.cmp.parse over pki.transport; the default transport is https-only and refuses an unpinned server.
+- pki.cmp.wellKnownUrl(base, opts) -- build an RFC 9811 sec. 3.4 /.well-known/cmp request-URI, optionally with a { label, operation } path. Each label/operation is a single safe path segment; a base carrying a query or fragment, or a segment containing a separator or dot-segment, is refused so the resource cannot be silently retargeted.
+
+### Changed
+
+- pki.x509.sign now accepts a subjectAltName iPAddress entry as a dotted-quad IPv4 or colon-hex IPv6 string -- packed to its 4- or 16-octet network form internally -- in addition to a pre-packed Buffer, matching the string ergonomics of dNSName and uniformResourceIdentifier. This applies to every GeneralName consumer (certificates, CRLs, CMP, attribute certificates).
+- extendedKeyUsage and certificatePolicies now accept a raw dotted-decimal OID string directly, in addition to a registered purpose/policy name -- so an unregistered KeyPurposeId or private policy OID (a BIMI VMC purpose, a document-signing EKU, a vendor-specific purpose) can be supplied inline without first calling pki.oid.register or hand-encoding the extension. A token that is neither a registered name nor a well-formed dotted OID still fails closed.
+
 ## v0.3.18 — 2026-07-25
 
 The ACME client ships -- pki.acme drives the full RFC 8555 certificate-issuance flow over the shared node:https transport.
