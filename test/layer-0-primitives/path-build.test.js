@@ -492,6 +492,21 @@ async function run() {
   check("AIA D11: a non-function opts.transport is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: true }))) === "path/bad-input");
   check("AIA D11: a negative opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: -5 }))) === "path/bad-input");
   check("AIA D11: a NaN opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: NaN }))) === "path/bad-input");
+  // D12 SHARED-POOL RECHECK ON DRAIN: two deferred branches share the same missing issuer (X) reachable at ONE
+  // (deduped) caIssuers URL. The lower-priority branch drains first, fetches X into the SHARED pool, but fails
+  // validation; the second branch's URL is then deduped and returns nothing, so it must reconsider X from the
+  // shared pool rather than only its own (empty) fetch. leaf has two same-DN issuers both issued by X: Mid_good
+  // (signs leaf) and Mid_bad (expired, a different key, so it scores lower -> drains first -> does the fetch).
+  var d12RootKp = await freshKeys(), d12XKp = await freshKeys(), d12GoodKp = await freshKeys(), d12BadKp = await freshKeys(), d12LeafKp = await freshKeys();
+  var d12Root = await mkCert({ signer: d12RootKp, subjectKp: d12RootKp, issuerName: "D12Root", subjectName: "D12Root", extensions: caExts() });
+  var d12X = await mkCert({ signer: d12RootKp, subjectKp: d12XKp, issuerName: "D12Root", subjectName: "D12X", extensions: caExts() });
+  var d12Good = await mkCert({ signer: d12XKp, subjectKp: d12GoodKp, issuerName: "D12X", subjectName: "D12Mid", extensions: caExts([aiaCaIssuersUri("https://ca.example/d12-x.der")]) });
+  var d12Bad = await mkCert({ signer: d12XKp, subjectKp: d12BadKp, issuerName: "D12X", subjectName: "D12Mid", notBefore: new Date("1999-01-01T00:00:00Z"), notAfter: new Date("2000-01-01T00:00:00Z"), extensions: caExts([aiaCaIssuersUri("https://ca.example/d12-x.der")]) });
+  var d12Leaf = await mkCert({ signer: d12GoodKp, subjectKp: d12LeafKp, issuerName: "D12Mid", subjectName: "D12Leaf" });
+  var d12t = mkTransport(function (url) { if (url.indexOf("d12-x") >= 0) return cert200(d12X); throw new Error("unknown"); });
+  var d12 = await pki.path.build(d12Leaf, { candidates: [d12Good, d12Bad], trustAnchors: [d12Root], time: T, fetchAia: true, transport: d12t });
+  check("AIA D12: a sibling-fetched issuer in the shared pool is reconsidered when a deduped URL returns nothing (valid)", d12.valid === true && d12.aiaFetches === 1);
+  check("AIA D12: the shared caIssuers URL was fetched exactly once (deduped across both branches)", d12t.calls.length === 1);
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });
