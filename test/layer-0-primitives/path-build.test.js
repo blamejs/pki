@@ -492,6 +492,8 @@ async function run() {
   check("AIA D11: a non-function opts.transport is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: true }))) === "path/bad-input");
   check("AIA D11: a negative opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: -5 }))) === "path/bad-input");
   check("AIA D11: a NaN opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: NaN }))) === "path/bad-input");
+  check("AIA D11: a non-integer opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: 1.5 }))) === "path/bad-input");
+  check("AIA D11: an over-ceiling opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: pki.C.TIME.seconds(600) + 1 }))) === "path/bad-input");
   // D12 SHARED-POOL RECHECK ON DRAIN: two deferred branches share the same missing issuer (X) reachable at ONE
   // (deduped) caIssuers URL. The lower-priority branch drains first, fetches X into the SHARED pool, but fails
   // validation; the second branch's URL is then deduped and returns nothing, so it must reconsider X from the
