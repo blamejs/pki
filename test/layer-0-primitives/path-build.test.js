@@ -109,11 +109,14 @@ function aiaExt(entries) {
 }
 function aiaCaIssuersUri(url) { return aiaExt([{ method: pki.oid.byName("caIssuers"), tag: 6, value: url }]); }
 // A call-counting injectable transport. `handler(url) -> {status,headers,body}` or a thrown/rejected error.
-// t.calls records every url requested (the SSRF/dedupe assertions read the count).
+// t.calls records every url requested (the SSRF/dedupe assertions read the count). It VOUCHES it filters resolved
+// addresses (blocksPrivateAddresses) -- it is a test double that never opens a socket, so a DNS-name AIA host is
+// safe to fetch through it; an UNGUARDED transport (for the fail-closed test) is built inline without this marker.
 function mkTransport(handler) {
   var calls = [];
   var t = function (req) { calls.push(req.url); return Promise.resolve().then(function () { return handler(req.url, req); }); };
   t.calls = calls;
+  t.blocksPrivateAddresses = true;
   return t;
 }
 function cert200(der, contentType) { return { status: 200, headers: { "content-type": contentType || "application/pkix-cert" }, body: der }; }
@@ -495,20 +498,46 @@ async function run() {
   check("AIA D11: a non-integer opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: 1.5 }))) === "path/bad-input");
   check("AIA D11: an over-ceiling opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: pki.C.TIME.seconds(600) + 1 }))) === "path/bad-input");
   // D12 SHARED-POOL RECHECK ON DRAIN: two deferred branches share the same missing issuer (X) reachable at ONE
-  // (deduped) caIssuers URL. The lower-priority branch drains first, fetches X into the SHARED pool, but fails
-  // validation; the second branch's URL is then deduped and returns nothing, so it must reconsider X from the
-  // shared pool rather than only its own (empty) fetch. leaf has two same-DN issuers both issued by X: Mid_good
-  // (signs leaf) and Mid_bad (expired, a different key, so it scores lower -> drains first -> does the fetch).
-  var d12RootKp = await freshKeys(), d12XKp = await freshKeys(), d12GoodKp = await freshKeys(), d12BadKp = await freshKeys(), d12LeafKp = await freshKeys();
+  // (deduped) caIssuers URL. The branch drained first fetches X into the SHARED pool but fails validation; the
+  // second branch's URL is then deduped and returns nothing, so it must reconsider X from the shared pool rather
+  // than only its own (empty) fetch. leaf has two same-DN issuers both issued by X: Mid_fail (does not sign leaf)
+  // and Mid_good (signs leaf). Mid_fail is placed last in the pool so it is explored -- and thus deferred + drained
+  // -- first (the drain preserves DFS priority), making it the branch that does the fetch and fails.
+  var d12RootKp = await freshKeys(), d12XKp = await freshKeys(), d12FailKp = await freshKeys(), d12GoodKp = await freshKeys(), d12LeafKp = await freshKeys();
   var d12Root = await mkCert({ signer: d12RootKp, subjectKp: d12RootKp, issuerName: "D12Root", subjectName: "D12Root", extensions: caExts() });
   var d12X = await mkCert({ signer: d12RootKp, subjectKp: d12XKp, issuerName: "D12Root", subjectName: "D12X", extensions: caExts() });
   var d12Good = await mkCert({ signer: d12XKp, subjectKp: d12GoodKp, issuerName: "D12X", subjectName: "D12Mid", extensions: caExts([aiaCaIssuersUri("https://ca.example/d12-x.der")]) });
-  var d12Bad = await mkCert({ signer: d12XKp, subjectKp: d12BadKp, issuerName: "D12X", subjectName: "D12Mid", notBefore: new Date("1999-01-01T00:00:00Z"), notAfter: new Date("2000-01-01T00:00:00Z"), extensions: caExts([aiaCaIssuersUri("https://ca.example/d12-x.der")]) });
+  var d12Fail = await mkCert({ signer: d12XKp, subjectKp: d12FailKp, issuerName: "D12X", subjectName: "D12Mid", extensions: caExts([aiaCaIssuersUri("https://ca.example/d12-x.der")]) });
   var d12Leaf = await mkCert({ signer: d12GoodKp, subjectKp: d12LeafKp, issuerName: "D12Mid", subjectName: "D12Leaf" });
   var d12t = mkTransport(function (url) { if (url.indexOf("d12-x") >= 0) return cert200(d12X); throw new Error("unknown"); });
-  var d12 = await pki.path.build(d12Leaf, { candidates: [d12Good, d12Bad], trustAnchors: [d12Root], time: T, fetchAia: true, transport: d12t });
+  var d12 = await pki.path.build(d12Leaf, { candidates: [d12Good, d12Fail], trustAnchors: [d12Root], time: T, fetchAia: true, transport: d12t });
   check("AIA D12: a sibling-fetched issuer in the shared pool is reconsidered when a deduped URL returns nothing (valid)", d12.valid === true && d12.aiaFetches === 1);
   check("AIA D12: the shared caIssuers URL was fetched exactly once (deduped across both branches)", d12t.calls.length === 1);
+  // D13 UNGUARDED INJECTED TRANSPORT (SSRF): a transport that does NOT vouch it filters resolved addresses (a plain
+  // fn(request), e.g. a fetch wrapper) cannot block a private-RESOLVING hostname, so a DNS-name AIA URL is fetched
+  // ONLY through a guarded transport; through an unguarded one it is fail-closed (skipped, transport uncalled). An
+  // IP-literal AIA URL (validated by the literal pre-check) is still fetched through an unguarded transport.
+  var d13Calls = [];
+  var d13Unguarded = function (req) { d13Calls.push(req.url); return Promise.resolve(cert200(aInter)); };   // no blocksPrivateAddresses marker
+  check("AIA D13: a DNS-name AIA URL is NOT fetched through an unguarded injected transport (SSRF fail-closed)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: d13Unguarded }))) === "path/no-path" && d13Calls.length === 0);
+  var d13IpLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri("https://8.8.8.8/i.der")] });
+  var d13Calls2 = [];
+  var d13Unguarded2 = function (req) { d13Calls2.push(req.url); return Promise.resolve(cert200(aInter)); };
+  check("AIA D13: an IP-literal AIA URL IS still fetched through an unguarded transport (literal pre-check validated it)", (await pki.path.build(d13IpLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: d13Unguarded2 })).valid === true && d13Calls2.length === 1);
+  // D14 PRIORITY-PRESERVING DRAIN: two same-depth deferred candidates for the leaf's issuer, budget 1. The
+  // higher-priority branch (a KID match) needs a fetch that COMPLETES the chain; the lower-priority stale branch
+  // has a unique DEAD URL. A LIFO drain would fetch the dead URL first and exhaust the budget (-> path/no-path);
+  // the priority-preserving drain fetches the preferred branch first and builds within the single-fetch budget.
+  var d14RootKp = await freshKeys(), d14UpKp = await freshKeys(), d14HighKp = await freshKeys(), d14LowKp = await freshKeys(), d14LeafKp = await freshKeys();
+  var d14Kid = Buffer.alloc(20, 0xE4);   // leaf.AKI == d14High.SKI (the real signer) -> d14High scored higher -> drained first
+  var d14Root = await mkCert({ signer: d14RootKp, subjectKp: d14RootKp, issuerName: "D14Root", subjectName: "D14Root", extensions: caExts() });
+  var d14Up = await mkCert({ signer: d14RootKp, subjectKp: d14UpKp, issuerName: "D14Root", subjectName: "D14Up", extensions: caExts() });
+  var d14High = await mkCert({ signer: d14UpKp, subjectKp: d14HighKp, issuerName: "D14Up", subjectName: "D14Mid", extensions: caExts([skiExt(d14Kid), aiaCaIssuersUri("https://ca.example/d14-up.der")]) });
+  var d14Low = await mkCert({ signer: d14RootKp, subjectKp: d14LowKp, issuerName: "D14LowUp", subjectName: "D14Mid", extensions: caExts([aiaCaIssuersUri("https://ca.example/d14-dead.der")]) });
+  var d14Leaf = await mkCert({ signer: d14HighKp, subjectKp: d14LeafKp, issuerName: "D14Mid", subjectName: "D14Leaf", extensions: [akiExt(d14Kid)] });
+  var d14t = mkTransport(function (url) { if (url.indexOf("d14-up") >= 0) return cert200(d14Up); return { status: 404, headers: {}, body: Buffer.alloc(0) }; });
+  var d14 = await pki.path.build(d14Leaf, { candidates: [d14High, d14Low], trustAnchors: [d14Root], time: T, fetchAia: true, transport: d14t, maxAiaFetches: 1 });
+  check("AIA D14: a tight budget is spent on the higher-priority branch, not a stale sibling's dead URL (valid within budget 1)", d14.valid === true && d14.aiaFetches === 1);
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });
