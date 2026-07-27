@@ -473,15 +473,17 @@ security-only patches after the next major releases.
   surface is bounded against server-side request forgery and amplification: only an
   `https:` `uniformResourceIdentifier` accessLocation is fetched (an `http` /
   `ldap` / `ftp` / `file` / `mailto` URL, or a non-URI GeneralName, is skipped
-  before any socket), NEVER a private / loopback / link-local destination — one
-  that is an IP LITERAL in those ranges (RFC 1918, `127.0.0.0/8`,
-  `169.254.0.0/16` cloud-metadata, IPv6 `::1` / `fc00::/7` / `fe80::/10` /
-  `fec0::/10` deprecated site-local) OR a
-  hostname that RESOLVES to one is refused at resolution time and the checked
-  address is pinned for the connection (closing the resolve/connect rebinding
-  window), so an untrusted certificate cannot drive an authenticated GET to an
-  internal service by IP literal or by hostname — only the `id-ad-caIssuers`
-  access method (never
+  before any socket), NEVER a non-globally-routable destination — one that is
+  such an address LITERAL, or a hostname that RESOLVES to one, is refused (the
+  resolved address pinned for the connection, closing the rebinding window). The
+  classifier blocks the complete IANA special-purpose set: for IPv4 the private /
+  loopback / CGNAT / link-local (`169.254.0.0/16` cloud-metadata) / benchmarking /
+  TEST-NET / 6to4-relay / multicast / reserved ranges (RFC 6890); for IPv6
+  everything outside global unicast `2000::/3`, plus the special-use carve-outs
+  within it — `2001::/23` (IETF protocol) / `2002::/16` (6to4) / `2001:db8::/32`
+  and `3fff::/20` (documentation) / IPv4-mapped. So an untrusted certificate
+  cannot drive an authenticated GET to an internal service by IP literal or by
+  hostname — only the `id-ad-caIssuers` access method (never
   `id-ad-ocsp`), a build-wide total fetch budget enforced as a SILENT cap (on
   reaching it the builder stops fetching — never a throw, so a fetch bound can
   never deny a path the static pool could build), a per-certificate URL cap, a

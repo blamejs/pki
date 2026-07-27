@@ -415,7 +415,7 @@ async function run() {
   check("AIA C3: an unparseable caIssuers URI is skipped -> path/no-path, transport uncalled", (await codeOf(pki.path.build(cBadUrlLeaf, Object.assign({}, aBase, { transport: c3t })))) === "path/no-path" && c3t.calls.length === 0);
   // C4 SSRF PRIVATE-ADDRESS BLOCK: an https caIssuers URL to a loopback / link-local / RFC1918 IP LITERAL is
   // never fetched (an untrusted cert must not drive an authenticated GET to an internal service / cloud metadata).
-  var privHosts = ["127.0.0.1", "169.254.169.254", "10.0.0.5", "172.16.0.1", "192.168.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1", "198.18.0.1", "192.0.2.1", "203.0.113.1", "[::1]", "[::]", "[fc00::1]", "[fe80::1]", "[fec0::1]", "[ff02::1]", "[2001:db8::1]", "[::ffff:127.0.0.1]"];
+  var privHosts = ["127.0.0.1", "169.254.169.254", "10.0.0.5", "172.16.0.1", "192.168.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1", "198.18.0.1", "192.0.2.1", "203.0.113.1", "[::1]", "[::]", "[fc00::1]", "[fe80::1]", "[fec0::1]", "[ff02::1]", "[2001:db8::1]", "[2002::1]", "[2001:2::1]", "[::ffff:127.0.0.1]"];
   var cPrivLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt(privHosts.map(function (h) { return { tag: 6, value: "https://" + h + "/i" }; }))] });
   var c4t = mkTransport(function () { return cert200(aInter); });
   check("AIA C4: private/loopback/link-local/reserved IP-literal caIssuers URLs (v4 + v6) are never fetched (SSRF, transport uncalled)", (await codeOf(pki.path.build(cPrivLeaf, Object.assign({}, aBase, { transport: c4t, maxAiaPerCert: 20 })))) === "path/no-path" && c4t.calls.length === 0);
