@@ -538,6 +538,16 @@ async function run() {
   var d14t = mkTransport(function (url) { if (url.indexOf("d14-up") >= 0) return cert200(d14Up); return { status: 404, headers: {}, body: Buffer.alloc(0) }; });
   var d14 = await pki.path.build(d14Leaf, { candidates: [d14High, d14Low], trustAnchors: [d14Root], time: T, fetchAia: true, transport: d14t, maxAiaFetches: 1 });
   check("AIA D14: a tight budget is spent on the higher-priority branch, not a stale sibling's dead URL (valid within budget 1)", d14.valid === true && d14.aiaFetches === 1);
+  // D15 DEDUP FETCHED ISSUERS: distinct mirror caIssuers URLs return the SAME issuer. Without dedup each copy is
+  // appended and charges the candidate budget, so maxCandidatesConsidered:1 trips path/build-limit before the
+  // issuer is evaluated; deduping by DER means the mirrored issuer is added once and the chain builds within it.
+  var d15RootKp = await freshKeys(), d15MidKp = await freshKeys(), d15LeafKp = await freshKeys();
+  var d15Root = await mkCert({ signer: d15RootKp, subjectKp: d15RootKp, issuerName: "D15Root", subjectName: "D15Root", extensions: caExts() });
+  var d15Mid = await mkCert({ signer: d15RootKp, subjectKp: d15MidKp, issuerName: "D15Root", subjectName: "D15Mid", extensions: caExts() });
+  var d15Leaf = await mkCert({ signer: d15MidKp, subjectKp: d15LeafKp, issuerName: "D15Mid", subjectName: "D15Leaf", extensions: [aiaExt([{ tag: 6, value: "https://ca.example/d15-m1.der" }, { tag: 6, value: "https://ca.example/d15-m2.der" }])] });
+  var d15t = mkTransport(function () { return cert200(d15Mid); });   // every mirror URL returns the SAME issuer
+  var d15 = await pki.path.build(d15Leaf, { candidates: [], trustAnchors: [d15Root], time: T, fetchAia: true, transport: d15t, maxCandidatesConsidered: 1 });
+  check("AIA D15: mirrored caIssuers URLs returning the same issuer are deduped -> the chain builds within maxCandidatesConsidered:1", d15.valid === true);
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });
