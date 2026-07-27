@@ -548,6 +548,20 @@ async function run() {
   var d15t = mkTransport(function () { return cert200(d15Mid); });   // every mirror URL returns the SAME issuer
   var d15 = await pki.path.build(d15Leaf, { candidates: [], trustAnchors: [d15Root], time: T, fetchAia: true, transport: d15t, maxCandidatesConsidered: 1 });
   check("AIA D15: mirrored caIssuers URLs returning the same issuer are deduped -> the chain builds within maxCandidatesConsidered:1", d15.valid === true);
+  // D16 BACKWARD COMPLETION: a branch drained FIRST (its AIA URL is dead) must be re-explored after a LATER sibling
+  // fetches the issuer it needed. leaf has two same-DN issuers both issued by SharedUp: MidA (signs leaf, dead AIA
+  // URL, drained first) and MidB (does NOT sign leaf, its AIA returns SharedUp). MidA drains first and finds
+  // nothing; MidB then fetches SharedUp (but MidB is an invalid signer); MidA -- kept eligible -- is re-explored
+  // against the now-shared SharedUp and completes the chain. A one-shot drain would discard MidA and miss the path.
+  var d16RootKp = await freshKeys(), d16UpKp = await freshKeys(), d16AKp = await freshKeys(), d16BKp = await freshKeys(), d16LeafKp = await freshKeys();
+  var d16Root = await mkCert({ signer: d16RootKp, subjectKp: d16RootKp, issuerName: "D16Root", subjectName: "D16Root", extensions: caExts() });
+  var d16Up = await mkCert({ signer: d16RootKp, subjectKp: d16UpKp, issuerName: "D16Root", subjectName: "D16Up", extensions: caExts() });
+  var d16A = await mkCert({ signer: d16UpKp, subjectKp: d16AKp, issuerName: "D16Up", subjectName: "D16Mid", extensions: caExts([aiaCaIssuersUri("https://ca.example/d16-dead.der")]) });
+  var d16B = await mkCert({ signer: d16UpKp, subjectKp: d16BKp, issuerName: "D16Up", subjectName: "D16Mid", extensions: caExts([aiaCaIssuersUri("https://ca.example/d16-up.der")]) });
+  var d16Leaf = await mkCert({ signer: d16AKp, subjectKp: d16LeafKp, issuerName: "D16Mid", subjectName: "D16Leaf" });
+  var d16t = mkTransport(function (url) { if (url.indexOf("d16-up") >= 0) return cert200(d16Up); return { status: 404, headers: {}, body: Buffer.alloc(0) }; });
+  var d16 = await pki.path.build(d16Leaf, { candidates: [d16B, d16A], trustAnchors: [d16Root], time: T, fetchAia: true, transport: d16t });
+  check("AIA D16: a branch drained early is re-explored after a later sibling fetches the issuer it needed (valid)", d16.valid === true);
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });
