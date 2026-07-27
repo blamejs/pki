@@ -112,6 +112,14 @@ function run() {
   check("inspect: control byte in a fallback value is hex-dumped, never raw",
     cr.indexOf("\r") < 0 && cr.indexOf("line-a\rline-b") < 0 && /6c:69:6e:65:2d:61/.test(cr));
 
+  // An AIA accessLocation using the iPAddress GeneralName form ([7]) is a RAW 4/16-byte Buffer; a byte such as
+  // 0x0a ('\n') must render as an address (10.0.0.10), never emitted raw where it would inject a line + spoof a field.
+  var aiaIp = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("caIssuers")), b.contextPrimitive(7, Buffer.from([10, 0, 0, 10]))])]))])));
+  check("inspect: an AIA iPAddress accessLocation renders as an address, never raw bytes that inject a line",
+    /CA Issuers - IP:10\.0\.0\.10/.test(aiaIp) && aiaIp.indexOf("IP:\n") < 0);
+
   // The issuer+serial AKI form (no keyIdentifier) must render its real values, not
   // "keyid:(none)". Build AKI = { [1] authorityCertIssuer dirName, [2] serial }.
   var akiName = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("aki-ca")])])]);
