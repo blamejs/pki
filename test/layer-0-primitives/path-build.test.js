@@ -434,19 +434,19 @@ async function run() {
   var dLeaf = await mkCert({ signer: dAKp, subjectKp: dLeafKp, issuerName: "DInterA", subjectName: "DLeaf", extensions: [aiaCaIssuersUri("https://ca.example/A.der")] });
   var dt = mkTransport(function (url) { if (url.indexOf("A.der") >= 0) return cert200(dA); if (url.indexOf("B.der") >= 0) return cert200(dB); throw new Error("unknown"); });
   check("AIA D1: the total fetch budget is a SILENT cap -> path/no-path (never aborts a build), transport <= budget", (await codeOf(pki.path.build(dLeaf, { candidates: [], trustAnchors: [dRoot], time: T, fetchAia: true, transport: dt, maxAiaFetches: 1 }))) === "path/no-path" && dt.calls.length <= 1);
-  // D0 AVAILABILITY (audit: budget-exhaustion must not deny a valid STATIC path): a leaf with a valid pool path
-  // whose issuer also has many same-name decoys (each anchor-adjacent but unable to sign, each advertising a
-  // dead AIA URL) must still build. The decoys' failed-anchor branches DO fall back to their AIA (a CA key
-  // rollover must not be starved), but every such fetch is bounded by the total budget and never denies the
-  // valid static path -- aInter is a pool cert reached without any fetch.
+  // D0 LOCAL-BEFORE-REMOTE IS GLOBAL, NOT PER-BRANCH: a leaf with a valid pool path whose issuer also has many
+  // same-DN decoys (each anchor-adjacent but unable to sign, each advertising a dead AIA URL) must build via the
+  // static pool with ZERO fetches. Every decoy dead-ends locally, but its AIA fallback is DEFERRED until the whole
+  // local search is exhausted -- and the valid static issuer (aInter) is found during that local search, so the
+  // decoys' fallbacks never run. A fetch ahead of a still-unexplored static sibling would break the guarantee.
   var d0Decoys = [];
   for (var d0i = 0; d0i < 15; d0i++) { var d0kp = await freshKeys(); d0Decoys.push(await mkCert({ signer: aRootKp, subjectKp: d0kp, issuerName: "AiaRoot", subjectName: "AiaInter", extensions: caExts([aiaCaIssuersUri("https://ca.example/decoy" + d0i)]) })); }
   var d0Pool = [aInter].concat(d0Decoys);
   var d0t = mkTransport(function () { return { status: 404, headers: {}, body: Buffer.alloc(0) }; });
   var d0Offline = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T });
   var d0Fetch = await pki.path.build(aLeaf, { candidates: d0Pool, trustAnchors: [aRoot], time: T, fetchAia: true, transport: d0t });
-  check("AIA D0: fetchAia does NOT deny a valid static path that budget-burning decoys would exhaust (valid:true both ways)", d0Offline.valid === true && d0Fetch.valid === true);
-  check("AIA D0: the same-DN decoys' failed-anchor fallbacks stay within the total fetch budget (bounded, never unbounded)", d0t.calls.length <= 10);
+  check("AIA D0: fetchAia does NOT deny a valid static path amid budget-burning decoys (valid:true both ways)", d0Offline.valid === true && d0Fetch.valid === true);
+  check("AIA D0: a pool-completable build makes ZERO fetches -- a dead-ending decoy never fetches ahead of the valid static sibling (local-before-remote is global)", d0t.calls.length === 0);
   // D7 STALE-POOL-CERT FALLBACK (RFC 4158 sec. 7.2 local-before-remote is LAZY, not skip-if-any-local-match): the
   // pool holds a DECOY whose subject == the leaf's issuer DN but with a different key -- it name-chains to the
   // anchor yet cannot sign the leaf. The local decoy branch is explored FIRST and dead-ends in validation; only
