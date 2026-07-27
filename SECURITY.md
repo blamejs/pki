@@ -475,7 +475,8 @@ security-only patches after the next major releases.
   `ldap` / `ftp` / `file` / `mailto` URL, or a non-URI GeneralName, is skipped
   before any socket), NEVER a private / loopback / link-local destination — one
   that is an IP LITERAL in those ranges (RFC 1918, `127.0.0.0/8`,
-  `169.254.0.0/16` cloud-metadata, IPv6 `::1` / `fc00::/7` / `fe80::/10`) OR a
+  `169.254.0.0/16` cloud-metadata, IPv6 `::1` / `fc00::/7` / `fe80::/10` /
+  `fec0::/10` deprecated site-local) OR a
   hostname that RESOLVES to one is refused at resolution time and the checked
   address is pinned for the connection (closing the resolve/connect rebinding
   window), so an untrusted certificate cannot drive an authenticated GET to an

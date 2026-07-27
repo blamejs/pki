@@ -310,7 +310,7 @@ async function testResolutionFilterUnits() {
   var ht = require("../../lib/http-transport");
   check("isBlockedIp: v4 private/loopback/link-local/reserved blocked", ["10.0.0.1", "127.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.169.254", "100.64.0.1", "0.0.0.0", "224.0.0.1"].every(ht.isBlockedIp));
   check("isBlockedIp: v4 public allowed (range edges)", !ht.isBlockedIp("8.8.8.8") && !ht.isBlockedIp("172.32.0.1") && !ht.isBlockedIp("192.169.0.1") && !ht.isBlockedIp("100.128.0.1"));
-  check("isBlockedIp: v6 loopback/unspecified/mapped/ULA/link-local blocked", ["::1", "::", "::ffff:127.0.0.1", "fc00::1", "fe80::1"].every(ht.isBlockedIp));
+  check("isBlockedIp: v6 loopback/unspecified/mapped/ULA/link-local/site-local blocked", ["::1", "::", "::ffff:127.0.0.1", "fc00::1", "fe80::1", "fec0::1", "feff::1"].every(ht.isBlockedIp));
   check("isBlockedIp: v6 public allowed + a non-IP is not classified", !ht.isBlockedIp("2001:db8::1") && !ht.isBlockedIp("example.com"));
   function resolver(err, addr, fam) { return function (h, o, cb) { cb(err, addr, fam); }; }
   function drive(lookupFn) { return new Promise(function (res) { lookupFn("host", {}, function (e, a) { res({ e: e, a: a }); }); }); }
