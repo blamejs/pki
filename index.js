@@ -154,7 +154,9 @@ module.exports = {
   // drive -- pki.transport.https(defaults) returns a transport(request) -> {status,
   // headers, body}. The toolkit's sole socket choke point: explicit trust anchors,
   // rejectUnauthorized always on, a TLS floor, a streaming response cap, and a timeout.
-  transport: transport,
+  // Curated to the public `https` factory; the module's `isBlockedIp` classifier is an
+  // internal helper pki.path.build reuses (require the module), not a public surface.
+  transport: { https: transport.https },
   // `jose` is the RFC 7515 Flattened JWS + RFC 7638 JWK-thumbprint layer: a strict
   // base64url codec, a bounded duplicate-key-rejecting JSON reader, profiled
   // sign/verify (ACME-outer / EAB-inner / keyChange-inner), and an alg registry

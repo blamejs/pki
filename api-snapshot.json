@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.24",
+  "packageVersion": "0.3.25",
   "surface": {
     "C": {
       "kind": "object",
@@ -96,6 +96,18 @@
               "kind": "number"
             },
             "OID_MAX_SUBIDENTIFIER_BYTES": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_CERTS_PER_RESPONSE": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_FETCHES": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_PER_CERT": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_RESPONSE_BYTES": {
               "kind": "number"
             },
             "PATH_BUILD_MAX_CANDIDATES": {
@@ -1295,6 +1307,18 @@
             "OID_MAX_SUBIDENTIFIER_BYTES": {
               "kind": "number"
             },
+            "PATH_AIA_MAX_CERTS_PER_RESPONSE": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_FETCHES": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_PER_CERT": {
+              "kind": "number"
+            },
+            "PATH_AIA_MAX_RESPONSE_BYTES": {
+              "kind": "number"
+            },
             "PATH_BUILD_MAX_CANDIDATES": {
               "kind": "number"
             },
@@ -2270,7 +2294,7 @@
         },
         "renderedExtensions": {
           "kind": "array",
-          "length": 22
+          "length": 23
         }
       }
     },

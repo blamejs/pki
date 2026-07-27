@@ -1830,9 +1830,9 @@ function testNoDuplicateCodeBlocks() {
       // guard-limits.js); each client binds a DIFFERENT domain (acme/ est/ cmp/ ct/) and a different protocol
       // shape (a stateful session, functional verbs, a stateless transfer, a fetch-then-verify), so the
       // anchor-gate + budget + response-normalize glue recurs without being further extractable.
-      files: ["lib/acme.js:client", "lib/acme.js:_sendFollowing", "lib/est.js:_client", "lib/cmp-build.js:_transfer", "lib/ct.js:fetchLogList", "lib/ct.js:_fetchBody"],
+      files: ["lib/acme.js:client", "lib/acme.js:_sendFollowing", "lib/est.js:_client", "lib/cmp-build.js:_transfer", "lib/ct.js:fetchLogList", "lib/ct.js:_fetchBody", "lib/path-validate.js:build", "lib/path-validate.js:_aiaFetchOne"],
       mode: "family-subset",
-      reason: "network-client entry + response glue: URL parse + default-transport trust-anchor gate (explicit anchor|useSystemStore else */no-trust-anchors, then pki.transport.https) + guard.limits.cap timeout/maxResponseBytes budgets + opts.tls->request.tls mapping + the response-body re-view (guard.bytes.view) and size recheck. The transport/guard/budget primitives are shared in http-transport.js / guard-limits.js; each client binds a different domain and protocol shape (acme stateful session, est functional verbs, cmp stateless transfer, ct fetch-then-verify), so the glue recurs without being further extractable.",
+      reason: "network-client entry + response glue: URL parse + default-transport trust-anchor gate (explicit anchor|useSystemStore else */no-trust-anchors, then pki.transport.https) + guard.limits.cap timeout/maxResponseBytes budgets + opts.tls->request.tls mapping + the response-body re-view (guard.bytes.view) and size recheck. The transport/guard/budget primitives are shared in http-transport.js / guard-limits.js; each client binds a different domain and protocol shape (acme stateful session, est functional verbs, cmp stateless transfer, ct fetch-then-verify, path-validate's opt-in AIA caIssuers fetch), so the glue recurs without being further extractable.",
     },
     {
       // The per-attribute uniqueness + assembly idiom: a dedup helper that rejects a repeated

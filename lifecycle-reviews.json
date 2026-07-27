@@ -707,6 +707,18 @@
     "reviewedAt": "0.3.11",
     "reviewBy": "0.4.0"
   },
+  "pki.cmp.transfer": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 9811 CMP-over-HTTP transfer rides the still-experimental shared pki.transport, whose fail-closed contract is still being hardened as each protocol client composes it, and the surrounding CMP surface (lightweight-profile RFC 9483 validation, incoming MAC/signature verification, a stateful transaction orchestrator) is still Planned. Graduate alongside pki.cmp.build once the CMP transfer + verification surface is complete.",
+    "reviewedAt": "0.3.25",
+    "reviewBy": "0.4.0"
+  },
+  "pki.cmp.wellKnownUrl": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 9811 sec. 3.4 /.well-known/cmp URL builder is part of the CMP transfer surface that is still settling (incoming verification and the stateful transaction orchestrator remain Planned). Graduate alongside pki.cmp.transfer / pki.cmp.build.",
+    "reviewedAt": "0.3.25",
+    "reviewBy": "0.4.0"
+  },
   "pki.crmf.buildCertTemplate": {
     "decision": "keep-experimental",
     "reason": "The thin CertTemplate encoder export rides the same still-settling RFC 4211 CertTemplate field set as pki.crmf.build; graduate alongside pki.crmf.build once the CMP enrollment surface is complete and the builder opts are frozen.",
@@ -715,7 +727,7 @@
   },
   "pki.path.build": {
     "decision": "keep-experimental",
-    "reason": "RFC 4158 certification-path building (leaf -> anchor over an untrusted candidate pool, every accept flowing through pki.path.validate, DoS-bounded). The offline discovery surface is hardened and openssl-cross-checked, but AIA caIssuers fetching is still Planned, so the surface will grow before it settles. Graduate once the path-discovery surface (including AIA fetch) is settled.",
+    "reason": "RFC 4158 certification-path building (leaf -> anchor over an untrusted candidate pool, every accept flowing through pki.path.validate, DoS-bounded). Offline discovery is hardened and openssl-cross-checked, and opt-in AIA caIssuers fetching now ships over the still-experimental shared pki.transport (SSRF-bounded, fetched certs stay untrusted pool material through validate). Reverse/bridge-mesh building and multiple-anchor policy selection remain Planned, so the discovery surface will still grow before it settles. Graduate once the path-discovery surface is settled alongside the network-client transport contract.",
     "reviewedAt": "0.3.13",
     "reviewBy": "0.4.0"
   },
