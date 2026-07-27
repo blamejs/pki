@@ -345,6 +345,14 @@ async function testBlockPrivateAddresses() {
     check("blockPrivateAddresses off: a loopback-resolving hostname connects (the literal check alone misses it)", ok.status === 200);
     check("blockPrivateAddresses on: a hostname resolving to a loopback address is refused (transport/blocked-address)",
       (await codeOf(t({ method: "GET", url: url, blockPrivateAddresses: true }))) === "transport/blocked-address");
+    // A private IP LITERAL host: node does NOT call the custom lookup (nothing to resolve), so the option must
+    // reject the literal in _prepare -- otherwise a direct transport caller would connect to it.
+    check("blockPrivateAddresses on: a private IP-literal host is refused (node skips lookup for literals) -> transport/blocked-address",
+      (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x", blockPrivateAddresses: true }))) === "transport/blocked-address");
+    check("blockPrivateAddresses on: an IPv6 private literal host is refused too",
+      (await codeOf(t({ method: "GET", url: "https://[fc00::1]:9/x", blockPrivateAddresses: true }))) === "transport/blocked-address");
+    check("blockPrivateAddresses off (default): the private-literal guard is opt-in, not applied",
+      (await codeOf(t({ method: "GET", url: "https://127.0.0.1:9/x" }))) !== "transport/blocked-address");
   } finally { s.srv.close(); }
 }
 
