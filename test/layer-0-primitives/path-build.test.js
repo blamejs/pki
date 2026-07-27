@@ -412,7 +412,7 @@ async function run() {
   check("AIA C3: an unparseable caIssuers URI is skipped -> path/no-path, transport uncalled", (await codeOf(pki.path.build(cBadUrlLeaf, Object.assign({}, aBase, { transport: c3t })))) === "path/no-path" && c3t.calls.length === 0);
   // C4 SSRF PRIVATE-ADDRESS BLOCK: an https caIssuers URL to a loopback / link-local / RFC1918 IP LITERAL is
   // never fetched (an untrusted cert must not drive an authenticated GET to an internal service / cloud metadata).
-  var privHosts = ["127.0.0.1", "169.254.169.254", "10.0.0.5", "172.16.0.1", "192.168.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1", "[::1]", "[::]", "[fc00::1]", "[fe80::1]", "[fec0::1]", "[::ffff:127.0.0.1]"];
+  var privHosts = ["127.0.0.1", "169.254.169.254", "10.0.0.5", "172.16.0.1", "192.168.1.1", "100.64.0.1", "0.0.0.0", "224.0.0.1", "198.18.0.1", "192.0.2.1", "203.0.113.1", "[::1]", "[::]", "[fc00::1]", "[fe80::1]", "[fec0::1]", "[ff02::1]", "[2001:db8::1]", "[::ffff:127.0.0.1]"];
   var cPrivLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt(privHosts.map(function (h) { return { tag: 6, value: "https://" + h + "/i" }; }))] });
   var c4t = mkTransport(function () { return cert200(aInter); });
   check("AIA C4: private/loopback/link-local/reserved IP-literal caIssuers URLs (v4 + v6) are never fetched (SSRF, transport uncalled)", (await codeOf(pki.path.build(cPrivLeaf, Object.assign({}, aBase, { transport: c4t, maxAiaPerCert: 20 })))) === "path/no-path" && c4t.calls.length === 0);
@@ -420,9 +420,9 @@ async function run() {
   var cPubLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri("https://8.8.8.8/i.der")] });
   var c5t = mkTransport(function () { return cert200(aInter); });
   check("AIA C5: a public IPv4-literal caIssuers URL IS fetched (block is private-only) -> valid", (await pki.path.build(cPubLeaf, Object.assign({}, aBase, { transport: c5t }))).valid === true && c5t.calls.length === 1);
-  var cPub6Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri("https://[2001:db8::1]/i.der")] });
+  var cPub6Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaCaIssuersUri("https://[2606:4700::1]/i.der")] });
   var c6t = mkTransport(function () { return cert200(aInter); });
-  check("AIA C6: a public IPv6-literal caIssuers URL IS fetched (block is private-only) -> valid", (await pki.path.build(cPub6Leaf, Object.assign({}, aBase, { transport: c6t }))).valid === true && c6t.calls.length === 1);
+  check("AIA C6: a global-unicast IPv6-literal caIssuers URL IS fetched (block is non-global-only) -> valid", (await pki.path.build(cPub6Leaf, Object.assign({}, aBase, { transport: c6t }))).valid === true && c6t.calls.length === 1);
 
   // D1 BUDGET is a SILENT CAP, not a throw: a chain needing more fetches than maxAiaFetches stops fetching at
   // the budget (never a throw that denies a buildable path). Here no path exists within a 1-fetch budget, so the
@@ -475,6 +475,23 @@ async function run() {
   var d9 = await pki.path.build(d9Leaf, { candidates: [], trustAnchors: [d9Anchor], time: T, fetchAia: true, transport: d9t });
   check("AIA D9: a name match to an anchor whose key fails direct validation still falls back to AIA (rollover chain validates)", d9.valid === true && d9.aiaFetches === 1 && d9.path.length === 2);
   check("AIA D9: the fetched rollover intermediate carries the old key and is on the built path", Buffer.from(d9.path[0].subjectPublicKeyInfo.bytes).equals(d9OldKp.spki));
+  // D10 DEEPEST-FIRST DRAIN: the pool supplies the leaf's DIRECT issuer (I1) but the higher intermediate (I2) is
+  // missing. A FIFO drain would spend the only fetch re-retrieving the already-supplied I1 via the leaf's AIA and
+  // exhaust the budget; deepest-first drains I1's fallback (the actual dead end) first, fetching the MISSING I2.
+  var d10RootKp = await freshKeys(), d10I2Kp = await freshKeys(), d10I1Kp = await freshKeys(), d10LeafKp = await freshKeys();
+  var d10Root = await mkCert({ signer: d10RootKp, subjectKp: d10RootKp, issuerName: "D10Root", subjectName: "D10Root", extensions: caExts() });
+  var d10I2 = await mkCert({ signer: d10RootKp, subjectKp: d10I2Kp, issuerName: "D10Root", subjectName: "D10I2", extensions: caExts() });
+  var d10I1 = await mkCert({ signer: d10I2Kp, subjectKp: d10I1Kp, issuerName: "D10I2", subjectName: "D10I1", extensions: caExts([aiaCaIssuersUri("https://ca.example/d10-i2.der")]) });
+  var d10Leaf = await mkCert({ signer: d10I1Kp, subjectKp: d10LeafKp, issuerName: "D10I1", subjectName: "D10Leaf", extensions: [aiaCaIssuersUri("https://ca.example/d10-i1.der")] });
+  var d10t = mkTransport(function (url) { if (url.indexOf("d10-i2") >= 0) return cert200(d10I2); if (url.indexOf("d10-i1") >= 0) return cert200(d10I1); throw new Error("unknown"); });
+  var d10 = await pki.path.build(d10Leaf, { candidates: [d10I1], trustAnchors: [d10Root], time: T, fetchAia: true, transport: d10t, maxAiaFetches: 1 });
+  check("AIA D10: deepest-first spends the single fetch on the MISSING higher hop, not the pool-supplied issuer (valid within budget 1)", d10.valid === true && d10.aiaFetches === 1);
+  check("AIA D10: the fetch targeted the missing intermediate's AIA, not the leaf's already-supplied issuer", d10t.calls.length === 1 && d10t.calls[0].indexOf("d10-i2") >= 0);
+  // D11 CONFIG-TIME AIA OPTION VALIDATION: a caller typo is a path/bad-input THROW (tier 1), not a swallowed fetch
+  // fault that degrades to path/no-path (or, for an injected transport, an unvalidated timeout).
+  check("AIA D11: a non-function opts.transport is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: true }))) === "path/bad-input");
+  check("AIA D11: a negative opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: -5 }))) === "path/bad-input");
+  check("AIA D11: a NaN opts.aiaTimeout is rejected at config time (path/bad-input)", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true, transport: b1t, aiaTimeout: NaN }))) === "path/bad-input");
   // D2 PER-CERT URL CAP: a leaf advertising 5 caIssuers URLs (all failing) fetches at most maxAiaPerCert.
   var d2Leaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([1, 2, 3, 4, 5].map(function (i) { return { tag: 6, value: "https://ca.example/u" + i }; }))] });
   var d2t = mkTransport(function () { throw new Error("all fail"); });
