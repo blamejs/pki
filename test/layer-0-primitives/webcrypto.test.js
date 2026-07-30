@@ -249,6 +249,15 @@ async function testDerive() {
   var pw = await subtle.importKey("raw", Buffer.from("password"), { name: "PBKDF2" }, false, ["deriveBits"]);
   var p1 = await subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("NaCl"), iterations: 1000 }, pw, 256);
   check("PBKDF2 derives 32 bytes deterministically", p1.byteLength === 32);
+  // PBKDF2 runs OFF the event-loop thread (crypto.pbkdf2 on the libuv threadpool), so an attacker-controlled
+  // iteration count cannot block Node (CWE-400). A concurrent setImmediate loop keeps ticking DURING a large
+  // derivation; a synchronous pbkdf2Sync would block the loop so no tick fires before the derivation resolves.
+  var ticks = 0, derDone = false;
+  function _tick() { if (derDone) return; ticks++; setImmediate(_tick); }
+  setImmediate(_tick);
+  await subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("NaCl"), iterations: 2000000 }, pw, 256);
+  derDone = true;
+  check("PBKDF2 runs off the event loop (concurrent ticks fired during a 2M-iteration derivation)", ticks > 100);
 }
 
 async function testWrap() {
