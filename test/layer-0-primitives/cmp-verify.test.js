@@ -211,6 +211,15 @@ async function run() {
   var malKuMsg = await pki.cmp.build({ header: HDR, body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
   var t9d2 = await pki.cmp.verify(malKuMsg, { signerCert: malKuCert, trustAnchors: [caCert], time: T });
   check("9d2. a signer cert with a non-minimal KeyUsage encoding -> cmp/untrusted-signer (not authorized to sign)", t9d2.trusted === false && t9d2.code === "cmp/untrusted-signer");
+  // An EXPLICIT opts.signerCert is resolved WITHOUT the senderKID SKI gate (the senderKID only narrows a
+  // candidate search): a valid message from a signer certificate that omits an SKI, carrying an arbitrary
+  // header senderKID, still resolves to its exact opts.signerCert and verifies (the signature is the gate).
+  var noSkiKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var noSkiKey = noSkiKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var noSkiSpki = noSkiKp.publicKey.export({ format: "der", type: "spki" });
+  var noSkiCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: noSkiSpki, serialNumber: 52, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] } }, { key: caKey, cert: caCert });
+  var kidMsg = await pki.cmp.build({ header: hdr({ senderKID: Buffer.alloc(20, 0xab) }), body: await p10Body(noSkiSpki, noSkiKey) }, { key: noSkiKey, cert: noSkiCert });
+  check("9d3. an explicit opts.signerCert with no SKI resolves despite a header senderKID -> valid", (await pki.cmp.verify(kidMsg, { signerCert: noSkiCert })).valid === true);
   // A signer cert EXPIRED at the current time whose message backdates messageTime into the cert's old
   // validity window MUST NOT be trusted: the path is validated at a TRUSTED current time, not the sender's
   // self-asserted messageTime (an expired-cert holder could otherwise backdate to stay trusted).
@@ -548,7 +557,7 @@ async function run() {
   var ski = nodeCrypto.createHash("sha1").update(skiSigner.spki).digest();
   var skidDer = await pki.cmp.build({ header: hdr({ senderKID: ski }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: skiSigner.spki }, skiSigner.key) } }, { key: skiSigner.key, cert: skiSigner.cert });
   check("17a. a senderKID matching the signer cert SKI resolves + verifies", (await pki.cmp.verify(skidDer, { signerCert: skiSigner.cert })).valid === true);
-  check("17b. a senderKID NOT binding to the presented cert -> cmp/signer-cert-not-found", (await pki.cmp.verify(skidDer, { signerCert: s.cert })).code === "cmp/signer-cert-not-found");
+  check("17b. an explicit signerCert that did NOT sign the message resolves (senderKID not a resolution gate) but its signature fails -> cmp/protection-failed", (await pki.cmp.verify(skidDer, { signerCert: s.cert })).code === "cmp/protection-failed");
   check("17c. no signerCert resolves the signer from extraCerts[0]", (await pki.cmp.verify(await buildSig(), {})).valid === true);
   var pemCert = "-----BEGIN CERTIFICATE-----\n" + s.cert.toString("base64").replace(/(.{64})/g, "$1\n") + "\n-----END CERTIFICATE-----";
   check("17d. a PEM signerCert is accepted", (await pki.cmp.verify(await buildSig(), { signerCert: pemCert })).valid === true);
