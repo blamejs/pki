@@ -247,6 +247,21 @@ async function run() {
   var sanCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: sanSpki, serialNumber: 30, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "alt.example" }] } }, { key: sanKey });
   var sanSenderMsg = await pki.cmp.build({ header: hdr({ sender: { dNSName: "alt.example" } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: sanSpki }, sanKey) } }, { key: sanKey, cert: sanCert });
   check("9q. a populated-subject cert: a sender matching the SAN verifies (subject DN OR SAN)", (await pki.cmp.verify(sanSenderMsg, { signerCert: sanCert })).valid === true);
+  // non-dNSName SAN types are compared per RFC 5280 sec. 7, not by raw DER: rfc822Name domain case-insensitive,
+  // directoryName under the canonical DN comparison.
+  var mailKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var mailKey = mailKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var mailSpki = mailKp.publicKey.export({ format: "der", type: "spki" });
+  var mailCert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 31, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "user@Example.com" }] } }, { key: caKey, cert: caCert });
+  async function mailMsg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mailCert }); }
+  check("9r. rfc822Name SAN: a case-different domain sender still matches (RFC 5280 sec. 7.5)", (await pki.cmp.verify(await mailMsg("user@example.com"), { signerCert: mailCert })).valid === true);
+  check("9s. rfc822Name SAN: a different local-part does NOT match -> cmp/sender-mismatch", (await pki.cmp.verify(await mailMsg("other@example.com"), { signerCert: mailCert })).code === "cmp/sender-mismatch");
+  var dnKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var dnKey = dnKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var dnSpki = dnKp.publicKey.export({ format: "der", type: "spki" });
+  var dnCert = await pki.x509.sign({ subject: [], subjectPublicKey: dnSpki, serialNumber: 32, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ directoryName: [{ commonName: "Alt Name" }] }] } }, { key: caKey, cert: caCert });
+  var dnMsg = await pki.cmp.build({ header: hdr({ sender: { directoryName: [{ commonName: "Alt Name" }] } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: dnSpki }, dnKey) } }, { key: dnKey, cert: dnCert });
+  check("9t. directoryName SAN: a sender matching the SAN DN verifies (canonical DN comparison)", (await pki.cmp.verify(dnMsg, { signerCert: dnCert })).valid === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
