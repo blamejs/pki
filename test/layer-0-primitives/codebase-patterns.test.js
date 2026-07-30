@@ -1815,9 +1815,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/x509-sign.js:sign", "lib/x509-sign.js:_sign",
         "lib/crl-sign.js:_sign", "lib/crl-sign.js:_idpValue", "lib/crl-sign.js:_buildCrlExtensions", "lib/crl-sign.js:_buildRevoked", "lib/crl-sign.js:_assertIssuerCanSignCrl",
         "lib/ct.js:fetchLogList",
+        "lib/cmp-verify.js:_verify",
       ],
       mode: "family-subset",
-      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the ct fetch verb shares the same validate-opts + async-orchestrate shingle (it composes rather than encodes, but the glue tokens coincide). The structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
+      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the ct fetch verb shares the same validate-opts + async-orchestrate shingle (it composes rather than encodes, but the glue tokens coincide), and cmp-verify's _verify shares the opts-key-whitelist + Promise.resolve().then async-boundary + ProtectedPart b.sequence glue (the verify-side orchestrator). The structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
     },
     {
       // The thin network-client entry + response body: pki.acme / pki.est / pki.cmp / pki.ct each validate
@@ -1879,8 +1880,9 @@ function testNoDuplicateCodeBlocks() {
       // under their own namespace prefix + error class. The decoders + makeNS already
       // live in pkix (composed identically by path-validate); the two-line header repeats
       // in shape without being extractable (each binds a different prefix/error class).
-      files: ["lib/inspect.js:<top>", "lib/lint.js:<top>", "lib/webauthn.js:<top>"],
-      reason: "inspect/lint/webauthn each compose pkix.certExtensionDecoders under their own makeNS namespace; the decoder table lives in pkix, the header composition is not further extractable.",
+      files: ["lib/inspect.js:<top>", "lib/lint.js:<top>", "lib/webauthn.js:<top>", "lib/cmp-verify.js:<top>", "lib/trust.js:<top>"],
+      mode: "family-subset",
+      reason: "consumer-module header run: require the codec/oid/schema/guard/framework-error core + declare a `var NS = pkix.makeNS(prefix, ErrorClass, oid)` namespace (inspect/lint/webauthn compose pkix.certExtensionDecoders under it; cmp-verify composes pkix.pbmac1Params under it; trust its own decoders). The makeNS + require idiom lives in pkix and each binds a different prefix/error class, so the header composition is not further extractable. family-subset so any 3+ match.",
     },
     {
       // The crypto-layer modules (cms-encrypt / cms-decrypt / ocsp producer / sign-scheme) each
@@ -1899,6 +1901,17 @@ function testNoDuplicateCodeBlocks() {
       ],
       mode: "family-subset",
       reason: "per-domain cert/key/input-to-DER normalizers (own PEM decoder + typed error code), the same thin-wrapper class as the allowlisted pemDecode/pemEncode; not further extractable.",
+    },
+    {
+      // The PBKDF2 / PBMAC1 work-factor + params shingle shared across the PBES2 core and the two PBMAC1
+      // verifiers (pkcs12 MacData, CMP protection). pbes2.parsePbkdf2Params reads the PBKDF2-params shape;
+      // pkcs12-build._capWork and cmp-verify._capWork each bound the attacker-controlled iterationCount /
+      // salt / keyLength BEFORE deriving, throwing their OWN domain code (pkcs12/* vs cmp/*) with their own
+      // keyLength ceiling + hardCap. The PBMAC1-params DECODER is already shared (pkix.pbmac1Params); the
+      // work-cap is a short domain-parameterized bound (E, code, hardCap, keyLen ceiling differ), not further
+      // extractable without threading a per-domain error factory + bounds through a callback.
+      files: ["lib/cmp-verify.js:_capWork", "lib/pbes2.js:parsePbkdf2Params", "lib/pkcs12-build.js:_capWork"],
+      reason: "PBKDF2/PBMAC1 work-factor bounding (cap iterationCount/salt/keyLength before deriving) + the PBKDF2-params read shingle, shared across pbes2 / pkcs12 MacData / CMP protection; each throws its own domain code with its own ceilings -- domain-parameterized, the PBMAC1-params reader is already shared as pkix.pbmac1Params, nothing further cleanly extractable.",
     },
   ];
 

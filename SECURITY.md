@@ -406,9 +406,13 @@ security-only patches after the next major releases.
   closed rather than trusting an unpinned server — and TLS is floored at 1.2. A
   request URL, and every redirect target, must be `https`: a scheme downgrade is
   refused, a cross-origin redirect on an enroll POST needs an explicit opt-in, and
-  the redirect chain is bounded. HTTP Basic credentials are answered only after the
-  server is authenticated and are dropped on any cross-origin redirect, so they are
-  never carried to another origin. The response body is bounded while it streams
+  the redirect chain is bounded. Every origin-bound identity is dropped on a
+  cross-origin redirect and never carried to another origin: HTTP Basic credentials
+  (answered only after the server is authenticated), the mTLS client certificate and
+  key, and a caller-pinned `servername` (SNI) or `checkServerIdentity` RFC 6125
+  verifier — the last two dropped even when no client certificate is set, so a
+  server-identity check pinned to the enrollment host is never applied to a different
+  redirected origin. The response body is bounded while it streams
   (aborted the instant it crosses the cap, before it reaches a decoder), a stalled
   socket times out, and a 202 Retry-After is surfaced to the caller, never slept on.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer

@@ -44,7 +44,7 @@ var x509      = require("./lib/x509-sign");
 var csr       = require("./lib/csr-sign");
 var attrcert  = require("./lib/attrcert-sign");
 var crmf      = require("./lib/crmf-sign");
-var cmp       = require("./lib/cmp-build");
+var cmp       = require("./lib/cmp-verify");
 var crl       = require("./lib/crl-sign");
 var key       = require("./lib/key");
 var pkcs12    = require("./lib/pkcs12-build");
@@ -109,9 +109,10 @@ module.exports = {
   // or EST enrollment. Parsing lives at pki.schema.crmf.parse.
   crmf:      crmf,
   // `cmp` is the RFC 9810 Certificate Management Protocol producing side -- pki.cmp.build assembles a
-  // protected PKIMessage (a certificate request / confirmation / revocation / general message).
-  // Parsing lives at pki.schema.cmp.parse.
-  cmp:       cmp,
+  // protected PKIMessage (a certificate request / confirmation / revocation / general message),
+  // and pki.cmp.verify checks the protection on an incoming one. Parsing lives at pki.schema.cmp.parse.
+  // setEngine is the @internal path-validate seam -- kept off the public surface.
+  cmp:       { build: cmp.build, transfer: cmp.transfer, wellKnownUrl: cmp.wellKnownUrl, verify: cmp.verify },
   // `crl` is the RFC 5280 sec. 5 CRL producing side -- pki.crl.sign builds and signs a CertificateList
   // over any registry algorithm, pki.crl.verify checks a CRL signature through the one path-validation
   // signature engine, and pki.crl.isRevoked looks a serial up. Parsing lives at pki.schema.crl.parse.
