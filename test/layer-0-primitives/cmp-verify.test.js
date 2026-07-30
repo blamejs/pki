@@ -345,6 +345,23 @@ async function run() {
   async function uiMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: uiCert }); }
   check("9z. a URI with userinfo + no path: a case-different host still matches (host case-insensitive)", (await pki.cmp.verify(await uiMsg("https://User@host.EXAMPLE"), { signerCert: uiCert })).valid === true);
   check("9z2. a URI with userinfo: a case-different userinfo does NOT match (userinfo case-sensitive) -> cmp/sender-mismatch", (await pki.cmp.verify(await uiMsg("https://user@host.example"), { signerCert: uiCert })).code === "cmp/sender-mismatch");
+  // The port is NOT part of the host: only the host case-folds; the port stays byte-exact, so a malformed
+  // non-numeric port (":ADMIN" vs ":admin") is a mismatch, while a numeric port + case-different host matches.
+  var portCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 37, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://host.example:ADMIN/p" }] } }, { key: caKey, cert: caCert });
+  async function portMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: portCert }); }
+  check("9z3. a case-different non-numeric port does NOT match (port byte-exact) -> cmp/sender-mismatch", (await pki.cmp.verify(await portMsg("https://host.example:admin/p"), { signerCert: portCert })).code === "cmp/sender-mismatch");
+  var numPortCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 38, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://Host.Example:8443/p" }] } }, { key: caKey, cert: caCert });
+  async function numPortMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: numPortCert }); }
+  check("9z4. a case-different host with the same numeric port matches (host folded, port equal)", (await pki.cmp.verify(await numPortMsg("https://host.example:8443/p"), { signerCert: numPortCert })).valid === true);
+  // An IPv6-literal host case-folds (hex is case-insensitive) with the port after the "]" kept exact.
+  var v6Cert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 39, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://[2001:DB8::1]:443/p" }] } }, { key: caKey, cert: caCert });
+  async function v6Msg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: v6Cert }); }
+  check("9z5. an IPv6-literal host case-folds with an exact port", (await pki.cmp.verify(await v6Msg("https://[2001:db8::1]:443/p"), { signerCert: v6Cert })).valid === true);
+  // An unterminated IPv6 literal is malformed -> exact-DER fallback (no normalization), so a case difference
+  // in the malformed authority is a mismatch rather than a folded false match.
+  var v6BadCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 40, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://[2001:DB8/p" }] } }, { key: caKey, cert: caCert });
+  async function v6BadMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: v6BadCert }); }
+  check("9z6. an unterminated IPv6 literal falls back to exact comparison (a case difference does not match)", (await pki.cmp.verify(await v6BadMsg("https://[2001:db8/p"), { signerCert: v6BadCert })).code === "cmp/sender-mismatch");
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
