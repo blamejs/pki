@@ -478,6 +478,18 @@ async function run() {
   check("11d. a PBMAC1 keyLength below the RFC 9579 sec. 9 floor (< 20) -> throws cmp/bad-input", await codeOf(pki.cmp.verify(shortKey, { sharedSecret: "hunter2" })) === "cmp/bad-input");
   var longKey = substituteAlg(macDer, pbmac1AlgId({ salt: SALT, iter: 2048, keyLen: 4096, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
   check("11e. a PBMAC1 keyLength over the ceiling -> throws cmp/bad-input", await codeOf(pki.cmp.verify(longKey, { sharedSecret: "hunter2" })) === "cmp/bad-input");
+  // A messageAuthScheme / prf HMAC AlgorithmIdentifier with MALFORMED parameters (an INTEGER instead of the
+  // RFC 8018 App. B.1 NULL/absent) is rejected as cmp/bad-mac-data, not silently discarded before OID dispatch.
+  function pbmac1AlgIdParams(macParams, prfParams) {
+    var prfAlg = prfParams ? b.sequence([b.oid(pki.oid.byName("hmacWithSHA256")), prfParams]) : b.sequence([b.oid(pki.oid.byName("hmacWithSHA256"))]);
+    var pbkdf2 = b.sequence([b.oid(pki.oid.byName("pbkdf2")), b.sequence([b.octetString(SALT), b.integer(2048n), b.integer(32n), prfAlg])]);
+    var hmac = macParams ? b.sequence([b.oid(pki.oid.byName("hmacWithSHA256")), macParams]) : b.sequence([b.oid(pki.oid.byName("hmacWithSHA256"))]);
+    return b.sequence([b.oid(pki.oid.byName("pbmac1")), b.sequence([pbkdf2, hmac])]);
+  }
+  var badMacScheme = substituteAlg(macDer, pbmac1AlgIdParams(b.integer(5n), null));
+  check("11f. a PBMAC1 messageAuthScheme with non-NULL parameters -> cmp/bad-mac-data (not silently discarded)", (await pki.cmp.verify(badMacScheme, { sharedSecret: "hunter2" })).code === "cmp/bad-mac-data");
+  var badPrfScheme = substituteAlg(macDer, pbmac1AlgIdParams(null, b.integer(5n)));
+  check("11g. a PBMAC1 PBKDF2 prf with non-NULL parameters -> cmp/bad-mac-data", (await pki.cmp.verify(badPrfScheme, { sharedSecret: "hunter2" })).code === "cmp/bad-mac-data");
 
   // ===== 12. work-factor caps: a hostile iterationCount/keyLength combination rejects BEFORE derivation =====
   var hugeIter = substituteAlg(macDer, pbmac1AlgId({ salt: SALT, iter: 100000000, keyLen: 32, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
