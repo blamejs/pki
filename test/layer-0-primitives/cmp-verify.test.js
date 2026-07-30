@@ -188,6 +188,17 @@ async function run() {
   var noKuDer = await pki.cmp.build({ header: HDR, body: await p10Body(noKuSpki, noKuKey) }, { key: noKuKey, cert: noKuCert });
   var t9d = await pki.cmp.verify(noKuDer, { signerCert: noKuCert, trustAnchors: [caCert], time: T });
   check("9d. a signer cert whose keyUsage omits digitalSignature -> cmp/untrusted-signer", t9d.trusted === false && t9d.code === "cmp/untrusted-signer");
+  // A signer cert EXPIRED at the current time whose message backdates messageTime into the cert's old
+  // validity window MUST NOT be trusted: the path is validated at a TRUSTED current time, not the sender's
+  // self-asserted messageTime (an expired-cert holder could otherwise backdate to stay trusted).
+  var expKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var expKey = expKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var expSpki = expKp.publicKey.export({ format: "der", type: "spki" });
+  var expCert = await pki.x509.sign({ subject: "CN=expired signer", subjectPublicKey: expSpki, serialNumber: 9, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  var expDer = await pki.cmp.build({ header: Object.assign({ messageTime: new Date("2020-06-01T00:00:00Z") }, HDR), body: await p10Body(expSpki, expKey) }, { key: expKey, cert: expCert });
+  var texp = await pki.cmp.verify(expDer, { signerCert: expCert, trustAnchors: [caCert] });   // NO opts.time
+  check("9e. a now-expired signer backdated via messageTime is NOT trusted (path validated at a trusted now)", texp.valid === true && texp.trusted === false && texp.code === "cmp/untrusted-signer");
+  check("9f. an explicit opts.time enables historical verification of the then-valid signer", (await pki.cmp.verify(expDer, { signerCert: expCert, trustAnchors: [caCert], time: new Date("2020-06-01T00:00:00Z") })).trusted === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
@@ -282,9 +293,10 @@ async function run() {
   var minHdr = { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } };
   var minV = await pki.cmp.verify(await pki.cmp.build({ header: minHdr, body: IRBODY }, SIG), { signerCert: s.cert });
   check("20c. a message with no transactionID/senderNonce -> verdict echoes null for the absent fields", minV.valid === true && minV.transactionID === null && minV.senderNonce === null && minV.recipNonce === null);
-  // trustAnchors as a SINGLE root cert (not an array) + no opts.time (validity evaluated at the messageTime).
+  // trustAnchors as a SINGLE root cert (not an array); no opts.time -> the signer path is validated at the
+  // trusted current time (the signer cert's 2020..2040 window covers it), exercising the single-cert coercion.
   var mtChain = await pki.cmp.build({ header: Object.assign({ messageTime: T }, HDR), body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
-  check("20d. trustAnchors as a single cert + validity at messageTime -> trusted", (await pki.cmp.verify(mtChain, { signerCert: signerCert, trustAnchors: caCert })).trusted === true);
+  check("20d. trustAnchors as a single cert (not an array) validates at a trusted now -> trusted", (await pki.cmp.verify(mtChain, { signerCert: signerCert, trustAnchors: caCert })).trusted === true);
   check("20e. a trust verify with the message extraCerts stripped still validates (signer issued directly by the anchor)", (await pki.cmp.verify(stripExtraCerts(mtChain), { signerCert: signerCert, trustAnchors: [caCert], intermediates: [], time: T })).trusted === true);
 
   // ===== 21. additional fail-closed edge branches =====
