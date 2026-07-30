@@ -239,6 +239,14 @@ async function run() {
   // ceiling over it and turn a valid verification into an exception.
   var fullPool = new Array(1000).fill(signerCert);
   check("9p. extraCerts do not push a ceiling-full caller intermediates pool over the path-builder limit", (await pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], intermediates: fullPool, time: T })).trusted === true);
+  // a cert with BOTH a populated subject and a SAN: the sender may identify the signer via EITHER (the SAN is
+  // checked even when the subject is non-empty), so a SAN-named sender is not rejected.
+  var sanKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var sanKey = sanKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var sanSpki = sanKp.publicKey.export({ format: "der", type: "spki" });
+  var sanCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: sanSpki, serialNumber: 30, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "alt.example" }] } }, { key: sanKey });
+  var sanSenderMsg = await pki.cmp.build({ header: hdr({ sender: { dNSName: "alt.example" } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: sanSpki }, sanKey) } }, { key: sanKey, cert: sanCert });
+  check("9q. a populated-subject cert: a sender matching the SAN verifies (subject DN OR SAN)", (await pki.cmp.verify(sanSenderMsg, { signerCert: sanCert })).valid === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
@@ -349,6 +357,11 @@ async function run() {
   check("21d. a valid-DER-but-not-a-certificate signerCert -> cmp/signer-cert-not-found", (await pki.cmp.verify(await buildSig(), { signerCert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) })).code === "cmp/signer-cert-not-found");
   var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
   check("21e. an opt-in transactionID against a message that carries none -> cmp/transaction-id-mismatch", (await pki.cmp.verify(noTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
+
+  // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
+  var oidMsg = await buildMac("hunter2");
+  pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
+  check("22. renaming hmacWithSHA256 in the registry does not break PBMAC1 verify (OID dispatch)", (await pki.cmp.verify(oidMsg, { sharedSecret: "hunter2" })).valid === true);
 
   console.log("CHECKS " + helpers.getChecks());
 }
