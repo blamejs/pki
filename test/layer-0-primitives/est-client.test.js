@@ -337,6 +337,17 @@ async function testRedirectCredentialScope() {
   ]);
   var rbounce = await pki.est.cacerts(BASE, { transport: tbounce, tls: { anchors: [S.cert], servername: "ca.example" } });
   check("#29 a redirect off-origin then back restores the origin-scoped servername on the return hop", tbounce.calls[0].tls.servername === "ca.example" && tbounce.calls[1].tls.servername === undefined && tbounce.calls[2].tls.servername === "ca.example" && rbounce.certificates.length === 1);
+  // The HTTP Basic credential is likewise origin-scoped per hop: after a 401 on the origin it is sent to that
+  // origin, dropped off-origin, and RESTORED on a redirect back -- so an authenticated flow that bounces
+  // off-origin and returns still completes instead of arriving unauthenticated and being re-challenged.
+  var tcred = fakeTransport([
+    { status: 401, headers: { "www-authenticate": "Basic realm=x" }, body: "" },
+    { status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" },
+    { status: 302, headers: { location: "https://ca.example/.well-known/est/cacerts" }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rcred = await pki.est.cacerts(BASE, { transport: tcred, username: "u", password: "p" });
+  check("#29 the Basic credential is restored on a redirect back to the original origin", /^Basic /.test(tcred.calls[1].headers.authorization) && !tcred.calls[2].headers.authorization && /^Basic /.test(tcred.calls[3].headers.authorization) && rcred.certificates.length === 1);
   // a 303 See Other converts the follow to a GET with no body (no duplicate CSR re-POST).
   var t303 = fakeTransport([{ status: 303, headers: { location: "https://ca.example/.well-known/est/simpleenroll?x=1" }, body: "" }, enrollOK([S.cert])]);
   var r303 = await pki.est.simpleenroll(BASE, CSR, { transport: t303 });

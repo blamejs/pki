@@ -250,6 +250,13 @@ async function run() {
   var tidBefore = Buffer.from(snapV.transactionID);
   rawBuf.fill(0x00);
   check("9l3. a raw Buffer input is snapshotted -- mutating it after verify does not alter the verdict transactionID", snapV.valid === true && snapV.transactionID.equals(tidBefore));
+  // opts.signerCert is snapshotted too: mutating the caller's signerCert buffer after verify does not change
+  // the surfaced verdict.signer.cert / .spki -- they bind to the verified copy, not the caller's live buffer.
+  var scBuf = Buffer.from(s.cert);
+  var scV = await pki.cmp.verify(await buildSig(), { signerCert: scBuf });
+  var certBefore = Buffer.from(scV.signer.cert), spkiBefore = Buffer.from(scV.signer.spki);
+  scBuf.fill(0x00);
+  check("9l4. opts.signerCert is snapshotted -- mutating it after verify does not alter verdict.signer.cert / .spki", scV.valid === true && scV.signer.cert.equals(certBefore) && scV.signer.spki.equals(spkiBefore));
   // An EMPTY-subject protection certificate binds the sender to a subjectAltName entry (RFC 5280 sec. 7.1),
   // not the (empty) subject DN -- a matching SAN sender verifies, a non-matching one is a sender-mismatch.
   var eeKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
