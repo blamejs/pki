@@ -282,9 +282,21 @@ async function run() {
   var longKey = substituteAlg(macDer, pbmac1AlgId({ salt: SALT, iter: 2048, keyLen: 4096, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
   check("11e. a PBMAC1 keyLength over the ceiling -> throws cmp/bad-input", await codeOf(pki.cmp.verify(longKey, { sharedSecret: "hunter2" })) === "cmp/bad-input");
 
-  // ===== 12. work-factor caps: a huge iterationCount rejects BEFORE derivation (no multi-second burn) =====
+  // ===== 12. work-factor caps: a hostile iterationCount/keyLength combination rejects BEFORE derivation =====
   var hugeIter = substituteAlg(macDer, pbmac1AlgId({ salt: SALT, iter: 100000000, keyLen: 32, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
-  check("12. a PBMAC1 iterationCount over the cap -> cmp/bad-input before any derivation", await codeOf(pki.cmp.verify(hugeIter, { sharedSecret: "hunter2" })) === "cmp/bad-input");
+  check("12a. a PBMAC1 iterationCount over the cap -> cmp/bad-input before any derivation", await codeOf(pki.cmp.verify(hugeIter, { sharedSecret: "hunter2" })) === "cmp/bad-input");
+  // A count below the RFC 8018 sec. 4.2 floor (1000) is refused symmetrically with pki.cmp.build, so a peer cannot
+  // downgrade the work factor to run cheap offline guesses against a password-like shared secret.
+  var lowIter = substituteAlg(macDer, pbmac1AlgId({ salt: SALT, iter: 1, keyLen: 32, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
+  check("12b. a PBMAC1 iterationCount below the floor (< 1000) -> cmp/bad-input", await codeOf(pki.cmp.verify(lowIter, { sharedSecret: "hunter2" })) === "cmp/bad-input");
+  // The COMBINED work is bounded: an at-cap iterationCount with a 1024-octet keyLength derives 32 SHA-256 blocks,
+  // so the total HMAC work is 32x the per-block ceiling -- rejected before any derivation (no multi-second burn).
+  var comboWork = substituteAlg(macDer, pbmac1AlgId({ salt: SALT, iter: 10000000, keyLen: 1024, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
+  check("12c. an at-cap iterationCount x a maximal keyLength (32 derived blocks) -> cmp/bad-input", await codeOf(pki.cmp.verify(comboWork, { sharedSecret: "hunter2" })) === "cmp/bad-input");
+  // A legitimate multi-block derived key (keyLength 64 = 2 SHA-256 blocks) at a normal count stays well under the
+  // combined ceiling and verifies end to end -- the cap bounds hostile work without rejecting a real 2-block key.
+  var twoBlock = await buildMac("hunter2", { keyLength: 64 });
+  check("12d. a genuine 2-block keyLength (64) at a normal iterationCount -> valid", (await pki.cmp.verify(twoBlock, { sharedSecret: "hunter2" })).valid === true);
 
   // ===== 13. header echo opt-ins =====
   var echoDer = await buildSig({ transactionID: Buffer.alloc(16, 0x33), recipNonce: undefined });
