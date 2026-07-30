@@ -312,6 +312,11 @@ async function run() {
   async function mailMsg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mailCert }); }
   check("9r. rfc822Name SAN: a case-different domain sender still matches (RFC 5280 sec. 7.5)", (await pki.cmp.verify(await mailMsg("user@example.com"), { signerCert: mailCert })).valid === true);
   check("9s. rfc822Name SAN: a different local-part does NOT match -> cmp/sender-mismatch", (await pki.cmp.verify(await mailMsg("other@example.com"), { signerCert: mailCert })).code === "cmp/sender-mismatch");
+  // An rfc822Name with more than one "@" is a malformed mailbox (RFC 5321 addr-spec) -> exact comparison, so a
+  // domain-case difference in such an address does not fold into a false match.
+  var mail2Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 43, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "a@b@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
+  async function mail2Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail2Cert }); }
+  check("9s2. an rfc822Name with multiple at-signs is malformed -> a domain-case difference does not bind", (await pki.cmp.verify(await mail2Msg("a@b@example.com"), { signerCert: mail2Cert })).code === "cmp/sender-mismatch");
   var dnKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dnKey = dnKp.privateKey.export({ format: "der", type: "pkcs8" });
   var dnSpki = dnKp.publicKey.export({ format: "der", type: "spki" });
@@ -499,7 +504,7 @@ async function run() {
   check("21a. maxIterations = Infinity -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", maxIterations: Infinity })) === "cmp/bad-input");
   check("21b. maxIterations = 0 -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", maxIterations: 0 })) === "cmp/bad-input");
   check("21c. a malformed PEM signerCert -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), { signerCert: "-----BEGIN CERTIFICATE-----\n@@@\n-----END CERTIFICATE-----" })) === "cmp/bad-input");
-  check("21d. a valid-DER-but-not-a-certificate signerCert -> cmp/signer-cert-not-found", (await pki.cmp.verify(await buildSig(), { signerCert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) })).code === "cmp/signer-cert-not-found");
+  check("21d. a valid-DER-but-not-a-certificate signerCert (corrupt required config) -> throws cmp/bad-input, not a routine not-found verdict", await codeOf(pki.cmp.verify(await buildSig(), { signerCert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) })) === "cmp/bad-input");
   var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
   check("21e. an opt-in transactionID against a message that carries none -> cmp/transaction-id-mismatch", (await pki.cmp.verify(noTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
 
