@@ -195,6 +195,22 @@ async function run() {
   var noKuDer = await pki.cmp.build({ header: HDR, body: await p10Body(noKuSpki, noKuKey) }, { key: noKuKey, cert: noKuCert });
   var t9d = await pki.cmp.verify(noKuDer, { signerCert: noKuCert, trustAnchors: [caCert], time: T });
   check("9d. a signer cert whose keyUsage omits digitalSignature -> cmp/untrusted-signer", t9d.trusted === false && t9d.code === "cmp/untrusted-signer");
+  // A signer cert with a NON-MINIMAL KeyUsage NamedBitList (03 02 00 80 -- digitalSignature set but 0 unused
+  // bits where the minimal form is 03 02 07 80) is not trusted end to end: the sec. 3.2 keyUsage gate reads it
+  // through the shared strict decoder (X.690 sec. 11.2.2 minimal rule) AND full path validation rejects the
+  // malformed extension. x509.sign only emits the minimal form, so patch the TBS to the non-minimal encoding
+  // and re-sign with the CA key so the certificate signature stays valid.
+  var kuOkDer = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: signerSpki, serialNumber: 51, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  var kuKids = asn1.decode(kuOkDer).children;   // [tbs, sigAlg, signature]
+  var kuTbs = Buffer.from(kuKids[0].bytes);
+  var kuOidPos = kuTbs.indexOf(Buffer.from([0x06, 0x03, 0x55, 0x1d, 0x0f]));   // keyUsage 2.5.29.15
+  var kuBitPos = kuTbs.indexOf(Buffer.from([0x03, 0x02, 0x07, 0x80]), kuOidPos);
+  kuTbs[kuBitPos + 2] = 0x00;   // 03 02 07 80 -> 03 02 00 80 : a non-minimal NamedBitList
+  var kuSig = nodeCrypto.sign("sha256", kuTbs, { key: caKp.privateKey, dsaEncoding: "der" });
+  var malKuCert = asn1.build.sequence([asn1.build.raw(kuTbs), asn1.build.raw(kuKids[1].bytes), asn1.build.bitString(kuSig, 0)]);
+  var malKuMsg = await pki.cmp.build({ header: HDR, body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
+  var t9d2 = await pki.cmp.verify(malKuMsg, { signerCert: malKuCert, trustAnchors: [caCert], time: T });
+  check("9d2. a signer cert with a non-minimal KeyUsage encoding -> cmp/untrusted-signer (not authorized to sign)", t9d2.trusted === false && t9d2.code === "cmp/untrusted-signer");
   // A signer cert EXPIRED at the current time whose message backdates messageTime into the cert's old
   // validity window MUST NOT be trusted: the path is validated at a TRUSTED current time, not the sender's
   // self-asserted messageTime (an expired-cert holder could otherwise backdate to stay trusted).
@@ -322,6 +338,11 @@ async function run() {
   var mail3Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 44, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "\"a@b\"@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
   async function mail3Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail3Cert }); }
   check("9s3. a quoted rfc822Name local-part carrying '@' still binds (domain case-insensitive)", (await pki.cmp.verify(await mail3Msg("\"a@b\"@example.com"), { signerCert: mail3Cert })).valid === true);
+  // A quoted local-part correctly holds the FIRST "@", but the DOMAIN must still be valid: an extra "@" in the
+  // domain ("a"@b@X) is malformed -> exact comparison, so the malformed suffix is not case-folded into a match.
+  var mail4Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 46, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "\"a\"@b@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
+  async function mail4Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail4Cert }); }
+  check("9s4. a quoted rfc822Name whose domain carries an extra '@' is malformed -> a case difference does not bind", (await pki.cmp.verify(await mail4Msg("\"a\"@b@example.com"), { signerCert: mail4Cert })).code === "cmp/sender-mismatch");
   var dnKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dnKey = dnKp.privateKey.export({ format: "der", type: "pkcs8" });
   var dnSpki = dnKp.publicKey.export({ format: "der", type: "spki" });
