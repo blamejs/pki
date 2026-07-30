@@ -77,7 +77,7 @@ function pbmac1AlgId(o) {
 
 async function run() {
   var s = makeSigner("ec-p256");
-  var HDR = { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
+  var HDR = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
   var SIG = { key: s.key, cert: s.cert };
   var IRBODY = { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: s.spki } } };
   function hdr(over) { return Object.assign({}, HDR, over || {}); }
@@ -160,6 +160,12 @@ async function run() {
   var noSigner = stripExtraCerts(await buildSig());
   var r8b = await pki.cmp.verify(noSigner, {});
   check("8b. no signerCert and no resolvable extraCerts -> cmp/signer-cert-not-found", r8b.valid === false && r8b.code === "cmp/signer-cert-not-found");
+  // RFC 9483 sec. 3.1: the authenticated sender field MUST match the signer cert subject -- a cert the anchor
+  // trusts must not be usable to sign under another party's sender name. Signature valid, sender != subject.
+  var spoof = makeSigner("ec-p256", { cn: "attacker" });   // signer cert subject commonName "attacker"
+  var spoofDer = await pki.cmp.build({ header: HDR, body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: spoof.spki }, spoof.key) } }, { key: spoof.key, cert: spoof.cert });
+  var vspoof = await pki.cmp.verify(spoofDer, { signerCert: spoof.cert });
+  check("8c. sender != signer cert subject -> { valid:false, cmp/sender-mismatch } (RFC 9483 sec. 3.1)", vspoof.valid === false && vspoof.code === "cmp/sender-mismatch");
 
   // ===== 9. out-of-path signer trust (the FULL path.validate composition) =====
   var NB = new Date("2020-01-01T00:00:00Z"), NA = new Date("2040-01-01T00:00:00Z"), T = new Date("2030-06-01T00:00:00Z");
@@ -170,7 +176,7 @@ async function run() {
   var signerKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var signerKey = signerKp.privateKey.export({ format: "der", type: "pkcs8" });
   var signerSpki = signerKp.publicKey.export({ format: "der", type: "spki" });
-  var signerCert = await pki.x509.sign({ subject: "CN=CMP signer", subjectPublicKey: signerSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  var signerCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: signerSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
   // A p10cr body avoids the CRMF proof-of-possession key<->protection-key coupling (the ir POP key would
   // default to the protection key), so the chain build's requested key can differ from the default signer.
   async function p10Body(spki, key) { return { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: spki }, key) }; }
@@ -184,7 +190,7 @@ async function run() {
   var noKuKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var noKuKey = noKuKp.privateKey.export({ format: "der", type: "pkcs8" });
   var noKuSpki = noKuKp.publicKey.export({ format: "der", type: "spki" });
-  var noKuCert = await pki.x509.sign({ subject: "CN=no-ku signer", subjectPublicKey: noKuSpki, serialNumber: 3, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["keyEncipherment"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  var noKuCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: noKuSpki, serialNumber: 3, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["keyEncipherment"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
   var noKuDer = await pki.cmp.build({ header: HDR, body: await p10Body(noKuSpki, noKuKey) }, { key: noKuKey, cert: noKuCert });
   var t9d = await pki.cmp.verify(noKuDer, { signerCert: noKuCert, trustAnchors: [caCert], time: T });
   check("9d. a signer cert whose keyUsage omits digitalSignature -> cmp/untrusted-signer", t9d.trusted === false && t9d.code === "cmp/untrusted-signer");
@@ -194,7 +200,7 @@ async function run() {
   var expKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var expKey = expKp.privateKey.export({ format: "der", type: "pkcs8" });
   var expSpki = expKp.publicKey.export({ format: "der", type: "spki" });
-  var expCert = await pki.x509.sign({ subject: "CN=expired signer", subjectPublicKey: expSpki, serialNumber: 9, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  var expCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: expSpki, serialNumber: 9, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
   var expDer = await pki.cmp.build({ header: Object.assign({ messageTime: new Date("2020-06-01T00:00:00Z") }, HDR), body: await p10Body(expSpki, expKey) }, { key: expKey, cert: expCert });
   var texp = await pki.cmp.verify(expDer, { signerCert: expCert, trustAnchors: [caCert] });   // NO opts.time
   check("9e. a now-expired signer backdated via messageTime is NOT trusted (path validated at a trusted now)", texp.valid === true && texp.trusted === false && texp.code === "cmp/untrusted-signer");
@@ -204,6 +210,16 @@ async function run() {
   check("9g. an empty trustAnchors array -> throws cmp/bad-input (config error, not untrusted-signer)", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [] })) === "cmp/bad-input");
   check("9h. a non-Date opts.time -> throws cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], time: "not-a-date" })) === "cmp/bad-input");
   check("9i. a malformed trust anchor -> throws cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [Buffer.from([1, 2, 3])] })) === "cmp/bad-input");
+  check("9j. a falsy PRESENT opts.time (0) is not silently defaulted -> throws cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], time: 0 })) === "cmp/bad-input");
+  // extraCerts are unsigned: a flood of certs (here 40 distinct junk certs + duplicates) must not degrade an
+  // otherwise-valid signer to untrusted -- dedup + a hard count cap keep the pool bounded so the real signer
+  // still chains. Splice a hostile extraCerts SEQUENCE onto the valid signed message.
+  var floodEntries = [];
+  for (var fj = 0; fj < 40; fj++) floodEntries.push(asn1.build.raw(makeSigner("ec-p256").cert));
+  for (var fk = 0; fk < 5; fk++) floodEntries.push(asn1.build.raw(signerCert));   // duplicates of the real signer
+  var ck = msgKids(chainDer);   // [header, body, protection[0], extraCerts[1]]
+  var floodDer = rebuild([ck[0].bytes, ck[1].bytes, ck[2].bytes, asn1.build.explicit(1, asn1.build.sequence(floodEntries))]);
+  check("9k. a flood of unsigned extraCerts does not degrade a valid signer (dedup + bound)", (await pki.cmp.verify(floodDer, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
@@ -295,7 +311,7 @@ async function run() {
   check("20a. opts=null is treated as the default (empty) opts", (await pki.cmp.verify(await buildSig(), null)).valid === true);
   check("20b. opts as a Buffer -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), Buffer.from("x"))) === "cmp/bad-input");
   check("20b2. opts as a string -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), "x")) === "cmp/bad-input");
-  var minHdr = { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } };
+  var minHdr = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } };
   var minV = await pki.cmp.verify(await pki.cmp.build({ header: minHdr, body: IRBODY }, SIG), { signerCert: s.cert });
   check("20c. a message with no transactionID/senderNonce -> verdict echoes null for the absent fields", minV.valid === true && minV.transactionID === null && minV.senderNonce === null && minV.recipNonce === null);
   // trustAnchors as a SINGLE root cert (not an array); no opts.time -> the signer path is validated at the
@@ -309,7 +325,7 @@ async function run() {
   check("21b. maxIterations = 0 -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", maxIterations: 0 })) === "cmp/bad-input");
   check("21c. a malformed PEM signerCert -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), { signerCert: "-----BEGIN CERTIFICATE-----\n@@@\n-----END CERTIFICATE-----" })) === "cmp/bad-input");
   check("21d. a valid-DER-but-not-a-certificate signerCert -> cmp/signer-cert-not-found", (await pki.cmp.verify(await buildSig(), { signerCert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) })).code === "cmp/signer-cert-not-found");
-  var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: "CN=c" }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
+  var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
   check("21e. an opt-in transactionID against a message that carries none -> cmp/transaction-id-mismatch", (await pki.cmp.verify(noTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
 
   console.log("CHECKS " + helpers.getChecks());
