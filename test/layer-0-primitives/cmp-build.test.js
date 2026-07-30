@@ -193,6 +193,11 @@ async function run() {
   // work factors are bounded BEFORE deriving -- a huge iterationCount / keyLength / salt fails closed.
   check("19j. an over-cap mac.iterationCount -> cmp/bad-input (PBKDF2 DoS bound)", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 10000001 } })) === "cmp/bad-input");
   check("19k. an over-cap mac.keyLength -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 4096 } })) === "cmp/bad-input");
+  // The COMBINED work is bounded here too, so build never emits a message pki.cmp.verify would refuse as
+  // over-budget: a maximal keyLength (1024 = 32 SHA-256 blocks) with an iterationCount whose product exceeds
+  // the ceiling is rejected at production, while the same key at a count under the product ceiling still emits.
+  check("19k2. an in-range iterationCount x keyLength whose product exceeds the cap -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 312501, keyLength: 1024 } })) === "cmp/bad-input");
+  check("19k3. a maximal keyLength (1024) at a count under the product ceiling still emits", parse(await pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1000, keyLength: 1024 } })).header.protectionAlg.name === "pbmac1");
   check("19l. an over-cap mac.salt -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(2048) } })) === "cmp/bad-input");
   check("19i. a Buffer mac.secret + SHA-384 prf round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: Buffer.from("k"), salt: Buffer.alloc(16, 1), iterationCount: 1000, prf: "SHA-384" } })).header.protectionAlg.name === "pbmac1");
 
