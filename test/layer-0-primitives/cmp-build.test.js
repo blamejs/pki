@@ -182,6 +182,9 @@ async function run() {
   check("19b. an empty mac.secret -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "" } })) === "cmp/bad-input");
   check("19c. a non-object mac -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: 5 })) === "cmp/bad-input");
   check("19d. an unknown mac field -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", bogus: 1 } })) === "cmp/bad-input");
+  // build enforces the same RFC 9579 sec. 9 keyLength floor (>= 20) pki.cmp.verify requires, so it never emits
+  // a message its own verify-inverse would reject.
+  check("19e. mac.keyLength below the RFC 9579 floor (< 20) -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 16 } })) === "cmp/bad-input");
   check("19e. an unsupported mac.algorithm -> cmp/unsupported-algorithm", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", algorithm: "passwordBasedMac" } })) === "cmp/unsupported-algorithm");
   check("19f. a bad mac.prf -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", prf: "MD5" } })) === "cmp/bad-input");
   check("19g. a non-integer mac.iterationCount -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1.5 } })) === "cmp/bad-input");

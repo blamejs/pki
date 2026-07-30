@@ -220,6 +220,11 @@ async function run() {
   var ck = msgKids(chainDer);   // [header, body, protection[0], extraCerts[1]]
   var floodDer = rebuild([ck[0].bytes, ck[1].bytes, ck[2].bytes, asn1.build.explicit(1, asn1.build.sequence(floodEntries))]);
   check("9k. a flood of unsigned extraCerts does not degrade a valid signer (dedup + bound)", (await pki.cmp.verify(floodDer, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
+  // a non-certificate DER SEQUENCE in unsigned extraCerts is DROPPED before path building -- it must not reach
+  // path.build and turn a valid verification into a path/bad-input exception.
+  var junkExtra = asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(signerCert), asn1.build.raw(asn1.build.sequence([asn1.build.integer(1n)]))]));
+  var junkDer = rebuild([ck[0].bytes, ck[1].bytes, ck[2].bytes, junkExtra]);
+  check("9l. a non-certificate entry in unsigned extraCerts is dropped, not raised as an exception", (await pki.cmp.verify(junkDer, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
