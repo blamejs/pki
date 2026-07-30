@@ -297,6 +297,9 @@ async function run() {
   check("15c. a signature message WITH a sharedSecret (flavor mismatch) -> throws cmp/bad-input", await codeOf(pki.cmp.verify(derMsg, { signerCert: s.cert, sharedSecret: "x" })) === "cmp/bad-input");
   check("15d. a MAC message WITH signerCert/trustAnchors (flavor mismatch) -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", signerCert: s.cert })) === "cmp/bad-input");
   check("15e. an unknown opts key -> throws cmp/bad-input", await codeOf(pki.cmp.verify(derMsg, { signerCert: s.cert, bogus: 1 })) === "cmp/bad-input");
+  // an empty PBMAC1 secret has no entropy -> a peer could forge a matching MAC; require a non-empty secret.
+  check("15f. an empty-string sharedSecret on a MAC message -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "" })) === "cmp/bad-input");
+  check("15g. a zero-length Buffer sharedSecret -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: Buffer.alloc(0) })) === "cmp/bad-input");
 
   // ===== 16. direction-agnostic acceptance (a RESPONSE arm verifies exactly like a request) =====
   var errDer = await pki.cmp.build({ header: HDR, body: { error: { pKIStatusInfo: { status: 2 } } } }, SIG);
