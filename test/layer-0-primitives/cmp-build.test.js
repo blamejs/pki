@@ -182,6 +182,9 @@ async function run() {
   check("19b. an empty mac.secret -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "" } })) === "cmp/bad-input");
   check("19c. a non-object mac -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: 5 })) === "cmp/bad-input");
   check("19d. an unknown mac field -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", bogus: 1 } })) === "cmp/bad-input");
+  // build enforces the same RFC 9579 sec. 9 keyLength floor (>= 20) pki.cmp.verify requires, so it never emits
+  // a message its own verify-inverse would reject.
+  check("19e. mac.keyLength below the RFC 9579 floor (< 20) -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 16 } })) === "cmp/bad-input");
   check("19e. an unsupported mac.algorithm -> cmp/unsupported-algorithm", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", algorithm: "passwordBasedMac" } })) === "cmp/unsupported-algorithm");
   check("19f. a bad mac.prf -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", prf: "MD5" } })) === "cmp/bad-input");
   check("19g. a non-integer mac.iterationCount -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1.5 } })) === "cmp/bad-input");
@@ -190,7 +193,17 @@ async function run() {
   // work factors are bounded BEFORE deriving -- a huge iterationCount / keyLength / salt fails closed.
   check("19j. an over-cap mac.iterationCount -> cmp/bad-input (PBKDF2 DoS bound)", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 10000001 } })) === "cmp/bad-input");
   check("19k. an over-cap mac.keyLength -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 4096 } })) === "cmp/bad-input");
+  // The COMBINED work is bounded here too, so build never emits a message pki.cmp.verify would refuse as
+  // over-budget: a maximal keyLength (1024 = 32 SHA-256 blocks) with an iterationCount whose product exceeds
+  // the ceiling is rejected at production, while the same key at a count under the product ceiling still emits.
+  check("19k2. an in-range iterationCount x keyLength whose product exceeds the cap -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 312501, keyLength: 1024 } })) === "cmp/bad-input");
+  check("19k3. a maximal keyLength (1024) at a count under the product ceiling still emits", parse(await pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1000, keyLength: 1024 } })).header.protectionAlg.name === "pbmac1");
   check("19l. an over-cap mac.salt -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(2048) } })) === "cmp/bad-input");
+  // An empty / short salt loses precomputation resistance (RFC 8018 sec. 4.1 64-bit floor) -- refused at
+  // construction so build never emits a message pki.cmp.verify (same floor) rejects; an 8-octet salt is accepted.
+  check("19l2. an empty mac.salt -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(0) } })) === "cmp/bad-input");
+  check("19l3. a mac.salt below the 8-octet floor -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(4) } })) === "cmp/bad-input");
+  check("19l4. an 8-octet mac.salt (the floor) still emits", parse(await pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(8, 1), iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
   check("19i. a Buffer mac.secret + SHA-384 prf round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: Buffer.from("k"), salt: Buffer.alloc(16, 1), iterationCount: 1000, prf: "SHA-384" } })).header.protectionAlg.name === "pbmac1");
 
   // ---- protection self-check (the sender proof) ----

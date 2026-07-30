@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.26 — 2026-07-30
+
+pki.cmp.verify checks the protection on an incoming CMP PKIMessage -- verify a signature or PBMAC1 MAC over the exact protected bytes, and optionally chain the signer certificate to a trust anchor.
+
+### Added
+
+- pki.cmp.verify(message, opts) verifies the protection on an incoming CMP PKIMessage -- a DER Buffer, a PEM CMP block, or an already-parsed pki.schema.cmp.parse result (the protection is always recomputed from the parser's raw header/body wire slices, so a mutated display field on a parsed object cannot desync the crypto). Signature protection is verified through the shared certification-path signature engine; PBMAC1 protection is recomputed from opts.sharedSecret and compared in constant time. opts.signerCert / opts.trustAnchors / opts.intermediates / opts.time drive signer-certificate resolution (opts.signerCert, the message senderKID, or RFC 9483 extraCerts[0]) and full out-of-path certificate validation; opts.transactionID / opts.expectRecipNonce add opt-in response-echo checks; opts.maxIterations bounds the PBKDF2 work. The result is a fail-closed verdict { valid, trusted, protectionType, protectionAlg, signer, transactionID, senderNonce, recipNonce, header, body } carrying a typed cmp/* code on rejection; a malformed message or a flavor/credential mismatch throws a typed CmpError. RFC 9810 sec. 5.1.3, RFC 9481 sec. 3 / 6.1.2, RFC 9579, RFC 9483 sec. 3.1 / 3.2 / 3.3.
+
+### Fixed
+
+- The EST and ACME clients (pki.est / pki.acme) now reset the origin-specific tls.servername (SNI) on a cross-origin redirect / request even when no mTLS client certificate is set, so the trusted host's SNI is never sent to a different origin. A caller's tls.checkServerIdentity pin is RETAINED across the origin boundary and re-evaluated against the redirected host, so a certificate / SPKI pin keeps applying rather than being silently bypassed by dropping the callback.
+
 ## v0.3.25 — 2026-07-26
 
 pki.path.build can now fetch a missing intermediate over the network -- opt in with `fetchAia` and it discovers the issuer from a certificate's AIA caIssuers URL, so a chain with a gap in the supplied pool still builds.
