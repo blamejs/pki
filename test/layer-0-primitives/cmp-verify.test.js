@@ -262,6 +262,33 @@ async function run() {
   var dnCert = await pki.x509.sign({ subject: [], subjectPublicKey: dnSpki, serialNumber: 32, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ directoryName: [{ commonName: "Alt Name" }] }] } }, { key: caKey, cert: caCert });
   var dnMsg = await pki.cmp.build({ header: hdr({ sender: { directoryName: [{ commonName: "Alt Name" }] } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: dnSpki }, dnKey) } }, { key: dnKey, cert: dnCert });
   check("9t. directoryName SAN: a sender matching the SAN DN verifies (canonical DN comparison)", (await pki.cmp.verify(dnMsg, { signerCert: dnCert })).valid === true);
+  // uniformResourceIdentifier SAN: the scheme and host are case-insensitive (RFC 5280 sec. 4.2.1.6 / RFC 3986
+  // sec. 6.2.2.1); the path and every other component stay byte-exact (fail-closed).
+  var uriKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var uriKey = uriKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var uriSpki = uriKp.publicKey.export({ format: "der", type: "spki" });
+  var uriCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 33, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://EE.Example.com/enroll" }] } }, { key: caKey, cert: caCert });
+  async function uriMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: uriCert }); }
+  check("9u. uniformResourceIdentifier SAN: a case-different scheme+host sender still matches", (await pki.cmp.verify(await uriMsg("HTTPS://ee.example.COM/enroll"), { signerCert: uriCert })).valid === true);
+  check("9v. uniformResourceIdentifier SAN: a case-different PATH does NOT match (path is case-sensitive) -> cmp/sender-mismatch", (await pki.cmp.verify(await uriMsg("https://ee.example.com/ENROLL"), { signerCert: uriCert })).code === "cmp/sender-mismatch");
+  check("9w. uniformResourceIdentifier SAN: a different host does NOT match -> cmp/sender-mismatch", (await pki.cmp.verify(await uriMsg("https://evil.example.com/enroll"), { signerCert: uriCert })).code === "cmp/sender-mismatch");
+  // A no-authority URI (no "//"): the scheme is still case-insensitive, the scheme-specific-part byte-exact.
+  var urnCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 34, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "urn:example:Enroll" }] } }, { key: caKey, cert: caCert });
+  async function urnMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: urnCert }); }
+  check("9x. a no-authority URI: a case-different scheme still matches (scheme-specific-part exact)", (await pki.cmp.verify(await urnMsg("URN:example:Enroll"), { signerCert: urnCert })).valid === true);
+  check("9x2. a no-authority URI: a case-different scheme-specific-part does NOT match -> cmp/sender-mismatch", (await pki.cmp.verify(await urnMsg("urn:example:enroll"), { signerCert: urnCert })).code === "cmp/sender-mismatch");
+  // A value that is not a well-formed absolute URI (no scheme) falls back to an exact byte comparison (fail-closed
+  // -- an input we cannot confidently parse is never normalized into a false identity match).
+  var relCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 35, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "relative/Path" }] } }, { key: caKey, cert: caCert });
+  async function relMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: relCert }); }
+  check("9y. a scheme-less URI value: an exact byte match still binds", (await pki.cmp.verify(await relMsg("relative/Path"), { signerCert: relCert })).valid === true);
+  check("9y2. a scheme-less URI value: a case difference does NOT match (no normalization) -> cmp/sender-mismatch", (await pki.cmp.verify(await relMsg("relative/path"), { signerCert: relCert })).code === "cmp/sender-mismatch");
+  // A URI carrying userinfo + no path: the host is case-insensitive, but userinfo stays case-sensitive (it is not
+  // part of the host), so a userinfo-case difference is a mismatch -- the normalizer never over-folds identity.
+  var uiCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 36, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://User@Host.example" }] } }, { key: caKey, cert: caCert });
+  async function uiMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: uiCert }); }
+  check("9z. a URI with userinfo + no path: a case-different host still matches (host case-insensitive)", (await pki.cmp.verify(await uiMsg("https://User@host.EXAMPLE"), { signerCert: uiCert })).valid === true);
+  check("9z2. a URI with userinfo: a case-different userinfo does NOT match (userinfo case-sensitive) -> cmp/sender-mismatch", (await pki.cmp.verify(await uiMsg("https://user@host.example"), { signerCert: uiCert })).code === "cmp/sender-mismatch");
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
