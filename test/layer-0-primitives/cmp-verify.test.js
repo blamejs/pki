@@ -259,6 +259,14 @@ async function run() {
   var junkFill = makeSigner("ec-p256").cert, fillPool = [];
   for (var pj = 0; pj < constants.LIMITS.PATH_BUILD_MAX_CANDIDATES - 1; pj++) fillPool.push(junkFill);
   check("9l2. a tight candidate pool spends its last slot on the embedded issuer, not the redundant signer leaf", (await pki.cmp.verify(tightMsg, { signerCert: leafCert, trustAnchors: [caCert], intermediates: fillPool, time: T })).trusted === true);
+  // The dedup keys on the canonical cert identity, so an extraCert duplicating a caller intermediate supplied as
+  // a PARSED certificate object (path.build accepts parsed candidates) is dropped too -- the last slot goes to
+  // the useful embedded issuer, not the parsed-object duplicate.
+  var junkParsed = pki.schema.x509.parse(junkFill);
+  var dupPool = [];
+  for (var pk = 0; pk < constants.LIMITS.PATH_BUILD_MAX_CANDIDATES - 1; pk++) dupPool.push(junkParsed);
+  var dupMsg = rebuild([lk[0].bytes, lk[1].bytes, lk[2].bytes, asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(leafCert), asn1.build.raw(junkFill), asn1.build.raw(intCert)]))]);
+  check("9l2b. an extraCert duplicating a PARSED-object intermediate is deduped -> the last slot holds the issuer", (await pki.cmp.verify(dupMsg, { signerCert: leafCert, trustAnchors: [caCert], intermediates: dupPool, time: T })).trusted === true);
   // A raw Buffer input is snapshotted: parse copies the input, so mutating the caller's buffer AFTER verify
   // cannot change the returned authenticated fields -- they bind to the verified snapshot, not the live buffer.
   var rawBuf = Buffer.from(await buildSig());
@@ -362,8 +370,10 @@ async function run() {
   // A no-authority URI (no "//"): the scheme is still case-insensitive, the scheme-specific-part byte-exact.
   var urnCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 34, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "urn:example:Enroll" }] } }, { key: caKey, cert: caCert });
   async function urnMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: urnCert }); }
-  check("9x. a no-authority URI: a case-different scheme still matches (scheme-specific-part exact)", (await pki.cmp.verify(await urnMsg("URN:example:Enroll"), { signerCert: urnCert })).valid === true);
-  check("9x2. a no-authority URI: a case-different scheme-specific-part does NOT match -> cmp/sender-mismatch", (await pki.cmp.verify(await urnMsg("urn:example:enroll"), { signerCert: urnCert })).code === "cmp/sender-mismatch");
+  // An authority-free URI (a URN, no host) is host-less, so it is compared byte-exact (RFC 5280 sec. 4.2.1.6):
+  // a case-different scheme does NOT fold into a match, but a byte-identical value still binds.
+  check("9x. an authority-free URI: a case-different scheme does NOT bind -> cmp/sender-mismatch", (await pki.cmp.verify(await urnMsg("URN:example:Enroll"), { signerCert: urnCert })).code === "cmp/sender-mismatch");
+  check("9x2. an authority-free URI: a byte-identical value still binds", (await pki.cmp.verify(await urnMsg("urn:example:Enroll"), { signerCert: urnCert })).valid === true);
   // A value that is not a well-formed absolute URI (no scheme) falls back to an exact byte comparison (fail-closed
   // -- an input we cannot confidently parse is never normalized into a false identity match).
   var relCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 35, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "relative/Path" }] } }, { key: caKey, cert: caCert });
