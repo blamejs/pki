@@ -362,6 +362,12 @@ async function run() {
   var v6BadCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 40, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://[2001:DB8/p" }] } }, { key: caKey, cert: caCert });
   async function v6BadMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: v6BadCert }); }
   check("9z6. an unterminated IPv6 literal falls back to exact comparison (a case difference does not match)", (await pki.cmp.verify(await v6BadMsg("https://[2001:db8/p"), { signerCert: v6BadCert })).code === "cmp/sender-mismatch");
+  // A malformed authority (non-numeric port) is NOT normalized at all -> exact comparison, so a host-case
+  // difference alongside the SAME malformed port is still a mismatch (the host is never folded for an
+  // authority the normalizer cannot validate).
+  var malPortCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 41, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://EXAMPLE.com:ADMIN/p" }] } }, { key: caKey, cert: caCert });
+  async function malPortMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: malPortCert }); }
+  check("9z7. a malformed authority (non-numeric port) is not normalized -> a host-case difference does not bind", (await pki.cmp.verify(await malPortMsg("https://example.com:ADMIN/p"), { signerCert: malPortCert })).code === "cmp/sender-mismatch");
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
