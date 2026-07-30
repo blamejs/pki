@@ -374,6 +374,10 @@ async function run() {
   var mail6Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 50, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "a..b@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
   async function mail6Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail6Cert }); }
   check("9s6. an rfc822Name with a malformed local-part (empty atom) is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await mail6Msg("a..b@example.com"), { signerCert: mail6Cert })).code === "cmp/sender-mismatch");
+  // A local-part with a non-atext character (a space) is malformed (RFC 5321 sec. 4.1.2) -> byte-exact comparison.
+  var mail7Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 53, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "user name@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
+  async function mail7Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail7Cert }); }
+  check("9s7. an rfc822Name local-part with a non-atext character (space) is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await mail7Msg("user name@example.com"), { signerCert: mail7Cert })).code === "cmp/sender-mismatch");
   var dnKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dnKey = dnKp.privateKey.export({ format: "der", type: "pkcs8" });
   var dnSpki = dnKp.publicKey.export({ format: "der", type: "spki" });

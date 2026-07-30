@@ -274,6 +274,16 @@ async function testDerive() {
   } finally { nodeCryptoMod.pbkdf2 = origPbkdf2; }
   var cap = Math.max(1, (parseInt(process.env.UV_THREADPOOL_SIZE, 10) || 4) - 2);
   check("PBKDF2 concurrency is capped so the libuv worker pool is not monopolized", peak >= 1 && peak <= cap);
+  // A SYNCHRONOUS PBKDF2 argument fault (iterations 0 -> crypto.pbkdf2 throws before the callback) must RELEASE
+  // its concurrency slot: after `cap` such faults a later valid derivation must still complete, not queue forever
+  // behind leaked slots.
+  for (var lf = 0; lf < cap; lf++) {
+    try { await subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("s"), iterations: 0 }, pw, 256); } catch (_e0) { /* expected argument fault */ }
+  }
+  var recovered = false;
+  subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("s"), iterations: 1000 }, pw, 256).then(function () { recovered = true; }).catch(function () {});
+  try { await helpers.waitUntil(function () { return recovered; }, { timeoutMs: 4000, label: "PBKDF2 slot recovery after a synchronous fault" }); } catch (_e1) { /* leaked slot -> never resolves */ }
+  check("a synchronous PBKDF2 fault releases its concurrency slot (a later derivation still completes)", recovered === true);
 }
 
 async function testWrap() {
