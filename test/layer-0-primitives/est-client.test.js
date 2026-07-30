@@ -319,14 +319,15 @@ async function testRedirectCredentialScope() {
   var rmtls = await pki.est.cacerts(BASE, { transport: tmtls, tls: { anchors: [S.cert], cert: Buffer.from("CLIENTCERT"), key: Buffer.from("CLIENTKEY") } });
   check("#29 the mTLS cert/key are presented on the original origin", !!(tmtls.calls[0].tls.cert && tmtls.calls[0].tls.key));
   check("#29 the mTLS cert/key are stripped on a cross-origin redirect", !tmtls.calls[1].tls.cert && !tmtls.calls[1].tls.key && rmtls.certificates.length === 1);
-  // the pinned server-identity material (servername SNI + a custom checkServerIdentity RFC 6125 verifier)
-  // is ALSO origin-bound: it authenticates the trusted host, so a cross-origin redirect must drop it, even
-  // when no mTLS cert/key is present (else the pinned host check runs against the wrong server).
+  // On a cross-origin redirect the origin-specific servername (SNI) is reset, but a caller's
+  // checkServerIdentity pin is RETAINED -- it is an additional tightening constraint that node re-evaluates
+  // against the redirected host, so a certificate/SPKI pin keeps applying (dropping it would let the
+  // redirected host through under only default hostname validation, bypassing the pin).
   var pinnedCheck = function () { return undefined; };
   var tpin = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, cacertsOK([S.cert])]);
   var rpin = await pki.est.cacerts(BASE, { transport: tpin, tls: { anchors: [S.cert], servername: "ca.example", checkServerIdentity: pinnedCheck } });
-  check("#29 the pinned servername/checkServerIdentity are presented on the original origin", tpin.calls[0].tls.servername === "ca.example" && tpin.calls[0].tls.checkServerIdentity === pinnedCheck);
-  check("#29 the pinned servername/checkServerIdentity are stripped on a cross-origin redirect", tpin.calls[1].tls.servername === undefined && tpin.calls[1].tls.checkServerIdentity === undefined && rpin.certificates.length === 1);
+  check("#29 the pinned servername + checkServerIdentity are presented on the original origin", tpin.calls[0].tls.servername === "ca.example" && tpin.calls[0].tls.checkServerIdentity === pinnedCheck);
+  check("#29 a cross-origin redirect resets the origin-specific servername but RETAINS the checkServerIdentity pin", tpin.calls[1].tls.servername === undefined && tpin.calls[1].tls.checkServerIdentity === pinnedCheck && rpin.certificates.length === 1);
   // a 303 See Other converts the follow to a GET with no body (no duplicate CSR re-POST).
   var t303 = fakeTransport([{ status: 303, headers: { location: "https://ca.example/.well-known/est/simpleenroll?x=1" }, body: "" }, enrollOK([S.cert])]);
   var r303 = await pki.est.simpleenroll(BASE, CSR, { transport: t303 });

@@ -14,7 +14,7 @@ pki.cmp.verify checks the protection on an incoming CMP PKIMessage -- verify a s
 
 ### Fixed
 
-- The EST client (pki.est) now drops a pinned tls.servername and tls.checkServerIdentity -- not only an mTLS client certificate and key -- when a request is redirected across an origin boundary, and drops them even when no client certificate is set. A caller that pinned a custom RFC 6125 server-identity verifier or SNI for the enrollment host no longer has it silently applied to a different redirected origin.
+- The EST and ACME clients (pki.est / pki.acme) now reset the origin-specific tls.servername (SNI) on a cross-origin redirect / request even when no mTLS client certificate is set, so the trusted host's SNI is never sent to a different origin. A caller's tls.checkServerIdentity pin is RETAINED across the origin boundary and re-evaluated against the redirected host, so a certificate / SPKI pin keeps applying rather than being silently bypassed by dropping the callback.
 
 ## v0.3.25 — 2026-07-26
 

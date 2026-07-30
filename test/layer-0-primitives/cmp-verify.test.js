@@ -199,6 +199,11 @@ async function run() {
   var texp = await pki.cmp.verify(expDer, { signerCert: expCert, trustAnchors: [caCert] });   // NO opts.time
   check("9e. a now-expired signer backdated via messageTime is NOT trusted (path validated at a trusted now)", texp.valid === true && texp.trusted === false && texp.code === "cmp/untrusted-signer");
   check("9f. an explicit opts.time enables historical verification of the then-valid signer", (await pki.cmp.verify(expDer, { signerCert: expCert, trustAnchors: [caCert], time: new Date("2020-06-01T00:00:00Z") })).trusted === true);
+  // A config-tier fault in the trust/validation options is a DEPLOYMENT error -> throw cmp/bad-input, never
+  // mask it as a routine cmp/untrusted-signer (a genuine no-path result stays an untrusted verdict, per 9c).
+  check("9g. an empty trustAnchors array -> throws cmp/bad-input (config error, not untrusted-signer)", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [] })) === "cmp/bad-input");
+  check("9h. a non-Date opts.time -> throws cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], time: "not-a-date" })) === "cmp/bad-input");
+  check("9i. a malformed trust anchor -> throws cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [Buffer.from([1, 2, 3])] })) === "cmp/bad-input");
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
