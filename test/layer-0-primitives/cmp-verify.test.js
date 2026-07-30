@@ -216,9 +216,12 @@ async function run() {
   var echoDer = await buildSig({ transactionID: Buffer.alloc(16, 0x33), recipNonce: undefined });
   var tid = Buffer.alloc(16, 0x33);
   check("13a. matching transactionID opt-in -> valid", (await pki.cmp.verify(echoDer, { signerCert: s.cert, transactionID: tid })).valid === true);
-  check("13b. wrong transactionID opt-in -> cmp/transaction-id-mismatch", (await pki.cmp.verify(echoDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 0x44) })).code === "cmp/transaction-id-mismatch");
+  // A failed opt-in echo is a REJECTION verdict (valid:false) on the SIGNATURE path too, not just the MAC path.
+  var t13b = await pki.cmp.verify(echoDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 0x44) });
+  check("13b. wrong transactionID opt-in -> { valid:false, cmp/transaction-id-mismatch }", t13b.valid === false && t13b.code === "cmp/transaction-id-mismatch");
   var rnDer = await buildSig({ recipNonce: Buffer.alloc(16, 0x55) });
-  check("13c. wrong expectRecipNonce -> cmp/bad-recip-nonce", (await pki.cmp.verify(rnDer, { signerCert: s.cert, expectRecipNonce: Buffer.alloc(16, 0x66) })).code === "cmp/bad-recip-nonce");
+  var t13c = await pki.cmp.verify(rnDer, { signerCert: s.cert, expectRecipNonce: Buffer.alloc(16, 0x66) });
+  check("13c. wrong expectRecipNonce -> { valid:false, cmp/bad-recip-nonce }", t13c.valid === false && t13c.code === "cmp/bad-recip-nonce");
   check("13d. matching expectRecipNonce -> valid", (await pki.cmp.verify(rnDer, { signerCert: s.cert, expectRecipNonce: Buffer.alloc(16, 0x55) })).valid === true);
 
   // ===== 14. input coercion (DER / PEM / parsed object) + display-field desync =====
@@ -228,8 +231,14 @@ async function run() {
   check("14b. a PEM CMP string verifies", (await pki.cmp.verify(pemMsg, { signerCert: s.cert })).valid === true);
   var parsedObj = parse(derMsg);
   check("14c. an already-parsed object verifies", (await pki.cmp.verify(parsedObj, { signerCert: s.cert })).valid === true);
-  parsedObj.header.transactionID = Buffer.alloc(16, 0xee);   // mutate a display field -- crypto is from raw slices
-  check("14d. a mutated display field on the parsed object does NOT change the crypto verdict", (await pki.cmp.verify(parsedObj, { signerCert: s.cert })).valid === true);
+  // A parsed object's decoded fields are UNTRUSTED: mutating header.transactionID must neither reach the
+  // verdict nor bypass the opt-in echo check (verify re-derives every field from the authenticated slices).
+  parsedObj.header.transactionID = Buffer.alloc(16, 0xee);
+  var desyncV = await pki.cmp.verify(parsedObj, { signerCert: s.cert });
+  check("14d. a mutated decoded field is discarded -- the verdict echoes the AUTHENTICATED transactionID (0x07, not 0xee)",
+    desyncV.valid === true && Buffer.isBuffer(desyncV.transactionID) && !desyncV.transactionID.equals(Buffer.alloc(16, 0xee)) && desyncV.transactionID.equals(Buffer.alloc(16, 7)));
+  check("14e. a mutated transactionID cannot bypass the opt-in echo check (the authenticated value is checked)",
+    (await pki.cmp.verify(parsedObj, { signerCert: s.cert, transactionID: Buffer.alloc(16, 0xee) })).code === "cmp/transaction-id-mismatch");
 
   // ===== 15. config throws (tier-1: throw, not a verdict) =====
   check("15a. malformed DER -> throws a typed cmp/*", /^cmp\//.test(await codeOf(pki.cmp.verify(Buffer.from([0x30, 0x00]), {}))));
