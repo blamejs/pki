@@ -234,6 +234,11 @@ async function run() {
   async function eeMsg(dns) { return pki.cmp.build({ header: hdr({ sender: { dNSName: dns } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: eeSpki }, eeKey) } }, { key: eeKey, cert: eeCert }); }
   check("9m. an empty-subject cert: a sender matching a subjectAltName entry verifies", (await pki.cmp.verify(await eeMsg("ee.example"), { signerCert: eeCert })).valid === true);
   check("9n. an empty-subject cert: a sender NOT in the subjectAltName -> cmp/sender-mismatch", (await pki.cmp.verify(await eeMsg("evil.example"), { signerCert: eeCert })).code === "cmp/sender-mismatch");
+  check("9o. an empty-subject cert: a case-different dNSName sender still matches the SAN (RFC 5280 sec. 4.2.1.6)", (await pki.cmp.verify(await eeMsg("EE.EXAMPLE"), { signerCert: eeCert })).valid === true);
+  // the path-builder pool ceiling (1000): unsigned extraCerts must not push a caller pool already at the
+  // ceiling over it and turn a valid verification into an exception.
+  var fullPool = new Array(1000).fill(signerCert);
+  check("9p. extraCerts do not push a ceiling-full caller intermediates pool over the path-builder limit", (await pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], intermediates: fullPool, time: T })).trusted === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
