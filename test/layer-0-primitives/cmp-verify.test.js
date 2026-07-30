@@ -317,6 +317,11 @@ async function run() {
   var mail2Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 43, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "a@b@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
   async function mail2Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail2Cert }); }
   check("9s2. an rfc822Name with multiple at-signs is malformed -> a domain-case difference does not bind", (await pki.cmp.verify(await mail2Msg("a@b@example.com"), { signerCert: mail2Cert })).code === "cmp/sender-mismatch");
+  // A VALID quoted local-part may itself contain "@" (RFC 5321) -- the mailbox separator is the "@" after the
+  // closing quote, so a quoted address still binds with the domain compared case-insensitively.
+  var mail3Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 44, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "\"a@b\"@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
+  async function mail3Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail3Cert }); }
+  check("9s3. a quoted rfc822Name local-part carrying '@' still binds (domain case-insensitive)", (await pki.cmp.verify(await mail3Msg("\"a@b\"@example.com"), { signerCert: mail3Cert })).valid === true);
   var dnKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dnKey = dnKp.privateKey.export({ format: "der", type: "pkcs8" });
   var dnSpki = dnKp.publicKey.export({ format: "der", type: "spki" });
@@ -378,6 +383,11 @@ async function run() {
   var atCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 42, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://a@b@EXAMPLE.com/p" }] } }, { key: caKey, cert: caCert });
   async function atMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: atCert }); }
   check("9z8. an authority with multiple at-signs is not normalized -> a host-case difference does not bind", (await pki.cmp.verify(await atMsg("https://a@b@example.com/p"), { signerCert: atCert })).code === "cmp/sender-mismatch");
+  // A hostless authority ("scheme:///path", empty host) is malformed (RFC 5280 sec. 4.2.1.6 requires an FQDN/IP
+  // host) -> exact comparison, so the scheme is not case-folded into a false match.
+  var noHostCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 45, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "HTTPS:///p" }] } }, { key: caKey, cert: caCert });
+  async function noHostMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: noHostCert }); }
+  check("9z8b. a hostless URI authority is not normalized -> a scheme-case difference does not bind", (await pki.cmp.verify(await noHostMsg("https:///p"), { signerCert: noHostCert })).code === "cmp/sender-mismatch");
   // opts defaults ONLY for null / undefined -- a falsy non-object (false / 0 / "") is a bad config, not a
   // default, so it raises cmp/bad-input like any other non-object rather than being silently coerced to {}.
   check("9z9a. opts=false -> cmp/bad-input (not silently defaulted)", await codeOf(pki.cmp.verify(chainDer, false)) === "cmp/bad-input");
