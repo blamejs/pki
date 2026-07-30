@@ -804,11 +804,28 @@ function testSignedEnvelopeTbs() {
     tbs && tbs.tagClass === "universal" && tbs.tagNumber === asn1.TAGS.SEQUENCE);
 }
 
+// dnsNameProblem: the shared RFC 5280 sec. 4.2.1.6 / RFC 1034 preferred-name validator (null when well-formed).
+function testDnsNameProblem() {
+  check("dnsNameProblem: a well-formed name -> null", pkix.dnsNameProblem("ee.example.com") === null);
+  check("dnsNameProblem: a single label -> null", pkix.dnsNameProblem("localhost") === null);
+  check("dnsNameProblem: a leftmost wildcard -> null", pkix.dnsNameProblem("*.example.com") === null);
+  check("dnsNameProblem: a non-string -> 'empty'", pkix.dnsNameProblem(5) === "empty");
+  check("dnsNameProblem: over 253 octets -> rejected", pkix.dnsNameProblem("a".repeat(254)) === "exceeds 253 octets");
+  check("dnsNameProblem: whitespace -> rejected", pkix.dnsNameProblem("bad name.com") === "whitespace");
+  check("dnsNameProblem: a trailing dot -> rejected", pkix.dnsNameProblem("example.com.") === "leading/trailing dot");
+  check("dnsNameProblem: an underscore -> rejected", pkix.dnsNameProblem("a_b.com") === "underscore forbidden in dNSName");
+  check("dnsNameProblem: an empty label -> rejected", pkix.dnsNameProblem("victim..com") === "empty label");
+  check("dnsNameProblem: a 64-octet label -> rejected", pkix.dnsNameProblem("a".repeat(64) + ".com") === "label exceeds 63 octets");
+  check("dnsNameProblem: a bare wildcard -> rejected", pkix.dnsNameProblem("*") === "bare wildcard");
+  check("dnsNameProblem: a leading-hyphen label -> rejected", pkix.dnsNameProblem("-bad.com") === "invalid label syntax");
+}
+
 // ---------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------
 
 function run() {
+  testDnsNameProblem();
   testBasicConstraints();
   testKeyUsage();
   testNameConstraints();

@@ -315,6 +315,11 @@ async function run() {
   check("9m. an empty-subject cert: a sender matching a subjectAltName entry verifies", (await pki.cmp.verify(await eeMsg("ee.example"), { signerCert: eeCert })).valid === true);
   check("9n. an empty-subject cert: a sender NOT in the subjectAltName -> cmp/sender-mismatch", (await pki.cmp.verify(await eeMsg("evil.example"), { signerCert: eeCert })).code === "cmp/sender-mismatch");
   check("9o. an empty-subject cert: a case-different dNSName sender still matches the SAN (RFC 5280 sec. 4.2.1.6)", (await pki.cmp.verify(await eeMsg("EE.EXAMPLE"), { signerCert: eeCert })).valid === true);
+  // A MALFORMED dNSName (an empty label) is compared byte-exact, not case-folded, so a byte-distinct identity
+  // differing only in case does not bind (RFC 5280 sec. 4.2.1.6 / RFC 1034 preferred name syntax).
+  var badDnsCert = await pki.x509.sign({ subject: [], subjectPublicKey: eeSpki, serialNumber: 47, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "Victim..COM" }] } }, { key: caKey, cert: caCert });
+  async function badDnsMsg(dns) { return pki.cmp.build({ header: hdr({ sender: { dNSName: dns } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: eeSpki }, eeKey) } }, { key: eeKey, cert: badDnsCert }); }
+  check("9o2. a malformed dNSName (empty label) is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await badDnsMsg("victim..com"), { signerCert: badDnsCert })).code === "cmp/sender-mismatch");
   // the path-builder pool ceiling (1000): unsigned extraCerts must not push a caller pool already at the
   // ceiling over it and turn a valid verification into an exception.
   var fullPool = new Array(1000).fill(signerCert);
