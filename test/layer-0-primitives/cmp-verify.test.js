@@ -356,6 +356,15 @@ async function run() {
   var mail4Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 46, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "\"a\"@b@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
   async function mail4Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail4Cert }); }
   check("9s4. a quoted rfc822Name whose domain carries an extra '@' is malformed -> a case difference does not bind", (await pki.cmp.verify(await mail4Msg("\"a\"@b@example.com"), { signerCert: mail4Cert })).code === "cmp/sender-mismatch");
+  // An rfc822Name whose DOMAIN is not a valid FQDN (an empty label like "Victim..COM") is compared byte-exact,
+  // not case-folded, so it cannot bind a byte-distinct identity.
+  var mail5Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 49, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "user@Victim..COM" }] } }, { key: caKey, cert: caCert });
+  async function mail5Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail5Cert }); }
+  check("9s5. an rfc822Name with a malformed domain is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await mail5Msg("user@victim..com"), { signerCert: mail5Cert })).code === "cmp/sender-mismatch");
+  // An unquoted local-part with an empty atom ("a..b") is malformed -> byte-exact comparison.
+  var mail6Cert = await pki.x509.sign({ subject: [], subjectPublicKey: mailSpki, serialNumber: 50, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ rfc822Name: "a..b@EXAMPLE.com" }] } }, { key: caKey, cert: caCert });
+  async function mail6Msg(addr) { return pki.cmp.build({ header: hdr({ sender: { rfc822Name: addr } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: mailSpki }, mailKey) } }, { key: mailKey, cert: mail6Cert }); }
+  check("9s6. an rfc822Name with a malformed local-part (empty atom) is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await mail6Msg("a..b@example.com"), { signerCert: mail6Cert })).code === "cmp/sender-mismatch");
   var dnKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dnKey = dnKp.privateKey.export({ format: "der", type: "pkcs8" });
   var dnSpki = dnKp.publicKey.export({ format: "der", type: "spki" });
@@ -429,6 +438,11 @@ async function run() {
   var badHostCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 48, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://Victim..COM/p" }] } }, { key: caKey, cert: caCert });
   async function badHostMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: badHostCert }); }
   check("9z8c. a URI SAN with a malformed host is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await badHostMsg("https://victim..com/p"), { signerCert: badHostCert })).code === "cmp/sender-mismatch");
+  // A URI with a malformed component OUTSIDE the authority (a bad percent-escape "%zz" in the path) is not a
+  // well-formed RFC 3986 URI, so it is compared byte-exact rather than case-folding the host into a match.
+  var badPctCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 51, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://EXAMPLE.com/%zz" }] } }, { key: caKey, cert: caCert });
+  async function badPctMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: badPctCert }); }
+  check("9z8d. a URI SAN with an invalid percent-escape is compared byte-exact -> a host-case difference does not bind", (await pki.cmp.verify(await badPctMsg("https://example.com/%zz"), { signerCert: badPctCert })).code === "cmp/sender-mismatch");
   // opts defaults ONLY for null / undefined -- a falsy non-object (false / 0 / "") is a bad config, not a
   // default, so it raises cmp/bad-input like any other non-object rather than being silently coerced to {}.
   check("9z9a. opts=false -> cmp/bad-input (not silently defaulted)", await codeOf(pki.cmp.verify(chainDer, false)) === "cmp/bad-input");
