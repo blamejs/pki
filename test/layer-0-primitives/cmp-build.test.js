@@ -199,6 +199,11 @@ async function run() {
   check("19k2. an in-range iterationCount x keyLength whose product exceeds the cap -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 312501, keyLength: 1024 } })) === "cmp/bad-input");
   check("19k3. a maximal keyLength (1024) at a count under the product ceiling still emits", parse(await pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1000, keyLength: 1024 } })).header.protectionAlg.name === "pbmac1");
   check("19l. an over-cap mac.salt -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(2048) } })) === "cmp/bad-input");
+  // An empty / short salt loses precomputation resistance (RFC 8018 sec. 4.1 64-bit floor) -- refused at
+  // construction so build never emits a message pki.cmp.verify (same floor) rejects; an 8-octet salt is accepted.
+  check("19l2. an empty mac.salt -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(0) } })) === "cmp/bad-input");
+  check("19l3. a mac.salt below the 8-octet floor -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(4) } })) === "cmp/bad-input");
+  check("19l4. an 8-octet mac.salt (the floor) still emits", parse(await pki.cmp.build(macMsg, { mac: { secret: "x", salt: Buffer.alloc(8, 1), iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
   check("19i. a Buffer mac.secret + SHA-384 prf round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: Buffer.from("k"), salt: Buffer.alloc(16, 1), iterationCount: 1000, prf: "SHA-384" } })).header.protectionAlg.name === "pbmac1");
 
   // ---- protection self-check (the sender proof) ----

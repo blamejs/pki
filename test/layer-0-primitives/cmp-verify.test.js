@@ -430,6 +430,12 @@ async function run() {
   // combined ceiling and verifies end to end -- the cap bounds hostile work without rejecting a real 2-block key.
   var twoBlock = await buildMac("hunter2", { keyLength: 64 });
   check("12d. a genuine 2-block keyLength (64) at a normal iterationCount -> valid", (await pki.cmp.verify(twoBlock, { sharedSecret: "hunter2" })).valid === true);
+  // An empty / short PBMAC1 salt is refused BEFORE derivation (RFC 8018 sec. 4.1 64-bit floor): an under-length
+  // salt loses precomputation resistance, so the work-factor gate rejects it rather than MAC-verify a weak message.
+  var emptySalt = substituteAlg(macDer, pbmac1AlgId({ salt: Buffer.alloc(0), iter: 2048, keyLen: 32, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
+  check("12e. a PBMAC1 empty salt -> cmp/bad-input", await codeOf(pki.cmp.verify(emptySalt, { sharedSecret: "hunter2" })) === "cmp/bad-input");
+  var shortSalt = substituteAlg(macDer, pbmac1AlgId({ salt: Buffer.alloc(4, 9), iter: 2048, keyLen: 32, prf: "hmacWithSHA256", mac: "hmacWithSHA256" }));
+  check("12f. a PBMAC1 salt below the 8-octet floor -> cmp/bad-input", await codeOf(pki.cmp.verify(shortSalt, { sharedSecret: "hunter2" })) === "cmp/bad-input");
 
   // ===== 13. header echo opt-ins =====
   var echoDer = await buildSig({ transactionID: Buffer.alloc(16, 0x33), recipNonce: undefined });
