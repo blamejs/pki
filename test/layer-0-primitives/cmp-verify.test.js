@@ -424,6 +424,11 @@ async function run() {
   var noHostCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 45, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "HTTPS:///p" }] } }, { key: caKey, cert: caCert });
   async function noHostMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: noHostCert }); }
   check("9z8b. a hostless URI authority is not normalized -> a scheme-case difference does not bind", (await pki.cmp.verify(await noHostMsg("https:///p"), { signerCert: noHostCert })).code === "cmp/sender-mismatch");
+  // A URI authority whose host is not a valid FQDN/IP (an empty label like "Victim..COM") is compared byte-exact,
+  // not case-folded, so it cannot bind a byte-distinct identity (RFC 5280 sec. 4.2.1.6 / RFC 1034).
+  var badHostCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 48, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://Victim..COM/p" }] } }, { key: caKey, cert: caCert });
+  async function badHostMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: badHostCert }); }
+  check("9z8c. a URI SAN with a malformed host is compared byte-exact -> a case difference does not bind", (await pki.cmp.verify(await badHostMsg("https://victim..com/p"), { signerCert: badHostCert })).code === "cmp/sender-mismatch");
   // opts defaults ONLY for null / undefined -- a falsy non-object (false / 0 / "") is a bad config, not a
   // default, so it raises cmp/bad-input like any other non-object rather than being silently coerced to {}.
   check("9z9a. opts=false -> cmp/bad-input (not silently defaulted)", await codeOf(pki.cmp.verify(chainDer, false)) === "cmp/bad-input");
