@@ -368,6 +368,18 @@ async function run() {
   var malPortCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 41, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://EXAMPLE.com:ADMIN/p" }] } }, { key: caKey, cert: caCert });
   async function malPortMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: malPortCert }); }
   check("9z7. a malformed authority (non-numeric port) is not normalized -> a host-case difference does not bind", (await pki.cmp.verify(await malPortMsg("https://example.com:ADMIN/p"), { signerCert: malPortCert })).code === "cmp/sender-mismatch");
+  // An authority with more than one "@" is malformed (a raw "@" is forbidden in userinfo) -> exact comparison,
+  // so a host-case difference in such an authority does not fold into a false match.
+  var atCert = await pki.x509.sign({ subject: [], subjectPublicKey: uriSpki, serialNumber: 42, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ uniformResourceIdentifier: "https://a@b@EXAMPLE.com/p" }] } }, { key: caKey, cert: caCert });
+  async function atMsg(u) { return pki.cmp.build({ header: hdr({ sender: { uniformResourceIdentifier: u } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: uriSpki }, uriKey) } }, { key: uriKey, cert: atCert }); }
+  check("9z8. an authority with multiple at-signs is not normalized -> a host-case difference does not bind", (await pki.cmp.verify(await atMsg("https://a@b@example.com/p"), { signerCert: atCert })).code === "cmp/sender-mismatch");
+  // opts defaults ONLY for null / undefined -- a falsy non-object (false / 0 / "") is a bad config, not a
+  // default, so it raises cmp/bad-input like any other non-object rather than being silently coerced to {}.
+  check("9z9a. opts=false -> cmp/bad-input (not silently defaulted)", await codeOf(pki.cmp.verify(chainDer, false)) === "cmp/bad-input");
+  check("9z9b. opts=0 -> cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, 0)) === "cmp/bad-input");
+  check("9z9c. opts=empty-string -> cmp/bad-input", await codeOf(pki.cmp.verify(chainDer, "")) === "cmp/bad-input");
+  check("9z9d. omitted opts (undefined) still defaults to {} -> valid", (await pki.cmp.verify(chainDer)).valid === true);
+  check("9z9e. opts=null still defaults to {} -> valid", (await pki.cmp.verify(chainDer, null)).valid === true);
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
