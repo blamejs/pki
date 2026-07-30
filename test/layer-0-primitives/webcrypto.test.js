@@ -258,6 +258,22 @@ async function testDerive() {
   await subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("NaCl"), iterations: 2000000 }, pw, 256);
   derDone = true;
   check("PBKDF2 runs off the event loop (concurrent ticks fired during a 2M-iteration derivation)", ticks > 100);
+  // Concurrent PBKDF2 derivations are CAPPED so many jobs cannot monopolize the libuv worker pool (CWE-400):
+  // wrap crypto.pbkdf2 to track the peak concurrent derivations while 8 jobs run, and assert the peak never
+  // exceeds the cap (UV_THREADPOOL_SIZE - 2, floored at 1) -- unlimited, all 8 would be in flight at once.
+  var nodeCryptoMod = require("node:crypto");
+  var origPbkdf2 = nodeCryptoMod.pbkdf2, inFlight = 0, peak = 0;
+  nodeCryptoMod.pbkdf2 = function (p, s, it, kl, dg, cb) {
+    inFlight++; if (inFlight > peak) peak = inFlight;
+    return origPbkdf2(p, s, it, kl, dg, function (e, k) { inFlight--; cb(e, k); });
+  };
+  try {
+    var jobs = [];
+    for (var j = 0; j < 8; j++) jobs.push(subtle.deriveBits({ name: "PBKDF2", hash: "SHA-256", salt: Buffer.from("NaCl"), iterations: 300000 }, pw, 256));
+    await Promise.all(jobs);
+  } finally { nodeCryptoMod.pbkdf2 = origPbkdf2; }
+  var cap = Math.max(1, (parseInt(process.env.UV_THREADPOOL_SIZE, 10) || 4) - 2);
+  check("PBKDF2 concurrency is capped so the libuv worker pool is not monopolized", peak >= 1 && peak <= cap);
 }
 
 async function testWrap() {
