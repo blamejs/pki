@@ -20,6 +20,7 @@ var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
 var b = asn1.build;
 var nodeCrypto = require("node:crypto");
+var constants = require("../../lib/constants");
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -225,6 +226,30 @@ async function run() {
   var junkExtra = asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(signerCert), asn1.build.raw(asn1.build.sequence([asn1.build.integer(1n)]))]));
   var junkDer = rebuild([ck[0].bytes, ck[1].bytes, ck[2].bytes, junkExtra]);
   check("9l. a non-certificate entry in unsigned extraCerts is dropped, not raised as an exception", (await pki.cmp.verify(junkDer, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
+  // A tight candidate pool (only one slot left under the ceiling) must spend it on the USEFUL embedded issuer,
+  // not the redundant signer leaf (already the path target): signer -> intermediate -> root, with [signer,
+  // intermediate] in extraCerts and the caller pool filled to leave exactly one slot, still chains to trusted.
+  var intKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var intKey = intKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var intSpki = intKp.publicKey.export({ format: "der", type: "spki" });
+  var intCert = await pki.x509.sign({ subject: [{ commonName: "Intermediate CA" }], subjectPublicKey: intSpki, serialNumber: 40, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], authorityKeyIdentifier: true } }, { key: caKey, cert: caCert });
+  var leafKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var leafKey = leafKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var leafSpki = leafKp.publicKey.export({ format: "der", type: "spki" });
+  var leafCert = await pki.x509.sign({ subject: [{ commonName: "Test Signer" }], subjectPublicKey: leafSpki, serialNumber: 41, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: intKey, cert: intCert });
+  var leafMsg = await pki.cmp.build({ header: HDR, body: await p10Body(leafSpki, leafKey) }, { key: leafKey, cert: leafCert });
+  var lk = msgKids(leafMsg);
+  var tightMsg = rebuild([lk[0].bytes, lk[1].bytes, lk[2].bytes, asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(leafCert), asn1.build.raw(intCert)]))]);
+  var junkFill = makeSigner("ec-p256").cert, fillPool = [];
+  for (var pj = 0; pj < constants.LIMITS.PATH_BUILD_MAX_CANDIDATES - 1; pj++) fillPool.push(junkFill);
+  check("9l2. a tight candidate pool spends its last slot on the embedded issuer, not the redundant signer leaf", (await pki.cmp.verify(tightMsg, { signerCert: leafCert, trustAnchors: [caCert], intermediates: fillPool, time: T })).trusted === true);
+  // A raw Buffer input is snapshotted: parse copies the input, so mutating the caller's buffer AFTER verify
+  // cannot change the returned authenticated fields -- they bind to the verified snapshot, not the live buffer.
+  var rawBuf = Buffer.from(await buildSig());
+  var snapV = await pki.cmp.verify(rawBuf, { signerCert: s.cert });
+  var tidBefore = Buffer.from(snapV.transactionID);
+  rawBuf.fill(0x00);
+  check("9l3. a raw Buffer input is snapshotted -- mutating it after verify does not alter the verdict transactionID", snapV.valid === true && snapV.transactionID.equals(tidBefore));
   // An EMPTY-subject protection certificate binds the sender to a subjectAltName entry (RFC 5280 sec. 7.1),
   // not the (empty) subject DN -- a matching SAN sender verifies, a non-matching one is a sender-mismatch.
   var eeKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });

@@ -328,6 +328,15 @@ async function testRedirectCredentialScope() {
   var rpin = await pki.est.cacerts(BASE, { transport: tpin, tls: { anchors: [S.cert], servername: "ca.example", checkServerIdentity: pinnedCheck } });
   check("#29 the pinned servername + checkServerIdentity are presented on the original origin", tpin.calls[0].tls.servername === "ca.example" && tpin.calls[0].tls.checkServerIdentity === pinnedCheck);
   check("#29 a cross-origin redirect resets the origin-specific servername but RETAINS the checkServerIdentity pin", tpin.calls[1].tls.servername === undefined && tpin.calls[1].tls.checkServerIdentity === pinnedCheck && rpin.certificates.length === 1);
+  // A redirect that leaves the origin and then returns to it restores the origin-scoped SNI on the return hop
+  // (per-hop TLS scoping, not a one-way strip): ca.example -> mirror.example (SNI dropped) -> ca.example (SNI back).
+  var tbounce = fakeTransport([
+    { status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" },
+    { status: 302, headers: { location: "https://ca.example/.well-known/est/cacerts" }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rbounce = await pki.est.cacerts(BASE, { transport: tbounce, tls: { anchors: [S.cert], servername: "ca.example" } });
+  check("#29 a redirect off-origin then back restores the origin-scoped servername on the return hop", tbounce.calls[0].tls.servername === "ca.example" && tbounce.calls[1].tls.servername === undefined && tbounce.calls[2].tls.servername === "ca.example" && rbounce.certificates.length === 1);
   // a 303 See Other converts the follow to a GET with no body (no duplicate CSR re-POST).
   var t303 = fakeTransport([{ status: 303, headers: { location: "https://ca.example/.well-known/est/simpleenroll?x=1" }, body: "" }, enrollOK([S.cert])]);
   var r303 = await pki.est.simpleenroll(BASE, CSR, { transport: t303 });
