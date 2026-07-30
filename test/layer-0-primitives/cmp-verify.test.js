@@ -225,6 +225,15 @@ async function run() {
   var junkExtra = asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(signerCert), asn1.build.raw(asn1.build.sequence([asn1.build.integer(1n)]))]));
   var junkDer = rebuild([ck[0].bytes, ck[1].bytes, ck[2].bytes, junkExtra]);
   check("9l. a non-certificate entry in unsigned extraCerts is dropped, not raised as an exception", (await pki.cmp.verify(junkDer, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
+  // An EMPTY-subject protection certificate binds the sender to a subjectAltName entry (RFC 5280 sec. 7.1),
+  // not the (empty) subject DN -- a matching SAN sender verifies, a non-matching one is a sender-mismatch.
+  var eeKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var eeKey = eeKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var eeSpki = eeKp.publicKey.export({ format: "der", type: "spki" });
+  var eeCert = await pki.x509.sign({ subject: [], subjectPublicKey: eeSpki, serialNumber: 20, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "ee.example" }] } }, { key: caKey, cert: caCert });
+  async function eeMsg(dns) { return pki.cmp.build({ header: hdr({ sender: { dNSName: dns } }), body: { p10cr: await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: eeSpki }, eeKey) } }, { key: eeKey, cert: eeCert }); }
+  check("9m. an empty-subject cert: a sender matching a subjectAltName entry verifies", (await pki.cmp.verify(await eeMsg("ee.example"), { signerCert: eeCert })).valid === true);
+  check("9n. an empty-subject cert: a sender NOT in the subjectAltName -> cmp/sender-mismatch", (await pki.cmp.verify(await eeMsg("evil.example"), { signerCert: eeCert })).code === "cmp/sender-mismatch");
 
   // ===== 10. reject-unknown/legacy/KEM alg (never a silent accept) =====
   var pbmOid = substituteAlg(await buildSig(), b.sequence([b.oid(pki.oid.byName("passwordBasedMac"))]));
