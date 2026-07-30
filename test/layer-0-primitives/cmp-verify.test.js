@@ -257,6 +257,30 @@ async function run() {
   var certBefore = Buffer.from(scV.signer.cert), spkiBefore = Buffer.from(scV.signer.spki);
   scBuf.fill(0x00);
   check("9l4. opts.signerCert is snapshotted -- mutating it after verify does not alter verdict.signer.cert / .spki", scV.valid === true && scV.signer.cert.equals(certBefore) && scV.signer.spki.equals(spkiBefore));
+  // A signer with a POPULATED subject and a non-critical SAN whose OUTER tag is malformed (a SET wrapping a
+  // valid [2] dNSName) must NOT bind the header sender to that unvalidated name: path validation does not
+  // decode a non-critical unused SAN, so verify must reject the structure through the shared generalNames
+  // schema (RFC 5280 sec. 4.2.1.6 SEQUENCE OF GeneralName) and fail closed to sender-mismatch.
+  function patchSanToSet(der) {
+    der = Buffer.from(der);
+    var sanOid = Buffer.from([0x06, 0x03, 0x55, 0x1d, 0x11]);   // subjectAltName 2.5.29.17
+    var p = der.indexOf(sanOid);
+    if (p < 0) throw new Error("SAN OID not found");
+    p += sanOid.length;
+    if (der[p] === 0x01) p += 3;                                // skip a critical BOOLEAN (01 01 FF) if present
+    if (der[p] !== 0x04) throw new Error("expected extnValue OCTET STRING");
+    var contentStart = der[p + 1] < 0x80 ? p + 2 : p + 2 + (der[p + 1] & 0x7f);
+    if (der[contentStart] !== 0x30) throw new Error("expected a SEQUENCE at the SAN content");
+    der[contentStart] = 0x31;                                  // SEQUENCE (30) -> SET (31): a malformed SAN outer tag
+    return der;
+  }
+  var malKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var malKey = malKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var malSpki = malKp.publicKey.export({ format: "der", type: "spki" });
+  var malCertOk = await pki.x509.sign({ subject: [{ commonName: "Populated Subject" }], subjectPublicKey: malSpki, serialNumber: 50, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "malformed.example" }] } }, { key: caKey, cert: caCert });
+  var malCert = patchSanToSet(malCertOk);
+  var malMsg = await pki.cmp.build({ header: hdr({ sender: { dNSName: "malformed.example" } }), body: await p10Body(malSpki, malKey) }, { key: malKey, cert: malCertOk });
+  check("9l5. a populated-subject signer with a malformed (SET) SAN does not bind the sender to the wrapped dNSName", (await pki.cmp.verify(malMsg, { signerCert: malCert })).code === "cmp/sender-mismatch");
   // An EMPTY-subject protection certificate binds the sender to a subjectAltName entry (RFC 5280 sec. 7.1),
   // not the (empty) subject DN -- a matching SAN sender verifies, a non-matching one is a sender-mismatch.
   var eeKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
