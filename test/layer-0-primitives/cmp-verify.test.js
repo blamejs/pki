@@ -485,6 +485,15 @@ async function run() {
     desyncV.valid === true && Buffer.isBuffer(desyncV.transactionID) && !desyncV.transactionID.equals(Buffer.alloc(16, 0xee)) && desyncV.transactionID.equals(Buffer.alloc(16, 7)));
   check("14e. a mutated transactionID cannot bypass the opt-in echo check (the authenticated value is checked)",
     (await pki.cmp.verify(parsedObj, { signerCert: s.cert, transactionID: Buffer.alloc(16, 0xee) })).code === "cmp/transaction-id-mismatch");
+  // A parsed object with a MALFORMED raw slice (a null protection.bytes) makes reassembly throw -- it must
+  // surface the documented typed cmp/bad-input, not a raw asn1/* error leaking through the coercion boundary.
+  var badSlice = parse(derMsg);
+  badSlice.protection = { bytes: null, unusedBits: 0 };
+  check("14f. a parsed object with a malformed raw slice -> typed cmp/bad-input (not a raw asn1 error)", await codeOf(pki.cmp.verify(badSlice, { signerCert: s.cert })) === "cmp/bad-input");
+  // A non-buffer opt-in echo value (e.g. a string from JSON config) is a config error -> cmp/bad-input, never a
+  // routine transaction/nonce mismatch verdict that would misreport the typing mistake as a peer auth failure.
+  check("14g. a non-buffer opts.transactionID (string) -> cmp/bad-input, not a mismatch verdict", await codeOf(pki.cmp.verify(derMsg, { signerCert: s.cert, transactionID: "not-a-buffer" })) === "cmp/bad-input");
+  check("14h. a non-buffer opts.expectRecipNonce (string) -> cmp/bad-input", await codeOf(pki.cmp.verify(derMsg, { signerCert: s.cert, expectRecipNonce: "not-a-buffer" })) === "cmp/bad-input");
 
   // ===== 15. config throws (tier-1: throw, not a verdict) =====
   check("15a. malformed DER -> throws a typed cmp/*", /^cmp\//.test(await codeOf(pki.cmp.verify(Buffer.from([0x30, 0x00]), {}))));
