@@ -601,6 +601,14 @@ async function run() {
   var r93 = await s93.enroll(H.irRequest(CLIENT.spki));
   check("93. 1000 duplicate caller intermediates collapse to one distinct candidate before bounding -> the caPubs intermediate still fits -> the leaf validates -> issued", r93.outcome === "issued");
 
+  // ===== 94. duplicate caller intermediates do not starve the FIRST verify's signer path (dedup before cmp.verify too) =====
+  var dup94 = [];
+  for (var f94 = 0; f94 < 1000; f94++) dup94.push(DISTINCT[0]);   // 1000 copies of ONE cert -> raw would fill the ceiling
+  var s94f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { deepSigner: true });   // the signer chains via intCaCert delivered in its extraCerts
+  var s94 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: dup94, transport: s94f.transport, sleep: function () { return Promise.resolve(); } });
+  var r94 = await s94.enroll(H.irRequest(CLIENT.spki));
+  check("94. 1000 duplicate caller intermediates collapse before the FIRST verify -> cmp.verify has room for the response's extraCerts issuer -> the deepSigner chains -> issued", r94.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
