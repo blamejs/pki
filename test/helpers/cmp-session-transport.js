@@ -332,9 +332,10 @@ function errorBody(statusCode, failInfo) { return { error: { pKIStatusInfo: { st
 // An enrollment request spec (an ir) whose template publicKey is the ENROLLING key -- it MUST equal the
 // signature-protection key so the CRMF proof-of-possession (which defaults to the protection key) verifies.
 // An optional certReqId sets the CRMF request id the session must echo in pollReq / certConf (RFC 4211).
-function irRequest(spki, certReqId) {
+function irRequest(spki, certReqId, key) {
   var ir = { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: spki } };
   if (certReqId != null) ir.certReqId = certReqId;
+  if (key != null) ir.key = key;   // the requested key's private half for the CRMF proof of possession (required for a MAC session)
   return { ir: ir };
 }
 

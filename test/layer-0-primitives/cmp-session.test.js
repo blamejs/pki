@@ -161,7 +161,7 @@ async function run() {
   var SECRET = "shared-secret-123";
   var s24f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: SECRET });
   var s24 = pki.cmp.session({ url: URL, mac: { secret: SECRET }, transport: s24f.transport, sleep: function () { return Promise.resolve(); } });
-  var r24 = await s24.enroll(H.irRequest(CLIENT.spki));
+  var r24 = await s24.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
   check("24. a PBMAC1-protected transaction issues end to end (build + verify under the shared secret)", r24.outcome === "issued" && r24.confirmed === true && Buffer.isBuffer(r24.certificate));
 
   // ===== 25. a hashless-signature issued cert (Ed25519) -> the certConf certHash defaults to SHA-256 =====
@@ -410,7 +410,7 @@ async function run() {
   var compLeaf = await H.makeCompositeSigOidCert(pki, CLIENT.spki);
   var s63f = H.fakeCa(pki, [H.ip(0, 0, compLeaf), H.pkiconf()], { macSecret: "s3cr3t-63" });   // a MAC session skips leaf path-validation, reaching the certConf-hash resolver
   var s63 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-63" }, transport: s63f.transport, sleep: function () { return Promise.resolve(); } });
-  var r63 = await s63.enroll(H.irRequest(CLIENT.spki));
+  var r63 = await s63.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
   var cc63 = pki.schema.cmp.parse(s63f.transport.calls[1].body).body.decoded[0];
   check("63. a composite signature algorithm -> certConf under SHA-256 with an explicit hashAlg (not cmp/bad-cert-response)", r63.outcome === "issued" && cc63.hashAlg != null);
 
@@ -432,7 +432,7 @@ async function run() {
   var comp512 = await H.makeCompositeSigOidCert(pki, CLIENT.spki, "id-MLDSA65-ECDSA-P256-SHA512");
   var s66f = H.fakeCa(pki, [H.ip(0, 0, comp512), H.pkiconf()], { macSecret: "s3cr3t-66" });
   var s66 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-66" }, transport: s66f.transport, sleep: function () { return Promise.resolve(); } });
-  var r66 = await s66.enroll(H.irRequest(CLIENT.spki));
+  var r66 = await s66.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
   var cc66 = pki.schema.cmp.parse(s66f.transport.calls[1].body).body.decoded[0];
   var wantH66 = require("node:crypto").createHash("sha512").update(comp512).digest();
   check("66. a SHA-512 composite -> certConf certHash under SHA-512 with hashAlg sha512 (the composite's own prehash)",
@@ -471,6 +471,27 @@ async function run() {
   var swappedLeaf = await H.makeCurveSwappedLeaf(pki, CLIENT.spki);   // same subjectPublicKey bits, secp384r1 OID
   var s71 = mk([H.ip(0, 0, swappedLeaf), H.pkiconf()]);
   check("71. a granted cert whose SPKI shares the requested bits but declares a different EC curve -> cmp/bad-cert-response (params are part of the key identity, not dropped)", await codeOf(s71.session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
+  // ===== 72. a MAC-protected ir with NO arm-local POP key -> cmp/bad-input (a PBMAC1 session has no signing key) =====
+  var s72f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-72" });
+  var s72 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-72" }, transport: s72f.transport, sleep: function () { return Promise.resolve(); } });
+  check("72. a MAC-protected ir/cr/kur without the requested key's private half for the CRMF proof of possession -> cmp/bad-input (crmf.build would emit none)", await codeOf(s72.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-input");
+
+  // ===== 73. an acceptCert policy can VETO a grantedWithMods certificate -> rejected + a rejecting certConf =====
+  var seen73 = null;
+  var s73f = H.fakeCa(pki, [H.ip(0, 1, certDer), H.pkiconf()]);   // status 1 = grantedWithMods
+  var s73 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s73f.transport, sleep: function () { return Promise.resolve(); }, acceptCert: function (cert, info) { seen73 = info; return false; } });
+  var r73 = await s73.enroll(H.irRequest(CLIENT.spki));
+  check("73a. an acceptCert veto of a grantedWithMods cert -> outcome:rejected, still surfacing the inspected certificate", r73.outcome === "rejected" && Buffer.isBuffer(r73.certificate) && r73.certificate.equals(certDer));
+  check("73b. the policy is told the grant was grantedWithMods (the cert bytes + a status name)", seen73 && seen73.grantedWithMods === true && seen73.status === "grantedWithMods");
+  var cc73 = pki.schema.cmp.parse(s73f.transport.calls[1].body).body.decoded[0];   // the certConf CertStatus
+  check("73c. the certConf carried a REJECTING statusInfo (status rejection) so the CA learns the EE declined", cc73.statusInfo && cc73.statusInfo.status.code === 2);
+
+  // ===== 74. an acceptCert policy that ACCEPTS (returns true) -> issued (default behavior preserved) =====
+  var s74f = H.fakeCa(pki, [H.ip(0, 1, certDer), H.pkiconf()]);
+  var s74 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s74f.transport, sleep: function () { return Promise.resolve(); }, acceptCert: function () { return true; } });
+  var r74 = await s74.enroll(H.irRequest(CLIENT.spki));
+  check("74. an acceptCert policy returning true -> issued via an accepting certConf (no statusInfo)", r74.outcome === "issued" && r74.confirmed === true && pki.schema.cmp.parse(s74f.transport.calls[1].body).body.decoded[0].statusInfo == null);
 
   console.log("CHECKS " + helpers.getChecks());
 }
