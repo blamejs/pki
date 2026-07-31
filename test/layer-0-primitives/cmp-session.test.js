@@ -503,6 +503,9 @@ async function run() {
   var r76 = await s76.session.enroll(H.irRequest(CLIENT.spki));
   check("76. a caller intermediates pool near the ceiling + the cached signer material bounded to the remaining room -> the valid grant still issues (a meddler cannot fail it)", r76.outcome === "issued");
 
+  // ===== 77. acceptCert + implicitConfirm together -> cmp/bad-input at construction (a veto has no reject leg) =====
+  check("77. opts.acceptCert combined with opts.implicitConfirm -> cmp/bad-input at construction (implicit confirmation leaves no certConf to reject on)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], implicitConfirm: true, acceptCert: function () { return true; } }); })) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
