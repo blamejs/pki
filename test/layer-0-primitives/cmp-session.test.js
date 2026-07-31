@@ -643,6 +643,10 @@ async function run() {
   var s100 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-100" }, trustAnchors: [H.caCert], transport: s100f.transport, sleep: function () { return Promise.resolve(); } });
   check("100. a MAC session with trustAnchors rejects an issued cert whose signature is invalid -> cmp/bad-cert-response (the MAC authenticates the exchange, not the embedded cert signature)", await codeOf(s100.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
 
+  // ===== 101. an invalid opts.time -> cmp/bad-input at construction (not consumed then failed at verify) =====
+  check("101a. a non-Date opts.time -> cmp/bad-input at construction (the verify clock is validated before any request is sent)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], time: "not-a-date" }); })) === "cmp/bad-input");
+  check("101b. an Invalid Date opts.time -> cmp/bad-input at construction", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], time: new Date("nonsense") }); })) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
