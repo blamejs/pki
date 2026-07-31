@@ -69,6 +69,18 @@ async function makeUnknownSigAlgCert(pki, subjectSpki) {
   while ((i = der.indexOf(oidBytes, i)) !== -1) { der[i + 9] = 0x63; i += 10; }   // final arc 2 -> 99 (unregistered)
   return der;
 }
+// A leaf whose signatureAlgorithm is a REGISTERED but NON-SIGNATURE algorithm (rsaEncryption): x509.parse
+// resolves a name, but it conveys no certConf hash and is not a hashless signature -- the transaction must be
+// refused, not defaulted to SHA-256. Rebuilds the tbs.signature + outer signatureAlgorithm as rsaEncryption.
+async function makeRegisteredNonSigCert(pki, subjectSpki) {
+  var b = pki.asn1.build;
+  var der = await pki.x509.sign({ subject: [{ commonName: "nonsig-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer });
+  var certKids = pki.asn1.decode(der).children;   // [tbs, signatureAlgorithm, signatureValue]
+  var tbsKids = pki.asn1.decode(certKids[0].bytes).children;
+  var nonSig = b.sequence([b.oid(pki.oid.byName("rsaEncryption")), b.nullValue()]);
+  var newTbs = b.sequence(tbsKids.map(function (c) { return c.bytes.equals(certKids[1].bytes) ? b.raw(nonSig) : b.raw(c.bytes); }));
+  return b.sequence([b.raw(newTbs), b.raw(nonSig), b.raw(certKids[2].bytes)]);
+}
 
 // legs: an array played in order, ONE per request. Each entry is either a body spec object (the response
 // body arm, e.g. { ip: { response: [...] } }) OR { body, generalInfo?, tamper?, protect? } OR a
@@ -213,6 +225,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

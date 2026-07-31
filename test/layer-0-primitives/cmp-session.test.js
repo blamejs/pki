@@ -358,6 +358,19 @@ async function run() {
     await codeOf(s55.session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
   check("55b. the malformed caPubs is rejected BEFORE any certConf leg is sent", s55.transport.calls.length === 1);
 
+  // ===== 56. a REGISTERED but non-signature alg (rsaEncryption) is NOT a hashless signature -> reject, not SHA-256 =====
+  var nonSigCert = await H.makeRegisteredNonSigCert(pki, CLIENT.spki);
+  check("56. a registered non-signature sig-alg (rsaEncryption) -> cmp/bad-cert-response (only true hashless signatures default to SHA-256)",
+    await codeOf(mk([H.ip(0, 0, nonSigCert), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
+  // ===== 57. the transactionID getter returns a defensive copy -- a caller mutating it cannot desync the transaction =====
+  var s57 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  s57.session.transactionID.fill(0);   // a caller zeroing the returned buffer must NOT corrupt the session identity
+  var r57 = await s57.session.enroll(H.irRequest(CLIENT.spki));
+  var reqTxid57 = pki.schema.cmp.parse(s57.transport.calls[0].body).header.transactionID;
+  check("57. mutating the returned transactionID does not desync the transaction (a defensive copy is returned)",
+    r57.outcome === "issued" && reqTxid57.equals(s57.session.transactionID) && !reqTxid57.every(function (x) { return x === 0; }));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
