@@ -59,6 +59,16 @@ function makePssCert(pki, subjectSpki) {
   return pki.x509.sign({ subject: [{ commonName: "pss-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA },
     { key: kp.privateKey.export({ format: "der", type: "pkcs8" }), publicKey: kp.publicKey.export({ format: "der", type: "spki" }), name: [{ commonName: "pss-ca" }] });
 }
+// An ecdsaWithSHA256 leaf whose signatureAlgorithm OID final arc is bumped to an UNREGISTERED value (both the
+// tbsCertificate.signature and outer signatureAlgorithm) -- x509.parse accepts the structure but resolves no
+// name, so the certConf hash is indeterminate. The subject key (subjectSpki) is untouched (the key-match passes).
+async function makeUnknownSigAlgCert(pki, subjectSpki) {
+  var der = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "unk-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer }));
+  var oidBytes = Buffer.from([0x06, 0x08, 0x2A, 0x86, 0x48, 0xCE, 0x3D, 0x04, 0x03, 0x02]);   // ecdsaWithSHA256
+  var i = 0;
+  while ((i = der.indexOf(oidBytes, i)) !== -1) { der[i + 9] = 0x63; i += 10; }   // final arc 2 -> 99 (unregistered)
+  return der;
+}
 
 // legs: an array played in order, ONE per request. Each entry is either a body spec object (the response
 // body arm, e.g. { ip: { response: [...] } }) OR { body, generalInfo?, tamper?, protect? } OR a
@@ -203,6 +213,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

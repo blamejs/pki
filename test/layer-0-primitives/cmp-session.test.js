@@ -347,6 +347,17 @@ async function run() {
   check("53. an ir without a submitted public key -> cmp/bad-input (a session enrolls a client-generated key)",
     await codeOf(mk([H.pkiconf()]).session.enroll({ ir: { certTemplate: { subject: [{ commonName: "x" }] } } })) === "cmp/bad-input");
 
+  // ===== 54. an issued cert with an UNRECOGNIZED signature algorithm -> the certConf hash is indeterminate -> reject =====
+  var unkCert = await H.makeUnknownSigAlgCert(pki, CLIENT.spki);
+  check("54. an unrecognized signature-algorithm OID (no resolvable hash) -> cmp/bad-cert-response (not a guessed SHA-256)",
+    await codeOf(mk([H.ip(0, 0, unkCert), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
+  // ===== 55. a granting response with a non-X.509 caPubs entry is rejected BEFORE the certConf =====
+  var s55 = mk([{ body: H.ip(0, 0, certDer, { caPubs: [H.caCert] }), malformedCert: true, certOf: H.caCert }]);
+  check("55. a non-X.509 caPubs entry -> cmp/bad-cert-response (validated before the grant is confirmed)",
+    await codeOf(s55.session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+  check("55b. the malformed caPubs is rejected BEFORE any certConf leg is sent", s55.transport.calls.length === 1);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
