@@ -563,6 +563,27 @@ async function run() {
   var read85a = s85.session.transcript, read85b = s85.session.transcript;   // two reads -> two distinct arrays
   check("85b. session.transcript returns a fresh array each read (freezing the returned value is harmless)", read85a !== read85b && Object.isFrozen(Object.freeze(read85a)) && read85b.length === 4);
 
+  // ===== 86. a decoy carrying the real signer's key under an UNTRUSTED root (valid but untrusted) -> fall back to the cached signer =====
+  var s86 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), untrustedDecoy: true }]);
+  var r86 = await s86.session.enroll(H.irRequest(CLIENT.spki));
+  check("86. an untrusted-issuer decoy with the signer's own key (verifies but is untrusted) -> falls back to the earlier trusted signer -> issued", r86.outcome === "issued");
+
+  // ===== 87. a corrupted-sig copy of an issuer sharing the valid issuer's TBS must NOT evict the valid one in the dedup =====
+  var intLeaf87 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intCaCert -> root
+  var filler87 = [H.corruptLeafSig(H.intCaCert)];   // a corrupted-signature intCaCert (same TBS, bad signature) FIRST
+  for (var f87 = 0; f87 < 998; f87++) filler87.push(H.caCert);   // 999 caller certs total; room for exactly one added cert
+  var s87f = H.fakeCa(pki, [H.ip(0, 0, intLeaf87, { caPubs: [H.intCaCert] }), H.pkiconf()]);   // the VALID intCaCert delivered in caPubs
+  var s87 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: filler87, transport: s87f.transport, sleep: function () { return Promise.resolve(); } });
+  var r87 = await s87.enroll(H.irRequest(CLIENT.spki));
+  check("87. a corrupted-sig issuer copy (same TBS) does not evict the valid issuer in the pool dedup -> the intermediate-signed leaf still validates -> issued", r87.outcome === "issued");
+
+  // ===== 88. the issued certificate + chain are independent defensive COPIES (mutating one cannot reach session state) =====
+  var s88 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var r88 = await s88.session.enroll(H.irRequest(CLIENT.spki));
+  var origLeaf88 = r88.chain[0][0];
+  r88.certificate[0] ^= 0xff;   // mutate the returned certificate
+  check("88. result.certificate is an independent copy -> mutating it does not affect result.chain[0] (nor internal state)", r88.chain[0][0] === origLeaf88 && r88.certificate[0] !== origLeaf88);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

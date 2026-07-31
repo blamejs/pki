@@ -24,6 +24,7 @@ var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued b
 var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
 var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
 var _deepSigner2Cert = null;   // a same-subject decoy for the deep signer (a meddler's parseable extraCerts[0])
+var _untrustedSignerDecoy = null;   // the signer's key + subject under an UNTRUSTED root (verifies but is not trusted)
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -57,6 +58,13 @@ async function init(pki, subjectSpki) {
   _deepSignerDN = pki.schema.x509.parse(_deepSignerCert).subject.bytes;
   var ds2Kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // a same-subject DECOY for the deep signer (different key, also under the intermediate)
   _deepSigner2Cert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: ds2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 12, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
+  // A DECOY for the response signer: the SAME public key + subject as _signerCert (so the protection signature
+  // verifies under it -> valid:true) but issued by an UNTRUSTED throwaway root (so it fails path validation ->
+  // trusted:false / cmp/untrusted-signer). Models an intermediary swapping the signer cert for an unanchored copy.
+  var untrustedKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var untrustedRoot = await pki.x509.sign({ subject: [{ commonName: "untrusted-root" }], subjectPublicKey: untrustedKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: untrustedKp.privateKey.export({ format: "der", type: "pkcs8" }) });
+  var signerSpki = pki.schema.x509.parse(_signerCertDer).subjectPublicKeyInfo.bytes;
+  _untrustedSignerDecoy = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: signerSpki, serialNumber: 99, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: untrustedKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: untrustedRoot });
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   module.exports.intCaCert = _intCaCert;
@@ -174,6 +182,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
       if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
       if (leg.deepDecoyExtra) der = _deepDecoyExtra(pki, der);   // replace extraCerts with a lone deep-signer decoy (omits the real intermediate)
+      if (leg.untrustedDecoy) der = _prependExtraCert(pki, der, _untrustedSignerDecoy);   // prepend the signer's key under an untrusted root (valid but untrusted)
       if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
@@ -281,13 +290,14 @@ function _deepDecoyExtra(pki, der) {
 // PREPEND a same-subject decoy certificate (signer2 shares signer1's subject but has a different key) to the
 // unsigned extraCerts, so the verifier's RFC 9483 sec. 3.3 "extraCerts[0] is the protection cert" rule selects
 // the decoy first and protection fails under a key that never signed -- modelling a network meddler.
-function _prependExtraCert(pki, der) {
+function _prependExtraCert(pki, der, decoyCert) {
   var b = pki.asn1.build;
+  var lead = decoyCert || _signer2CertDer;
   var kids = pki.asn1.decode(der).children;
   var last = kids.length - 1;
   return b.sequence(kids.map(function (c, i) {
     if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
-      var certs = [b.raw(_signer2CertDer)].concat(c.children[0].children.map(function (x) { return b.raw(x.bytes); }));
+      var certs = [b.raw(lead)].concat(c.children[0].children.map(function (x) { return b.raw(x.bytes); }));
       return b.raw(b.explicit(1, b.sequence(certs)));
     }
     return b.raw(c.bytes);
