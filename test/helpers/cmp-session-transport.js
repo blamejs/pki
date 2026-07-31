@@ -83,6 +83,7 @@ async function init(pki, subjectSpki) {
   module.exports.leafCert = _leafCertDer;
   module.exports.intCaCert = _intCaCert;
   module.exports.signerCert = _signerCertDer;   // the CA's response-signer cert (subject cmp-ca.example) -- pin it via opts.expectedSender
+  module.exports.deepSignerCert = _deepSignerCert;   // a signer that chains via intCaCert (needs an appended issuer to reach the anchor)
   module.exports.sanSignerACert = _sanSignerACert;   // an EMPTY-subject signer named only by a directoryName SAN (san-ca-a)
   module.exports.sanSignerBCert = _sanSignerBCert;   // a distinct empty-subject signer (san-ca-b)
   return { caCert: _caCertDer, leafCert: _leafCertDer };
@@ -233,6 +234,7 @@ function fakeCa(pki, legs, cfg) {
       }
       if (leg.tamper) der = _tamperProtection(pki, der);   // flip a byte INSIDE the protection [0] -> the signature no longer matches
       if (leg.noExtraCerts) der = _stripExtraCerts(pki, der);   // drop the extraCerts [1] (a later leg the recipient already has the signer for)
+      if (leg.stripSignerExtra) der = _stripSignerExtra(pki, der);   // keep the issuer(s) in extraCerts but drop the signer cert (resolved via expectedSender)
       if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
       if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
       if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
@@ -280,6 +282,22 @@ function _stripExtraCerts(pki, der) {
   var last = kids.length - 1;
   if (last >= 0 && kids[last].tagClass === "context" && kids[last].tagNumber === 1) kids = kids.slice(0, last);
   return b.sequence(kids.map(function (c) { return b.raw(c.bytes); }));
+}
+
+// Drop the FIRST extraCert (RFC 9483 sec. 3.1 the protection/signer cert) from the trailing [1] extraCerts,
+// leaving only the issuer(s): a response that assumes the client already holds the signer cert (via
+// opts.expectedSender) yet still delivers the signer's intermediate.
+function _stripSignerExtra(pki, der) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;
+  var last = kids.length - 1;
+  return b.sequence(kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
+      var certs = c.children[0].children.slice(1);   // drop extraCert[0] (the signer), keep the issuers
+      return b.raw(b.explicit(1, b.sequence(certs.map(function (x) { return b.raw(x.bytes); }))));
+    }
+    return b.raw(c.bytes);
+  }));
 }
 
 // A well-formed DER SEQUENCE of an EXACT byte length that is NOT a valid X.509 certificate (a SEQUENCE whose
@@ -428,7 +446,7 @@ function irRequest(spki, certReqId, key) {
 }
 
 module.exports = {
-  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, sanSignerACert: null, sanSignerBCert: null,
+  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, sanSignerACert: null, sanSignerBCert: null,
   ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

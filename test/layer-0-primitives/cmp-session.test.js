@@ -662,6 +662,11 @@ async function run() {
   check("102h. a first response omitting extraCerts + a prebound expectedSender (bytes) -> the CA cert resolves the signer -> issued (without it the signer cannot resolve)", (await mk([{ body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()], { expectedSender: H.signerCert }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
   check("102i. a first response omitting extraCerts WITHOUT a prebound signer cert -> cmp/signer-cert-not-found (the signer cannot resolve from an empty extraCerts)", await codeOf(mk([{ body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/signer-cert-not-found");
   check("102j. opts.expectedSender of a non-certificate type (an object that is not a parsed certificate) -> cmp/bad-input at construction", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: { notACertificate: true } }); })) === "cmp/bad-input");
+  // A response whose extraCerts carries the signer's ISSUER but not the signer (resolved via expectedSender): the
+  // override attempt must reserve ALL of extraCerts as appendable issuers (the signer is not among them), not one fewer.
+  var s102k = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), stripSignerExtra: true }, H.pkiconf()], { deepSigner: true });   // extraCerts = [intCaCert] only; the deep signer resolves via expectedSender
+  var sess102k = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s102k.transport, expectedSender: H.deepSignerCert, sleep: function () { return Promise.resolve(); } });   // 1000 caller certs AT the ceiling
+  check("102k. an extraCerts-carries-only-the-issuer response (signer via expectedSender) + a ceiling-filling caller pool -> the override reserves ALL issuer slots -> issued (reserving one fewer truncates the delivered issuer to cmp/untrusted-signer)", (await sess102k.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
   // ===== 103. opts.senderKID is propagated to every request header (PBMAC1 credential selection) =====
   var kid103 = Buffer.from([0x0a, 0x0b, 0x0c, 0x0d]);
@@ -773,6 +778,13 @@ async function run() {
   var garbageTransport = function () { return Promise.resolve({ status: 200, headers: { "content-type": "application/pkixcmp" }, body: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x2a]) }); };
   var s123 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: garbageTransport, sleep: function () { return Promise.resolve(); } });
   check("123. a non-PKIMessage 200 response fails closed at the transfer parse gate -> a typed cmp error (the transaction is not advanced)", /^cmp\//.test(await codeOf(s123.enroll(H.irRequest(CLIENT.spki)))));
+
+  // ===== 125. the same authenticated caPubs across a waiting leg and the grant accumulates ONCE (byte-identity
+  //            dedup bounds the cross-leg pool) while the leaf still chains via the accumulated issuer =====
+  var intLeaf125 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // needs intCaCert (delivered in caPubs) to chain to the anchor
+  var legs125 = [{ body: H.ip(0, 3, null, { caPubs: [H.intCaCert] }) }, H.pollRep(0, 1), { body: H.ip(0, 0, intLeaf125, { caPubs: [H.intCaCert] }) }, H.pkiconf()];
+  var s125 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs125).transport, sleep: function () { return Promise.resolve(); } });
+  check("125. the same authenticated caPubs delivered across a waiting leg and the grant is deduped (bounded accumulation) yet still chains the leaf -> issued", (await s125.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
   console.log("CHECKS " + helpers.getChecks());
 }
