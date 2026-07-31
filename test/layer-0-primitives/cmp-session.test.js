@@ -438,6 +438,24 @@ async function run() {
   check("66. a SHA-512 composite -> certConf certHash under SHA-512 with hashAlg sha512 (the composite's own prehash)",
     r66.outcome === "issued" && Buffer.from(cc66.certHash).equals(wantH66));
 
+  // ===== 67. a malformed (non-X.509) entry in the grant's extraCerts is dropped from the cache, not fed to path.build =====
+  var s67f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), badExtraCert: true }, H.pkiconf()]);
+  var s67 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s67f.transport, sleep: function () { return Promise.resolve(); } });
+  var r67 = await s67.enroll(H.irRequest(CLIENT.spki));
+  check("67. a malformed extraCerts entry (bounded by verify) is not cached into the leaf pool -> the valid grant issues", r67.outcome === "issued");
+
+  // ===== 68. an rsaEncryption request SPKI OMITTING the NULL param matches an issued cert carrying the NULL (canonical key match) =====
+  var rsaKp = require("node:crypto").generateKeyPairSync("rsa", { modulusLength: 2048 });
+  var rsaKey = rsaKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var rsaWithNull = rsaKp.publicKey.export({ format: "der", type: "spki" });   // node emits WITH the NULL param
+  var rsaNoNull = H.stripSpkiParams(pki, rsaWithNull);                          // the same key, NULL param omitted
+  var rsaEe = await H.makeCaSignedLeaf(pki, rsaWithNull, "rsa-ee");             // the enrolling entity cert (request protection)
+  var rsaLeaf = await H.makeCaSignedLeaf(pki, rsaWithNull, "rsa-issued");       // the ISSUED cert (SPKI carries the NULL)
+  var s68f = H.fakeCa(pki, [H.ip(0, 0, rsaLeaf), H.pkiconf()]);
+  var s68 = pki.cmp.session({ url: URL, key: rsaKey, cert: rsaEe, trustAnchors: [H.caCert], transport: s68f.transport, sleep: function () { return Promise.resolve(); } });
+  var r68 = await s68.enroll({ ir: { certTemplate: { subject: [{ commonName: "rsa-issued" }], publicKey: rsaNoNull } } });
+  check("68. a request SPKI with the rsaEncryption NULL omitted matches an issued cert carrying it -> issued (keys compared, not bytes)", r68.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

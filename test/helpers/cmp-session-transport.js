@@ -154,6 +154,7 @@ function fakeCa(pki, legs, cfg) {
       }
       if (leg.tamper) der = _tamperProtection(pki, der);   // flip a byte INSIDE the protection [0] -> the signature no longer matches
       if (leg.noExtraCerts) der = _stripExtraCerts(pki, der);   // drop the extraCerts [1] (a later leg the recipient already has the signer for)
+      if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
       if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
@@ -226,6 +227,33 @@ function _malformCert(pki, der, certOf) {
   return b.sequence(out);
 }
 
+// Append a malformed (non-X.509) SEQUENCE to the response's extraCerts [1]. extraCerts is OUTSIDE the
+// protected part, so no re-sign is needed -- cmp.verify bounds the malformed entry away yet still verifies.
+function _addBadExtraCert(pki, der) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;   // [header, body[N], protection[0]?, extraCerts[1]?]
+  var last = kids.length - 1;   // extraCerts is the LAST child; the ip body is ALSO context [1], so match by position
+  return b.sequence(kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
+      var certs = c.children[0].children.map(function (x) { return b.raw(x.bytes); });
+      certs.push(b.raw(b.sequence([b.integer(1n)])));   // a non-cert SEQUENCE
+      return b.raw(b.explicit(1, b.sequence(certs)));
+    }
+    return b.raw(c.bytes);
+  }));
+}
+// A leaf signed by the ROOT CA (chains directly to the anchor) for an arbitrary subject SPKI.
+function makeCaSignedLeaf(pki, subjectSpki, cn) {
+  return pki.x509.sign({ subject: [{ commonName: cn }], subjectPublicKey: subjectSpki, serialNumber: 12, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer });
+}
+// Re-encode an SPKI with the AlgorithmIdentifier parameters DROPPED (e.g. strip the rsaEncryption NULL) --
+// a different byte encoding of the SAME key, to prove the issued-cert key-match compares keys, not bytes.
+function stripSpkiParams(pki, spkiDer) {
+  var b = pki.asn1.build;
+  var node = pki.asn1.decode(spkiDer);
+  return b.sequence([b.raw(b.sequence([b.raw(node.children[0].children[0].bytes)])), b.raw(node.children[1].bytes)]);
+}
+
 // Flip a byte in the leaf's signatureValue (the final BIT STRING content) -- x509.parse still succeeds
 // (structural), the key still matches, but the ECDSA signature no longer verifies, so the leaf must fail the
 // session's issued-certificate path validation (RFC 5280 sec. 6.1) rather than reach certConf.
@@ -267,6 +295,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
