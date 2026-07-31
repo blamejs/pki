@@ -26,6 +26,7 @@ var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert 
 var _deepSigner2Cert = null;   // a same-subject decoy for the deep signer (a meddler's parseable extraCerts[0])
 var _untrustedSignerDecoy = null;   // the signer's key + subject under an UNTRUSTED root (verifies but is not trusted)
 var _wrongSubjectSignerDecoy = null;   // the signer's key under a WRONG subject (verifies but the sender does not bind)
+var _sanSignerAKey = null, _sanSignerACert = null, _sanSignerBKey = null, _sanSignerBCert = null;   // two EMPTY-subject signers with distinct SANs
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -70,6 +71,14 @@ async function init(pki, subjectSpki) {
   // protection signature verifies under it, but the header sender (the real signer's subject) does not bind ->
   // cmp/sender-mismatch, another meddler-selected-decoy variant the cached-signer fallback must recover.
   _wrongSubjectSignerDecoy = await pki.x509.sign({ subject: [{ commonName: "evil-signer.example" }], subjectPublicKey: signerSpki, serialNumber: 100, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+  // Two EMPTY-SUBJECT signers identified by DIFFERENT subjectAltName directoryNames, both issued by the root with
+  // digitalSignature -- a forger and the legit CA are INDISTINGUISHABLE by the null subject but NOT by the SAN.
+  var sanAKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  _sanSignerAKey = sanAKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _sanSignerACert = await pki.x509.sign({ subject: [], subjectPublicKey: sanAKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 14, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ directoryName: [{ commonName: "san-ca-a" }] }], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+  var sanBKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  _sanSignerBKey = sanBKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _sanSignerBCert = await pki.x509.sign({ subject: [], subjectPublicKey: sanBKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 15, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ directoryName: [{ commonName: "san-ca-b" }] }], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   module.exports.intCaCert = _intCaCert;
@@ -184,6 +193,7 @@ function fakeCa(pki, legs, cfg) {
       senderNonce: nodeCrypto.randomBytes(16),
     };
     if (leg.foreignSigner) header.sender = { directoryName: _issuerSignerDN };   // a DIFFERENT trusted signer (own subject) forging a leg
+    if (leg.emptySanSigner) header.sender = { directoryName: [{ commonName: leg.emptySanSigner === "b" ? "san-ca-b" : "san-ca-a" }] };   // an EMPTY-subject signer's sender IS its SAN (RFC 9483 sec. 3.1)
     if (leg.generalInfo) header.generalInfo = leg.generalInfo;
     if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
@@ -192,8 +202,8 @@ function fakeCa(pki, legs, cfg) {
     // cfg.issuerSigner signs with the combined CA that both protects the message AND issued the leaf.
     var defaultKey = cfg.deepSigner ? _deepSignerKey : (cfg.issuerSigner ? _issuerSignerKey : _signerKeyPk8);
     var defaultCert = cfg.deepSigner ? _deepSignerCert : (cfg.issuerSigner ? _issuerSignerCert : _signerCertDer);
-    var sigKey = leg.foreignSigner ? _issuerSignerKey : (leg.rotateSigner ? _signer2KeyPk8 : defaultKey);
-    var sigCert = leg.foreignSigner ? _issuerSignerCert : (leg.rotateSigner ? _signer2CertDer : defaultCert);
+    var sigKey = leg.emptySanSigner === "b" ? _sanSignerBKey : (leg.emptySanSigner ? _sanSignerAKey : (leg.foreignSigner ? _issuerSignerKey : (leg.rotateSigner ? _signer2KeyPk8 : defaultKey)));
+    var sigCert = leg.emptySanSigner === "b" ? _sanSignerBCert : (leg.emptySanSigner ? _sanSignerACert : (leg.foreignSigner ? _issuerSignerCert : (leg.rotateSigner ? _signer2CertDer : defaultCert)));
     var sigProt = { key: sigKey, cert: sigCert };
     if (cfg.deepSigner && !leg.rotateSigner) sigProt.extraCerts = [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate]
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : sigProt;

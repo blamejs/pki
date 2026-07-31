@@ -664,6 +664,22 @@ async function run() {
   // ===== 104. opts.intermediates exceeding the candidate ceiling -> cmp/bad-input at construction =====
   check("104. opts.intermediates with more distinct certificates than the candidate ceiling -> cmp/bad-input at construction (not path/bad-input after the request is sent)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT.concat([certDer]) }); })) === "cmp/bad-input");
 
+  // ===== 105. a same-identity certificate rotation (same subject, rotated key) is ALLOWED across the CA-identity pin =====
+  var s105 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), rotateSigner: true }]);   // signer2: same subject, a different key
+  var r105 = await s105.session.enroll(H.irRequest(CLIENT.spki));
+  check("105. a same-identity certificate rotation (same subject, rotated key) across legs is allowed by the CA-identity pin -> issued", r105.outcome === "issued");
+
+  // ===== 106. a ceiling-filling caller pool reserves room for the response's OWN extraCerts issuer (signer path) =====
+  var s106f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { deepSigner: true });   // the signer chains via intCaCert delivered in its OWN extraCerts
+  var s106 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s106f.transport, sleep: function () { return Promise.resolve(); } });   // 1000 DISTINCT caller certs fill the ceiling
+  var r106 = await s106.enroll(H.irRequest(CLIENT.spki));
+  check("106. a 1000-cert distinct caller pool reserves candidate room for the deepSigner's own extraCerts issuer -> cmp.verify still chains the signer -> issued", r106.outcome === "issued");
+
+  // ===== 107. two EMPTY-subject signers with DIFFERENT SANs across legs -> the second is rejected (pin on the authenticated SAN, not a null subject) =====
+  var s107f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), emptySanSigner: "a" }, { body: H.pkiconf(), emptySanSigner: "b" }]);
+  var s107 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s107f.transport, sleep: function () { return Promise.resolve(); } });
+  check("107. two empty-subject signers with different SANs across legs -> cmp/untrusted-signer (the identity pin distinguishes the authenticated SAN, not the null subject sentinel)", await codeOf(s107.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
