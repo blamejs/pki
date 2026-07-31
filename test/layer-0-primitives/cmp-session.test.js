@@ -834,6 +834,13 @@ async function run() {
   var s130 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: callerPool130, transport: s130f.transport, sleep: function () { return Promise.resolve(); } });
   check("130. a response extraCert duplicating a caller intermediate spends no reserved slot, so the signer's real issuer (the 1000th caller cert) survives -> issued (counting the duplicate truncates it to cmp/untrusted-signer)", (await s130.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
+  // ===== 131. a response whose signer is NOT the first extraCert (reordered -- cmp.verify resolves it by
+  //            senderKID / signature match) + a ceiling-filling caller pool: the delivered issuer survives -> issued
+  //            (blindly excluding extraCerts[0] as the signer would drop the real issuer) =====
+  var s131f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), reverseExtra: true, senderKid: H.deepSignerSki }, H.pkiconf()], { deepSigner: true });   // extraCerts = [intCaCert, deepSigner]; senderKID names deepSigner (SECOND) so the issuer intCaCert is FIRST
+  var s131 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s131f.transport, sleep: function () { return Promise.resolve(); } });   // 1000 junk caller certs at the ceiling
+  check("131. a response whose signer is not the first extraCert + a ceiling-filling caller pool -> the delivered issuer survives -> issued (treating extraCerts[0] as the signer would drop the real issuer to cmp/untrusted-signer)", (await s131.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

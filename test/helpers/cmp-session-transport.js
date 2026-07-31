@@ -22,7 +22,7 @@ var PKIXCMP = "application/pkixcmp";
 var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null, _leafCertDer = null;
 var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
 var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
-var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
+var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null, _deepSignerSki = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
 var _deepSigner2Cert = null;   // a same-subject decoy for the deep signer (a meddler's parseable extraCerts[0])
 var _untrustedSignerDecoy = null;   // the signer's key + subject under an UNTRUSTED root (verifies but is not trusted)
 var _wrongSubjectSignerDecoy = null;   // the signer's key under a WRONG subject (verifies but the sender does not bind)
@@ -56,8 +56,10 @@ async function init(pki, subjectSpki) {
   _intCaCert = await pki.x509.sign({ subject: [{ commonName: "cmp-int-ca.example" }], subjectPublicKey: intKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 7, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   var dsKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   _deepSignerKey = dsKp.privateKey.export({ format: "der", type: "pkcs8" });
-  _deepSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: dsKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 8, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
+  _deepSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: dsKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 8, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   _deepSignerDN = pki.schema.x509.parse(_deepSignerCert).subject.bytes;
+  var _dsSkiExt = (pki.schema.x509.parse(_deepSignerCert).extensions || []).filter(function (e) { return e.oid === "2.5.29.14"; })[0];   // subjectKeyIdentifier -- so a response senderKID can select the deep signer by SKI, not by position
+  _deepSignerSki = _dsSkiExt ? pki.asn1.decode(_dsSkiExt.value).content : null;
   var ds2Kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // a same-subject DECOY for the deep signer (different key, also under the intermediate)
   _deepSigner2Cert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: ds2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 12, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   // A DECOY for the response signer: the SAME public key + subject as _signerCert (so the protection signature
@@ -84,6 +86,7 @@ async function init(pki, subjectSpki) {
   module.exports.intCaCert = _intCaCert;
   module.exports.signerCert = _signerCertDer;   // the CA's response-signer cert (subject cmp-ca.example) -- pin it via opts.expectedSender
   module.exports.deepSignerCert = _deepSignerCert;   // a signer that chains via intCaCert (needs an appended issuer to reach the anchor)
+  module.exports.deepSignerSki = _deepSignerSki;   // its subjectKeyIdentifier -- for a senderKID-selected response signer
   module.exports.sanSignerACert = _sanSignerACert;   // an EMPTY-subject signer named only by a directoryName SAN (san-ca-a)
   module.exports.sanSignerAKey = _sanSignerAKey;   // its private key -- for using the empty-subject cert as a REQUEST protection cert
   module.exports.sanSignerBCert = _sanSignerBCert;   // a distinct empty-subject signer (san-ca-b)
@@ -213,6 +216,7 @@ function fakeCa(pki, legs, cfg) {
     if (leg.foreignSigner) header.sender = { directoryName: _issuerSignerDN };   // a DIFFERENT trusted signer (own subject) forging a leg
     if (leg.emptySanSigner) header.sender = { directoryName: [{ commonName: leg.emptySanSigner === "b" ? "san-ca-b" : "san-ca-a" }] };   // an EMPTY-subject signer's sender IS its SAN (RFC 9483 sec. 3.1)
     if (leg.generalInfo) header.generalInfo = leg.generalInfo;
+    if (leg.senderKid) header.senderKID = leg.senderKid;   // the response names its signer by SKI -- cmp.verify resolves it by senderKID, not extraCerts position
     if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
     // issued by the CA anchor, is carried in extraCerts so the session chains it to trustAnchors:[caCert]).
@@ -236,6 +240,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.tamper) der = _tamperProtection(pki, der);   // flip a byte INSIDE the protection [0] -> the signature no longer matches
       if (leg.noExtraCerts) der = _stripExtraCerts(pki, der);   // drop the extraCerts [1] (a later leg the recipient already has the signer for)
       if (leg.stripSignerExtra) der = _stripSignerExtra(pki, der);   // keep the issuer(s) in extraCerts but drop the signer cert (resolved via expectedSender)
+      if (leg.reverseExtra) der = _reverseExtra(pki, der);   // reorder extraCerts so the signer is NOT first (senderKID / sig-match resolution)
       if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
       if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
       if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
@@ -283,6 +288,22 @@ function _stripExtraCerts(pki, der) {
   var last = kids.length - 1;
   if (last >= 0 && kids[last].tagClass === "context" && kids[last].tagNumber === 1) kids = kids.slice(0, last);
   return b.sequence(kids.map(function (c) { return b.raw(c.bytes); }));
+}
+
+// Reverse the order of the trailing [1] extraCerts, so the protection/signer cert is NO LONGER first (RFC 9483
+// sec. 3.1 places it first, but a peer may reorder -- cmp.verify resolves the signer by senderKID / signature
+// match, not position). Exercises a session that must not blindly treat extraCerts[0] as the signer.
+function _reverseExtra(pki, der) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;
+  var last = kids.length - 1;
+  return b.sequence(kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
+      var certs = c.children[0].children.slice().reverse();
+      return b.raw(b.explicit(1, b.sequence(certs.map(function (x) { return b.raw(x.bytes); }))));
+    }
+    return b.raw(c.bytes);
+  }));
 }
 
 // Drop the FIRST extraCert (RFC 9483 sec. 3.1 the protection/signer cert) from the trailing [1] extraCerts,
@@ -447,7 +468,7 @@ function irRequest(spki, certReqId, key) {
 }
 
 module.exports = {
-  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, sanSignerACert: null, sanSignerAKey: null, sanSignerBCert: null,
+  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, deepSignerSki: null, sanSignerACert: null, sanSignerAKey: null, sanSignerBCert: null,
   ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
