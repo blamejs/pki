@@ -813,6 +813,19 @@ async function run() {
   var intLeaf128 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // issued by intCaCert, which no leg delivers
   check("128. an issued leaf whose issuer is delivered nowhere -> cmp/bad-cert-response (path.build's path/no-path is re-typed to the domain error, never leaked)", await codeOf(mk([H.ip(0, 0, intLeaf128), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
 
+  // ===== 129. a grant re-delivering an issuer that a WAITING leg also supplied (so eviction removed it from the
+  //            front) re-adds it -- the dedup set tracks the RETAINED set, not history -> issued =====
+  var intLeaf129 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // chains via intCaCert
+  var legs129 = [
+    { body: H.ip(0, 3, null, { caPubs: [H.intCaCert].concat(DISTINCT.slice(100, 120)) }) },   // intCaCert FIRST (oldest -> first evicted), then junk
+    { body: H.ip(0, 3, null, { caPubs: DISTINCT.slice(120, 140) }) },
+    { body: H.ip(0, 3, null, { caPubs: DISTINCT.slice(140, 160) }) },
+    { body: H.ip(0, 0, intLeaf129, { caPubs: [DISTINCT[160], H.intCaCert] }) },   // grant: a NEW junk (evicts intCaCert from the front) then RE-delivers intCaCert
+    H.pkiconf(),
+  ];
+  var s129 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs129).transport, maxResponseBytes: 8192, sleep: function () { return Promise.resolve(); } });
+  check("129. a grant re-delivering an issuer a waiting leg supplied (which eviction removed) re-adds it -> issued (a stale dedup set would drop the re-delivered issuer to cmp/bad-cert-response)", (await s129.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
