@@ -62,6 +62,7 @@ function fakeCa(pki, legs, cfg) {
       senderNonce: nodeCrypto.randomBytes(16),
     };
     if (leg.generalInfo) header.generalInfo = leg.generalInfo;
+    if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
     // issued by the CA anchor, is carried in extraCerts so the session chains it to trustAnchors:[caCert]).
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : { key: _signerKeyPk8, cert: _signerCertDer };
@@ -103,11 +104,15 @@ function _unprotect(pki, der) {
 }
 
 // ---- response body-arm builders (RFC 9810 sec. 5.2.3 / 5.3.4 / 5.3.22) ----
-function ip(certReqId, statusCode, certDer) {
+function _certRep(arm, certReqId, statusCode, certDer) {
   var r = { certReqId: certReqId, status: { status: statusCode } };
   if (certDer) r.certifiedKeyPair = { certificate: certDer };
-  return { ip: { response: [r] } };
+  var body = {}; body[arm] = { response: [r] };
+  return body;
 }
+function ip(certReqId, statusCode, certDer) { return _certRep("ip", certReqId, statusCode, certDer); }
+function cp(certReqId, statusCode, certDer) { return _certRep("cp", certReqId, statusCode, certDer); }   // a cr / p10cr response
+function kup(certReqId, statusCode, certDer) { return _certRep("kup", certReqId, statusCode, certDer); }  // a kur response
 function ipRejected(certReqId, failInfo, statusString) { return { ip: { response: [{ certReqId: certReqId, status: { status: 2, failInfo: failInfo || ["badRequest"], statusString: statusString || ["denied"] } }] } }; }
 function ipEmpty() { return { ip: { response: [] } }; }   // a CertRepContent with no CertResponse -> no transition
 function pollRep(certReqId, checkAfter) { return { pollRep: [{ certReqId: certReqId, checkAfter: checkAfter }] }; }
@@ -135,6 +140,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null,
-  ip: ip, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

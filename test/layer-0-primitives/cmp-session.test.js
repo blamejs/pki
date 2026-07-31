@@ -204,7 +204,7 @@ async function run() {
   check("28b. a non-conveying sig alg (Ed25519) -> certConf DECLARES an explicit hashAlg", r28b.outcome === "issued" && cc28b.hashAlg != null);
 
   // ===== 29. implicitConfirm is requested for ANY enrollment arm (cr), not only ir =====
-  var s29f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }]);
+  var s29f = H.fakeCa(pki, [{ body: H.cp(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }]);   // a cr is answered by a cp
   var s29 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s29f.transport, implicitConfirm: true, sleep: function () { return Promise.resolve(); } });
   var r29 = await s29.enroll({ cr: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki } } });
   var h29 = pki.schema.cmp.parse(s29f.transport.calls[0].body).header;
@@ -219,15 +219,36 @@ async function run() {
   check("30b. a CertResponse for a DIFFERENT certReqId than requested -> cmp/unexpected-arm",
     await codeOf(mk([H.ip(0, 0, certDer)]).session.enroll(H.irRequest(CLIENT.spki, 5))) === "cmp/unexpected-arm");
 
-  // ===== 31. a p10cr (PKCS#10) enrollment drives the same transaction to issuance =====
+  // ===== 31. a p10cr (PKCS#10) enrollment drives the same transaction to issuance (answered by a cp) =====
   var p10 = await pki.csr.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: CLIENT.spki }, CLIENT.key);
-  var s31 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var s31 = mk([H.cp(0, 0, certDer), H.pkiconf()]);
   var r31 = await s31.session.enroll({ p10cr: p10 });
   check("31. a p10cr enrollment (a Buffer request arm, no CRMF certReqId) issues end to end", r31.outcome === "issued" && Buffer.isBuffer(r31.certificate));
 
   // ===== 32. an EMPTY trustAnchors array for the signature flavor is refused (a disabled anchor is no anchor) =====
   check("32. signature protection with an empty trustAnchors array -> cmp/bad-input",
     await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [], transport: s31.transport }); })) === "cmp/bad-input");
+
+  // ===== 33. a response of the WRONG cert-response arm for the request (an ir answered by a cp) -> unexpected =====
+  check("33. an ir answered by a cp (misrouted cert-response arm) -> cmp/unexpected-arm",
+    await codeOf(mk([H.cp(0, 0, certDer)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/unexpected-arm");
+  check("33b. a kur answered by an ip (wrong arm) -> cmp/unexpected-arm",
+    await codeOf(mk([H.ip(0, 0, certDer)]).session.enroll({ kur: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki } } })) === "cmp/unexpected-arm");
+
+  // ===== 34. a pollRep whose only entry is for a DIFFERENT certReqId -> unexpected (not a silent zero-delay re-poll) =====
+  check("34. a pollRep carrying no entry for the active certReqId -> cmp/unexpected-arm",
+    await codeOf(mk([H.ip(0, 3), H.pollRep(9, 1)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/unexpected-arm");
+
+  // ===== 35. a bigint certReqId above 2^53 is echoed EXACTLY and matched (no Number rounding) =====
+  var BIG = 9007199254740993n;   // 2^53 + 1: not representable as a JS Number
+  var s35 = mk([H.ip(BIG, 0, certDer), H.pkiconf()]);
+  var r35 = await s35.session.enroll(H.irRequest(CLIENT.spki, BIG));
+  var cc35 = pki.schema.cmp.parse(s35.transport.calls[1].body).body.decoded[0];
+  check("35. a bigint certReqId (2^53+1) is echoed exactly in the certConf and matched in the response", r35.outcome === "issued" && BigInt(cc35.certReqId) === BIG);
+
+  // ===== 36. a response that omits its senderNonce, before a follow-up leg -> cmp/bad-nonce (chain broken) =====
+  check("36. a waiting response omitting senderNonce, then a poll leg -> cmp/bad-nonce (the chain cannot continue)",
+    await codeOf(mk([{ body: H.ip(0, 3), noSenderNonce: true }, H.pollRep(0, 1)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-nonce");
 
   console.log("CHECKS " + helpers.getChecks());
 }
