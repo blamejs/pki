@@ -656,6 +656,12 @@ async function run() {
   check("102d. opts.expectedSender pinning an empty-subject CA (named only by a directoryName SAN) that signs the responses -> issued (bound via the SAN, not a null subject)", (await mk([{ body: H.ip(0, 0, certDer), emptySanSigner: "a" }, { body: H.pkiconf(), emptySanSigner: "a" }], { expectedSender: H.sanSignerACert }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
   check("102e. opts.expectedSender pinning empty-subject CA A while the responses are signed by empty-subject CA B -> cmp/untrusted-signer (the SAN identities differ)", await codeOf(mk([{ body: H.ip(0, 0, certDer), emptySanSigner: "a" }, { body: H.pkiconf(), emptySanSigner: "a" }], { expectedSender: H.sanSignerBCert }).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
   check("102f. opts.expectedSender that is not a certificate (a bare DN string) -> cmp/bad-input at construction (before the one-shot transaction engages the transport)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: "CN=cmp-ca.example" }); })) === "cmp/bad-input");
+  // opts.expectedSender accepts the documented ALREADY-PARSED form, not only DER/PEM.
+  check("102g. opts.expectedSender as an already-parsed certificate (pki.schema.x509.parse) -> the transaction proceeds -> issued (the parsed form is honored, not reparsed)", (await mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: pki.schema.x509.parse(H.signerCert) }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  // A first response that OMITS its extraCerts (the CA assumes the client holds its cert) resolves via the prebound expectedSender.
+  check("102h. a first response omitting extraCerts + a prebound expectedSender (bytes) -> the CA cert resolves the signer -> issued (without it the signer cannot resolve)", (await mk([{ body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()], { expectedSender: H.signerCert }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  check("102i. a first response omitting extraCerts WITHOUT a prebound signer cert -> cmp/signer-cert-not-found (the signer cannot resolve from an empty extraCerts)", await codeOf(mk([{ body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/signer-cert-not-found");
+  check("102j. opts.expectedSender of a non-certificate type (an object that is not a parsed certificate) -> cmp/bad-input at construction", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: { notACertificate: true } }); })) === "cmp/bad-input");
 
   // ===== 103. opts.senderKID is propagated to every request header (PBMAC1 credential selection) =====
   var kid103 = Buffer.from([0x0a, 0x0b, 0x0c, 0x0d]);
@@ -746,9 +752,9 @@ async function run() {
   // ===== 121. the signer-path reserve is sized to the response's OWN extraCerts, not a static 32: a response
   //            carrying only its signer does NOT forfeit a needed caller intermediate below the ceiling =====
   var s121f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { deepSigner: true, deepSignerBareExtra: true });   // the deep signer chains via intCaCert, but its response carries ONLY the signer
-  var callerPool121 = DISTINCT.slice(0, 968).concat([H.intCaCert]);   // 968 filler + the needed issuer LAST (candidate 969, the slot a static 32 reserve would truncate)
+  var callerPool121 = DISTINCT.slice(0, 999).concat([H.intCaCert]);   // exactly the 1000-candidate ceiling: 999 filler + the needed issuer LAST -- a response carrying only its signer must reserve ZERO (the signer is not appended), else this last slot is truncated
   var s121 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: callerPool121, transport: s121f.transport, sleep: function () { return Promise.resolve(); } });
-  check("121. a response carrying only its signer sizes the reserve to its actual extraCerts, so the 969th caller intermediate (the needed issuer) is retained -> issued (a static 32-slot reserve would truncate it to cmp/untrusted-signer)", (await s121.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  check("121. a response carrying only its signer reserves ZERO issuer slots (the signer is excluded from the append pool), so the 1000th caller intermediate (the needed issuer) is retained -> issued (counting the signer would reserve 1 and truncate it to cmp/untrusted-signer)", (await s121.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
   // ===== 122. the transcript retains at most TRANSCRIPT_RETAIN_RESPONSES * maxResponseBytes of payload: a
   //            padded-response polling flood is bounded (later legs keep metadata + byteLength, drop the payload) =====
