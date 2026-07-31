@@ -414,6 +414,13 @@ async function run() {
   var cc63 = pki.schema.cmp.parse(s63f.transport.calls[1].body).body.decoded[0];
   check("63. a composite signature algorithm -> certConf under SHA-256 with an explicit hashAlg (not cmp/bad-cert-response)", r63.outcome === "issued" && cc63.hashAlg != null);
 
+  // ===== 64. a signer chained through an INTERMEDIATE (delivered only in the first leg's extraCerts): a later =====
+  //          leg that omits extraCerts still verifies -- the cached CHAIN (not just the signer) rebuilds the path.
+  var s64f = H.fakeCa(pki, [H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }], { deepSigner: true });
+  var s64 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s64f.transport, sleep: function () { return Promise.resolve(); } });
+  var r64 = await s64.enroll(H.irRequest(CLIENT.spki));
+  check("64. a later leg omitting extraCerts rebuilds the signer path via the cached intermediate chain -> issued", r64.outcome === "issued" && r64.confirmed === true);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

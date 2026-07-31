@@ -22,6 +22,7 @@ var PKIXCMP = "application/pkixcmp";
 var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null, _leafCertDer = null;
 var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
 var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
+var _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -46,6 +47,13 @@ async function init(pki, subjectSpki) {
   _issuerSignerKey = isKp.privateKey.export({ format: "der", type: "pkcs8" });
   _issuerSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-issuer.example" }], subjectPublicKey: isKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 5, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   _issuerSignerDN = pki.schema.x509.parse(_issuerSignerCert).subject.bytes;
+  var intKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // an INTERMEDIATE CA issued by the root, and a signer under it
+  var intKey = intKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _intCaCert = await pki.x509.sign({ subject: [{ commonName: "cmp-int-ca.example" }], subjectPublicKey: intKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 7, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+  var dsKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  _deepSignerKey = dsKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _deepSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: dsKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 8, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: intKey, cert: _intCaCert });
+  _deepSignerDN = pki.schema.x509.parse(_deepSignerCert).subject.bytes;
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   return { caCert: _caCertDer, leafCert: _leafCertDer };
@@ -115,7 +123,7 @@ function fakeCa(pki, legs, cfg) {
     // A signed response's sender := the SIGNER cert subject (RFC 9483 sec. 3.1); a MAC response uses a NULL-DN.
     // signer2 (rotateSigner) shares signer1's subject, so both use _signerDN; the issuer-signer has its own DN.
     var header = {
-      sender: { directoryName: cfg.macSecret ? [] : (cfg.issuerSigner ? _issuerSignerDN : _signerDN) }, recipient: { directoryName: [] },
+      sender: { directoryName: cfg.macSecret ? [] : (cfg.deepSigner ? _deepSignerDN : (cfg.issuerSigner ? _issuerSignerDN : _signerDN)) }, recipient: { directoryName: [] },
       transactionID: reqMsg.header.transactionID,
       recipNonce: reqMsg.header.senderNonce,
       senderNonce: nodeCrypto.randomBytes(16),
@@ -126,11 +134,13 @@ function fakeCa(pki, legs, cfg) {
     // issued by the CA anchor, is carried in extraCerts so the session chains it to trustAnchors:[caCert]).
     // leg.rotateSigner signs with the SECOND signer (a clustered CA rotating its protection cert mid-transaction);
     // cfg.issuerSigner signs with the combined CA that both protects the message AND issued the leaf.
-    var defaultKey = cfg.issuerSigner ? _issuerSignerKey : _signerKeyPk8;
-    var defaultCert = cfg.issuerSigner ? _issuerSignerCert : _signerCertDer;
+    var defaultKey = cfg.deepSigner ? _deepSignerKey : (cfg.issuerSigner ? _issuerSignerKey : _signerKeyPk8);
+    var defaultCert = cfg.deepSigner ? _deepSignerCert : (cfg.issuerSigner ? _issuerSignerCert : _signerCertDer);
     var sigKey = leg.rotateSigner ? _signer2KeyPk8 : defaultKey;
     var sigCert = leg.rotateSigner ? _signer2CertDer : defaultCert;
-    var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : { key: sigKey, cert: sigCert };
+    var sigProt = { key: sigKey, cert: sigCert };
+    if (cfg.deepSigner && !leg.rotateSigner) sigProt.extraCerts = [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate]
+    var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : sigProt;
     var protectOpts = leg.protect === false ? { key: sigKey, cert: sigCert } : buildProt;
     return Promise.resolve(pki.cmp.build({ header: header, body: leg.body }, protectOpts)).then(function (der) {
       if (leg.protect === false) {
