@@ -609,6 +609,12 @@ async function run() {
   var r94 = await s94.enroll(H.irRequest(CLIENT.spki));
   check("94. 1000 duplicate caller intermediates collapse before the FIRST verify -> cmp.verify has room for the response's extraCerts issuer -> the deepSigner chains -> issued", r94.outcome === "issued");
 
+  // ===== 95. a raVerified POP override -> cmp/bad-input (the session proves possession by signing, never raVerified) =====
+  var s95f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-95" });
+  var s95 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-95" }, transport: s95f.transport, sleep: function () { return Promise.resolve(); } });
+  var raReq95 = { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki }, key: CLIENT.key, pop: { type: "raVerified", raVerified: true } } };
+  check("95. a MAC ir with an arm-local key BUT a raVerified POP override -> cmp/bad-input (a non-signature POP emits no proof of possession, bypassing the key requirement)", await codeOf(s95.enroll(raReq95)) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
