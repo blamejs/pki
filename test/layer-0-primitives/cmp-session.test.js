@@ -513,6 +513,13 @@ async function run() {
   var r78 = await s78.session.enroll(H.irRequest(CLIENT.spki));
   check("78. a caller intermediates pool near the ceiling + an authenticated caPubs -> caPubs bounded to the remaining room, the valid grant still issues", r78.outcome === "issued");
 
+  // ===== 79. the fallback signer-chain pool is bounded too (a large caller pool + a signer-omitting later leg must not fail) =====
+  var filler79 = [];
+  for (var f79 = 0; f79 < 1000; f79++) filler79.push(certDer);   // caller pool AT the ceiling
+  var s79 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }], { intermediates: filler79 });   // leg 2 omits its signer -> fallback to the cached chain
+  var r79 = await s79.session.enroll(H.irRequest(CLIENT.spki));
+  check("79. a caller intermediates pool at the ceiling + a later leg that omits its signer -> the fallback cached chain is bounded, the transaction still confirms", r79.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
