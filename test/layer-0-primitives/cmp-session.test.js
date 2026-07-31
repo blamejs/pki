@@ -615,6 +615,12 @@ async function run() {
   var raReq95 = { ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: CLIENT.spki }, key: CLIENT.key, pop: { type: "raVerified", raVerified: true } } };
   check("95. a MAC ir with an arm-local key BUT a raVerified POP override -> cmp/bad-input (a non-signature POP emits no proof of possession, bypassing the key requirement)", await codeOf(s95.enroll(raReq95)) === "cmp/bad-input");
 
+  // ===== 96. caPubs delivered on a WAITING leg is retained across the poll (the eventual grant may omit it) =====
+  var intLeaf96 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intCaCert -> root
+  var s96 = mk([H.ip(0, 3, null, { caPubs: [H.intCaCert] }), H.pollRep(0, 1), H.ip(0, 0, intLeaf96), H.pkiconf()]);   // the intermediate arrives ONLY on the waiting leg
+  var r96 = await s96.session.enroll(H.irRequest(CLIENT.spki));
+  check("96. an intermediate delivered in a WAITING leg's caPubs is retained across the poll -> the grant that omits it still validates the intermediate-signed leaf -> issued", r96.outcome === "issued" && r96.chain.length === 2);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
