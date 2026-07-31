@@ -421,6 +421,23 @@ async function run() {
   var r64 = await s64.enroll(H.irRequest(CLIENT.spki));
   check("64. a later leg omitting extraCerts rebuilds the signer path via the cached intermediate chain -> issued", r64.outcome === "issued" && r64.confirmed === true);
 
+  // ===== 65. the issued leaf is signed by the intermediate (delivered in the grant's extraCerts) -> leaf validation uses the cached chain =====
+  var intLeaf = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intermediate -> root
+  var s65f = H.fakeCa(pki, [H.ip(0, 0, intLeaf), H.pkiconf()], { deepSigner: true });   // extraCerts = [signer, intermediate]
+  var s65 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s65f.transport, sleep: function () { return Promise.resolve(); } });
+  var r65 = await s65.enroll(H.irRequest(CLIENT.spki));
+  check("65. a leaf issued by the intermediate validates via the cached chain material in the leaf pool -> issued", r65.outcome === "issued");
+
+  // ===== 66. a SHA-512 composite -> the certConf uses the composite's DECLARED prehash (SHA-512), not a hardcoded SHA-256 =====
+  var comp512 = await H.makeCompositeSigOidCert(pki, CLIENT.spki, "id-MLDSA65-ECDSA-P256-SHA512");
+  var s66f = H.fakeCa(pki, [H.ip(0, 0, comp512), H.pkiconf()], { macSecret: "s3cr3t-66" });
+  var s66 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-66" }, transport: s66f.transport, sleep: function () { return Promise.resolve(); } });
+  var r66 = await s66.enroll(H.irRequest(CLIENT.spki));
+  var cc66 = pki.schema.cmp.parse(s66f.transport.calls[1].body).body.decoded[0];
+  var wantH66 = require("node:crypto").createHash("sha512").update(comp512).digest();
+  check("66. a SHA-512 composite -> certConf certHash under SHA-512 with hashAlg sha512 (the composite's own prehash)",
+    r66.outcome === "issued" && Buffer.from(cc66.certHash).equals(wantH66));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -22,7 +22,7 @@ var PKIXCMP = "application/pkixcmp";
 var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null, _leafCertDer = null;
 var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
 var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
-var _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
+var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -48,11 +48,11 @@ async function init(pki, subjectSpki) {
   _issuerSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-issuer.example" }], subjectPublicKey: isKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 5, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   _issuerSignerDN = pki.schema.x509.parse(_issuerSignerCert).subject.bytes;
   var intKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // an INTERMEDIATE CA issued by the root, and a signer under it
-  var intKey = intKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _intCaKey = intKp.privateKey.export({ format: "der", type: "pkcs8" });
   _intCaCert = await pki.x509.sign({ subject: [{ commonName: "cmp-int-ca.example" }], subjectPublicKey: intKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 7, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   var dsKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   _deepSignerKey = dsKp.privateKey.export({ format: "der", type: "pkcs8" });
-  _deepSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: dsKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 8, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: intKey, cert: _intCaCert });
+  _deepSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: dsKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 8, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   _deepSignerDN = pki.schema.x509.parse(_deepSignerCert).subject.bytes;
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
@@ -75,6 +75,11 @@ async function _hashlessChain(pki, subjectSpki, caKp, edname) {
 function makeSignerIssuedLeaf(pki, subjectSpki) {
   return pki.x509.sign({ subject: [{ commonName: "si-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 6, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _issuerSignerKey, cert: _issuerSignerCert });
 }
+// A leaf signed by the INTERMEDIATE CA (used with fakeCa(..., { deepSigner: true }) whose extraCerts carry the
+// intermediate): the leaf chains leaf -> intermediate -> root, so its validation needs the cached chain material.
+function makeIntSignedLeaf(pki, subjectSpki) {
+  return pki.x509.sign({ subject: [{ commonName: "int-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 9, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
+}
 function makeEd25519Cert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("ed25519"), "ed-ca"); }
 function makePssCert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 }), "pss-ca"); }
 // An ecdsaWithSHA256 leaf whose signatureAlgorithm OID final arc is bumped to an UNREGISTERED value (both the
@@ -94,7 +99,7 @@ async function makeRegisteredNonSigCert(pki, subjectSpki) { return _rebuildSigAl
 // A leaf carrying a COMPOSITE signatureAlgorithm OID (its OID conveys no single message hash). Rebuilt (the
 // signature bytes are not a real composite sig), so it must be delivered to a MAC session -- which skips
 // leaf path-validation -- to exercise the composite branch of the certConf-hash resolver.
-async function makeCompositeSigOidCert(pki, subjectSpki) { return _rebuildSigAlg(pki, subjectSpki, "comp-leaf", pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("id-MLDSA44-ECDSA-P256-SHA256"))])); }
+async function makeCompositeSigOidCert(pki, subjectSpki, oidName) { return _rebuildSigAlg(pki, subjectSpki, "comp-leaf", pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName(oidName || "id-MLDSA44-ECDSA-P256-SHA256"))])); }
 async function _rebuildSigAlg(pki, subjectSpki, cn, newAlgId) {
   var b = pki.asn1.build;
   var der = await pki.x509.sign({ subject: [{ commonName: cn }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer });
@@ -262,6 +267,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
