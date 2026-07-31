@@ -320,6 +320,12 @@ async function run() {
   var cc48 = pki.schema.cmp.parse(s48.transport.calls[1].body).body.decoded[0];
   check("48. a '0x5' hex certReqId is parsed as 5 (matching crmf-sign), matched and echoed", r48.outcome === "issued" && Number(cc48.certReqId) === 5);
 
+  // ===== 49. a clustered CA rotates its protection cert mid-transaction: a later leg's OWN signer wins over the cache =====
+  var s49f = H.fakeCa(pki, [H.ip(0, 0, certDer), { body: H.pkiconf(), rotateSigner: true }]);   // certConf answered by a DIFFERENT (valid) signer
+  var s49 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s49f.transport, sleep: function () { return Promise.resolve(); } });
+  var r49 = await s49.enroll(H.irRequest(CLIENT.spki));
+  check("49. a later leg signed by a rotated (but valid, anchored) signer verifies via its OWN cert, not the cached one -> issued", r49.outcome === "issued" && r49.confirmed === true);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

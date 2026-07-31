@@ -20,6 +20,7 @@ var PKIXCMP = "application/pkixcmp";
 // in extraCerts and the header sender := the signer subject, so a session with trustAnchors:[caCert] resolves
 // the signer, chains it to the anchor, and reports trusted (RFC 9483 sec. 3.1 / 3.2). Populated by init(pki).
 var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null, _leafCertDer = null;
+var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -36,6 +37,9 @@ async function init(pki, subjectSpki) {
   var sSpki = sKp.publicKey.export({ format: "der", type: "spki" });
   _signerCertDer = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: sSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   _signerDN = pki.schema.x509.parse(_signerCertDer).subject.bytes;
+  var s2Kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // the rotated signer: same subject, a different key, chains to the same CA
+  _signer2KeyPk8 = s2Kp.privateKey.export({ format: "der", type: "pkcs8" });
+  _signer2CertDer = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: s2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 4, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   _leafCertDer = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subjectSpki, serialNumber: 3, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer });
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
@@ -83,8 +87,11 @@ function fakeCa(pki, legs, cfg) {
     if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
     // issued by the CA anchor, is carried in extraCerts so the session chains it to trustAnchors:[caCert]).
-    var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : { key: _signerKeyPk8, cert: _signerCertDer };
-    var protectOpts = leg.protect === false ? { key: _signerKeyPk8, cert: _signerCertDer } : buildProt;
+    // leg.rotateSigner signs with the SECOND signer (a clustered CA rotating its protection cert mid-transaction).
+    var sigKey = leg.rotateSigner ? _signer2KeyPk8 : _signerKeyPk8;
+    var sigCert = leg.rotateSigner ? _signer2CertDer : _signerCertDer;
+    var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : { key: sigKey, cert: sigCert };
+    var protectOpts = leg.protect === false ? { key: sigKey, cert: sigCert } : buildProt;
     return Promise.resolve(pki.cmp.build({ header: header, body: leg.body }, protectOpts)).then(function (der) {
       if (leg.protect === false) {
         // strip the protection [0] + extraCerts [1] envelope children -> an unprotected SEQUENCE { header, body }
