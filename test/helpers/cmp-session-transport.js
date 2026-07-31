@@ -19,23 +19,41 @@ var PKIXCMP = "application/pkixcmp";
 // issued by it (keyUsage digitalSignature). Every signed response is signed by the signer key with its cert
 // in extraCerts and the header sender := the signer subject, so a session with trustAnchors:[caCert] resolves
 // the signer, chains it to the anchor, and reports trusted (RFC 9483 sec. 3.1 / 3.2). Populated by init(pki).
-var _caCertDer = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null;
+var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null, _leafCertDer = null;
+var NB = new Date(0), NA = new Date(4102444800000);
 
-// Build the CA anchor + CMP-signer certs ONCE (async: x509.sign). Idempotent; sets module.exports.caCert.
-async function init(pki) {
-  if (_caCertDer) return { caCert: _caCertDer };
-  var NB = new Date(0), NA = new Date(4102444800000);
+// Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
+// is `subjectSpki` -- so the session's issued-cert key-match (RFC 4211) passes on the happy path. Idempotent;
+// sets module.exports.caCert + .leafCert.
+async function init(pki, subjectSpki) {
+  if (_caCertDer) return { caCert: _caCertDer, leafCert: _leafCertDer };
   var caKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
-  var caKey = caKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _caKeyPk8 = caKp.privateKey.export({ format: "der", type: "pkcs8" });
   var caSpki = caKp.publicKey.export({ format: "der", type: "spki" });
-  _caCertDer = await pki.x509.sign({ subject: "CN=CMP Test CA", subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKey });
+  _caCertDer = await pki.x509.sign({ subject: "CN=CMP Test CA", subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: _caKeyPk8 });
   var sKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
   _signerKeyPk8 = sKp.privateKey.export({ format: "der", type: "pkcs8" });
   var sSpki = sKp.publicKey.export({ format: "der", type: "spki" });
-  _signerCertDer = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: sSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: caKey, cert: _caCertDer });
+  _signerCertDer = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: sSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   _signerDN = pki.schema.x509.parse(_signerCertDer).subject.bytes;
+  _leafCertDer = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subjectSpki, serialNumber: 3, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer });
   module.exports.caCert = _caCertDer;
-  return { caCert: _caCertDer };
+  module.exports.leafCert = _leafCertDer;
+  return { caCert: _caCertDer, leafCert: _leafCertDer };
+}
+
+// A leaf cert whose subject key is `subjectSpki` but whose SIGNATURE is Ed25519 / RSASSA-PSS-SHA384 (the OID
+// does / does not convey the certConf hash): the key-match still passes, the certConf digest path is exercised.
+function makeEd25519Cert(pki, subjectSpki) {
+  var kp = nodeCrypto.generateKeyPairSync("ed25519");
+  // the issuer name + public key go in the SIGNER opts so the signatureAlgorithm resolves from the Ed25519 signer, not the EC subject key
+  return pki.x509.sign({ subject: [{ commonName: "ed-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA },
+    { key: kp.privateKey.export({ format: "der", type: "pkcs8" }), publicKey: kp.publicKey.export({ format: "der", type: "spki" }), name: [{ commonName: "ed-ca" }] });
+}
+function makePssCert(pki, subjectSpki) {
+  var kp = nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 });
+  return pki.x509.sign({ subject: [{ commonName: "pss-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA },
+    { key: kp.privateKey.export({ format: "der", type: "pkcs8" }), publicKey: kp.publicKey.export({ format: "der", type: "spki" }), name: [{ commonName: "pss-ca" }] });
 }
 
 // legs: an array played in order, ONE per request. Each entry is either a body spec object (the response
@@ -163,15 +181,6 @@ function pkiconf() { return { pkiconf: null }; }
 function genp() { return { genp: [] }; }   // a general response -- an unexpected arm in an enrollment transaction
 function errorBody(statusCode, failInfo) { return { error: { pKIStatusInfo: { status: statusCode, failInfo: failInfo || ["badRequest"], statusString: ["error"] } } }; }
 
-// A self-signed Ed25519 leaf cert -- its signatureAlgorithm names no SHA digest, so a certConf certHash
-// computed over it must fall back to SHA-256 (RFC 9810 sec. 5.3.18; the session's hashless-alg default).
-function makeEd25519Cert(pki) {
-  var kp = nodeCrypto.generateKeyPairSync("ed25519");
-  var spki = kp.publicKey.export({ format: "der", type: "spki" });
-  var pk8 = kp.privateKey.export({ format: "der", type: "pkcs8" });
-  return pki.x509.sign({ subject: [{ commonName: "ed-leaf" }], issuer: [{ commonName: "ed-leaf" }], subjectPublicKey: spki, serialNumber: 1, notBefore: new Date(0), notAfter: new Date(4102444800000) }, { key: pk8 });
-}
-
 // An enrollment request spec (an ir) whose template publicKey is the ENROLLING key -- it MUST equal the
 // signature-protection key so the CRMF proof-of-possession (which defaults to the protection key) verifies.
 // An optional certReqId sets the CRMF request id the session must echo in pollReq / certConf (RFC 4211).
@@ -182,7 +191,7 @@ function irRequest(spki, certReqId) {
 }
 
 module.exports = {
-  init: init, fakeCa: fakeCa, caCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert,
+  init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

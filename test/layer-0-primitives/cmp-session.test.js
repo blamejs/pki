@@ -32,8 +32,8 @@ function mk(legs, extra) {
 }
 
 async function run() {
-  await H.init(pki);        // build the CA anchor + CMP-signer chain (async) before any session is constructed
-  var certDer = H.caCert;   // a real cert DER to hand back as the issued leaf
+  await H.init(pki, CLIENT.spki);   // build the CA anchor + signer chain + a leaf cert for the CLIENT key (async)
+  var certDer = H.leafCert;         // the issued leaf whose subject key matches the request (the key-match passes)
 
   // ===== 1. happy path: ir -> granted(accepted) -> certConf -> pkiConf -> issued =====
   var s1 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
@@ -165,7 +165,7 @@ async function run() {
   check("24. a PBMAC1-protected transaction issues end to end (build + verify under the shared secret)", r24.outcome === "issued" && r24.confirmed === true && Buffer.isBuffer(r24.certificate));
 
   // ===== 25. a hashless-signature issued cert (Ed25519) -> the certConf certHash defaults to SHA-256 =====
-  var edCert = await H.makeEd25519Cert(pki);
+  var edCert = await H.makeEd25519Cert(pki, CLIENT.spki);
   var s25 = mk([H.ip(0, 0, edCert), H.pkiconf()]);
   var r25 = await s25.session.enroll(H.irRequest(CLIENT.spki));
   var conf25 = pki.schema.cmp.parse(s25.transport.calls[1].body);   // the certConf request
@@ -197,7 +197,7 @@ async function run() {
   await s28a.session.enroll(H.irRequest(CLIENT.spki));
   var cc28a = pki.schema.cmp.parse(s28a.transport.calls[1].body).body.decoded[0];
   check("28a. a conveying sig alg (ecdsaWithSHA256) -> certConf OMITS hashAlg (RFC 9810 sec. 5.3.18)", cc28a.hashAlg == null);
-  var edCert28 = await H.makeEd25519Cert(pki);   // Ed25519: the OID does NOT convey a hash
+  var edCert28 = await H.makeEd25519Cert(pki, CLIENT.spki);   // Ed25519: the OID does NOT convey a hash
   var s28b = mk([H.ip(0, 0, edCert28), H.pkiconf()]);
   var r28b = await s28b.session.enroll(H.irRequest(CLIENT.spki));
   var cc28b = pki.schema.cmp.parse(s28b.transport.calls[1].body).body.decoded[0];
@@ -289,6 +289,29 @@ async function run() {
   var code43 = await codeOf(s43.session.enroll(H.irRequest(CLIENT.spki)));   // a second call while the first is mid-transaction
   await inflight;
   check("43. a concurrent enroll while one is in flight -> cmp/bad-input", code43 === "cmp/bad-input");
+
+  // ===== 44. a granted certificate whose public key differs from the requested key -> reject (RFC 4211) =====
+  check("44. a granted certificate whose key does not match the request -> cmp/bad-cert-response",
+    await codeOf(mk([H.ip(0, 0, H.caCert)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
+  // ===== 45. an RSASSA-PSS-SHA384 issued cert -> the certConf digest is derived from the params (SHA-384), hashAlg OMITTED =====
+  var pssCert = await H.makePssCert(pki, CLIENT.spki);
+  var s45 = mk([H.ip(0, 0, pssCert), H.pkiconf()]);
+  var r45 = await s45.session.enroll(H.irRequest(CLIENT.spki));
+  var cc45 = pki.schema.cmp.parse(s45.transport.calls[1].body).body.decoded[0];
+  var wantH45 = require("node:crypto").createHash("sha384").update(pssCert).digest();
+  check("45. a PSS-SHA384 cert -> certConf certHash is SHA-384 (from the params) and hashAlg is OMITTED (RFC 9810 sec. 5.3.18)",
+    r45.outcome === "issued" && cc45.hashAlg == null && Buffer.from(cc45.certHash).equals(wantH45));
+
+  // ===== 46. a batched CRMF request is refused at the session boundary =====
+  check("46. a batched CRMF request ({ messages: [...] }) -> cmp/bad-input (one request per session)",
+    await codeOf(mk([H.pkiconf()]).session.enroll({ ir: { messages: [{ certTemplate: { subject: [{ commonName: "a" }], publicKey: CLIENT.spki } }] } })) === "cmp/bad-input");
+
+  // ===== 47. a LOCAL build error does NOT consume the session -> a retry succeeds (no request crossed the seam) =====
+  var s47 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var code47a = await codeOf(s47.session.enroll({ ir: {} }));   // missing certTemplate -> a build error before any transfer
+  var r47 = await s47.session.enroll(H.irRequest(CLIENT.spki));   // the session was not consumed -> this retry succeeds
+  check("47. a local build error leaves the session retryable (no transactionID reached the transport)", code47a !== "NO-THROW" && r47.outcome === "issued" && s47.transport.calls.length === 2);
 
   console.log("CHECKS " + helpers.getChecks());
 }

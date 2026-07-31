@@ -298,9 +298,9 @@ async function run() {
   acmeTransport = acmeHelper.acmeServer({}).transport;
 
   var cmpHelper = require("../helpers/cmp-session-transport");
-  await cmpHelper.init(pki);
+  await cmpHelper.init(pki, signFixtureSigner.spki);   // the issued leaf carries the @example's signer key (the key-match passes)
   cmpCaCert = cmpHelper.caCert;
-  cmpTransport = cmpHelper.fakeCa(pki, [cmpHelper.ip(0, 0, cmpHelper.caCert), cmpHelper.pkiconf()]).transport;
+  cmpTransport = cmpHelper.fakeCa(pki, [cmpHelper.ip(0, 0, cmpHelper.leafCert), cmpHelper.pkiconf()]).transport;
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 
