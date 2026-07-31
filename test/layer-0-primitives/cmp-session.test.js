@@ -337,6 +337,16 @@ async function run() {
   check("51. a granted CertResponse carrying a server-generated privateKey -> cmp/unexpected-arm (central keygen out of scope)",
     await codeOf(mk([H.ip(0, 0, certDer, { privateKey: privBlob })]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/unexpected-arm");
 
+  // ===== 52. the cached signer tracks the MOST RECENT rotation: A(waiting) -> B(grant) -> B(pkiConf, no extraCerts) =====
+  var s52f = H.fakeCa(pki, [H.ip(0, 3), { body: H.ip(0, 0, certDer), rotateSigner: true }, { body: H.pkiconf(), rotateSigner: true, noExtraCerts: true }]);
+  var s52 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s52f.transport, sleep: function () { return Promise.resolve(); } });
+  var r52 = await s52.enroll(H.irRequest(CLIENT.spki));
+  check("52. the fallback uses the most recently verified signer (B), not the first (A) -> issued", r52.outcome === "issued" && r52.confirmed === true);
+
+  // ===== 53. a keyless ir (no certTemplate.publicKey, e.g. a raVerified request) is refused at the session boundary =====
+  check("53. an ir without a submitted public key -> cmp/bad-input (a session enrolls a client-generated key)",
+    await codeOf(mk([H.pkiconf()]).session.enroll({ ir: { certTemplate: { subject: [{ commonName: "x" }] } } })) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
