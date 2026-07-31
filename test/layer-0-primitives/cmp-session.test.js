@@ -456,6 +456,12 @@ async function run() {
   var r68 = await s68.enroll({ ir: { certTemplate: { subject: [{ commonName: "rsa-issued" }], publicKey: rsaNoNull } } });
   check("68. a request SPKI with the rsaEncryption NULL omitted matches an issued cert carrying it -> issued (keys compared, not bytes)", r68.outcome === "issued");
 
+  // ===== 69. a FLOODED extraCerts (past path.build's candidate cap) is deduped + count-capped in the cache =====
+  var s69f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), padExtraCerts: 1005 }, H.pkiconf()]);   // > PATH_BUILD_MAX_CANDIDATES if not bounded
+  var s69 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s69f.transport, sleep: function () { return Promise.resolve(); } });
+  var r69 = await s69.enroll(H.irRequest(CLIENT.spki));
+  check("69. a flood of unsigned extraCerts is deduped + capped before caching -> the valid grant still issues (no meddler DoS)", r69.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

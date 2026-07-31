@@ -155,6 +155,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.tamper) der = _tamperProtection(pki, der);   // flip a byte INSIDE the protection [0] -> the signature no longer matches
       if (leg.noExtraCerts) der = _stripExtraCerts(pki, der);   // drop the extraCerts [1] (a later leg the recipient already has the signer for)
       if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
+      if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
       if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
@@ -237,6 +238,22 @@ function _addBadExtraCert(pki, der) {
     if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
       var certs = c.children[0].children.map(function (x) { return b.raw(x.bytes); });
       certs.push(b.raw(b.sequence([b.integer(1n)])));   // a non-cert SEQUENCE
+      return b.raw(b.explicit(1, b.sequence(certs)));
+    }
+    return b.raw(c.bytes);
+  }));
+}
+// Append N duplicate copies of the first extraCerts entry (all valid, all identical) -- a flood the verifier
+// dedups + caps but which, un-bounded, would push a cached pool past path.build's candidate ceiling.
+function _padExtraCerts(pki, der, n) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;
+  var last = kids.length - 1;
+  return b.sequence(kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
+      var existing = c.children[0].children;
+      var certs = existing.map(function (x) { return b.raw(x.bytes); });
+      for (var k = 0; k < n; k++) certs.push(b.raw(existing[0].bytes));
       return b.raw(b.explicit(1, b.sequence(certs)));
     }
     return b.raw(c.bytes);
