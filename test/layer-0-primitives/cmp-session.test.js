@@ -165,14 +165,14 @@ async function run() {
   check("24. a PBMAC1-protected transaction issues end to end (build + verify under the shared secret)", r24.outcome === "issued" && r24.confirmed === true && Buffer.isBuffer(r24.certificate));
 
   // ===== 25. a hashless-signature issued cert (Ed25519) -> the certConf certHash defaults to SHA-256 =====
-  var edCert = await H.makeEd25519Cert(pki, CLIENT.spki);
-  var s25 = mk([H.ip(0, 0, edCert), H.pkiconf()]);
+  var ed25 = await H.makeEd25519Cert(pki, CLIENT.spki);
+  var s25 = mk([H.ip(0, 0, ed25.cert), H.pkiconf()], { trustAnchors: [H.caCert, ed25.ca] });   // the Ed25519 CA is a trust anchor so the leaf validates
   var r25 = await s25.session.enroll(H.irRequest(CLIENT.spki));
   var conf25 = pki.schema.cmp.parse(s25.transport.calls[1].body);   // the certConf request
   var sentHash = conf25.body.decoded[0].certHash;
-  var wantHash = require("node:crypto").createHash("sha256").update(edCert).digest();
+  var wantHash = require("node:crypto").createHash("sha256").update(ed25.cert).digest();
   check("25. an Ed25519-signed issued cert -> the certConf certHash is computed under SHA-256 (the hashless default)",
-    r25.outcome === "issued" && r25.certificate.equals(edCert) && Buffer.from(sentHash).equals(wantHash));
+    r25.outcome === "issued" && r25.certificate.equals(ed25.cert) && Buffer.from(sentHash).equals(wantHash));
 
   // ===== 26. implicitConfirm granted in the POLLED (final) response, not the initial waiting one -> no certConf =====
   var s26f = H.fakeCa(pki, [H.ip(0, 3), H.pollRep(0, 1), { body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }]);
@@ -197,8 +197,8 @@ async function run() {
   await s28a.session.enroll(H.irRequest(CLIENT.spki));
   var cc28a = pki.schema.cmp.parse(s28a.transport.calls[1].body).body.decoded[0];
   check("28a. a conveying sig alg (ecdsaWithSHA256) -> certConf OMITS hashAlg (RFC 9810 sec. 5.3.18)", cc28a.hashAlg == null);
-  var edCert28 = await H.makeEd25519Cert(pki, CLIENT.spki);   // Ed25519: the OID does NOT convey a hash
-  var s28b = mk([H.ip(0, 0, edCert28), H.pkiconf()]);
+  var ed28 = await H.makeEd25519Cert(pki, CLIENT.spki);   // Ed25519: the OID does NOT convey a hash
+  var s28b = mk([H.ip(0, 0, ed28.cert), H.pkiconf()], { trustAnchors: [H.caCert, ed28.ca] });
   var r28b = await s28b.session.enroll(H.irRequest(CLIENT.spki));
   var cc28b = pki.schema.cmp.parse(s28b.transport.calls[1].body).body.decoded[0];
   check("28b. a non-conveying sig alg (Ed25519) -> certConf DECLARES an explicit hashAlg", r28b.outcome === "issued" && cc28b.hashAlg != null);
@@ -296,11 +296,11 @@ async function run() {
     await codeOf(mk([H.ip(0, 0, H.caCert)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
 
   // ===== 45. an RSASSA-PSS-SHA384 issued cert -> the certConf digest is derived from the params (SHA-384), hashAlg OMITTED =====
-  var pssCert = await H.makePssCert(pki, CLIENT.spki);
-  var s45 = mk([H.ip(0, 0, pssCert), H.pkiconf()]);
+  var pss45 = await H.makePssCert(pki, CLIENT.spki);
+  var s45 = mk([H.ip(0, 0, pss45.cert), H.pkiconf()], { trustAnchors: [H.caCert, pss45.ca] });
   var r45 = await s45.session.enroll(H.irRequest(CLIENT.spki));
   var cc45 = pki.schema.cmp.parse(s45.transport.calls[1].body).body.decoded[0];
-  var wantH45 = require("node:crypto").createHash("sha384").update(pssCert).digest();
+  var wantH45 = require("node:crypto").createHash("sha384").update(pss45.cert).digest();
   check("45. a PSS-SHA384 cert -> certConf certHash is SHA-384 (from the params) and hashAlg is OMITTED (RFC 9810 sec. 5.3.18)",
     r45.outcome === "issued" && cc45.hashAlg == null && Buffer.from(cc45.certHash).equals(wantH45));
 
@@ -370,6 +370,11 @@ async function run() {
   var reqTxid57 = pki.schema.cmp.parse(s57.transport.calls[0].body).header.transactionID;
   check("57. mutating the returned transactionID does not desync the transaction (a defensive copy is returned)",
     r57.outcome === "issued" && reqTxid57.equals(s57.session.transactionID) && !reqTxid57.every(function (x) { return x === 0; }));
+
+  // ===== 58. an issued leaf with a CORRUPTED signature (parses + key matches, but the signature is invalid) -> reject =====
+  var badSigLeaf = H.corruptLeafSig(certDer);   // structurally valid, chains by name, but the ECDSA signature no longer verifies
+  check("58. an issued cert whose signature does not verify -> cmp/bad-cert-response (path-validated before certConf, not just parsed)",
+    await codeOf(mk([H.ip(0, 0, badSigLeaf), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
 
   console.log("CHECKS " + helpers.getChecks());
 }

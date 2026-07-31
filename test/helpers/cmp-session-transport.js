@@ -46,19 +46,19 @@ async function init(pki, subjectSpki) {
   return { caCert: _caCertDer, leafCert: _leafCertDer };
 }
 
-// A leaf cert whose subject key is `subjectSpki` but whose SIGNATURE is Ed25519 / RSASSA-PSS-SHA384 (the OID
-// does / does not convey the certConf hash): the key-match still passes, the certConf digest path is exercised.
-function makeEd25519Cert(pki, subjectSpki) {
-  var kp = nodeCrypto.generateKeyPairSync("ed25519");
-  // the issuer name + public key go in the SIGNER opts so the signatureAlgorithm resolves from the Ed25519 signer, not the EC subject key
-  return pki.x509.sign({ subject: [{ commonName: "ed-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA },
-    { key: kp.privateKey.export({ format: "der", type: "pkcs8" }), publicKey: kp.publicKey.export({ format: "der", type: "spki" }), name: [{ commonName: "ed-ca" }] });
+// A self-contained chain whose LEAF subject key is `subjectSpki` but whose SIGNATURE is Ed25519 /
+// RSASSA-PSS-SHA384 (the OID does / does not convey the certConf hash). Returns { cert, ca } -- the leaf plus
+// the self-signed CA that signed it, so the session (which now validates the issued leaf's chain) can be given
+// the CA as a trust anchor. The key-match still passes; the certConf digest path is exercised on a VALID leaf.
+async function _hashlessChain(pki, subjectSpki, caKp, edname) {
+  var caKey = caKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var caSpki = caKp.publicKey.export({ format: "der", type: "spki" });
+  var ca = await pki.x509.sign({ subject: [{ commonName: edname }], subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKey });
+  var cert = await pki.x509.sign({ subject: [{ commonName: edname + "-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: caKey, cert: ca });
+  return { cert: cert, ca: ca };
 }
-function makePssCert(pki, subjectSpki) {
-  var kp = nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 });
-  return pki.x509.sign({ subject: [{ commonName: "pss-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 1, notBefore: NB, notAfter: NA },
-    { key: kp.privateKey.export({ format: "der", type: "pkcs8" }), publicKey: kp.publicKey.export({ format: "der", type: "spki" }), name: [{ commonName: "pss-ca" }] });
-}
+function makeEd25519Cert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("ed25519"), "ed-ca"); }
+function makePssCert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 }), "pss-ca"); }
 // An ecdsaWithSHA256 leaf whose signatureAlgorithm OID final arc is bumped to an UNREGISTERED value (both the
 // tbsCertificate.signature and outer signatureAlgorithm) -- x509.parse accepts the structure but resolves no
 // name, so the certConf hash is indeterminate. The subject key (subjectSpki) is untouched (the key-match passes).
@@ -193,6 +193,15 @@ function _malformCert(pki, der, certOf) {
   return b.sequence(out);
 }
 
+// Flip a byte in the leaf's signatureValue (the final BIT STRING content) -- x509.parse still succeeds
+// (structural), the key still matches, but the ECDSA signature no longer verifies, so the leaf must fail the
+// session's issued-certificate path validation (RFC 5280 sec. 6.1) rather than reach certConf.
+function corruptLeafSig(leafDer) {
+  var d = Buffer.from(leafDer);
+  d[d.length - 1] ^= 0xff;
+  return d;
+}
+
 // ---- response body-arm builders (RFC 9810 sec. 5.2.3 / 5.3.4 / 5.3.22) ----
 // `extra` may carry { caPubs: [certDer,...] } (issuer certs on the CertRepMessage) and/or { privateKey } (a
 // central-key-generation payload on the certifiedKeyPair).
@@ -225,6 +234,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, corruptLeafSig: corruptLeafSig,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
