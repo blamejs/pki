@@ -326,6 +326,17 @@ async function run() {
   var r49 = await s49.enroll(H.irRequest(CLIENT.spki));
   check("49. a later leg signed by a rotated (but valid, anchored) signer verifies via its OWN cert, not the cached one -> issued", r49.outcome === "issued" && r49.confirmed === true);
 
+  // ===== 50. the granting response's authenticated caPubs are surfaced in the returned chain (not dropped) =====
+  var s50 = mk([H.ip(0, 0, certDer, { caPubs: [H.caCert] }), H.pkiconf()]);
+  var r50 = await s50.session.enroll(H.irRequest(CLIENT.spki));
+  check("50. caPubs delivered in the grant are retained in chain (leaf + issuer certs), as chain material not anchors",
+    r50.outcome === "issued" && r50.chain.length === 2 && r50.chain[0].equals(certDer) && r50.chain[1].equals(H.caCert));
+
+  // ===== 51. a central-key-generation privateKey in the grant is refused (a session enrolls a client-generated key) =====
+  var privBlob = pki.asn1.build.sequence([pki.asn1.build.integer(0n)]);   // any DER stands in for the encrypted key payload
+  check("51. a granted CertResponse carrying a server-generated privateKey -> cmp/unexpected-arm (central keygen out of scope)",
+    await codeOf(mk([H.ip(0, 0, certDer, { privateKey: privBlob })]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/unexpected-arm");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

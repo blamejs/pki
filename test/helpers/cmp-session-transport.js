@@ -172,15 +172,19 @@ function _malformCert(pki, der, certOf) {
 }
 
 // ---- response body-arm builders (RFC 9810 sec. 5.2.3 / 5.3.4 / 5.3.22) ----
-function _certRep(arm, certReqId, statusCode, certDer) {
+// `extra` may carry { caPubs: [certDer,...] } (issuer certs on the CertRepMessage) and/or { privateKey } (a
+// central-key-generation payload on the certifiedKeyPair).
+function _certRep(arm, certReqId, statusCode, certDer, extra) {
   var r = { certReqId: certReqId, status: { status: statusCode } };
-  if (certDer) r.certifiedKeyPair = { certificate: certDer };
-  var body = {}; body[arm] = { response: [r] };
+  if (certDer) { r.certifiedKeyPair = { certificate: certDer }; if (extra && extra.privateKey != null) r.certifiedKeyPair.privateKey = extra.privateKey; }
+  var content = { response: [r] };
+  if (extra && extra.caPubs != null) content.caPubs = extra.caPubs;
+  var body = {}; body[arm] = content;
   return body;
 }
-function ip(certReqId, statusCode, certDer) { return _certRep("ip", certReqId, statusCode, certDer); }
-function cp(certReqId, statusCode, certDer) { return _certRep("cp", certReqId, statusCode, certDer); }   // a cr / p10cr response
-function kup(certReqId, statusCode, certDer) { return _certRep("kup", certReqId, statusCode, certDer); }  // a kur response
+function ip(certReqId, statusCode, certDer, extra) { return _certRep("ip", certReqId, statusCode, certDer, extra); }
+function cp(certReqId, statusCode, certDer, extra) { return _certRep("cp", certReqId, statusCode, certDer, extra); }   // a cr / p10cr response
+function kup(certReqId, statusCode, certDer, extra) { return _certRep("kup", certReqId, statusCode, certDer, extra); } // a kur response
 function ipRejected(certReqId, failInfo, statusString) { return { ip: { response: [{ certReqId: certReqId, status: { status: 2, failInfo: failInfo || ["badRequest"], statusString: statusString || ["denied"] } }] } }; }
 function ipEmpty() { return { ip: { response: [] } }; }   // a CertRepContent with no CertResponse -> no transition
 function pollRep(certReqId, checkAfter) { return { pollRep: [{ certReqId: certReqId, checkAfter: checkAfter }] }; }
