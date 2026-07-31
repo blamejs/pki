@@ -966,6 +966,15 @@ async function run() {
   var c146b = await codeOf(s146.enroll(H.irRequest(CLIENT.spki)));
   check("146. a default-transport session with an out-of-range transfer timeout fails at preflight (cmp/bad-input, before any request) and does not consume the session -> retryable", c146a === "cmp/bad-input" && c146b === "cmp/bad-input");
 
+  // ===== 147/148. the intermediates cap is PER PROTECTION FLAVOR. A MAC session authenticates the response by the
+  //                shared secret and never adds a signer chain, so it reserves only the caPubs slots (leaf
+  //                validation) -- accepting 32 MORE distinct intermediates than a signature session (whose 904 cap
+  //                rejects 905, vector 104). Its cap is PATH_BUILD_MAX_CANDIDATES - CAPUBS_MAX = 936. =====
+  var DISTINCT_MAC = DISTINCT.concat(await H.manyDistinctCerts(pki, 33));   // 937 distinct (the extra 33 carry a different key, so distinct from DISTINCT's first 33)
+  var macTransport147 = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-147" }).transport;
+  check("147. a MAC session accepts 936 distinct intermediates (only caPubs reserved, no signer chain) -> constructs (a signature session's 904 cap rejects far fewer)", typeof pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-147" }, trustAnchors: [H.caCert], intermediates: DISTINCT_MAC.slice(0, 936), transport: macTransport147, sleep: function () { return Promise.resolve(); } }).enroll === "function");
+  check("148. a MAC session rejects 937 distinct intermediates (one over its per-flavor cap) -> cmp/bad-input at construction", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-148" }, trustAnchors: [H.caCert], intermediates: DISTINCT_MAC.slice(0, 937) }); })) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
