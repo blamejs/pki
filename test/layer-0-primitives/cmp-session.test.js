@@ -647,6 +647,23 @@ async function run() {
   check("101a. a non-Date opts.time -> cmp/bad-input at construction (the verify clock is validated before any request is sent)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], time: "not-a-date" }); })) === "cmp/bad-input");
   check("101b. an Invalid Date opts.time -> cmp/bad-input at construction", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], time: new Date("nonsense") }); })) === "cmp/bad-input");
 
+  // ===== 102. a later leg signed by a DIFFERENT trusted signer (own subject) is rejected -- the CA identity is pinned =====
+  check("102a. a later leg signed by a different trusted signer (its own subject) -> cmp/untrusted-signer (pinned to the first response's CA identity)", await codeOf(mk([H.ip(0, 0, certDer), { body: H.pkiconf(), foreignSigner: true }]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+  var s102b = mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: "CN=cmp-ca.example" });   // the caller pins the CA subject
+  check("102b. opts.expectedSender matching the CA signer subject -> the transaction proceeds -> issued", (await s102b.session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  check("102c. opts.expectedSender NOT matching the response signer subject -> cmp/untrusted-signer (a response from a different CA is refused)", await codeOf(mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: "CN=some-other-ca" }).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+
+  // ===== 103. opts.senderKID is propagated to every request header (PBMAC1 credential selection) =====
+  var kid103 = Buffer.from([0x0a, 0x0b, 0x0c, 0x0d]);
+  var s103 = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-103" });
+  var sess103 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-103" }, senderKID: kid103, transport: s103.transport, sleep: function () { return Promise.resolve(); } });
+  await sess103.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
+  var reqHdr103 = pki.schema.cmp.parse(s103.transport.calls[0].body).header;
+  check("103. opts.senderKID is emitted on the request header (a CA can select the right shared secret)", Buffer.isBuffer(reqHdr103.senderKID) && reqHdr103.senderKID.equals(kid103));
+
+  // ===== 104. opts.intermediates exceeding the candidate ceiling -> cmp/bad-input at construction =====
+  check("104. opts.intermediates with more distinct certificates than the candidate ceiling -> cmp/bad-input at construction (not path/bad-input after the request is sent)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT.concat([certDer]) }); })) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

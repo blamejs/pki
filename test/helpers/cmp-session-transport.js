@@ -183,6 +183,7 @@ function fakeCa(pki, legs, cfg) {
       recipNonce: reqMsg.header.senderNonce,
       senderNonce: nodeCrypto.randomBytes(16),
     };
+    if (leg.foreignSigner) header.sender = { directoryName: _issuerSignerDN };   // a DIFFERENT trusted signer (own subject) forging a leg
     if (leg.generalInfo) header.generalInfo = leg.generalInfo;
     if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
@@ -191,8 +192,8 @@ function fakeCa(pki, legs, cfg) {
     // cfg.issuerSigner signs with the combined CA that both protects the message AND issued the leaf.
     var defaultKey = cfg.deepSigner ? _deepSignerKey : (cfg.issuerSigner ? _issuerSignerKey : _signerKeyPk8);
     var defaultCert = cfg.deepSigner ? _deepSignerCert : (cfg.issuerSigner ? _issuerSignerCert : _signerCertDer);
-    var sigKey = leg.rotateSigner ? _signer2KeyPk8 : defaultKey;
-    var sigCert = leg.rotateSigner ? _signer2CertDer : defaultCert;
+    var sigKey = leg.foreignSigner ? _issuerSignerKey : (leg.rotateSigner ? _signer2KeyPk8 : defaultKey);
+    var sigCert = leg.foreignSigner ? _issuerSignerCert : (leg.rotateSigner ? _signer2CertDer : defaultCert);
     var sigProt = { key: sigKey, cert: sigCert };
     if (cfg.deepSigner && !leg.rotateSigner) sigProt.extraCerts = [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate]
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : sigProt;
