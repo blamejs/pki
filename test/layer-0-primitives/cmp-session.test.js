@@ -902,13 +902,26 @@ async function run() {
   var c138b = await codeOf(s138.enroll(H.irRequest(CLIENT.spki)));   // the retry is refused -- the one-shot session was consumed
   check("138. a post-engage transfer error (bad content-type, after the transport returned) consumes the one-shot session -> the retry is refused as already-completed (unlike 135's local error, which leaves it retryable)", c138a === "cmp/bad-content-type" && c138b === "cmp/bad-input");
 
-  // ===== 139. a same-identity signer rotation used across TWO bare legs: the rotated signer's issuer, delivered
-  //            only on the FIRST (waiting) leg, is RETAINED in the cached chain across the rotation, so a SECOND
-  //            bare leg from the rotated signer still chains -> issued. Overwriting the cached chain with the bare
-  //            rotation leg's extraCerts would discard the issuer, failing the second bare leg as untrusted-signer. =====
+  // ===== 139. a same-identity signer rotation across TWO bare legs: the session caches the VALIDATED chain (the
+  //            signer + the issuer path.build used), so the rotated signer's issuer -- delivered only on the FIRST
+  //            (waiting) leg -- survives, and a SECOND bare leg from the rotated signer still chains -> issued.
+  //            Caching the bare rotation leg's own extraCerts would discard the issuer, failing it as untrusted. =====
   var s139f = H.fakeCa(pki, [H.ip(0, 3), { body: H.ip(0, 0, certDer), rotateDeepSigner: true }, { body: H.pkiconf(), rotateDeepSigner: true }], { deepSigner: true });   // A(waiting,[A,int]) -> B(grant,[B]) -> B(pkiConf,[B]); B's issuer came only with A
   var s139 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s139f.transport, sleep: function () { return Promise.resolve(); } });
-  check("139. a same-identity rotation across two bare legs retains the establishing issuer in the cached chain -> issued (overwriting the cached chain with the bare rotation leg's extraCerts would drop the issuer, failing the second bare leg as cmp/untrusted-signer)", (await s139.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  check("139. a same-identity rotation across two bare legs caches the validated chain, so the establishing issuer survives -> issued (caching the bare rotation leg's own extraCerts would drop the issuer, failing the second bare leg as cmp/untrusted-signer)", (await s139.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
+  // ===== 140. an on-path party pads the rotation leg's UNSIGNED extraCerts with the real signer + 31 unrelated
+  //            parseable certificates. Because the session caches the VALIDATED chain (only certs on the trusted
+  //            path), the padding is excluded and the establishing issuer survives, so the following bare leg still
+  //            chains -> issued. Caching the raw (padded) extraCerts would evict the issuer -> cmp/untrusted-signer. =====
+  var s140f = H.fakeCa(pki, [H.ip(0, 3), { body: H.ip(0, 0, certDer), rotateDeepSigner: true, padDistinctExtra: DISTINCT.slice(0, 31) }, { body: H.pkiconf(), rotateDeepSigner: true }], { deepSigner: true });   // the grant leg's extraCerts = [B] + 31 distinct junk (filling MAX_EXTRA_CERTS)
+  var s140 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s140f.transport, sleep: function () { return Promise.resolve(); } });
+  check("140. padding the rotation leg's unsigned extraCerts with 31 unrelated certs does not evict the establishing issuer, because the session caches the validated chain not the raw extraCerts -> issued (caching the padded extraCerts drops the issuer to cmp/untrusted-signer)", (await s140.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
+  // ===== 141. a PARTIAL parsed expectedSender ({ tbsBytes } only) is rejected at CONSTRUCTION with the same
+  //            full parsed-certificate check the path engine applies -- it would otherwise pass the tbsBytes-only
+  //            detection and later throw a raw TypeError in senderBoundToCert, consuming the one-shot session. =====
+  check("141. a partial parsed opts.expectedSender (a { tbsBytes } object, not a complete parsed certificate) -> cmp/bad-input at construction (a config error cannot pass the parsed-form detection and then throw a session-consuming TypeError mid-transaction)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: { tbsBytes: Buffer.alloc(0) } }); })) === "cmp/bad-input");
 
   console.log("CHECKS " + helpers.getChecks());
 }

@@ -246,6 +246,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.reverseExtra) der = _reverseExtra(pki, der);   // reorder extraCerts so the signer is NOT first (senderKID / sig-match resolution)
       if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
       if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
+      if (leg.padDistinctExtra) der = _padDistinctExtra(pki, der, leg.padDistinctExtra);   // append DISTINCT unrelated certs to extraCerts (a paddable-pool meddler)
       if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
       if (leg.deepDecoyExtra) der = _deepDecoyExtra(pki, der);   // replace extraCerts with a lone deep-signer decoy (omits the real intermediate)
       if (leg.untrustedDecoy) der = _prependExtraCert(pki, der, _untrustedSignerDecoy);   // prepend the signer's key under an untrusted root (valid but untrusted)
@@ -414,6 +415,22 @@ function _padExtraCerts(pki, der, n) {
       var certs = existing.map(function (x) { return b.raw(x.bytes); });
       for (var k = 0; k < n; k++) certs.push(b.raw(existing[0].bytes));
       return b.raw(b.explicit(1, b.sequence(certs)));
+    }
+    return b.raw(c.bytes);
+  }));
+}
+// Append DISTINCT (unrelated) certificates to the unsigned extraCerts -- a meddler padding the pool with real,
+// parseable-but-irrelevant certs. Unlike _padExtraCerts (duplicate flood), these are distinct, so a cache that
+// stores the raw extraCerts fills its slots with them and evicts the issuer a rotation actually needed.
+function _padDistinctExtra(pki, der, certs) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;
+  var last = kids.length - 1;
+  return b.sequence(kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
+      var out = c.children[0].children.map(function (x) { return b.raw(x.bytes); });
+      certs.forEach(function (d) { out.push(b.raw(d)); });
+      return b.raw(b.explicit(1, b.sequence(out)));
     }
     return b.raw(c.bytes);
   }));
