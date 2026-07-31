@@ -902,6 +902,14 @@ async function run() {
   var c138b = await codeOf(s138.enroll(H.irRequest(CLIENT.spki)));   // the retry is refused -- the one-shot session was consumed
   check("138. a post-engage transfer error (bad content-type, after the transport returned) consumes the one-shot session -> the retry is refused as already-completed (unlike 135's local error, which leaves it retryable)", c138a === "cmp/bad-content-type" && c138b === "cmp/bad-input");
 
+  // ===== 139. a same-identity signer rotation used across TWO bare legs: the rotated signer's issuer, delivered
+  //            only on the FIRST (waiting) leg, is RETAINED in the cached chain across the rotation, so a SECOND
+  //            bare leg from the rotated signer still chains -> issued. Overwriting the cached chain with the bare
+  //            rotation leg's extraCerts would discard the issuer, failing the second bare leg as untrusted-signer. =====
+  var s139f = H.fakeCa(pki, [H.ip(0, 3), { body: H.ip(0, 0, certDer), rotateDeepSigner: true }, { body: H.pkiconf(), rotateDeepSigner: true }], { deepSigner: true });   // A(waiting,[A,int]) -> B(grant,[B]) -> B(pkiConf,[B]); B's issuer came only with A
+  var s139 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s139f.transport, sleep: function () { return Promise.resolve(); } });
+  check("139. a same-identity rotation across two bare legs retains the establishing issuer in the cached chain -> issued (overwriting the cached chain with the bare rotation leg's extraCerts would drop the issuer, failing the second bare leg as cmp/untrusted-signer)", (await s139.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
