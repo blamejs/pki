@@ -923,6 +923,15 @@ async function run() {
   //            detection and later throw a raw TypeError in senderBoundToCert, consuming the one-shot session. =====
   check("141. a partial parsed opts.expectedSender (a { tbsBytes } object, not a complete parsed certificate) -> cmp/bad-input at construction (a config error cannot pass the parsed-form detection and then throw a session-consuming TypeError mid-transaction)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: { tbsBytes: Buffer.alloc(0) } }); })) === "cmp/bad-input");
 
+  // ===== 142. a FROZEN options object with an empty MAC trustAnchors list: the session normalizes on a shallow
+  //            copy, never the caller's frozen object, so construction does not throw a raw TypeError and the empty
+  //            list is treated as absent -> issued (mutating the frozen opts would throw; the caller's object is
+  //            also left unmodified for reuse across sessions). =====
+  var s142f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-142" });
+  var frozen142 = Object.freeze({ url: URL, mac: { secret: "s3cr3t-142" }, trustAnchors: [], transport: s142f.transport, sleep: function () { return Promise.resolve(); } });
+  var r142 = await pki.cmp.session(frozen142).enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
+  check("142. a frozen options object with an empty MAC trustAnchors list normalizes on a copy (not the caller's frozen object) -> issued (mutating the frozen opts would throw a raw TypeError at construction)", r142.outcome === "issued" && Array.isArray(frozen142.trustAnchors) && frozen142.trustAnchors.length === 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
