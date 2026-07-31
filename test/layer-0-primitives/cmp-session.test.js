@@ -462,6 +462,16 @@ async function run() {
   var r69 = await s69.enroll(H.irRequest(CLIENT.spki));
   check("69. a flood of unsigned extraCerts is deduped + capped before caching -> the valid grant still issues (no meddler DoS)", r69.outcome === "issued");
 
+  // ===== 70. a same-subject DECOY prepended to a later leg's unsigned extraCerts -> fall back to the cached signer =====
+  var s70 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), decoyExtraCert: true }]);   // signer2 (same subject, other key) selected first
+  var r70 = await s70.session.enroll(H.irRequest(CLIENT.spki));
+  check("70. a same-subject decoy prepended to a later leg's unsigned extraCerts (protection fails under it) falls back to the earlier authenticated signer -> issued", r70.outcome === "issued");
+
+  // ===== 71. an issued leaf sharing the request's key BITS but a DIFFERENT EC curve param is NOT the requested key =====
+  var swappedLeaf = await H.makeCurveSwappedLeaf(pki, CLIENT.spki);   // same subjectPublicKey bits, secp384r1 OID
+  var s71 = mk([H.ip(0, 0, swappedLeaf), H.pkiconf()]);
+  check("71. a granted cert whose SPKI shares the requested bits but declares a different EC curve -> cmp/bad-cert-response (params are part of the key identity, not dropped)", await codeOf(s71.session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

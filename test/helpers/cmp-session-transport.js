@@ -80,6 +80,18 @@ function makeSignerIssuedLeaf(pki, subjectSpki) {
 function makeIntSignedLeaf(pki, subjectSpki) {
   return pki.x509.sign({ subject: [{ commonName: "int-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 9, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
 }
+// A CA-issued leaf whose SPKI shares the requested key's exact BIT STRING but declares a DIFFERENT EC named
+// curve (P-256 -> secp384r1 OID). The keys are NOT equal -- the identity check must keep the AlgorithmIdentifier
+// parameters and reject, not collapse the two onto one identity by dropping them. x509.sign embeds the SPKI
+// verbatim, and the CA signature is valid, so the leaf path-validates; only the key-match must fail.
+function makeCurveSwappedLeaf(pki, subjectSpki) {
+  var b = pki.asn1.build, node = pki.asn1.decode(subjectSpki), algId = node.children[0];
+  var swapped = b.sequence([
+    b.sequence([b.raw(algId.children[0].bytes), b.oid(pki.oid.byName("secp384r1"))]),
+    b.raw(node.children[1].bytes),
+  ]);
+  return pki.x509.sign({ subject: [{ commonName: "curve-swapped-leaf" }], subjectPublicKey: swapped, serialNumber: 10, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+}
 function makeEd25519Cert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("ed25519"), "ed-ca"); }
 function makePssCert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 }), "pss-ca"); }
 // An ecdsaWithSHA256 leaf whose signatureAlgorithm OID final arc is bumped to an UNREGISTERED value (both the
@@ -156,6 +168,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.noExtraCerts) der = _stripExtraCerts(pki, der);   // drop the extraCerts [1] (a later leg the recipient already has the signer for)
       if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
       if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
+      if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
       if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
@@ -243,6 +256,21 @@ function _addBadExtraCert(pki, der) {
     return b.raw(c.bytes);
   }));
 }
+// PREPEND a same-subject decoy certificate (signer2 shares signer1's subject but has a different key) to the
+// unsigned extraCerts, so the verifier's RFC 9483 sec. 3.3 "extraCerts[0] is the protection cert" rule selects
+// the decoy first and protection fails under a key that never signed -- modelling a network meddler.
+function _prependExtraCert(pki, der) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;
+  var last = kids.length - 1;
+  return b.sequence(kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) {
+      var certs = [b.raw(_signer2CertDer)].concat(c.children[0].children.map(function (x) { return b.raw(x.bytes); }));
+      return b.raw(b.explicit(1, b.sequence(certs)));
+    }
+    return b.raw(c.bytes);
+  }));
+}
 // Append N duplicate copies of the first extraCerts entry (all valid, all identical) -- a flood the verifier
 // dedups + caps but which, un-bounded, would push a cached pool past path.build's candidate ceiling.
 function _padExtraCerts(pki, der, n) {
@@ -312,6 +340,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, stripSpkiParams: stripSpkiParams,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
