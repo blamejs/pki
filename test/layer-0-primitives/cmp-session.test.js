@@ -932,6 +932,40 @@ async function run() {
   var r142 = await pki.cmp.session(frozen142).enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
   check("142. a frozen options object with an empty MAC trustAnchors list normalizes on a copy (not the caller's frozen object) -> issued (mutating the frozen opts would throw a raw TypeError at construction)", r142.outcome === "issued" && Array.isArray(frozen142.trustAnchors) && frozen142.trustAnchors.length === 0);
 
+  // ===== 143. a custom transport that is INVOKED and then rejects with a coded error (cmp/bad-input -- a code the
+  //            preflight also uses) DOES consume the one-shot session: engagement is detected by the transport
+  //            being called, not by the error code. The retry is refused WITHOUT calling the transport again, so a
+  //            request that may have reached the CA is never replayed under the same transactionID/nonce. =====
+  var calls143 = 0;
+  var s143 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], sleep: function () { return Promise.resolve(); },
+    transport: function () { calls143 += 1; return Promise.reject(Object.assign(new Error("reached the CA, then failed"), { code: "cmp/bad-input", isCmpError: true })); } });
+  var c143a = await codeOf(s143.enroll(H.irRequest(CLIENT.spki)));   // the transport is called (calls=1), then rejects with a preflight-shaped code
+  var c143b = await codeOf(s143.enroll(H.irRequest(CLIENT.spki)));   // the retry is refused: the session was consumed, the transport is NOT called again
+  check("143. a custom transport that is invoked then rejects with a coded error consumes the one-shot session -> the retry is refused without re-calling the transport (calls stays 1) (inferring pre-send from the code would let a delivered request replay under the same transactionID)", c143a === "cmp/bad-input" && c143b === "cmp/bad-input" && calls143 === 1);
+
+  // ===== 144. a DEFAULT-transport session (no opts.transport): cmp.transfer's OWN preflight fails on a bad url
+  //            BEFORE any transport call, and the default transport never reuses the preflight codes for its own
+  //            network errors, so the code-based classification (used only for the default transport) correctly
+  //            leaves the one-shot session retryable. =====
+  var s144 = pki.cmp.session({ url: "http://[bad", key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], sleep: function () { return Promise.resolve(); } });   // NO opts.transport -> the default HTTP transport
+  var c144a = await codeOf(s144.enroll(H.irRequest(CLIENT.spki)));   // cmp.transfer's url preflight throws cmp/bad-url before any transport call
+  var c144b = await codeOf(s144.enroll(H.irRequest(CLIENT.spki)));   // the retry sees the same preflight error, not a consumed session
+  check("144. a default-transport session with a bad url fails at cmp.transfer's preflight (before any transport call) and does not consume the session -> retryable (the default transport's own errors never reuse the preflight codes)", c144a === "cmp/bad-url" && c144b === "cmp/bad-url");
+
+  // ===== 145. a default-transport session with NO TLS trust anchors: cmp.transfer refuses the unpinned server at
+  //            preflight (cmp/no-trust-anchors) before any request -> the session stays retryable. =====
+  var s145 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], sleep: function () { return Promise.resolve(); } });   // default transport, no opts.tls anchors
+  var c145a = await codeOf(s145.enroll(H.irRequest(CLIENT.spki)));
+  var c145b = await codeOf(s145.enroll(H.irRequest(CLIENT.spki)));
+  check("145. a default-transport session without TLS trust anchors fails at preflight (cmp/no-trust-anchors, before any request) and does not consume the session -> retryable", c145a === "cmp/no-trust-anchors" && c145b === "cmp/no-trust-anchors");
+
+  // ===== 146. a default-transport session with a bad transfer budget (an out-of-range timeout): cmp.transfer
+  //            rejects it (cmp/bad-input) at preflight, after the TLS-anchor check, before any request -> retryable. =====
+  var s146 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], tls: { anchors: [H.caCert] }, timeout: -5, sleep: function () { return Promise.resolve(); } });   // default transport, TLS pinned, bad timeout
+  var c146a = await codeOf(s146.enroll(H.irRequest(CLIENT.spki)));
+  var c146b = await codeOf(s146.enroll(H.irRequest(CLIENT.spki)));
+  check("146. a default-transport session with an out-of-range transfer timeout fails at preflight (cmp/bad-input, before any request) and does not consume the session -> retryable", c146a === "cmp/bad-input" && c146b === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
