@@ -534,8 +534,11 @@ async function run() {
   var r82 = await s82.enroll(H.irRequest(CLIENT.spki));
   check("82. a fallback-verified leg (a decoy in its extraCerts) does not replace the trusted cached chain -> a later signer-omitting leg still chains via the preserved intermediate -> issued", r82.outcome === "issued");
 
-  // ===== 83. a MAC session with trustAnchors -> cmp/bad-input at construction (not consumed then failed at verify) =====
-  check("83. a MAC (PBMAC1) session carrying opts.trustAnchors -> cmp/bad-input at construction (a signature-flavor credential a MAC session cannot use)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, mac: { secret: "k83" }, trustAnchors: [H.caCert] }); })) === "cmp/bad-input");
+  // ===== 83. a MAC session MAY carry trustAnchors to validate the ISSUED certificate (not the response protection) =====
+  var s83f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-83" });
+  var s83 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-83" }, trustAnchors: [H.caCert], transport: s83f.transport, sleep: function () { return Promise.resolve(); } });
+  var r83 = await s83.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key));
+  check("83. a MAC session with trustAnchors validates the issued certificate's signature + chain (a good leaf still issues; anchors are NOT forwarded to the MAC response verify)", r83.outcome === "issued");
 
   // ===== 84. a caller intermediate supplied as PEM dedups against a byte-identical DER caPubs (no wasted slot) =====
   var intLeaf84 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intermediate -> root
@@ -626,6 +629,19 @@ async function run() {
 
   // ===== 98. an invalid intermediates entry -> cmp/bad-input at construction (same class as the anchors) =====
   check("98. a session with a malformed intermediates entry -> cmp/bad-input at construction (the chain pool is validated before any request)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: [Buffer.from("garbage")] }); })) === "cmp/bad-input");
+
+  // ===== 99. the authenticated caPubs issuer is prioritized over a ceiling-filling caller pool =====
+  var intLeaf99 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intCaCert -> root
+  var s99f = H.fakeCa(pki, [H.ip(0, 0, intLeaf99, { caPubs: [H.intCaCert] }), H.pkiconf()]);   // the needed intermediate ONLY in caPubs
+  var s99 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s99f.transport, sleep: function () { return Promise.resolve(); } });   // 1000 DISTINCT caller certs fill the ceiling
+  var r99 = await s99.enroll(H.irRequest(CLIENT.spki));
+  check("99. the authenticated caPubs intermediate is prioritized over a ceiling-filling caller pool -> the intermediate-signed leaf still validates -> issued", r99.outcome === "issued");
+
+  // ===== 100. a MAC session with trustAnchors REJECTS an issued cert with an invalid signature =====
+  var badLeaf100 = H.corruptLeafSig(certDer);   // structurally valid, INVALID signature (same SPKI -> the key-match passes)
+  var s100f = H.fakeCa(pki, [H.ip(0, 0, badLeaf100), H.pkiconf()], { macSecret: "s3cr3t-100" });
+  var s100 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-100" }, trustAnchors: [H.caCert], transport: s100f.transport, sleep: function () { return Promise.resolve(); } });
+  check("100. a MAC session with trustAnchors rejects an issued cert whose signature is invalid -> cmp/bad-cert-response (the MAC authenticates the exchange, not the embedded cert signature)", await codeOf(s100.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
 
   console.log("CHECKS " + helpers.getChecks());
 }
