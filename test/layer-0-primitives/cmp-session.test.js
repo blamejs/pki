@@ -621,6 +621,12 @@ async function run() {
   var r96 = await s96.session.enroll(H.irRequest(CLIENT.spki));
   check("96. an intermediate delivered in a WAITING leg's caPubs is retained across the poll -> the grant that omits it still validates the intermediate-signed leaf -> issued", r96.outcome === "issued" && r96.chain.length === 2);
 
+  // ===== 97. an invalid trustAnchors entry -> cmp/bad-input at construction (not consumed then failed at verify) =====
+  check("97. a signature session with a non-certificate trustAnchors entry -> cmp/bad-input at construction (anchors validated before any request is sent)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [Buffer.from("not-a-certificate")] }); })) === "cmp/bad-input");
+
+  // ===== 98. an invalid intermediates entry -> cmp/bad-input at construction (same class as the anchors) =====
+  check("98. a session with a malformed intermediates entry -> cmp/bad-input at construction (the chain pool is validated before any request)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: [Buffer.from("garbage")] }); })) === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
