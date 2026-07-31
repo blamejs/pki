@@ -541,6 +541,28 @@ async function run() {
   var r82 = await s82.enroll(H.irRequest(CLIENT.spki));
   check("82. a fallback-verified leg (a decoy in its extraCerts) does not replace the trusted cached chain -> a later signer-omitting leg still chains via the preserved intermediate -> issued", r82.outcome === "issued");
 
+  // ===== 83. a MAC session with trustAnchors -> cmp/bad-input at construction (not consumed then failed at verify) =====
+  check("83. a MAC (PBMAC1) session carrying opts.trustAnchors -> cmp/bad-input at construction (a signature-flavor credential a MAC session cannot use)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, mac: { secret: "k83" }, trustAnchors: [H.caCert] }); })) === "cmp/bad-input");
+
+  // ===== 84. a caller intermediate supplied as PEM dedups against a byte-identical DER caPubs (no wasted slot) =====
+  var intLeaf84 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intermediate -> root
+  var filler84 = [];
+  for (var f84 = 0; f84 < 998; f84++) filler84.push(H.caCert);   // 998 fillers distinct from certDer
+  filler84.push(pki.schema.x509.pemEncode(certDer, "CERTIFICATE"));   // the 999th: certDer as PEM -- a caPubs DER duplicates it
+  var s84f = H.fakeCa(pki, [H.ip(0, 0, intLeaf84, { caPubs: [certDer, H.intCaCert] }), H.pkiconf()]);   // caPubs: [dup-of-PEM, the needed intermediate]
+  var s84 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: filler84, transport: s84f.transport, sleep: function () { return Promise.resolve(); } });
+  var r84 = await s84.enroll(H.irRequest(CLIENT.spki));
+  check("84. a PEM caller intermediate dedups against a byte-identical DER caPubs -> the freed slot holds the real intermediate, the intermediate-signed leaf validates -> issued", r84.outcome === "issued");
+
+  // ===== 85. session.transcript returns a defensive SNAPSHOT (copied bytes, a fresh array per read) =====
+  var s85 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var r85 = await s85.session.enroll(H.irRequest(CLIENT.spki));
+  var orig85 = r85.transcript[0].bytes[0];
+  r85.transcript[0].bytes[0] ^= 0xff;   // mutate the returned snapshot's byte buffer
+  check("85a. the transcript is a snapshot -> mutating a returned entry's bytes does not affect the internal transcript", s85.session.transcript[0].bytes[0] === orig85);
+  var read85a = s85.session.transcript, read85b = s85.session.transcript;   // two reads -> two distinct arrays
+  check("85b. session.transcript returns a fresh array each read (freezing the returned value is harmless)", read85a !== read85b && Object.isFrozen(Object.freeze(read85a)) && read85b.length === 4);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

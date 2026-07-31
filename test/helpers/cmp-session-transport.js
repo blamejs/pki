@@ -59,6 +59,7 @@ async function init(pki, subjectSpki) {
   _deepSigner2Cert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: ds2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 12, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
+  module.exports.intCaCert = _intCaCert;
   return { caCert: _caCertDer, leafCert: _leafCertDer };
 }
 
@@ -361,7 +362,7 @@ function irRequest(spki, certReqId, key) {
 }
 
 module.exports = {
-  init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
+  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null,
   ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
