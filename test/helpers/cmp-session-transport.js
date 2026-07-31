@@ -21,6 +21,7 @@ var PKIXCMP = "application/pkixcmp";
 // the signer, chains it to the anchor, and reports trusted (RFC 9483 sec. 3.1 / 3.2). Populated by init(pki).
 var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = null, _signerDN = null, _leafCertDer = null;
 var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
+var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -41,6 +42,10 @@ async function init(pki, subjectSpki) {
   _signer2KeyPk8 = s2Kp.privateKey.export({ format: "der", type: "pkcs8" });
   _signer2CertDer = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: s2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 4, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   _leafCertDer = await pki.x509.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: subjectSpki, serialNumber: 3, notBefore: NB, notAfter: NA }, { key: _caKeyPk8, cert: _caCertDer });
+  var isKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // a signer that BOTH protects CMP messages AND issues certs (cA + keyCertSign + digitalSignature)
+  _issuerSignerKey = isKp.privateKey.export({ format: "der", type: "pkcs8" });
+  _issuerSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-issuer.example" }], subjectPublicKey: isKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 5, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+  _issuerSignerDN = pki.schema.x509.parse(_issuerSignerCert).subject.bytes;
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   return { caCert: _caCertDer, leafCert: _leafCertDer };
@@ -56,6 +61,11 @@ async function _hashlessChain(pki, subjectSpki, caKp, edname) {
   var ca = await pki.x509.sign({ subject: [{ commonName: edname }], subjectPublicKey: caSpki, serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKey });
   var cert = await pki.x509.sign({ subject: [{ commonName: edname + "-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 2, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: caKey, cert: ca });
   return { cert: cert, ca: ca };
+}
+// A leaf issued by the combined CMP-issuer signer (its cert is the response's protection signer, delivered
+// only in extraCerts) -- used with fakeCa(..., { issuerSigner: true }) so the session must reuse the cached signer.
+function makeSignerIssuedLeaf(pki, subjectSpki) {
+  return pki.x509.sign({ subject: [{ commonName: "si-leaf" }], subjectPublicKey: subjectSpki, serialNumber: 6, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _issuerSignerKey, cert: _issuerSignerCert });
 }
 function makeEd25519Cert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("ed25519"), "ed-ca"); }
 function makePssCert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 }), "pss-ca"); }
@@ -99,8 +109,9 @@ function fakeCa(pki, legs, cfg) {
     if (typeof spec === "function") spec = spec(reqMsg);
     var leg = (spec && spec.body !== undefined) ? spec : { body: spec };
     // A signed response's sender := the SIGNER cert subject (RFC 9483 sec. 3.1); a MAC response uses a NULL-DN.
+    // signer2 (rotateSigner) shares signer1's subject, so both use _signerDN; the issuer-signer has its own DN.
     var header = {
-      sender: { directoryName: cfg.macSecret ? [] : _signerDN }, recipient: { directoryName: [] },
+      sender: { directoryName: cfg.macSecret ? [] : (cfg.issuerSigner ? _issuerSignerDN : _signerDN) }, recipient: { directoryName: [] },
       transactionID: reqMsg.header.transactionID,
       recipNonce: reqMsg.header.senderNonce,
       senderNonce: nodeCrypto.randomBytes(16),
@@ -109,9 +120,12 @@ function fakeCa(pki, legs, cfg) {
     if (leg.noSenderNonce) delete header.senderNonce;   // a response that omits its senderNonce (breaks the chain for a follow-up leg)
     // MAC (PBMAC1) responses when cfg.macSecret is set; otherwise sign under the CMP-signer key (its cert,
     // issued by the CA anchor, is carried in extraCerts so the session chains it to trustAnchors:[caCert]).
-    // leg.rotateSigner signs with the SECOND signer (a clustered CA rotating its protection cert mid-transaction).
-    var sigKey = leg.rotateSigner ? _signer2KeyPk8 : _signerKeyPk8;
-    var sigCert = leg.rotateSigner ? _signer2CertDer : _signerCertDer;
+    // leg.rotateSigner signs with the SECOND signer (a clustered CA rotating its protection cert mid-transaction);
+    // cfg.issuerSigner signs with the combined CA that both protects the message AND issued the leaf.
+    var defaultKey = cfg.issuerSigner ? _issuerSignerKey : _signerKeyPk8;
+    var defaultCert = cfg.issuerSigner ? _issuerSignerCert : _signerCertDer;
+    var sigKey = leg.rotateSigner ? _signer2KeyPk8 : defaultKey;
+    var sigCert = leg.rotateSigner ? _signer2CertDer : defaultCert;
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : { key: sigKey, cert: sigCert };
     var protectOpts = leg.protect === false ? { key: sigKey, cert: sigCert } : buildProt;
     return Promise.resolve(pki.cmp.build({ header: header, body: leg.body }, protectOpts)).then(function (der) {
@@ -234,6 +248,6 @@ function irRequest(spki, certReqId) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, corruptLeafSig: corruptLeafSig,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

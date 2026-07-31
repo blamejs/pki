@@ -392,6 +392,20 @@ async function run() {
     check("60. a PSS certConf hash resolves by the param OID even when 'sha384' is renamed via pki.oid.register -> issued", r60.outcome === "issued");
   } finally { pki.oid.register(sha384Oid, "sha384"); }
 
+  // ===== 61. an UNSOLICITED implicitConfirm (the caller did not request it) is ignored -> the explicit certConf runs =====
+  var s61f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), generalInfo: H.IMPLICIT_CONFIRM_GI }, H.pkiconf()]);
+  var s61 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s61f.transport, sleep: function () { return Promise.resolve(); } });   // implicitConfirm NOT requested
+  var r61 = await s61.enroll(H.irRequest(CLIENT.spki));
+  check("61. an unsolicited implicitConfirm is not honored -> issued via an explicit certConf (implicitConfirm false, two legs)",
+    r61.outcome === "issued" && r61.implicitConfirm === false && r61.confirmed === true && s61f.transport.calls.length === 2);
+
+  // ===== 62. a leaf signed by the CMP protection signer (delivered ONLY in extraCerts) validates via the cached signer =====
+  var siLeaf = await H.makeSignerIssuedLeaf(pki, CLIENT.spki);
+  var s62f = H.fakeCa(pki, [H.ip(0, 0, siLeaf), H.pkiconf()], { issuerSigner: true });
+  var s62 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s62f.transport, sleep: function () { return Promise.resolve(); } });
+  var r62 = await s62.enroll(H.irRequest(CLIENT.spki));
+  check("62. a leaf whose issuer is the CMP signer (only in extraCerts) validates via the cached signer in the pool -> issued", r62.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
