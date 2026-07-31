@@ -862,6 +862,20 @@ async function run() {
   var s133 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs133).transport, maxResponseBytes: 8192, sleep: function () { return Promise.resolve(); } });
   check("133. a grant re-delivering a retained issuer before a new entry promotes it, so eviction cannot drop it -> issued (leaving it at its old position lets the new entry evict it, failing path validation)", (await s133.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
+  // ===== 134. a grant with MORE than CAPUBS_MAX distinct caPubs and the required issuer FIRST keeps the earliest
+  //            grant entries (a later grant entry never evicts an earlier one) -> issued =====
+  var intLeaf134 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // chains via intCaCert
+  var s134f = H.fakeCa(pki, [H.ip(0, 0, intLeaf134, { caPubs: [H.intCaCert].concat(DISTINCT.slice(0, 70)) }), H.pkiconf()]);   // intCaCert FIRST, then 70 junk (> CAPUBS_MAX=64)
+  var s134 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s134f.transport, sleep: function () { return Promise.resolve(); } });
+  check("134. a grant with more than CAPUBS_MAX caPubs keeps the EARLIEST (a later grant entry never evicts an earlier one), so the required issuer delivered first survives -> issued (evicting grant entries drops it to cmp/bad-cert-response)", (await s134.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
+  // ===== 135. a purely-LOCAL transfer config error (an unparseable url) does NOT consume the one-shot session --
+  //            it is rejected before the transport, so the caller can fix the config and retry =====
+  var s135 = pki.cmp.session({ url: "http://[bad", key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()]).transport, sleep: function () { return Promise.resolve(); } });
+  var c135a = await codeOf(s135.enroll(H.irRequest(CLIENT.spki)));   // first attempt: local URL error
+  var c135b = await codeOf(s135.enroll(H.irRequest(CLIENT.spki)));   // retry: still the config error, NOT a consumed-session error
+  check("135. a local config error (bad url) fails before the transport and does NOT consume the session -> the retry sees the same config error, not a consumed-session error", c135a === "cmp/bad-url" && c135b === "cmp/bad-url");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -805,8 +805,15 @@ function _unresolvedThreads(prNum) {
                       " had no reviewThreads connection -- an unreadable result is not an empty one.");
     }
     nodes = nodes.concat(conn.nodes || []);
-    if (!conn.pageInfo.hasNextPage) { break; }
+    if (!conn.pageInfo.hasNextPage) { after = null; break; }
     after = conn.pageInfo.endCursor;
+  }
+  // Fail closed: if the page cap was hit while more pages remained (hasNextPage still true, so `after` is still set),
+  // the thread list is TRUNCATED. Returning it would let the gate see [] / a partial set and merge past unresolved
+  // findings on later pages. A PR with 10,000+ threads is a runaway, not a mergeable state -- throw, never truncate.
+  if (after !== null) {
+    throw new Error("release: PR #" + prNum + " has more review threads than the " +
+      "pagination cap can read -- refusing to treat a truncated thread list as authoritative (resolve threads or split the PR).");
   }
   return nodes.filter(function (t) { return t && t.isResolved === false; })
     .map(function (t) {
