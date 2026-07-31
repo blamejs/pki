@@ -82,6 +82,9 @@ async function init(pki, subjectSpki) {
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   module.exports.intCaCert = _intCaCert;
+  module.exports.signerCert = _signerCertDer;   // the CA's response-signer cert (subject cmp-ca.example) -- pin it via opts.expectedSender
+  module.exports.sanSignerACert = _sanSignerACert;   // an EMPTY-subject signer named only by a directoryName SAN (san-ca-a)
+  module.exports.sanSignerBCert = _sanSignerBCert;   // a distinct empty-subject signer (san-ca-b)
   return { caCert: _caCertDer, leafCert: _leafCertDer };
 }
 
@@ -121,6 +124,19 @@ function makeCurveSwappedLeaf(pki, subjectSpki) {
 // A CA-issued leaf whose rsaEncryption SPKI shares the requested key's exact bits but carries a MALFORMED
 // parameter (an empty OCTET STRING instead of the required NULL/absent). x509.parse + Node tolerate it, but the
 // identity check must NOT normalize it to the clean key -- a parameter-changed certificate is not the requested key.
+// An RSASSA-PSS-signed leaf whose PSS parameters carry NO explicit hashAlgorithm (defaulting to SHA-1, which the
+// certConf-hash resolver does not map) -- so _pssDigest returns null and the certConf hash is indeterminate.
+function makePssIndeterminateCert(pki, subjectSpki) {
+  var pssAlgId = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("rsassaPss")), pki.asn1.build.sequence([])]);   // rssaPss + empty params
+  return _rebuildSigAlg(pki, subjectSpki, "pss-indet-leaf", pssAlgId);
+}
+// An RSASSA-PSS-signed leaf whose params carry an EXPLICIT hashAlgorithm [0] naming an UNMAPPED digest (SHA-1) --
+// so _pssDigest reads the OID but the map returns null: the explicit-but-unresolvable branch of the resolver.
+function makePssExplicitUnknownHashCert(pki, subjectSpki) {
+  var b = pki.asn1.build;
+  var params = b.sequence([b.explicit(0, b.sequence([b.oid(pki.oid.byName("sha1")), b.nullValue()]))]);   // [0] EXPLICIT { sha1, NULL }
+  return _rebuildSigAlg(pki, subjectSpki, "pss-sha1-leaf", b.sequence([b.oid(pki.oid.byName("rsassaPss")), params]));
+}
 function makeMalformedRsaParamCert(pki, rsaSpki) {
   var b = pki.asn1.build, node = pki.asn1.decode(rsaSpki), algId = node.children[0];
   var variant = b.sequence([
@@ -410,7 +426,7 @@ function irRequest(spki, certReqId, key) {
 }
 
 module.exports = {
-  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
+  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, sanSignerACert: null, sanSignerBCert: null,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

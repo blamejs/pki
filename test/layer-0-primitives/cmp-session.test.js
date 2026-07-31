@@ -649,9 +649,13 @@ async function run() {
 
   // ===== 102. a later leg signed by a DIFFERENT trusted signer (own subject) is rejected -- the CA identity is pinned =====
   check("102a. a later leg signed by a different trusted signer (its own subject) -> cmp/untrusted-signer (pinned to the first response's CA identity)", await codeOf(mk([H.ip(0, 0, certDer), { body: H.pkiconf(), foreignSigner: true }]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
-  var s102b = mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: "CN=cmp-ca.example" });   // the caller pins the CA subject
-  check("102b. opts.expectedSender matching the CA signer subject -> the transaction proceeds -> issued", (await s102b.session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
-  check("102c. opts.expectedSender NOT matching the response signer subject -> cmp/untrusted-signer (a response from a different CA is refused)", await codeOf(mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: "CN=some-other-ca" }).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+  var s102b = mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: H.signerCert });   // the caller pins the CA's signer certificate
+  check("102b. opts.expectedSender pinning the CA signer certificate that signs the responses -> the transaction proceeds -> issued", (await s102b.session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  check("102c. opts.expectedSender pinning a DIFFERENT certificate than the response signer -> cmp/untrusted-signer (a response from a different CA is refused)", await codeOf(mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: H.caCert }).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+  // opts.expectedSender binds an EMPTY-subject CA by its subjectAltName -- the case a subject-string pin reads as an unmatchable null.
+  check("102d. opts.expectedSender pinning an empty-subject CA (named only by a directoryName SAN) that signs the responses -> issued (bound via the SAN, not a null subject)", (await mk([{ body: H.ip(0, 0, certDer), emptySanSigner: "a" }, { body: H.pkiconf(), emptySanSigner: "a" }], { expectedSender: H.sanSignerACert }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  check("102e. opts.expectedSender pinning empty-subject CA A while the responses are signed by empty-subject CA B -> cmp/untrusted-signer (the SAN identities differ)", await codeOf(mk([{ body: H.ip(0, 0, certDer), emptySanSigner: "a" }, { body: H.pkiconf(), emptySanSigner: "a" }], { expectedSender: H.sanSignerBCert }).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+  check("102f. opts.expectedSender that is not a certificate (a bare DN string) -> cmp/bad-input at construction (before the one-shot transaction engages the transport)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: "CN=cmp-ca.example" }); })) === "cmp/bad-input");
 
   // ===== 103. opts.senderKID is propagated to every request header (PBMAC1 credential selection) =====
   var kid103 = Buffer.from([0x0a, 0x0b, 0x0c, 0x0d]);
@@ -679,6 +683,65 @@ async function run() {
   var s107f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), emptySanSigner: "a" }, { body: H.pkiconf(), emptySanSigner: "b" }]);
   var s107 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s107f.transport, sleep: function () { return Promise.resolve(); } });
   check("107. two empty-subject signers with different SANs across legs -> cmp/untrusted-signer (the identity pin distinguishes the authenticated SAN, not the null subject sentinel)", await codeOf(s107.enroll(H.irRequest(CLIENT.spki))) === "cmp/untrusted-signer");
+
+  // ===== 108. certConf-hash resolver branch coverage: unknown / non-signature / hash-indeterminate algs fail closed (MAC skips leaf validation, reaching the resolver) =====
+  var s108a = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-108a" }, transport: H.fakeCa(pki, [H.ip(0, 0, await H.makeUnknownSigAlgCert(pki, CLIENT.spki)), H.pkiconf()], { macSecret: "s3cr3t-108a" }).transport, sleep: function () { return Promise.resolve(); } });
+  check("108a. an UNREGISTERED signature-algorithm cert (MAC session reaches the certConf-hash resolver) -> cmp/bad-cert-response", await codeOf(s108a.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
+  var s108b = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-108b" }, transport: H.fakeCa(pki, [H.ip(0, 0, await H.makeRegisteredNonSigCert(pki, CLIENT.spki)), H.pkiconf()], { macSecret: "s3cr3t-108b" }).transport, sleep: function () { return Promise.resolve(); } });
+  check("108b. a registered NON-signature-algorithm cert (rsaEncryption) -> cmp/bad-cert-response (no conveyed certConf hash)", await codeOf(s108b.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
+  var s108c = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-108c" }, transport: H.fakeCa(pki, [H.ip(0, 0, await H.makePssIndeterminateCert(pki, CLIENT.spki)), H.pkiconf()], { macSecret: "s3cr3t-108c" }).transport, sleep: function () { return Promise.resolve(); } });
+  check("108c. an RSASSA-PSS cert whose parameters resolve no hash (SHA-1 default) -> cmp/bad-cert-response (never a guessed SHA-256)", await codeOf(s108c.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
+
+  // ===== 109. implicitConfirm requested but the grant's generalInfo LACKS it -> _implicitConfirmGranted false -> an explicit certConf still runs =====
+  var s109f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), generalInfo: [{ infoType: "confirmWaitTime", infoValue: new Date(0) }] }, H.pkiconf()]);
+  var s109 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], implicitConfirm: true, transport: s109f.transport, sleep: function () { return Promise.resolve(); } });
+  var r109 = await s109.enroll(H.irRequest(CLIENT.spki));
+  check("109. implicitConfirm requested but the grant's generalInfo carries a DIFFERENT entry -> _implicitConfirmGranted false -> an explicit certConf runs -> issued (confirmed, not implicit)", r109.outcome === "issued" && r109.confirmed === true && r109.implicitConfirm === false);
+
+  // ===== 110. a MAC session with an EMPTY trustAnchors array reaches issued-cert validation with no anchor -> path.build path/bad-input -> cmp/bad-input =====
+  var s110 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-110" }, trustAnchors: [], transport: H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-110" }).transport, sleep: function () { return Promise.resolve(); } });
+  check("110. a MAC session with an empty trustAnchors array -> issued-cert validation with no usable anchor -> cmp/bad-input (fail-closed, mapped from path/bad-input)", await codeOf(s110.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-input");
+
+  // ===== 111-117: branch-coverage edges (recipKID, implicitConfirm-no-generalInfo, duplicate-caPubs dedup, parsed/Uint8Array/Ed25519 request forms) =====
+  var kid111 = Buffer.from([0x11, 0x22]);
+  var s111 = mk([H.ip(0, 0, certDer), H.pkiconf()], { recipKID: kid111 });
+  await s111.session.enroll(H.irRequest(CLIENT.spki));
+  check("111. opts.recipKID is emitted on the request header", Buffer.isBuffer(pki.schema.cmp.parse(s111.transport.calls[0].body).header.recipKID) && pki.schema.cmp.parse(s111.transport.calls[0].body).header.recipKID.equals(kid111));
+
+  var s112 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], implicitConfirm: true, transport: H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()]).transport, sleep: function () { return Promise.resolve(); } });
+  var r112 = await s112.enroll(H.irRequest(CLIENT.spki));
+  check("112. implicitConfirm requested but the grant carries NO generalInfo -> _implicitConfirmGranted false (non-array) -> an explicit certConf runs -> issued (not implicit)", r112.outcome === "issued" && r112.implicitConfirm === false);
+
+  var intLeaf113 = await H.makeIntSignedLeaf(pki, CLIENT.spki);
+  var s113 = mk([H.ip(0, 3, null, { caPubs: [H.intCaCert] }), H.pollRep(0, 1), H.ip(0, 0, intLeaf113, { caPubs: [H.intCaCert] }), H.pkiconf()]);   // SAME intermediate on the waiting AND granting legs
+  var r113 = await s113.session.enroll(H.irRequest(CLIENT.spki));
+  check("113. the same caPubs delivered on the waiting AND granting legs is deduped in the returned chain -> length 2 (leaf + one intermediate)", r113.outcome === "issued" && r113.chain.length === 2);
+
+  var s114 = mk([H.ip(0, 0, certDer), H.pkiconf()], { intermediates: [pki.schema.x509.parse(H.caCert)] });   // an already-PARSED cert as an intermediate
+  var r114 = await s114.session.enroll(H.irRequest(CLIENT.spki));
+  check("114. a parsed-object caller intermediate is accepted (canonicalized via its tbsBytes, not re-parsed) -> issued", r114.outcome === "issued");
+
+  var s115 = mk([H.pkiconf()]);
+  check("115. a p10cr with an unparseable CSR -> the requested-key extraction fails closed, the build boundary rejects it", /^(cmp|crmf|csr)\//.test(await codeOf(s115.session.enroll({ p10cr: Buffer.from("not a csr at all") }))));
+
+  var s116 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var r116 = await s116.session.enroll({ ir: { certTemplate: { subject: [{ commonName: "leaf" }], publicKey: Uint8Array.from(CLIENT.spki) } } });
+  check("116. a certTemplate.publicKey supplied as a Uint8Array is normalized to a Buffer for the key match -> issued", r116.outcome === "issued");
+
+  var ED = signing.makeSigner("ed25519", { cn: "ed-client" });
+  var edLeaf117 = await H.makeCaSignedLeaf(pki, ED.spki, "ed-leaf");   // a CA-issued leaf carrying the Ed25519 key (no SPKI params)
+  var s117 = mk([H.ip(0, 0, edLeaf117), H.pkiconf()]);
+  var r117 = await s117.session.enroll(H.irRequest(ED.spki, null, ED.key));
+  check("117. an Ed25519 request key (no SPKI parameters) key-matches an issued cert carrying it -> issued", r117.outcome === "issued");
+
+  var s118 = mk([H.pkiconf()]);
+  check("118. a p10cr whose arm is NOT a CSR Buffer/Uint8Array -> the requested-key extraction returns null, the build boundary rejects it", /^(cmp|crmf|csr)\//.test(await codeOf(s118.session.enroll({ p10cr: { not: "a csr buffer" } }))));
+
+  var s119 = mk([H.ip(0, 0, certDer), H.pkiconf()]);   // the session best-effort normalizes an invalid string certReqId for matching, but the request itself fails closed at the crmf build boundary
+  check("119. an unparseable string certReqId is normalized to the default for matching, then fails closed at the build boundary", /^(cmp|crmf|csr)\//.test(await codeOf(s119.session.enroll(H.irRequest(CLIENT.spki, "not-a-number")))));
+
+  var s120 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-120" }, transport: H.fakeCa(pki, [H.ip(0, 0, await H.makePssExplicitUnknownHashCert(pki, CLIENT.spki)), H.pkiconf()], { macSecret: "s3cr3t-120" }).transport, sleep: function () { return Promise.resolve(); } });
+  check("120. an RSASSA-PSS cert with an EXPLICIT but unmapped hashAlgorithm (SHA-1) -> cmp/bad-cert-response (the resolver reads the OID and refuses)", await codeOf(s120.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
 
   console.log("CHECKS " + helpers.getChecks());
 }
