@@ -406,6 +406,14 @@ async function run() {
   var r62 = await s62.enroll(H.irRequest(CLIENT.spki));
   check("62. a leaf whose issuer is the CMP signer (only in extraCerts) validates via the cached signer in the pool -> issued", r62.outcome === "issued");
 
+  // ===== 63. a COMPOSITE-signature issued cert -> the certConf resolves a hash (SHA-256 + explicit hashAlg), not indeterminate =====
+  var compLeaf = await H.makeCompositeSigOidCert(pki, CLIENT.spki);
+  var s63f = H.fakeCa(pki, [H.ip(0, 0, compLeaf), H.pkiconf()], { macSecret: "s3cr3t-63" });   // a MAC session skips leaf path-validation, reaching the certConf-hash resolver
+  var s63 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-63" }, transport: s63f.transport, sleep: function () { return Promise.resolve(); } });
+  var r63 = await s63.enroll(H.irRequest(CLIENT.spki));
+  var cc63 = pki.schema.cmp.parse(s63f.transport.calls[1].body).body.decoded[0];
+  check("63. a composite signature algorithm -> certConf under SHA-256 with an explicit hashAlg (not cmp/bad-cert-response)", r63.outcome === "issued" && cc63.hashAlg != null);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
