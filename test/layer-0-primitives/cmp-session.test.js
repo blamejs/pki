@@ -808,6 +808,11 @@ async function run() {
   var s127 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s127f.transport, expectedSender: H.deepSignerCert, sleep: function () { return Promise.resolve(); } });
   check("127. a preborn-fallback first leg caches its authenticated issuer, so a later extraCerts-less leg reuses it -> issued (without caching the later leg retries with an empty chain and fails as cmp/untrusted-signer)", (await s127.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
+  // ===== 128. an issued leaf whose issuer is delivered NOWHERE (no caPubs, not in extraCerts) cannot chain:
+  //            path.build THROWS path/no-path, re-typed to cmp/bad-cert-response before confirmation (not leaked) =====
+  var intLeaf128 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // issued by intCaCert, which no leg delivers
+  check("128. an issued leaf whose issuer is delivered nowhere -> cmp/bad-cert-response (path.build's path/no-path is re-typed to the domain error, never leaked)", await codeOf(mk([H.ip(0, 0, intLeaf128), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
