@@ -376,6 +376,22 @@ async function run() {
   check("58. an issued cert whose signature does not verify -> cmp/bad-cert-response (path-validated before certConf, not just parsed)",
     await codeOf(mk([H.ip(0, 0, badSigLeaf), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
 
+  // ===== 59. a SINGLETON (non-array) trustAnchors -- a form the constructor accepts -- is normalized for leaf validation =====
+  var s59f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()]);
+  var s59 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: H.caCert, transport: s59f.transport, sleep: function () { return Promise.resolve(); } });
+  var r59 = await s59.enroll(H.irRequest(CLIENT.spki));
+  check("59. a single-certificate trustAnchors (not an array) is normalized before leaf validation -> issued", r59.outcome === "issued");
+
+  // ===== 60. the certConf PSS hash dispatches by the IMMUTABLE param OID -- a pki.oid.register rename cannot break it =====
+  var pss60 = await H.makePssCert(pki, CLIENT.spki);   // built before the rename
+  var sha384Oid = pki.oid.byName("sha384");
+  pki.oid.register(sha384Oid, "renamed-sha384");
+  try {
+    var s60 = mk([H.ip(0, 0, pss60.cert), H.pkiconf()], { trustAnchors: [H.caCert, pss60.ca] });
+    var r60 = await s60.session.enroll(H.irRequest(CLIENT.spki));
+    check("60. a PSS certConf hash resolves by the param OID even when 'sha384' is renamed via pki.oid.register -> issued", r60.outcome === "issued");
+  } finally { pki.oid.register(sha384Oid, "sha384"); }
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
