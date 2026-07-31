@@ -712,9 +712,12 @@ async function run() {
   var r109 = await s109.enroll(H.irRequest(CLIENT.spki));
   check("109. implicitConfirm requested but the grant's generalInfo carries a DIFFERENT entry -> _implicitConfirmGranted false -> an explicit certConf runs -> issued (confirmed, not implicit)", r109.outcome === "issued" && r109.confirmed === true && r109.implicitConfirm === false);
 
-  // ===== 110. a MAC session with an EMPTY trustAnchors array reaches issued-cert validation with no anchor -> path.build path/bad-input -> cmp/bad-input =====
+  // ===== 110. a MAC session with an EMPTY trustAnchors array treats it as ABSENT (anchors are optional for a MAC
+  //            session -- used only for issued-cert validation): the leaf-chain check is skipped, exactly as with
+  //            omitted anchors -> issued. An empty store reaching _engine.build would reject the leaf only in _finish,
+  //            AFTER the authenticated grant consumed the one-shot session. =====
   var s110 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-110" }, trustAnchors: [], transport: H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { macSecret: "s3cr3t-110" }).transport, sleep: function () { return Promise.resolve(); } });
-  check("110. a MAC session with an empty trustAnchors array -> issued-cert validation with no usable anchor -> cmp/bad-input (fail-closed, mapped from path/bad-input)", await codeOf(s110.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-input");
+  check("110. a MAC session with an empty trustAnchors array treats it as absent (leaf validation skipped, as with omitted anchors) -> issued (the empty trust store would otherwise reject the leaf in _finish, after the grant consumed the one-shot session)", (await s110.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))).outcome === "issued");
 
   // ===== 111-117: branch-coverage edges (recipKID, implicitConfirm-no-generalInfo, duplicate-caPubs dedup, parsed/Uint8Array/Ed25519 request forms) =====
   var kid111 = Buffer.from([0x11, 0x22]);
@@ -875,6 +878,29 @@ async function run() {
   var c135a = await codeOf(s135.enroll(H.irRequest(CLIENT.spki)));   // first attempt: local URL error
   var c135b = await codeOf(s135.enroll(H.irRequest(CLIENT.spki)));   // retry: still the config error, NOT a consumed-session error
   check("135. a local config error (bad url) fails before the transport and does NOT consume the session -> the retry sees the same config error, not a consumed-session error", c135a === "cmp/bad-url" && c135b === "cmp/bad-url");
+
+  // ===== 136. a same-identity signer ROTATION whose issuer was delivered on an EARLIER leg: the rotated signer's
+  //            bare extraCerts resolve it, and the CACHED chain (folded into the PRIMARY signer pool) supplies its
+  //            intermediate -> issued. Without the cached chain in the primary, the rotation is rejected: the
+  //            fallback forces the earlier signer's key and cannot verify the rotated signature. =====
+  var s136f = H.fakeCa(pki, [H.ip(0, 3), { body: H.ip(0, 0, certDer), rotateDeepSigner: true }, H.pkiconf()], { deepSigner: true });   // waiting leg caches [deepSigner, intermediate]; the grant rotates to a same-subject deep signer carrying ONLY itself
+  var s136 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s136f.transport, sleep: function () { return Promise.resolve(); } });
+  check("136. a same-identity signer rotation whose issuer was delivered on an earlier leg -> issued (the cached chain in the PRIMARY signer pool supplies the rotated signer's intermediate; without it the fallback forces the earlier key and fails as cmp/protection-failed)", (await s136.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
+  // ===== 137. a non-function opts.transport -> cmp/bad-input at CONSTRUCTION -- it would otherwise pass cmp.transfer's
+  //            local url/budget checks and throw a raw TypeError when invoked, a local error the send path would mark
+  //            as consuming the one-shot session. =====
+  check("137. a non-function opts.transport -> cmp/bad-input at construction (a config typo cannot pass the local transfer checks and then throw a session-consuming TypeError when the transport is invoked)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: 123 }); })) === "cmp/bad-input");
+
+  // ===== 138. a POST-ENGAGE transfer error DOES consume the one-shot session: a 200 response with a non-CMP
+  //            content-type (cmp.transfer's cmp/bad-content-type, thrown AFTER the transport returned) means a
+  //            request reached the transport, so the retry is refused as already-completed -- the complement of
+  //            135's LOCAL config error, which leaves the session retryable. =====
+  var s138f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), contentType: "text/plain" }, H.pkiconf()]);
+  var s138 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s138f.transport, sleep: function () { return Promise.resolve(); } });
+  var c138a = await codeOf(s138.enroll(H.irRequest(CLIENT.spki)));   // a request reached the transport, THEN the content-type check failed
+  var c138b = await codeOf(s138.enroll(H.irRequest(CLIENT.spki)));   // the retry is refused -- the one-shot session was consumed
+  check("138. a post-engage transfer error (bad content-type, after the transport returned) consumes the one-shot session -> the retry is refused as already-completed (unlike 135's local error, which leaves it retryable)", c138a === "cmp/bad-content-type" && c138b === "cmp/bad-input");
 
   console.log("CHECKS " + helpers.getChecks());
 }

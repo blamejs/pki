@@ -23,7 +23,7 @@ var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = 
 var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
 var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
 var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null, _deepSignerSki = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
-var _deepSigner2Cert = null;   // a same-subject decoy for the deep signer (a meddler's parseable extraCerts[0])
+var _deepSigner2Cert = null, _deepSigner2Key = null;   // a same-subject SECOND deep signer (its own key, also under the intermediate): a meddler's parseable extraCerts[0] decoy AND a legitimate rotation target (leg.rotateDeepSigner signs with its key)
 var _untrustedSignerDecoy = null;   // the signer's key + subject under an UNTRUSTED root (verifies but is not trusted)
 var _wrongSubjectSignerDecoy = null;   // the signer's key under a WRONG subject (verifies but the sender does not bind)
 var _sanSignerAKey = null, _sanSignerACert = null, _sanSignerBKey = null, _sanSignerBCert = null;   // two EMPTY-subject signers with distinct SANs
@@ -60,7 +60,8 @@ async function init(pki, subjectSpki) {
   _deepSignerDN = pki.schema.x509.parse(_deepSignerCert).subject.bytes;
   var _dsSkiExt = (pki.schema.x509.parse(_deepSignerCert).extensions || []).filter(function (e) { return e.oid === "2.5.29.14"; })[0];   // subjectKeyIdentifier -- so a response senderKID can select the deep signer by SKI, not by position
   _deepSignerSki = _dsSkiExt ? pki.asn1.decode(_dsSkiExt.value).content : null;
-  var ds2Kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // a same-subject DECOY for the deep signer (different key, also under the intermediate)
+  var ds2Kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // a same-subject SECOND deep signer (different key, also under the intermediate): a DECOY when swapped in, a legitimate rotation target when signed with
+  _deepSigner2Key = ds2Kp.privateKey.export({ format: "der", type: "pkcs8" });
   _deepSigner2Cert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: ds2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 12, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   // A DECOY for the response signer: the SAME public key + subject as _signerCert (so the protection signature
   // verifies under it -> valid:true) but issued by an UNTRUSTED throwaway root (so it fails path validation ->
@@ -224,10 +225,12 @@ function fakeCa(pki, legs, cfg) {
     // cfg.issuerSigner signs with the combined CA that both protects the message AND issued the leaf.
     var defaultKey = cfg.deepSigner ? _deepSignerKey : (cfg.issuerSigner ? _issuerSignerKey : _signerKeyPk8);
     var defaultCert = cfg.deepSigner ? _deepSignerCert : (cfg.issuerSigner ? _issuerSignerCert : _signerCertDer);
-    var sigKey = leg.emptySanSigner === "b" ? _sanSignerBKey : (leg.emptySanSigner ? _sanSignerAKey : (leg.foreignSigner ? _issuerSignerKey : (leg.rotateSigner ? _signer2KeyPk8 : defaultKey)));
-    var sigCert = leg.emptySanSigner === "b" ? _sanSignerBCert : (leg.emptySanSigner ? _sanSignerACert : (leg.foreignSigner ? _issuerSignerCert : (leg.rotateSigner ? _signer2CertDer : defaultCert)));
+    var sigKey = leg.emptySanSigner === "b" ? _sanSignerBKey : (leg.emptySanSigner ? _sanSignerAKey : (leg.foreignSigner ? _issuerSignerKey : (leg.rotateDeepSigner ? _deepSigner2Key : (leg.rotateSigner ? _signer2KeyPk8 : defaultKey))));
+    var sigCert = leg.emptySanSigner === "b" ? _sanSignerBCert : (leg.emptySanSigner ? _sanSignerACert : (leg.foreignSigner ? _issuerSignerCert : (leg.rotateDeepSigner ? _deepSigner2Cert : (leg.rotateSigner ? _signer2CertDer : defaultCert))));
     var sigProt = { key: sigKey, cert: sigCert };
-    if (cfg.deepSigner && !leg.rotateSigner && !cfg.deepSignerBareExtra) sigProt.extraCerts = cfg.deepSignerDupExtra ? [cfg.deepSignerDupExtra] : [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate] -- OR a caller-duplicate cert (deepSignerDupExtra), the intermediate then coming from the caller pool
+    // A rotateDeepSigner leg carries ONLY the rotated signer (extraCerts = [B]); its issuer (the intermediate) was
+    // delivered on an EARLIER leg, so it must be resolved from the cached chain -- never re-attached here.
+    if (cfg.deepSigner && !leg.rotateSigner && !leg.rotateDeepSigner && !cfg.deepSignerBareExtra) sigProt.extraCerts = cfg.deepSignerDupExtra ? [cfg.deepSignerDupExtra] : [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate] -- OR a caller-duplicate cert (deepSignerDupExtra), the intermediate then coming from the caller pool
     // deepSignerBareExtra: the response carries ONLY its signer (no intermediate) -- the signer's issuer must come
     // from the CALLER intermediates pool, so the signer-path reserve must NOT forfeit that caller slot.
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : sigProt;
