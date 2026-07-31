@@ -276,6 +276,14 @@ async function run() {
   for (var pk = 0; pk < constants.LIMITS.PATH_BUILD_MAX_CANDIDATES - 1; pk++) dupPool.push(junkParsed);
   var dupMsg = rebuild([lk[0].bytes, lk[1].bytes, lk[2].bytes, asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(leafCert), asn1.build.raw(junkFill), asn1.build.raw(intCert)]))]);
   check("9l2b. an extraCert duplicating a PARSED-object intermediate is deduped -> the last slot holds the issuer", (await pki.cmp.verify(dupMsg, { signerCert: leafCert, trustAnchors: [caCert], intermediates: dupPool, time: T })).trusted === true);
+  // The trusted verdict surfaces the VALIDATED chain as independent DER-buffer copies (never slices pinning the
+  // response): an intermediate delivered in extraCerts (DER) appears in signer.chain; one supplied ONLY as a parsed
+  // pool object (no retained DER to copy) is omitted, though the signer path still validates through it.
+  var chainDerV = await pki.cmp.verify(tightMsg, { signerCert: leafCert, trustAnchors: [caCert], intermediates: [], time: T });
+  check("9l2c. verdict.signer.chain surfaces the validated path as DER-buffer copies (signer + the extraCerts intermediate)", chainDerV.trusted === true && Array.isArray(chainDerV.signer.chain) && chainDerV.signer.chain.length === 2 && chainDerV.signer.chain.every(function (c) { return Buffer.isBuffer(c); }));
+  var bareLeafMsg = rebuild([lk[0].bytes, lk[1].bytes, lk[2].bytes, asn1.build.explicit(1, asn1.build.sequence([asn1.build.raw(leafCert)]))]);   // extraCerts = [leaf] only; the issuer comes from a PARSED pool object
+  var parsedIntV = await pki.cmp.verify(bareLeafMsg, { signerCert: leafCert, trustAnchors: [caCert], intermediates: [pki.schema.x509.parse(intCert)], time: T });
+  check("9l2d. a validated-path intermediate supplied only as a parsed pool object (no DER to copy) is omitted from verdict.signer.chain -> the signer alone, still trusted", parsedIntV.trusted === true && Array.isArray(parsedIntV.signer.chain) && parsedIntV.signer.chain.length === 1 && Buffer.isBuffer(parsedIntV.signer.chain[0]) && parsedIntV.signer.chain[0].equals(leafCert));
   // A raw Buffer input is snapshotted: parse copies the input, so mutating the caller's buffer AFTER verify
   // cannot change the returned authenticated fields -- they bind to the verified snapshot, not the live buffer.
   var rawBuf = Buffer.from(await buildSig());

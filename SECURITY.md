@@ -416,6 +416,28 @@ security-only patches after the next major releases.
   response body is bounded while it streams
   (aborted the instant it crosses the cap, before it reaches a decoder), a stalled
   socket times out, and a 202 Retry-After is surfaced to the caller, never slept on.
+- **CMP enrollment verify-before-read (CWE-345 / CWE-294 / CWE-770).** The
+  `pki.cmp.session` enrollment orchestrator confers protection trust the transfer
+  layer does not: a response is protection-verified (a signature chained to the
+  supplied anchors, or a PBMAC1 MAC under the shared secret) AND bound to this
+  exchange before any field of its body is read. Cryptographic validity alone is
+  not accepted — the signer must be TRUSTED (chain to a supplied trust anchor with
+  the RFC 9483 keyUsage gate, or the shared secret must match); a valid-but-untrusted
+  response, whose signer an attacker on the transport can supply via the message's
+  own unsigned extraCerts, is a hard stop, and the signature flavor therefore
+  requires a trust anchor at construction rather than silently trusting an unpinned
+  signer. A meddler who flips the HTTP response cannot forge a granted status or a
+  poisoned poll delay, because the session throws on a failed or untrusted verify
+  rather than reading a certificate off it.
+  Each request carries a fresh `senderNonce` and echoes the peer's last
+  `senderNonce` as `recipNonce` under one stable `transactionID`, so a response
+  cannot be replayed or interleaved from another exchange (RFC 9810 §5.1.1). A
+  `waiting` status is polled under a loop bounded by BOTH a poll count and a
+  total-wait budget with an injectable sleeper, so a CA cannot hold the client
+  open indefinitely. A verified rejection or error, or an exhausted poll budget,
+  is a terminal typed verdict (`outcome: rejected` / `poll-timeout`); a tampered,
+  unverifiable, or nonce-desynchronized response is a hard-stop `CmpError`, never a
+  value the caller can misread as an issued certificate.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms

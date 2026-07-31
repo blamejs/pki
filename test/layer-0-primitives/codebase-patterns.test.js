@@ -1816,9 +1816,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/crl-sign.js:_sign", "lib/crl-sign.js:_idpValue", "lib/crl-sign.js:_buildCrlExtensions", "lib/crl-sign.js:_buildRevoked", "lib/crl-sign.js:_assertIssuerCanSignCrl",
         "lib/ct.js:fetchLogList",
         "lib/cmp-verify.js:_verify",
+        "lib/cmp-session.js:session",
       ],
       mode: "family-subset",
-      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the ct fetch verb shares the same validate-opts + async-orchestrate shingle (it composes rather than encodes, but the glue tokens coincide), and cmp-verify's _verify shares the opts-key-whitelist + Promise.resolve().then async-boundary + ProtectedPart b.sequence glue (the verify-side orchestrator). The structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
+      reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the ct fetch verb shares the same validate-opts + async-orchestrate shingle (it composes rather than encodes, but the glue tokens coincide), cmp-verify's _verify shares the opts-key-whitelist + Promise.resolve().then async-boundary + ProtectedPart b.sequence glue (the verify-side orchestrator), and cmp-session's `session` constructor shares the same opts-key-whitelist + guard.limits.cap budget glue (the transaction-orchestrator constructor). The structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
     },
     {
       // The thin network-client entry + response body: pki.acme / pki.est / pki.cmp / pki.ct each validate
@@ -1912,6 +1913,16 @@ function testNoDuplicateCodeBlocks() {
       // extractable without threading a per-domain error factory + bounds through a callback.
       files: ["lib/cmp-verify.js:_capWork", "lib/pbes2.js:parsePbkdf2Params", "lib/pkcs12-build.js:_capWork"],
       reason: "PBKDF2/PBMAC1 work-factor bounding (cap iterationCount/salt/keyLength before deriving) + the PBKDF2-params read shingle, shared across pbes2 / pkcs12 MacData / CMP protection; each throws its own domain code with its own ceilings -- domain-parameterized, the PBMAC1-params reader is already shared as pkix.pbmac1Params, nothing further cleanly extractable.",
+    },
+    {
+      // The transport/verify orchestrator header run: cmp-session / cms-verify / est each open with a run of
+      // `var X = require("./Y");` binding the shared core (oid, guard-all, constants, webcrypto, framework-error,
+      // schema-cms/cmp, http-retry-after) that their orchestration composes. The requires + the modules they bind
+      // live once each; the header run repeats in SHAPE (the same var-require idiom) while binding a different
+      // module set per domain, so it is not further extractable. family-subset so any 3+ match.
+      files: ["lib/cmp-session.js:<top>", "lib/cms-verify.js:<top>", "lib/est.js:<top>"],
+      mode: "family-subset",
+      reason: "transport/verify-orchestrator header run: a `var X = require(\"./Y\")` block binding the shared core (oid/guard/constants/webcrypto/framework-error/schema-cms|cmp/http-retry-after); the requires and the bound modules live once each, the run repeats in shape while binding a different module set per domain -- not further extractable. family-subset so any 3+ match.",
     },
   ];
 

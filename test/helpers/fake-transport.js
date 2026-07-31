@@ -20,7 +20,11 @@ function fakeTransport(script) {
     var r = typeof script === "function" ? script(request, i)
           : (Array.isArray(script) ? script[i] : script);
     if (!r) return Promise.reject(new Error("fakeTransport: no scripted response for call " + i));
-    return Promise.resolve({ status: r.status, headers: r.headers || {}, body: r.body == null ? "" : r.body });
+    // A script function may return the response object directly OR a Promise of it (a stateful async CA that
+    // builds a signed response per request) -- resolve the thenable before reading its fields.
+    return Promise.resolve(r).then(function (rr) {
+      return { status: rr.status, headers: rr.headers || {}, body: rr.body == null ? "" : rr.body };
+    });
   }
   transport.calls = calls;
   return transport;

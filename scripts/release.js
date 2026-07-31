@@ -779,16 +779,43 @@ function _waitForCodexReview(prNum) {
 
 function _unresolvedThreads(prNum) {
   var slug = _repoSlug();
-  var rv = _capture("gh", ["api", "graphql",
-    "-f", "query=query { repository(owner:\"" + slug.owner + "\",name:\"" + slug.name +
-      "\") { pullRequest(number:" + prNum +
-      ") { reviewThreads(first:100) { nodes { id isResolved path line " +
-      "comments(first:1) { nodes { author{login} body } } } } } } }",
-    "--jq", ".data.repository.pullRequest.reviewThreads.nodes"]);
-  // Fail closed: [] is this gate's PASS value, so a failed lookup must throw
-  // rather than report the thread list as empty.
-  var nodes = _ghJson(rv, "PR #" + prNum + " review-thread list");
-  return (nodes || []).filter(function (t) { return t && t.isResolved === false; })
+  // PAGINATE every review thread. GitHub caps a GraphQL connection's `first` at 100,
+  // so a single first:100 page silently drops thread 101+ -- and a long-lived release
+  // PR accrues far more than 100 threads over a deep review loop, so the gate reported
+  // "no unresolved threads" while later-page findings still blocked the merge. Walk the
+  // cursor to completion; a bounded page cap backstops a runaway rather than truncating
+  // real work (the loop stops at hasNextPage=false well before it).
+  var nodes = [];
+  var after = null;
+  for (var page = 0; page < 100; page += 1) {
+    var afterClause = after ? (", after: \"" + after + "\"") : "";
+    var rv = _capture("gh", ["api", "graphql",
+      "-f", "query=query { repository(owner:\"" + slug.owner + "\",name:\"" + slug.name +
+        "\") { pullRequest(number:" + prNum +
+        ") { reviewThreads(first:100" + afterClause + ") { pageInfo { hasNextPage endCursor } nodes { " +
+        "id isResolved path line comments(first:1) { nodes { author{login} body } } } } } } }"]);
+    // Fail closed: [] is this gate's PASS value, so a failed lookup must throw rather
+    // than report the thread list as empty (an unreadable state is not an empty one --
+    // a transient gh failure must never merge past a live finding).
+    var data = _ghJson(rv, "PR #" + prNum + " review-thread page " + page);
+    var conn = data && data.data && data.data.repository && data.data.repository.pullRequest &&
+               data.data.repository.pullRequest.reviewThreads;
+    if (!conn || !conn.pageInfo) {
+      throw new Error("release: PR #" + prNum + " review-thread page " + page +
+                      " had no reviewThreads connection -- an unreadable result is not an empty one.");
+    }
+    nodes = nodes.concat(conn.nodes || []);
+    if (!conn.pageInfo.hasNextPage) { after = null; break; }
+    after = conn.pageInfo.endCursor;
+  }
+  // Fail closed: if the page cap was hit while more pages remained (hasNextPage still true, so `after` is still set),
+  // the thread list is TRUNCATED. Returning it would let the gate see [] / a partial set and merge past unresolved
+  // findings on later pages. A PR with 10,000+ threads is a runaway, not a mergeable state -- throw, never truncate.
+  if (after !== null) {
+    throw new Error("release: PR #" + prNum + " has more review threads than the " +
+      "pagination cap can read -- refusing to treat a truncated thread list as authoritative (resolve threads or split the PR).");
+  }
+  return nodes.filter(function (t) { return t && t.isResolved === false; })
     .map(function (t) {
       var c = t.comments && t.comments.nodes && t.comments.nodes[0];
       return {

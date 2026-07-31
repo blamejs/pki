@@ -41,6 +41,12 @@
     "reviewedAt": "0.3.0",
     "reviewBy": "0.4.0"
   },
+  "pki.ct.fetchLogList": {
+    "decision": "keep-experimental",
+    "reason": "The live-fetch client for the CT log list rides the still-experimental shared pki.transport and the log-list trust surface (pki.ct.parseLogList / verifyLogListSignature) that is still absorbing refinements. Graduate alongside pki.ct.parseLogList and pki.transport.https once the network-client transport contract is settled.",
+    "reviewedAt": "0.3.27",
+    "reviewBy": "0.4.0"
+  },
   "pki.schema.c509.parse": {
     "decision": "keep-experimental",
     "reason": "C509 (draft-ietf-cose-cbor-encoded-cert) is a moving Internet-Draft, not a published standard; the parser covers both certificate modes with byte-exact type-3 DER reconstruction and is proven against derived known-answer vectors, but the wire format can still change before the draft is finalized. Graduate once the C509 draft is published as an RFC.",
