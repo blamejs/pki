@@ -841,6 +841,14 @@ async function run() {
   var s131 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s131f.transport, sleep: function () { return Promise.resolve(); } });   // 1000 junk caller certs at the ceiling
   check("131. a response whose signer is not the first extraCert + a ceiling-filling caller pool -> the delivered issuer survives -> issued (treating extraCerts[0] as the signer would drop the real issuer to cmp/untrusted-signer)", (await s131.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
+  // ===== 132. leaf validation retries CALLER-first when the caPubs-first pool cannot build a path: a
+  //            ceiling-filling caller pool with the required issuer LAST + an unrelated caPubs entry -> issued =====
+  var intLeaf132 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // chains via intCaCert (in the caller pool, LAST)
+  var caller132 = DISTINCT.slice(0, 999).concat([H.intCaCert]);   // 1000 caller certs at the ceiling, intCaCert last
+  var s132f = H.fakeCa(pki, [H.ip(0, 0, intLeaf132, { caPubs: [DISTINCT[999]] }), H.pkiconf()]);   // an UNRELATED grant caPubs entry (not the leaf's issuer, not in the caller pool)
+  var s132 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: caller132, transport: s132f.transport, sleep: function () { return Promise.resolve(); } });
+  check("132. a ceiling-filling caller pool with the required issuer last + an unrelated caPubs entry -> leaf validation retries caller-first -> issued (a caPubs-first-only pool truncates the required issuer to cmp/bad-cert-response)", (await s132.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
