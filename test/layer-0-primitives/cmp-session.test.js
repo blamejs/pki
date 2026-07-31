@@ -802,6 +802,12 @@ async function run() {
   var s126 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs126).transport, maxResponseBytes: 8192, sleep: function () { return Promise.resolve(); } });
   check("126. a waiting-caPubs flood filling the byte budget does NOT drop the grant's own required issuer (reserved capacity) -> issued (without the grant reserve the delivered issuer is starved to cmp/untrusted-signer)", (await s126.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
+  // ===== 127. a PREBORN-fallback first leg authenticates its OWN extraCerts (via opts.expectedSender), so the
+  //            issuer is cached and a later extraCerts-less leg reuses it (a cached-signer fallback would not) =====
+  var s127f = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), stripSignerExtra: true }, { body: H.pkiconf(), noExtraCerts: true }], { deepSigner: true });   // grant: signer via expectedSender, issuer in extraCerts; pkiConf: no extraCerts
+  var s127 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s127f.transport, expectedSender: H.deepSignerCert, sleep: function () { return Promise.resolve(); } });
+  check("127. a preborn-fallback first leg caches its authenticated issuer, so a later extraCerts-less leg reuses it -> issued (without caching the later leg retries with an empty chain and fails as cmp/untrusted-signer)", (await s127.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
