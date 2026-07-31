@@ -506,6 +506,13 @@ async function run() {
   // ===== 77. acceptCert + implicitConfirm together -> cmp/bad-input at construction (a veto has no reject leg) =====
   check("77. opts.acceptCert combined with opts.implicitConfirm -> cmp/bad-input at construction (implicit confirmation leaves no certConf to reject on)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], implicitConfirm: true, acceptCert: function () { return true; } }); })) === "cmp/bad-input");
 
+  // ===== 78. an authenticated caPubs is bounded against the ceiling too (a valid caller pool + a delivered caPubs must not fail) =====
+  var filler78 = [];
+  for (var f78 = 0; f78 < 1000; f78++) filler78.push(certDer);   // caller pool AT the ceiling; an unbounded caPubs append would push it over
+  var s78 = mk([H.ip(0, 0, certDer, { caPubs: [H.caCert] }), H.pkiconf()], { intermediates: filler78 });
+  var r78 = await s78.session.enroll(H.irRequest(CLIENT.spki));
+  check("78. a caller intermediates pool near the ceiling + an authenticated caPubs -> caPubs bounded to the remaining room, the valid grant still issues", r78.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
