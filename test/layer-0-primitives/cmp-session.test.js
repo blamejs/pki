@@ -826,6 +826,14 @@ async function run() {
   var s129 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs129).transport, maxResponseBytes: 8192, sleep: function () { return Promise.resolve(); } });
   check("129. a grant re-delivering an issuer a waiting leg supplied (which eviction removed) re-adds it -> issued (a stale dedup set would drop the re-delivered issuer to cmp/bad-cert-response)", (await s129.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
+  // ===== 130. a response whose extraCerts DUPLICATES a caller intermediate spends no extra pool slot on the
+  //            duplicate, so the signer's real issuer (last in a ceiling-filling caller pool) survives -> issued =====
+  var dupCert130 = DISTINCT[500];   // a caller cert the response ALSO delivers in its extraCerts
+  var s130f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { deepSigner: true, deepSignerDupExtra: dupCert130 });   // response extraCerts = [deepSigner, dupCert130]; the needed intCaCert comes from the caller pool
+  var callerPool130 = DISTINCT.slice(0, 999).concat([H.intCaCert]);   // 999 junk (INCLUDING dupCert130) + the needed issuer LAST, exactly at the ceiling
+  var s130 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: callerPool130, transport: s130f.transport, sleep: function () { return Promise.resolve(); } });
+  check("130. a response extraCert duplicating a caller intermediate spends no reserved slot, so the signer's real issuer (the 1000th caller cert) survives -> issued (counting the duplicate truncates it to cmp/untrusted-signer)", (await s130.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
