@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.26",
+  "packageVersion": "0.3.27",
   "surface": {
     "C": {
       "kind": "object",
@@ -1163,6 +1163,10 @@
         "build": {
           "kind": "function",
           "arity": 2
+        },
+        "session": {
+          "kind": "function",
+          "arity": 1
         },
         "transfer": {
           "kind": "function",
@@ -3186,6 +3190,7 @@
     "pki.cmp.build": "0.3.5",
     "pki.cmp.transfer": "0.3.19",
     "pki.cmp.wellKnownUrl": "0.3.19",
+    "pki.cmp.session": "0.3.27",
     "pki.cmp.verify": "0.3.26",
     "pki.cms.verify": "0.2.14",
     "pki.cms.sign": "0.2.15",

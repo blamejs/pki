@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.27 — 2026-07-31
+
+pki.cmp.session drives a full CMP certificate enrollment end to end -- build, transfer, and verify every leg of an ir/cr/kur/p10cr exchange, with every response protection-checked before its body is read.
+
+### Added
+
+- pki.cmp.session(opts) returns a stateful CMP enrollment session; session.enroll(request) drives an RFC 9810 ir / cr / kur / p10cr exchange to completion and returns a terminal verdict { outcome, certificate, chain, status, trusted, confirmed, implicitConfirm, transactionID, polls, transcript }. Every response is protection-verified (pki.cmp.verify) and bound to the transaction by transactionID and a fresh-senderNonce / echoed-recipNonce chain before its body is read, and is advanced only if its signer is trusted (chains to a supplied anchor, or the shared secret matches); a waiting status is polled under a bounded pollReq/pollRep loop; a grant is confirmed by a certConf/pkiConf handshake unless implicit confirmation was granted. opts.key + opts.cert select signature protection (with opts.trustAnchors REQUIRED to authenticate the CA's response signer, opts.intermediates an extra chain pool) or opts.mac selects PBMAC1; opts.transport / opts.tls / opts.timeout / opts.maxResponseBytes configure transfer; opts.maxPolls / opts.maxTotalWait / opts.sleep bound the poll loop; opts.sender / opts.recipient / opts.implicitConfirm / opts.extraCerts tune the request. A verified rejection or error, or an exhausted poll budget, is a terminal outcome; a tampered, unverifiable, untrusted, or nonce-mismatched response is a typed CmpError throw. RFC 9810 sec. 5.1.1 / 5.2.3 / 5.3.4 / 5.3.18 / 5.3.22, RFC 9811, RFC 9483.
+
 ## v0.3.26 — 2026-07-30
 
 pki.cmp.verify checks the protection on an incoming CMP PKIMessage -- verify a signature or PBMAC1 MAC over the exact protected bytes, and optionally chain the signer certificate to a trust anchor.

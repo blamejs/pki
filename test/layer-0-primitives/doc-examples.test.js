@@ -227,6 +227,9 @@ function fixturesFor(tag) {
     logListJsonBytes: ctLogListJson, logList: ctLogList, sctEntry: ctEntry, embeddedSct: ctSct,
     // pki.ct.verifyLogListSignature: a detached RSA-PKCS1-SHA256 signature over the log-list bytes + its signer SPKI.
     logListSig: ctLogListSig, googleSignerSpki: ctSignerSpki,
+    // pki.cmp.session: a stateful fake CMP CA (its self-signed anchor + a signer chained to it) scripted to
+    // grant then confirm, so the session @example runs a real ir -> granted -> certConf -> pkiConf to issuance.
+    cmpTransport: cmpTransport, cmpCaCert: cmpCaCert,
   };
 }
 var cmsRecipient = null, cmsEnvDer = null, smimeMessageBytes = null;
@@ -243,6 +246,10 @@ var JOSE_EC_JWK = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8
 // helper the client vectors drive), so the client @example runs the real directory -> account ->
 // order flow end to end rather than failing closed at construction. Built at run() start (async).
 var acmeAccountKey = null, acmeTransport = null;
+// pki.cmp.session fixtures: a fake CMP CA (anchor + chained signer) scripted to grant + confirm, and its
+// anchor cert. Built at run() start (async: the CA chain is x509-signed). The @example's signer key/cert/spki
+// reuse signFixtureSigner (a real EC signer), matching the CRMF proof-of-possession key to the protection key.
+var cmpTransport = null, cmpCaCert = null;
 
 // Concatenated source of every test/**/*.test.js EXCEPT this harness, so a
 // primitive path mentioned only here can never satisfy its own TESTED gate.
@@ -289,6 +296,11 @@ async function run() {
   var acmeHelper = require("../helpers/acme-transport");
   acmeAccountKey = (await acmeHelper.makeAccount()).key;
   acmeTransport = acmeHelper.acmeServer({}).transport;
+
+  var cmpHelper = require("../helpers/cmp-session-transport");
+  await cmpHelper.init(pki);
+  cmpCaCert = cmpHelper.caCert;
+  cmpTransport = cmpHelper.fakeCa(pki, [cmpHelper.ip(0, 0, cmpHelper.caCert), cmpHelper.pkiconf()]).transport;
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 
