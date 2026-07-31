@@ -667,6 +667,9 @@ async function run() {
   var s102k = H.fakeCa(pki, [{ body: H.ip(0, 0, certDer), stripSignerExtra: true }, H.pkiconf()], { deepSigner: true });   // extraCerts = [intCaCert] only; the deep signer resolves via expectedSender
   var sess102k = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT, transport: s102k.transport, expectedSender: H.deepSignerCert, sleep: function () { return Promise.resolve(); } });   // 1000 caller certs AT the ceiling
   check("102k. an extraCerts-carries-only-the-issuer response (signer via expectedSender) + a ceiling-filling caller pool -> the override reserves ALL issuer slots -> issued (reserving one fewer truncates the delivered issuer to cmp/untrusted-signer)", (await sess102k.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  // An EMPTY-subject signature-protection cert cannot name the requester -> opts.sender is required at construction.
+  check("102l. an empty-subject signature-protection cert without opts.sender -> cmp/bad-input at construction (the empty subject cannot name the sender)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: H.sanSignerAKey, cert: H.sanSignerACert, trustAnchors: [H.caCert] }); })) === "cmp/bad-input");
+  check("102m. the same empty-subject cert WITH an explicit opts.sender -> constructs (the SAN identity names the requester)", typeof pki.cmp.session({ url: URL, key: H.sanSignerAKey, cert: H.sanSignerACert, trustAnchors: [H.caCert], sender: { directoryName: [{ commonName: "san-ca-a" }] } }).enroll === "function");
 
   // ===== 103. opts.senderKID is propagated to every request header (PBMAC1 credential selection) =====
   var kid103 = Buffer.from([0x0a, 0x0b, 0x0c, 0x0d]);
@@ -785,6 +788,19 @@ async function run() {
   var legs125 = [{ body: H.ip(0, 3, null, { caPubs: [H.intCaCert] }) }, H.pollRep(0, 1), { body: H.ip(0, 0, intLeaf125, { caPubs: [H.intCaCert] }) }, H.pkiconf()];
   var s125 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs125).transport, sleep: function () { return Promise.resolve(); } });
   check("125. the same authenticated caPubs delivered across a waiting leg and the grant is deduped (bounded accumulation) yet still chains the leaf -> issued", (await s125.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
+  // ===== 126. caPubs is bounded by a BYTE budget with capacity RESERVED for the grant: a flood of waiting caPubs
+  //            cannot starve the grant's own required issuer (byte budget + grant reserve) =====
+  var intLeaf126 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // chains via intCaCert, delivered ONLY in the grant's caPubs
+  var legs126 = [
+    { body: H.ip(0, 3, null, { caPubs: DISTINCT.slice(0, 22) }) },   // waiting-leg caPubs floods (junk certs) filling the byte budget
+    { body: H.ip(0, 3, null, { caPubs: DISTINCT.slice(22, 44) }) },
+    { body: H.ip(0, 3, null, { caPubs: DISTINCT.slice(44, 66) }) },
+    { body: H.ip(0, 3, null, { caPubs: DISTINCT.slice(66, 88) }) },
+    { body: H.ip(0, 0, intLeaf126, { caPubs: [H.intCaCert] }) }, H.pkiconf(),   // the GRANT delivers the leaf's own required issuer
+  ];
+  var s126 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs126).transport, maxResponseBytes: 8192, sleep: function () { return Promise.resolve(); } });
+  check("126. a waiting-caPubs flood filling the byte budget does NOT drop the grant's own required issuer (reserved capacity) -> issued (without the grant reserve the delivered issuer is starved to cmp/untrusted-signer)", (await s126.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
 
   console.log("CHECKS " + helpers.getChecks());
 }

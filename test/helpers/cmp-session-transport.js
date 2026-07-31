@@ -85,6 +85,7 @@ async function init(pki, subjectSpki) {
   module.exports.signerCert = _signerCertDer;   // the CA's response-signer cert (subject cmp-ca.example) -- pin it via opts.expectedSender
   module.exports.deepSignerCert = _deepSignerCert;   // a signer that chains via intCaCert (needs an appended issuer to reach the anchor)
   module.exports.sanSignerACert = _sanSignerACert;   // an EMPTY-subject signer named only by a directoryName SAN (san-ca-a)
+  module.exports.sanSignerAKey = _sanSignerAKey;   // its private key -- for using the empty-subject cert as a REQUEST protection cert
   module.exports.sanSignerBCert = _sanSignerBCert;   // a distinct empty-subject signer (san-ca-b)
   return { caCert: _caCertDer, leafCert: _leafCertDer };
 }
@@ -446,7 +447,7 @@ function irRequest(spki, certReqId, key) {
 }
 
 module.exports = {
-  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, sanSignerACert: null, sanSignerBCert: null,
+  init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, sanSignerACert: null, sanSignerAKey: null, sanSignerBCert: null,
   ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
