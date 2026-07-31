@@ -493,6 +493,16 @@ async function run() {
   var r74 = await s74.enroll(H.irRequest(CLIENT.spki));
   check("74. an acceptCert policy returning true -> issued via an accepting certConf (no statusInfo)", r74.outcome === "issued" && r74.confirmed === true && pki.schema.cmp.parse(s74f.transport.calls[1].body).body.decoded[0].statusInfo == null);
 
+  // ===== 75. a non-function acceptCert -> cmp/bad-input at construction (a typo cannot silently auto-accept) =====
+  check("75. a non-function opts.acceptCert -> cmp/bad-input at construction (never a silently-skipped veto policy)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], acceptCert: "yes-please" }); })) === "cmp/bad-input");
+
+  // ===== 76. a caller intermediates pool near the ceiling: the cached signer material stays BOUNDED (no path/bad-input) =====
+  var filler76 = [];
+  for (var f76 = 0; f76 < 999; f76++) filler76.push(certDer);   // near PATH_BUILD_MAX_CANDIDATES; path.build counts the RAW pool length
+  var s76 = mk([H.ip(0, 0, certDer), H.pkiconf()], { intermediates: filler76 });
+  var r76 = await s76.session.enroll(H.irRequest(CLIENT.spki));
+  check("76. a caller intermediates pool near the ceiling + the cached signer material bounded to the remaining room -> the valid grant still issues (a meddler cannot fail it)", r76.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
