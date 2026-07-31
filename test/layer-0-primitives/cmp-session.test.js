@@ -219,11 +219,12 @@ async function run() {
   check("30b. a CertResponse for a DIFFERENT certReqId than requested -> cmp/unexpected-arm",
     await codeOf(mk([H.ip(0, 0, certDer)]).session.enroll(H.irRequest(CLIENT.spki, 5))) === "cmp/unexpected-arm");
 
-  // ===== 31. a p10cr (PKCS#10) enrollment drives the same transaction to issuance (answered by a cp) =====
+  // ===== 31. a p10cr (PKCS#10) enrollment: the cp identifies it with the -1 sentinel, echoed in the certConf =====
   var p10 = await pki.csr.sign({ subject: [{ commonName: "leaf" }], subjectPublicKey: CLIENT.spki }, CLIENT.key);
-  var s31 = mk([H.cp(0, 0, certDer), H.pkiconf()]);
+  var s31 = mk([H.cp(-1, 0, certDer), H.pkiconf()]);   // a conforming cp uses certReqId -1 for a PKCS#10 request
   var r31 = await s31.session.enroll({ p10cr: p10 });
-  check("31. a p10cr enrollment (a Buffer request arm, no CRMF certReqId) issues end to end", r31.outcome === "issued" && Buffer.isBuffer(r31.certificate));
+  var cc31 = pki.schema.cmp.parse(s31.transport.calls[1].body).body.decoded[0];
+  check("31. a p10cr enrollment matches the -1 sentinel cp and echoes -1 in the certConf", r31.outcome === "issued" && Buffer.isBuffer(r31.certificate) && Number(cc31.certReqId) === -1);
 
   // ===== 32. an EMPTY trustAnchors array for the signature flavor is refused (a disabled anchor is no anchor) =====
   check("32. signature protection with an empty trustAnchors array -> cmp/bad-input",
@@ -312,6 +313,12 @@ async function run() {
   var code47a = await codeOf(s47.session.enroll({ ir: {} }));   // missing certTemplate -> a build error before any transfer
   var r47 = await s47.session.enroll(H.irRequest(CLIENT.spki));   // the session was not consumed -> this retry succeeds
   check("47. a local build error leaves the session retryable (no transactionID reached the transport)", code47a !== "NO-THROW" && r47.outcome === "issued" && s47.transport.calls.length === 2);
+
+  // ===== 48. a 0x-hex certReqId string (a CRMF-supported form) is normalized like the builder, not reset to 0 =====
+  var s48 = mk([H.ip(5, 0, certDer), H.pkiconf()]);
+  var r48 = await s48.session.enroll(H.irRequest(CLIENT.spki, "0x5"));
+  var cc48 = pki.schema.cmp.parse(s48.transport.calls[1].body).body.decoded[0];
+  check("48. a '0x5' hex certReqId is parsed as 5 (matching crmf-sign), matched and echoed", r48.outcome === "issued" && Number(cc48.certReqId) === 5);
 
   console.log("CHECKS " + helpers.getChecks());
 }
