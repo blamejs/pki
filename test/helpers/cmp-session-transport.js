@@ -25,6 +25,7 @@ var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;  
 var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
 var _deepSigner2Cert = null;   // a same-subject decoy for the deep signer (a meddler's parseable extraCerts[0])
 var _untrustedSignerDecoy = null;   // the signer's key + subject under an UNTRUSTED root (verifies but is not trusted)
+var _wrongSubjectSignerDecoy = null;   // the signer's key under a WRONG subject (verifies but the sender does not bind)
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -65,6 +66,10 @@ async function init(pki, subjectSpki) {
   var untrustedRoot = await pki.x509.sign({ subject: [{ commonName: "untrusted-root" }], subjectPublicKey: untrustedKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 1, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: untrustedKp.privateKey.export({ format: "der", type: "pkcs8" }) });
   var signerSpki = pki.schema.x509.parse(_signerCertDer).subjectPublicKeyInfo.bytes;
   _untrustedSignerDecoy = await pki.x509.sign({ subject: [{ commonName: "cmp-ca.example" }], subjectPublicKey: signerSpki, serialNumber: 99, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: untrustedKp.privateKey.export({ format: "der", type: "pkcs8" }), cert: untrustedRoot });
+  // The signer's key under a DIFFERENT subject (issued by the trusted CA so ONLY the sender binding fails): the
+  // protection signature verifies under it, but the header sender (the real signer's subject) does not bind ->
+  // cmp/sender-mismatch, another meddler-selected-decoy variant the cached-signer fallback must recover.
+  _wrongSubjectSignerDecoy = await pki.x509.sign({ subject: [{ commonName: "evil-signer.example" }], subjectPublicKey: signerSpki, serialNumber: 100, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   module.exports.intCaCert = _intCaCert;
@@ -103,6 +108,17 @@ function makeCurveSwappedLeaf(pki, subjectSpki) {
     b.raw(node.children[1].bytes),
   ]);
   return pki.x509.sign({ subject: [{ commonName: "curve-swapped-leaf" }], subjectPublicKey: swapped, serialNumber: 10, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
+}
+// A CA-issued leaf whose rsaEncryption SPKI shares the requested key's exact bits but carries a MALFORMED
+// parameter (an empty OCTET STRING instead of the required NULL/absent). x509.parse + Node tolerate it, but the
+// identity check must NOT normalize it to the clean key -- a parameter-changed certificate is not the requested key.
+function makeMalformedRsaParamCert(pki, rsaSpki) {
+  var b = pki.asn1.build, node = pki.asn1.decode(rsaSpki), algId = node.children[0];
+  var variant = b.sequence([
+    b.sequence([b.raw(algId.children[0].bytes), b.octetString(Buffer.alloc(0))]),   // rsaEncryption + empty OCTET STRING (malformed param)
+    b.raw(node.children[1].bytes),
+  ]);
+  return pki.x509.sign({ subject: [{ commonName: "malformed-rsa-leaf" }], subjectPublicKey: variant, serialNumber: 13, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
 }
 function makeEd25519Cert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("ed25519"), "ed-ca"); }
 function makePssCert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 }), "pss-ca"); }
@@ -183,6 +199,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
       if (leg.deepDecoyExtra) der = _deepDecoyExtra(pki, der);   // replace extraCerts with a lone deep-signer decoy (omits the real intermediate)
       if (leg.untrustedDecoy) der = _prependExtraCert(pki, der, _untrustedSignerDecoy);   // prepend the signer's key under an untrusted root (valid but untrusted)
+      if (leg.wrongSubjectDecoy) der = _prependExtraCert(pki, der, _wrongSubjectSignerDecoy);   // prepend the signer's key under a wrong subject (valid but sender-mismatched)
       if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
@@ -373,6 +390,6 @@ function irRequest(spki, certReqId, key) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, stripSpkiParams: stripSpkiParams,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };

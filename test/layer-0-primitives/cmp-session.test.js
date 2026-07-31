@@ -584,6 +584,21 @@ async function run() {
   r88.certificate[0] ^= 0xff;   // mutate the returned certificate
   check("88. result.certificate is an independent copy -> mutating it does not affect result.chain[0] (nor internal state)", r88.chain[0][0] === origLeaf88 && r88.certificate[0] !== origLeaf88);
 
+  // ===== 89. a decoy carrying the real signer's key under a WRONG subject (verifies but sender-mismatched) -> fall back =====
+  var s89 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), wrongSubjectDecoy: true }]);
+  var r89 = await s89.session.enroll(H.irRequest(CLIENT.spki));
+  check("89. a wrong-subject decoy with the signer's own key (verifies but the sender does not bind) -> falls back to the cached signer -> issued", r89.outcome === "issued");
+
+  // ===== 90. a non-boolean implicitConfirm -> cmp/bad-input at construction (a truthy string cannot reverse the policy) =====
+  check("90. a non-boolean opts.implicitConfirm (a truthy string) -> cmp/bad-input at construction (never a silently-reversed confirmation policy)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], implicitConfirm: "false" }); })) === "cmp/bad-input");
+
+  // ===== 91. an issued rsaEncryption cert with a MALFORMED parameter (empty OCTET STRING, not NULL/absent) is not the requested key =====
+  var RSA = signing.makeSigner("rsa", { cn: "rsa-client" });   // rsaEncryption SPKI (NULL parameter)
+  var malformedRsaLeaf = await H.makeMalformedRsaParamCert(pki, RSA.spki);   // same key bits, parameter = empty OCTET STRING
+  var s91f = H.fakeCa(pki, [H.ip(0, 0, malformedRsaLeaf), H.pkiconf()], { macSecret: "s3cr3t-91" });   // MAC skips leaf path-validation, reaching the key-match
+  var s91 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-91" }, transport: s91f.transport, sleep: function () { return Promise.resolve(); } });
+  check("91. an issued rsaEncryption cert whose parameter is a malformed empty OCTET STRING (not NULL/absent) is NOT the requested key -> cmp/bad-cert-response", await codeOf(s91.enroll(H.irRequest(RSA.spki, null, RSA.key))) === "cmp/bad-cert-response");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
