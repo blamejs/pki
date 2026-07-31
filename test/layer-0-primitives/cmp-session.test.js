@@ -743,6 +743,31 @@ async function run() {
   var s120 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-120" }, transport: H.fakeCa(pki, [H.ip(0, 0, await H.makePssExplicitUnknownHashCert(pki, CLIENT.spki)), H.pkiconf()], { macSecret: "s3cr3t-120" }).transport, sleep: function () { return Promise.resolve(); } });
   check("120. an RSASSA-PSS cert with an EXPLICIT but unmapped hashAlgorithm (SHA-1) -> cmp/bad-cert-response (the resolver reads the OID and refuses)", await codeOf(s120.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
 
+  // ===== 121. the signer-path reserve is sized to the response's OWN extraCerts, not a static 32: a response
+  //            carrying only its signer does NOT forfeit a needed caller intermediate below the ceiling =====
+  var s121f = H.fakeCa(pki, [H.ip(0, 0, certDer), H.pkiconf()], { deepSigner: true, deepSignerBareExtra: true });   // the deep signer chains via intCaCert, but its response carries ONLY the signer
+  var callerPool121 = DISTINCT.slice(0, 968).concat([H.intCaCert]);   // 968 filler + the needed issuer LAST (candidate 969, the slot a static 32 reserve would truncate)
+  var s121 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: callerPool121, transport: s121f.transport, sleep: function () { return Promise.resolve(); } });
+  check("121. a response carrying only its signer sizes the reserve to its actual extraCerts, so the 969th caller intermediate (the needed issuer) is retained -> issued (a static 32-slot reserve would truncate it to cmp/untrusted-signer)", (await s121.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+
+  // ===== 122. the transcript retains at most TRANSCRIPT_RETAIN_RESPONSES * maxResponseBytes of payload: a
+  //            padded-response polling flood is bounded (later legs keep metadata + byteLength, drop the payload) =====
+  var PAD122 = 40;   // ~20 KiB of duplicate extraCerts per response (deduped away by verify; only inflates the wire size)
+  var legs122 = [{ body: H.ip(0, 3), padExtraCerts: PAD122 }, { body: H.pollRep(0, 1), padExtraCerts: PAD122 }, { body: H.pollRep(0, 1), padExtraCerts: PAD122 }, { body: H.pollRep(0, 1), padExtraCerts: PAD122 }, { body: H.ip(0, 0, certDer), padExtraCerts: PAD122 }, { body: H.pkiconf(), padExtraCerts: PAD122 }];
+  var s122 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: H.fakeCa(pki, legs122).transport, maxResponseBytes: 32768, sleep: function () { return Promise.resolve(); } });
+  var r122 = await s122.enroll(H.irRequest(CLIENT.spki));
+  var retained122 = r122.transcript.reduce(function (sum, e) { return sum + (Buffer.isBuffer(e.bytes) ? e.bytes.length : 0); }, 0);
+  var truncated122 = r122.transcript.filter(function (e) { return e.truncated === true; });
+  check("122a. a padded-response polling flood still issues (transcript truncation is diagnostic-only, never blocks the transaction)", r122.outcome === "issued");
+  check("122b. the retained transcript payload stays within TRANSCRIPT_RETAIN_RESPONSES * maxResponseBytes (an unbounded transcript would retain every leg)", retained122 <= 32768 * 2);
+  check("122c. the over-cap legs are truncated -- metadata + byteLength retained, payload dropped to bytes:null", truncated122.length > 0 && truncated122.every(function (e) { return e.bytes === null && typeof e.byteLength === "number" && e.byteLength > 0; }));
+
+  // ===== 123. a 200 response whose body is NOT a parseable PKIMessage fails closed at the transfer parse gate
+  //            (RFC 9811 sec. 3.3) -> a typed cmp error, and the transaction is not advanced =====
+  var garbageTransport = function () { return Promise.resolve({ status: 200, headers: { "content-type": "application/pkixcmp" }, body: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x2a]) }); };
+  var s123 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: garbageTransport, sleep: function () { return Promise.resolve(); } });
+  check("123. a non-PKIMessage 200 response fails closed at the transfer parse gate -> a typed cmp error (the transaction is not advanced)", /^cmp\//.test(await codeOf(s123.enroll(H.irRequest(CLIENT.spki)))));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

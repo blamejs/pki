@@ -221,7 +221,9 @@ function fakeCa(pki, legs, cfg) {
     var sigKey = leg.emptySanSigner === "b" ? _sanSignerBKey : (leg.emptySanSigner ? _sanSignerAKey : (leg.foreignSigner ? _issuerSignerKey : (leg.rotateSigner ? _signer2KeyPk8 : defaultKey)));
     var sigCert = leg.emptySanSigner === "b" ? _sanSignerBCert : (leg.emptySanSigner ? _sanSignerACert : (leg.foreignSigner ? _issuerSignerCert : (leg.rotateSigner ? _signer2CertDer : defaultCert)));
     var sigProt = { key: sigKey, cert: sigCert };
-    if (cfg.deepSigner && !leg.rotateSigner) sigProt.extraCerts = [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate]
+    if (cfg.deepSigner && !leg.rotateSigner && !cfg.deepSignerBareExtra) sigProt.extraCerts = [_intCaCert];   // carry the intermediate so extraCerts = [signer, intermediate]
+    // deepSignerBareExtra: the response carries ONLY its signer (no intermediate) -- the signer's issuer must come
+    // from the CALLER intermediates pool, so the signer-path reserve must NOT forfeit that caller slot.
     var buildProt = cfg.macSecret ? { mac: { secret: cfg.macSecret } } : sigProt;
     var protectOpts = leg.protect === false ? { key: sigKey, cert: sigCert } : buildProt;
     return Promise.resolve(pki.cmp.build({ header: header, body: leg.body }, protectOpts)).then(function (der) {
