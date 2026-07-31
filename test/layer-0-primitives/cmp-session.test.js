@@ -520,6 +520,27 @@ async function run() {
   var r79 = await s79.session.enroll(H.irRequest(CLIENT.spki));
   check("79. a caller intermediates pool at the ceiling + a later leg that omits its signer -> the fallback cached chain is bounded, the transaction still confirms", r79.outcome === "issued");
 
+  // ===== 80. a SHAKE256-prehash composite issued cert -> the certConf hash is indeterminate (never silently SHA-256) =====
+  var shakeLeaf = await H.makeCompositeSigOidCert(pki, CLIENT.spki, "id-MLDSA87-Ed448-SHAKE256");
+  var s80f = H.fakeCa(pki, [H.ip(0, 0, shakeLeaf), H.pkiconf()], { macSecret: "s3cr3t-80" });   // MAC skips leaf path-validation, reaching the certConf-hash resolver
+  var s80 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-80" }, transport: s80f.transport, sleep: function () { return Promise.resolve(); } });
+  check("80. a composite whose prehash is SHAKE256 (not certConf-representable) -> cmp/bad-cert-response (never a SHA-256 certHash contradicting the signature)", await codeOf(s80.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
+
+  // ===== 81. the fallback intermediate capacity excludes the signer itself (a 999-pool deepSigner leg must not truncate the real issuer) =====
+  var filler81 = [];
+  for (var f81 = 0; f81 < 999; f81++) filler81.push(certDer);   // room for exactly one added cert -- it must be the intermediate, not the (already-passed) signer
+  var s81f = H.fakeCa(pki, [H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }], { deepSigner: true });
+  var s81 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: filler81, transport: s81f.transport, sleep: function () { return Promise.resolve(); } });
+  var r81 = await s81.enroll(H.irRequest(CLIENT.spki));
+  check("81. a 999-cert caller pool + a signer-omitting deepSigner leg -> the one fallback slot keeps the real intermediate (the signer is excluded), still confirms", r81.outcome === "issued");
+
+  // ===== 82. a leg that verifies only via the cached-signer FALLBACK must not overwrite the trusted cached chain =====
+  //          with its own (untrusted) extraCerts -- else a meddler's decoy pool discards the real intermediate.
+  var s82f = H.fakeCa(pki, [H.ip(0, 3), { body: H.pollRep(0, 1), deepDecoyExtra: true }, { body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()], { deepSigner: true });
+  var s82 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s82f.transport, sleep: function () { return Promise.resolve(); } });
+  var r82 = await s82.enroll(H.irRequest(CLIENT.spki));
+  check("82. a fallback-verified leg (a decoy in its extraCerts) does not replace the trusted cached chain -> a later signer-omitting leg still chains via the preserved intermediate -> issued", r82.outcome === "issued");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

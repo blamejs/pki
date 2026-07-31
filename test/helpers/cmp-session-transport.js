@@ -23,6 +23,7 @@ var _caCertDer = null, _caKeyPk8 = null, _signerKeyPk8 = null, _signerCertDer = 
 var _signer2KeyPk8 = null, _signer2CertDer = null;   // a SECOND signer issued by the same CA (a clustered CA rotating its protection cert)
 var _issuerSignerKey = null, _issuerSignerCert = null, _issuerSignerDN = null;   // a CA that BOTH signs CMP protection AND issues the leaf
 var _intCaKey = null, _intCaCert = null, _deepSignerKey = null, _deepSignerCert = null, _deepSignerDN = null;   // a signer under an INTERMEDIATE CA (chain [signer, intermediate])
+var _deepSigner2Cert = null;   // a same-subject decoy for the deep signer (a meddler's parseable extraCerts[0])
 var NB = new Date(0), NA = new Date(4102444800000);
 
 // Build the CA anchor + CMP-signer certs ONCE (async: x509.sign), plus an issued LEAF cert whose subject key
@@ -54,6 +55,8 @@ async function init(pki, subjectSpki) {
   _deepSignerKey = dsKp.privateKey.export({ format: "der", type: "pkcs8" });
   _deepSignerCert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: dsKp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 8, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   _deepSignerDN = pki.schema.x509.parse(_deepSignerCert).subject.bytes;
+  var ds2Kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });   // a same-subject DECOY for the deep signer (different key, also under the intermediate)
+  _deepSigner2Cert = await pki.x509.sign({ subject: [{ commonName: "cmp-deep-signer.example" }], subjectPublicKey: ds2Kp.publicKey.export({ format: "der", type: "spki" }), serialNumber: 12, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], authorityKeyIdentifier: true } }, { key: _intCaKey, cert: _intCaCert });
   module.exports.caCert = _caCertDer;
   module.exports.leafCert = _leafCertDer;
   return { caCert: _caCertDer, leafCert: _leafCertDer };
@@ -169,6 +172,7 @@ function fakeCa(pki, legs, cfg) {
       if (leg.badExtraCert) der = _addBadExtraCert(pki, der);   // append a malformed entry to extraCerts (bounded away by verify)
       if (leg.padExtraCerts) der = _padExtraCerts(pki, der, leg.padExtraCerts);   // flood extraCerts with duplicate certs
       if (leg.decoyExtraCert) der = _prependExtraCert(pki, der);   // prepend a same-subject decoy the resolver selects first
+      if (leg.deepDecoyExtra) der = _deepDecoyExtra(pki, der);   // replace extraCerts with a lone deep-signer decoy (omits the real intermediate)
       if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
@@ -204,7 +208,11 @@ function _unprotect(pki, der) {
 // { header, body }), modelling a conforming CA that omits its signer cert on a later leg (RFC 9483 sec. 3.3).
 function _stripExtraCerts(pki, der) {
   var b = pki.asn1.build;
-  var kids = pki.asn1.decode(der).children.filter(function (c) { return !(c.tagClass === "context" && c.tagNumber === 1); });
+  var kids = pki.asn1.decode(der).children;   // [header, body, protection[0]?, extraCerts[1]?]
+  // extraCerts is the LAST child when present; the ip/cp/kup body is ALSO context [1] (ip is arm 1) but earlier,
+  // so drop only the trailing [1] child (the extraCerts), never the body.
+  var last = kids.length - 1;
+  if (last >= 0 && kids[last].tagClass === "context" && kids[last].tagNumber === 1) kids = kids.slice(0, last);
   return b.sequence(kids.map(function (c) { return b.raw(c.bytes); }));
 }
 
@@ -255,6 +263,19 @@ function _addBadExtraCert(pki, der) {
     }
     return b.raw(c.bytes);
   }));
+}
+// REPLACE the extraCerts [1] envelope with a single same-subject deep-signer decoy: the resolver selects it
+// first (protection fails under it -> the cached-signer fallback rescues the leg), and its bytes are what a
+// cache refresh WOULD store -- a pool that omits the real intermediate the deep signer needs to reach the root.
+function _deepDecoyExtra(pki, der) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children;
+  var last = kids.length - 1;
+  var out = kids.map(function (c, i) {
+    if (i === last && c.tagClass === "context" && c.tagNumber === 1) return b.raw(b.explicit(1, b.sequence([b.raw(_deepSigner2Cert)])));
+    return b.raw(c.bytes);
+  });
+  return b.sequence(out);
 }
 // PREPEND a same-subject decoy certificate (signer2 shares signer1's subject but has a different key) to the
 // unsigned extraCerts, so the verifier's RFC 9483 sec. 3.3 "extraCerts[0] is the protection cert" rule selects
