@@ -73,6 +73,8 @@ function fakeCa(pki, legs, cfg) {
         der = _unprotect(pki, der);
       }
       if (leg.tamper) der = _tamperProtection(pki, der);   // flip a byte INSIDE the protection [0] -> the signature no longer matches
+      if (leg.noExtraCerts) der = _stripExtraCerts(pki, der);   // drop the extraCerts [1] (a later leg the recipient already has the signer for)
+      if (leg.malformedCert) der = _malformCert(pki, der, leg.certOf);   // swap the issued cert for a non-X.509 SEQUENCE + re-sign
       return { status: leg.status || 200, headers: { "content-type": leg.contentType || PKIXCMP }, body: der };
     });
   });
@@ -101,6 +103,47 @@ function _unprotect(pki, der) {
   var hk = pki.asn1.decode(kids[0].bytes).children.filter(function (c) { return !(c.tagClass === "context" && c.tagNumber === 1); });
   var headerDer = b.sequence(hk.map(function (c) { return b.raw(c.bytes); }));
   return b.sequence([b.raw(headerDer), b.raw(kids[1].bytes)]);
+}
+
+// Drop the extraCerts [1] envelope child -- the message stays protection-valid (protection covers only
+// { header, body }), modelling a conforming CA that omits its signer cert on a later leg (RFC 9483 sec. 3.3).
+function _stripExtraCerts(pki, der) {
+  var b = pki.asn1.build;
+  var kids = pki.asn1.decode(der).children.filter(function (c) { return !(c.tagClass === "context" && c.tagNumber === 1); });
+  return b.sequence(kids.map(function (c) { return b.raw(c.bytes); }));
+}
+
+// A well-formed DER SEQUENCE of an EXACT byte length that is NOT a valid X.509 certificate (a SEQUENCE whose
+// single child is an OCTET STRING) -- the CMP parser accepts it as opaque certificate bytes; x509.parse rejects it.
+function _sequenceOfLength(pki, L) {
+  var b = pki.asn1.build;
+  for (var d = 0; d <= 8; d++) {
+    for (var i = 0; i < 2; i++) {
+      var s = L - 8 + (i === 0 ? d : -d);
+      if (s < 0) continue;
+      var m = b.sequence([b.octetString(Buffer.alloc(s, 0x41))]);
+      if (m.length === L) return m;
+    }
+  }
+  throw new Error("cmp-session-transport: cannot build a non-cert SEQUENCE of length " + L);
+}
+
+// Swap the issued certificate (certOf) for a same-length non-X.509 SEQUENCE and RE-SIGN the ProtectedPart with
+// the CMP-signer key, so the forged response is protection-VALID + TRUSTED but carries a certificate x509.parse
+// rejects -- what a non-conformant / hostile CA (not using our strict builder) could send over the wire.
+function _malformCert(pki, der, certOf) {
+  var b = pki.asn1.build;
+  var idx = der.indexOf(certOf);
+  if (idx < 0) throw new Error("cmp-session-transport: issued cert not found for malformCert");
+  var malformed = _sequenceOfLength(pki, certOf.length);
+  var swapped = Buffer.concat([der.slice(0, idx), malformed, der.slice(idx + certOf.length)]);
+  var kids = pki.asn1.decode(swapped).children;   // [header, body, protection[0], extraCerts[1]?]
+  var protectedPart = b.sequence([b.raw(kids[0].bytes), b.raw(kids[1].bytes)]);
+  var key = nodeCrypto.createPrivateKey({ key: _signerKeyPk8, format: "der", type: "pkcs8" });
+  var sig = nodeCrypto.sign("sha256", protectedPart, key);
+  var out = [b.raw(kids[0].bytes), b.raw(kids[1].bytes), b.raw(b.explicit(0, b.bitString(sig, 0)))];
+  if (kids[3]) out.push(b.raw(kids[3].bytes));
+  return b.sequence(out);
 }
 
 // ---- response body-arm builders (RFC 9810 sec. 5.2.3 / 5.3.4 / 5.3.22) ----

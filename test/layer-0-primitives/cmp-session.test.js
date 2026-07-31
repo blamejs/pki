@@ -250,6 +250,46 @@ async function run() {
   check("36. a waiting response omitting senderNonce, then a poll leg -> cmp/bad-nonce (the chain cannot continue)",
     await codeOf(mk([{ body: H.ip(0, 3), noSenderNonce: true }, H.pollRep(0, 1)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-nonce");
 
+  // ===== 37. the FINAL permitted poll's pollRep does NOT sleep its checkAfter (the poll-count bound holds) =====
+  var s37 = mk([H.ip(0, 3), H.pollRep(0, 31536000)], { maxPolls: 1 });   // a 1-year checkAfter on the last allowed poll
+  var r37 = await s37.session.enroll(H.irRequest(CLIENT.spki));
+  check("37. exhausting maxPolls on a pollRep returns poll-timeout WITHOUT sleeping the final checkAfter", r37.outcome === "poll-timeout" && r37.polls === 1 && s37.slept() === 0);
+
+  // ===== 38. a granted response whose certificate is not valid X.509 (a forged, protection-valid response) -> reject =====
+  check("38. a granted CertResponse carrying a non-X.509 certificate -> cmp/bad-cert-response (never outcome:issued)",
+    await codeOf(mk([{ body: H.ip(0, 0, certDer), malformedCert: true, certOf: certDer }, H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-cert-response");
+
+  // ===== 39. a later leg that OMITS extraCerts still verifies via the cached signer cert (RFC 9483 sec. 3.3) =====
+  var s39f = H.fakeCa(pki, [H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }]);
+  var s39 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: s39f.transport, sleep: function () { return Promise.resolve(); } });
+  var r39 = await s39.enroll(H.irRequest(CLIENT.spki));
+  check("39. a certConf-leg response omitting extraCerts verifies via the cached signer -> issued", r39.outcome === "issued" && r39.confirmed === true);
+
+  // ===== 40. a string-form CRMF certReqId ("5") is preserved (echoed as 5, matched), not silently reset to 0 =====
+  var s40 = mk([H.ip(5, 0, certDer), H.pkiconf()]);
+  var r40 = await s40.session.enroll(H.irRequest(CLIENT.spki, "5"));
+  var cc40 = pki.schema.cmp.parse(s40.transport.calls[1].body).body.decoded[0];
+  check("40. a string certReqId '5' is preserved end to end (issued, certConf carries 5)", r40.outcome === "issued" && Number(cc40.certReqId) === 5);
+
+  // ===== 41. one transaction per session: a second enroll on the same session is refused =====
+  var s41 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  var r41 = await s41.session.enroll(H.irRequest(CLIENT.spki));
+  check("41a. the first enroll succeeds", r41.outcome === "issued");
+  check("41b. a SECOND enroll on the same session -> cmp/bad-input (one transactionID per transaction)",
+    await codeOf(s41.session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-input");
+
+  // ===== 42. a run of WAITING ip responses (never a pollRep) that exhausts maxPolls -> poll-timeout =====
+  var s42 = mk([H.ip(0, 3), H.ip(0, 3), H.ip(0, 3), H.ip(0, 3)], { maxPolls: 2 });
+  var r42 = await s42.session.enroll(H.irRequest(CLIENT.spki));
+  check("42. repeated waiting ip responses hit the poll-count bound -> poll-timeout (no sleep, never a pollRep)", r42.outcome === "poll-timeout" && r42.polls === 2 && s42.slept() === 0);
+
+  // ===== 43. a CONCURRENT enroll while one is already in flight is refused =====
+  var s43 = mk([H.ip(0, 3), H.pollRep(0, 1), H.ip(0, 0, certDer), H.pkiconf()]);
+  var inflight = s43.session.enroll(H.irRequest(CLIENT.spki));   // start but do not await -> transaction in flight
+  var code43 = await codeOf(s43.session.enroll(H.irRequest(CLIENT.spki)));   // a second call while the first is mid-transaction
+  await inflight;
+  check("43. a concurrent enroll while one is in flight -> cmp/bad-input", code43 === "cmp/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
