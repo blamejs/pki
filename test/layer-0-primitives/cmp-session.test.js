@@ -34,6 +34,7 @@ function mk(legs, extra) {
 async function run() {
   await H.init(pki, CLIENT.spki);   // build the CA anchor + signer chain + a leaf cert for the CLIENT key (async)
   var certDer = H.leafCert;         // the issued leaf whose subject key matches the request (the key-match passes)
+  var DISTINCT = await H.manyDistinctCerts(pki, 1000);   // 1000 DISTINCT filler certs -> a near-ceiling caller pool by distinct count (built once, reused)
 
   // ===== 1. happy path: ir -> granted(accepted) -> certConf -> pkiConf -> issued =====
   var s1 = mk([H.ip(0, 0, certDer), H.pkiconf()]);
@@ -497,9 +498,7 @@ async function run() {
   check("75. a non-function opts.acceptCert -> cmp/bad-input at construction (never a silently-skipped veto policy)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], acceptCert: "yes-please" }); })) === "cmp/bad-input");
 
   // ===== 76. a caller intermediates pool near the ceiling: the cached signer material stays BOUNDED (no path/bad-input) =====
-  var filler76 = [];
-  for (var f76 = 0; f76 < 999; f76++) filler76.push(certDer);   // near PATH_BUILD_MAX_CANDIDATES; path.build counts the RAW pool length
-  var s76 = mk([H.ip(0, 0, certDer), H.pkiconf()], { intermediates: filler76 });
+  var s76 = mk([H.ip(0, 0, certDer), H.pkiconf()], { intermediates: DISTINCT.slice(0, 999) });   // 999 DISTINCT -> room for one added cert
   var r76 = await s76.session.enroll(H.irRequest(CLIENT.spki));
   check("76. a caller intermediates pool near the ceiling + the cached signer material bounded to the remaining room -> the valid grant still issues (a meddler cannot fail it)", r76.outcome === "issued");
 
@@ -507,16 +506,12 @@ async function run() {
   check("77. opts.acceptCert combined with opts.implicitConfirm -> cmp/bad-input at construction (implicit confirmation leaves no certConf to reject on)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], implicitConfirm: true, acceptCert: function () { return true; } }); })) === "cmp/bad-input");
 
   // ===== 78. an authenticated caPubs is bounded against the ceiling too (a valid caller pool + a delivered caPubs must not fail) =====
-  var filler78 = [];
-  for (var f78 = 0; f78 < 1000; f78++) filler78.push(certDer);   // caller pool AT the ceiling; an unbounded caPubs append would push it over
-  var s78 = mk([H.ip(0, 0, certDer, { caPubs: [H.caCert] }), H.pkiconf()], { intermediates: filler78 });
+  var s78 = mk([H.ip(0, 0, certDer, { caPubs: [H.caCert] }), H.pkiconf()], { intermediates: DISTINCT });   // 1000 DISTINCT AT the ceiling; an unbounded caPubs append would push it over
   var r78 = await s78.session.enroll(H.irRequest(CLIENT.spki));
   check("78. a caller intermediates pool near the ceiling + an authenticated caPubs -> caPubs bounded to the remaining room, the valid grant still issues", r78.outcome === "issued");
 
   // ===== 79. the fallback signer-chain pool is bounded too (a large caller pool + a signer-omitting later leg must not fail) =====
-  var filler79 = [];
-  for (var f79 = 0; f79 < 1000; f79++) filler79.push(certDer);   // caller pool AT the ceiling
-  var s79 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }], { intermediates: filler79 });   // leg 2 omits its signer -> fallback to the cached chain
+  var s79 = mk([H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }], { intermediates: DISTINCT });   // 1000 DISTINCT AT the ceiling; leg 2 omits its signer -> fallback to the cached chain
   var r79 = await s79.session.enroll(H.irRequest(CLIENT.spki));
   check("79. a caller intermediates pool at the ceiling + a later leg that omits its signer -> the fallback cached chain is bounded, the transaction still confirms", r79.outcome === "issued");
 
@@ -527,10 +522,8 @@ async function run() {
   check("80. a composite whose prehash is SHAKE256 (not certConf-representable) -> cmp/bad-cert-response (never a SHA-256 certHash contradicting the signature)", await codeOf(s80.enroll(H.irRequest(CLIENT.spki, null, CLIENT.key))) === "cmp/bad-cert-response");
 
   // ===== 81. the fallback intermediate capacity excludes the signer itself (a 999-pool deepSigner leg must not truncate the real issuer) =====
-  var filler81 = [];
-  for (var f81 = 0; f81 < 999; f81++) filler81.push(certDer);   // room for exactly one added cert -- it must be the intermediate, not the (already-passed) signer
   var s81f = H.fakeCa(pki, [H.ip(0, 0, certDer), { body: H.pkiconf(), noExtraCerts: true }], { deepSigner: true });
-  var s81 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: filler81, transport: s81f.transport, sleep: function () { return Promise.resolve(); } });
+  var s81 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: DISTINCT.slice(0, 999), transport: s81f.transport, sleep: function () { return Promise.resolve(); } });   // 999 DISTINCT -> room for exactly one added cert (must be the intermediate, not the already-passed signer)
   var r81 = await s81.enroll(H.irRequest(CLIENT.spki));
   check("81. a 999-cert caller pool + a signer-omitting deepSigner leg -> the one fallback slot keeps the real intermediate (the signer is excluded), still confirms", r81.outcome === "issued");
 
@@ -546,9 +539,7 @@ async function run() {
 
   // ===== 84. a caller intermediate supplied as PEM dedups against a byte-identical DER caPubs (no wasted slot) =====
   var intLeaf84 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intermediate -> root
-  var filler84 = [];
-  for (var f84 = 0; f84 < 998; f84++) filler84.push(H.caCert);   // 998 fillers distinct from certDer
-  filler84.push(pki.schema.x509.pemEncode(certDer, "CERTIFICATE"));   // the 999th: certDer as PEM -- a caPubs DER duplicates it
+  var filler84 = DISTINCT.slice(0, 998).concat([pki.schema.x509.pemEncode(certDer, "CERTIFICATE")]);   // 998 DISTINCT + certDer as PEM (999th) -- a caPubs DER duplicates the PEM
   var s84f = H.fakeCa(pki, [H.ip(0, 0, intLeaf84, { caPubs: [certDer, H.intCaCert] }), H.pkiconf()]);   // caPubs: [dup-of-PEM, the needed intermediate]
   var s84 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: filler84, transport: s84f.transport, sleep: function () { return Promise.resolve(); } });
   var r84 = await s84.enroll(H.irRequest(CLIENT.spki));
@@ -570,8 +561,7 @@ async function run() {
 
   // ===== 87. a corrupted-sig copy of an issuer sharing the valid issuer's TBS must NOT evict the valid one in the dedup =====
   var intLeaf87 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intCaCert -> root
-  var filler87 = [H.corruptLeafSig(H.intCaCert)];   // a corrupted-signature intCaCert (same TBS, bad signature) FIRST
-  for (var f87 = 0; f87 < 998; f87++) filler87.push(H.caCert);   // 999 caller certs total; room for exactly one added cert
+  var filler87 = [H.corruptLeafSig(H.intCaCert)].concat(DISTINCT.slice(0, 998));   // a corrupted-signature intCaCert (same TBS) FIRST + 998 DISTINCT = 999; room for one added cert
   var s87f = H.fakeCa(pki, [H.ip(0, 0, intLeaf87, { caPubs: [H.intCaCert] }), H.pkiconf()]);   // the VALID intCaCert delivered in caPubs
   var s87 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: filler87, transport: s87f.transport, sleep: function () { return Promise.resolve(); } });
   var r87 = await s87.enroll(H.irRequest(CLIENT.spki));
@@ -598,6 +588,18 @@ async function run() {
   var s91f = H.fakeCa(pki, [H.ip(0, 0, malformedRsaLeaf), H.pkiconf()], { macSecret: "s3cr3t-91" });   // MAC skips leaf path-validation, reaching the key-match
   var s91 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-91" }, transport: s91f.transport, sleep: function () { return Promise.resolve(); } });
   check("91. an issued rsaEncryption cert whose parameter is a malformed empty OCTET STRING (not NULL/absent) is NOT the requested key -> cmp/bad-cert-response", await codeOf(s91.enroll(H.irRequest(RSA.spki, null, RSA.key))) === "cmp/bad-cert-response");
+
+  // ===== 92. a non-function opts.sleep -> cmp/bad-input at construction (never a silent fall back to the real timer) =====
+  check("92. a non-function opts.sleep -> cmp/bad-input at construction (a config typo cannot silently swap the injected sleeper for the real timer)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], sleep: 5 }); })) === "cmp/bad-input");
+
+  // ===== 93. DUPLICATE caller intermediates collapse before the capacity limit (they do not consume the ceiling) =====
+  var intLeaf93 = await H.makeIntSignedLeaf(pki, CLIENT.spki);   // leaf -> intCaCert -> root
+  var dup93 = [];
+  for (var f93 = 0; f93 < 1000; f93++) dup93.push(H.caCert);   // 1000 COPIES of ONE cert (1 distinct) -- must NOT fill the ceiling
+  var s93f = H.fakeCa(pki, [H.ip(0, 0, intLeaf93, { caPubs: [H.intCaCert] }), H.pkiconf()]);   // the required intermediate delivered ONLY in caPubs
+  var s93 = pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], intermediates: dup93, transport: s93f.transport, sleep: function () { return Promise.resolve(); } });
+  var r93 = await s93.enroll(H.irRequest(CLIENT.spki));
+  check("93. 1000 duplicate caller intermediates collapse to one distinct candidate before bounding -> the caPubs intermediate still fits -> the leaf validates -> issued", r93.outcome === "issued");
 
   console.log("CHECKS " + helpers.getChecks());
 }

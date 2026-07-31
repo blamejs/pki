@@ -120,6 +120,16 @@ function makeMalformedRsaParamCert(pki, rsaSpki) {
   ]);
   return pki.x509.sign({ subject: [{ commonName: "malformed-rsa-leaf" }], subjectPublicKey: variant, serialNumber: 13, notBefore: NB, notAfter: NA, extensions: { authorityKeyIdentifier: true } }, { key: _caKeyPk8, cert: _caCertDer });
 }
+// N DISTINCT self-signed filler certificates (one key, distinct serial numbers -> distinct TBS -> distinct
+// identity), so a near-ceiling caller intermediates pool reaches the candidate ceiling by DISTINCT count (not
+// duplicate copies the session now collapses). Inert filler: none chains to a session leaf or signer.
+async function manyDistinctCerts(pki, n) {
+  var kp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "P-256" });
+  var key = kp.privateKey.export({ format: "der", type: "pkcs8" }), spki = kp.publicKey.export({ format: "der", type: "spki" });
+  var out = [];
+  for (var i = 0; i < n; i++) out.push(await pki.x509.sign({ subject: [{ commonName: "filler-" + i }], subjectPublicKey: spki, serialNumber: 100000 + i, notBefore: NB, notAfter: NA }, { key: key }));
+  return out;
+}
 function makeEd25519Cert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("ed25519"), "ed-ca"); }
 function makePssCert(pki, subjectSpki) { return _hashlessChain(pki, subjectSpki, nodeCrypto.generateKeyPairSync("rsa-pss", { modulusLength: 2048, hashAlgorithm: "sha384", saltLength: 48 }), "pss-ca"); }
 // An ecdsaWithSHA256 leaf whose signatureAlgorithm OID final arc is bumped to an UNREGISTERED value (both the
@@ -390,6 +400,6 @@ function irRequest(spki, certReqId, key) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, stripSpkiParams: stripSpkiParams,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
