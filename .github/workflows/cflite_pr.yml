@@ -68,6 +68,7 @@ jobs:
           - schema-all-parse
           - csrattrs-parse
           - est-transfer
+          - http-digest-challenge
           - jose-parse
           - acme-object
           - trust-certdata

@@ -1,0 +1,1 @@
+Digest realm="example.org", qop="auth", algorithm=SHA-256, nonce="abc123", opaque="xyz"

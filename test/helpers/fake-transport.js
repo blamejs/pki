@@ -23,7 +23,10 @@ function fakeTransport(script) {
     // A script function may return the response object directly OR a Promise of it (a stateful async CA that
     // builds a signed response per request) -- resolve the thenable before reading its fields.
     return Promise.resolve(r).then(function (rr) {
-      return { status: rr.status, headers: rr.headers || {}, body: rr.body == null ? "" : rr.body };
+      // Forward a scripted `tls` verbatim (the real transport surfaces { protocol, cipher, peerCertificate }) so a
+      // verb that inspects the negotiated session -- e.g. serverkeygen's non-NULL/anon/EXPORT cipher gate -- can be
+      // driven deterministically; absent by default, so every existing vector is unaffected.
+      return { status: rr.status, headers: rr.headers || {}, body: rr.body == null ? "" : rr.body, tls: rr.tls };
     });
   }
   transport.calls = calls;

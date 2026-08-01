@@ -416,6 +416,25 @@ security-only patches after the next major releases.
   response body is bounded while it streams
   (aborted the instant it crosses the cap, before it reaches a decoder), a stalled
   socket times out, and a 202 Retry-After is surfaced to the caller, never slept on.
+- **EST HTTP Digest is security-on-by-default (CWE-327 / CWE-757).** HTTP Digest
+  access authentication (RFC 7616), the alternative to HTTP Basic on every EST verb,
+  answers only SHA-256 and SHA-512-256 challenges: MD5 (and MD5-sess) and the legacy
+  no-qop RFC 2069 mode are refused unless the caller explicitly opts in, an unsupported
+  or unusable challenge fails closed rather than downgrading, the most secure offered
+  algorithm is chosen, a server `stale` re-challenge is bounded, and there is no
+  `scheme: "auto"` — a Digest challenge is never silently answered with Basic. The
+  untrusted `WWW-Authenticate` challenge is parsed with a quoted-string-honoring
+  tokenizer bounded before the copy, so a comma or scheme name inside a quoted value
+  is never mistaken for a delimiter. The credential, like Basic, is answered only on
+  the authenticated origin and never sent to a redirected server.
+- **EST server-generated key confidentiality (CWE-311 / CWE-319).** `pki.est.serverkeygen`
+  binds the delivered key's encryption to the request: whether the key part must be a
+  CMS `EnvelopedData` (and to which recipient) is derived from the CSR's own
+  DecryptKeyIdentifier / AsymmetricDecryptKeyIdentifier attribute, so a cleartext key
+  cannot silently substitute for the encrypted key the request asked for, and the
+  channel is asserted to negotiate a confidentiality-bearing cipher (a NULL, anonymous,
+  or EXPORT suite is refused) before the key is surfaced. The verb never decrypts the
+  key part, so it is not a decryption oracle.
 - **CMP enrollment verify-before-read (CWE-345 / CWE-294 / CWE-770).** The
   `pki.cmp.session` enrollment orchestrator confers protection trust the transfer
   layer does not: a response is protection-verified (a signature chained to the
