@@ -117,6 +117,12 @@ async function run() {
     t1.calls.length === 1 && t1.calls[0].method === "POST" && /\/serverkeygen$/.test(t1.calls[0].url) &&
     t1.calls[0].headers["content-type"] === "application/pkcs10" && t1.calls[0].headers.accept === "multipart/mixed" &&
     t1.calls[0].body === pki.est.transferEncode(CSR_PLAIN));
+  // SK-fold: a FOLDED MIME part header (the cert part's Content-Type continues its smime-type on a
+  // whitespace-prefixed line) is unfolded and read whole, not truncated to est/bad-multipart (RFC 5322 sec. 2.2.3).
+  var foldedBody = "--estBoundary\r\nContent-Type: application/pkcs8\r\n\r\n" + REAL_PKCS8.toString("base64") +
+    "\r\n--estBoundary\r\nContent-Type: application/pkcs7-mime;\r\n smime-type=certs-only\r\n\r\n" + MATCH_CERT_PART.toString("base64") + "\r\n--estBoundary--\r\n";
+  var rFold = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: ct(SK_CT), body: foldedBody }) });
+  check("SK-fold. a folded MIME part header (Content-Type continuation) is unfolded and the part parses", !!rFold.privateKey && rFold.certificates.length === 1);
   var r2 = await pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64"))) });
   check("SK-2. encrypted key, encryption auto-derived from the CSR's AsymmetricDecryptKeyIdentifier", !!r2.encryptedKey && r2.encryptedKey.contentTypeName === "envelopedData" && r2.certificates.length === 1 && !r2.privateKey);
   var r3 = await pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64"))), expectedRecipientIssuerSerial: { issuer: b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), serialNumber: 9n } });
