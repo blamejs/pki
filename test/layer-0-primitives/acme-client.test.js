@@ -794,6 +794,10 @@ async function testRenewalWindow() {
   var s20 = A.acmeServer({ renewalInfoResponse: riResp(NA - 10 * DAY, NA + 10 * DAY) });
   var r20 = await clientAt(s20, NA - 5 * DAY).renewalWindow(certDer, { random: function () { return 1; } });
   check("#15 RW-20 a selection landing on notAfter forces renewNow", r20.renewNow === true && Date.parse(r20.selectedTime) === NA);
+  // RW-21 a clock that returns a NON-finite value (NaN / Infinity) must fail closed, not silently make every
+  // comparison false and bypass the expiry gate.
+  check("#15 RW-21 a NaN clock reading is rejected", (await codeOf(clientAt(s20, T).renewalWindow(certDer, { clock: function () { return NaN; } }))) === "acme/bad-input");
+  check("#15 RW-21 an infinite clock reading is rejected", (await codeOf(clientAt(s20, T).renewalWindow(certDer, { clock: function () { return Infinity; } }))) === "acme/bad-input");
 
   // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
   // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
