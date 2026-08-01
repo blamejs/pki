@@ -760,6 +760,15 @@ async function testRenewalWindow() {
   var r9e = await clientAt(s9e, T).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-9 an explanationURL is surfaced", r9e.explanationURL === "https://ca.example/why");
 
+  // RW-15 renewNow is decided against a FRESH clock read (after the fetch), not the pre-fetch time: a clock
+  // that advances past the selected instant while the RenewalInfo GET is in flight yields renewNow true.
+  var rwCalls = 0;
+  var advancingClock = function () { return rwCalls++ === 0 ? T : T + 16 * DAY; };   // pre-fetch T; post-fetch T+16d
+  var s15 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });   // midpoint T+15d, no Retry-After
+  var acme15rw = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s15, { clock: function () { return T; } }));
+  var r15 = await acme15rw.renewalWindow(certDer, { clock: advancingClock, random: function () { return 0.5; } });
+  check("#15 RW-15 renewNow uses a fresh post-fetch clock read", r15.renewNow === true && Date.parse(r15.selectedTime) === T + 15 * DAY);
+
   // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
   // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
   // never discard the usable window). Both keep the decision fail-OPEN on the poll cadence, fail-closed on data.
