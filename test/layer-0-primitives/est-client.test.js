@@ -394,6 +394,7 @@ function chal(o) {   // build a WWW-Authenticate Digest challenge from parts
   if (o.qop !== undefined) parts.push('qop="' + o.qop + '"');
   if (o.algorithm !== undefined) parts.push("algorithm=" + o.algorithm);
   if (o.opaque !== undefined) parts.push('opaque="' + o.opaque + '"');
+  if (o.domain !== undefined) parts.push('domain="' + o.domain + '"');
   if (o.stale) parts.push("stale=true");
   return { "www-authenticate": "Digest " + parts.join(", ") };
 }
@@ -499,6 +500,32 @@ async function testDigestAuth() {
   var tSel = fakeTransport([{ status: 401, headers: { "www-authenticate": 'Digest realm="est", nonce="s1", qop="auth", algorithm=MD5, Digest realm="est", nonce="s2", algorithm=SHA-256' }, body: "" }, cacertsOK([S.cert])]);
   var rSel = await pki.est.cacerts(BASE, { transport: tSel, auth: { scheme: "digest", username: "u", password: "p", allowMD5: true } });
   check("#D-select the caller policy flows into selection: the usable MD5+qop offer is answered, not the unusable SHA-256 no-qop one", rSel.certificates.length === 1 && digestParam(tSel.calls[1].headers.authorization, "algorithm") === "MD5" && digestParam(tSel.calls[1].headers.authorization, "nonce") === "s1");
+  // D-space: a same-origin redirect to a URI OUTSIDE the challenge's protection space (domain) is sent
+  // unauthenticated, and the target resource's OWN Digest realm drives a fresh authentication instead of being
+  // blocked by the first realm's one-shot guard. Realm "est" is scoped to /cacerts; the redirect enters realm
+  // "mirror" at /mirror (RFC 7616 sec. 3.3 / 3.5).
+  var MIRROR = "https://ca.example/.well-known/est/mirror";
+  var tSp = fakeTransport([
+    chal401({ realm: "est", nonce: "nA", qop: "auth", algorithm: "SHA-256", domain: CACERTS_URI }),
+    { status: 302, headers: { location: MIRROR }, body: "" },
+    chal401({ realm: "mirror", nonce: "nB", qop: "auth", algorithm: "SHA-256" }),
+    cacertsOK([S.cert]),
+  ]);
+  var rSp = await pki.est.cacerts(BASE, { transport: tSp, auth: DIG });
+  check("#D-space a redirect out of the challenge domain is unauthenticated, and the new realm authenticates fresh",
+    rSp.certificates.length === 1 && tSp.calls.length === 4 &&
+    digestParam(tSp.calls[1].headers.authorization, "realm") === "est" &&
+    !(tSp.calls[2].headers && tSp.calls[2].headers.authorization) &&
+    digestParam(tSp.calls[3].headers.authorization, "realm") === "mirror" && digestParam(tSp.calls[3].headers.authorization, "nonce") === "nB");
+  // D-space-reject: a SAME-realm non-stale second 401 is a rejection of the credential, NOT a new protection
+  // space -- the realm check must not turn a genuine rejection into an open re-answer loop.
+  var tRej = fakeTransport([chal401({ realm: "est", nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ realm: "est", nonce: "n2", qop: "auth", algorithm: "SHA-256" })]);
+  check("#D-space-reject a same-realm non-stale second 401 is a rejection, not a new space", (await codeOf(pki.est.cacerts(BASE, { transport: tRej, auth: DIG }))) === "est/auth-required" && tRej.calls.length === 2);
+  // D-space-bound: a server that loops with an endless stream of NEW realms is bounded (maxRedirects), never
+  // answered forever.
+  var manyRealms = [];
+  for (var si = 0; si < 6; si++) manyRealms.push(chal401({ realm: "r" + si, nonce: "z" + si, qop: "auth", algorithm: "SHA-256" }));
+  check("#D-space-bound an endless stream of new Digest realms is bounded (never an open loop)", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport(manyRealms), auth: { scheme: "digest", username: "u", password: "p" }, maxRedirects: 3 }))) === "est/auth-required");
 }
 
 async function main() {
