@@ -438,6 +438,16 @@ async function testDigestAuth() {
   var t6 = fakeTransport([chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ nonce: "n2", qop: "auth", algorithm: "SHA-256", stale: true }), enrollOK([S.cert])]);
   var r6 = await pki.est.simpleenroll(BASE, CSR, { transport: t6, auth: { scheme: "digest", username: "u", password: "p", maxStaleRetries: 1 } });
   check("#D-6 a stale=true re-challenge is retried (bounded) with the fresh nonce", r6.certificate.equals(S.cert) && t6.calls.length === 3 && digestParam(t6.calls[2].headers.authorization, "nonce") === "n2");
+  // D-6-prefer-stale: a credentialed request is rejected with TWO same-realm offers -- a stronger stale=false
+  // (terminal) and a weaker usable stale=true (retryable). Selection must prefer the RETRYABLE stale offer so
+  // the request re-answers instead of being refused because the strongest offer happened to be non-stale.
+  var tStale = fakeTransport([
+    chal401({ realm: "est", nonce: "nA", qop: "auth", algorithm: "SHA-256" }),
+    { status: 401, headers: { "www-authenticate": 'Digest realm="est", nonce="nB1", qop="auth", algorithm=SHA-512-256, Digest realm="est", nonce="nB2", qop="auth", algorithm=SHA-256, stale=true' }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rStale = await pki.est.cacerts(BASE, { transport: tStale, auth: DIG });
+  check("#D-6-prefer-stale a retryable stale offer is preferred over a stronger non-stale one in a rejection", rStale.certificates.length === 1 && tStale.calls.length === 3 && digestParam(tStale.calls[2].headers.authorization, "algorithm") === "SHA-256" && digestParam(tStale.calls[2].headers.authorization, "nonce") === "nB2");
   // D-7 / D-8 scheme mismatch
   check("#D-7 Digest requested but only Basic offered", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": 'Basic realm="est"' }, body: "" }), auth: DIG }))) === "est/auth-required");
   var t8 = fakeTransport({ status: 401, headers: chal({ nonce: "n" }), body: "" });
