@@ -972,6 +972,9 @@ async function testAlternateChains() {
   // AL-25 an encoded dot that is NOT a whole dot-segment (e.g. a filename 0%2ex == 0.x) is a valid target and
   // must NOT be rejected -- only a segment that decodes to "." or ".." is a traversal.
   check("#16 AL-25 an encoded dot outside a dot-segment is allowed", (await altCount("</cert/1/alt/0%2ex>;rel=\"alternate\"")) === 1);
+  // AL-26 a quoted value must be a WELL-FORMED quoted-string (RFC 7230): an unescaped interior quote (a""b) or a
+  // dangling backslash is malformed, not merely first/last-char-is-a-quote.
+  check("#16 AL-26 a malformed quoted Link value fails closed", (await codeForLink("<" + ALT0 + ">;title=\"a\"\"b\";rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
