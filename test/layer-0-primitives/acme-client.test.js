@@ -775,6 +775,11 @@ async function testRenewalWindow() {
   var s16 = A.acmeServer({ renewalInfoResponse: riResp(NA - 100 * DAY, NA + 100 * DAY) });   // window straddles notAfter
   var r16 = await clientAt(s16, NA - 200 * DAY).renewalWindow(certDer, { random: function () { return 1; } });   // draw the max
   check("#15 RW-16 the selected time is clamped to notAfter", Date.parse(r16.selectedTime) === NA);
+  // RW-17 when the ENTIRE suggested window starts after notAfter, there is no valid renewal time in it, so the
+  // caller must renew immediately (renewNow true), not schedule for the last-valid instant.
+  var s17rw = A.acmeServer({ renewalInfoResponse: riResp(NA + 10 * DAY, NA + 20 * DAY) });   // window entirely past expiry
+  var r17rw = await clientAt(s17rw, NA - 10 * DAY).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-17 a window starting after expiry forces renewNow", r17rw.renewNow === true && Date.parse(r17rw.selectedTime) === NA);
 
   // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
   // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
@@ -933,6 +938,10 @@ async function testAlternateChains() {
   var empties = []; for (var e18 = 0; e18 < 10000; e18++) empties.push("");
   var acme18 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: empties }));
   check("#16 AL-18 many empty Link fields hit the aggregate cap", (await codeOf(acme18.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-link");
+
+  // AL-19 a relative Link URI carrying whitespace that URL parsing would REPAIR is rejected, not silently
+  // resolved (RFC 3986: a URI-reference has no raw whitespace) -- mirrors the client's own URL canonicality gate.
+  check("#16 AL-19 a Link URI with repairable whitespace fails closed", (await codeForLink("< /cert/1/alt/0>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
