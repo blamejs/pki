@@ -479,6 +479,18 @@ async function testDigestAuth() {
   // D-stale-samenonce: a stale=true re-challenge that REUSES the nonce terminates (RFC 7616 requires a fresh nonce)
   var tSs = fakeTransport([chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256", stale: true })]);
   check("#D-stale-samenonce a stale=true re-challenge reusing the same nonce terminates (a fresh nonce is required)", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: tSs, auth: { scheme: "digest", username: "u", password: "p", maxStaleRetries: 2 } }))) === "est/auth-required" && tSs.calls.length === 2);
+  // D-redirect: a same-origin redirect after a Digest 401 recomputes the answer for the NEW request-target (a
+  // Digest response is method+uri-bound, unlike Basic) -- the cached answer's stale uri would otherwise be rejected.
+  var tRd = fakeTransport([
+    chal401({ nonce: "n", qop: "auth", algorithm: "SHA-256" }),
+    { status: 302, headers: { location: "https://ca.example/.well-known/est/mirror" }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rRd = await pki.est.cacerts(BASE, { transport: tRd, auth: { scheme: "digest", username: "u", password: "p" } });
+  check("#D-redirect a same-origin redirect recomputes the Digest answer for the new request-target", rRd.certificates.length === 1 && tRd.calls.length === 3 &&
+    digestParam(tRd.calls[1].headers.authorization, "uri") === "/.well-known/est/cacerts" &&
+    digestParam(tRd.calls[2].headers.authorization, "uri") === "/.well-known/est/mirror" &&
+    recomputeDigest(tRd.calls[2].headers.authorization, { method: "GET", uri: "/.well-known/est/mirror", username: "u", password: "p" }));
 }
 
 async function main() {
