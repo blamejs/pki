@@ -532,6 +532,15 @@ async function testDigestAuth() {
   var tSel = fakeTransport([{ status: 401, headers: { "www-authenticate": 'Digest realm="est", nonce="s1", qop="auth", algorithm=MD5, Digest realm="est", nonce="s2", algorithm=SHA-256' }, body: "" }, cacertsOK([S.cert])]);
   var rSel = await pki.est.cacerts(BASE, { transport: tSel, auth: { scheme: "digest", username: "u", password: "p", allowMD5: true } });
   check("#D-select the caller policy flows into selection: the usable MD5+qop offer is answered, not the unusable SHA-256 no-qop one", rSel.certificates.length === 1 && digestParam(tSel.calls[1].headers.authorization, "algorithm") === "MD5" && digestParam(tSel.calls[1].headers.authorization, "nonce") === "s1");
+  // D-select-applicable: a 401 offers a STRONGER challenge scoped (via domain) to a DIFFERENT resource and a
+  // weaker one scoped to THIS request. Selection must prefer the one whose protection space covers the request,
+  // or the client would omit the credential for the chosen (out-of-space) challenge and loop on 401s.
+  var tApp = fakeTransport([
+    { status: 401, headers: { "www-authenticate": 'Digest realm="r", nonce="n1", qop="auth", algorithm=SHA-512-256, domain="/other", Digest realm="r", nonce="n2", qop="auth", algorithm=SHA-256, domain="' + CACERTS_URI + '"' }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rApp = await pki.est.cacerts(BASE, { transport: tApp, auth: DIG });
+  check("#D-select-applicable an offer whose domain covers THIS request beats a stronger one scoped elsewhere", rApp.certificates.length === 1 && tApp.calls.length === 2 && digestParam(tApp.calls[1].headers.authorization, "algorithm") === "SHA-256" && digestParam(tApp.calls[1].headers.authorization, "nonce") === "n2");
   // D-space: a same-origin redirect to a URI OUTSIDE the challenge's protection space (domain) is sent
   // unauthenticated, and the target resource's OWN Digest realm drives a fresh authentication instead of being
   // blocked by the first realm's one-shot guard. Realm "est" is scoped to /cacerts; the redirect enters realm
