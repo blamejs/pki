@@ -126,6 +126,9 @@ async function run() {
   check("SK-17b. parseServerKeygenResponse rejects a bad serialNumber typed (not a raw BigInt error)", (await codeOf(Promise.resolve().then(function () { return pki.est.parseServerKeygenResponse(multipart([{ ct: ENC_PART, body: envelopedKeyCI().toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: CERT_PART.toString("base64") }]), SK_CT, { expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: {} } }); }))) === "est/bad-input");
   // SK-18: a bogus opts.auth.scheme is caught at config time, even when the server would answer 200.
   check("SK-18. a bogus opts.auth.scheme is rejected at construction (not deferred to a 401)", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))), auth: { scheme: "bogus" } }))) === "est/bad-input");
+  // SK-19: a mixed-case Content-Type header (an injected / non-Node transport) is read case-insensitively.
+  var r19 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: { "Content-Type": SK_CT }, body: multipart([{ ct: "application/pkcs8", body: pkcs8.toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: CERT_PART.toString("base64") }]) }) });
+  check("SK-19. a mixed-case Content-Type header is read case-insensitively -> the multipart parses", !!r19.privateKey && r19.certificates.length === 1);
 
   // ===== csrattrs -- accept =====
   var tc1 = fakeTransport(csrattrsOK(b.sequence([b.oid(CHALLENGE_PW)])));

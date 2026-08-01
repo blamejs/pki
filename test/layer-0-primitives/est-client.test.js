@@ -491,6 +491,7 @@ async function testDigestAuth() {
     digestParam(tRd.calls[1].headers.authorization, "uri") === "/.well-known/est/cacerts" &&
     digestParam(tRd.calls[2].headers.authorization, "uri") === "/.well-known/est/mirror" &&
     recomputeDigest(tRd.calls[2].headers.authorization, { method: "GET", uri: "/.well-known/est/mirror", username: "u", password: "p" }));
+  check("#D-redirect-nc the reused nonce increments the nonce-count across the redirect (never repeats a (nonce, nc) pair)", digestParam(tRd.calls[1].headers.authorization, "nc") === "00000001" && digestParam(tRd.calls[2].headers.authorization, "nc") === "00000002");
 }
 
 async function main() {
