@@ -111,6 +111,10 @@ async function run() {
   check("DG-space-absuri-port. an explicit default port in an absolute domain URI is normalized (matches the request's normalized origin)", httpDigest.inProtectionSpace(chPort, "https://ca.example", "/enroll/x") === true);
   var chPortAlt = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example:8443/enroll"', E, "bad");
   check("DG-space-absuri-port-diff. a NON-default port is a different origin (not normalized away)", httpDigest.inProtectionSpace(chPortAlt, "https://ca.example", "/enroll/x") === false);
+  var chQabs = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example/enroll?tenant=a"', E, "bad");
+  check("DG-space-query. a domain entry's QUERY is preserved and narrows the space (covers ?tenant=a, not ?tenant=b)", httpDigest.inProtectionSpace(chQabs, ORIG, "/enroll?tenant=a") === true && httpDigest.inProtectionSpace(chQabs, ORIG, "/enroll?tenant=b") === false);
+  var chNoQ = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="/enroll"', E, "bad");
+  check("DG-space-query-noquery. a query-less domain entry covers its whole path (any query)", httpDigest.inProtectionSpace(chNoQ, ORIG, "/enroll?tenant=b") === true);
   check("DG-p-domain-unquoted. an UNQUOTED domain is rejected (fail closed, not silently widened to the whole server)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain=/a', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
 
   // ===== DG-username: RFC 7616 sec. 3.4 username / username* (RFC 5987 extended value) =====
@@ -125,6 +129,13 @@ async function run() {
   var chUhash = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, charset=UTF-8, userhash=true', E, "bad");
   var hdrUhash = httpDigest.answer(chUhash, { method: "GET", uri: "/x", username: uNonAscii, password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
   check("DG-username-userhash. userhash sends the hashed username in the legacy field, never username*", hdrUhash.indexOf("username*") === -1 && param(hdrUhash, "userhash") === "true" && /^[0-9a-f]+$/.test(param(hdrUhash, "username")));
+  // DG-realm-utf8: a non-ASCII realm under charset=UTF-8 must contribute its UTF-8 octets to A1 (like user/pass),
+  // not its Latin-1 code points, or the response disagrees with an RFC 7616 server.
+  var realmU8 = "r" + String.fromCharCode(0xe9);   // a non-ASCII realm, built without a raw source byte
+  var chRealm = httpDigest.parseChallenge('Digest realm="' + realmU8 + '", nonce="n", qop="auth", algorithm=SHA-256, charset=UTF-8', E, "bad");
+  var hdrRealm = httpDigest.answer(chRealm, { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  var reconHA1r = h("sha256", "u:" + Buffer.from(realmU8, "utf8").toString("latin1") + ":p");
+  check("DG-realm-utf8. a non-ASCII UTF-8 realm hashes as its UTF-8 octets in A1 (matches an RFC 7616 server)", param(hdrRealm, "response") === kd("sha256", reconHA1r, "n:" + param(hdrRealm, "nc") + ":cc:auth:" + h("sha256", "GET:/x")));
 
   // ===== DG-p-*: the UNTRUSTED challenge parser fails closed =====
   check("DG-p-realm. a Digest challenge missing realm is rejected (not defaulted)", codeOf(function () { httpDigest.parseChallenge('Digest nonce="n", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
