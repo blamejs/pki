@@ -104,6 +104,19 @@ async function run() {
   check("DG-space-absuri-foreign. an absolute-URI domain entry to a DIFFERENT origin never matches this origin's same path", httpDigest.inProtectionSpace(chAbs, "https://evil.example", "/enroll/x") === false);
   check("DG-p-domain-unquoted. an UNQUOTED domain is rejected (fail closed, not silently widened to the whole server)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain=/a', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
 
+  // ===== DG-username: RFC 7616 sec. 3.4 username / username* (RFC 5987 extended value) =====
+  var uNonAscii = "u" + String.fromCharCode(0xe9);   // "ue-acute" -- a non-ASCII username built without a raw source byte
+  var chU8 = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, charset=UTF-8', E, "bad");
+  var hdrU8 = httpDigest.answer(chU8, { method: "GET", uri: "/x", username: uNonAscii, password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  check("DG-username-star. a non-ASCII UTF-8 username is sent as the extended username* form (RFC 5987), not the legacy username", param(hdrU8, "username") === null && hdrU8.indexOf("username*=UTF-8''u%C3%A9") !== -1);
+  var reconHA1u = h("sha256", Buffer.from(uNonAscii, "utf8").toString("latin1") + ":r:p");
+  check("DG-username-star-a1. the response still hashes A1 over the UTF-8 octets (username* is only a transport encoding)", param(hdrU8, "response") === kd("sha256", reconHA1u, "n:" + param(hdrU8, "nc") + ":cc:auth:" + h("sha256", "GET:/x")));
+  var hdrAscii = httpDigest.answer(chU8, { method: "GET", uri: "/x", username: "alice", password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  check("DG-username-ascii. an ASCII username under charset=UTF-8 keeps the legacy quoted username", param(hdrAscii, "username") === "alice" && hdrAscii.indexOf("username*") === -1);
+  var chUhash = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, charset=UTF-8, userhash=true', E, "bad");
+  var hdrUhash = httpDigest.answer(chUhash, { method: "GET", uri: "/x", username: uNonAscii, password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  check("DG-username-userhash. userhash sends the hashed username in the legacy field, never username*", hdrUhash.indexOf("username*") === -1 && param(hdrUhash, "userhash") === "true" && /^[0-9a-f]+$/.test(param(hdrUhash, "username")));
+
   // ===== DG-p-*: the UNTRUSTED challenge parser fails closed =====
   check("DG-p-realm. a Digest challenge missing realm is rejected (not defaulted)", codeOf(function () { httpDigest.parseChallenge('Digest nonce="n", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
   check("DG-p-nonce. a Digest challenge missing nonce is rejected", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
