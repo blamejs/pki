@@ -755,6 +755,14 @@ async function testRenewalWindow() {
   var r9e = await clientAt(s9e, T).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-9 an explanationURL is surfaced", r9e.explanationURL === "https://ca.example/why");
 
+  // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
+  // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
+  // never discard the usable window). Both keep the decision fail-OPEN on the poll cadence, fail-closed on data.
+  var s13ra = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "99999999999" }) });
+  check("#15 RW-13 an over-ceiling Retry-After clamps to 24h", (await clientAt(s13ra, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 86400);
+  var s14ra = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "not-a-delay" }) });
+  check("#15 RW-14 a garbage Retry-After falls back to the default", (await clientAt(s14ra, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 21600);
+
   // RW-10 a non-200 renewalInfo (a server problem) after the pre-fetch gates surfaces as acme/server-problem.
   var s10 = A.acmeServer({ renewalInfoResponse: A.problem(503, "serverInternal", "renewalInfo unavailable") });
   check("#15 RW-10 a renewalInfo server problem propagates", (await codeOf(clientAt(s10, T).renewalWindow(certDer, { random: function () { return 0.5; } }))) === "acme/server-problem");

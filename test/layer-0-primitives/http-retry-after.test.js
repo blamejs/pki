@@ -59,6 +59,16 @@ function run() {
   // an HTTP-date with an impossible calendar day is rejected (round-trip check), returning NaN.
   check("an impossible calendar date returns NaN", isNaN(retryAfter.httpDateMs("Wed, 31 Feb 2026 00:00:00 GMT")));
 
+  // opts.cap clamps a value above the cap to the cap instead of rejecting it (a caller that clamps anyway).
+  check("cap clamps a delay above the cap to the cap", retryAfter.parse("100000", { cap: 86400, E: E, code: E_CODE }).retryAfterSeconds === 86400);
+  check("cap leaves a delay at/below the cap unchanged", retryAfter.parse("30", { cap: 86400, E: E, code: E_CODE }).retryAfterSeconds === 30);
+  check("cap clamps a delay beyond the one-year ceiling rather than rejecting", retryAfter.parse(String(retryAfter.MAX_RETRY_AFTER_SECONDS + 1000), { cap: 86400, E: E, code: E_CODE }).retryAfterSeconds === 86400);
+  check("cap clamps a far-future Retry-After date to the cap", retryAfter.parse("Wed, 21 Oct 2099 07:28:00 GMT", { now: Date.UTC(2026, 0, 1), cap: 86400, E: E, code: E_CODE }).retryAfterSeconds === 86400);
+  // opts.lenient surfaces an otherwise-rejected value as a null retryAfterSeconds instead of throwing.
+  check("lenient surfaces a garbage value as null (no throw)", retryAfter.parse("not-a-delay", { lenient: true, E: E, code: E_CODE }).retryAfterSeconds === null);
+  check("lenient surfaces an over-ceiling delay as null when uncapped", retryAfter.parse(String(retryAfter.MAX_RETRY_AFTER_SECONDS + 1), { lenient: true, E: E, code: E_CODE }).retryAfterSeconds === null);
+  check("lenient surfaces an over-horizon date as null when uncapped", retryAfter.parse("Wed, 21 Oct 2099 07:28:00 GMT", { now: Date.UTC(2026, 0, 1), lenient: true, E: E, code: E_CODE }).retryAfterSeconds === null);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
