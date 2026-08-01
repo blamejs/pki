@@ -142,6 +142,9 @@ async function run() {
   // ===== serverkeygen -- reject =====
   var t6 = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
   check("SK-6. CSR advertised a KEK but the key part is cleartext -> downgrade refused", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t6 }))) === "est/expected-encrypted-key" && t6.calls.length === 1);
+  // SK-6b: the reverse -- the CSR advertised NO key-encryption key, but the server returned an EnvelopedData.
+  // The client cannot decrypt it, so an unsolicited encrypted key is refused rather than surfaced as unusable.
+  check("SK-6b. an encrypted key when the CSR requested no encryption is refused (unsolicited encryption)", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64"))) }))) === "est/unexpected-encrypted-key");
   check("SK-7. encrypted to a different recipient than the CSR advertised", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: Buffer.from([0x99, 0x99]) }).toString("base64"))) }))) === "est/recipient-mismatch");
   check("SK-8. a three-part body", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply(null, null, { raw: multipart([{ ct: "application/pkcs8", body: "AA==" }, { ct: "application/pkcs8", body: "AA==" }, { ct: "text/plain", body: "x" }]) })) }))) === "est/bad-multipart");
   check("SK-9. a 200 non-multipart content-type", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: ct("application/pkcs7-mime"), body: "AA==" }) }))) === "est/bad-content-type");
