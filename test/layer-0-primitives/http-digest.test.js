@@ -102,6 +102,10 @@ async function run() {
   var chAbs = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example/enroll"', E, "bad");
   check("DG-space-absuri. an absolute-URI domain entry matches by origin AND path", httpDigest.inProtectionSpace(chAbs, ORIG, "/enroll/x") === true && httpDigest.inProtectionSpace(chAbs, ORIG, "/other") === false);
   check("DG-space-absuri-foreign. an absolute-URI domain entry to a DIFFERENT origin never matches this origin's same path", httpDigest.inProtectionSpace(chAbs, "https://evil.example", "/enroll/x") === false);
+  var chPort = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example:443/enroll"', E, "bad");
+  check("DG-space-absuri-port. an explicit default port in an absolute domain URI is normalized (matches the request's normalized origin)", httpDigest.inProtectionSpace(chPort, "https://ca.example", "/enroll/x") === true);
+  var chPortAlt = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example:8443/enroll"', E, "bad");
+  check("DG-space-absuri-port-diff. a NON-default port is a different origin (not normalized away)", httpDigest.inProtectionSpace(chPortAlt, "https://ca.example", "/enroll/x") === false);
   check("DG-p-domain-unquoted. an UNQUOTED domain is rejected (fail closed, not silently widened to the whole server)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain=/a', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
 
   // ===== DG-username: RFC 7616 sec. 3.4 username / username* (RFC 5987 extended value) =====
