@@ -969,6 +969,9 @@ async function testAlternateChains() {
   // AL-24 a percent-encoded dot-segment (%2e%2e) in a relative URI would be DECODED and resolved into a path
   // traversal by URL parsing, changing the target -- reject it (the absolute path hits _clientUrl's own gate).
   check("#16 AL-24 a percent-encoded dot-segment in a relative Link URI fails closed", (await codeForLink("</cert/%2e%2e/alt/0>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-25 an encoded dot that is NOT a whole dot-segment (e.g. a filename 0%2ex == 0.x) is a valid target and
+  // must NOT be rejected -- only a segment that decodes to "." or ".." is a traversal.
+  check("#16 AL-25 an encoded dot outside a dot-segment is allowed", (await altCount("</cert/1/alt/0%2ex>;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
