@@ -457,6 +457,15 @@ async function testDigestAuth() {
   ]);
   var rStaleN = await pki.est.cacerts(BASE, { transport: tStaleN, auth: DIG });
   check("#D-6-prefer-stale-fresh a stale offer with a FRESH nonce beats a stronger one repeating the rejected nonce", rStaleN.certificates.length === 1 && tStaleN.calls.length === 3 && digestParam(tStaleN.calls[2].headers.authorization, "algorithm") === "SHA-256" && digestParam(tStaleN.calls[2].headers.authorization, "nonce") === "nB");
+  // D-6-prefer-stale-realm: the stale-retry preference applies ONLY to the rejected realm. A stronger stale
+  // offer for a DIFFERENT realm B must not shadow a genuinely retryable stale offer for the rejected realm A.
+  var tRealmStale = fakeTransport([
+    chal401({ realm: "A", nonce: "nA", qop: "auth", algorithm: "SHA-256" }),
+    { status: 401, headers: { "www-authenticate": 'Digest realm="B", nonce="nB", qop="auth", algorithm=SHA-512-256, stale=true, Digest realm="A", nonce="nA2", qop="auth", algorithm=SHA-256, stale=true' }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rRealmStale = await pki.est.cacerts(BASE, { transport: tRealmStale, auth: DIG });
+  check("#D-6-prefer-stale-realm the stale-retry preference is restricted to the rejected realm (retries A, not a stronger B)", rRealmStale.certificates.length === 1 && tRealmStale.calls.length === 3 && digestParam(tRealmStale.calls[2].headers.authorization, "realm") === "A" && digestParam(tRealmStale.calls[2].headers.authorization, "nonce") === "nA2");
   // D-7 / D-8 scheme mismatch
   check("#D-7 Digest requested but only Basic offered", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": 'Basic realm="est"' }, body: "" }), auth: DIG }))) === "est/auth-required");
   var t8 = fakeTransport({ status: 401, headers: chal({ nonce: "n" }), body: "" });
