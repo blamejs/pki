@@ -874,6 +874,12 @@ async function testAlternateChains() {
   var s13 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
   var r13 = await (await withAccount(s13)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
   check("#16 AL-13 a predicate accepting the primary skips the alternate fetch", r13.certificate.equals(leafDer) && altCalls(s13) === 0);
+
+  // AL-14 the Link header size cap is AGGREGATE, not per-field: an array of fields each under the per-field
+  // size but summing over the cap fails closed (CWE-770 -- a duplicate/injected Link array cannot amplify).
+  var bigField = "<" + ALT0 + ">;rel=\"alternate\";title=\"" + "a".repeat(5000) + "\"";
+  var acme14 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: [bigField, bigField] }));
+  check("#16 AL-14 the Link header cap is aggregate across fields", (await codeOf(acme14.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
 }
 
 async function main() {
