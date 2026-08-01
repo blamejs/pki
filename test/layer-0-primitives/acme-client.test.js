@@ -780,6 +780,15 @@ async function testRenewalWindow() {
   var s17rw = A.acmeServer({ renewalInfoResponse: riResp(NA + 10 * DAY, NA + 20 * DAY) });   // window entirely past expiry
   var r17rw = await clientAt(s17rw, NA - 10 * DAY).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-17 a window starting after expiry forces renewNow", r17rw.renewNow === true && Date.parse(r17rw.selectedTime) === NA);
+  // RW-18 a window whose start is EXACTLY notAfter is equally unusable -- the >= boundary forces renewNow.
+  var s18 = A.acmeServer({ renewalInfoResponse: riResp(NA, NA + 10 * DAY) });
+  var r18 = await clientAt(s18, NA - 10 * DAY).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-18 a window starting exactly at notAfter forces renewNow", r18.renewNow === true);
+  // RW-19 the expiry gate is EXCLUSIVE of notAfter (X.509 validity is inclusive, matching path-validate's t > notAfter):
+  // a cert at exactly notAfter is still renewable (not yet expired), so the decision proceeds.
+  var s19 = A.acmeServer({ renewalInfoResponse: riResp(NA - 20 * DAY, NA - 10 * DAY) });
+  var r19 = await clientAt(s19, NA).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-19 a certificate at exactly notAfter is still renewable, not expired", r19.renewNow === true);
 
   // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
   // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
