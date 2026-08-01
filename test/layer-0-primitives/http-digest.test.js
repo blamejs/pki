@@ -137,6 +137,14 @@ async function run() {
   var hdrRealm = httpDigest.answer(chRealm, { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
   var reconHA1r = h("sha256", "u:" + realmOctets + ":p");   // realm hashed RAW (already the wire octets), not re-encoded
   check("DG-realm-utf8. a UTF-8 realm's incoming header octets are hashed raw (not re-encoded), matching the server", param(hdrRealm, "response") === kd("sha256", reconHA1r, "n:" + param(hdrRealm, "nc") + ":cc:auth:" + h("sha256", "GET:/x")));
+  // DG-cred-nfc: a canonically DECOMPOSED UTF-8 credential (e + combining acute) is NFC-normalized before
+  // hashing, so it produces the SAME digest a server computes from the precomposed form (RFC 7616 sec. 4).
+  var decomposed = "e" + String.fromCharCode(0x0301);   // "e" + combining acute -> NFC "e-acute" (U+00E9)
+  var composedOctets = Buffer.from(decomposed.normalize("NFC"), "utf8").toString("latin1");
+  var chNfc = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, charset=UTF-8', E, "bad");
+  var hdrNfc = httpDigest.answer(chNfc, { method: "GET", uri: "/x", username: decomposed, password: decomposed, policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  var reconHA1n = h("sha256", composedOctets + ":r:" + composedOctets);
+  check("DG-cred-nfc. a decomposed UTF-8 credential is NFC-normalized before hashing (matches the precomposed form)", param(hdrNfc, "response") === kd("sha256", reconHA1n, "n:" + param(hdrNfc, "nc") + ":cc:auth:" + h("sha256", "GET:/x")));
 
   // ===== DG-p-*: the UNTRUSTED challenge parser fails closed =====
   check("DG-p-realm. a Digest challenge missing realm is rejected (not defaulted)", codeOf(function () { httpDigest.parseChallenge('Digest nonce="n", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
