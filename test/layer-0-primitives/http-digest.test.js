@@ -89,17 +89,19 @@ async function run() {
   check("DG-select-none. all-unusable offers still return the strongest so answer() reports the specific reason", chNone.algorithm === "SHA-512-256" && codeOf(function () { httpDigest.answer(chNone, { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES } }, E); }) === "est/digest-no-qop");
 
   // ===== DG-space: the domain protection space (RFC 7616 sec. 3.3 / 3.5) =====
+  var ORIG = "https://ca.example";
   var chDom = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="/a /c/d"', E, "bad");
   check("DG-p-domain. the domain directive parses to the list of protection-space URIs", Array.isArray(chDom.domain) && chDom.domain.length === 2 && chDom.domain[0] === "/a" && chDom.domain[1] === "/c/d");
-  check("DG-space-in. a path at or under a domain URI is in the protection space", httpDigest.inProtectionSpace(chDom, "/a") === true && httpDigest.inProtectionSpace(chDom, "/a/x") === true && httpDigest.inProtectionSpace(chDom, "/c/d/e") === true);
-  check("DG-space-out. a path outside every domain URI is NOT in the protection space", httpDigest.inProtectionSpace(chDom, "/b") === false);
-  check("DG-space-boundary. the prefix is path-segment aware (/a does not cover /ab)", httpDigest.inProtectionSpace(chDom, "/ab") === false);
+  check("DG-space-in. a path at or under a domain URI is in the protection space", httpDigest.inProtectionSpace(chDom, ORIG, "/a") === true && httpDigest.inProtectionSpace(chDom, ORIG, "/a/x") === true && httpDigest.inProtectionSpace(chDom, ORIG, "/c/d/e") === true);
+  check("DG-space-out. a path outside every domain URI is NOT in the protection space", httpDigest.inProtectionSpace(chDom, ORIG, "/b") === false);
+  check("DG-space-boundary. the prefix is path-segment aware (/a does not cover /ab)", httpDigest.inProtectionSpace(chDom, ORIG, "/ab") === false);
   var chNoDom = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256', E, "bad");
-  check("DG-space-nodomain. an absent domain means the whole server (any path in space)", chNoDom.domain === null && httpDigest.inProtectionSpace(chNoDom, "/anything") === true);
+  check("DG-space-nodomain. an absent domain means the whole server (any path in space)", chNoDom.domain === null && httpDigest.inProtectionSpace(chNoDom, ORIG, "/anything") === true);
   var chEmptyDom = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain=""', E, "bad");
-  check("DG-space-emptydomain. an empty domain is treated as the whole server (RFC 7616 sec. 3.3)", chEmptyDom.domain === null && httpDigest.inProtectionSpace(chEmptyDom, "/x") === true);
+  check("DG-space-emptydomain. an empty domain is treated as the whole server (RFC 7616 sec. 3.3)", chEmptyDom.domain === null && httpDigest.inProtectionSpace(chEmptyDom, ORIG, "/x") === true);
   var chAbs = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example/enroll"', E, "bad");
-  check("DG-space-absuri. an absolute-URI domain entry matches by its path component", httpDigest.inProtectionSpace(chAbs, "/enroll/x") === true && httpDigest.inProtectionSpace(chAbs, "/other") === false);
+  check("DG-space-absuri. an absolute-URI domain entry matches by origin AND path", httpDigest.inProtectionSpace(chAbs, ORIG, "/enroll/x") === true && httpDigest.inProtectionSpace(chAbs, ORIG, "/other") === false);
+  check("DG-space-absuri-foreign. an absolute-URI domain entry to a DIFFERENT origin never matches this origin's same path", httpDigest.inProtectionSpace(chAbs, "https://evil.example", "/enroll/x") === false);
   check("DG-p-domain-unquoted. an UNQUOTED domain is rejected (fail closed, not silently widened to the whole server)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain=/a', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
 
   // ===== DG-p-*: the UNTRUSTED challenge parser fails closed =====

@@ -87,7 +87,19 @@ var MATCH_CERT = certWithSpki(REAL_SPKI);
 var MATCH_CERT2 = certWithSpki(REAL_SPKI, 777n);
 var MATCH_CERT_PART = certsOnly([MATCH_CERT]);
 var CSR_PLAIN = csrWith([]);
-var CSR_KEK = csrWith([pki.est.decryptKeyIdentifierAttr(KID)]);
+// An ASYMMETRIC key-encryption request (AsymmetricDecryptKeyIdentifier) -- matches the subjectKeyIdentifier /
+// issuerAndSerial arms envelopedKeyCI builds. A SYMMETRIC request (DecryptKeyIdentifier -> a KEKRecipientInfo).
+var CSR_ASYM = csrWith([pki.est.asymmetricDecryptKeyIdentifierAttr(KID)]);
+var CSR_SYM = csrWith([pki.est.decryptKeyIdentifierAttr(KID)]);
+var AES256_WRAP = "2.16.840.1.101.3.4.1.45";
+// A KEKRecipientInfo ([2]) enveloped key -- the SYMMETRIC recipient arm a DecryptKeyIdentifier resolves to.
+function kekEnvelopedKeyCI(kekId) {
+  var kekid = b.sequence([b.octetString(Buffer.from(kekId))]);
+  var kekri = b.contextConstructed(2, Buffer.concat([b.integer(4n), kekid, algId(AES256_WRAP), b.octetString(Buffer.from([0xAA, 0xBB]))]));
+  var eci = b.sequence([b.oid(ID_SIGNED_DATA), algId(AES256_CBC), b.contextPrimitive(0, Buffer.from([0x11, 0x22]))]);
+  var env = b.sequence([b.integer(2n), b.set([kekri]), eci]);
+  return b.sequence([b.oid(ID_ENVELOPED_DATA), b.explicit(0, env)]);
+}
 // 200 serverkeygen reply: a key part + the certs-only part. o.raw overrides the whole body; o.tls forwards a cipher.
 function skReply(keyCt, keyBody, o) {
   o = o || {};
@@ -105,10 +117,19 @@ async function run() {
     t1.calls.length === 1 && t1.calls[0].method === "POST" && /\/serverkeygen$/.test(t1.calls[0].url) &&
     t1.calls[0].headers["content-type"] === "application/pkcs10" && t1.calls[0].headers.accept === "multipart/mixed" &&
     t1.calls[0].body === pki.est.transferEncode(CSR_PLAIN));
-  var r2 = await pki.est.serverkeygen(BASE, CSR_KEK, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64"))) });
-  check("SK-2. encrypted key, encryption auto-derived from the CSR's DecryptKeyIdentifier", !!r2.encryptedKey && r2.encryptedKey.contentTypeName === "envelopedData" && r2.certificates.length === 1 && !r2.privateKey);
-  var r3 = await pki.est.serverkeygen(BASE, CSR_KEK, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64"))), expectedRecipientIssuerSerial: { issuer: b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), serialNumber: 9n } });
+  var r2 = await pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64"))) });
+  check("SK-2. encrypted key, encryption auto-derived from the CSR's AsymmetricDecryptKeyIdentifier", !!r2.encryptedKey && r2.encryptedKey.contentTypeName === "envelopedData" && r2.certificates.length === 1 && !r2.privateKey);
+  var r3 = await pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64"))), expectedRecipientIssuerSerial: { issuer: b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), serialNumber: 9n } });
   check("SK-3. issuer+serial recipient resolves via a caller hint", !!r3.encryptedKey);
+  // SK-mech: the recipient MECHANISM (symmetric KEK vs asymmetric key) is preserved and must match the
+  // RecipientInfo arm -- identical identifier bytes on the WRONG arm do not satisfy the request, so the returned
+  // key is never mis-associated with a mechanism the client cannot use (RFC 7030 sec. 4.4.1).
+  var rSym = await pki.est.serverkeygen(BASE, CSR_SYM, { transport: fakeTransport(skReply(ENC_PART, kekEnvelopedKeyCI(KID).toString("base64"))) });
+  check("SK-mech-sym. a symmetric DecryptKeyIdentifier matches a KEKRecipientInfo of the same key id", !!rSym.encryptedKey);
+  check("SK-mech-a2s. an asymmetric request does NOT match a symmetric KEK arm with the same identifier bytes", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, kekEnvelopedKeyCI(KID).toString("base64"))) }))) === "est/recipient-mismatch");
+  check("SK-mech-s2a. a symmetric request does NOT match an asymmetric subjectKeyIdentifier arm with the same identifier bytes", (await codeOf(pki.est.serverkeygen(BASE, CSR_SYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64"))) }))) === "est/recipient-mismatch");
+  var tAmb = fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64")));
+  check("SK-mech-ambiguous. a CSR advertising BOTH a symmetric and an asymmetric key is refused pre-transport", (await codeOf(pki.est.serverkeygen(BASE, csrWith([pki.est.decryptKeyIdentifierAttr(KID), pki.est.asymmetricDecryptKeyIdentifierAttr(KID)]), { transport: tAmb }))) === "est/bad-input" && tAmb.calls.length === 0);
   var r4 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 202, headers: { "retry-after": "60" }, body: "" }) });
   check("SK-4. a 202 is surfaced, never slept", r4.retry === true && r4.retryAfterSeconds === 60);
   var r5 = await pki.est.serverkeygen(BASE, csrWith([], b.sequence([b.sequence([b.oid("1.3.101.112")]), b.bitString(Buffer.alloc(32, 9), 0)])), { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART })) });
@@ -116,14 +137,14 @@ async function run() {
 
   // ===== serverkeygen -- reject =====
   var t6 = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
-  check("SK-6. CSR advertised a KEK but the key part is cleartext -> downgrade refused", (await codeOf(pki.est.serverkeygen(BASE, CSR_KEK, { transport: t6 }))) === "est/expected-encrypted-key" && t6.calls.length === 1);
-  check("SK-7. encrypted to a different recipient than the CSR advertised", (await codeOf(pki.est.serverkeygen(BASE, CSR_KEK, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: Buffer.from([0x99, 0x99]) }).toString("base64"))) }))) === "est/recipient-mismatch");
+  check("SK-6. CSR advertised a KEK but the key part is cleartext -> downgrade refused", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t6 }))) === "est/expected-encrypted-key" && t6.calls.length === 1);
+  check("SK-7. encrypted to a different recipient than the CSR advertised", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: Buffer.from([0x99, 0x99]) }).toString("base64"))) }))) === "est/recipient-mismatch");
   check("SK-8. a three-part body", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply(null, null, { raw: multipart([{ ct: "application/pkcs8", body: "AA==" }, { ct: "application/pkcs8", body: "AA==" }, { ct: "text/plain", body: "x" }]) })) }))) === "est/bad-multipart");
   check("SK-9. a 200 non-multipart content-type", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: ct("application/pkcs7-mime"), body: "AA==" }) }))) === "est/bad-content-type");
   check("SK-10. a 200 empty body", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: ct(SK_CT), body: "" }) }))) === "est/empty-body");
-  check("SK-11. the encrypted key encapsulates id-data (not SignedData)", (await codeOf(pki.est.serverkeygen(BASE, CSR_KEK, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ innerType: ID_DATA, skid: KID }).toString("base64"))) }))) === "est/bad-key-part");
+  check("SK-11. the encrypted key encapsulates id-data (not SignedData)", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ innerType: ID_DATA, skid: KID }).toString("base64"))) }))) === "est/bad-key-part");
   var t12 = fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64")));
-  check("SK-12. opts contradicts the CSR (pre-transport)", (await codeOf(pki.est.serverkeygen(BASE, CSR_KEK, { transport: t12, requestedEncryption: false }))) === "est/bad-input" && t12.calls.length === 0);
+  check("SK-12. opts contradicts the CSR (pre-transport)", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t12, requestedEncryption: false }))) === "est/bad-input" && t12.calls.length === 0);
   check("SK-13a. a NULL cipher on the serverkeygen channel", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "ECDHE-RSA-NULL-SHA", standardName: "TLS_ECDHE_RSA_WITH_NULL_SHA" } } })) }))) === "est/weak-cipher");
   check("SK-13b. an EXPORT cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "EXP-RC4-MD5" } } })) }))) === "est/weak-cipher");
   check("SK-13c. an anonymous cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { standardName: "TLS_ECDH_anon_WITH_AES_128_CBC_SHA" } } })) }))) === "est/weak-cipher");
@@ -145,13 +166,13 @@ async function run() {
   var t16b = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
   check("SK-16b. expectedRecipientIssuerSerial on a no-KEK CSR is refused pre-transport", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: t16b, expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: 9n } }))) === "est/bad-input" && t16b.calls.length === 0);
   // SK-17: a bad expectedRecipientIssuerSerial.serialNumber is a typed est/bad-input, never a raw BigInt error.
-  check("SK-17a. a non-integer expectedRecipientIssuerSerial.serialNumber is a typed est/bad-input (verb)", (await codeOf(pki.est.serverkeygen(BASE, CSR_KEK, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64"))), expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: "not-a-number" } }))) === "est/bad-input");
+  check("SK-17a. a non-integer expectedRecipientIssuerSerial.serialNumber is a typed est/bad-input (verb)", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64"))), expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: "not-a-number" } }))) === "est/bad-input");
   check("SK-17b. parseServerKeygenResponse rejects a bad serialNumber typed (not a raw BigInt error)", (await codeOf(Promise.resolve().then(function () { return pki.est.parseServerKeygenResponse(multipart([{ ct: ENC_PART, body: envelopedKeyCI().toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: CERT_PART.toString("base64") }]), SK_CT, { expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: {} } }); }))) === "est/bad-input");
   // SK-17c/d: a NEGATIVE bigint serial is rejected like the negative number / non-digit string forms -- a
   // certificate serial is non-negative (RFC 5280 sec. 4.1.2.2), so the bigint branch is not a hole. Both the
   // verb's config-time gate and the shared recipient matcher reject it (no transport for the config-time gate).
   var t17c = fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64")));
-  check("SK-17c. a NEGATIVE bigint expectedRecipientIssuerSerial.serialNumber is refused pre-transport (verb)", (await codeOf(pki.est.serverkeygen(BASE, CSR_KEK, { transport: t17c, expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: -1n } }))) === "est/bad-input" && t17c.calls.length === 0);
+  check("SK-17c. a NEGATIVE bigint expectedRecipientIssuerSerial.serialNumber is refused pre-transport (verb)", (await codeOf(pki.est.serverkeygen(BASE, CSR_ASYM, { transport: t17c, expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: -1n } }))) === "est/bad-input" && t17c.calls.length === 0);
   check("SK-17d. the shared recipient matcher rejects a NEGATIVE bigint serial (parseServerKeygenResponse)", (await codeOf(Promise.resolve().then(function () { return pki.est.parseServerKeygenResponse(multipart([{ ct: ENC_PART, body: envelopedKeyCI().toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: CERT_PART.toString("base64") }]), SK_CT, { expectedRecipientIssuerSerial: { issuer: b.sequence([]), serialNumber: -1n } }); }))) === "est/bad-input");
   // SK-18: a bogus opts.auth.scheme is caught at config time, even when the server would answer 200.
   check("SK-18. a bogus opts.auth.scheme is rejected at construction (not deferred to a 401)", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))), auth: { scheme: "bogus" } }))) === "est/bad-input");
