@@ -87,6 +87,11 @@ async function run() {
   // specific policy reason (which opt to set) rather than a generic "no challenge".
   var chNone = httpDigest.parseChallenge('Digest realm="r", nonce="n1", algorithm=SHA-256, Digest realm="r", nonce="n2", algorithm=SHA-512-256', E, "bad", POL);
   check("DG-select-none. all-unusable offers still return the strongest so answer() reports the specific reason", chNone.algorithm === "SHA-512-256" && codeOf(function () { httpDigest.answer(chNone, { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES } }, E); }) === "est/digest-no-qop");
+  // DG-select-skip-malformed: a MALFORMED offer (missing nonce) alongside a VALID one is skipped, not fatal --
+  // parseChallenge throws only when NO valid Digest offer exists (RFC 7616 sec. 3.3).
+  var chSkip = httpDigest.parseChallenge('Digest realm="r", qop="auth", algorithm=MD5, Digest realm="r", nonce="n2", qop="auth", algorithm=SHA-256', E, "est/digest-bad-challenge");
+  check("DG-select-skip-malformed. a malformed Digest offer is skipped when a valid one remains", chSkip.algorithm === "SHA-256" && chSkip.nonce === "n2");
+  check("DG-select-all-malformed. when EVERY Digest offer is malformed, parseChallenge throws (none valid)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", qop="auth", Digest realm="r2", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
 
   // ===== DG-space: the domain protection space (RFC 7616 sec. 3.3 / 3.5) =====
   var ORIG = "https://ca.example";
