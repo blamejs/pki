@@ -531,6 +531,21 @@ async function testDigestAuth() {
     rSm.certificates.length === 1 && tSm.calls.length === 4 &&
     !(tSm.calls[2].headers && tSm.calls[2].headers.authorization) &&
     digestParam(tSm.calls[3].headers.authorization, "realm") === "est" && digestParam(tSm.calls[3].headers.authorization, "nonce") === "nM");
+  // D-space-nonce-preserve: when the out-of-domain resource challenges with the SAME still-valid nonce, the
+  // nonce-count must KEEP advancing (not reset to 1) -- a (nonce, nc) pair must never repeat or a server's
+  // replay detection rejects it (RFC 7616 sec. 3.4).
+  var tNp = fakeTransport([
+    chal401({ realm: "est", nonce: "nA", qop: "auth", algorithm: "SHA-256", domain: CACERTS_URI }),
+    { status: 302, headers: { location: MIRROR }, body: "" },
+    chal401({ realm: "est", nonce: "nA", qop: "auth", algorithm: "SHA-256" }),
+    cacertsOK([S.cert]),
+  ]);
+  var rNp = await pki.est.cacerts(BASE, { transport: tNp, auth: DIG });
+  check("#D-space-nonce-preserve a fresh challenge reusing the same nonce keeps the nonce-count advancing (no nc replay)",
+    rNp.certificates.length === 1 && tNp.calls.length === 4 &&
+    digestParam(tNp.calls[1].headers.authorization, "nc") === "00000001" &&
+    !(tNp.calls[2].headers && tNp.calls[2].headers.authorization) &&
+    digestParam(tNp.calls[3].headers.authorization, "nc") === "00000002");
   // D-space-reject: a SAME-realm non-stale second 401 is a rejection of the credential, NOT a new protection
   // space -- the realm check must not turn a genuine rejection into an open re-answer loop.
   var tRej = fakeTransport([chal401({ realm: "est", nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ realm: "est", nonce: "n2", qop: "auth", algorithm: "SHA-256" })]);

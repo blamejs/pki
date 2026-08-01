@@ -130,6 +130,10 @@ async function run() {
   check("SK-mech-s2a. a symmetric request does NOT match an asymmetric subjectKeyIdentifier arm with the same identifier bytes", (await codeOf(pki.est.serverkeygen(BASE, CSR_SYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64"))) }))) === "est/recipient-mismatch");
   var tAmb = fakeTransport(skReply(ENC_PART, envelopedKeyCI({ skid: KID }).toString("base64")));
   check("SK-mech-ambiguous. a CSR advertising BOTH a symmetric and an asymmetric key is refused pre-transport", (await codeOf(pki.est.serverkeygen(BASE, csrWith([pki.est.decryptKeyIdentifierAttr(KID), pki.est.asymmetricDecryptKeyIdentifierAttr(KID)]), { transport: tAmb }))) === "est/bad-input" && tAmb.calls.length === 0);
+  // SK-mech-sym-ias: a SYMMETRIC request plus a caller issuer+serial hint must NOT be satisfied by an ASYMMETRIC
+  // KeyTrans arm bearing that issuer+serial -- issuer+serial names a certificate (asymmetric) identity, so the
+  // symmetric key requested cannot decrypt it; the mechanism filter applies to the issuer+serial branch too.
+  check("SK-mech-sym-ias. a symmetric request is NOT satisfied by an asymmetric issuer+serial arm (undecryptable ciphertext)", (await codeOf(pki.est.serverkeygen(BASE, CSR_SYM, { transport: fakeTransport(skReply(ENC_PART, envelopedKeyCI().toString("base64"))), expectedRecipientIssuerSerial: { issuer: b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R")])])]), serialNumber: 9n } }))) === "est/recipient-mismatch");
   var r4 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 202, headers: { "retry-after": "60" }, body: "" }) });
   check("SK-4. a 202 is surfaced, never slept", r4.retry === true && r4.retryAfterSeconds === 60);
   var r5 = await pki.est.serverkeygen(BASE, csrWith([], b.sequence([b.sequence([b.oid("1.3.101.112")]), b.bitString(Buffer.alloc(32, 9), 0)])), { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART })) });
