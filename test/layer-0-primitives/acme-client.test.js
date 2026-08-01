@@ -194,6 +194,7 @@ async function testRenewalInfo() {
   var sInv = A.acmeServer({ renewalInfoResponse: A.json(200, { suggestedWindow: { start: "2027-02-01T00:00:00Z", end: "2027-01-01T00:00:00Z" } }) });
   var acmeInv = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sInv));
   check("#9 an inverted renewal window fails closed", (await codeOf(acmeInv.renewalInfo(certDer))) === "acme/bad-renewal-window");
+  check("#9 renewalInfo requires a DER Buffer", (function () { try { acme.renewalInfo("not-a-buffer"); return "NO-THROW"; } catch (e) { return e && e.code; } })() === "acme/bad-input");
 }
 
 // ---- 10 oversized response rejected before decode ---------------------------
@@ -754,6 +755,17 @@ async function testRenewalWindow() {
   // RW-10 a non-200 renewalInfo (a server problem) after the pre-fetch gates surfaces as acme/server-problem.
   var s10 = A.acmeServer({ renewalInfoResponse: A.problem(503, "serverInternal", "renewalInfo unavailable") });
   check("#15 RW-10 a renewalInfo server problem propagates", (await codeOf(clientAt(s10, T).renewalWindow(certDer, { random: function () { return 0.5; } }))) === "acme/server-problem");
+
+  // RW-11 a per-call clock overrides the client clock for the whole decision (expiry gate + renewNow).
+  var s11 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r11 = await clientAt(s11, T).renewalWindow(certDer, { clock: function () { return T + 30 * DAY; }, random: function () { return 0.5; } });
+  check("#15 RW-11 a per-call clock governs renewNow", r11.renewNow === true);   // the window is in the past per the call clock
+  check("#15 RW-11 a per-call clock past notAfter is expired", (await codeOf(clientAt(s11, T).renewalWindow(certDer, { clock: function () { return Date.parse("2041-01-01T00:00:00Z"); } }))) === "acme/certificate-expired");
+  check("#15 RW-11 a non-function clock is rejected", (await codeOf(clientAt(s11, T).renewalWindow(certDer, { clock: 5 }))) === "acme/bad-input");
+
+  // RW-12 when the CA omits Retry-After, a sensible clamped default (6h) is returned rather than null.
+  var s12 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });   // riResp sets no retry-after header
+  check("#15 RW-12 an absent Retry-After yields the default poll delay", (await clientAt(s12, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 21600);
 }
 
 // ---- 16 alternate-chain selection (RFC 8555 sec. 7.4.2 / RFC 8288 Link) ------
