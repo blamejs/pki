@@ -33,6 +33,7 @@ var KAT_WWW = 'Digest realm="http-auth@example.org", qop="auth, auth-int", algor
 var KAT_CNONCE = "f2/wE4q74E6zIJEtWaHKaf5wv/H5QzzpXusqGemxURZJ";
 var KAT_RESPONSE = "753927fa0e85d155564e2e272a28d1802ca10daf4496794697cf8db5856cb6c1";
 var POL = { allowMD5: false, allowLegacyQop: false };
+var CODES = { unsupportedAlgorithm: "est/digest-unsupported-algorithm", weakAlgorithm: "est/digest-weak-algorithm", noQop: "est/digest-no-qop", badChallenge: "est/digest-bad-challenge" };
 
 async function run() {
   // ===== DG-KAT: the RFC 7616 sec. 3.9.1 known-answer anchors A1/A2/KD byte-exact =====
@@ -66,9 +67,26 @@ async function run() {
   var a2ai = h("sha256", "POST:/enroll:" + h("sha256", "BODYBYTES"));
   check("DG-authint. auth-int folds H(entity-body) into A2", param(hdrAi, "qop") === "auth-int" && param(hdrAi, "response") === kd("sha256", h("sha256", "u:r:p"), "n:00000001:cc:auth-int:" + a2ai));
 
-  // ===== DG-select: multiple Digest challenges -> the most secure supported algorithm is chosen =====
+  // ===== DG-select: multiple Digest challenges -> the most secure USABLE algorithm is chosen =====
   var chSel = httpDigest.parseChallenge('Digest realm="r", nonce="n1", qop="auth", algorithm=MD5, Digest realm="r", nonce="n2", qop="auth", algorithm=SHA-256', E, "bad");
   check("DG-select. among multiple Digest challenges the most secure (SHA-256 > MD5) is selected", chSel.algorithm === "SHA-256" && chSel.nonce === "n2");
+  // DG-select-usable: a higher-ALGORITHM but policy-UNUSABLE challenge (SHA-512-256 with no qop, refused under
+  // the default policy) must NOT shadow a lower-ranked USABLE one (SHA-256 with qop=auth) -- else the client
+  // selects the strong-but-unusable offer and fails to authenticate though a usable one was on the wire.
+  var selMix = 'Digest realm="r", nonce="n1", algorithm=SHA-512-256, Digest realm="r", nonce="n2", qop="auth", algorithm=SHA-256';
+  var chUsable = httpDigest.parseChallenge(selMix, E, "bad", POL);
+  check("DG-select-usable. the highest-ranked USABLE challenge wins (SHA-256+qop over SHA-512-256 no-qop under default policy)", chUsable.algorithm === "SHA-256" && chUsable.nonce === "n2");
+  // ...and the selected usable challenge actually answers (proves selection picked an answerable offer).
+  var hdrUsable = httpDigest.answer(chUsable, { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  check("DG-select-usable-answers. the selected usable challenge produces a valid Authorization header", param(hdrUsable, "qop") === "auth" && param(hdrUsable, "nc") === "00000001");
+  // DG-select-policy: the SAME wire, with allowLegacyQop set, makes the SHA-512-256 no-qop challenge usable, so
+  // the stronger algorithm now wins -- selection genuinely follows the active policy, not a fixed table.
+  var chPolicy = httpDigest.parseChallenge(selMix, E, "bad", { allowLegacyQop: true });
+  check("DG-select-policy. selection follows the policy (SHA-512-256 no-qop wins once allowLegacyQop is set)", chPolicy.algorithm === "SHA-512-256" && chPolicy.nonce === "n1");
+  // DG-select-none: when NO challenge is usable, the highest-ranked one is returned so answer() reports the
+  // specific policy reason (which opt to set) rather than a generic "no challenge".
+  var chNone = httpDigest.parseChallenge('Digest realm="r", nonce="n1", algorithm=SHA-256, Digest realm="r", nonce="n2", algorithm=SHA-512-256', E, "bad", POL);
+  check("DG-select-none. all-unusable offers still return the strongest so answer() reports the specific reason", chNone.algorithm === "SHA-512-256" && codeOf(function () { httpDigest.answer(chNone, { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES } }, E); }) === "est/digest-no-qop");
 
   // ===== DG-p-*: the UNTRUSTED challenge parser fails closed =====
   check("DG-p-realm. a Digest challenge missing realm is rejected (not defaulted)", codeOf(function () { httpDigest.parseChallenge('Digest nonce="n", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
@@ -83,7 +101,6 @@ async function run() {
   check("DG-p-none. a header with no Digest scheme returns null (a Basic-only challenge is not a Digest one)", httpDigest.parseChallenge('Basic realm="r"', E, "bad") === null);
 
   // ===== DG-a-*: the answer() security policy fails closed =====
-  var CODES = { unsupportedAlgorithm: "est/digest-unsupported-algorithm", weakAlgorithm: "est/digest-weak-algorithm", noQop: "est/digest-no-qop", badChallenge: "est/digest-bad-challenge" };
   function ans(www, pol) { var ch = httpDigest.parseChallenge(www, E, "est/digest-bad-challenge"); return httpDigest.answer(ch, { method: "GET", uri: "/x", username: "u", password: "p", policy: { allowMD5: pol && pol.allowMD5, allowLegacyQop: pol && pol.allowLegacyQop, codes: CODES }, rng: function () { return "cc"; } }, E); }
   check("DG-a-unsup. an unsupported offered algorithm is refused, never downgraded", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-1', {}); }) === "est/digest-unsupported-algorithm");
   check("DG-a-md5. MD5 is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', {}); }) === "est/digest-weak-algorithm");

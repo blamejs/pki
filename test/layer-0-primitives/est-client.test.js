@@ -492,6 +492,13 @@ async function testDigestAuth() {
     digestParam(tRd.calls[2].headers.authorization, "uri") === "/.well-known/est/mirror" &&
     recomputeDigest(tRd.calls[2].headers.authorization, { method: "GET", uri: "/.well-known/est/mirror", username: "u", password: "p" }));
   check("#D-redirect-nc the reused nonce increments the nonce-count across the redirect (never repeats a (nonce, nc) pair)", digestParam(tRd.calls[1].headers.authorization, "nc") === "00000001" && digestParam(tRd.calls[2].headers.authorization, "nc") === "00000002");
+  // D-select: the caller's Digest policy MUST flow into challenge SELECTION, not just the answer. A 401 offers
+  // MD5 with qop=auth (usable only because this caller set allowMD5) and SHA-256 with no qop (a higher algorithm
+  // rank, but UNusable under this policy). The client must answer the usable MD5+qop offer; were selection blind
+  // to the policy it would pick the higher-ranked SHA-256 no-qop and then fail the no-qop gate at answer time.
+  var tSel = fakeTransport([{ status: 401, headers: { "www-authenticate": 'Digest realm="est", nonce="s1", qop="auth", algorithm=MD5, Digest realm="est", nonce="s2", algorithm=SHA-256' }, body: "" }, cacertsOK([S.cert])]);
+  var rSel = await pki.est.cacerts(BASE, { transport: tSel, auth: { scheme: "digest", username: "u", password: "p", allowMD5: true } });
+  check("#D-select the caller policy flows into selection: the usable MD5+qop offer is answered, not the unusable SHA-256 no-qop one", rSel.certificates.length === 1 && digestParam(tSel.calls[1].headers.authorization, "algorithm") === "MD5" && digestParam(tSel.calls[1].headers.authorization, "nonce") === "s1");
 }
 
 async function main() {
