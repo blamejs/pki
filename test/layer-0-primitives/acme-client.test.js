@@ -951,6 +951,11 @@ async function testAlternateChains() {
   // AL-19 a relative Link URI carrying whitespace that URL parsing would REPAIR is rejected, not silently
   // resolved (RFC 3986: a URI-reference has no raw whitespace) -- mirrors the client's own URL canonicality gate.
   check("#16 AL-19 a Link URI with repairable whitespace fails closed", (await codeForLink("< /cert/1/alt/0>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-20 a Link parameter NAME must be a token too (RFC 8288 / RFC 7230): whitespace in a name is malformed.
+  check("#16 AL-20 whitespace in a Link parameter name fails closed", (await codeForLink("<" + ALT0 + ">;bad name=x;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-21 a relative URI carrying any non-RFC-3986 character that URL parsing would percent-encode/repair (not
+  // just whitespace) is rejected before resolution -- e.g. an unencoded brace.
+  check("#16 AL-21 a relative Link URI with an invalid RFC 3986 char fails closed", (await codeForLink("</cert/1/alt/0{x}>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
