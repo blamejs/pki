@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.27",
+  "packageVersion": "0.3.28",
   "surface": {
     "C": {
       "kind": "object",
@@ -72,6 +72,9 @@
               "kind": "number"
             },
             "HSS_MAX_LEVELS": {
+              "kind": "number"
+            },
+            "HTTP_AUTH_HEADER_MAX_BYTES": {
               "kind": "number"
             },
             "HTTP_MAX_RESPONSE_BYTES": {
@@ -1291,6 +1294,9 @@
             "HSS_MAX_LEVELS": {
               "kind": "number"
             },
+            "HTTP_AUTH_HEADER_MAX_BYTES": {
+              "kind": "number"
+            },
             "HTTP_MAX_RESPONSE_BYTES": {
               "kind": "number"
             },
@@ -2139,6 +2145,10 @@
           "kind": "function",
           "arity": 4
         },
+        "csrattrs": {
+          "kind": "function",
+          "arity": 2
+        },
         "decryptKeyIdentifierAttr": {
           "kind": "function",
           "arity": 1
@@ -2162,6 +2172,10 @@
         "reenrollGuard": {
           "kind": "function",
           "arity": 2
+        },
+        "serverkeygen": {
+          "kind": "function",
+          "arity": 3
         },
         "simpleenroll": {
           "kind": "function",
@@ -3225,6 +3239,8 @@
     "pki.est.cacerts": "0.3.16",
     "pki.est.simpleenroll": "0.3.16",
     "pki.est.simplereenroll": "0.3.16",
+    "pki.est.serverkeygen": "0.3.28",
+    "pki.est.csrattrs": "0.3.28",
     "pki.errors.PkiError": "0.1.0",
     "pki.errors.defineClass": "0.1.0",
     "pki.hpke.setupS": "0.2.2",

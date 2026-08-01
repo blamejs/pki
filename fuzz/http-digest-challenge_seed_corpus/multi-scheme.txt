@@ -1,0 +1,1 @@
+Digest realm="x, Basic required", nonce="n", qop="auth", algorithm=MD5, Basic realm="y"

@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.28 — 2026-08-01
+
+pki.est gains its remaining RFC 7030 network verbs -- request a server-generated key pair with pki.est.serverkeygen, fetch the CA's CSR-attributes policy with pki.est.csrattrs, and authenticate with HTTP Digest as an alternative to HTTP Basic.
+
+### Added
+
+- pki.est.serverkeygen(baseUrl, csr, opts?) requests a server-generated key pair + certificate (RFC 7030 sec. 4.4): it POSTs the CSR (application/pkcs10, identical encoding to simpleenroll) to /.well-known/est/serverkeygen and returns { certificates, privateKey } for a cleartext PKCS#8 PrivateKeyInfo key part, { certificates, encryptedKey } for a CMS EnvelopedData key part (surfaced structurally, never decrypted), or { retry, retryAfterSeconds, retryAfterDate } on a 202. The certificates are returned raw (no leaf is selected -- the CA generated the key, so the issued certificate carries the generated public key, not the throwaway CSR key). Whether the key part must be encrypted, and to which recipient, is derived from the CSR's DecryptKeyIdentifier / AsymmetricDecryptKeyIdentifier attribute; an opts value that contradicts the CSR is refused, and a cleartext key delivered where the CSR requested encryption is refused. The delivered key's channel must negotiate a confidentiality-bearing cipher (a NULL / anonymous / EXPORT suite is refused). https-only, explicit-anchor, and the full redirect / auth / budget machinery of the enrollment verbs apply.
+- pki.est.csrattrs(baseUrl, opts?) fetches the CA's CSR-attributes policy (RFC 7030 sec. 4.5, RFC 9908): a 200 application/csrattrs body is parsed and returned as { available: true, attrs, plan }, where plan is the enroll-attribute plan the caller builds its next CSR from; a 204 or 404 is { available: false } (a valid "CSR Attributes Response not available"); an empty CsrAttrs is a complete empty policy. The verb never applies attributes to a CSR itself. Server authentication is not required for this policy GET, but a 401 is honored so the auth path stays available.
+- HTTP Digest access authentication (RFC 7616) is available on every EST verb as an alternative to HTTP Basic via opts.auth = { scheme: "digest", username, password }. SHA-256 and SHA-512-256 are supported; MD5 and MD5-sess are refused unless opts.auth.allowMD5 is set, and a legacy no-qop (RFC 2069) challenge is refused unless opts.auth.allowLegacyQop is set. Among multiple offered challenges the most secure supported algorithm is chosen; an unsupported algorithm or an unusable challenge fails closed rather than downgrading to a weaker scheme. A server stale=true re-challenge is answered under a bounded opts.auth.maxStaleRetries budget. As with Basic, the credential is answered only on the origin the caller authenticated to -- never sent to a redirected origin, and never as a silent Basic downgrade of a Digest challenge.
+
 ## v0.3.27 — 2026-07-31
 
 pki.cmp.session drives a full CMP certificate enrollment end to end -- build, transfer, and verify every leg of an ir/cr/kur/p10cr exchange, with every response protection-checked before its body is read.

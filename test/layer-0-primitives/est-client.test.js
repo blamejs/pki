@@ -365,6 +365,122 @@ async function testAmbiguousIssued() {
   check("#30 two certificates matching the CSR key are rejected as ambiguous", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: t }))) === "est/ambiguous-issued-cert");
 }
 
+// ---- HTTP Digest authentication (RFC 7616), driven cross-verb over the 401->200 flow ----
+var _crypto = require("crypto");
+function digestParam(header, name) {
+  var m = new RegExp("(?:^Digest |, )" + name + "=(\"(?:[^\"\\\\]|\\\\.)*\"|[^,]*)").exec(String(header || ""));
+  if (!m) return null;
+  var v = m[1];
+  return v.charAt(0) === "\"" ? v.slice(1, -1).replace(/\\(.)/g, "$1") : v;
+}
+// Recompute the Digest response from the EMITTED header (self-consistency; no rng injection) -- proves the
+// answer is internally correct over the real request-target + the client's own cnonce.
+function recomputeDigest(header, p) {
+  var ALG = { "SHA-256": "sha256", "SHA-512-256": "sha512-256", "MD5": "md5" };
+  var hash = ALG[digestParam(header, "algorithm")];
+  if (!hash) return false;
+  function h(s) { return _crypto.createHash(hash).update(s, "latin1").digest("hex"); }
+  var nonce = digestParam(header, "nonce"), cnonce = digestParam(header, "cnonce"), nc = digestParam(header, "nc"),
+    qop = digestParam(header, "qop"), realm = digestParam(header, "realm"), uri = digestParam(header, "uri");
+  var HA1 = h((p.username || "") + ":" + realm + ":" + (p.password || ""));
+  var A2 = qop === "auth-int" ? p.method + ":" + uri + ":" + h(p.body == null ? "" : p.body) : p.method + ":" + uri;
+  var HA2 = h(A2);
+  var expect = qop ? h(HA1 + ":" + nonce + ":" + nc + ":" + cnonce + ":" + qop + ":" + HA2) : h(HA1 + ":" + nonce + ":" + HA2);
+  return digestParam(header, "response") === expect;
+}
+function chal(o) {   // build a WWW-Authenticate Digest challenge from parts
+  var parts = ['realm="' + (o.realm === undefined ? "est" : o.realm) + '"'];
+  if (o.nonce !== undefined) parts.push('nonce="' + o.nonce + '"');
+  if (o.qop !== undefined) parts.push('qop="' + o.qop + '"');
+  if (o.algorithm !== undefined) parts.push("algorithm=" + o.algorithm);
+  if (o.opaque !== undefined) parts.push('opaque="' + o.opaque + '"');
+  if (o.stale) parts.push("stale=true");
+  return { "www-authenticate": "Digest " + parts.join(", ") };
+}
+function chal401(o) { return { status: 401, headers: chal(o), body: "" }; }
+async function testDigestAuth() {
+  var DIG = { scheme: "digest", username: "u", password: "p" };
+  var CACERTS_URI = "/.well-known/est/cacerts", ENROLL_URI = "/.well-known/est/simpleenroll";
+  // D-1 Digest happy GET
+  var t1 = fakeTransport([chal401({ nonce: "abc", qop: "auth", algorithm: "SHA-256" }), cacertsOK([S.cert])]);
+  var r1 = await pki.est.cacerts(BASE, { transport: t1, auth: DIG });
+  var a1 = t1.calls[1].headers.authorization;
+  check("#D-1 a Digest 401 is answered and the GET succeeds", r1.certificates.length === 1 && t1.calls.length === 2 && /^Digest /.test(a1) &&
+    digestParam(a1, "username") === "u" && digestParam(a1, "realm") === "est" && digestParam(a1, "nonce") === "abc" &&
+    digestParam(a1, "uri") === CACERTS_URI && digestParam(a1, "nc") === "00000001" && digestParam(a1, "qop") === "auth" &&
+    recomputeDigest(a1, { method: "GET", uri: CACERTS_URI, username: "u", password: "p" }));
+  // D-1p Digest happy POST (enroll)
+  var t1p = fakeTransport([chal401({ nonce: "n", qop: "auth", algorithm: "SHA-256" }), enrollOK([S.cert])]);
+  var r1p = await pki.est.simpleenroll(BASE, CSR, { transport: t1p, auth: DIG });
+  var a1p = t1p.calls[1].headers.authorization;
+  check("#D-1p a Digest 401 is answered and the POST enroll succeeds", r1p.certificate.equals(S.cert) && digestParam(a1p, "uri") === ENROLL_URI &&
+    recomputeDigest(a1p, { method: "POST", uri: ENROLL_URI, username: "u", password: "p" }));
+  // D-3 SHA-512-256
+  var t3 = fakeTransport([chal401({ nonce: "n", qop: "auth", algorithm: "SHA-512-256" }), cacertsOK([S.cert])]);
+  await pki.est.cacerts(BASE, { transport: t3, auth: DIG });
+  check("#D-3 SHA-512-256 is answered", digestParam(t3.calls[1].headers.authorization, "algorithm") === "SHA-512-256" && recomputeDigest(t3.calls[1].headers.authorization, { method: "GET", uri: CACERTS_URI, username: "u", password: "p" }));
+  // D-4 opaque echo / absent
+  var t4 = fakeTransport([chal401({ nonce: "n", qop: "auth", algorithm: "SHA-256", opaque: "XYZ" }), cacertsOK([S.cert])]);
+  await pki.est.cacerts(BASE, { transport: t4, auth: DIG });
+  check("#D-4a opaque is echoed verbatim", digestParam(t4.calls[1].headers.authorization, "opaque") === "XYZ");
+  check("#D-4b no opaque when the challenge omits it", digestParam(a1, "opaque") === null);
+  // D-5 auth-int over the exact body
+  var t5 = fakeTransport([chal401({ nonce: "n", qop: "auth-int", algorithm: "SHA-256" }), enrollOK([S.cert])]);
+  await pki.est.simpleenroll(BASE, CSR, { transport: t5, auth: DIG });
+  var a5 = t5.calls[1].headers.authorization;
+  check("#D-5 auth-int hashes the exact transfer body", digestParam(a5, "qop") === "auth-int" && recomputeDigest(a5, { method: "POST", uri: ENROLL_URI, username: "u", password: "p", body: t5.calls[0].body }));
+  // D-6 stale bounded retry
+  var t6 = fakeTransport([chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ nonce: "n2", qop: "auth", algorithm: "SHA-256", stale: true }), enrollOK([S.cert])]);
+  var r6 = await pki.est.simpleenroll(BASE, CSR, { transport: t6, auth: { scheme: "digest", username: "u", password: "p", maxStaleRetries: 1 } });
+  check("#D-6 a stale=true re-challenge is retried (bounded) with the fresh nonce", r6.certificate.equals(S.cert) && t6.calls.length === 3 && digestParam(t6.calls[2].headers.authorization, "nonce") === "n2");
+  // D-7 / D-8 scheme mismatch
+  check("#D-7 Digest requested but only Basic offered", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": 'Basic realm="est"' }, body: "" }), auth: DIG }))) === "est/auth-required");
+  var t8 = fakeTransport({ status: 401, headers: chal({ nonce: "n" }), body: "" });
+  check("#D-8 Basic requested (legacy) but only Digest offered", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: t8, username: "u", password: "p" }))) === "est/auth-required" && !(t8.calls[0].headers && t8.calls[0].headers.authorization));
+  // D-9 MD5 off / on
+  check("#D-9a MD5 is refused by default", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport(chal401({ nonce: "n", qop: "auth", algorithm: "MD5" })), auth: DIG }))) === "est/digest-weak-algorithm");
+  var t9b = fakeTransport([chal401({ nonce: "n", qop: "auth", algorithm: "MD5" }), enrollOK([S.cert])]);
+  await pki.est.simpleenroll(BASE, CSR, { transport: t9b, auth: { scheme: "digest", username: "u", password: "p", allowMD5: true } });
+  check("#D-9b MD5 is answered when opted in", digestParam(t9b.calls[1].headers.authorization, "algorithm") === "MD5" && recomputeDigest(t9b.calls[1].headers.authorization, { method: "POST", uri: ENROLL_URI, username: "u", password: "p" }));
+  // D-10 / D-11 / D-12 malformed / unsupported
+  check("#D-10 a Digest challenge missing nonce", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": 'Digest realm="est", qop="auth"' }, body: "" }), auth: DIG }))) === "est/digest-bad-challenge");
+  check("#D-11 a Digest challenge missing realm", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": 'Digest nonce="n", qop="auth"' }, body: "" }), auth: DIG }))) === "est/digest-bad-challenge");
+  check("#D-12 an unsupported Digest algorithm", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport(chal401({ nonce: "n", qop: "auth", algorithm: "SHA-1" })), auth: DIG }))) === "est/digest-unsupported-algorithm");
+  // D-13 no-qop off / on
+  check("#D-13a a no-qop (RFC 2069) challenge is refused by default", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport(chal401({ nonce: "n", algorithm: "SHA-256" })), auth: DIG }))) === "est/digest-no-qop");
+  var t13b = fakeTransport([chal401({ nonce: "n", algorithm: "SHA-256" }), enrollOK([S.cert])]);
+  await pki.est.simpleenroll(BASE, CSR, { transport: t13b, auth: { scheme: "digest", username: "u", password: "p", allowLegacyQop: true } });
+  var a13b = t13b.calls[1].headers.authorization;
+  check("#D-13b a no-qop challenge (opted in) emits no qop/nc/cnonce and the RFC 2069 response", digestParam(a13b, "qop") === null && digestParam(a13b, "nc") === null && recomputeDigest(a13b, { method: "POST", uri: ENROLL_URI, username: "u", password: "p" }));
+  // D-14 401 after a cross-origin redirect refuses
+  var t14 = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, chal401({ nonce: "n", algorithm: "SHA-256", qop: "auth" })]);
+  check("#D-14 a 401 after a cross-origin redirect refuses credentials", (await codeOf(pki.est.cacerts(BASE, { transport: t14, auth: DIG }))) === "est/auth-required" && t14.calls.every(function (c) { return !(c.headers && c.headers.authorization); }));
+  // D-15 scheme digest, no creds
+  var t15 = fakeTransport(chal401({ nonce: "n", qop: "auth", algorithm: "SHA-256" }));
+  check("#D-15 scheme:digest with no credentials fails closed", (await codeOf(pki.est.cacerts(BASE, { transport: t15, auth: { scheme: "digest" } }))) === "est/auth-required" && t15.calls.length === 1);
+  // D-16 second non-stale 401 terminates
+  var t16 = fakeTransport([chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ nonce: "n2", qop: "auth", algorithm: "SHA-256" })]);
+  check("#D-16 a second non-stale 401 terminates", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: t16, auth: { scheme: "digest", username: "u", password: "p", maxStaleRetries: 1 } }))) === "est/auth-required" && t16.calls.length === 2);
+  // D-16b stale past the bound terminates
+  var t16b = fakeTransport([chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ nonce: "n2", qop: "auth", algorithm: "SHA-256", stale: true }), chal401({ nonce: "n3", qop: "auth", algorithm: "SHA-256", stale: true })]);
+  check("#D-16b stale retries past the bound terminate", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: t16b, auth: { scheme: "digest", username: "u", password: "p", maxStaleRetries: 1 } }))) === "est/auth-required" && t16b.calls.length === 3);
+  // D-17 hostile challenge: a comma inside a quoted realm is not a Basic challenge
+  var t17 = fakeTransport([{ status: 401, headers: { "www-authenticate": 'Digest realm="x, Basic required", nonce="n", qop="auth", algorithm=SHA-256' }, body: "" }, enrollOK([S.cert])]);
+  var r17 = await pki.est.simpleenroll(BASE, CSR, { transport: t17, auth: DIG });
+  check("#D-17 a comma inside a quoted realm is answered as Digest (not misread as Basic)", r17.certificate.equals(S.cert) && /^Digest /.test(t17.calls[1].headers.authorization) && digestParam(t17.calls[1].headers.authorization, "realm") === "x, Basic required");
+  // D-empty-user empty username allowed
+  var tE = fakeTransport([chal401({ nonce: "n", qop: "auth", algorithm: "SHA-256" }), enrollOK([S.cert])]);
+  await pki.est.simpleenroll(BASE, CSR, { transport: tE, auth: { scheme: "digest", username: "", password: "p" } });
+  var aE = tE.calls[1].headers.authorization;
+  check("#D-empty an empty username is allowed", digestParam(aE, "username") === "" && recomputeDigest(aE, { method: "POST", uri: ENROLL_URI, username: "", password: "p" }));
+  // D-basic-nocreds: an explicit scheme:"basic" with no credentials fails closed (never sends "Basic Og==")
+  var tBn = fakeTransport({ status: 401, headers: { "www-authenticate": 'Basic realm="est"' }, body: "" });
+  check("#D-basic-nocreds scheme:basic with no credentials fails closed, no Authorization sent", (await codeOf(pki.est.cacerts(BASE, { transport: tBn, auth: { scheme: "basic" } }))) === "est/auth-required" && tBn.calls.every(function (c) { return !(c.headers && c.headers.authorization); }));
+  // D-stale-samenonce: a stale=true re-challenge that REUSES the nonce terminates (RFC 7616 requires a fresh nonce)
+  var tSs = fakeTransport([chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ nonce: "n1", qop: "auth", algorithm: "SHA-256", stale: true })]);
+  check("#D-stale-samenonce a stale=true re-challenge reusing the same nonce terminates (a fresh nonce is required)", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: tSs, auth: { scheme: "digest", username: "u", password: "p", maxStaleRetries: 2 } }))) === "est/auth-required" && tSs.calls.length === 2);
+}
+
 async function main() {
   await setup();
   await testCsrFormsAndDefaultTransport();
@@ -372,6 +488,7 @@ async function main() {
   await testAuthScopeAndScheme();
   await testRedirectCredentialScope();
   await testAmbiguousIssued();
+  await testDigestAuth();
   await testCacertsHappy();
   await testEnrollHappy();
   await testReenrollHappy();
