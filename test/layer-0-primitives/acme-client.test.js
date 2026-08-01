@@ -789,6 +789,11 @@ async function testRenewalWindow() {
   var s19 = A.acmeServer({ renewalInfoResponse: riResp(NA - 20 * DAY, NA - 10 * DAY) });
   var r19 = await clientAt(s19, NA).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-19 a certificate at exactly notAfter is still renewable, not expired", r19.renewNow === true);
+  // RW-20 a straddling window (starts before notAfter, ends at/after it) whose draw lands EXACTLY on notAfter
+  // leaves no margin -- renewNow is true even though the window opened before expiry.
+  var s20 = A.acmeServer({ renewalInfoResponse: riResp(NA - 10 * DAY, NA + 10 * DAY) });
+  var r20 = await clientAt(s20, NA - 5 * DAY).renewalWindow(certDer, { random: function () { return 1; } });
+  check("#15 RW-20 a selection landing on notAfter forces renewNow", r20.renewNow === true && Date.parse(r20.selectedTime) === NA);
 
   // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
   // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
@@ -956,6 +961,8 @@ async function testAlternateChains() {
   // AL-21 a relative URI carrying any non-RFC-3986 character that URL parsing would percent-encode/repair (not
   // just whitespace) is rejected before resolution -- e.g. an unencoded brace.
   check("#16 AL-21 a relative Link URI with an invalid RFC 3986 char fails closed", (await codeForLink("</cert/1/alt/0{x}>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-22 a malformed percent-escape (% not followed by two hex digits) is not valid RFC 3986 pct-encoding.
+  check("#16 AL-22 a malformed percent-escape in a Link URI fails closed", (await codeForLink("</cert/%ZZ>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
