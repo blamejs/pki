@@ -410,6 +410,10 @@ async function testDigestAuth() {
     digestParam(a1, "username") === "u" && digestParam(a1, "realm") === "est" && digestParam(a1, "nonce") === "abc" &&
     digestParam(a1, "uri") === CACERTS_URI && digestParam(a1, "nc") === "00000001" && digestParam(a1, "qop") === "auth" &&
     recomputeDigest(a1, { method: "GET", uri: CACERTS_URI, username: "u", password: "p" }));
+  // D-oversize an oversized WWW-Authenticate is rejected by the auth handler's cap BEFORE any scheme scan /
+  // copy, so an injected transport without its own header limit cannot force unbounded allocation.
+  var tOversize = fakeTransport({ status: 401, headers: { "www-authenticate": 'Digest realm="' + "a".repeat(9000) + '"' }, body: "" });
+  check("#D-oversize an over-length WWW-Authenticate is bounded before the scheme scan", (await codeOf(pki.est.cacerts(BASE, { transport: tOversize, auth: DIG }))) === "est/auth-required");
   // D-1p Digest happy POST (enroll)
   var t1p = fakeTransport([chal401({ nonce: "n", qop: "auth", algorithm: "SHA-256" }), enrollOK([S.cert])]);
   var r1p = await pki.est.simpleenroll(BASE, CSR, { transport: t1p, auth: DIG });

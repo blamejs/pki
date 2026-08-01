@@ -154,6 +154,7 @@ async function run() {
   check("SK-13c. an anonymous cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { standardName: "TLS_ECDH_anon_WITH_AES_128_CBC_SHA" } } })) }))) === "est/weak-cipher");
   var r13d = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART, tls: { cipher: { name: "ECDHE-RSA-AES128-GCM-SHA256" } } })) });
   check("SK-13d. a strong cipher is accepted", !!r13d.privateKey);
+  check("SK-13e. an EXP1024 export cipher (OpenSSL short name, no word boundary after EXP) is refused", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "EXP1024-RC4-SHA" } } })) }))) === "est/weak-cipher");
   var t14a = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
   check("SK-14a. an http base URL is refused pre-transport", (await codeOf(pki.est.serverkeygen("http://ca.example", CSR_PLAIN, { transport: t14a }))) === "est/insecure-url" && t14a.calls.length === 0);
   check("SK-14b. no trust anchor without a transport", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, {}))) === "est/no-trust-anchors");
