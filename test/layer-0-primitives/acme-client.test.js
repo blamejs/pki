@@ -678,6 +678,9 @@ async function testNewAuthz() {
   // NA-8 403 unwilling server problem.
   var acme8 = await withAccount(A.acmeServer({ newAuthzProblem: A.problem(403, "rejectedIdentifier", "identifier not allowed") }));
   check("#14 NA-8 a 403 problem surfaces as acme/server-problem", (await codeOf(acme8.newAuthz(DNS))) === "acme/server-problem");
+  // NA-9 an authorization the CA marks wildcard:true is a broader grant than the non-wildcard identifier requested.
+  var acme9 = await withAccount(A.acmeServer({ newAuthzWildcard: true }));
+  check("#14 NA-9 a wildcard authorization for a non-wildcard request is rejected", (await codeOf(acme9.newAuthz(DNS))) === "acme/identifier-mismatch");
 }
 
 // ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------
@@ -880,6 +883,10 @@ async function testAlternateChains() {
   var bigField = "<" + ALT0 + ">;rel=\"alternate\";title=\"" + "a".repeat(5000) + "\"";
   var acme14 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: [bigField, bigField] }));
   check("#16 AL-14 the Link header cap is aggregate across fields", (await codeOf(acme14.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+
+  // AL-15 a Link parameter not introduced by ';' (RFC 8288: <URI> *(";" param)) is malformed -> fails closed.
+  var acme15 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">rel=\"alternate\"" }));
+  check("#16 AL-15 a Link param not preceded by a semicolon fails closed", (await codeOf(acme15.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
 }
 
 async function main() {
