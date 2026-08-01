@@ -98,6 +98,12 @@ async function run() {
   var chSn = httpDigest.parseChallenge('Digest realm="r", nonce="n", algorithm=MD5-sess', E, "bad");
   var hdrSn = httpDigest.answer(chSn, { method: "GET", uri: "/x", username: "u", password: "p", policy: { allowMD5: true, allowLegacyQop: true }, rng: function () { return "cc"; } }, E);
   check("DG-sess-noqop. a -sess algorithm on the no-qop path still emits cnonce (the server needs it to recompute A1)", param(hdrSn, "qop") === null && param(hdrSn, "nc") === null && param(hdrSn, "cnonce") === "cc");
+  // Recompute the -sess no-qop response with an INDEPENDENT MD5 implementation, folding the emitted cnonce
+  // into A1 exactly as a server would -- proving the emitted header is verifiable, not just that cnonce is present.
+  function md5(s) { return crypto.createHash("md5").update(s, "utf8").digest("hex"); }
+  var reconHA1 = md5(md5("u:r:p") + ":n:" + param(hdrSn, "cnonce"));
+  var reconResp = md5(reconHA1 + ":n:" + md5("GET:/x"));
+  check("DG-sess-noqop-recon. the emitted -sess no-qop response is reconstructible by the server from the header cnonce", param(hdrSn, "response") === reconResp);
   var hdrNc = httpDigest.answer(ch512, { method: "GET", uri: "/x", username: "u", password: "p", nc: 2, policy: POL, rng: function () { return "cc"; } }, E);
   check("DG-nc. the caller-supplied nonce-count is formatted as 8 lowercase hex", param(hdrNc, "nc") === "00000002");
   check("DG-p-ctl. a control octet (CR/LF) in a challenge value is rejected (RFC 7230 qdtext + header-injection)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n\r\nX-Injected: 1", qop="auth", algorithm=SHA-256', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");

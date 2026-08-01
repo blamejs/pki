@@ -7,6 +7,7 @@
 // reject with a pre-transport gate asserts t.calls.length === 0; every accept injects { transport } only.
 // The multipart / enveloped-key / certs-only fixtures mirror the codec-level est.test.js verbatim.
 
+var nodeCrypto = require("crypto");
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
@@ -64,19 +65,41 @@ function csrWith(attrNodes, altSpki) {
 }
 var pkcs8 = b.sequence([b.integer(0n), b.sequence([b.oid("1.3.101.112")]), b.octetString(Buffer.alloc(34, 7))]);
 var CERT_PART = certsOnly([REAL_CERT]);
+// A REAL server-generated key pair + a certificate that carries its EXACT public key: the cleartext
+// serverkeygen key is bound to a returned certificate by public-key match, so the happy path needs a
+// genuinely coherent pair (a fake key is unusable). REAL_CERT with its SubjectPublicKeyInfo (tbs field
+// [6]) swapped to the generated key's SPKI -- x509.parse is structural (it never verifies the now-stale
+// signature), so findIssuedCert matches the byte-exact SPKI. An optional serial override yields a second,
+// distinct certificate carrying the SAME key (the ambiguity case).
+var _kp = nodeCrypto.generateKeyPairSync("ed25519");
+var REAL_PKCS8 = _kp.privateKey.export({ format: "der", type: "pkcs8" });
+var REAL_SPKI = _kp.publicKey.export({ format: "der", type: "spki" });
+function certWithSpki(spkiDer, serial) {
+  var cert = pki.asn1.decode(REAL_CERT);
+  var kids = cert.children[0].children.map(function (c, i) {
+    if (i === 6) return spkiDer;
+    if (i === 1 && serial != null) return b.integer(serial);
+    return c.bytes;
+  });
+  return b.sequence([b.sequence(kids), cert.children[1].bytes, cert.children[2].bytes]);
+}
+var MATCH_CERT = certWithSpki(REAL_SPKI);
+var MATCH_CERT2 = certWithSpki(REAL_SPKI, 777n);
+var MATCH_CERT_PART = certsOnly([MATCH_CERT]);
 var CSR_PLAIN = csrWith([]);
 var CSR_KEK = csrWith([pki.est.decryptKeyIdentifierAttr(KID)]);
 // 200 serverkeygen reply: a key part + the certs-only part. o.raw overrides the whole body; o.tls forwards a cipher.
 function skReply(keyCt, keyBody, o) {
   o = o || {};
-  var body = o.raw != null ? o.raw : multipart([{ ct: keyCt, body: keyBody }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: CERT_PART.toString("base64") }]);
+  var certPart = o.certPart || CERT_PART;
+  var body = o.raw != null ? o.raw : multipart([{ ct: keyCt, body: keyBody }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: certPart.toString("base64") }]);
   return { status: 200, headers: ct(SK_CT), body: body, tls: o.tls };
 }
 function csrattrsOK(der) { return { status: 200, headers: ct("application/csrattrs"), body: pki.est.transferEncode(der) }; }
 
 async function run() {
   // ===== serverkeygen -- accept =====
-  var t1 = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
+  var t1 = fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART }));
   var r1 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: t1 });
   check("SK-1. cleartext key + request shape", !!r1.privateKey && r1.certificates.length === 1 && !r1.encryptedKey &&
     t1.calls.length === 1 && t1.calls[0].method === "POST" && /\/serverkeygen$/.test(t1.calls[0].url) &&
@@ -88,7 +111,7 @@ async function run() {
   check("SK-3. issuer+serial recipient resolves via a caller hint", !!r3.encryptedKey);
   var r4 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 202, headers: { "retry-after": "60" }, body: "" }) });
   check("SK-4. a 202 is surfaced, never slept", r4.retry === true && r4.retryAfterSeconds === 60);
-  var r5 = await pki.est.serverkeygen(BASE, csrWith([], b.sequence([b.sequence([b.oid("1.3.101.112")]), b.bitString(Buffer.alloc(32, 9), 0)])), { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))) });
+  var r5 = await pki.est.serverkeygen(BASE, csrWith([], b.sequence([b.sequence([b.oid("1.3.101.112")]), b.bitString(Buffer.alloc(32, 9), 0)])), { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART })) });
   check("SK-5. a CA-generated cert whose key differs from the CSR key still resolves (no leaf pick)", !!r5.privateKey && r5.certificates.length === 1);
 
   // ===== serverkeygen -- reject =====
@@ -104,7 +127,7 @@ async function run() {
   check("SK-13a. a NULL cipher on the serverkeygen channel", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "ECDHE-RSA-NULL-SHA", standardName: "TLS_ECDHE_RSA_WITH_NULL_SHA" } } })) }))) === "est/weak-cipher");
   check("SK-13b. an EXPORT cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "EXP-RC4-MD5" } } })) }))) === "est/weak-cipher");
   check("SK-13c. an anonymous cipher", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { standardName: "TLS_ECDH_anon_WITH_AES_128_CBC_SHA" } } })) }))) === "est/weak-cipher");
-  var r13d = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"), { tls: { cipher: { name: "ECDHE-RSA-AES128-GCM-SHA256" } } })) });
+  var r13d = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART, tls: { cipher: { name: "ECDHE-RSA-AES128-GCM-SHA256" } } })) });
   check("SK-13d. a strong cipher is accepted", !!r13d.privateKey);
   var t14a = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
   check("SK-14a. an http base URL is refused pre-transport", (await codeOf(pki.est.serverkeygen("http://ca.example", CSR_PLAIN, { transport: t14a }))) === "est/insecure-url" && t14a.calls.length === 0);
@@ -112,7 +135,7 @@ async function run() {
   check("SK-15a. a 500 http error", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 500, headers: {}, body: "boom" }) }))) === "est/http-error");
   var t15b = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
   check("SK-15b. a non-CSR input is rejected pre-transport", (await codeOf(pki.est.serverkeygen(BASE, 123, { transport: t15b }))) === "est/bad-input" && t15b.calls.length === 0);
-  var r15c = await pki.est.serverkeygen(BASE, pki.schema.csr.pemEncode(CSR_PLAIN), { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))) });
+  var r15c = await pki.est.serverkeygen(BASE, pki.schema.csr.pemEncode(CSR_PLAIN), { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART })) });
   check("SK-15c. a PEM CSR is accepted", !!r15c.privateKey);
   // SK-16: a recipient pin on a CSR with NO key-encryption attribute implies encryption the CSR never requested;
   // without the gate a compromised CA could deliver the key to a recipient IT controls (or cleartext) while the
@@ -127,8 +150,17 @@ async function run() {
   // SK-18: a bogus opts.auth.scheme is caught at config time, even when the server would answer 200.
   check("SK-18. a bogus opts.auth.scheme is rejected at construction (not deferred to a 401)", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))), auth: { scheme: "bogus" } }))) === "est/bad-input");
   // SK-19: a mixed-case Content-Type header (an injected / non-Node transport) is read case-insensitively.
-  var r19 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: { "Content-Type": SK_CT }, body: multipart([{ ct: "application/pkcs8", body: pkcs8.toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: CERT_PART.toString("base64") }]) }) });
+  var r19 = await pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 200, headers: { "Content-Type": SK_CT }, body: multipart([{ ct: "application/pkcs8", body: REAL_PKCS8.toString("base64") }, { ct: "application/pkcs7-mime; smime-type=certs-only", body: MATCH_CERT_PART.toString("base64") }]) }) });
   check("SK-19. a mixed-case Content-Type header is read case-insensitively -> the multipart parses", !!r19.privateKey && r19.certificates.length === 1);
+  // SK-20: a cleartext server-generated key whose public half matches NONE of the returned certificates is
+  // an unusable / mis-associated credential -> fail closed (the CERT_PART carries REAL_CERT's own EC key,
+  // not the delivered Ed25519 key).
+  check("SK-20. a cleartext key that matches no returned certificate is rejected", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"))) }))) === "est/key-cert-mismatch");
+  // SK-21: two returned certificates both carrying the delivered key leave the issued certificate ambiguous.
+  check("SK-21. a cleartext key carried by more than one returned certificate is ambiguous", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: certsOnly([MATCH_CERT, MATCH_CERT2]) })) }))) === "est/ambiguous-issued-cert");
+  // SK-22: a structurally-parseable PKCS#8 whose public half cannot be derived (a garbage inner key) is not
+  // bindable -> fail closed rather than resolve an unbindable credential (the derivation-failure branch).
+  check("SK-22. a cleartext key whose public half cannot be derived is rejected", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64"))) }))) === "est/key-cert-mismatch");
 
   // ===== csrattrs -- accept =====
   var tc1 = fakeTransport(csrattrsOK(b.sequence([b.oid(CHALLENGE_PW)])));
