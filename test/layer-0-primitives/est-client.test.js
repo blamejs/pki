@@ -517,6 +517,20 @@ async function testDigestAuth() {
     digestParam(tSp.calls[1].headers.authorization, "realm") === "est" &&
     !(tSp.calls[2].headers && tSp.calls[2].headers.authorization) &&
     digestParam(tSp.calls[3].headers.authorization, "realm") === "mirror" && digestParam(tSp.calls[3].headers.authorization, "nonce") === "nB");
+  // D-space-samerealm: a redirect out of the domain is sent unauthenticated, and if the new resource challenges
+  // with the SAME realm it is still a FRESH authentication (the request carried no credential to be rejected) --
+  // the rejection test keys on whether the request actually carried Digest credentials, not on the realm alone.
+  var tSm = fakeTransport([
+    chal401({ realm: "est", nonce: "nA", qop: "auth", algorithm: "SHA-256", domain: CACERTS_URI }),
+    { status: 302, headers: { location: MIRROR }, body: "" },
+    chal401({ realm: "est", nonce: "nM", qop: "auth", algorithm: "SHA-256" }),
+    cacertsOK([S.cert]),
+  ]);
+  var rSm = await pki.est.cacerts(BASE, { transport: tSm, auth: DIG });
+  check("#D-space-samerealm an unauthenticated out-of-domain request whose 401 reuses the realm still authenticates fresh",
+    rSm.certificates.length === 1 && tSm.calls.length === 4 &&
+    !(tSm.calls[2].headers && tSm.calls[2].headers.authorization) &&
+    digestParam(tSm.calls[3].headers.authorization, "realm") === "est" && digestParam(tSm.calls[3].headers.authorization, "nonce") === "nM");
   // D-space-reject: a SAME-realm non-stale second 401 is a rejection of the credential, NOT a new protection
   // space -- the realm check must not turn a genuine rejection into an open re-answer loop.
   var tRej = fakeTransport([chal401({ realm: "est", nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ realm: "est", nonce: "n2", qop: "auth", algorithm: "SHA-256" })]);

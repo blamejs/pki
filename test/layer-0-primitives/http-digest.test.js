@@ -100,6 +100,7 @@ async function run() {
   check("DG-space-emptydomain. an empty domain is treated as the whole server (RFC 7616 sec. 3.3)", chEmptyDom.domain === null && httpDigest.inProtectionSpace(chEmptyDom, "/x") === true);
   var chAbs = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain="https://ca.example/enroll"', E, "bad");
   check("DG-space-absuri. an absolute-URI domain entry matches by its path component", httpDigest.inProtectionSpace(chAbs, "/enroll/x") === true && httpDigest.inProtectionSpace(chAbs, "/other") === false);
+  check("DG-p-domain-unquoted. an UNQUOTED domain is rejected (fail closed, not silently widened to the whole server)", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, domain=/a', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
 
   // ===== DG-p-*: the UNTRUSTED challenge parser fails closed =====
   check("DG-p-realm. a Digest challenge missing realm is rejected (not defaulted)", codeOf(function () { httpDigest.parseChallenge('Digest nonce="n", qop="auth"', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
