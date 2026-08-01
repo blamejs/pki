@@ -448,6 +448,15 @@ async function testDigestAuth() {
   ]);
   var rStale = await pki.est.cacerts(BASE, { transport: tStale, auth: DIG });
   check("#D-6-prefer-stale a retryable stale offer is preferred over a stronger non-stale one in a rejection", rStale.certificates.length === 1 && tStale.calls.length === 3 && digestParam(tStale.calls[2].headers.authorization, "algorithm") === "SHA-256" && digestParam(tStale.calls[2].headers.authorization, "nonce") === "nB2");
+  // D-6-prefer-stale-fresh: two stale=true offers -- a STRONGER one repeating the just-rejected nonce (not
+  // retryable) and a weaker one with a FRESH nonce. Selection must pick the retryable (fresh-nonce) offer.
+  var tStaleN = fakeTransport([
+    chal401({ realm: "est", nonce: "nA", qop: "auth", algorithm: "SHA-256" }),
+    { status: 401, headers: { "www-authenticate": 'Digest realm="est", nonce="nA", qop="auth", algorithm=SHA-512-256, stale=true, Digest realm="est", nonce="nB", qop="auth", algorithm=SHA-256, stale=true' }, body: "" },
+    cacertsOK([S.cert]),
+  ]);
+  var rStaleN = await pki.est.cacerts(BASE, { transport: tStaleN, auth: DIG });
+  check("#D-6-prefer-stale-fresh a stale offer with a FRESH nonce beats a stronger one repeating the rejected nonce", rStaleN.certificates.length === 1 && tStaleN.calls.length === 3 && digestParam(tStaleN.calls[2].headers.authorization, "algorithm") === "SHA-256" && digestParam(tStaleN.calls[2].headers.authorization, "nonce") === "nB");
   // D-7 / D-8 scheme mismatch
   check("#D-7 Digest requested but only Basic offered", (await codeOf(pki.est.simpleenroll(BASE, CSR, { transport: fakeTransport({ status: 401, headers: { "www-authenticate": 'Basic realm="est"' }, body: "" }), auth: DIG }))) === "est/auth-required");
   var t8 = fakeTransport({ status: 401, headers: chal({ nonce: "n" }), body: "" });
