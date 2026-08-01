@@ -35,13 +35,14 @@ var URLS = {
   authz: BASE + "/authz/1",
   challenge: BASE + "/chal/1",
   certificate: BASE + "/cert/1",
+  newAuthz: BASE + "/new-authz",
 };
 
 // A directory object; drop a key (e.g. delete d.newNonce) to test a missing required resource.
 function directory(overrides) {
   return Object.assign({
     newNonce: URLS.newNonce, newAccount: URLS.newAccount, newOrder: URLS.newOrder,
-    revokeCert: URLS.revokeCert, keyChange: URLS.keyChange, renewalInfo: URLS.renewalInfo,
+    revokeCert: URLS.revokeCert, keyChange: URLS.keyChange, renewalInfo: URLS.renewalInfo, newAuthz: URLS.newAuthz,
   }, overrides || {});
 }
 
@@ -129,6 +130,16 @@ function acmeServer(opts) {
     // a bounded run of badNonce on the first N POSTs
     if (method === "POST" && badLeft > 0) { badLeft--; return withNonce(problem(400, "badNonce", "bad nonce, retry")); }
 
+    // POST /new-authz (pre-authorization, RFC 8555 sec. 7.4.1): 201 + Location(authz) + the authz object, or a
+    // configured problem (e.g. 403 rejectedIdentifier via newAuthzProblem).
+    if (path === "/new-authz") {
+      if (opts.newAuthzProblem) return withNonce(opts.newAuthzProblem);
+      var authzLoc = ("newAuthzLocation" in opts) ? opts.newAuthzLocation : URLS.authz;
+      var authzBody = opts.newAuthzObject || { status: "pending", expires: EXPIRES, identifier: orderIdentifiers[0], challenges: challenges };
+      var hdrs = authzLoc == null ? {} : { location: authzLoc };
+      return withNonce(json(201, authzBody, hdrs));
+    }
+
     if (path === "/new-account") {
       var loc = opts.accountLocation || URLS.account;
       // accountNonceInvalid: the 201 carries a non-base64url Replay-Nonce the client must DISCARD.
@@ -152,7 +163,21 @@ function acmeServer(opts) {
     }
     if (path === "/cert/1") {
       if (opts.certRequiresPemAccept && String((request.headers || {}).accept || "").indexOf("application/pem-certificate-chain") === -1) return withNonce(problem(406, "malformed", "the certificate resource requires Accept: application/pem-certificate-chain"));
-      return withNonce(pemChain(certPems, opts.certContentType ? { "content-type": opts.certContentType } : {}));
+      var certHdrs = opts.certContentType ? { "content-type": opts.certContentType } : {};
+      // Link: rel="alternate" -- either a raw header (certLinkHeader, for malformed / token-match cases) or one
+      // auto-built per alternateChains entry (each served at /cert/1/alt/N below).
+      if (opts.certLinkHeader != null) certHdrs.link = opts.certLinkHeader;
+      else if (opts.alternateChains) certHdrs.link = opts.alternateChains.map(function (_c, k) { return "<" + URLS.certificate + "/alt/" + k + ">;rel=\"alternate\""; }).join(", ");
+      // certNoContentType: return the chain with NO content-type header (a non-conforming server) so the
+      // download's media-type gate is exercised on an absent (not merely wrong) type.
+      if (opts.certNoContentType) return withNonce({ status: 200, headers: certHdrs, body: certPems.join("\n") });
+      return withNonce(pemChain(certPems, certHdrs));
+    }
+    // GET (POST-as-GET) an alternate chain at /cert/1/alt/N.
+    if (opts.alternateChains && /^\/cert\/1\/alt\/[0-9]+$/.test(path)) {
+      var altPems = opts.alternateChains[Number(path.split("/").pop())];
+      if (!altPems) return withNonce({ status: 404, headers: {}, body: "no such alternate" });
+      return withNonce(pemChain(altPems, opts.altContentType ? { "content-type": opts.altContentType } : {}));
     }
     if (path === "/acct/1") return withNonce(json(200, opts.accountAfter || { status: "deactivated" }));
     if (path === "/key-change") return withNonce({ status: 200, headers: { "content-type": "application/json" }, body: opts.keyChangeBody !== undefined ? opts.keyChangeBody : JSON.stringify({ status: "valid" }) });

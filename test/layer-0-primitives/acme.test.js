@@ -599,6 +599,13 @@ async function testBuilders() {
   // a malformed notAfter (present but not RFC 3339) fails closed, matching the notBefore guard.
   check("96g. newOrder malformed notAfter rejected", (await acode(function () { return pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org" }], notAfter: "not-a-date" })); })) === "acme/bad-order");
 
+  // newAuthz: a single-identifier pre-authorization (RFC 8555 sec. 7.4.1) -> a kid-signed { identifier } payload;
+  // a missing identifier fails closed, and (unlike an order) a wildcard authorization identifier is rejected.
+  var naJws = await pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: { type: "dns", value: "example.org" } }));
+  check("96h. newAuthz emits a kid-signed single-identifier payload", b64uJson(naJws.protected).kid === kid && b64uJson(naJws.protected).url === "https://ca/authz" && JSON.parse(Buffer.from(naJws.payload, "base64").toString("utf8")).identifier.value === "example.org");
+  check("96i. newAuthz without an identifier rejected", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz" })); })) === "acme/bad-order");
+  check("96j. newAuthz a wildcard authorization identifier rejected", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: { type: "dns", value: "*.example.org" } })); })) === "acme/bad-identifier");
+
   // keyChange requires the account URL and the new account public JWK.
   var nk2 = await ecKeyPair();
   check("97a. keyChange without account URL rejected", (await acode(function () { return pki.acme.keyChange({ key: acct.key, alg: "ES256", kid: kid, oldKey: acct.jwk, newKey: nk2.key, newJwk: nk2.jwk, newAlg: "ES256", nonce: base.nonce, url: "https://ca/k" }); })) === "acme/bad-input");

@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.29 — 2026-08-01
+
+The pki.acme client rounds out its RFC 8555 / RFC 9773 surface -- pre-authorize an identifier with client.newAuthz, choose among alternate issuance chains in client.downloadCertificate, and schedule renewal from the CA's ARI window with client.renewalWindow.
+
+### Added
+
+- client.newAuthz(identifier) pre-authorizes a single identifier ahead of placing an order (RFC 8555 sec. 7.4.1): it POSTs the identifier to the directory's newAuthz resource (kid-signed) and returns { authorization, url } for the created pending authorization. A wildcard identifier is refused before any request (pre-authorization of a wildcard is not defined), an unadvertised newAuthz resource fails closed, a 201 without a Location fails closed, and the returned authorization is validated to name exactly the identifier requested -- a server authorization that names a different identifier is rejected rather than acted on.
+- client.downloadCertificate(url, opts?) gains selectChain + maxAlternates to choose among the alternate issuance chains a CA offers (RFC 8555 sec. 7.4.2, RFC 8288 Link). Without a selector it returns the primary chain and now also alternates -- the resolved URLs of every Link rel="alternate" the certificate response advertised. With selectChain, it evaluates the primary chain first, then each alternate in header order, and resolves to the first chain the predicate accepts (selectChain receives { certificate, chain, certificates }); none accepted fails closed. The alternate Link header is untrusted: it is parsed strictly against RFC 8288 (rel matched as a whole token, case-insensitively; a malformed header or a non-https target fails closed), the extra signed fetches are bounded by maxAlternates (default 8, over-budget fails closed), duplicate resolved URLs are de-duplicated, and an alternate whose end-entity certificate differs from the primary's is rejected rather than substituted. Each alternate is fetched by the same POST-as-GET path, inheriting the media-type, size, and strict-chain-parse gates.
+- client.renewalWindow(certDer, opts?) turns the CA's ARI renewal window into a scheduling decision (RFC 9773 sec. 4.2 / 4.3). It composes the unauthenticated renewalInfo GET, selects a uniform-random instant within the CA's suggested window (an injectable random for deterministic selection) so many clients do not renew at the same edge, and returns { suggestedWindow, selectedTime, renewNow, retryAfterSeconds, explanationURL } -- renewNow is set when the selected instant is already in the past. It refuses before any request for a certificate already past its notAfter (nothing to renew) or one the caller marks with replaced: true (already superseded), and the Retry-After that paces the next poll is clamped to [60s, 24h]. The helper returns the decision as data; it never sleeps or schedules on a background timer.
+
 ## v0.3.28 — 2026-08-01
 
 pki.est gains its remaining RFC 7030 network verbs -- request a server-generated key pair with pki.est.serverkeygen, fetch the CA's CSR-attributes policy with pki.est.csrattrs, and authenticate with HTTP Digest as an alternative to HTTP Basic.

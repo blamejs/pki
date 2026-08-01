@@ -636,9 +636,240 @@ async function testReadyAndRelativeRedirect() {
   check("#13 the ARI certID is in the path with the query preserved", ariCall && new URL(ariCall.url).pathname === "/renewal-info/" + certIdR && new URL(ariCall.url).search === "?tenant=1");
 }
 
+// ---- 14 newAuthz pre-authorization (RFC 8555 sec. 7.4.1) --------------------
+async function withAccount(server) {
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, server));
+  await acme.newAccount({ termsOfServiceAgreed: true });
+  return acme;
+}
+async function testNewAuthz() {
+  var DNS = { type: "dns", value: "example.org" };
+  // NA-1 happy: 201 pending authz; kid-signed { identifier } payload; identifier bound; url == Location.
+  var s = A.acmeServer({});
+  var acme = await withAccount(s);
+  var r = await acme.newAuthz(DNS);
+  check("#14 NA-1 newAuthz resolves the validated pending authorization", r.authorization.status === "pending" && r.authorization.challenges.length === 1 && r.url === A.URLS.authz);
+  var naPost = s.calls.filter(function (c) { return new URL(c.url).pathname === "/new-authz"; })[0];
+  check("#14 NA-1 newAuthz is kid-signed with a single-identifier payload", naPost && naPost.method === "POST" && jwsProtected(naPost.body).kid === A.URLS.account &&
+    JSON.parse(Buffer.from(JSON.parse(naPost.body).payload, "base64").toString("utf8")).identifier.value === "example.org");
+  // NA-2 unadvertised newAuthz.
+  var acme2 = await withAccount(A.acmeServer({ directory: A.directory({ newAuthz: undefined }) }));
+  check("#14 NA-2 an unadvertised newAuthz fails closed", (await codeOf(acme2.newAuthz(DNS))) === "acme/resource-unavailable");
+  // NA-3 wildcard rejected pre-transport (no POST).
+  var s3 = A.acmeServer({});
+  var acme3 = await withAccount(s3);
+  check("#14 NA-3 a wildcard authorization identifier is rejected before any POST", (await codeOf(acme3.newAuthz({ type: "dns", value: "*.example.org" }))) === "acme/bad-identifier" &&
+    s3.calls.filter(function (c) { return new URL(c.url).pathname === "/new-authz"; }).length === 0);
+  // NA-4 hostile authz object (missing challenges).
+  var acme4 = await withAccount(A.acmeServer({ newAuthzObject: { status: "pending", identifier: DNS } }));
+  check("#14 NA-4 an authorization missing challenges fails closed", (await codeOf(acme4.newAuthz(DNS))) === "acme/missing-field");
+  // NA-5 no Location.
+  var acme5 = await withAccount(A.acmeServer({ newAuthzLocation: null }));
+  check("#14 NA-5 a 201 with no Location fails closed", (await codeOf(acme5.newAuthz(DNS))) === "acme/no-authorization-url");
+  // NA-6 identifier mismatch (server authz names a different identifier than requested).
+  var acme6 = await withAccount(A.acmeServer({ identifiers: [{ type: "dns", value: "other.org" }] }));
+  check("#14 NA-6 an authz whose identifier differs from the request is rejected", (await codeOf(acme6.newAuthz(DNS))) === "acme/identifier-mismatch");
+  // NA-7 https invariant on the directory newAuthz URL (no POST).
+  var s7 = A.acmeServer({ directory: A.directory({ newAuthz: "http://acme.example/new-authz" }) });
+  var acme7 = await withAccount(s7);
+  check("#14 NA-7 an http newAuthz directory URL is refused", (await codeOf(acme7.newAuthz(DNS))) === "acme/insecure-url" &&
+    s7.calls.filter(function (c) { return new URL(c.url).pathname === "/new-authz"; }).length === 0);
+  // NA-8 403 unwilling server problem.
+  var acme8 = await withAccount(A.acmeServer({ newAuthzProblem: A.problem(403, "rejectedIdentifier", "identifier not allowed") }));
+  check("#14 NA-8 a 403 problem surfaces as acme/server-problem", (await codeOf(acme8.newAuthz(DNS))) === "acme/server-problem");
+}
+
+// ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------
+// A pure, timer-less decision over the shipped renewalInfo GET: the sec. 4.3 pre-fetch gates (expired /
+// caller-replaced), the sec. 4.2 uniform-random instant in the suggested window, and the sec. 4.3.2
+// Retry-After clamp -- surfaced to the caller as DATA, never a hidden background scheduler.
+async function testRenewalWindow() {
+  var DAY = 24 * 60 * 60 * 1000;
+  var aki = require("node:crypto").createHash("sha1").update("renew-issuer-key").digest();
+  var certDer = signing.makeSigner("ec-p256", { cn: "renew.example", exts: [akiExt(aki)] }).cert;   // validity notAfter 2040-01-01; AKI for the ARI certID
+  function iso(ms) { return new Date(ms).toISOString(); }
+  function riResp(startMs, endMs, extraHeaders) {
+    return { status: 200, headers: Object.assign({ "content-type": "application/json" }, extraHeaders || {}),
+      body: JSON.stringify({ suggestedWindow: { start: iso(startMs), end: iso(endMs) } }) };
+  }
+  function clientAt(server, atMs) { return pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, server, { clock: function () { return atMs; } })); }
+  var T = Date.parse("2027-06-01T00:00:00Z");
+
+  // RW-1 a uniform-random instant IN the window; renewNow false; the fetch is the unauthenticated GET.
+  var s1 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r1 = await clientAt(s1, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-1 selects the window midpoint, renewNow false", Date.parse(r1.selectedTime) === T + 15 * DAY && r1.renewNow === false);
+  var ri1 = s1.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/renewal-info") === 0; })[0];
+  check("#15 RW-1 the ARI fetch is the unauthenticated GET (no JWS body)", ri1 && ri1.method === "GET" && (ri1.body == null || ri1.body === ""));
+
+  // RW-2 a window entirely in the past -> renewNow true.
+  var s2 = A.acmeServer({ renewalInfoResponse: riResp(T - 20 * DAY, T - 10 * DAY) });
+  var r2 = await clientAt(s2, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-2 a past window forces renewNow", r2.renewNow === true);
+
+  // RW-3 an inverted window fails closed (validateRenewalInfo, sec. 4.2).
+  var s3 = A.acmeServer({ renewalInfoResponse: riResp(T + 20 * DAY, T + 10 * DAY) });
+  check("#15 RW-3 an inverted window fails closed", (await codeOf(clientAt(s3, T).renewalWindow(certDer, {}))) === "acme/bad-renewal-window");
+
+  // RW-4 an expired certificate is refused BEFORE any fetch (sec. 4.3).
+  var s4 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  check("#15 RW-4 an expired certificate is refused", (await codeOf(clientAt(s4, Date.parse("2041-01-01T00:00:00Z")).renewalWindow(certDer, {}))) === "acme/certificate-expired");
+  check("#15 RW-4 the expiry refusal precedes any request", s4.calls.length === 0);
+
+  // RW-5 a caller-asserted replaced certificate is refused with ZERO fetch (sec. 4.3).
+  var s5 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  check("#15 RW-5 a replaced certificate is refused", (await codeOf(clientAt(s5, T).renewalWindow(certDer, { replaced: true }))) === "acme/certificate-replaced");
+  check("#15 RW-5 the replaced refusal makes no request", s5.calls.length === 0);
+
+  // RW-6 the ARI Retry-After is clamped to [60s, 24h] (sec. 4.3.2).
+  var s6a = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "5" }) });
+  check("#15 RW-6 a tiny Retry-After clamps up to 60s", (await clientAt(s6a, T).renewalWindow(certDer, {})).retryAfterSeconds === 60);
+  var s6b = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "999999" }) });
+  check("#15 RW-6 a huge Retry-After clamps down to 24h", (await clientAt(s6b, T).renewalWindow(certDer, {})).retryAfterSeconds === 86400);
+
+  // RW-7 an unadvertised renewalInfo resource fails closed.
+  var dir7 = A.directory(); delete dir7.renewalInfo;
+  check("#15 RW-7 an unadvertised renewalInfo fails closed", (await codeOf(clientAt(A.acmeServer({ directory: dir7 }), T).renewalWindow(certDer, {}))) === "acme/resource-unavailable");
+
+  // RW-8 the random draw spans the window endpoints inclusively (0 -> start, 1 -> end); deterministic.
+  var s8 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r8lo = await clientAt(s8, T).renewalWindow(certDer, { random: function () { return 0; } });
+  var r8hi = await clientAt(s8, T).renewalWindow(certDer, { random: function () { return 1; } });
+  check("#15 RW-8 draw 0 selects the window start", Date.parse(r8lo.selectedTime) === T + 10 * DAY);
+  check("#15 RW-8 draw 1 selects the window end", Date.parse(r8hi.selectedTime) === T + 20 * DAY);
+
+  // RW-9 input guards + the default random path: no opts is accepted (crypto-backed draw); a non-Buffer cert,
+  // a non-function random, and a draw outside [0,1] each fail closed; an explanationURL is surfaced.
+  var s9 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r9 = await clientAt(s9, T).renewalWindow(certDer);   // no opts -> default crypto random
+  check("#15 RW-9 renewalWindow with no opts selects within the window", Date.parse(r9.selectedTime) >= T + 10 * DAY && Date.parse(r9.selectedTime) <= T + 20 * DAY);
+  check("#15 RW-9 a non-Buffer certificate is rejected", (await codeOf(clientAt(s9, T).renewalWindow("nope", {}))) === "acme/bad-input");
+  check("#15 RW-9 a non-function random is rejected", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: 5 }))) === "acme/bad-input");
+  check("#15 RW-9 a non-boolean replaced is rejected (no fail-open past the sec. 4.3 gate)", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { replaced: 12345 }))) === "acme/bad-input");
+  check("#15 RW-9 a random draw outside [0,1] is rejected", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return 2; } }))) === "acme/bad-input");
+  var s9e = A.acmeServer({ renewalInfoResponse: { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, explanationURL: "https://ca.example/why" }) } });
+  var r9e = await clientAt(s9e, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-9 an explanationURL is surfaced", r9e.explanationURL === "https://ca.example/why");
+
+  // RW-10 a non-200 renewalInfo (a server problem) after the pre-fetch gates surfaces as acme/server-problem.
+  var s10 = A.acmeServer({ renewalInfoResponse: A.problem(503, "serverInternal", "renewalInfo unavailable") });
+  check("#15 RW-10 a renewalInfo server problem propagates", (await codeOf(clientAt(s10, T).renewalWindow(certDer, { random: function () { return 0.5; } }))) === "acme/server-problem");
+}
+
+// ---- 16 alternate-chain selection (RFC 8555 sec. 7.4.2 / RFC 8288 Link) ------
+async function testAlternateChains() {
+  function toPem(der) { return "-----BEGIN CERTIFICATE-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n+$/, "") + "\n-----END CERTIFICATE-----"; }
+  var leafDer = signing.makeSigner("ec-p256", { cn: "leaf.example" }).cert;         // the shared end-entity cert
+  var otherLeafDer = signing.makeSigner("ec-p256", { cn: "other-leaf.example" }).cert;
+  var rootADer = signing.makeSigner("ec-p256", { cn: "Root CA A" }).cert;
+  var rootBDer = signing.makeSigner("ec-p256", { cn: "Root CA B" }).cert;
+  var leafPem = toPem(leafDer), rootAPem = toPem(rootADer), rootBPem = toPem(rootBDer), otherLeafPem = toPem(otherLeafDer);
+  var primary = [leafPem, rootAPem], altB = [leafPem, rootBPem];
+  var ALT0 = A.URLS.certificate + "/alt/0";
+  function pickB(c) { return c.certificates[c.certificates.length - 1].equals(rootBDer); }   // DER identity, not a string compare
+  function altCalls(s) { return s.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/cert/1/alt/") === 0; }).length; }
+
+  // AL-1 no Link -> the primary chain, empty alternates.
+  var r1 = await (await withAccount(A.acmeServer({ certPems: primary }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-1 no Link resolves the primary chain with empty alternates", r1.certificate.equals(leafDer) && r1.alternates.length === 0);
+
+  // AL-2 a well-formed Link is LISTED but not fetched without a predicate.
+  var s2 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r2 = await (await withAccount(s2)).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-2 a Link alternate is listed but not fetched", r2.alternates.length === 1 && r2.alternates[0] === ALT0 && altCalls(s2) === 0);
+
+  // AL-3 a predicate selects the CA-B alternate (both cert URLs POST-as-GET'd, same leaf).
+  var s3 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r3 = await (await withAccount(s3)).downloadCertificate(A.URLS.certificate, { selectChain: pickB });
+  check("#16 AL-3 selectChain picks the CA-B alternate", r3.certificate.equals(leafDer) && r3.certificates[r3.certificates.length - 1].equals(rootBDer) && altCalls(s3) === 1);
+
+  // AL-4 a predicate that matches nothing fails closed.
+  var acme4 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
+  check("#16 AL-4 no matching candidate fails closed", (await codeOf(acme4.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/no-matching-chain");
+
+  // AL-5 rel is a WHOLE-token, case-insensitive match (no substring); the param name folds too.
+  async function altCount(link) { return (await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link }))).downloadCertificate(A.URLS.certificate)).alternates.length; }
+  check("#16 AL-5 a multi-token rel matches alternate", (await altCount("<" + ALT0 + ">;rel=\"alternate index\"")) === 1);
+  check("#16 AL-5 a substring rel does not match", (await altCount("<" + ALT0 + ">;rel=\"alternateX\"")) === 0 && (await altCount("<" + ALT0 + ">;rel=\"xalternate\"")) === 0);
+  check("#16 AL-5 the rel token and param name are case-insensitive", (await altCount("<" + ALT0 + ">;Rel=\"ALTERNATE\"")) === 1);
+
+  // AL-6 a malformed Link fails closed WHEN alternates are requested, is ignored otherwise; http target fails closed.
+  var acme6a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }));
+  check("#16 AL-6 a malformed Link with selection fails closed", (await codeOf(acme6a.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  var r6b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-6 a malformed Link without selection is ignored", r6b.certificate.equals(leafDer) && r6b.alternates.length === 0);
+  var acme6c = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<http://acme.example/cert/1/alt/0>;rel=\"alternate\"" }));
+  check("#16 AL-6 an http alternate target fails closed", (await codeOf(acme6c.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  // A cross-origin https alternate is an SSRF vector -- an untrusted Link header MUST NOT steer the account-key
+  // -signed POST-as-GET to another origin. It fails closed under selection, and is not even listed without one.
+  var xLink = "<https://evil.example/cert/1/alt/0>;rel=\"alternate\"";
+  var acme6d = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }));
+  check("#16 AL-6 a cross-origin https alternate fails closed under selection", (await codeOf(acme6d.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  var r6e = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-6 a cross-origin alternate is not listed without selection", r6e.certificate.equals(leafDer) && r6e.alternates.length === 0);
+
+  // AL-7 the alternate-fetch budget is bounded (CWE-770): 20 advertised, cap 4 -> reject after exactly 4 fetches.
+  var many = []; for (var i = 0; i < 20; i++) many.push(altB);
+  var s7 = A.acmeServer({ certPems: primary, alternateChains: many });
+  var acme7 = await withAccount(s7);
+  check("#16 AL-7 the alternate fetch budget is enforced", (await codeOf(acme7.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; }, maxAlternates: 4 }))) === "acme/too-many-alternates");
+  check("#16 AL-7 exactly maxAlternates alternates were fetched", altCalls(s7) === 4);
+
+  // AL-8 a fetched alternate inherits every download gate (media type, size).
+  var acme8a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], altContentType: "text/plain" }));
+  check("#16 AL-8 a wrong-media-type alternate fails closed", (await codeOf(acme8a.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-certificate-chain");
+  var bigRoot = "-----BEGIN CERTIFICATE-----\n" + "A".repeat(2000) + "\n-----END CERTIFICATE-----";
+  var acme8b = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({ certPems: [leafPem], alternateChains: [[leafPem, bigRoot]] }), { maxResponseBytes: 1200 }));
+  await acme8b.newAccount({ termsOfServiceAgreed: true });
+  check("#16 AL-8 an oversize alternate is rejected", (await codeOf(acme8b.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/response-too-large");
+
+  // AL-9 same-leaf invariant, URL dedup, predicate-throw propagation.
+  var acme9a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [[otherLeafPem, rootBPem]] }));
+  check("#16 AL-9 an alternate with a different leaf is rejected", (await codeOf(acme9a.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-alternate");
+  var s9b = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"" });
+  var r9b = await (await withAccount(s9b)).downloadCertificate(A.URLS.certificate, { selectChain: pickB });
+  check("#16 AL-9 a duplicate alternate URL is fetched once", r9b.certificates[r9b.certificates.length - 1].equals(rootBDer) && altCalls(s9b) === 1);
+  var acme9c = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
+  check("#16 AL-9 a throwing selectChain propagates (not swallowed)", (await codeOf(acme9c.downloadCertificate(A.URLS.certificate, { selectChain: function () { throw new Error("boom"); } }))) === "RAW:boom");
+
+  // AL-10 both header shapes parse: node's comma-joined string AND an injected array of Link values.
+  var joined = "<" + A.URLS.certificate + "/alt/0>;rel=\"alternate\", <" + A.URLS.certificate + "/alt/1>;rel=\"alternate\"";
+  var r10a = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: joined }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-10 a comma-joined Link string parses both alternates", r10a.alternates.length === 2);
+  var arr = ["<" + A.URLS.certificate + "/alt/0>;rel=\"alternate\"", "<" + A.URLS.certificate + "/alt/1>;rel=\"alternate\""];
+  var r10b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: arr }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-10 an array of Link headers parses both alternates", r10b.alternates.length === 2);
+
+  // AL-11 RFC 8288 tokenizer edges: a comma or semicolon inside a quoted param value is not a separator; a
+  // bare (value-less) param and a trailing comma are tolerated; all still parse to the single alternate.
+  check("#16 AL-11 a comma inside a quoted param is not a separator", (await altCount("<" + ALT0 + ">;title=\"a,b\";rel=\"alternate\"")) === 1);
+  check("#16 AL-11 a semicolon inside a quoted param is not a separator", (await altCount("<" + ALT0 + ">;title=\"a;b\";rel=\"alternate\"")) === 1);
+  check("#16 AL-11 a bare param and a trailing comma are tolerated", (await altCount("<" + ALT0 + ">;rel=\"alternate\";flag")) === 1 && (await altCount("<" + ALT0 + ">;rel=\"alternate\",")) === 1);
+  check("#16 AL-11 a backslash-escaped quote inside a param value is handled", (await altCount("<" + ALT0 + ">;title=\"a\\\"b\";rel=\"alternate\"")) === 1);
+
+  // AL-11b a certificate response with NO content-type (a non-conforming server) fails the media-type gate.
+  var acme11b = await withAccount(A.acmeServer({ certPems: primary, certNoContentType: true }));
+  check("#16 AL-11 a missing content-type on the chain fails closed", (await codeOf(acme11b.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+
+  // AL-12 malformed-header edges fail closed under selection: an unterminated quote, and an over-cap header.
+  function codeForLink(link) { return withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link })).then(function (a) { return codeOf(a.downloadCertificate(A.URLS.certificate, { selectChain: pickB })); }); }
+  check("#16 AL-12 an unterminated quote fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate")) === "acme/bad-link");
+  check("#16 AL-12 an over-cap Link header fails closed", (await codeForLink("<" + ALT0 + ">;title=\"" + "a".repeat(8300) + "\";rel=\"alternate\"")) === "acme/bad-link");
+
+  // AL-13 selectChain must be a function; a predicate that accepts the PRIMARY returns it without fetching an alternate.
+  var acme13 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
+  check("#16 AL-13 a non-function selectChain is rejected", (await codeOf(acme13.downloadCertificate(A.URLS.certificate, { selectChain: 5 }))) === "acme/bad-input");
+  var s13 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r13 = await (await withAccount(s13)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
+  check("#16 AL-13 a predicate accepting the primary skips the alternate fetch", r13.certificate.equals(leafDer) && altCalls(s13) === 0);
+}
+
 async function main() {
   await setup();
   await testHappyFlow();
+  await testNewAuthz();
+  await testRenewalWindow();
+  await testAlternateChains();
   await testRemainingVerbs();
   await testRenewalInfo();
   await testOversized();

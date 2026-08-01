@@ -491,6 +491,21 @@ security-only patches after the next major releases.
   is bounded by a poll count and a total-wait budget and sleeps on a `Retry-After`
   through an injectable sleeper (so the delay is bounded, not attacker-unbounded),
   and every response body is size-capped before it reaches a JSON or PEM decoder.
+  When `downloadCertificate` selects among alternate issuance chains, the `Link`
+  response header is parsed strictly (RFC 8288: `rel="alternate"` matched as a whole
+  token, a malformed header or a non-`https` target refused). Because an alternate is
+  fetched with the account-key-signed POST-as-GET, an alternate target is confined to
+  the certificate download's own origin — an untrusted, TLS-delivered but unsigned
+  `Link` header cannot steer that authenticated request to another host (SSRF). The
+  extra signed fetches are bounded by `maxAlternates` (default 8) so a header
+  advertising many alternates cannot amplify into unbounded requests, resolved URLs
+  are de-duplicated, and an alternate whose end-entity certificate differs from the
+  primary's is rejected rather than substituted (RFC 8555 §7.4.2). `renewalWindow` refuses before any
+  request for a certificate already past its `notAfter` or one the caller marks
+  replaced, spreads the renewal instant with a uniform random draw inside the CA's
+  suggested window, and clamps the ARI `Retry-After` to [60 s, 24 h] so a hostile or
+  absent value can neither hammer the CA nor defer the next check indefinitely
+  (RFC 9773 §4.2/4.3).
 - **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /
   CWE-770).** `pki.ct.fetchLogList` fetches the `log_list.json` and its detached
   `log_list.sig` over the same fail-closed `pki.transport` (`rejectUnauthorized`
