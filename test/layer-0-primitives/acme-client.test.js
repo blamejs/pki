@@ -963,6 +963,12 @@ async function testAlternateChains() {
   check("#16 AL-21 a relative Link URI with an invalid RFC 3986 char fails closed", (await codeForLink("</cert/1/alt/0{x}>;rel=\"alternate\"")) === "acme/bad-link");
   // AL-22 a malformed percent-escape (% not followed by two hex digits) is not valid RFC 3986 pct-encoding.
   check("#16 AL-22 a malformed percent-escape in a Link URI fails closed", (await codeForLink("</cert/%ZZ>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-23 a control octet anywhere in the Link header (even inside a quoted param) is not a valid field-value.
+  var ctlHeader = "<" + ALT0 + ">;title=\"" + String.fromCharCode(1) + "\";rel=\"alternate\"";
+  check("#16 AL-23 a control octet in a Link header fails closed", (await codeForLink(ctlHeader)) === "acme/bad-link");
+  // AL-24 a percent-encoded dot-segment (%2e%2e) in a relative URI would be DECODED and resolved into a path
+  // traversal by URL parsing, changing the target -- reject it (the absolute path hits _clientUrl's own gate).
+  check("#16 AL-24 a percent-encoded dot-segment in a relative Link URI fails closed", (await codeForLink("</cert/%2e%2e/alt/0>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
