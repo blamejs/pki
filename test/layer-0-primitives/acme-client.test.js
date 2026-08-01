@@ -681,6 +681,11 @@ async function testNewAuthz() {
   // NA-9 an authorization the CA marks wildcard:true is a broader grant than the non-wildcard identifier requested.
   var acme9 = await withAccount(A.acmeServer({ newAuthzWildcard: true }));
   check("#14 NA-9 a wildcard authorization for a non-wildcard request is rejected", (await codeOf(acme9.newAuthz(DNS))) === "acme/identifier-mismatch");
+  // NA-10 a pre-authorization creates a PENDING authz (RFC 8555 sec. 7.1.4); a non-pending status is unexpected.
+  var acme10a = await withAccount(A.acmeServer({ newAuthzStatus: "valid" }));
+  check("#14 NA-10 a non-pending (valid) newAuthz response is rejected", (await codeOf(acme10a.newAuthz(DNS))) === "acme/unexpected-authorization-status");
+  var acme10b = await withAccount(A.acmeServer({ newAuthzStatus: "invalid" }));
+  check("#14 NA-10 a terminal (invalid) newAuthz response is rejected", (await codeOf(acme10b.newAuthz(DNS))) === "acme/unexpected-authorization-status");
 }
 
 // ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------
@@ -895,6 +900,12 @@ async function testAlternateChains() {
   // AL-15 a Link parameter not introduced by ';' (RFC 8288: <URI> *(";" param)) is malformed -> fails closed.
   var acme15 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">rel=\"alternate\"" }));
   check("#16 AL-15 a Link param not preceded by a semicolon fails closed", (await codeOf(acme15.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+
+  // AL-16 an UNQUOTED param value must be a single token (RFC 8288 / RFC 7230): whitespace in an unquoted rel
+  // (rel=alternate garbage) is malformed and MUST NOT be split-and-matched -- a quoted list is the valid form.
+  var acme16 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=alternate garbage" }));
+  check("#16 AL-16 whitespace in an unquoted param value fails closed", (await codeOf(acme16.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  check("#16 AL-16 a well-formed UNQUOTED rel token still matches", (await altCount("<" + ALT0 + ">;rel=alternate")) === 1);
 }
 
 async function main() {
