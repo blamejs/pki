@@ -177,6 +177,7 @@ async function run() {
   check("DG-p-baduserhash. a userhash value other than true/false is rejected", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, userhash=maybe', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
   var chUhf = httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, userhash=false', E, "bad");
   check("DG-p-userhash-false. userhash=false (unquoted token) is accepted as the default", chUhf.userhash === false);
+  check("DG-p-unquotedopaque. an UNQUOTED opaque directive (must be a quoted-string) is rejected", codeOf(function () { httpDigest.parseChallenge('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-256, opaque=abc', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
   var chCharset = httpDigest.parseChallenge('Digest realm="r", nonce="n1", qop="auth", algorithm=SHA-512-256, charset=ISO-8859-1, Digest realm="r", nonce="n2", qop="auth", algorithm=SHA-256, charset=UTF-8', E, "bad");
   check("DG-select-badcharset. an invalid-charset offer is skipped in favour of a valid UTF-8 one", chCharset.algorithm === "SHA-256" && chCharset.nonce === "n2");
   check("DG-p-unterminated. an unterminated quoted value is rejected", codeOf(function () { httpDigest.parseChallenge('Digest realm="unterminated', E, "est/digest-bad-challenge"); }) === "est/digest-bad-challenge");
