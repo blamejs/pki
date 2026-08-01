@@ -550,6 +550,24 @@ async function testDigestAuth() {
     digestParam(tNp.calls[1].headers.authorization, "nc") === "00000001" &&
     !(tNp.calls[2].headers && tNp.calls[2].headers.authorization) &&
     digestParam(tNp.calls[3].headers.authorization, "nc") === "00000002");
+  // D-space-nonce-alt: NON-consecutive reuse. Nonce nA (space /cacerts), then nB (space /mirror), then a hop
+  // back to /cacerts that REISSUES the still-valid nA. The count is tracked PER NONCE, so nA resumes at 2 --
+  // tracking only the most-recent nonce would reset it and replay (nA, 1) (RFC 7616 sec. 3.4).
+  var CACERTS_FULL = "https://ca.example/.well-known/est/cacerts";
+  var tAlt = fakeTransport([
+    chal401({ realm: "A", nonce: "nA", qop: "auth", algorithm: "SHA-256", domain: CACERTS_URI }),
+    { status: 302, headers: { location: MIRROR }, body: "" },
+    chal401({ realm: "B", nonce: "nB", qop: "auth", algorithm: "SHA-256", domain: "/.well-known/est/mirror" }),
+    { status: 302, headers: { location: CACERTS_FULL }, body: "" },
+    chal401({ realm: "A", nonce: "nA", qop: "auth", algorithm: "SHA-256", domain: CACERTS_URI }),
+    cacertsOK([S.cert]),
+  ]);
+  var rAlt = await pki.est.cacerts(BASE, { transport: tAlt, auth: DIG });
+  check("#D-space-nonce-alt a nonce reissued after another was used resumes its own count (per-nonce, no replay)",
+    rAlt.certificates.length === 1 && tAlt.calls.length === 6 &&
+    digestParam(tAlt.calls[1].headers.authorization, "nc") === "00000001" &&
+    digestParam(tAlt.calls[3].headers.authorization, "nc") === "00000001" &&
+    digestParam(tAlt.calls[5].headers.authorization, "nonce") === "nA" && digestParam(tAlt.calls[5].headers.authorization, "nc") === "00000002");
   // D-space-reject: a SAME-realm non-stale second 401 is a rejection of the credential, NOT a new protection
   // space -- the realm check must not turn a genuine rejection into an open re-answer loop.
   var tRej = fakeTransport([chal401({ realm: "est", nonce: "n1", qop: "auth", algorithm: "SHA-256" }), chal401({ realm: "est", nonce: "n2", qop: "auth", algorithm: "SHA-256" })]);
