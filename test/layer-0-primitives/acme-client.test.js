@@ -915,6 +915,17 @@ async function testAlternateChains() {
   var acme16 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=alternate garbage" }));
   check("#16 AL-16 whitespace in an unquoted param value fails closed", (await codeOf(acme16.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
   check("#16 AL-16 a well-formed UNQUOTED rel token still matches", (await altCount("<" + ALT0 + ">;rel=alternate")) === 1);
+
+  // AL-17 the primary is evaluated BEFORE a malformed Link is rejected: if selectChain accepts the primary, a
+  // malformed alternate Link (which is never needed) does not fail the download.
+  var s17 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" });
+  var r17 = await (await withAccount(s17)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
+  check("#16 AL-17 a matching primary is returned despite a malformed Link", r17.certificate.equals(leafDer) && altCalls(s17) === 0);
+
+  // AL-18 empty Link fields count toward the aggregate cap: a huge array of empty fields cannot amplify parse work.
+  var empties = []; for (var e18 = 0; e18 < 10000; e18++) empties.push("");
+  var acme18 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: empties }));
+  check("#16 AL-18 many empty Link fields hit the aggregate cap", (await codeOf(acme18.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-link");
 }
 
 async function main() {
