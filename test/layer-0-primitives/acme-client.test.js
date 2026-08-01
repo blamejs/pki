@@ -769,6 +769,13 @@ async function testRenewalWindow() {
   var r15 = await acme15rw.renewalWindow(certDer, { clock: advancingClock, random: function () { return 0.5; } });
   check("#15 RW-15 renewNow uses a fresh post-fetch clock read", r15.renewNow === true && Date.parse(r15.selectedTime) === T + 15 * DAY);
 
+  // RW-16 the selected renewal instant is bounded by the certificate's notAfter: a suggestedWindow extending
+  // past expiry never yields a renewal time after the cert is dead (RFC 9773 -- you renew BEFORE notAfter).
+  var NA = Date.parse("2040-01-01T00:00:00Z");   // the fixture cert's notAfter
+  var s16 = A.acmeServer({ renewalInfoResponse: riResp(NA - 100 * DAY, NA + 100 * DAY) });   // window straddles notAfter
+  var r16 = await clientAt(s16, NA - 200 * DAY).renewalWindow(certDer, { random: function () { return 1; } });   // draw the max
+  check("#15 RW-16 the selected time is clamped to notAfter", Date.parse(r16.selectedTime) === NA);
+
   // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
   // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
   // never discard the usable window). Both keep the decision fail-OPEN on the poll cadence, fail-closed on data.
