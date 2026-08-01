@@ -911,7 +911,7 @@ async function testAlternateChains() {
   // bare (value-less) param and a trailing comma are tolerated; all still parse to the single alternate.
   check("#16 AL-11 a comma inside a quoted param is not a separator", (await altCount("<" + ALT0 + ">;title=\"a,b\";rel=\"alternate\"")) === 1);
   check("#16 AL-11 a semicolon inside a quoted param is not a separator", (await altCount("<" + ALT0 + ">;title=\"a;b\";rel=\"alternate\"")) === 1);
-  check("#16 AL-11 a bare param and a trailing comma are tolerated", (await altCount("<" + ALT0 + ">;rel=\"alternate\";flag")) === 1 && (await altCount("<" + ALT0 + ">;rel=\"alternate\",")) === 1);
+  check("#16 AL-11 a trailing comma is tolerated (empty link-value skipped)", (await altCount("<" + ALT0 + ">;rel=\"alternate\",")) === 1);
   check("#16 AL-11 a backslash-escaped quote inside a param value is handled", (await altCount("<" + ALT0 + ">;title=\"a\\\"b\";rel=\"alternate\"")) === 1);
 
   // AL-11b a certificate response with NO content-type (a non-conforming server) fails the media-type gate.
@@ -979,6 +979,9 @@ async function testAlternateChains() {
   // AL-26 a quoted value must be a WELL-FORMED quoted-string (RFC 7230): an unescaped interior quote (a""b) or a
   // dangling backslash is malformed, not merely first/last-char-is-a-quote.
   check("#16 AL-26 a malformed quoted Link value fails closed", (await codeForLink("<" + ALT0 + ">;title=\"a\"\"b\";rel=\"alternate\"")) === "acme/bad-link");
+  // AL-27 a Link parameter must carry a value (name=value / name="value", RFC 9110 sec. 5.6.6); a valueless
+  // param (no '=') is rejected rather than accepted as an empty-valued one.
+  check("#16 AL-27 a valueless Link parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";flag")) === "acme/bad-link");
 }
 
 async function main() {
