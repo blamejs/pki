@@ -204,6 +204,11 @@ async function testRenewalInfo() {
   // RFC 9773 sec. 4.3 gate -- the validating wrapper fails closed rather than issuing the GET on a dead cert.
   var acmeNaN = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { clock: function () { return NaN; } }));
   check("#9 renewalInfo rejects a non-finite client clock", (await codeOf(Promise.resolve().then(function () { return acmeNaN.renewalInfo(certDer); }))) === "acme/bad-input");
+  // RFC 9773 sec. 4.3: the expiry is re-checked immediately BEFORE the GET, so a certificate that crosses notAfter
+  // WHILE the (uncached) directory is being fetched is caught -- a clock that reads not-expired first, expired next.
+  var tocCalls = 0;
+  var acmeToc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { clock: function () { return tocCalls++ === 0 ? Date.parse("2039-06-01T00:00:00Z") : Date.parse("2041-01-01T00:00:00Z"); } }));
+  check("#9 renewalInfo re-checks expiry after the directory fetch (TOCTOU)", (await codeOf(Promise.resolve().then(function () { return acmeToc.renewalInfo(certDer); }))) === "acme/certificate-expired");
   check("#9 renewalInfo requires a DER Buffer", (function () { try { acme.renewalInfo("not-a-buffer"); return "NO-THROW"; } catch (e) { return e && e.code; } })() === "acme/bad-input");
 }
 
