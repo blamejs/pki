@@ -1017,9 +1017,9 @@ async function testAlternateChains() {
   // AL-34 the anchor parameter is URI-valued (RFC 8288 sec. 3.2): unlike a generic extension param, a VALUELESS
   // anchor is malformed (an empty anchor would resolve to the certificate URL and spoof a context match).
   check("#16 AL-34 a valueless anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor")) === "acme/bad-link");
-  // AL-35 the FIRST rel occurrence wins even when empty (RFC 8288 sec. 3.3): rel="";rel=alternate uses the empty
-  // first value (not an alternate), so it is skipped, not matched via the second rel.
-  check("#16 AL-35 the first rel occurrence wins even when empty", (await altCount("<" + ALT0 + ">;rel=\"\";rel=alternate")) === 0);
+  // AL-35 the FIRST rel occurrence wins even when empty (RFC 8288 sec. 3.3): rel="";rel=alternate keeps the empty
+  // first value, which is a malformed (zero-type) rel and fails closed -- it is NOT matched via the later alternate.
+  check("#16 AL-35 an empty first rel value fails closed, not matched via a later rel", (await codeForLink("<" + ALT0 + ">;rel=\"\";rel=alternate")) === "acme/bad-link");
   // AL-36 an explicitly empty anchor URI-reference (anchor="") is valid -- it resolves to the context (the cert
   // URL) -- so the alternate is kept (distinct from a VALUELESS anchor with no '=' which is malformed).
   check("#16 AL-36 an explicitly empty anchor URI-reference is permitted", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"\"")) === 1);
@@ -1066,6 +1066,12 @@ async function testAlternateChains() {
   check("#16 AL-49 a bracket in an opaque-scheme relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:[\"")) === "acme/bad-link");
   // AL-50 an IPvFuture version marker is case-insensitive (RFC 5234 ABNF literal): "[V1.a]" is as valid as "[v1.a]".
   check("#16 AL-50 an uppercase-V IPvFuture relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://[V1.a]/\"")) === 1);
+  // AL-51 a SEPARATE link-value carrying an empty rel fails the whole field closed (not silently skipped so a
+  // later valid alternate is used): a malformed value is a hard reject.
+  check("#16 AL-51 a separate link-value with an empty rel fails closed", (await codeForLink("<https://acme.example/bad>;rel=\"\", <" + ALT0 + ">;rel=alternate")) === "acme/bad-link");
+  // AL-52 an ext-rel-type authority with two "@" is invalid RFC 3986 (WHATWG would accept it while rewriting the
+  // first "@"); it fails closed rather than being passed by canParse's repair.
+  check("#16 AL-52 a double-@ authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://a@b@host/\"")) === "acme/bad-link");
 }
 
 async function main() {
