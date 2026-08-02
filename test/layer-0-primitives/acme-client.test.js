@@ -1176,6 +1176,10 @@ async function testAlternateChains() {
   // AL-72 a fetched TARGET keeps WHATWG's 16-bit port range (it is connected to over TCP): a target port ">65535"
   // is not usable and is skipped (not signed).
   check("#16 AL-72 an out-of-range port in a target URI is skipped", (await altCount("<https://acme.example:65536/cert/1/alt/0>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-73 a numeric dotted reg-name in an ext-rel-type is a valid RFC 3986 reg-name (WHATWG mis-coerces it to an
+  // invalid IPv4 literal): "1.2.3.4.5" is accepted, while an empty/invalid IP-literal host stays rejected.
+  check("#16 AL-73 an IPv4-shaped reg-name in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://1.2.3.4.5/type\"")) === 1);
+  check("#16 AL-73 an empty IP-literal host in a relation-type URI is still rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[]/type\"")) === "acme/bad-link");
 }
 
 async function main() {
