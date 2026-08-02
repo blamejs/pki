@@ -1007,6 +1007,9 @@ async function testAlternateChains() {
   // AL-32 the RAW anchor is validated with the same RFC 3986 rules as the target: an encoded dot-segment anchor
   // that would traverse to the certificate URL cannot spoof a context match -- it is skipped, not kept.
   check("#16 AL-32 an anchor with an encoded dot-segment cannot spoof the context", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"/cert/x/%2e%2e/1\"")) === 0);
+  // AL-33 a rel relation-type list is single-space-separated with no leading/trailing/repeated space (RFC 8288
+  // sec. 3.3): "alternate " (trailing space) is malformed and must not be split-and-matched.
+  check("#16 AL-33 a rel with a trailing space fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate \"")) === "acme/bad-link");
 }
 
 async function main() {
