@@ -718,6 +718,14 @@ async function testNewAuthz() {
   // NA-11 only a terminal failed status ("invalid"/"deactivated"/"expired"/"revoked") is not proceedable.
   var acme11 = await withAccount(A.acmeServer({ newAuthzStatus: "invalid" }));
   check("#14 NA-11 a terminal (invalid) newAuthz response is rejected", (await codeOf(acme11.newAuthz(DNS))) === "acme/unexpected-authorization-status");
+  // NA-12 an already-valid authz the CA granted out of band MAY carry an empty challenges array (RFC 8555 sec.
+  // 7.1.4 / 7.4.1 -- no challenge was validated); the schema accepts it rather than requiring >= 1 challenge.
+  var acme12 = await withAccount(A.acmeServer({ newAuthzObject: { status: "valid", expires: "2040-01-01T00:00:00Z", identifier: DNS, challenges: [] } }));
+  var na12 = await acme12.newAuthz(DNS);
+  check("#14 NA-12 a valid authz with empty challenges is accepted", na12.authorization.status === "valid" && na12.authorization.challenges.length === 0);
+  // NA-12 a PENDING authz still requires at least one challenge (an empty challenges array is malformed).
+  var acme12b = await withAccount(A.acmeServer({ newAuthzObject: { status: "pending", expires: "2040-01-01T00:00:00Z", identifier: DNS, challenges: [] } }));
+  check("#14 NA-12 a pending authz with empty challenges is rejected", (await codeOf(acme12b.newAuthz(DNS))) !== "NO-THROW");
 }
 
 // ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------
