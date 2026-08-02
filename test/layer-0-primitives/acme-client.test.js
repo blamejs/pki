@@ -1032,6 +1032,11 @@ async function testAlternateChains() {
   // AL-40 an ext-rel-type (URI) relation-type is validated in FULL, not just its scheme: "http:%ZZ" has a scheme
   // but a malformed percent-escape, so it is not a valid URI relation-type and the list fails closed.
   check("#16 AL-40 a malformed URI relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:%ZZ\"")) === "acme/bad-link");
+  // AL-41 an ext-rel-type URI is PARSED in full (not just char-checked): "http://[" has only valid characters but
+  // is a structurally invalid URL, so it is not a valid relation-type and the list fails closed.
+  check("#16 AL-41 a structurally invalid URI relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[\"")) === "acme/bad-link");
+  // AL-41 a well-formed ext-rel-type URI alongside alternate is accepted (the list is valid, alternate matches).
+  check("#16 AL-41 a valid URI relation-type alongside alternate is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate https://example.com/rel\"")) === 1);
 }
 
 async function main() {
