@@ -1180,6 +1180,12 @@ async function testAlternateChains() {
   // invalid IPv4 literal): "1.2.3.4.5" is accepted, while an empty/invalid IP-literal host stays rejected.
   check("#16 AL-73 an IPv4-shaped reg-name in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://1.2.3.4.5/type\"")) === 1);
   check("#16 AL-73 an empty IP-literal host in a relation-type URI is still rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[]/type\"")) === "acme/bad-link");
+  // AL-74 an anchor whose query WHATWG re-encodes ("?x='" -> "?x=%27") must NOT spoof a context match against a
+  // download URL that already carries the encoded form -- "'" is a reserved sub-delim, not equal to its escape
+  // (RFC 3986 sec. 6.2.2.2), so the resolution repaired it and the anchor is an unreliable context (skipped).
+  var s74 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\";anchor=\"?x='\"" });
+  var r74 = await (await withAccount(s74)).downloadCertificate("https://acme.example/cert/1?x=%27");
+  check("#16 AL-74 a re-encoded-query anchor does not spoof the certificate context", r74.alternates.length === 0);
 }
 
 async function main() {
