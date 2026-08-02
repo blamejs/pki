@@ -756,6 +756,7 @@ async function testRenewalWindow() {
   check("#15 RW-9 a non-function random is rejected", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: 5 }))) === "acme/bad-input");
   check("#15 RW-9 a non-boolean replaced is rejected (no fail-open past the sec. 4.3 gate)", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { replaced: 12345 }))) === "acme/bad-input");
   check("#15 RW-9 a random draw outside [0,1] is rejected", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return 2; } }))) === "acme/bad-input");
+  check("#15 RW-9 a non-number random draw is rejected (not coerced)", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return null; } }))) === "acme/bad-input" && (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return "0.5"; } }))) === "acme/bad-input");
   var s9e = A.acmeServer({ renewalInfoResponse: { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, explanationURL: "https://ca.example/why" }) } });
   var r9e = await clientAt(s9e, T).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-9 an explanationURL is surfaced", r9e.explanationURL === "https://ca.example/why");
