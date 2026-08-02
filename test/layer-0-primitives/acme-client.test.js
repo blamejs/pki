@@ -569,6 +569,18 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a bracket in userinfo is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://a[b@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+  // (r) an IPv4-address-form host WHATWG rewrites to a dotted-quad ("0x7f.1", "2130706433" -> 127.0.0.1) is
+  // rejected: the JWS url would be signed over the raw host while the transport connects to a DIFFERENT (loopback /
+  // internal, SSRF-adjacent) address (RFC 8555 sec. 6.4). Uppercase host / :443 are still honored (normalization).
+  check("#13 a hex IPv4-coercion host is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://0x7f.1/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a decimal IPv4-coercion host is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://2130706433/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 an uppercase host is still accepted (normalization, not a rewrite)", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://ACME.EXAMPLE/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) !== "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
@@ -726,6 +738,11 @@ async function testNewAuthz() {
   // NA-12 a PENDING authz still requires at least one challenge (an empty challenges array is malformed).
   var acme12b = await withAccount(A.acmeServer({ newAuthzObject: { status: "pending", expires: "2040-01-01T00:00:00Z", identifier: DNS, challenges: [] } }));
   check("#14 NA-12 a pending authz with empty challenges is rejected", (await codeOf(acme12b.newAuthz(DNS))) !== "NO-THROW");
+  // NA-13 a CA MAY answer a pre-authorization with 200 (OK) rather than 201 (Created) -- e.g. an already-existing
+  // authorization (RFC 8555 sec. 7.4.1), the same leniency newAccount applies for an existing account.
+  var acme13 = await withAccount(A.acmeServer({ newAuthzHttpStatus: 200 }));
+  var na13 = await acme13.newAuthz(DNS);
+  check("#14 NA-13 a 200 pre-authorization response is accepted", na13.authorization && na13.authorization.status === "pending");
 }
 
 // ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------

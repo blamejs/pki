@@ -484,7 +484,13 @@ security-only patches after the next major releases.
   a system-store opt-in) is required, and TLS is floored at 1.2. The directory URL
   and every server-returned URL — account, order, authorization, challenge,
   finalize, certificate, and the ARI path — must be `https`; an `http` URL from a
-  compromised or downgraded directory is refused rather than fetched. Every
+  compromised or downgraded directory is refused rather than fetched. Every such URL
+  must also be canonical: a spelling the WHATWG URL parser would silently rewrite — a
+  path or query the transport would normalize, a fragment, or a host in an IPv4-address
+  form (hex/octal/decimal/shorthand) the parser coerces to a different, often loopback
+  or internal, address — is refused, so the account-key-signed JWS `url` (RFC 8555 §6.4)
+  always names the exact authority the request is directed to and cannot be steered to
+  an unintended host. Every
   authenticated request carries a fresh single-use anti-replay nonce bound to that
   URL, harvested only from a validated `Replay-Nonce`, with a bounded `badNonce`
   retry so a nonce-replay error cannot loop. Reads are POST-as-GET, the poll loop

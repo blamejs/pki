@@ -138,7 +138,7 @@ function acmeServer(opts) {
       var authzBody = opts.newAuthzObject || { status: opts.newAuthzStatus || "pending", expires: EXPIRES, identifier: orderIdentifiers[0], challenges: challenges };
       if (opts.newAuthzWildcard) authzBody = Object.assign({}, authzBody, { wildcard: true });   // a broader-than-requested grant
       var hdrs = authzLoc == null ? {} : { location: authzLoc };
-      return withNonce(json(201, authzBody, hdrs));
+      return withNonce(json(opts.newAuthzHttpStatus || 201, authzBody, hdrs));
     }
 
     if (path === "/new-account") {

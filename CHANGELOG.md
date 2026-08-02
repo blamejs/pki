@@ -17,6 +17,7 @@ The pki.acme client rounds out its RFC 8555 / RFC 9773 surface -- pre-authorize 
 ### Changed
 
 - client.renewalInfo(certDer) now refuses an already-expired certificate before issuing the unauthenticated RenewalInfo GET (RFC 9773 sec. 4.3: a client MUST NOT check a certificate's RenewalInfo after it has expired), throwing acme/certificate-expired -- the same pre-fetch expiry gate renewalWindow applies.
+- pki.acme.client now rejects a server-provided URL whose host is an IPv4-address form (hex, octal, decimal, or shorthand) that the WHATWG URL parser would coerce to a different, often loopback or internal, address -- the account-signed JWS url (RFC 8555 sec. 6.4) must name the exact authority the request connects to, so such a URL can no longer steer an authenticated request to an unintended host (SSRF hardening).
 
 ## v0.3.28 — 2026-08-01
 
