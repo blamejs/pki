@@ -1045,6 +1045,19 @@ async function testAlternateChains() {
   // AL-44 a TARGET (fetched) URI must not carry a bracket outside an authority IP-literal (a cert URL never uses
   // one): "/cert/[alt]" is structurally invalid and WHATWG would percent-encode it, so it fails closed.
   check("#16 AL-44 a bracket in a target URI path fails closed", (await codeForLink("</cert/[alt]>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-45 an ext-rel-type with an empty IP-literal authority ("http://[]") is a structurally invalid URI (a
+  // balance-only check would accept it), so it fails closed.
+  check("#16 AL-45 an empty IP-literal relation-type authority fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[]\"")) === "acme/bad-link");
+  // AL-46 an ext-rel-type with a non-numeric port ("http://host:bad") is a structurally invalid URI, so it fails closed.
+  check("#16 AL-46 a bad-port relation-type authority fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://host:bad\"")) === "acme/bad-link");
+  // AL-47 a same-origin IPv6-literal TARGET authority is valid (a bracket is legal in an authority, only invalid
+  // in a path): an IPv6-hosted cert URL advertising a same-origin IPv6 alternate resolves it.
+  var s47 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<https://[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
+  var r47 = await (await withAccount(s47)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
+  check("#16 AL-47 a same-origin IPv6 target authority resolves the alternate", r47.certificates[r47.certificates.length - 1].equals(rootBDer));
+  // AL-48 a valid authority IP-literal does not license a bracket elsewhere: "https://[::1]/cert/[alt]" carries a
+  // stray bracket in the path and fails closed.
+  check("#16 AL-48 a bracket in the path past a valid IP-literal authority fails closed", (await codeForLink("<https://[2001:db8::1]/cert/[alt]>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
