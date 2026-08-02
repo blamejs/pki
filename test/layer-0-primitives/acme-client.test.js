@@ -1064,6 +1064,8 @@ async function testAlternateChains() {
   // AL-49 a bracket outside an authority is invalid even for a scheme WHATWG parses leniently: "urn:[" has an
   // opaque part with a stray bracket (URL.canParse accepts it), so the ext-rel-type fails closed.
   check("#16 AL-49 a bracket in an opaque-scheme relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:[\"")) === "acme/bad-link");
+  // AL-50 an IPvFuture version marker is case-insensitive (RFC 5234 ABNF literal): "[V1.a]" is as valid as "[v1.a]".
+  check("#16 AL-50 an uppercase-V IPvFuture relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://[V1.a]/\"")) === 1);
 }
 
 async function main() {
