@@ -1022,6 +1022,9 @@ async function testAlternateChains() {
   // AL-37 multiple spaces between relation types are allowed (RFC 8288 sec. 3.3 separator is 1*SP): "alternate
   // <SP><SP>index" still matches alternate; only a LEADING/TRAILING space is malformed (AL-33).
   check("#16 AL-37 multiple spaces between relation types are allowed", (await altCount("<" + ALT0 + ">;rel=\"alternate  index\"")) === 1);
+  // AL-38 only HTTP OWS (SP / HTAB) is trimmed, not arbitrary Unicode whitespace: a non-breaking space (obs-text
+  // U+00A0) before a parameter name is part of the (non-token) name, not stripped -> the parameter is malformed.
+  check("#16 AL-38 a non-breaking space is not trimmed as OWS", (await codeForLink("<" + ALT0 + ">;" + String.fromCharCode(0xA0) + "rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
