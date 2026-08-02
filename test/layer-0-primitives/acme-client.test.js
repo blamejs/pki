@@ -1089,6 +1089,9 @@ async function testAlternateChains() {
   check("#16 AL-56 a repeated fragment delimiter in a relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:x#y#z\"")) === "acme/bad-link");
   // AL-57 the same repeated-"#" reject applies to a fetched TARGET too (swept to both, not only the ext-rel-type).
   check("#16 AL-57 a repeated fragment delimiter in a target URI fails closed", (await codeForLink("<https://acme.example/cert/alt#y#z>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-58 the empty-authority reject (shared with the target) also covers an ext-rel-type: "http:///relations"
+  // has an empty authority WHATWG repairs by promoting the path segment to the host, so it fails closed.
+  check("#16 AL-58 an empty-authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:///relations.example\"")) === "acme/bad-link");
 }
 
 async function main() {
