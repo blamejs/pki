@@ -1225,6 +1225,10 @@ async function testAlternateChains() {
   // AL-79 a DUPLICATE anchor is ambiguous (anchor is not an RFC 8288 sec. 3.3 singleton), and since anchor sets the
   // context it fails closed rather than silently taking the first.
   check("#16 AL-79 a duplicate anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor=\"\";anchor=\"https://other.example/\"")) === "acme/bad-link");
+  // AL-80 an empty HOST after userinfo or before a port ("https://user@/x", "https://:443/x") is an empty authority
+  // for a special scheme -- not caught by looking only at the char after "//" -- and fails closed.
+  check("#16 AL-80 an empty host after userinfo fails closed", (await codeForLink("<https://user@/bad>;rel=\"alternate\"")) === "acme/bad-link");
+  check("#16 AL-80 an empty host before a port fails closed", (await codeForLink("<https://:443/bad>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
