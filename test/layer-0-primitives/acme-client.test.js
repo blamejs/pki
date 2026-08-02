@@ -989,6 +989,9 @@ async function testAlternateChains() {
   // single (non-matching) relation-type, so "alternate<TAB>index" must NOT match alternate.
   var tabRel = "<" + ALT0 + ">;rel=\"alternate" + String.fromCharCode(9) + "index\"";
   check("#16 AL-29 a tab in a quoted rel is not a list separator", (await codeForLink(tabRel)) === "acme/no-matching-chain");
+  // AL-30 an empty parameter (a `;` with no parameter, e.g. `;;`) is malformed (RFC 8288 requires a link-param
+  // after each `;`) -- reject it rather than silently skip the empty slot.
+  check("#16 AL-30 an empty Link parameter (;;) fails closed", (await codeForLink("<" + ALT0 + ">;;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
