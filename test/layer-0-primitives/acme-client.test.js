@@ -1139,6 +1139,12 @@ async function testAlternateChains() {
   // AL-67 two equivalent spellings of the same alternate (an uppercase host + explicit :443 vs the canonical form)
   // collapse to ONE fetch: dedup is by the WHATWG-normalized href, not the verbatim string (CWE-770 amplification).
   check("#16 AL-67 equivalent-spelling alternates are de-duplicated by normalized href", (await altCount("<" + ALT0 + ">;rel=\"alternate\", <https://ACME.EXAMPLE:443/cert/1/alt/0>;rel=\"alternate\"")) === 1);
+  // AL-68 a percent-encoded unreserved char is equivalent (RFC 3986 sec. 6.2.2.2: "%61" == "a"), so "/alt" and
+  // "/%61lt" de-duplicate to a single fetch too.
+  check("#16 AL-68 an unreserved percent-escape is normalized for dedup", (await altCount("<" + ALT0 + ">;rel=\"alternate\", <https://acme.example/cert/1/%61lt/0>;rel=\"alternate\"")) === 1);
+  // AL-68 a RESERVED escape is not decoded but its hex is case-normalized (RFC 3986 sec. 6.2.2.1): "%2f" and "%2F"
+  // (both an encoded "/") are the same target and de-duplicate to one fetch.
+  check("#16 AL-68 a reserved percent-escape is case-normalized for dedup", (await altCount("<https://acme.example/cert/1/alt%2f0>;rel=\"alternate\", <https://acme.example/cert/1/alt%2F0>;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
