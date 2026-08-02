@@ -681,11 +681,14 @@ async function testNewAuthz() {
   // NA-9 an authorization the CA marks wildcard:true is a broader grant than the non-wildcard identifier requested.
   var acme9 = await withAccount(A.acmeServer({ newAuthzWildcard: true }));
   check("#14 NA-9 a wildcard authorization for a non-wildcard request is rejected", (await codeOf(acme9.newAuthz(DNS))) === "acme/identifier-mismatch");
-  // NA-10 a pre-authorization creates a PENDING authz (RFC 8555 sec. 7.1.4); a non-pending status is unexpected.
+  // NA-10 a pre-authorization is normally PENDING, but the CA MAY return an already-"valid" authz (RFC 8555 sec.
+  // 7.4.1 -- the identifier is already authorized out of band); it is usable and accepted.
   var acme10a = await withAccount(A.acmeServer({ newAuthzStatus: "valid" }));
-  check("#14 NA-10 a non-pending (valid) newAuthz response is rejected", (await codeOf(acme10a.newAuthz(DNS))) === "acme/unexpected-authorization-status");
-  var acme10b = await withAccount(A.acmeServer({ newAuthzStatus: "invalid" }));
-  check("#14 NA-10 a terminal (invalid) newAuthz response is rejected", (await codeOf(acme10b.newAuthz(DNS))) === "acme/unexpected-authorization-status");
+  var na10a = await acme10a.newAuthz(DNS);
+  check("#14 NA-10 an already-valid newAuthz response is accepted", na10a.authorization.status === "valid");
+  // NA-11 only a terminal failed status ("invalid"/"deactivated"/"expired"/"revoked") is not proceedable.
+  var acme11 = await withAccount(A.acmeServer({ newAuthzStatus: "invalid" }));
+  check("#14 NA-11 a terminal (invalid) newAuthz response is rejected", (await codeOf(acme11.newAuthz(DNS))) === "acme/unexpected-authorization-status");
 }
 
 // ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------
@@ -1058,6 +1061,9 @@ async function testAlternateChains() {
   // AL-48 a valid authority IP-literal does not license a bracket elsewhere: "https://[::1]/cert/[alt]" carries a
   // stray bracket in the path and fails closed.
   check("#16 AL-48 a bracket in the path past a valid IP-literal authority fails closed", (await codeForLink("<https://[2001:db8::1]/cert/[alt]>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-49 a bracket outside an authority is invalid even for a scheme WHATWG parses leniently: "urn:[" has an
+  // opaque part with a stray bracket (URL.canParse accepts it), so the ext-rel-type fails closed.
+  check("#16 AL-49 a bracket in an opaque-scheme relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:[\"")) === "acme/bad-link");
 }
 
 async function main() {
