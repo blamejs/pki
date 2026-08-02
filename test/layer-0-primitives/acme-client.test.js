@@ -586,6 +586,11 @@ async function testReadyAndRelativeRedirect() {
   check("#13 an uppercase host is still accepted (normalization, not a rewrite)", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://ACME.EXAMPLE/directory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) !== "acme/bad-url");
+  // (r) an ACME URL must not carry userinfo: the transport connects to the host without it, so a signed JWS url
+  // with userinfo would not match the requested URL (RFC 8555 sec. 6.4), and a directory URL never has userinfo.
+  check("#13 a URL with userinfo is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://user@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
@@ -1229,6 +1234,9 @@ async function testAlternateChains() {
   // for a special scheme -- not caught by looking only at the char after "//" -- and fails closed.
   check("#16 AL-80 an empty host after userinfo fails closed", (await codeForLink("<https://user@/bad>;rel=\"alternate\"")) === "acme/bad-link");
   check("#16 AL-80 an empty host before a port fails closed", (await codeForLink("<https://:443/bad>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-81 an alternate TARGET with userinfo is not signed/fetched (ACME URLs have no userinfo; a signed url with it
+  // would not match the request, RFC 8555 sec. 6.4) -- it is skipped, a co-advertised valid alternate survives.
+  check("#16 AL-81 an alternate target with userinfo is skipped", (await altCount("<https://user@acme.example/cert/1/alt/0>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
