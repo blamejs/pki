@@ -1004,6 +1004,9 @@ async function testAlternateChains() {
   check("#16 AL-32 an alternate anchored to the certificate URL is kept", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"" + A.URLS.certificate + "\"")) === 1);
   // AL-32 an anchor that does not resolve to a URL cannot be our context -> skip (conservative).
   check("#16 AL-32 an unresolvable anchor is skipped", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"http://\"")) === 0);
+  // AL-32 the RAW anchor is validated with the same RFC 3986 rules as the target: an encoded dot-segment anchor
+  // that would traverse to the certificate URL cannot spoof a context match -- it is skipped, not kept.
+  check("#16 AL-32 an anchor with an encoded dot-segment cannot spoof the context", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"/cert/x/%2e%2e/1\"")) === 0);
 }
 
 async function main() {
