@@ -894,6 +894,20 @@ async function testRenewalWindow() {
   // RW-12 when the CA omits Retry-After, a sensible clamped default (6h) is returned rather than null.
   var s12 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });   // riResp sets no retry-after header
   check("#15 RW-12 an absent Retry-After yields the default poll delay", (await clientAt(s12, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 21600);
+  // RW-20 RFC 9773 sec. 4.2: passing back a prior result (opts.previous) whose window is UNCHANGED reuses its
+  // selectedTime, even when a fresh draw would differ -- a repeated ARI refresh converges on one stable instant.
+  var sReuse = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r20a = await clientAt(sReuse, T).renewalWindow(certDer, { random: function () { return 0.25; } });
+  var r20b = await clientAt(sReuse, T).renewalWindow(certDer, { previous: r20a, random: function () { return 0.9; } });
+  check("#15 RW-20 an unchanged window reuses the prior selected time", r20b.selectedTime === r20a.selectedTime && Date.parse(r20a.selectedTime) === T + 12.5 * DAY);
+  // RW-21 a CHANGED window ignores the stale prior and draws fresh.
+  var r21 = await clientAt(sReuse, T).renewalWindow(certDer, { previous: { suggestedWindow: { start: "1999-01-01T00:00:00Z", end: "1999-02-01T00:00:00Z" }, selectedTime: "1999-01-15T00:00:00Z" }, random: function () { return 0.5; } });
+  check("#15 RW-21 a changed window draws fresh, not the stale prior", Date.parse(r21.selectedTime) === T + 15 * DAY);
+  // RW-21 a non-object opts.previous is a config error.
+  check("#15 RW-21 a non-object previous is rejected", (await codeOf(clientAt(sReuse, T).renewalWindow(certDer, { previous: "nope" }))) === "acme/bad-input");
+  // RW-22 a previous whose window MATCHES but whose selectedTime is not a date is a config error (fails closed
+  // rather than silently re-drawing, so a corrupted stored value surfaces).
+  check("#15 RW-22 a matching-window previous with a malformed selectedTime is rejected", (await codeOf(clientAt(sReuse, T).renewalWindow(certDer, { previous: { suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, selectedTime: "not-a-date" } }))) === "acme/bad-input");
 }
 
 // ---- 16 alternate-chain selection (RFC 8555 sec. 7.4.2 / RFC 8288 Link) ------
