@@ -1042,6 +1042,9 @@ async function testAlternateChains() {
   check("#16 AL-42 a percent-encoded dot in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate https://relations.example/%2e%2e/chain\"")) === 1);
   // AL-43 an IPvFuture host is a valid RFC 3986 relation-type URI (WHATWG would reject it), and is accepted.
   check("#16 AL-43 an IPvFuture relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://[v1.a]/\"")) === 1);
+  // AL-44 a TARGET (fetched) URI must not carry a bracket outside an authority IP-literal (a cert URL never uses
+  // one): "/cert/[alt]" is structurally invalid and WHATWG would percent-encode it, so it fails closed.
+  check("#16 AL-44 a bracket in a target URI path fails closed", (await codeForLink("</cert/[alt]>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
