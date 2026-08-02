@@ -1186,6 +1186,9 @@ async function testAlternateChains() {
   var s74 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\";anchor=\"?x='\"" });
   var r74 = await (await withAccount(s74)).downloadCertificate("https://acme.example/cert/1?x=%27");
   check("#16 AL-74 a re-encoded-query anchor does not spoof the certificate context", r74.alternates.length === 0);
+  // AL-75 a non-numeric port ("host:bad") is malformed (RFC 3986 port = *DIGIT), not merely non-canonical, so a
+  // target carrying one FAILS the whole header closed (a structural reject before resolution), not skipped.
+  check("#16 AL-75 a malformed-port target fails closed", (await codeForLink("<https://acme.example:bad/cert>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
