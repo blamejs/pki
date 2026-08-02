@@ -1211,6 +1211,9 @@ async function testAlternateChains() {
   check("#16 AL-76 a malformed IP-literal target fails closed", (await codeForLink("<https://[not-ip]/cert>;rel=\"alternate\"")) === "acme/bad-link");
   // AL-76 a valid IPv6 relation-type host is still accepted, and a malformed one is rejected (the same content check).
   check("#16 AL-76 a malformed IP-literal relation-type URI is rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[not-ip]/x\"")) === "acme/bad-link");
+  // AL-77 an ext-rel-type is validated by RFC 3986 GRAMMAR, not WHATWG: an empty reg-name authority ("foo://user@/")
+  // is valid (reg-name = *(...), zero chars allowed), so it is accepted where WHATWG's special-scheme parse rejects it.
+  check("#16 AL-77 an empty reg-name authority relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate foo://user@/type\"")) === 1);
 }
 
 async function main() {
