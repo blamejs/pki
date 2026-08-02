@@ -1242,6 +1242,11 @@ async function testAlternateChains() {
   // AL-81 an alternate TARGET with userinfo is not signed/fetched (ACME URLs have no userinfo; a signed url with it
   // would not match the request, RFC 8555 sec. 6.4) -- it is skipped, a co-advertised valid alternate survives.
   check("#16 AL-81 an alternate target with userinfo is skipped", (await altCount("<https://user@acme.example/cert/1/alt/0>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-82 a bracketed userinfo disguised as an IP host ("[::1]:80@relations.example", where "[::1]:80" is userinfo
+  // and "relations.example" the real host) fails closed: after an IP-literal host, only an optional ":port" may
+  // follow, never "@" -- else the literal is in userinfo position, which RFC 3986 forbids.
+  check("#16 AL-82 a bracketed userinfo before the real host fails closed (relation-type)", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[::1]:80@relations.example/type\"")) === "acme/bad-link");
+  check("#16 AL-82 the same bracketed-userinfo reject applies to a target", (await codeForLink("<http://[::1]:80@acme.example/cert>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
