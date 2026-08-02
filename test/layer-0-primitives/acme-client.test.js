@@ -1136,6 +1136,9 @@ async function testAlternateChains() {
   // AL-62 RFC 3986 permits userinfo before an IP-literal / IPvFuture host: an ext-rel-type "http://user@[v1.a]/"
   // is a valid relation URI and is accepted.
   check("#16 AL-62 userinfo before an IPvFuture relation host is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://user@[v1.a]/\"")) === 1);
+  // AL-67 two equivalent spellings of the same alternate (an uppercase host + explicit :443 vs the canonical form)
+  // collapse to ONE fetch: dedup is by the WHATWG-normalized href, not the verbatim string (CWE-770 amplification).
+  check("#16 AL-67 equivalent-spelling alternates are de-duplicated by normalized href", (await altCount("<" + ALT0 + ">;rel=\"alternate\", <https://ACME.EXAMPLE:443/cert/1/alt/0>;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
