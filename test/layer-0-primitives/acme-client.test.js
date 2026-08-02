@@ -200,6 +200,10 @@ async function testRenewalInfo() {
   var acmeExp = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sExp, { clock: function () { return Date.parse("2041-01-01T00:00:00Z"); } }));
   check("#9 renewalInfo refuses an expired certificate", (await codeOf(Promise.resolve().then(function () { return acmeExp.renewalInfo(certDer); }))) === "acme/certificate-expired");
   check("#9 renewalInfo made no request for the expired certificate", sExp.calls.filter(function (c) { return c.url.indexOf(A.URLS.renewalInfo) === 0; }).length === 0);
+  // a non-finite client clock (NaN / Infinity) would make the expiry comparison silently false and bypass the
+  // RFC 9773 sec. 4.3 gate -- the validating wrapper fails closed rather than issuing the GET on a dead cert.
+  var acmeNaN = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { clock: function () { return NaN; } }));
+  check("#9 renewalInfo rejects a non-finite client clock", (await codeOf(Promise.resolve().then(function () { return acmeNaN.renewalInfo(certDer); }))) === "acme/bad-input");
   check("#9 renewalInfo requires a DER Buffer", (function () { try { acme.renewalInfo("not-a-buffer"); return "NO-THROW"; } catch (e) { return e && e.code; } })() === "acme/bad-input");
 }
 
@@ -559,6 +563,12 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a non-empty query is accepted", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/directory?x=1", A.clientOpts(ACCT, A.acmeServer({})));
   }))) !== "acme/bad-url");
+  // (r) a repaired AUTHORITY (a bracket in userinfo, "a[b@host" -> "a%5Bb@host") is rejected on the DIRECT path
+  // (a directory / Location / caller URL) too, not only the Link-alternate path -- the signed url must match the
+  // requested authority (RFC 8555 sec. 6.4).
+  check("#13 a URL with a bracket in userinfo is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://a[b@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
@@ -1148,6 +1158,9 @@ async function testAlternateChains() {
   // AL-69 a RELATIVE alternate whose query WHATWG re-encodes on resolution (an apostrophe -> %27) is non-canonical
   // just like the absolute form, so it is SKIPPED (not silently resolved to the repaired query), keeping a valid one.
   check("#16 AL-69 a relative alternate with a re-encoded query is skipped, others kept", (await altCount("<alt/x?y='1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-70 the PRIMARY certificate URL advertised as a rel="alternate" (it is not an alternate of itself) is
+  // de-duplicated against the download URL, so it is not collected + redundantly re-fetched.
+  check("#16 AL-70 the primary URL advertised as an alternate is skipped", (await altCount("</cert/1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
