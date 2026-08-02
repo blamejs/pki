@@ -605,6 +605,19 @@ async function testBuilders() {
   check("96h. newAuthz emits a kid-signed single-identifier payload", b64uJson(naJws.protected).kid === kid && b64uJson(naJws.protected).url === "https://ca/authz" && JSON.parse(Buffer.from(naJws.payload, "base64").toString("utf8")).identifier.value === "example.org");
   check("96i. newAuthz without an identifier rejected", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz" })); })) === "acme/bad-order");
   check("96j. newAuthz a wildcard authorization identifier rejected", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: { type: "dns", value: "*.example.org" } })); })) === "acme/bad-identifier");
+  // 96k. newAuthz serializes ONLY the validated { type, value }: an inherited (getter-backed) field is not dropped
+  // by JSON.stringify, and an extra enumerable field is not sent to the CA.
+  var naInh = await pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: Object.create({ type: "dns", value: "inherited.example" }) }));
+  var naExtra = await pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: { type: "dns", value: "example.org", injected: "evil" } }));
+  var pInh = JSON.parse(Buffer.from(naInh.payload, "base64").toString("utf8")).identifier;
+  var pExt = JSON.parse(Buffer.from(naExtra.payload, "base64").toString("utf8")).identifier;
+  check("96k. newAuthz serializes only the validated identifier fields", pInh.value === "inherited.example" && pExt.injected === undefined && pExt.value === "example.org" && Object.keys(pExt).length === 2);
+  // 96l. newOrder likewise serializes only each order identifier's validated { type, value }.
+  var noInh = await pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [Object.create({ type: "dns", value: "inherited.example" })] }));
+  var noExtra = await pki.acme.newOrder(Object.assign({}, base, { url: "https://ca/o", identifiers: [{ type: "dns", value: "example.org", injected: "evil" }] }));
+  var idsInh = JSON.parse(Buffer.from(noInh.payload, "base64").toString("utf8")).identifiers;
+  var idsExt = JSON.parse(Buffer.from(noExtra.payload, "base64").toString("utf8")).identifiers;
+  check("96l. newOrder serializes only the validated identifier fields", idsInh[0].value === "inherited.example" && idsExt[0].injected === undefined && Object.keys(idsExt[0]).length === 2);
 
   // keyChange requires the account URL and the new account public JWK.
   var nk2 = await ecKeyPair();
