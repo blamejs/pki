@@ -540,6 +540,11 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a fragment is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/directory#frag", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+  // (r) an EMPTY fragment ("...#") is rejected too: url.hash is "" (falsy) but the verbatim URL keeps the `#`,
+  // so the signed JWS url would still differ from the requested target.
+  check("#13 a URL with an empty fragment is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory#", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
@@ -1092,6 +1097,9 @@ async function testAlternateChains() {
   // AL-58 the empty-authority reject (shared with the target) also covers an ext-rel-type: "http:///relations"
   // has an empty authority WHATWG repairs by promoting the path segment to the host, so it fails closed.
   check("#16 AL-58 an empty-authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:///relations.example\"")) === "acme/bad-link");
+  // AL-59 an alternate TARGET with an empty fragment ("...alt#") fails closed: the fragment is dropped from the
+  // request but retained in the signed JWS url, so the URL is not usable as an ACME endpoint.
+  check("#16 AL-59 an empty-fragment alternate target fails closed", (await codeForLink("<https://acme.example/cert/alt#>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
