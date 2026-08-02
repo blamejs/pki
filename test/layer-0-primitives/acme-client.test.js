@@ -545,6 +545,14 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with an empty fragment is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/directory#", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+  // (r) an EMPTY query ("...?") is rejected too (url.search is "" but the verbatim URL keeps the "?"); a
+  // NON-empty query round-trips and is accepted (not every ACME URL is path-only).
+  check("#13 a URL with an empty query is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory?", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a URL with a non-empty query is accepted", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory?x=1", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) !== "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
@@ -1100,6 +1108,9 @@ async function testAlternateChains() {
   // AL-59 an alternate TARGET with an empty fragment ("...alt#") fails closed: the fragment is dropped from the
   // request but retained in the signed JWS url, so the URL is not usable as an ACME endpoint.
   check("#16 AL-59 an empty-fragment alternate target fails closed", (await codeForLink("<https://acme.example/cert/alt#>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-60 an alternate target with an EMPTY query ("...alt?") fails closed for the same reason as a fragment: the
+  // "?" is dropped from the request but retained in the signed JWS url.
+  check("#16 AL-60 an empty-query alternate target fails closed", (await codeForLink("<https://acme.example/cert/alt?>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
