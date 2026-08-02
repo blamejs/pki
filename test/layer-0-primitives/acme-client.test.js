@@ -980,9 +980,9 @@ async function testAlternateChains() {
   // AL-26 a quoted value must be a WELL-FORMED quoted-string (RFC 7230): an unescaped interior quote (a""b) or a
   // dangling backslash is malformed, not merely first/last-char-is-a-quote.
   check("#16 AL-26 a malformed quoted Link value fails closed", (await codeForLink("<" + ALT0 + ">;title=\"a\"\"b\";rel=\"alternate\"")) === "acme/bad-link");
-  // AL-27 a Link parameter must carry a value (name=value / name="value", RFC 9110 sec. 5.6.6); a valueless
-  // param (no '=') is rejected rather than accepted as an empty-valued one.
-  check("#16 AL-27 a valueless Link parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";flag")) === "acme/bad-link");
+  // AL-27 a valueless extension parameter (a bare token, no '=') is VALID per RFC 8288 (link-param has an
+  // optional value) -- it is tolerated (ignored), not rejected, so the alternate is still found.
+  check("#16 AL-27 a valueless Link extension parameter is permitted", (await altCount("<" + ALT0 + ">;rel=\"alternate\";flag")) === 1);
   // AL-28 an empty UNQUOTED value (foo=) is not a token (RFC 9110 sec. 5.6.6); an empty value must be quoted (foo="").
   check("#16 AL-28 an empty unquoted Link parameter value fails closed", (await codeForLink("<" + ALT0 + ">;foo=;rel=\"alternate\"")) === "acme/bad-link");
   // AL-29 the rel relation-type list is SPACE-separated (RFC 8288 sec. 3.3), not tab: a tab-joined value is a
