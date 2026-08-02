@@ -1111,6 +1111,12 @@ async function testAlternateChains() {
   // AL-60 an alternate target with an EMPTY query ("...alt?") fails closed for the same reason as a fragment: the
   // "?" is dropped from the request but retained in the signed JWS url.
   check("#16 AL-60 an empty-query alternate target fails closed", (await codeForLink("<https://acme.example/cert/alt?>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-61 an empty authority is VALID for a scheme that permits one: an ext-rel-type "file:///relations/chain" is
+  // accepted (unlike an http/https/scheme-relative authority, whose empty form WHATWG repairs to a host).
+  check("#16 AL-61 a file:/// relation-type URI (valid empty authority) is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate file:///relations/chain\"")) === 1);
+  // AL-62 RFC 3986 permits userinfo before an IP-literal / IPvFuture host: an ext-rel-type "http://user@[v1.a]/"
+  // is a valid relation URI and is accepted.
+  check("#16 AL-62 userinfo before an IPvFuture relation host is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://user@[v1.a]/\"")) === 1);
 }
 
 async function main() {
