@@ -1029,6 +1029,9 @@ async function testAlternateChains() {
   // AL-39 EVERY relation-type in the list must be well-formed (RFC 8288 sec. 3.3 reg-rel-type / ext-rel-type):
   // "alternate @" contains an invalid token (@) -- the whole list is malformed, not a valid alternate.
   check("#16 AL-39 an invalid relation-type token fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate @\"")) === "acme/bad-link");
+  // AL-40 an ext-rel-type (URI) relation-type is validated in FULL, not just its scheme: "http:%ZZ" has a scheme
+  // but a malformed percent-escape, so it is not a valid URI relation-type and the list fails closed.
+  check("#16 AL-40 a malformed URI relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:%ZZ\"")) === "acme/bad-link");
 }
 
 async function main() {
