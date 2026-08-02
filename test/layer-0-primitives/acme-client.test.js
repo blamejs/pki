@@ -1219,6 +1219,12 @@ async function testAlternateChains() {
   // AL-77 an ext-rel-type is validated by RFC 3986 GRAMMAR, not WHATWG: an empty reg-name authority ("foo://user@/")
   // is valid (reg-name = *(...), zero chars allowed), so it is accepted where WHATWG's special-scheme parse rejects it.
   check("#16 AL-77 an empty reg-name authority relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate foo://user@/type\"")) === 1);
+  // AL-78 an IP-literal HOST must be followed only by a port or a path/query/fragment delimiter: "[::1]@acme.example"
+  // (an IP-literal followed by "@host") is malformed (WHATWG re-parses to a different host) and fails closed.
+  check("#16 AL-78 an IP-literal followed by authority text fails closed", (await codeForLink("<https://[::1]@acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-79 a DUPLICATE anchor is ambiguous (anchor is not an RFC 8288 sec. 3.3 singleton), and since anchor sets the
+  // context it fails closed rather than silently taking the first.
+  check("#16 AL-79 a duplicate anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor=\"\";anchor=\"https://other.example/\"")) === "acme/bad-link");
 }
 
 async function main() {
