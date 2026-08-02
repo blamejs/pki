@@ -1206,6 +1206,11 @@ async function testAlternateChains() {
   // AL-75 a non-numeric port ("host:bad") is malformed (RFC 3986 port = *DIGIT), not merely non-canonical, so a
   // target carrying one FAILS the whole header closed (a structural reject before resolution), not skipped.
   check("#16 AL-75 a malformed-port target fails closed", (await codeForLink("<https://acme.example:bad/cert>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-76 an IP-literal host must CONTAIN a valid IPv6/IPvFuture (RFC 3986 sec. 3.2.2); "[not-ip]" is malformed, not
+  // merely non-canonical, so a target carrying one fails the header closed (structural reject before resolution).
+  check("#16 AL-76 a malformed IP-literal target fails closed", (await codeForLink("<https://[not-ip]/cert>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-76 a valid IPv6 relation-type host is still accepted, and a malformed one is rejected (the same content check).
+  check("#16 AL-76 a malformed IP-literal relation-type URI is rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[not-ip]/x\"")) === "acme/bad-link");
 }
 
 async function main() {
