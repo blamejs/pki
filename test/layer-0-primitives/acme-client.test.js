@@ -1010,6 +1010,9 @@ async function testAlternateChains() {
   // AL-33 a rel relation-type list is single-space-separated with no leading/trailing/repeated space (RFC 8288
   // sec. 3.3): "alternate " (trailing space) is malformed and must not be split-and-matched.
   check("#16 AL-33 a rel with a trailing space fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate \"")) === "acme/bad-link");
+  // AL-34 the anchor parameter is URI-valued (RFC 8288 sec. 3.2): unlike a generic extension param, a VALUELESS
+  // anchor is malformed (an empty anchor would resolve to the certificate URL and spoof a context match).
+  check("#16 AL-34 a valueless anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor")) === "acme/bad-link");
 }
 
 async function main() {
