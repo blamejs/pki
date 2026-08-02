@@ -1084,6 +1084,11 @@ async function testAlternateChains() {
   // AL-55 the double-@ authority reject applies to a fetched TARGET too, not only an ext-rel-type: a target such
   // as "https://a@b@acme.example/cert/alt" (WHATWG repairs to the same origin) fails closed before any fetch.
   check("#16 AL-55 a double-@ target authority fails closed", (await codeForLink("<https://a@b@acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-56 a URI carries at most one "#" (a fragment cannot contain "#", RFC 3986 sec. 3.5); a second "#" is
+  // invalid, which WHATWG accepts by folding it into the fragment. An ext-rel-type "urn:x#y#z" fails closed.
+  check("#16 AL-56 a repeated fragment delimiter in a relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:x#y#z\"")) === "acme/bad-link");
+  // AL-57 the same repeated-"#" reject applies to a fetched TARGET too (swept to both, not only the ext-rel-type).
+  check("#16 AL-57 a repeated fragment delimiter in a target URI fails closed", (await codeForLink("<https://acme.example/cert/alt#y#z>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
