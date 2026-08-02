@@ -1081,6 +1081,9 @@ async function testAlternateChains() {
   // it by promoting a path segment to the host (here back to the cert's own origin), so a malformed raw reference
   // must not be accepted just because its repaired form happens to pass the same-origin gate.
   check("#16 AL-54 an empty-authority (////) target fails closed", (await codeForLink("<////acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-55 the double-@ authority reject applies to a fetched TARGET too, not only an ext-rel-type: a target such
+  // as "https://a@b@acme.example/cert/alt" (WHATWG repairs to the same origin) fails closed before any fetch.
+  check("#16 AL-55 a double-@ target authority fails closed", (await codeForLink("<https://a@b@acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
