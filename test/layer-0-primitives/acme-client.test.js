@@ -1169,6 +1169,13 @@ async function testAlternateChains() {
   // AL-70 the PRIMARY certificate URL advertised as a rel="alternate" (it is not an alternate of itself) is
   // de-duplicated against the download URL, so it is not collected + redundantly re-fetched.
   check("#16 AL-70 the primary URL advertised as an alternate is skipped", (await altCount("</cert/1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-71 an ext-rel-type identifier port is RFC 3986 *DIGIT (no 16-bit range limit -- it is never connected to),
+  // so ":65536" is accepted, while a non-numeric port (":bad") is still rejected.
+  check("#16 AL-71 an out-of-range port in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://relations.example:65536/type\"")) === 1);
+  check("#16 AL-71 a non-numeric port in a relation-type URI is still rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://relations.example:bad/type\"")) === "acme/bad-link");
+  // AL-72 a fetched TARGET keeps WHATWG's 16-bit port range (it is connected to over TCP): a target port ">65535"
+  // is not usable and is skipped (not signed).
+  check("#16 AL-72 an out-of-range port in a target URI is skipped", (await altCount("<https://acme.example:65536/cert/1/alt/0>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
