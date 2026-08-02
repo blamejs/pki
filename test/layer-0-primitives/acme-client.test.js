@@ -992,6 +992,18 @@ async function testAlternateChains() {
   // AL-30 an empty parameter (a `;` with no parameter, e.g. `;;`) is malformed (RFC 8288 requires a link-param
   // after each `;`) -- reject it rather than silently skip the empty slot.
   check("#16 AL-30 an empty Link parameter (;;) fails closed", (await codeForLink("<" + ALT0 + ">;;rel=\"alternate\"")) === "acme/bad-link");
+
+  // AL-31 an ASYNC selectChain (returns a Promise) is awaited, not treated as always-truthy.
+  var s31 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r31 = await (await withAccount(s31)).downloadCertificate(A.URLS.certificate, { selectChain: async function (c) { return c.certificates[c.certificates.length - 1].equals(rootBDer); } });
+  check("#16 AL-31 an async selectChain is awaited", r31.certificates[r31.certificates.length - 1].equals(rootBDer) && r31.certificate.equals(leafDer));
+
+  // AL-32 a rel="alternate" link with an anchor param has a DIFFERENT context (RFC 8288 sec. 3.2): anchored to
+  // another resource it is not a cert alternate (skipped); anchored to the certificate URL it is kept.
+  check("#16 AL-32 an alternate anchored elsewhere is not a cert alternate", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"https://acme.example/other\"")) === 0);
+  check("#16 AL-32 an alternate anchored to the certificate URL is kept", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"" + A.URLS.certificate + "\"")) === 1);
+  // AL-32 an anchor that does not resolve to a URL cannot be our context -> skip (conservative).
+  check("#16 AL-32 an unresolvable anchor is skipped", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"http://\"")) === 0);
 }
 
 async function main() {
