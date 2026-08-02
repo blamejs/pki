@@ -1145,6 +1145,9 @@ async function testAlternateChains() {
   // AL-68 a RESERVED escape is not decoded but its hex is case-normalized (RFC 3986 sec. 6.2.2.1): "%2f" and "%2F"
   // (both an encoded "/") are the same target and de-duplicate to one fetch.
   check("#16 AL-68 a reserved percent-escape is case-normalized for dedup", (await altCount("<https://acme.example/cert/1/alt%2f0>;rel=\"alternate\", <https://acme.example/cert/1/alt%2F0>;rel=\"alternate\"")) === 1);
+  // AL-69 a RELATIVE alternate whose query WHATWG re-encodes on resolution (an apostrophe -> %27) is non-canonical
+  // just like the absolute form, so it is SKIPPED (not silently resolved to the repaired query), keeping a valid one.
+  check("#16 AL-69 a relative alternate with a re-encoded query is skipped, others kept", (await altCount("<alt/x?y='1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
 }
 
 async function main() {
