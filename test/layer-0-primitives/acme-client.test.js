@@ -1072,6 +1072,11 @@ async function testAlternateChains() {
   // AL-52 an ext-rel-type authority with two "@" is invalid RFC 3986 (WHATWG would accept it while rewriting the
   // first "@"); it fails closed rather than being passed by canParse's repair.
   check("#16 AL-52 a double-@ authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://a@b@host/\"")) === "acme/bad-link");
+  // AL-53 a scheme-relative (network-path) reference with an IP-literal authority ("//[2001:db8::1]/...", RFC 3986
+  // sec. 4.2) is a valid same-origin alternate against an IPv6-hosted cert, and resolves.
+  var s53 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<//[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
+  var r53 = await (await withAccount(s53)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
+  check("#16 AL-53 a scheme-relative IPv6-authority alternate resolves", r53.certificates[r53.certificates.length - 1].equals(rootBDer));
 }
 
 async function main() {
