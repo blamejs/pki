@@ -194,6 +194,12 @@ async function testRenewalInfo() {
   var sInv = A.acmeServer({ renewalInfoResponse: A.json(200, { suggestedWindow: { start: "2027-02-01T00:00:00Z", end: "2027-01-01T00:00:00Z" } }) });
   var acmeInv = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sInv));
   check("#9 an inverted renewal window fails closed", (await codeOf(acmeInv.renewalInfo(certDer))) === "acme/bad-renewal-window");
+  // RFC 9773 sec. 4.3: the RAW renewalInfo verb MUST NOT query an already-expired certificate (not only the
+  // renewalWindow helper) -- gated before the unauthenticated GET, so a dead certificate never reaches the CA.
+  var sExp = A.acmeServer({});
+  var acmeExp = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sExp, { clock: function () { return Date.parse("2041-01-01T00:00:00Z"); } }));
+  check("#9 renewalInfo refuses an expired certificate", (await codeOf(Promise.resolve().then(function () { return acmeExp.renewalInfo(certDer); }))) === "acme/certificate-expired");
+  check("#9 renewalInfo made no request for the expired certificate", sExp.calls.filter(function (c) { return c.url.indexOf(A.URLS.renewalInfo) === 0; }).length === 0);
   check("#9 renewalInfo requires a DER Buffer", (function () { try { acme.renewalInfo("not-a-buffer"); return "NO-THROW"; } catch (e) { return e && e.code; } })() === "acme/bad-input");
 }
 
@@ -1105,12 +1111,25 @@ async function testAlternateChains() {
   // AL-58 the empty-authority reject (shared with the target) also covers an ext-rel-type: "http:///relations"
   // has an empty authority WHATWG repairs by promoting the path segment to the host, so it fails closed.
   check("#16 AL-58 an empty-authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:///relations.example\"")) === "acme/bad-link");
-  // AL-59 an alternate TARGET with an empty fragment ("...alt#") fails closed: the fragment is dropped from the
-  // request but retained in the signed JWS url, so the URL is not usable as an ACME endpoint.
-  check("#16 AL-59 an empty-fragment alternate target fails closed", (await codeForLink("<https://acme.example/cert/alt#>;rel=\"alternate\"")) === "acme/bad-link");
-  // AL-60 an alternate target with an EMPTY query ("...alt?") fails closed for the same reason as a fragment: the
-  // "?" is dropped from the request but retained in the signed JWS url.
-  check("#16 AL-60 an empty-query alternate target fails closed", (await codeForLink("<https://acme.example/cert/alt?>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-59 an alternate target that is a valid RFC 3986 reference but not a canonical ACME URL (an empty fragment
+  // "...alt#" -- unusable because the "#" is dropped from the request yet retained in the signed JWS url) is SKIPPED,
+  // not fatal: a second valid alternate in the same header still resolves (RFC 8555 sec. 7.4.2 permits several).
+  check("#16 AL-59 a non-canonical (empty-fragment) alternate is skipped, others kept", (await altCount("<https://acme.example/cert/alt#>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-60 the same for an empty query ("...alt?"): the non-canonical alternate is skipped, the valid one survives.
+  check("#16 AL-60 a non-canonical (empty-query) alternate is skipped, others kept", (await altCount("<https://acme.example/cert/alt?>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-63 a raw "[" / "]" in userinfo is NOT permitted (RFC 3986 sec. 3.2.1/3.2.2 -- brackets only in the IP-literal
+  // host); "a[b@[::1]" (WHATWG repairs to "a%5Bb@[::1]") is a structural violation and fails closed.
+  check("#16 AL-63 a bracket in userinfo before an IP-literal host fails closed", (await codeForLink("<https://a[b@[::1]/cert>;rel=\"alternate\"")) === "acme/bad-link");
+  check("#16 AL-63 the same bracket-in-userinfo reject applies to an ext-rel-type", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://a[b@[::1]/\"")) === "acme/bad-link");
+  // AL-64 a relative-path reference whose first segment carries a ":" is a path-noscheme violation (RFC 3986 sec.
+  // 4.2), which WHATWG resolves against the base as same-origin; ":foo" fails closed.
+  check("#16 AL-64 a colon in a relative-ref first segment fails closed", (await codeForLink("<:foo>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-65 an absolute alternate carrying literal dot-segments is a valid RFC 3986 URI but not a canonical ACME
+  // request URL (WHATWG applies remove_dot_segments), so it is SKIPPED, keeping a co-advertised valid alternate --
+  // rather than the old behavior where one non-canonical absolute alternate discarded ALL of them.
+  check("#16 AL-65 a dot-segment absolute alternate is skipped, others kept", (await altCount("<https://acme.example/cert/1/../bad>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-66 same for an apostrophe (a valid RFC 3986 sub-delim WHATWG re-encodes to %27 in a special-scheme query).
+  check("#16 AL-66 an apostrophe-query absolute alternate is skipped, others kept", (await altCount("<https://acme.example/cert/1?x='1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
   // AL-61 an empty authority is VALID for a scheme that permits one: an ext-rel-type "file:///relations/chain" is
   // accepted (unlike an http/https/scheme-relative authority, whose empty form WHATWG repairs to a host).
   check("#16 AL-61 a file:/// relation-type URI (valid empty authority) is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate file:///relations/chain\"")) === 1);
