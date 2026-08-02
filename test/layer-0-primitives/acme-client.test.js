@@ -983,6 +983,12 @@ async function testAlternateChains() {
   // AL-27 a Link parameter must carry a value (name=value / name="value", RFC 9110 sec. 5.6.6); a valueless
   // param (no '=') is rejected rather than accepted as an empty-valued one.
   check("#16 AL-27 a valueless Link parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";flag")) === "acme/bad-link");
+  // AL-28 an empty UNQUOTED value (foo=) is not a token (RFC 9110 sec. 5.6.6); an empty value must be quoted (foo="").
+  check("#16 AL-28 an empty unquoted Link parameter value fails closed", (await codeForLink("<" + ALT0 + ">;foo=;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-29 the rel relation-type list is SPACE-separated (RFC 8288 sec. 3.3), not tab: a tab-joined value is a
+  // single (non-matching) relation-type, so "alternate<TAB>index" must NOT match alternate.
+  var tabRel = "<" + ALT0 + ">;rel=\"alternate" + String.fromCharCode(9) + "index\"";
+  check("#16 AL-29 a tab in a quoted rel is not a list separator", (await codeForLink(tabRel)) === "acme/no-matching-chain");
 }
 
 async function main() {
