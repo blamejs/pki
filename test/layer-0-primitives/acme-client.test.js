@@ -591,6 +591,11 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with userinfo is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://user@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+  // (r) an EMPTY userinfo ("https://@host", "https://:@host") is rejected too: WHATWG reports username/password
+  // empty, but the verbatim URL keeps the "@" the transport drops -- so the raw "@" is the signal, not url.username.
+  check("#13 a URL with an empty userinfo delimiter is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
