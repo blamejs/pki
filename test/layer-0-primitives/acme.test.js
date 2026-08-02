@@ -603,7 +603,7 @@ async function testBuilders() {
   // a missing identifier fails closed, and (unlike an order) a wildcard authorization identifier is rejected.
   var naJws = await pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: { type: "dns", value: "example.org" } }));
   check("96h. newAuthz emits a kid-signed single-identifier payload", b64uJson(naJws.protected).kid === kid && b64uJson(naJws.protected).url === "https://ca/authz" && JSON.parse(Buffer.from(naJws.payload, "base64").toString("utf8")).identifier.value === "example.org");
-  check("96i. newAuthz without an identifier rejected", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz" })); })) === "acme/bad-order");
+  check("96i. newAuthz without an identifier rejected (an identifier error, not an order error -- no order is involved)", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz" })); })) === "acme/bad-identifier");
   check("96j. newAuthz a wildcard authorization identifier rejected", (await acode(function () { return pki.acme.newAuthz(Object.assign({}, base, { url: "https://ca/authz", identifier: { type: "dns", value: "*.example.org" } })); })) === "acme/bad-identifier");
   // 96k. newAuthz serializes ONLY the validated { type, value }: an inherited (getter-backed) field is not dropped
   // by JSON.stringify, and an extra enumerable field is not sent to the CA.
