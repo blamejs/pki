@@ -1013,6 +1013,15 @@ async function testAlternateChains() {
   // AL-34 the anchor parameter is URI-valued (RFC 8288 sec. 3.2): unlike a generic extension param, a VALUELESS
   // anchor is malformed (an empty anchor would resolve to the certificate URL and spoof a context match).
   check("#16 AL-34 a valueless anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor")) === "acme/bad-link");
+  // AL-35 the FIRST rel occurrence wins even when empty (RFC 8288 sec. 3.3): rel="";rel=alternate uses the empty
+  // first value (not an alternate), so it is skipped, not matched via the second rel.
+  check("#16 AL-35 the first rel occurrence wins even when empty", (await altCount("<" + ALT0 + ">;rel=\"\";rel=alternate")) === 0);
+  // AL-36 an explicitly empty anchor URI-reference (anchor="") is valid -- it resolves to the context (the cert
+  // URL) -- so the alternate is kept (distinct from a VALUELESS anchor with no '=' which is malformed).
+  check("#16 AL-36 an explicitly empty anchor URI-reference is permitted", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"\"")) === 1);
+  // AL-37 multiple spaces between relation types are allowed (RFC 8288 sec. 3.3 separator is 1*SP): "alternate
+  // <SP><SP>index" still matches alternate; only a LEADING/TRAILING space is malformed (AL-33).
+  check("#16 AL-37 multiple spaces between relation types are allowed", (await altCount("<" + ALT0 + ">;rel=\"alternate  index\"")) === 1);
 }
 
 async function main() {
