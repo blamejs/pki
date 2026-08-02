@@ -1037,6 +1037,11 @@ async function testAlternateChains() {
   check("#16 AL-41 a structurally invalid URI relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[\"")) === "acme/bad-link");
   // AL-41 a well-formed ext-rel-type URI alongside alternate is accepted (the list is valid, alternate matches).
   check("#16 AL-41 a valid URI relation-type alongside alternate is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate https://example.com/rel\"")) === 1);
+  // AL-42 a relation-type URI is validated by RFC 3986 grammar, NOT fetch-target normalization: an encoded dot
+  // (%2e, a legal identifier char, not a resolved dot-segment) is accepted, so the alternate remains usable.
+  check("#16 AL-42 a percent-encoded dot in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate https://relations.example/%2e%2e/chain\"")) === 1);
+  // AL-43 an IPvFuture host is a valid RFC 3986 relation-type URI (WHATWG would reject it), and is accepted.
+  check("#16 AL-43 an IPvFuture relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://[v1.a]/\"")) === 1);
 }
 
 async function main() {
