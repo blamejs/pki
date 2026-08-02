@@ -986,9 +986,10 @@ async function testAlternateChains() {
   // AL-28 an empty UNQUOTED value (foo=) is not a token (RFC 9110 sec. 5.6.6); an empty value must be quoted (foo="").
   check("#16 AL-28 an empty unquoted Link parameter value fails closed", (await codeForLink("<" + ALT0 + ">;foo=;rel=\"alternate\"")) === "acme/bad-link");
   // AL-29 the rel relation-type list is SPACE-separated (RFC 8288 sec. 3.3), not tab: a tab-joined value is a
-  // single (non-matching) relation-type, so "alternate<TAB>index" must NOT match alternate.
+  // SINGLE relation-type "alternate<TAB>index" -- which contains a tab, so it is not a valid relation-type and
+  // the list is malformed (it does not match alternate and fails closed).
   var tabRel = "<" + ALT0 + ">;rel=\"alternate" + String.fromCharCode(9) + "index\"";
-  check("#16 AL-29 a tab in a quoted rel is not a list separator", (await codeForLink(tabRel)) === "acme/no-matching-chain");
+  check("#16 AL-29 a tab in a quoted rel is not a list separator", (await codeForLink(tabRel)) === "acme/bad-link");
   // AL-30 an empty parameter (a `;` with no parameter, e.g. `;;`) is malformed (RFC 8288 requires a link-param
   // after each `;`) -- reject it rather than silently skip the empty slot.
   check("#16 AL-30 an empty Link parameter (;;) fails closed", (await codeForLink("<" + ALT0 + ">;;rel=\"alternate\"")) === "acme/bad-link");
@@ -1025,6 +1026,9 @@ async function testAlternateChains() {
   // AL-38 only HTTP OWS (SP / HTAB) is trimmed, not arbitrary Unicode whitespace: a non-breaking space (obs-text
   // U+00A0) before a parameter name is part of the (non-token) name, not stripped -> the parameter is malformed.
   check("#16 AL-38 a non-breaking space is not trimmed as OWS", (await codeForLink("<" + ALT0 + ">;" + String.fromCharCode(0xA0) + "rel=\"alternate\"")) === "acme/bad-link");
+  // AL-39 EVERY relation-type in the list must be well-formed (RFC 8288 sec. 3.3 reg-rel-type / ext-rel-type):
+  // "alternate @" contains an invalid token (@) -- the whole list is malformed, not a valid alternate.
+  check("#16 AL-39 an invalid relation-type token fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate @\"")) === "acme/bad-link");
 }
 
 async function main() {
