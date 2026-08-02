@@ -194,6 +194,22 @@ async function testRenewalInfo() {
   var sInv = A.acmeServer({ renewalInfoResponse: A.json(200, { suggestedWindow: { start: "2027-02-01T00:00:00Z", end: "2027-01-01T00:00:00Z" } }) });
   var acmeInv = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sInv));
   check("#9 an inverted renewal window fails closed", (await codeOf(acmeInv.renewalInfo(certDer))) === "acme/bad-renewal-window");
+  // RFC 9773 sec. 4.3: the RAW renewalInfo verb MUST NOT query an already-expired certificate (not only the
+  // renewalWindow helper) -- gated before the unauthenticated GET, so a dead certificate never reaches the CA.
+  var sExp = A.acmeServer({});
+  var acmeExp = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sExp, { clock: function () { return Date.parse("2041-01-01T00:00:00Z"); } }));
+  check("#9 renewalInfo refuses an expired certificate", (await codeOf(Promise.resolve().then(function () { return acmeExp.renewalInfo(certDer); }))) === "acme/certificate-expired");
+  check("#9 renewalInfo made no request for the expired certificate", sExp.calls.filter(function (c) { return c.url.indexOf(A.URLS.renewalInfo) === 0; }).length === 0);
+  // a non-finite client clock (NaN / Infinity) would make the expiry comparison silently false and bypass the
+  // RFC 9773 sec. 4.3 gate -- the validating wrapper fails closed rather than issuing the GET on a dead cert.
+  var acmeNaN = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { clock: function () { return NaN; } }));
+  check("#9 renewalInfo rejects a non-finite client clock", (await codeOf(Promise.resolve().then(function () { return acmeNaN.renewalInfo(certDer); }))) === "acme/bad-input");
+  // RFC 9773 sec. 4.3: the expiry is re-checked immediately BEFORE the GET, so a certificate that crosses notAfter
+  // WHILE the (uncached) directory is being fetched is caught -- a clock that reads not-expired first, expired next.
+  var tocCalls = 0;
+  var acmeToc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { clock: function () { return tocCalls++ === 0 ? Date.parse("2039-06-01T00:00:00Z") : Date.parse("2041-01-01T00:00:00Z"); } }));
+  check("#9 renewalInfo re-checks expiry after the directory fetch (TOCTOU)", (await codeOf(Promise.resolve().then(function () { return acmeToc.renewalInfo(certDer); }))) === "acme/certificate-expired");
+  check("#9 renewalInfo requires a DER Buffer", (function () { try { acme.renewalInfo("not-a-buffer"); return "NO-THROW"; } catch (e) { return e && e.code; } })() === "acme/bad-input");
 }
 
 // ---- 10 oversized response rejected before decode ---------------------------
@@ -539,6 +555,47 @@ async function testReadyAndRelativeRedirect() {
   check("#13 a URL with a fragment is rejected", (await codeOf(Promise.resolve().then(function () {
     return pki.acme.client("https://acme.example/directory#frag", A.clientOpts(ACCT, A.acmeServer({})));
   }))) === "acme/bad-url");
+  // (r) an EMPTY fragment ("...#") is rejected too: url.hash is "" (falsy) but the verbatim URL keeps the `#`,
+  // so the signed JWS url would still differ from the requested target.
+  check("#13 a URL with an empty fragment is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory#", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  // (r) an EMPTY query ("...?") is rejected too (url.search is "" but the verbatim URL keeps the "?"); a
+  // NON-empty query round-trips and is accepted (not every ACME URL is path-only).
+  check("#13 a URL with an empty query is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory?", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a URL with a non-empty query is accepted", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://acme.example/directory?x=1", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) !== "acme/bad-url");
+  // (r) a repaired AUTHORITY (a bracket in userinfo, "a[b@host" -> "a%5Bb@host") is rejected on the DIRECT path
+  // (a directory / Location / caller URL) too, not only the Link-alternate path -- the signed url must match the
+  // requested authority (RFC 8555 sec. 6.4).
+  check("#13 a URL with a bracket in userinfo is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://a[b@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  // (r) an IPv4-address-form host WHATWG rewrites to a dotted-quad ("0x7f.1", "2130706433" -> 127.0.0.1) is
+  // rejected: the JWS url would be signed over the raw host while the transport connects to a DIFFERENT (loopback /
+  // internal, SSRF-adjacent) address (RFC 8555 sec. 6.4). Uppercase host / :443 are still honored (normalization).
+  check("#13 a hex IPv4-coercion host is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://0x7f.1/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 a decimal IPv4-coercion host is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://2130706433/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  check("#13 an uppercase host is still accepted (normalization, not a rewrite)", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://ACME.EXAMPLE/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) !== "acme/bad-url");
+  // (r) an ACME URL must not carry userinfo: the transport connects to the host without it, so a signed JWS url
+  // with userinfo would not match the requested URL (RFC 8555 sec. 6.4), and a directory URL never has userinfo.
+  check("#13 a URL with userinfo is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://user@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
+  // (r) an EMPTY userinfo ("https://@host", "https://:@host") is rejected too: WHATWG reports username/password
+  // empty, but the verbatim URL keeps the "@" the transport drops -- so the raw "@" is the signal, not url.username.
+  check("#13 a URL with an empty userinfo delimiter is rejected", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client("https://@acme.example/directory", A.clientOpts(ACCT, A.acmeServer({})));
+  }))) === "acme/bad-url");
 
   // (s) a URL whose spelling the transport would REPAIR into a different path (whitespace, backslash) is
   // rejected, so the signed and requested URLs cannot differ.
@@ -636,9 +693,582 @@ async function testReadyAndRelativeRedirect() {
   check("#13 the ARI certID is in the path with the query preserved", ariCall && new URL(ariCall.url).pathname === "/renewal-info/" + certIdR && new URL(ariCall.url).search === "?tenant=1");
 }
 
+// ---- 14 newAuthz pre-authorization (RFC 8555 sec. 7.4.1) --------------------
+async function withAccount(server) {
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, server));
+  await acme.newAccount({ termsOfServiceAgreed: true });
+  return acme;
+}
+async function testNewAuthz() {
+  var DNS = { type: "dns", value: "example.org" };
+  // NA-1 happy: 201 pending authz; kid-signed { identifier } payload; identifier bound; url == Location.
+  var s = A.acmeServer({});
+  var acme = await withAccount(s);
+  var r = await acme.newAuthz(DNS);
+  check("#14 NA-1 newAuthz resolves the validated pending authorization", r.authorization.status === "pending" && r.authorization.challenges.length === 1 && r.url === A.URLS.authz);
+  var naPost = s.calls.filter(function (c) { return new URL(c.url).pathname === "/new-authz"; })[0];
+  check("#14 NA-1 newAuthz is kid-signed with a single-identifier payload", naPost && naPost.method === "POST" && jwsProtected(naPost.body).kid === A.URLS.account &&
+    JSON.parse(Buffer.from(JSON.parse(naPost.body).payload, "base64").toString("utf8")).identifier.value === "example.org");
+  // NA-2 unadvertised newAuthz.
+  var acme2 = await withAccount(A.acmeServer({ directory: A.directory({ newAuthz: undefined }) }));
+  check("#14 NA-2 an unadvertised newAuthz fails closed", (await codeOf(acme2.newAuthz(DNS))) === "acme/resource-unavailable");
+  // NA-3 wildcard rejected pre-transport (no POST).
+  var s3 = A.acmeServer({});
+  var acme3 = await withAccount(s3);
+  check("#14 NA-3 a wildcard authorization identifier is rejected before any POST", (await codeOf(acme3.newAuthz({ type: "dns", value: "*.example.org" }))) === "acme/bad-identifier" &&
+    s3.calls.filter(function (c) { return new URL(c.url).pathname === "/new-authz"; }).length === 0);
+  // NA-4 hostile authz object (missing challenges).
+  var acme4 = await withAccount(A.acmeServer({ newAuthzObject: { status: "pending", identifier: DNS } }));
+  check("#14 NA-4 an authorization missing challenges fails closed", (await codeOf(acme4.newAuthz(DNS))) === "acme/missing-field");
+  // NA-5 no Location.
+  var acme5 = await withAccount(A.acmeServer({ newAuthzLocation: null }));
+  check("#14 NA-5 a 201 with no Location fails closed", (await codeOf(acme5.newAuthz(DNS))) === "acme/no-authorization-url");
+  // NA-6 identifier mismatch (server authz names a different identifier than requested).
+  var acme6 = await withAccount(A.acmeServer({ identifiers: [{ type: "dns", value: "other.org" }] }));
+  check("#14 NA-6 an authz whose identifier differs from the request is rejected", (await codeOf(acme6.newAuthz(DNS))) === "acme/identifier-mismatch");
+  // NA-7 https invariant on the directory newAuthz URL (no POST).
+  var s7 = A.acmeServer({ directory: A.directory({ newAuthz: "http://acme.example/new-authz" }) });
+  var acme7 = await withAccount(s7);
+  check("#14 NA-7 an http newAuthz directory URL is refused", (await codeOf(acme7.newAuthz(DNS))) === "acme/insecure-url" &&
+    s7.calls.filter(function (c) { return new URL(c.url).pathname === "/new-authz"; }).length === 0);
+  // NA-8 403 unwilling server problem.
+  var acme8 = await withAccount(A.acmeServer({ newAuthzProblem: A.problem(403, "rejectedIdentifier", "identifier not allowed") }));
+  check("#14 NA-8 a 403 problem surfaces as acme/server-problem", (await codeOf(acme8.newAuthz(DNS))) === "acme/server-problem");
+  // NA-9 an authorization the CA marks wildcard:true is a broader grant than the non-wildcard identifier requested.
+  var acme9 = await withAccount(A.acmeServer({ newAuthzWildcard: true }));
+  check("#14 NA-9 a wildcard authorization for a non-wildcard request is rejected", (await codeOf(acme9.newAuthz(DNS))) === "acme/identifier-mismatch");
+  // NA-10 a pre-authorization is normally PENDING, but the CA MAY return an already-"valid" authz (RFC 8555 sec.
+  // 7.4.1 -- the identifier is already authorized out of band); it is usable and accepted.
+  var acme10a = await withAccount(A.acmeServer({ newAuthzStatus: "valid" }));
+  var na10a = await acme10a.newAuthz(DNS);
+  check("#14 NA-10 an already-valid newAuthz response is accepted", na10a.authorization.status === "valid");
+  // NA-11 only a terminal failed status ("invalid"/"deactivated"/"expired"/"revoked") is not proceedable.
+  var acme11 = await withAccount(A.acmeServer({ newAuthzStatus: "invalid" }));
+  check("#14 NA-11 a terminal (invalid) newAuthz response is rejected", (await codeOf(acme11.newAuthz(DNS))) === "acme/unexpected-authorization-status");
+  // NA-12 an already-valid authz the CA granted out of band MAY carry an empty challenges array (RFC 8555 sec.
+  // 7.1.4 / 7.4.1 -- no challenge was validated); the schema accepts it rather than requiring >= 1 challenge.
+  var acme12 = await withAccount(A.acmeServer({ newAuthzObject: { status: "valid", expires: "2040-01-01T00:00:00Z", identifier: DNS, challenges: [] } }));
+  var na12 = await acme12.newAuthz(DNS);
+  check("#14 NA-12 a valid authz with empty challenges is accepted", na12.authorization.status === "valid" && na12.authorization.challenges.length === 0);
+  // NA-12 a PENDING authz still requires at least one challenge (an empty challenges array is malformed).
+  var acme12b = await withAccount(A.acmeServer({ newAuthzObject: { status: "pending", expires: "2040-01-01T00:00:00Z", identifier: DNS, challenges: [] } }));
+  check("#14 NA-12 a pending authz with empty challenges is rejected", (await codeOf(acme12b.newAuthz(DNS))) !== "NO-THROW");
+  // NA-13 a CA MAY answer a pre-authorization with 200 (OK) rather than 201 (Created) -- e.g. an already-existing
+  // authorization (RFC 8555 sec. 7.4.1), the same leniency newAccount applies for an existing account.
+  var acme13 = await withAccount(A.acmeServer({ newAuthzHttpStatus: 200 }));
+  var na13 = await acme13.newAuthz(DNS);
+  check("#14 NA-13 a 200 pre-authorization response is accepted", na13.authorization && na13.authorization.status === "pending");
+}
+
+// ---- 15 renewalWindow ARI decision helper (RFC 9773 sec. 4.2 / 4.3) ---------
+// A pure, timer-less decision over the shipped renewalInfo GET: the sec. 4.3 pre-fetch gates (expired /
+// caller-replaced), the sec. 4.2 uniform-random instant in the suggested window, and the sec. 4.3.2
+// Retry-After clamp -- surfaced to the caller as DATA, never a hidden background scheduler.
+async function testRenewalWindow() {
+  var DAY = 24 * 60 * 60 * 1000;
+  var aki = require("node:crypto").createHash("sha1").update("renew-issuer-key").digest();
+  var certDer = signing.makeSigner("ec-p256", { cn: "renew.example", exts: [akiExt(aki)] }).cert;   // validity notAfter 2040-01-01; AKI for the ARI certID
+  function iso(ms) { return new Date(ms).toISOString(); }
+  function riResp(startMs, endMs, extraHeaders) {
+    return { status: 200, headers: Object.assign({ "content-type": "application/json" }, extraHeaders || {}),
+      body: JSON.stringify({ suggestedWindow: { start: iso(startMs), end: iso(endMs) } }) };
+  }
+  function clientAt(server, atMs) { return pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, server, { clock: function () { return atMs; } })); }
+  var T = Date.parse("2027-06-01T00:00:00Z");
+
+  // RW-1 a uniform-random instant IN the window; renewNow false; the fetch is the unauthenticated GET.
+  var s1 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r1 = await clientAt(s1, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-1 selects the window midpoint, renewNow false", Date.parse(r1.selectedTime) === T + 15 * DAY && r1.renewNow === false);
+  var ri1 = s1.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/renewal-info") === 0; })[0];
+  check("#15 RW-1 the ARI fetch is the unauthenticated GET (no JWS body)", ri1 && ri1.method === "GET" && (ri1.body == null || ri1.body === ""));
+
+  // RW-2 a window entirely in the past -> renewNow true.
+  var s2 = A.acmeServer({ renewalInfoResponse: riResp(T - 20 * DAY, T - 10 * DAY) });
+  var r2 = await clientAt(s2, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-2 a past window forces renewNow", r2.renewNow === true);
+
+  // RW-3 an inverted window fails closed (validateRenewalInfo, sec. 4.2).
+  var s3 = A.acmeServer({ renewalInfoResponse: riResp(T + 20 * DAY, T + 10 * DAY) });
+  check("#15 RW-3 an inverted window fails closed", (await codeOf(clientAt(s3, T).renewalWindow(certDer, {}))) === "acme/bad-renewal-window");
+
+  // RW-4 an expired certificate is refused BEFORE any fetch (sec. 4.3).
+  var s4 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  check("#15 RW-4 an expired certificate is refused", (await codeOf(clientAt(s4, Date.parse("2041-01-01T00:00:00Z")).renewalWindow(certDer, {}))) === "acme/certificate-expired");
+  check("#15 RW-4 the expiry refusal precedes any request", s4.calls.length === 0);
+
+  // RW-5 a caller-asserted replaced certificate is refused with ZERO fetch (sec. 4.3).
+  var s5 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  check("#15 RW-5 a replaced certificate is refused", (await codeOf(clientAt(s5, T).renewalWindow(certDer, { replaced: true }))) === "acme/certificate-replaced");
+  check("#15 RW-5 the replaced refusal makes no request", s5.calls.length === 0);
+
+  // RW-6 the ARI Retry-After is clamped to [60s, 24h] (sec. 4.3.2).
+  var s6a = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "5" }) });
+  check("#15 RW-6 a tiny Retry-After clamps up to 60s", (await clientAt(s6a, T).renewalWindow(certDer, {})).retryAfterSeconds === 60);
+  var s6b = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "999999" }) });
+  check("#15 RW-6 a huge Retry-After clamps down to 24h", (await clientAt(s6b, T).renewalWindow(certDer, {})).retryAfterSeconds === 86400);
+
+  // RW-7 an unadvertised renewalInfo resource fails closed.
+  var dir7 = A.directory(); delete dir7.renewalInfo;
+  check("#15 RW-7 an unadvertised renewalInfo fails closed", (await codeOf(clientAt(A.acmeServer({ directory: dir7 }), T).renewalWindow(certDer, {}))) === "acme/resource-unavailable");
+
+  // RW-8 the random draw spans the window endpoints inclusively (0 -> start, 1 -> end); deterministic.
+  var s8 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r8lo = await clientAt(s8, T).renewalWindow(certDer, { random: function () { return 0; } });
+  var r8hi = await clientAt(s8, T).renewalWindow(certDer, { random: function () { return 1; } });
+  check("#15 RW-8 draw 0 selects the window start", Date.parse(r8lo.selectedTime) === T + 10 * DAY);
+  check("#15 RW-8 draw 1 selects the window end", Date.parse(r8hi.selectedTime) === T + 20 * DAY);
+
+  // RW-9 input guards + the default random path: no opts is accepted (crypto-backed draw); a non-Buffer cert,
+  // a non-function random, and a draw outside [0,1] each fail closed; an explanationURL is surfaced.
+  var s9 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r9 = await clientAt(s9, T).renewalWindow(certDer);   // no opts -> default crypto random
+  check("#15 RW-9 renewalWindow with no opts selects within the window", Date.parse(r9.selectedTime) >= T + 10 * DAY && Date.parse(r9.selectedTime) <= T + 20 * DAY);
+  check("#15 RW-9 a non-Buffer certificate is rejected", (await codeOf(clientAt(s9, T).renewalWindow("nope", {}))) === "acme/bad-input");
+  check("#15 RW-9 a non-function random is rejected", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: 5 }))) === "acme/bad-input");
+  check("#15 RW-9 a non-boolean replaced is rejected (no fail-open past the sec. 4.3 gate)", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { replaced: 12345 }))) === "acme/bad-input");
+  check("#15 RW-9 a random draw outside [0,1] is rejected", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return 2; } }))) === "acme/bad-input");
+  check("#15 RW-9 a non-number random draw is rejected (not coerced)", (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return null; } }))) === "acme/bad-input" && (await codeOf(clientAt(s9, T).renewalWindow(certDer, { random: function () { return "0.5"; } }))) === "acme/bad-input");
+  var s9e = A.acmeServer({ renewalInfoResponse: { status: 200, headers: { "content-type": "application/json" }, body: JSON.stringify({ suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, explanationURL: "https://ca.example/why" }) } });
+  var r9e = await clientAt(s9e, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-9 an explanationURL is surfaced", r9e.explanationURL === "https://ca.example/why");
+
+  // RW-15 renewNow is decided against a FRESH clock read (after the fetch), not the pre-fetch time: a clock
+  // that advances past the selected instant while the RenewalInfo GET is in flight yields renewNow true.
+  var rwCalls = 0;
+  var advancingClock = function () { return rwCalls++ === 0 ? T : T + 16 * DAY; };   // pre-fetch T; post-fetch T+16d
+  var s15 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });   // midpoint T+15d, no Retry-After
+  var acme15rw = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s15, { clock: function () { return T; } }));
+  var r15 = await acme15rw.renewalWindow(certDer, { clock: advancingClock, random: function () { return 0.5; } });
+  check("#15 RW-15 renewNow uses a fresh post-fetch clock read", r15.renewNow === true && Date.parse(r15.selectedTime) === T + 15 * DAY);
+
+  // RW-16 the selected renewal instant is bounded by the certificate's notAfter: a suggestedWindow extending
+  // past expiry never yields a renewal time after the cert is dead (RFC 9773 -- you renew BEFORE notAfter).
+  var NA = Date.parse("2040-01-01T00:00:00Z");   // the fixture cert's notAfter
+  var s16 = A.acmeServer({ renewalInfoResponse: riResp(NA - 100 * DAY, NA + 100 * DAY) });   // window straddles notAfter
+  var r16 = await clientAt(s16, NA - 200 * DAY).renewalWindow(certDer, { random: function () { return 1; } });   // draw the max
+  check("#15 RW-16 the selected time is clamped to notAfter", Date.parse(r16.selectedTime) === NA);
+  // RW-17 when the ENTIRE suggested window starts after notAfter, there is no valid renewal time in it, so the
+  // caller must renew immediately (renewNow true), not schedule for the last-valid instant.
+  var s17rw = A.acmeServer({ renewalInfoResponse: riResp(NA + 10 * DAY, NA + 20 * DAY) });   // window entirely past expiry
+  var r17rw = await clientAt(s17rw, NA - 10 * DAY).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-17 a window starting after expiry forces renewNow", r17rw.renewNow === true && Date.parse(r17rw.selectedTime) === NA);
+  // RW-18 a window whose start is EXACTLY notAfter is equally unusable -- the >= boundary forces renewNow.
+  var s18 = A.acmeServer({ renewalInfoResponse: riResp(NA, NA + 10 * DAY) });
+  var r18 = await clientAt(s18, NA - 10 * DAY).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-18 a window starting exactly at notAfter forces renewNow", r18.renewNow === true);
+  // RW-19 the expiry gate is EXCLUSIVE of notAfter (X.509 validity is inclusive, matching path-validate's t > notAfter):
+  // a cert at exactly notAfter is still renewable (not yet expired), so the decision proceeds.
+  var s19 = A.acmeServer({ renewalInfoResponse: riResp(NA - 20 * DAY, NA - 10 * DAY) });
+  var r19 = await clientAt(s19, NA).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15 RW-19 a certificate at exactly notAfter is still renewable, not expired", r19.renewNow === true);
+  // RW-20 a straddling window (starts before notAfter, ends at/after it) whose draw lands EXACTLY on notAfter
+  // leaves no margin -- renewNow is true even though the window opened before expiry.
+  var s20 = A.acmeServer({ renewalInfoResponse: riResp(NA - 10 * DAY, NA + 10 * DAY) });
+  var r20 = await clientAt(s20, NA - 5 * DAY).renewalWindow(certDer, { random: function () { return 1; } });
+  check("#15 RW-20 a selection landing on notAfter forces renewNow", r20.renewNow === true && Date.parse(r20.selectedTime) === NA);
+  // RW-21 a clock that returns a NON-finite value (NaN / Infinity) must fail closed, not silently make every
+  // comparison false and bypass the expiry gate.
+  check("#15 RW-21 a NaN clock reading is rejected", (await codeOf(clientAt(s20, T).renewalWindow(certDer, { clock: function () { return NaN; } }))) === "acme/bad-input");
+  check("#15 RW-21 an infinite clock reading is rejected", (await codeOf(clientAt(s20, T).renewalWindow(certDer, { clock: function () { return Infinity; } }))) === "acme/bad-input");
+
+  // RW-13 a syntactically-valid Retry-After beyond the shared parser's 1-year ceiling clamps to 24h rather
+  // than failing the decision; RW-14 a garbage Retry-After falls back to the default (an advisory header must
+  // never discard the usable window). Both keep the decision fail-OPEN on the poll cadence, fail-closed on data.
+  var s13ra = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "99999999999" }) });
+  check("#15 RW-13 an over-ceiling Retry-After clamps to 24h", (await clientAt(s13ra, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 86400);
+  var s14ra = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY, { "retry-after": "not-a-delay" }) });
+  check("#15 RW-14 a garbage Retry-After falls back to the default", (await clientAt(s14ra, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 21600);
+
+  // RW-10 a non-200 renewalInfo (a server problem) after the pre-fetch gates surfaces as acme/server-problem.
+  var s10 = A.acmeServer({ renewalInfoResponse: A.problem(503, "serverInternal", "renewalInfo unavailable") });
+  check("#15 RW-10 a renewalInfo server problem propagates", (await codeOf(clientAt(s10, T).renewalWindow(certDer, { random: function () { return 0.5; } }))) === "acme/server-problem");
+
+  // RW-11 a per-call clock overrides the client clock for the whole decision (expiry gate + renewNow).
+  var s11 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r11 = await clientAt(s11, T).renewalWindow(certDer, { clock: function () { return T + 30 * DAY; }, random: function () { return 0.5; } });
+  check("#15 RW-11 a per-call clock governs renewNow", r11.renewNow === true);   // the window is in the past per the call clock
+  check("#15 RW-11 a per-call clock past notAfter is expired", (await codeOf(clientAt(s11, T).renewalWindow(certDer, { clock: function () { return Date.parse("2041-01-01T00:00:00Z"); } }))) === "acme/certificate-expired");
+  check("#15 RW-11 a non-function clock is rejected", (await codeOf(clientAt(s11, T).renewalWindow(certDer, { clock: 5 }))) === "acme/bad-input");
+
+  // RW-12 when the CA omits Retry-After, a sensible clamped default (6h) is returned rather than null.
+  var s12 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });   // riResp sets no retry-after header
+  check("#15 RW-12 an absent Retry-After yields the default poll delay", (await clientAt(s12, T).renewalWindow(certDer, { random: function () { return 0.5; } })).retryAfterSeconds === 21600);
+  // RW-20 RFC 9773 sec. 4.2: passing back a prior result (opts.previous) whose window is UNCHANGED reuses its
+  // selectedTime, even when a fresh draw would differ -- a repeated ARI refresh converges on one stable instant.
+  var sReuse = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r20a = await clientAt(sReuse, T).renewalWindow(certDer, { random: function () { return 0.25; } });
+  var r20b = await clientAt(sReuse, T).renewalWindow(certDer, { previous: r20a, random: function () { return 0.9; } });
+  check("#15 RW-20 an unchanged window reuses the prior selected time", r20b.selectedTime === r20a.selectedTime && Date.parse(r20a.selectedTime) === T + 12.5 * DAY);
+  // RW-21 a CHANGED window ignores the stale prior and draws fresh.
+  var r21 = await clientAt(sReuse, T).renewalWindow(certDer, { previous: { suggestedWindow: { start: "1999-01-01T00:00:00Z", end: "1999-02-01T00:00:00Z" }, selectedTime: "1999-01-15T00:00:00Z" }, random: function () { return 0.5; } });
+  check("#15 RW-21 a changed window draws fresh, not the stale prior", Date.parse(r21.selectedTime) === T + 15 * DAY);
+  // RW-21 a non-object opts.previous is a config error.
+  check("#15 RW-21 a non-object previous is rejected", (await codeOf(clientAt(sReuse, T).renewalWindow(certDer, { previous: "nope" }))) === "acme/bad-input");
+  // RW-22 a previous whose window MATCHES but whose selectedTime is not a date is a config error (fails closed
+  // rather than silently re-drawing, so a corrupted stored value surfaces).
+  check("#15 RW-22 a matching-window previous with a malformed selectedTime is rejected", (await codeOf(clientAt(sReuse, T).renewalWindow(certDer, { previous: { suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, selectedTime: "not-a-date" } }))) === "acme/bad-input");
+}
+
+// ---- 16 alternate-chain selection (RFC 8555 sec. 7.4.2 / RFC 8288 Link) ------
+async function testAlternateChains() {
+  function toPem(der) { return "-----BEGIN CERTIFICATE-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n+$/, "") + "\n-----END CERTIFICATE-----"; }
+  var leafDer = signing.makeSigner("ec-p256", { cn: "leaf.example" }).cert;         // the shared end-entity cert
+  var otherLeafDer = signing.makeSigner("ec-p256", { cn: "other-leaf.example" }).cert;
+  var rootADer = signing.makeSigner("ec-p256", { cn: "Root CA A" }).cert;
+  var rootBDer = signing.makeSigner("ec-p256", { cn: "Root CA B" }).cert;
+  var leafPem = toPem(leafDer), rootAPem = toPem(rootADer), rootBPem = toPem(rootBDer), otherLeafPem = toPem(otherLeafDer);
+  var primary = [leafPem, rootAPem], altB = [leafPem, rootBPem];
+  var ALT0 = A.URLS.certificate + "/alt/0";
+  function pickB(c) { return c.certificates[c.certificates.length - 1].equals(rootBDer); }   // DER identity, not a string compare
+  function altCalls(s) { return s.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/cert/1/alt/") === 0; }).length; }
+
+  // AL-1 no Link -> the primary chain, empty alternates.
+  var r1 = await (await withAccount(A.acmeServer({ certPems: primary }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-1 no Link resolves the primary chain with empty alternates", r1.certificate.equals(leafDer) && r1.alternates.length === 0);
+
+  // AL-2 a well-formed Link is LISTED but not fetched without a predicate.
+  var s2 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r2 = await (await withAccount(s2)).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-2 a Link alternate is listed but not fetched", r2.alternates.length === 1 && r2.alternates[0] === ALT0 && altCalls(s2) === 0);
+
+  // AL-3 a predicate selects the CA-B alternate (both cert URLs POST-as-GET'd, same leaf).
+  var s3 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r3 = await (await withAccount(s3)).downloadCertificate(A.URLS.certificate, { selectChain: pickB });
+  check("#16 AL-3 selectChain picks the CA-B alternate", r3.certificate.equals(leafDer) && r3.certificates[r3.certificates.length - 1].equals(rootBDer) && altCalls(s3) === 1);
+
+  // AL-4 a predicate that matches nothing fails closed.
+  var acme4 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
+  check("#16 AL-4 no matching candidate fails closed", (await codeOf(acme4.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/no-matching-chain");
+
+  // AL-5 rel is a WHOLE-token, case-insensitive match (no substring); the param name folds too.
+  async function altCount(link) { return (await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link }))).downloadCertificate(A.URLS.certificate)).alternates.length; }
+  check("#16 AL-5 a multi-token rel matches alternate", (await altCount("<" + ALT0 + ">;rel=\"alternate index\"")) === 1);
+  check("#16 AL-5 a substring rel does not match", (await altCount("<" + ALT0 + ">;rel=\"alternateX\"")) === 0 && (await altCount("<" + ALT0 + ">;rel=\"xalternate\"")) === 0);
+  check("#16 AL-5 the rel token and param name are case-insensitive", (await altCount("<" + ALT0 + ">;Rel=\"ALTERNATE\"")) === 1);
+
+  // AL-6 a malformed Link fails closed WHEN alternates are requested, is ignored otherwise; http target fails closed.
+  var acme6a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }));
+  check("#16 AL-6 a malformed Link with selection fails closed", (await codeOf(acme6a.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  var r6b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-6 a malformed Link without selection is ignored", r6b.certificate.equals(leafDer) && r6b.alternates.length === 0);
+  var acme6c = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<http://acme.example/cert/1/alt/0>;rel=\"alternate\"" }));
+  check("#16 AL-6 an http alternate target fails closed", (await codeOf(acme6c.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  // A cross-origin https alternate is an SSRF vector -- an untrusted Link header MUST NOT steer the account-key
+  // -signed POST-as-GET to another origin. It fails closed under selection, and is not even listed without one.
+  var xLink = "<https://evil.example/cert/1/alt/0>;rel=\"alternate\"";
+  var acme6d = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }));
+  check("#16 AL-6 a cross-origin https alternate fails closed under selection", (await codeOf(acme6d.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  var r6e = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-6 a cross-origin alternate is not listed without selection", r6e.certificate.equals(leafDer) && r6e.alternates.length === 0);
+
+  // AL-7 the alternate-fetch budget is bounded (CWE-770): 20 advertised, cap 4 -> reject after exactly 4 fetches.
+  var many = []; for (var i = 0; i < 20; i++) many.push(altB);
+  var s7 = A.acmeServer({ certPems: primary, alternateChains: many });
+  var acme7 = await withAccount(s7);
+  check("#16 AL-7 the alternate fetch budget is enforced", (await codeOf(acme7.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; }, maxAlternates: 4 }))) === "acme/too-many-alternates");
+  check("#16 AL-7 exactly maxAlternates alternates were fetched", altCalls(s7) === 4);
+
+  // AL-8 a fetched alternate inherits every download gate (media type, size).
+  var acme8a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], altContentType: "text/plain" }));
+  check("#16 AL-8 a wrong-media-type alternate fails closed", (await codeOf(acme8a.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-certificate-chain");
+  var bigRoot = "-----BEGIN CERTIFICATE-----\n" + "A".repeat(2000) + "\n-----END CERTIFICATE-----";
+  var acme8b = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({ certPems: [leafPem], alternateChains: [[leafPem, bigRoot]] }), { maxResponseBytes: 1200 }));
+  await acme8b.newAccount({ termsOfServiceAgreed: true });
+  check("#16 AL-8 an oversize alternate is rejected", (await codeOf(acme8b.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/response-too-large");
+
+  // AL-9 same-leaf invariant, URL dedup, predicate-throw propagation.
+  var acme9a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [[otherLeafPem, rootBPem]] }));
+  check("#16 AL-9 an alternate with a different leaf is rejected", (await codeOf(acme9a.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-alternate");
+  var s9b = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"" });
+  var r9b = await (await withAccount(s9b)).downloadCertificate(A.URLS.certificate, { selectChain: pickB });
+  check("#16 AL-9 a duplicate alternate URL is fetched once", r9b.certificates[r9b.certificates.length - 1].equals(rootBDer) && altCalls(s9b) === 1);
+  var acme9c = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
+  check("#16 AL-9 a throwing selectChain propagates (not swallowed)", (await codeOf(acme9c.downloadCertificate(A.URLS.certificate, { selectChain: function () { throw new Error("boom"); } }))) === "RAW:boom");
+
+  // AL-10 both header shapes parse: node's comma-joined string AND an injected array of Link values.
+  var joined = "<" + A.URLS.certificate + "/alt/0>;rel=\"alternate\", <" + A.URLS.certificate + "/alt/1>;rel=\"alternate\"";
+  var r10a = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: joined }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-10 a comma-joined Link string parses both alternates", r10a.alternates.length === 2);
+  var arr = ["<" + A.URLS.certificate + "/alt/0>;rel=\"alternate\"", "<" + A.URLS.certificate + "/alt/1>;rel=\"alternate\""];
+  var r10b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: arr }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-10 an array of Link headers parses both alternates", r10b.alternates.length === 2);
+
+  // AL-11 RFC 8288 tokenizer edges: a comma or semicolon inside a quoted param value is not a separator; a
+  // bare (value-less) param and a trailing comma are tolerated; all still parse to the single alternate.
+  check("#16 AL-11 a comma inside a quoted param is not a separator", (await altCount("<" + ALT0 + ">;title=\"a,b\";rel=\"alternate\"")) === 1);
+  check("#16 AL-11 a semicolon inside a quoted param is not a separator", (await altCount("<" + ALT0 + ">;title=\"a;b\";rel=\"alternate\"")) === 1);
+  check("#16 AL-11 a trailing comma is tolerated (empty link-value skipped)", (await altCount("<" + ALT0 + ">;rel=\"alternate\",")) === 1);
+  check("#16 AL-11 a backslash-escaped quote inside a param value is handled", (await altCount("<" + ALT0 + ">;title=\"a\\\"b\";rel=\"alternate\"")) === 1);
+
+  // AL-11b a certificate response with NO content-type (a non-conforming server) fails the media-type gate.
+  var acme11b = await withAccount(A.acmeServer({ certPems: primary, certNoContentType: true }));
+  check("#16 AL-11 a missing content-type on the chain fails closed", (await codeOf(acme11b.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+
+  // AL-12 malformed-header edges fail closed under selection: an unterminated quote, and an over-cap header.
+  function codeForLink(link) { return withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link })).then(function (a) { return codeOf(a.downloadCertificate(A.URLS.certificate, { selectChain: pickB })); }); }
+  check("#16 AL-12 an unterminated quote fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate")) === "acme/bad-link");
+  check("#16 AL-12 an over-cap Link header fails closed", (await codeForLink("<" + ALT0 + ">;title=\"" + "a".repeat(8300) + "\";rel=\"alternate\"")) === "acme/bad-link");
+
+  // AL-13 selectChain must be a function; a predicate that accepts the PRIMARY returns it without fetching an alternate.
+  var acme13 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
+  check("#16 AL-13 a non-function selectChain is rejected", (await codeOf(acme13.downloadCertificate(A.URLS.certificate, { selectChain: 5 }))) === "acme/bad-input");
+  var s13 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r13 = await (await withAccount(s13)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
+  check("#16 AL-13 a predicate accepting the primary skips the alternate fetch", r13.certificate.equals(leafDer) && altCalls(s13) === 0);
+
+  // AL-14 the Link header size cap is AGGREGATE, not per-field: an array of fields each under the per-field
+  // size but summing over the cap fails closed (CWE-770 -- a duplicate/injected Link array cannot amplify).
+  var bigField = "<" + ALT0 + ">;rel=\"alternate\";title=\"" + "a".repeat(5000) + "\"";
+  var acme14 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: [bigField, bigField] }));
+  check("#16 AL-14 the Link header cap is aggregate across fields", (await codeOf(acme14.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+
+  // AL-15 a Link parameter not introduced by ';' (RFC 8288: <URI> *(";" param)) is malformed -> fails closed.
+  var acme15 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">rel=\"alternate\"" }));
+  check("#16 AL-15 a Link param not preceded by a semicolon fails closed", (await codeOf(acme15.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+
+  // AL-16 an UNQUOTED param value must be a single token (RFC 8288 / RFC 7230): whitespace in an unquoted rel
+  // (rel=alternate garbage) is malformed and MUST NOT be split-and-matched -- a quoted list is the valid form.
+  var acme16 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=alternate garbage" }));
+  check("#16 AL-16 whitespace in an unquoted param value fails closed", (await codeOf(acme16.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  check("#16 AL-16 a well-formed UNQUOTED rel token still matches", (await altCount("<" + ALT0 + ">;rel=alternate")) === 1);
+
+  // AL-17 the primary is evaluated BEFORE a malformed Link is rejected: if selectChain accepts the primary, a
+  // malformed alternate Link (which is never needed) does not fail the download.
+  var s17 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" });
+  var r17 = await (await withAccount(s17)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
+  check("#16 AL-17 a matching primary is returned despite a malformed Link", r17.certificate.equals(leafDer) && altCalls(s17) === 0);
+
+  // AL-18 empty Link fields count toward the aggregate cap: a huge array of empty fields cannot amplify parse work.
+  var empties = []; for (var e18 = 0; e18 < 10000; e18++) empties.push("");
+  var acme18 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: empties }));
+  check("#16 AL-18 many empty Link fields hit the aggregate cap", (await codeOf(acme18.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-link");
+
+  // AL-19 a relative Link URI carrying whitespace that URL parsing would REPAIR is rejected, not silently
+  // resolved (RFC 3986: a URI-reference has no raw whitespace) -- mirrors the client's own URL canonicality gate.
+  check("#16 AL-19 a Link URI with repairable whitespace fails closed", (await codeForLink("< /cert/1/alt/0>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-20 a Link parameter NAME must be a token too (RFC 8288 / RFC 7230): whitespace in a name is malformed.
+  check("#16 AL-20 whitespace in a Link parameter name fails closed", (await codeForLink("<" + ALT0 + ">;bad name=x;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-21 a relative URI carrying any non-RFC-3986 character that URL parsing would percent-encode/repair (not
+  // just whitespace) is rejected before resolution -- e.g. an unencoded brace.
+  check("#16 AL-21 a relative Link URI with an invalid RFC 3986 char fails closed", (await codeForLink("</cert/1/alt/0{x}>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-22 a malformed percent-escape (% not followed by two hex digits) is not valid RFC 3986 pct-encoding.
+  check("#16 AL-22 a malformed percent-escape in a Link URI fails closed", (await codeForLink("</cert/%ZZ>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-23 a control octet anywhere in the Link header (even inside a quoted param) is not a valid field-value.
+  var ctlHeader = "<" + ALT0 + ">;title=\"" + String.fromCharCode(1) + "\";rel=\"alternate\"";
+  check("#16 AL-23 a control octet in a Link header fails closed", (await codeForLink(ctlHeader)) === "acme/bad-link");
+  // AL-24 a percent-encoded dot-segment (%2e%2e) in a relative URI would be DECODED and resolved into a path
+  // traversal by URL parsing, changing the target -- reject it (the absolute path hits _clientUrl's own gate).
+  check("#16 AL-24 a percent-encoded dot-segment in a relative Link URI fails closed", (await codeForLink("</cert/%2e%2e/alt/0>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-25 an encoded dot that is NOT a whole dot-segment (e.g. a filename 0%2ex == 0.x) is a valid target and
+  // must NOT be rejected -- only a segment that decodes to "." or ".." is a traversal.
+  check("#16 AL-25 an encoded dot outside a dot-segment is allowed", (await altCount("</cert/1/alt/0%2ex>;rel=\"alternate\"")) === 1);
+  // AL-26 a quoted value must be a WELL-FORMED quoted-string (RFC 7230): an unescaped interior quote (a""b) or a
+  // dangling backslash is malformed, not merely first/last-char-is-a-quote.
+  check("#16 AL-26 a malformed quoted Link value fails closed", (await codeForLink("<" + ALT0 + ">;title=\"a\"\"b\";rel=\"alternate\"")) === "acme/bad-link");
+  // AL-27 a valueless extension parameter (a bare token, no '=') is VALID per RFC 8288 (link-param has an
+  // optional value) -- it is tolerated (ignored), not rejected, so the alternate is still found.
+  check("#16 AL-27 a valueless Link extension parameter is permitted", (await altCount("<" + ALT0 + ">;rel=\"alternate\";flag")) === 1);
+  // AL-28 an empty UNQUOTED value (foo=) is not a token (RFC 9110 sec. 5.6.6); an empty value must be quoted (foo="").
+  check("#16 AL-28 an empty unquoted Link parameter value fails closed", (await codeForLink("<" + ALT0 + ">;foo=;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-29 the rel relation-type list is SPACE-separated (RFC 8288 sec. 3.3), not tab: a tab-joined value is a
+  // SINGLE relation-type "alternate<TAB>index" -- which contains a tab, so it is not a valid relation-type and
+  // the list is malformed (it does not match alternate and fails closed).
+  var tabRel = "<" + ALT0 + ">;rel=\"alternate" + String.fromCharCode(9) + "index\"";
+  check("#16 AL-29 a tab in a quoted rel is not a list separator", (await codeForLink(tabRel)) === "acme/bad-link");
+  // AL-30 an empty parameter (a `;` with no parameter, e.g. `;;`) is malformed (RFC 8288 requires a link-param
+  // after each `;`) -- reject it rather than silently skip the empty slot.
+  check("#16 AL-30 an empty Link parameter (;;) fails closed", (await codeForLink("<" + ALT0 + ">;;rel=\"alternate\"")) === "acme/bad-link");
+
+  // AL-31 an ASYNC selectChain (returns a Promise) is awaited, not treated as always-truthy.
+  var s31 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
+  var r31 = await (await withAccount(s31)).downloadCertificate(A.URLS.certificate, { selectChain: async function (c) { return c.certificates[c.certificates.length - 1].equals(rootBDer); } });
+  check("#16 AL-31 an async selectChain is awaited", r31.certificates[r31.certificates.length - 1].equals(rootBDer) && r31.certificate.equals(leafDer));
+
+  // AL-32 a rel="alternate" link with an anchor param has a DIFFERENT context (RFC 8288 sec. 3.2): anchored to
+  // another resource it is not a cert alternate (skipped); anchored to the certificate URL it is kept.
+  check("#16 AL-32 an alternate anchored elsewhere is not a cert alternate", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"https://acme.example/other\"")) === 0);
+  check("#16 AL-32 an alternate anchored to the certificate URL is kept", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"" + A.URLS.certificate + "\"")) === 1);
+  // AL-32 an anchor that does not resolve to a URL cannot be our context -> skip (conservative).
+  check("#16 AL-32 an unresolvable anchor is skipped", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"http://\"")) === 0);
+  // AL-32 the RAW anchor is validated with the same RFC 3986 rules as the target: an encoded dot-segment anchor
+  // that would traverse to the certificate URL cannot spoof a context match -- it is skipped, not kept.
+  check("#16 AL-32 an anchor with an encoded dot-segment cannot spoof the context", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"/cert/x/%2e%2e/1\"")) === 0);
+  // AL-33 a rel relation-type list is single-space-separated with no leading/trailing/repeated space (RFC 8288
+  // sec. 3.3): "alternate " (trailing space) is malformed and must not be split-and-matched.
+  check("#16 AL-33 a rel with a trailing space fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate \"")) === "acme/bad-link");
+  // AL-34 the anchor parameter is URI-valued (RFC 8288 sec. 3.2): unlike a generic extension param, a VALUELESS
+  // anchor is malformed (an empty anchor would resolve to the certificate URL and spoof a context match).
+  check("#16 AL-34 a valueless anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor")) === "acme/bad-link");
+  // AL-35 the FIRST rel occurrence wins even when empty (RFC 8288 sec. 3.3): rel="";rel=alternate keeps the empty
+  // first value, which is a malformed (zero-type) rel and fails closed -- it is NOT matched via the later alternate.
+  check("#16 AL-35 an empty first rel value fails closed, not matched via a later rel", (await codeForLink("<" + ALT0 + ">;rel=\"\";rel=alternate")) === "acme/bad-link");
+  // AL-36 an explicitly empty anchor URI-reference (anchor="") is valid -- it resolves to the context (the cert
+  // URL) -- so the alternate is kept (distinct from a VALUELESS anchor with no '=' which is malformed).
+  check("#16 AL-36 an explicitly empty anchor URI-reference is permitted", (await altCount("<" + ALT0 + ">;rel=\"alternate\";anchor=\"\"")) === 1);
+  // AL-37 multiple spaces between relation types are allowed (RFC 8288 sec. 3.3 separator is 1*SP): "alternate
+  // <SP><SP>index" still matches alternate; only a LEADING/TRAILING space is malformed (AL-33).
+  check("#16 AL-37 multiple spaces between relation types are allowed", (await altCount("<" + ALT0 + ">;rel=\"alternate  index\"")) === 1);
+  // AL-38 only HTTP OWS (SP / HTAB) is trimmed, not arbitrary Unicode whitespace: a non-breaking space (obs-text
+  // U+00A0) before a parameter name is part of the (non-token) name, not stripped -> the parameter is malformed.
+  check("#16 AL-38 a non-breaking space is not trimmed as OWS", (await codeForLink("<" + ALT0 + ">;" + String.fromCharCode(0xA0) + "rel=\"alternate\"")) === "acme/bad-link");
+  // AL-39 EVERY relation-type in the list must be well-formed (RFC 8288 sec. 3.3 reg-rel-type / ext-rel-type):
+  // "alternate @" contains an invalid token (@) -- the whole list is malformed, not a valid alternate.
+  check("#16 AL-39 an invalid relation-type token fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate @\"")) === "acme/bad-link");
+  // AL-40 an ext-rel-type (URI) relation-type is validated in FULL, not just its scheme: "http:%ZZ" has a scheme
+  // but a malformed percent-escape, so it is not a valid URI relation-type and the list fails closed.
+  check("#16 AL-40 a malformed URI relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:%ZZ\"")) === "acme/bad-link");
+  // AL-41 an ext-rel-type URI is PARSED in full (not just char-checked): "http://[" has only valid characters but
+  // is a structurally invalid URL, so it is not a valid relation-type and the list fails closed.
+  check("#16 AL-41 a structurally invalid URI relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[\"")) === "acme/bad-link");
+  // AL-41 a well-formed ext-rel-type URI alongside alternate is accepted (the list is valid, alternate matches).
+  check("#16 AL-41 a valid URI relation-type alongside alternate is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate https://example.com/rel\"")) === 1);
+  // AL-42 a relation-type URI is validated by RFC 3986 grammar, NOT fetch-target normalization: an encoded dot
+  // (%2e, a legal identifier char, not a resolved dot-segment) is accepted, so the alternate remains usable.
+  check("#16 AL-42 a percent-encoded dot in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate https://relations.example/%2e%2e/chain\"")) === 1);
+  // AL-43 an IPvFuture host is a valid RFC 3986 relation-type URI (WHATWG would reject it), and is accepted.
+  check("#16 AL-43 an IPvFuture relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://[v1.a]/\"")) === 1);
+  // AL-44 a TARGET (fetched) URI must not carry a bracket outside an authority IP-literal (a cert URL never uses
+  // one): "/cert/[alt]" is structurally invalid and WHATWG would percent-encode it, so it fails closed.
+  check("#16 AL-44 a bracket in a target URI path fails closed", (await codeForLink("</cert/[alt]>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-45 an ext-rel-type with an empty IP-literal authority ("http://[]") is a structurally invalid URI (a
+  // balance-only check would accept it), so it fails closed.
+  check("#16 AL-45 an empty IP-literal relation-type authority fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[]\"")) === "acme/bad-link");
+  // AL-46 an ext-rel-type with a non-numeric port ("http://host:bad") is a structurally invalid URI, so it fails closed.
+  check("#16 AL-46 a bad-port relation-type authority fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://host:bad\"")) === "acme/bad-link");
+  // AL-47 a same-origin IPv6-literal TARGET authority is valid (a bracket is legal in an authority, only invalid
+  // in a path): an IPv6-hosted cert URL advertising a same-origin IPv6 alternate resolves it.
+  var s47 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<https://[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
+  var r47 = await (await withAccount(s47)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
+  check("#16 AL-47 a same-origin IPv6 target authority resolves the alternate", r47.certificates[r47.certificates.length - 1].equals(rootBDer));
+  // AL-48 a valid authority IP-literal does not license a bracket elsewhere: "https://[::1]/cert/[alt]" carries a
+  // stray bracket in the path and fails closed.
+  check("#16 AL-48 a bracket in the path past a valid IP-literal authority fails closed", (await codeForLink("<https://[2001:db8::1]/cert/[alt]>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-49 a bracket outside an authority is invalid even for a scheme WHATWG parses leniently: "urn:[" has an
+  // opaque part with a stray bracket (URL.canParse accepts it), so the ext-rel-type fails closed.
+  check("#16 AL-49 a bracket in an opaque-scheme relation-type fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:[\"")) === "acme/bad-link");
+  // AL-50 an IPvFuture version marker is case-insensitive (RFC 5234 ABNF literal): "[V1.a]" is as valid as "[v1.a]".
+  check("#16 AL-50 an uppercase-V IPvFuture relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://[V1.a]/\"")) === 1);
+  // AL-51 a SEPARATE link-value carrying an empty rel fails the whole field closed (not silently skipped so a
+  // later valid alternate is used): a malformed value is a hard reject.
+  check("#16 AL-51 a separate link-value with an empty rel fails closed", (await codeForLink("<https://acme.example/bad>;rel=\"\", <" + ALT0 + ">;rel=alternate")) === "acme/bad-link");
+  // AL-52 an ext-rel-type authority with two "@" is invalid RFC 3986 (WHATWG would accept it while rewriting the
+  // first "@"); it fails closed rather than being passed by canParse's repair.
+  check("#16 AL-52 a double-@ authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://a@b@host/\"")) === "acme/bad-link");
+  // AL-53 a scheme-relative (network-path) reference with an IP-literal authority ("//[2001:db8::1]/...", RFC 3986
+  // sec. 4.2) is a valid same-origin alternate against an IPv6-hosted cert, and resolves.
+  var s53 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<//[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
+  var r53 = await (await withAccount(s53)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
+  check("#16 AL-53 a scheme-relative IPv6-authority alternate resolves", r53.certificates[r53.certificates.length - 1].equals(rootBDer));
+  // AL-54 a reference with an EMPTY authority ("////acme.example/..." or "///x") fails closed: WHATWG would repair
+  // it by promoting a path segment to the host (here back to the cert's own origin), so a malformed raw reference
+  // must not be accepted just because its repaired form happens to pass the same-origin gate.
+  check("#16 AL-54 an empty-authority (////) target fails closed", (await codeForLink("<////acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-55 the double-@ authority reject applies to a fetched TARGET too, not only an ext-rel-type: a target such
+  // as "https://a@b@acme.example/cert/alt" (WHATWG repairs to the same origin) fails closed before any fetch.
+  check("#16 AL-55 a double-@ target authority fails closed", (await codeForLink("<https://a@b@acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-56 a URI carries at most one "#" (a fragment cannot contain "#", RFC 3986 sec. 3.5); a second "#" is
+  // invalid, which WHATWG accepts by folding it into the fragment. An ext-rel-type "urn:x#y#z" fails closed.
+  check("#16 AL-56 a repeated fragment delimiter in a relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate urn:x#y#z\"")) === "acme/bad-link");
+  // AL-57 the same repeated-"#" reject applies to a fetched TARGET too (swept to both, not only the ext-rel-type).
+  check("#16 AL-57 a repeated fragment delimiter in a target URI fails closed", (await codeForLink("<https://acme.example/cert/alt#y#z>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-58 the empty-authority reject (shared with the target) also covers an ext-rel-type: "http:///relations"
+  // has an empty authority WHATWG repairs by promoting the path segment to the host, so it fails closed.
+  check("#16 AL-58 an empty-authority relation-type URI fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http:///relations.example\"")) === "acme/bad-link");
+  // AL-59 an alternate target that is a valid RFC 3986 reference but not a canonical ACME URL (an empty fragment
+  // "...alt#" -- unusable because the "#" is dropped from the request yet retained in the signed JWS url) is SKIPPED,
+  // not fatal: a second valid alternate in the same header still resolves (RFC 8555 sec. 7.4.2 permits several).
+  check("#16 AL-59 a non-canonical (empty-fragment) alternate is skipped, others kept", (await altCount("<https://acme.example/cert/alt#>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-60 the same for an empty query ("...alt?"): the non-canonical alternate is skipped, the valid one survives.
+  check("#16 AL-60 a non-canonical (empty-query) alternate is skipped, others kept", (await altCount("<https://acme.example/cert/alt?>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-63 a raw "[" / "]" in userinfo is NOT permitted (RFC 3986 sec. 3.2.1/3.2.2 -- brackets only in the IP-literal
+  // host); "a[b@[::1]" (WHATWG repairs to "a%5Bb@[::1]") is a structural violation and fails closed.
+  check("#16 AL-63 a bracket in userinfo before an IP-literal host fails closed", (await codeForLink("<https://a[b@[::1]/cert>;rel=\"alternate\"")) === "acme/bad-link");
+  check("#16 AL-63 the same bracket-in-userinfo reject applies to an ext-rel-type", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://a[b@[::1]/\"")) === "acme/bad-link");
+  // AL-64 a relative-path reference whose first segment carries a ":" is a path-noscheme violation (RFC 3986 sec.
+  // 4.2), which WHATWG resolves against the base as same-origin; ":foo" fails closed.
+  check("#16 AL-64 a colon in a relative-ref first segment fails closed", (await codeForLink("<:foo>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-65 an absolute alternate carrying literal dot-segments is a valid RFC 3986 URI but not a canonical ACME
+  // request URL (WHATWG applies remove_dot_segments), so it is SKIPPED, keeping a co-advertised valid alternate --
+  // rather than the old behavior where one non-canonical absolute alternate discarded ALL of them.
+  check("#16 AL-65 a dot-segment absolute alternate is skipped, others kept", (await altCount("<https://acme.example/cert/1/../bad>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-66 same for an apostrophe (a valid RFC 3986 sub-delim WHATWG re-encodes to %27 in a special-scheme query).
+  check("#16 AL-66 an apostrophe-query absolute alternate is skipped, others kept", (await altCount("<https://acme.example/cert/1?x='1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-61 an empty authority is VALID for a scheme that permits one: an ext-rel-type "file:///relations/chain" is
+  // accepted (unlike an http/https/scheme-relative authority, whose empty form WHATWG repairs to a host).
+  check("#16 AL-61 a file:/// relation-type URI (valid empty authority) is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate file:///relations/chain\"")) === 1);
+  // AL-62 RFC 3986 permits userinfo before an IP-literal / IPvFuture host: an ext-rel-type "http://user@[v1.a]/"
+  // is a valid relation URI and is accepted.
+  check("#16 AL-62 userinfo before an IPvFuture relation host is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://user@[v1.a]/\"")) === 1);
+  // AL-67 two equivalent spellings of the same alternate (an uppercase host + explicit :443 vs the canonical form)
+  // collapse to ONE fetch: dedup is by the WHATWG-normalized href, not the verbatim string (CWE-770 amplification).
+  check("#16 AL-67 equivalent-spelling alternates are de-duplicated by normalized href", (await altCount("<" + ALT0 + ">;rel=\"alternate\", <https://ACME.EXAMPLE:443/cert/1/alt/0>;rel=\"alternate\"")) === 1);
+  // AL-68 a percent-encoded unreserved char is equivalent (RFC 3986 sec. 6.2.2.2: "%61" == "a"), so "/alt" and
+  // "/%61lt" de-duplicate to a single fetch too.
+  check("#16 AL-68 an unreserved percent-escape is normalized for dedup", (await altCount("<" + ALT0 + ">;rel=\"alternate\", <https://acme.example/cert/1/%61lt/0>;rel=\"alternate\"")) === 1);
+  // AL-68 a RESERVED escape is not decoded but its hex is case-normalized (RFC 3986 sec. 6.2.2.1): "%2f" and "%2F"
+  // (both an encoded "/") are the same target and de-duplicate to one fetch.
+  check("#16 AL-68 a reserved percent-escape is case-normalized for dedup", (await altCount("<https://acme.example/cert/1/alt%2f0>;rel=\"alternate\", <https://acme.example/cert/1/alt%2F0>;rel=\"alternate\"")) === 1);
+  // AL-69 a RELATIVE alternate whose query WHATWG re-encodes on resolution (an apostrophe -> %27) is non-canonical
+  // just like the absolute form, so it is SKIPPED (not silently resolved to the repaired query), keeping a valid one.
+  check("#16 AL-69 a relative alternate with a re-encoded query is skipped, others kept", (await altCount("<alt/x?y='1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-70 the PRIMARY certificate URL advertised as a rel="alternate" (it is not an alternate of itself) is
+  // de-duplicated against the download URL, so it is not collected + redundantly re-fetched.
+  check("#16 AL-70 the primary URL advertised as an alternate is skipped", (await altCount("</cert/1>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-71 an ext-rel-type identifier port is RFC 3986 *DIGIT (no 16-bit range limit -- it is never connected to),
+  // so ":65536" is accepted, while a non-numeric port (":bad") is still rejected.
+  check("#16 AL-71 an out-of-range port in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://relations.example:65536/type\"")) === 1);
+  check("#16 AL-71 a non-numeric port in a relation-type URI is still rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://relations.example:bad/type\"")) === "acme/bad-link");
+  // AL-72 a fetched TARGET keeps WHATWG's 16-bit port range (it is connected to over TCP): a target port ">65535"
+  // is not usable and is skipped (not signed).
+  check("#16 AL-72 an out-of-range port in a target URI is skipped", (await altCount("<https://acme.example:65536/cert/1/alt/0>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-73 a numeric dotted reg-name in an ext-rel-type is a valid RFC 3986 reg-name (WHATWG mis-coerces it to an
+  // invalid IPv4 literal): "1.2.3.4.5" is accepted, while an empty/invalid IP-literal host stays rejected.
+  check("#16 AL-73 an IPv4-shaped reg-name in a relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate http://1.2.3.4.5/type\"")) === 1);
+  check("#16 AL-73 an empty IP-literal host in a relation-type URI is still rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[]/type\"")) === "acme/bad-link");
+  // AL-74 an anchor whose query WHATWG re-encodes ("?x='" -> "?x=%27") must NOT spoof a context match against a
+  // download URL that already carries the encoded form -- "'" is a reserved sub-delim, not equal to its escape
+  // (RFC 3986 sec. 6.2.2.2), so the resolution repaired it and the anchor is an unreliable context (skipped).
+  var s74 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\";anchor=\"?x='\"" });
+  var r74 = await (await withAccount(s74)).downloadCertificate("https://acme.example/cert/1?x=%27");
+  check("#16 AL-74 a re-encoded-query anchor does not spoof the certificate context", r74.alternates.length === 0);
+  // AL-75 a non-numeric port ("host:bad") is malformed (RFC 3986 port = *DIGIT), not merely non-canonical, so a
+  // target carrying one FAILS the whole header closed (a structural reject before resolution), not skipped.
+  check("#16 AL-75 a malformed-port target fails closed", (await codeForLink("<https://acme.example:bad/cert>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-76 an IP-literal host must CONTAIN a valid IPv6/IPvFuture (RFC 3986 sec. 3.2.2); "[not-ip]" is malformed, not
+  // merely non-canonical, so a target carrying one fails the header closed (structural reject before resolution).
+  check("#16 AL-76 a malformed IP-literal target fails closed", (await codeForLink("<https://[not-ip]/cert>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-76 a valid IPv6 relation-type host is still accepted, and a malformed one is rejected (the same content check).
+  check("#16 AL-76 a malformed IP-literal relation-type URI is rejected", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[not-ip]/x\"")) === "acme/bad-link");
+  // AL-77 an ext-rel-type is validated by RFC 3986 GRAMMAR, not WHATWG: an empty reg-name authority ("foo://user@/")
+  // is valid (reg-name = *(...), zero chars allowed), so it is accepted where WHATWG's special-scheme parse rejects it.
+  check("#16 AL-77 an empty reg-name authority relation-type URI is accepted", (await altCount("<" + ALT0 + ">;rel=\"alternate foo://user@/type\"")) === 1);
+  // AL-78 an IP-literal HOST must be followed only by a port or a path/query/fragment delimiter: "[::1]@acme.example"
+  // (an IP-literal followed by "@host") is malformed (WHATWG re-parses to a different host) and fails closed.
+  check("#16 AL-78 an IP-literal followed by authority text fails closed", (await codeForLink("<https://[::1]@acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-79 a DUPLICATE anchor is ambiguous (anchor is not an RFC 8288 sec. 3.3 singleton), and since anchor sets the
+  // context it fails closed rather than silently taking the first.
+  check("#16 AL-79 a duplicate anchor parameter fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate\";anchor=\"\";anchor=\"https://other.example/\"")) === "acme/bad-link");
+  // AL-80 an empty HOST after userinfo or before a port ("https://user@/x", "https://:443/x") is an empty authority
+  // for a special scheme -- not caught by looking only at the char after "//" -- and fails closed.
+  check("#16 AL-80 an empty host after userinfo fails closed", (await codeForLink("<https://user@/bad>;rel=\"alternate\"")) === "acme/bad-link");
+  check("#16 AL-80 an empty host before a port fails closed", (await codeForLink("<https://:443/bad>;rel=\"alternate\"")) === "acme/bad-link");
+  // AL-81 an alternate TARGET with userinfo is not signed/fetched (ACME URLs have no userinfo; a signed url with it
+  // would not match the request, RFC 8555 sec. 6.4) -- it is skipped, a co-advertised valid alternate survives.
+  check("#16 AL-81 an alternate target with userinfo is skipped", (await altCount("<https://user@acme.example/cert/1/alt/0>;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"")) === 1);
+  // AL-82 a bracketed userinfo disguised as an IP host ("[::1]:80@relations.example", where "[::1]:80" is userinfo
+  // and "relations.example" the real host) fails closed: after an IP-literal host, only an optional ":port" may
+  // follow, never "@" -- else the literal is in userinfo position, which RFC 3986 forbids.
+  check("#16 AL-82 a bracketed userinfo before the real host fails closed (relation-type)", (await codeForLink("<" + ALT0 + ">;rel=\"alternate http://[::1]:80@relations.example/type\"")) === "acme/bad-link");
+  check("#16 AL-82 the same bracketed-userinfo reject applies to a target", (await codeForLink("<http://[::1]:80@acme.example/cert>;rel=\"alternate\"")) === "acme/bad-link");
+}
+
 async function main() {
   await setup();
   await testHappyFlow();
+  await testNewAuthz();
+  await testRenewalWindow();
+  await testAlternateChains();
   await testRemainingVerbs();
   await testRenewalInfo();
   await testOversized();

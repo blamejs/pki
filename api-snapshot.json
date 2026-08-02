@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.3.28",
+  "packageVersion": "0.3.29",
   "surface": {
     "C": {
       "kind": "object",
@@ -716,6 +716,10 @@
           "arity": 1
         },
         "newAccount": {
+          "kind": "function",
+          "arity": 1
+        },
+        "newAuthz": {
           "kind": "function",
           "arity": 1
         },
@@ -3171,6 +3175,7 @@
     "pki.acme.newAccount": "0.1.25",
     "pki.acme.externalAccountBinding": "0.1.25",
     "pki.acme.newOrder": "0.1.25",
+    "pki.acme.newAuthz": "0.3.29",
     "pki.acme.finalize": "0.1.25",
     "pki.acme.challengeResponse": "0.1.25",
     "pki.acme.deactivate": "0.1.25",
