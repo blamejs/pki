@@ -1077,6 +1077,10 @@ async function testAlternateChains() {
   var s53 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<//[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
   var r53 = await (await withAccount(s53)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
   check("#16 AL-53 a scheme-relative IPv6-authority alternate resolves", r53.certificates[r53.certificates.length - 1].equals(rootBDer));
+  // AL-54 a reference with an EMPTY authority ("////acme.example/..." or "///x") fails closed: WHATWG would repair
+  // it by promoting a path segment to the host (here back to the cert's own origin), so a malformed raw reference
+  // must not be accepted just because its repaired form happens to pass the same-origin gate.
+  check("#16 AL-54 an empty-authority (////) target fails closed", (await codeForLink("<////acme.example/cert/alt>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
 async function main() {
