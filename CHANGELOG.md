@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.30 — 2026-08-03
+## v0.3.31 — 2026-08-03
 
 pki.schema.c509 encodes and decodes the compact per-extension value forms -- a C509 certificate's keyUsage, basicConstraints, extended key usage, key identifiers, and other scalar extensions now ride in their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation, not only this decoder.
 
