@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.30 — 2026-08-03
+
+pki.schema.c509 encodes and decodes the compact per-extension value forms -- a C509 certificate's keyUsage, basicConstraints, extended key usage, key identifiers, and other scalar extensions now ride in their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation, not only this decoder.
+
+### Added
+
+- pki.schema.c509 encodes and decodes the compact per-extension value forms defined by draft-ietf-cose-cbor-encoded-cert-20 sec. 3.3 for the common scalar extensions: subjectKeyIdentifier (the bare key id), keyUsage (a network-byte-order integer), basicConstraints (an integer -- -2 for cA=false, -1 for cA=true with no path length, N for the path length), authorityKeyIdentifier (the bare key id, keyId-only form), extendedKeyUsage (an array of registry integers or unwrapped OIDs, the array omitted for a single purpose), inhibitAnyPolicy (an integer), OCSP No Check (CBOR null), and TLS Feature (an array of integers). Each form inverts to the DER extnValue byte-for-byte in both directions, so a C509 certificate carrying these extensions is the specific compact shape a conformant C509 implementation expects (draft-20 sec. 3.7 requires the specific form where one is defined) rather than an opaque DER byte string. The encoder is guarded: it emits the compact form only when it decodes back to the exact DER value, so a non-canonical or unrepresentable extension value falls back to the unwrapped-OID byte-string form instead of encoding lossily; a malformed compact value fails closed with a typed C509Error. The extended-key-usage integer shorthands cover the full draft-20 sec. 8.12 registry -- the RFC 5280 purposes (serverAuth, clientAuth, codeSigning, emailProtection, timeStamping, ocspSigning, anyExtendedKeyUsage) plus the SSH (RFC 6187), Kerberos PKINIT (RFC 4556), CMC (RFC 6402), and Wi-SUN purposes; any purpose outside the registry encodes as an unwrapped OID.
+
+### Changed
+
+- pki.schema.c509's RDN-attribute (sec. 8.6) and extension (sec. 8.8) integer registries now match draft-ietf-cose-cbor-encoded-cert-20: authorityKeyIdentifier is extension integer 7, extendedKeyUsage 8, inhibitAnyPolicy 30, OCSP No Check 36, and TLS Feature 38; and the RDN attributes localityName, stateOrProvinceName, and streetAddress are integers 5, 6, and 7. A certificate carrying any of these attributes or extensions now encodes to -- and decodes from -- the draft-20 integers and compact value shapes, so it interoperates with a conformant C509 implementation; re-encode any C509 produced by an earlier release, whose integers and per-extension value shapes differ.
+
 ## v0.3.29 — 2026-08-02
 
 The pki.acme client rounds out its RFC 8555 / RFC 9773 surface -- pre-authorize an identifier with client.newAuthz, choose among alternate issuance chains in client.downloadCertificate, and schedule renewal from the CA's ARI window with client.renewalWindow.
