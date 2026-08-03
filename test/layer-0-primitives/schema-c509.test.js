@@ -107,7 +107,8 @@ async function run() {
   check("42. an attribute value that is not a SpecialText -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "8201f5" })); }) === "c509/bad-name");
   check("43. an extensions field that is neither an array nor a keyUsage int -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "6141" })); }) === "c509/bad-extensions");
   // array-form extensions (int extensionID and ~oid extensionID) round-trip to the same keyUsage DER.
-  check("44. an array-form int-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "82024403020780" })).reconstructedDer.equals(V.A1.der));
+  // The int-id form carries the compact KeyUsage value (uint 1 = digitalSignature, draft-20 sec. 3.3).
+  check("44. an array-form int-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "820201" })).reconstructedDer.equals(V.A1.der));
   check("45. an array-form ~oid-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "8243551d0f4403020780" })).reconstructedDer.equals(V.A1.der));
   // a subjectPublicKey algorithm outside the reconstruction covered set (Ed25519 via ~oid) fails closed.
   check("46. an unsupported subjectPublicKey algorithm (type-3) -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "432b6570" })); }) === "c509/non-invertible");
@@ -119,8 +120,9 @@ async function run() {
   // a critical ~oid extension ([ bytes ] wrap) extracts the inner byte string as the value.
   var critOid = pki.schema.c509.parse(V.mk({ 9: "8243551d0f814403020780" }));
   check("49. a critical ~oid extension ([bytes] wrap) decodes critical with the inner value", critOid.extensions[0].critical === true && critOid.extensions[0].value.toString("hex") === "03020780");
-  // an array int extension whose value is not a byte string cannot invert -> c509/non-invertible.
-  check("50. an extension with a non-reconstructable value -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820418ff" })); }) === "c509/non-invertible");
+  // a registered extension WITHOUT a compact value codec (subjectAltName awaits the general-name codec)
+  // fails closed at decode when its int-form value is not a byte string (the compact form is unsupported).
+  check("50. a registered-int extension with an unsupported compact value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820318ff" })); }) === "c509/bad-extensions");
   // a countryName attribute reconstructs as a PrintableString.
   var country = pki.schema.c509.parse(V.mk({ 3: "8204625553" }));   // [4 (countryName), "US"]
   check("51. a countryName attribute reconstructs as PrintableString", pki.schema.x509.parse(country.reconstructedDer).issuer.dn === "C=US");
@@ -341,6 +343,149 @@ async function run() {
     var cb = V.mk(tc[1]);
     check("92." + i + " re-emit " + tc[0] + " byte-exact", pki.schema.c509.encode(pki.schema.c509.parse(cb)).equals(cb));
   });
+
+  // ==== draft-20 alignment + compact per-extension value inversions (sec. 3.3 / 8.6 / 8.8) ====
+  var b = pki.asn1.build, O = pki.oid.byName, CB = pki.cbor;
+  var KID = Buffer.from("00112233445566778899aabbccddeeff00112233", "hex");
+  async function certWithExts(extsArray) {
+    var sk = signing.makeSigner("ec-p256");
+    return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }));
+  }
+  // The [extID, value] pair for an int extID of magnitude absId in an encoded C509's extensions node.
+  function extPair(enc, absId) {
+    var kids = CB.decode(enc).children[9].children || [];
+    for (var i = 0; i + 1 < kids.length; i += 2) { var id = kids[i]; if ((id.majorType === 0 || id.majorType === 1) && Math.abs(Number(CB.read.int(id))) === absId) return { id: id, val: kids[i + 1] }; }
+    return null;
+  }
+  function extOidIds(enc) {   // the ~oid (byte-string) extension identifiers present
+    var kids = CB.decode(enc).children[9].children || [], out = [];
+    for (var i = 0; i + 1 < kids.length; i += 2) if (kids[i].majorType === 2) out.push(kids[i].content.toString("hex"));
+    return out;
+  }
+
+  // all eight compact extensions on one cert: encode emits each specific value form + double-inversion.
+  var allExts = [
+    b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true), b.integer(3n)]))]),
+    b.sequence([b.oid(O("keyUsage")), b.boolean(true), b.octetString(b.namedBitString([0, 5]))]),
+    b.sequence([b.oid(O("subjectKeyIdentifier")), b.octetString(b.octetString(KID))]),
+    b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID)]))]),
+    b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("serverAuth")), b.oid(O("clientAuth"))]))]),
+    b.sequence([b.oid(O("inhibitAnyPolicy")), b.octetString(b.integer(2n))]),
+    b.sequence([b.oid(O("ocspNoCheck")), b.octetString(b.nullValue())]),
+    b.sequence([b.oid(O("tlsFeature")), b.octetString(b.sequence([b.integer(5n), b.integer(17n)]))]),
+  ];
+  var allDer = await certWithExts(allExts);
+  var allEnc = pki.schema.c509.encode(allDer, { issuerCurve: "P-256" });
+  check("100. all-8-ext cert double-inverts byte-exact", pki.schema.c509.parse(allEnc).reconstructedDer.equals(allDer));
+  check("101. basicConstraints -> compact int (pathLen 3); keyUsage -> compact int", extPair(allEnc, 4).val.majorType <= 1 && Number(CB.read.int(extPair(allEnc, 4).val)) === 3 && extPair(allEnc, 2).val.majorType <= 1);
+  check("102. subjectKeyIdentifier -> the bare key id byte string (not the DER OCTET STRING)", extPair(allEnc, 1).val.majorType === 2 && extPair(allEnc, 1).val.content.equals(KID));
+  check("103. authorityKeyIdentifier is at draft-20 extID 7 (keyId bytes), never legacy 10", extPair(allEnc, 7) != null && extPair(allEnc, 7).val.content.equals(KID) && extPair(allEnc, 10) == null);
+  check("104. extendedKeyUsage is at extID 8 with a CBOR array value (not ~oid)", extPair(allEnc, 8) != null && extPair(allEnc, 8).val.majorType === 4);
+  check("105. inhibitAnyPolicy -> compact uint; ocspNoCheck -> CBOR null; tlsFeature -> array", extPair(allEnc, 30).val.majorType === 0 && extPair(allEnc, 36).val.majorType === 7 && extPair(allEnc, 38).val.majorType === 4);
+  check("106. decode surfaces each extnValue as its DER bytes (basicConstraints SEQUENCE)", (function () { var e = pki.schema.c509.parse(allEnc).extensions.filter(function (x) { return x.name === "basicConstraints"; })[0]; return Buffer.isBuffer(e.value) && e.value[0] === 0x30 && pki.asn1.read.integer(pki.asn1.decode(e.value).children[1]) === 3n; })());
+  check("107. the critical basicConstraints/keyUsage carry the NEGATIVE extID (criticality sign)", Number(CB.read.int(extPair(allEnc, 4).id)) === -4 && Number(CB.read.int(extPair(allEnc, 2).id)) === -2);
+
+  // basicConstraints -2 / -1 / pathLen mapping.
+  var bcFalse = await certWithExts([b.sequence([b.oid(O("basicConstraints")), b.octetString(b.sequence([]))])]);
+  var bcCA = await certWithExts([b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true)]))])]);
+  check("108. basicConstraints cA=false -> int -2 (non-critical)", Number(CB.read.int(extPair(pki.schema.c509.encode(bcFalse, { issuerCurve: "P-256" }), 4).val)) === -2);
+  check("109. basicConstraints cA=true no pathLen -> int -1", Number(CB.read.int(extPair(pki.schema.c509.encode(bcCA, { issuerCurve: "P-256" }), 4).val)) === -1);
+
+  // non-canonical basicConstraints (explicit cA=false) is NOT representable as the compact int -> ~oid fallback,
+  // still double-inverts. The round-trip guard rejects the lossy -2 that would drop the explicit BOOLEAN.
+  // (x509.sign refuses to emit the non-canonical form, so patch a critical cA=true cert's BOOLEAN TRUE -> FALSE.)
+  var bcCaCritDer = await certWithExts([b.sequence([b.oid(O("basicConstraints")), b.boolean(true), b.octetString(b.sequence([b.boolean(true)]))])]);
+  var bcNonCanon = Buffer.from(bcCaCritDer);
+  bcNonCanon[bcNonCanon.indexOf(Buffer.from("30030101ff", "hex")) + 4] = 0x00;   // SEQUENCE{BOOLEAN TRUE} -> explicit FALSE
+  var bcNonCanonEnc = pki.schema.c509.encode(bcNonCanon, { issuerCurve: "P-256" });
+  check("110. a non-canonical basicConstraints falls back to ~oid + bytes and double-inverts", extPair(bcNonCanonEnc, 4) == null && extOidIds(bcNonCanonEnc).indexOf("551d13") >= 0 && pki.schema.c509.parse(bcNonCanonEnc).reconstructedDer.equals(bcNonCanon));
+
+  // extKeyUsage: a registered purpose -> int, an unregistered OID -> ~oid; a single purpose omits the array.
+  var ekuMixed = await certWithExts([b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("serverAuth")), b.oid("1.3.6.1.4.1.99999.7")]))])]);
+  var ekuMixedEnc = pki.schema.c509.encode(ekuMixed, { issuerCurve: "P-256" });
+  var ekuArr = CB.decode(extPair(ekuMixedEnc, 8).val.bytes).children;
+  check("111. extKeyUsage encodes serverAuth as int 1 and an unregistered purpose as ~oid", Number(CB.read.int(ekuArr[0])) === 1 && ekuArr[1].majorType === 2 && pki.schema.c509.parse(ekuMixedEnc).reconstructedDer.equals(ekuMixed));
+  var ekuSingle = await certWithExts([b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("serverAuth"))]))])]);
+  check("112. a single-purpose extKeyUsage omits the array (bare int)", (function () { var v = extPair(pki.schema.c509.encode(ekuSingle, { issuerCurve: "P-256" }), 8).val; return v.majorType <= 1 && Number(CB.read.int(v)) === 1; })());
+
+  // the AKI 3-tuple form (keyIdentifier + issuer + serial) is not yet compact-encoded -> ~oid fallback.
+  var akiFull = await certWithExts([b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID), b.contextConstructed(1, b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.printable("CA")])])]))), b.contextPrimitive(2, Buffer.from([0x2a]))]))])]);
+  var akiFullEnc = pki.schema.c509.encode(akiFull, { issuerCurve: "P-256" });
+  check("113. the AKI 3-tuple form falls back to ~oid + bytes and double-inverts", extPair(akiFullEnc, 7) == null && extOidIds(akiFullEnc).indexOf("551d23") >= 0 && pki.schema.c509.parse(akiFullEnc).reconstructedDer.equals(akiFull));
+
+  // fail-closed decode: a compact value of the wrong CBOR type for the named extension -> c509/bad-extensions.
+  check("114. basicConstraints with a text value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82046178" })); }) === "c509/bad-extensions");
+  check("115. keyUsage with a byte-string value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82024103" })); }) === "c509/bad-extensions");
+  check("116. ocspNoCheck with a non-null value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82182405" })); }) === "c509/bad-extensions");
+  check("117. an extKeyUsage int with no registry row -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820881190100" })); }) === "c509/bad-extensions");
+
+  // draft-20 sec. 8.6 RDN attribute numbering: localityName=5, stateOrProvinceName=6, streetAddress=7.
+  var nameDer = await (async function () { var sk = signing.makeSigner("ec-p256"); return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "n" }, { localityName: "NYC" }, { stateOrProvinceName: "NY" }, { streetAddress: "1 Main St" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"] } }, { key: sk.key })); })();
+  var nameEnc = pki.schema.c509.encode(nameDer, { issuerCurve: "P-256" });
+  check("118. locality/state/street RDN attributes use the draft-20 ints 5/6/7 + double-invert", (function () {
+    var subjArr = CB.decode(nameEnc).children[6].children, ints = [];
+    for (var i = 0; i < subjArr.length; i += 2) ints.push(Number(CB.read.int(subjArr[i])));
+    return ints.indexOf(5) >= 0 && ints.indexOf(6) >= 0 && ints.indexOf(7) >= 0 && pki.schema.c509.parse(nameEnc).reconstructedDer.equals(nameDer);
+  })());
+
+  // a malformed extnValue (a basicConstraints SEQUENCE whose length is truncated) is not compact-encodable:
+  // the encode-side decode faults and the extension falls back to the ~oid byte-string form, double-inverting.
+  var bcMalformed = Buffer.from(bcCaCritDer);
+  bcMalformed[bcMalformed.indexOf(Buffer.from("30030101ff", "hex")) + 1] = 0x05;   // SEQUENCE length 3 -> 5 (truncated)
+  var bcMalformedEnc = pki.schema.c509.encode(bcMalformed, { issuerCurve: "P-256" });
+  check("119. a malformed compact-ext DER value falls back to ~oid + bytes and double-inverts", extPair(bcMalformedEnc, 4) == null && extOidIds(bcMalformedEnc).indexOf("551d13") >= 0 && pki.schema.c509.parse(bcMalformedEnc).reconstructedDer.equals(bcMalformed));
+
+  // more fail-closed decode vectors: a compact value of the wrong CBOR type for the byte-string / array exts.
+  check("120. subjectKeyIdentifier with a non-byte-string value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820100" })); }) === "c509/bad-extensions");
+  check("121. authorityKeyIdentifier with a non-byte-string value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820700" })); }) === "c509/bad-extensions");
+  check("122. tlsFeature with a non-array value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82182600" })); }) === "c509/bad-extensions");
+  check("123. an extKeyUsage KeyPurposeId that is neither int nor ~oid -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8208816161" })); }) === "c509/bad-extensions");
+  // a valid compact basicConstraints pathLen decodes to the DER SEQUENCE { cA TRUE, pathLen }.
+  check("124. a compact basicConstraints pathLen decodes to SEQUENCE { cA TRUE, pathLen }", (function () { var e = pki.schema.c509.parse(V.mk({ 9: "820405" })).extensions[0]; return e.name === "basicConstraints" && pki.asn1.read.boolean(pki.asn1.decode(e.value).children[0]) === true && pki.asn1.read.integer(pki.asn1.decode(e.value).children[1]) === 5n; })());
+  // a compact basicConstraints cA-only (-1) and cA=false (-2) decode to the two shorter DER SEQUENCE forms.
+  check("125. compact basicConstraints -1 -> cA-only, -2 -> empty SEQUENCE", (function () { var ca = pki.schema.c509.parse(V.mk({ 9: "820420" })).extensions[0], f = pki.schema.c509.parse(V.mk({ 9: "820421" })).extensions[0]; return ca.value.equals(Buffer.from("30030101ff", "hex")) && f.value.equals(Buffer.from("3000", "hex")); })());
+  check("126. a compact basicConstraints int below -2 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820422" })); }) === "c509/bad-extensions");
+  // a single (non-array) extKeyUsage KeyPurposeId decodes to a one-element SEQUENCE OF OID; an empty array fails closed.
+  check("127. a bare (non-array) extKeyUsage int decodes to SEQUENCE { serverAuth }", (function () { var e = pki.schema.c509.parse(V.mk({ 9: "820801" })).extensions[0]; return e.name === "extKeyUsage" && pki.asn1.read.oid(pki.asn1.decode(e.value).children[0]) === pki.oid.byName("serverAuth"); })());
+  check("128. an empty extKeyUsage array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820880" })); }) === "c509/bad-extensions");
+  // encode-side: a basicConstraints whose extnValue is not a SEQUENCE (patched to an INTEGER) is not
+  // compact-encodable and falls back to ~oid + bytes, double-inverting.
+  var bcNotSeq = Buffer.from(bcCaCritDer);
+  bcNotSeq[bcNotSeq.indexOf(Buffer.from("30030101ff", "hex"))] = 0x02;   // SEQUENCE tag -> INTEGER
+  var bcNotSeqEnc = pki.schema.c509.encode(bcNotSeq, { issuerCurve: "P-256" });
+  check("129. a non-SEQUENCE basicConstraints value falls back to ~oid + bytes and double-inverts", extPair(bcNotSeqEnc, 4) == null && extOidIds(bcNotSeqEnc).indexOf("551d13") >= 0 && pki.schema.c509.parse(bcNotSeqEnc).reconstructedDer.equals(bcNotSeq));
+  // the same non-SEQUENCE fallback for the other structural compact extensions (AKI, extKeyUsage, tlsFeature):
+  // an extnValue whose SEQUENCE tag is patched to INTEGER is not compact-encodable -> ~oid + bytes.
+  var structCerts = [
+    ["authorityKeyIdentifier", 7, b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID)]))])],
+    ["extKeyUsage", 8, b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("serverAuth"))]))])],
+    ["tlsFeature", 38, b.sequence([b.oid(O("tlsFeature")), b.octetString(b.sequence([b.integer(5n)]))])],
+  ];
+  for (var si = 0; si < structCerts.length; si++) {
+    var scDer = await certWithExts([structCerts[si][2]]);
+    var scEnt = pki.schema.x509.parse(scDer).extensions[0];
+    var scPatched = Buffer.from(scDer);
+    scPatched[scPatched.indexOf(scEnt.value)] = 0x02;   // the extnValue SEQUENCE tag -> INTEGER (non-compact)
+    var scEnc = pki.schema.c509.encode(scPatched, { issuerCurve: "P-256" });
+    check("130." + si + " a non-SEQUENCE " + structCerts[si][0] + " value falls back to ~oid and double-inverts", extPair(scEnc, structCerts[si][1]) == null && pki.schema.c509.parse(scEnc).reconstructedDer.equals(scPatched));
+  }
+
+  // a conformant single-dNSName subjectAltName is a BARE text string (draft-20 sec. 3.3): [3, "example.com"].
+  // We do not yet decode the general-name value forms, so a non-byte-string value under a registered-int
+  // extension without a compact codec MUST fail closed rather than copy the text bytes into a malformed
+  // extnValue (a text node's raw UTF-8 is not a DER GeneralNames).
+  check("131. a bare-text subjectAltName (single dNSName) -> c509/bad-extensions, not malformed DER", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82036b6578616d706c652e636f6d" })); }) === "c509/bad-extensions");
+  // a compact extKeyUsage array MUST hold 2+ purposes; a 1-element array is a non-canonical duplicate of the
+  // bare-int form and is rejected (draft-20 sec. 3.3 ExtKeyUsageSyntax = [ 2* KeyPurposeId ] / KeyPurposeId).
+  check("132. a 1-element extKeyUsage array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82088101" })); }) === "c509/bad-extensions");
+  // a registered-int extension without a compact codec (subjectAltName) DOES accept a byte-string value as the
+  // raw DER extnValue (the lenient non-native form) and reconstructs it verbatim -- [3, bytes(30078205612e636f6d)].
+  check("133. a byte-string subjectAltName value decodes as the raw DER extnValue", (function () { var e = pki.schema.c509.parse(V.mk({ 9: "82034930078205612e636f6d" })).extensions[0]; return e.name === "subjectAltName" && e.value.equals(Buffer.from("30078205612e636f6d", "hex")); })());
+  // a malformed ~oid extKeyUsage KeyPurposeId fails closed in the module's OWN domain (c509/bad-extensions),
+  // never leaking an oid/* code onto the parse surface -- a non-minimal, an empty, and a truncated OID content.
+  check("134. a non-minimal ~oid extKeyUsage purpose -> c509/bad-extensions (not oid/*)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8208428001" })); }) === "c509/bad-extensions");
+  check("135. an empty ~oid extKeyUsage purpose -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820840" })); }) === "c509/bad-extensions");
+  check("136. a truncated ~oid extKeyUsage purpose (in a 2-array) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82088201428001" })); }) === "c509/bad-extensions");
 
   console.log("CHECKS " + helpers.getChecks());
 }

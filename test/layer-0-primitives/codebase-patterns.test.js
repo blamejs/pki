@@ -2359,7 +2359,10 @@ function testOcspResponderAuthReinlined() {
   // the OID registry (oid.js) and the display-name table (constants.js) DECLARE the
   // names without performing authorization and are the shape's declaration homes.
   var HOME = "lib/ocsp-verify.js";
-  var DECL_HOMES = { "lib/oid.js": 1, "lib/constants.js": 1 };
+  // Declaration homes NAME the two OIDs without performing authorization: the OID registry (oid.js), the
+  // display-name table (constants.js), and the C509 int->name alias registries (schema-c509.js -- the
+  // sec. 8.12 EKU table names ocspSigning, the sec. 8.8 extension table names ocspNoCheck).
+  var DECL_HOMES = { "lib/oid.js": 1, "lib/constants.js": 1, "lib/schema-c509.js": 1 };
   var SIGNING = /\bocspSigning\b/, NOCHECK = /\bocspNoCheck\b/;
   function stripComments(s) {
     return s.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/(^|[^:])\/\/[^\n]*/g, "$1");
