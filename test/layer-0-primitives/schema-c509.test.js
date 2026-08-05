@@ -736,6 +736,10 @@ async function run() {
   var crlBit0Enc = pki.schema.c509.encode(crlBit0, { issuerCurve: "P-256" });
   check("196. a DER CRLDP ReasonFlags with the reserved bit 0 set falls back to ~oid + double-inverts", extPair(crlBit0Enc, 5) == null && pki.schema.c509.parse(crlBit0Enc).reconstructedDer.equals(crlBit0));
 
+  // 25. RFC 9598 constrains SmtpUTF8Mailbox to SIZE (1..MAX): a native C509 SAN with an empty id-on-SmtpUTF8Mailbox
+  //     value is not a valid otherName and fails closed rather than reconstructing an empty UTF8String.
+  check("197. an id-on-SmtpUTF8Mailbox otherName with an empty text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-2, CBb.textString("")))); }) === "c509/bad-extensions");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
