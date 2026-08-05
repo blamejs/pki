@@ -725,6 +725,12 @@
     "reviewedAt": "0.3.25",
     "reviewBy": "0.4.0"
   },
+  "pki.cmp.verify": {
+    "decision": "keep-experimental",
+    "reason": "RFC 9810/9483 incoming CMP PKIMessage verification (protection MAC/signature, the lightweight-profile response checks) is the most recently landed piece of the CMP surface and its result/opts shapes are still absorbing refinements as the stateful transaction orchestrator and the remaining lightweight-profile rules land; graduating would freeze the verification result surface prematurely. Graduate alongside pki.cmp.build / pki.cmp.transfer once the CMP verification + transaction surface is complete.",
+    "reviewedAt": "0.3.32",
+    "reviewBy": "0.4.0"
+  },
   "pki.crmf.buildCertTemplate": {
     "decision": "keep-experimental",
     "reason": "The thin CertTemplate encoder export rides the same still-settling RFC 4211 CertTemplate field set as pki.crmf.build; graduate alongside pki.crmf.build once the CMP enrollment surface is complete and the builder opts are frozen.",

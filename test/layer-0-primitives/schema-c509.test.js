@@ -408,10 +408,11 @@ async function run() {
   var ekuSingle = await certWithExts([b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("serverAuth"))]))])]);
   check("112. a single-purpose extKeyUsage omits the array (bare int)", (function () { var v = extPair(pki.schema.c509.encode(ekuSingle, { issuerCurve: "P-256" }), 8).val; return v.majorType <= 1 && Number(CB.read.int(v)) === 1; })());
 
-  // the AKI 3-tuple form (keyIdentifier + issuer + serial) is not yet compact-encoded -> ~oid fallback.
+  // the AKI 3-tuple form (keyIdentifier + authorityCertIssuer + serial) compacts to extID 7 [ keyId,
+  // GeneralNames, serial ] and double-inverts byte-exact.
   var akiFull = await certWithExts([b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID), b.contextConstructed(1, b.contextConstructed(4, b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.printable("CA")])])]))), b.contextPrimitive(2, Buffer.from([0x2a]))]))])]);
   var akiFullEnc = pki.schema.c509.encode(akiFull, { issuerCurve: "P-256" });
-  check("113. the AKI 3-tuple form falls back to ~oid + bytes and double-inverts", extPair(akiFullEnc, 7) == null && extOidIds(akiFullEnc).indexOf("551d23") >= 0 && pki.schema.c509.parse(akiFullEnc).reconstructedDer.equals(akiFull));
+  check("113. the AKI 3-tuple compacts to extID 7 [ keyId, issuer, serial ] + double-inverts", (function () { var p = extPair(akiFullEnc, 7); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 3 && a[0].content.equals(KID) && Number(CB.read.int(a[1].children[0])) === 4 && a[2].content.equals(Buffer.from([0x2a])) && pki.schema.c509.parse(akiFullEnc).reconstructedDer.equals(akiFull); })());
 
   // fail-closed decode: a compact value of the wrong CBOR type for the named extension -> c509/bad-extensions.
   check("114. basicConstraints with a text value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82046178" })); }) === "c509/bad-extensions");
@@ -470,17 +471,15 @@ async function run() {
     check("130." + si + " a non-SEQUENCE " + structCerts[si][0] + " value falls back to ~oid and double-inverts", extPair(scEnc, structCerts[si][1]) == null && pki.schema.c509.parse(scEnc).reconstructedDer.equals(scPatched));
   }
 
-  // a conformant single-dNSName subjectAltName is a BARE text string (draft-20 sec. 3.3): [3, "example.com"].
-  // We do not yet decode the general-name value forms, so a non-byte-string value under a registered-int
-  // extension without a compact codec MUST fail closed rather than copy the text bytes into a malformed
-  // extnValue (a text node's raw UTF-8 is not a DER GeneralNames).
-  check("131. a bare-text subjectAltName (single dNSName) -> c509/bad-extensions, not malformed DER", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82036b6578616d706c652e636f6d" })); }) === "c509/bad-extensions");
+  // a conformant single-dNSName subjectAltName is a BARE text string (draft-20 sec. 3.3): [3, "example.com"];
+  // it decodes to the DER SEQUENCE { [2] IA5String dNSName } (the array and the int are omitted).
+  check("131. a bare-text subjectAltName (single dNSName) decodes to SEQUENCE { [2] dNSName }", (function () { var e = pki.schema.c509.parse(V.mk({ 9: "82036b6578616d706c652e636f6d" })).extensions[0]; return e.name === "subjectAltName" && e.value.equals(Buffer.from("300d820b6578616d706c652e636f6d", "hex")); })());
   // a compact extKeyUsage array MUST hold 2+ purposes; a 1-element array is a non-canonical duplicate of the
   // bare-int form and is rejected (draft-20 sec. 3.3 ExtKeyUsageSyntax = [ 2* KeyPurposeId ] / KeyPurposeId).
   check("132. a 1-element extKeyUsage array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82088101" })); }) === "c509/bad-extensions");
-  // a registered-int extension without a compact codec (subjectAltName) DOES accept a byte-string value as the
-  // raw DER extnValue (the lenient non-native form) and reconstructs it verbatim -- [3, bytes(30078205612e636f6d)].
-  check("133. a byte-string subjectAltName value decodes as the raw DER extnValue", (function () { var e = pki.schema.c509.parse(V.mk({ 9: "82034930078205612e636f6d" })).extensions[0]; return e.name === "subjectAltName" && e.value.equals(Buffer.from("30078205612e636f6d", "hex")); })());
+  // a byte-string value under the subjectAltName int is non-conformant (sec. 3.3 defines the GeneralNames /
+  // text value form; a native C509 never carries the raw DER extnValue under int 3) and fails closed.
+  check("133. a byte-string subjectAltName value -> c509/bad-extensions (non-conformant; sec. 3.3)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82034930078205612e636f6d" })); }) === "c509/bad-extensions");
   // a malformed ~oid extKeyUsage KeyPurposeId fails closed in the module's OWN domain (c509/bad-extensions),
   // never leaking an oid/* code onto the parse surface -- a non-minimal, an empty, and a truncated OID content.
   check("134. a non-minimal ~oid extKeyUsage purpose -> c509/bad-extensions (not oid/*)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8208428001" })); }) === "c509/bad-extensions");
@@ -493,6 +492,253 @@ async function run() {
   check("137. SSH client/server extKeyUsage encode as integers 12/13 + round-trip", (function () { var a = CB.decode(extPair(sshEnc, 8).val.bytes).children; return Number(CB.read.int(a[0])) === 12 && Number(CB.read.int(a[1])) === 13 && pki.schema.c509.parse(sshEnc).reconstructedDer.equals(sshDer); })());
   var kdcDer = await certWithExts([b.sequence([b.oid(O("extKeyUsage")), b.octetString(b.sequence([b.oid(O("pkinitKdc"))]))])]);
   check("138. a single Kerberos-PKINIT-KDC extKeyUsage encodes as the bare integer 11 + round-trips", (function () { var v = extPair(pki.schema.c509.encode(kdcDer, { issuerCurve: "P-256" }), 8).val; return v.majorType <= 1 && Number(CB.read.int(v)) === 11 && pki.schema.c509.parse(pki.schema.c509.encode(kdcDer, { issuerCurve: "P-256" })).reconstructedDer.equals(kdcDer); })());
+
+  // ==== the shared GeneralNames value codec (draft-20 sec. 3.3 / sec. 8.13) ====
+  function dirName(cn) { return b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.printable(cn)])])]); }
+  function sanExt(members) { return b.sequence([b.oid(O("subjectAltName")), b.octetString(b.sequence(members))]); }
+  function gnInts(val) { var a = CB.decode(val.bytes).children, out = []; for (var i = 0; i < a.length; i += 2) out.push(Number(CB.read.int(a[i]))); return out; }
+
+  // 1. a SAN of rfc822Name + dNSName + URI + iPAddress(4) + directoryName -> a flat [1,2,6,7,4] array + byte-exact.
+  var sanMixed = await certWithExts([sanExt([
+    b.contextPrimitive(1, Buffer.from("a@b.com", "latin1")), b.contextPrimitive(2, Buffer.from("ex.com", "latin1")),
+    b.contextPrimitive(6, Buffer.from("https://x.io", "latin1")), b.contextPrimitive(7, Buffer.from([192, 0, 2, 1])),
+    b.explicit(4, dirName("CA")),
+  ])]);
+  var sanMixedEnc = pki.schema.c509.encode(sanMixed, { issuerCurve: "P-256" });
+  check("139. a mixed SAN encodes to a flat [1,2,6,7,4] GeneralNames array + double-inverts", extPair(sanMixedEnc, 3) != null && extPair(sanMixedEnc, 3).val.majorType === 4 && gnInts(extPair(sanMixedEnc, 3).val).join(",") === "1,2,6,7,4" && pki.schema.c509.parse(sanMixedEnc).reconstructedDer.equals(sanMixed));
+
+  // 2. exactly one dNSName -> the bare-text shortcut; a single URI keeps the [6, text] array (dNSName-only predicate).
+  var sanDns = await certWithExts([sanExt([b.contextPrimitive(2, Buffer.from("only.example", "latin1"))])]);
+  var sanDnsEnc = pki.schema.c509.encode(sanDns, { issuerCurve: "P-256" });
+  check("140. a single-dNSName SAN is a bare CBOR text (array + int omitted) + double-inverts", extPair(sanDnsEnc, 3).val.majorType === 3 && CB.read.textString(extPair(sanDnsEnc, 3).val) === "only.example" && pki.schema.c509.parse(sanDnsEnc).reconstructedDer.equals(sanDns));
+  var sanUri = await certWithExts([sanExt([b.contextPrimitive(6, Buffer.from("https://only.uri", "latin1"))])]);
+  var sanUriEnc = pki.schema.c509.encode(sanUri, { issuerCurve: "P-256" });
+  check("141. a single-URI SAN keeps the [6, text] array (the text shortcut is dNSName-only)", extPair(sanUriEnc, 3).val.majorType === 4 && gnInts(extPair(sanUriEnc, 3).val).join(",") === "6" && pki.schema.c509.parse(sanUriEnc).reconstructedDer.equals(sanUri));
+
+  // 3. a generic otherName (int 0) emits the [0, [~oid, bytes]] compact form (PROVE it is not fallen back).
+  var sanOther = await certWithExts([sanExt([b.contextConstructed(0, Buffer.concat([b.oid("1.2.3.4"), b.explicit(0, b.utf8("hi"))]))])]);
+  var sanOtherEnc = pki.schema.c509.encode(sanOther, { issuerCurve: "P-256" });
+  check("142. a generic otherName SAN emits [0, [~oid, bytes]] (not fallen back) + double-inverts", extPair(sanOtherEnc, 3) != null && gnInts(extPair(sanOtherEnc, 3).val).join(",") === "0" && pki.schema.c509.parse(sanOtherEnc).reconstructedDer.equals(sanOther));
+
+  // 4. the id-on specials: hardwareModuleName (-1), SmtpUTF8Mailbox (-2), MACAddress (-3, both 6 + 8 octet).
+  var sanIdOn = await certWithExts([sanExt([
+    b.contextConstructed(0, Buffer.concat([b.oid(O("hardwareModuleName")), b.explicit(0, b.sequence([b.oid("1.3.6.1.4.1.1"), b.octetString(Buffer.from([9, 9]))]))])),
+    b.contextConstructed(0, Buffer.concat([b.oid(O("smtpUtf8Mailbox")), b.explicit(0, b.utf8("u@ex.com"))])),
+    b.contextConstructed(0, Buffer.concat([b.oid(O("macAddress")), b.explicit(0, b.octetString(Buffer.from([1, 2, 3, 4, 5, 6])))])),
+    b.contextConstructed(0, Buffer.concat([b.oid(O("macAddress")), b.explicit(0, b.octetString(Buffer.from([1, 2, 3, 4, 5, 6, 7, 8])))])),
+  ])]);
+  var sanIdOnEnc = pki.schema.c509.encode(sanIdOn, { issuerCurve: "P-256" });
+  check("143. the id-on otherName specials encode as [-1,-2,-3,-3] + double-invert", gnInts(extPair(sanIdOnEnc, 3).val).join(",") === "-1,-2,-3,-3" && pki.schema.c509.parse(sanIdOnEnc).reconstructedDer.equals(sanIdOn));
+
+  // 5. an x400Address [3] (no sec. 8.13 row) makes the whole SAN fall back to ~oid + bytes (never a partial array).
+  var sanX400 = await certWithExts([sanExt([b.contextConstructed(3, dirName("x"))])]);
+  var sanX400Enc = pki.schema.c509.encode(sanX400, { issuerCurve: "P-256" });
+  check("144. a SAN with an x400Address [3] falls back to ~oid + bytes and double-inverts", extPair(sanX400Enc, 3) == null && extOidIds(sanX400Enc).indexOf("551d11") >= 0 && pki.schema.c509.parse(sanX400Enc).reconstructedDer.equals(sanX400));
+  // decode-side: a C509 SAN carrying GeneralName int 3 (x400) or int 5 (ediPartyName) has no registry row -> fail closed.
+  check("145. a C509 SAN with GeneralName int 3 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8203820340" })); }) === "c509/bad-extensions");
+  check("146. a C509 SAN with GeneralName int 5 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8203820540" })); }) === "c509/bad-extensions");
+  // an odd-length GeneralNames array (a dangling type with no value) fails closed.
+  check("147. an odd-length GeneralNames array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82038102" })); }) === "c509/bad-extensions");
+
+  // 6. issuerAltName rides the same codec under extID 25.
+  var ianCert = await certWithExts([b.sequence([b.oid(O("issuerAltName")), b.octetString(b.sequence([b.contextPrimitive(6, Buffer.from("https://ian.io", "latin1"))]))])]);
+  var ianEnc = pki.schema.c509.encode(ianCert, { issuerCurve: "P-256" });
+  check("148. issuerAltName encodes under extID 25 + double-inverts", extPair(ianEnc, 25) != null && extPair(ianEnc, 25).val.majorType === 4 && pki.schema.c509.parse(ianEnc).reconstructedDer.equals(ianCert));
+
+  // 7. AKI: keyId-only stays the bytes form; the 3-tuple compacts (test 113); an issuer+serial form (no keyId,
+  //    valid per RFC 5280 sec. 4.2.1.1) is not one of the two compact shapes -> ~oid fallback.
+  var akiNoKid = await certWithExts([b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextConstructed(1, b.explicit(4, dirName("CA"))), b.contextPrimitive(2, Buffer.from([0x2a]))]))])]);
+  var akiNoKidEnc = pki.schema.c509.encode(akiNoKid, { issuerCurve: "P-256" });
+  check("149. an AKI issuer + serial (no keyId) is not a compact shape -> ~oid fallback + double-inverts", extPair(akiNoKidEnc, 7) == null && extOidIds(akiNoKidEnc).indexOf("551d23") >= 0 && pki.schema.c509.parse(akiNoKidEnc).reconstructedDer.equals(akiNoKid));
+
+  // 8. nameConstraints (extID 26): permitted dNSName + excluded directoryName.
+  var ncNames = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([
+    b.contextConstructed(0, b.sequence([b.contextPrimitive(2, Buffer.from(".ex.com", "latin1"))])),
+    b.contextConstructed(1, b.sequence([b.explicit(4, dirName("CA"))])),
+  ]))])]);
+  var ncNamesEnc = pki.schema.c509.encode(ncNames, { issuerCurve: "P-256" });
+  check("150. nameConstraints names -> [permitted, excluded] under extID 26 + double-inverts", (function () { var p = extPair(ncNamesEnc, 26); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return a.length === 2 && Number(CB.read.int(a[0].children[0])) === 2 && Number(CB.read.int(a[1].children[0])) === 4 && pki.schema.c509.parse(ncNamesEnc).reconstructedDer.equals(ncNames); })());
+
+  // 9. nameConstraints RFC 9549 iPAddress prefix form: v4 /24 (5-octet CBOR <-> 8-octet DER), v6 /64, non-prefix mask fallback.
+  var ncIp4 = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 255, 255, 0]))]))]))])]);
+  var ncIp4Enc = pki.schema.c509.encode(ncIp4, { issuerCurve: "P-256" });
+  check("151. an NC iPAddress 192.0.2.0/24 encodes the subtree base as C0 00 02 00 18 + double-inverts", (function () { var perm = CB.decode(extPair(ncIp4Enc, 26).val.bytes).children[0].children; return perm[1].content.equals(Buffer.from("c000020018", "hex")) && pki.schema.c509.parse(ncIp4Enc).reconstructedDer.equals(ncIp4); })());
+  var v6mask = Buffer.concat([Buffer.alloc(16), Buffer.from([0])]); for (var v6i = 0; v6i < 16; v6i++) v6mask[v6i] = 0x20;   // an IPv6 addr (0x20..) with a /64 mask
+  var ncIp6base = Buffer.concat([Buffer.alloc(16), Buffer.alloc(16)]); for (var q = 0; q < 16; q++) ncIp6base[q] = 0x20; for (var q2 = 16; q2 < 24; q2++) ncIp6base[q2] = 0xff;
+  var ncIp6 = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, ncIp6base)]))]))])]);
+  var ncIp6Enc = pki.schema.c509.encode(ncIp6, { issuerCurve: "P-256" });
+  check("152. an NC IPv6 /64 subtree base is 17 CBOR octets (last = 64) + double-inverts", (function () { var perm = CB.decode(extPair(ncIp6Enc, 26).val.bytes).children[0].children; return perm[1].content.length === 17 && perm[1].content[16] === 64 && pki.schema.c509.parse(ncIp6Enc).reconstructedDer.equals(ncIp6); })());
+  var ncBadMask = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 0, 255, 0, 255, 0]))]))]))])]);
+  var ncBadMaskEnc = pki.schema.c509.encode(ncBadMask, { issuerCurve: "P-256" });
+  check("153. an NC iPAddress with a non-prefix mask (FF 00 FF 00) falls back to ~oid + double-inverts", extPair(ncBadMaskEnc, 26) == null && extOidIds(ncBadMaskEnc).indexOf("551d1e") >= 0 && pki.schema.c509.parse(ncBadMaskEnc).reconstructedDer.equals(ncBadMask));
+
+  // 10. authorityInfoAccess (extID 9): id-ad-ocsp + id-ad-caIssuers URIs -> [1, uri, 2, uri]; SIA (extID 31) identical;
+  //     an unregistered accessMethod -> ~oid; a non-URI accessLocation -> whole-ext fallback.
+  var aiaCert = await certWithExts([b.sequence([b.oid(O("authorityInfoAccess")), b.octetString(b.sequence([
+    b.sequence([b.oid(O("ocsp")), b.contextPrimitive(6, Buffer.from("http://o.io", "latin1"))]),
+    b.sequence([b.oid(O("caIssuers")), b.contextPrimitive(6, Buffer.from("http://c.io", "latin1"))]),
+  ]))])]);
+  var aiaEnc = pki.schema.c509.encode(aiaCert, { issuerCurve: "P-256" });
+  check("154. AIA (ocsp + caIssuers URIs) -> [1, uri, 2, uri] under extID 9 + double-inverts", (function () { var a = CB.decode(extPair(aiaEnc, 9).val.bytes).children; return Number(CB.read.int(a[0])) === 1 && Number(CB.read.int(a[2])) === 2 && pki.schema.c509.parse(aiaEnc).reconstructedDer.equals(aiaCert); })());
+  var siaCert = await certWithExts([b.sequence([b.oid(O("subjectInfoAccess")), b.octetString(b.sequence([b.sequence([b.oid(O("id-ad-caRepository")), b.contextPrimitive(6, Buffer.from("http://r.io", "latin1"))])]))])]);
+  var siaEnc = pki.schema.c509.encode(siaCert, { issuerCurve: "P-256" });
+  check("155. subjectInfoAccess rides the same codec under extID 31 (caRepository int 5) + double-inverts", (function () { var p = extPair(siaEnc, 31); return p != null && Number(CB.read.int(CB.decode(p.val.bytes).children[0])) === 5 && pki.schema.c509.parse(siaEnc).reconstructedDer.equals(siaCert); })());
+  var aiaOid = await certWithExts([b.sequence([b.oid(O("authorityInfoAccess")), b.octetString(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.7"), b.contextPrimitive(6, Buffer.from("http://x.io", "latin1"))])]))])]);
+  var aiaOidEnc = pki.schema.c509.encode(aiaOid, { issuerCurve: "P-256" });
+  check("156. an unregistered AIA accessMethod encodes as ~oid (not an int) + double-inverts", CB.decode(extPair(aiaOidEnc, 9).val.bytes).children[0].majorType === 2 && pki.schema.c509.parse(aiaOidEnc).reconstructedDer.equals(aiaOid));
+  var aiaDirLoc = await certWithExts([b.sequence([b.oid(O("authorityInfoAccess")), b.octetString(b.sequence([b.sequence([b.oid(O("ocsp")), b.explicit(4, dirName("CA"))])]))])]);
+  var aiaDirLocEnc = pki.schema.c509.encode(aiaDirLoc, { issuerCurve: "P-256" });
+  check("157. an AIA with a non-URI (directoryName) accessLocation falls back to ~oid + double-inverts", extPair(aiaDirLocEnc, 9) == null && pki.schema.c509.parse(aiaDirLocEnc).reconstructedDer.equals(aiaDirLoc));
+  check("158. a C509 AIA accessMethod int with no sec. 8.11 row -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82098218636178" })); }) === "c509/bad-extensions");
+
+  // 11. cRLDistributionPoints (extID 5): 2-URI fullName + reasons(keyCompromise|cACompromise = 6) + cRLIssuer(directoryName).
+  var crlFull = await certWithExts([b.sequence([b.oid(O("cRLDistributionPoints")), b.octetString(b.sequence([b.sequence([
+    b.explicit(0, b.contextConstructed(0, Buffer.concat([b.contextPrimitive(6, Buffer.from("http://a.io", "latin1")), b.contextPrimitive(6, Buffer.from("http://b.io", "latin1"))]))),
+    b.contextPrimitive(1, Buffer.from([5, 0x60])),
+    b.contextConstructed(2, b.explicit(4, dirName("CA"))),
+  ])]))])]);
+  var crlFullEnc = pki.schema.c509.encode(crlFull, { issuerCurve: "P-256" });
+  check("159. a full CRLDP (2 URIs + reasons + cRLIssuer) encodes under extID 5 + reasons uint 6 + double-inverts", (function () { var p = extPair(crlFullEnc, 5); if (p == null) return false; var dp = CB.decode(p.val.bytes).children[0].children; return dp[0].children.length === 2 && Number(CB.read.int(dp[1])) === 6 && dp[2].majorType !== 7 && pki.schema.c509.parse(crlFullEnc).reconstructedDer.equals(crlFull); })());
+
+  // 12. the whole-ext text shortcut (one DP, one-URI fullName, no reasons, no cRLIssuer); freshestCRL (extID 29) identical.
+  var crlText = await certWithExts([b.sequence([b.oid(O("cRLDistributionPoints")), b.octetString(b.sequence([b.sequence([b.explicit(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://only.crl", "latin1"))))])]))])]);
+  var crlTextEnc = pki.schema.c509.encode(crlText, { issuerCurve: "P-256" });
+  check("160. a one-DP one-URI CRLDP is a bare CBOR text + double-inverts", extPair(crlTextEnc, 5).val.majorType === 3 && CB.read.textString(extPair(crlTextEnc, 5).val) === "http://only.crl" && pki.schema.c509.parse(crlTextEnc).reconstructedDer.equals(crlText));
+  var freshCrl = await certWithExts([b.sequence([b.oid(O("freshestCRL")), b.octetString(b.sequence([b.sequence([b.explicit(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://fresh.crl", "latin1"))))])]))])]);
+  var freshCrlEnc = pki.schema.c509.encode(freshCrl, { issuerCurve: "P-256" });
+  check("161. freshestCRL rides the same codec under extID 29 + double-inverts", extPair(freshCrlEnc, 29) != null && pki.schema.c509.parse(freshCrlEnc).reconstructedDer.equals(freshCrl));
+
+  // 13. criticality: a critical general-name-bearing ext carries the NEGATIVE int extID and reconstructs critical.
+  var sanCrit = await certWithExts([b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(2, Buffer.from(".c.io", "latin1"))]))]))])]);
+  var sanCritEnc = pki.schema.c509.encode(sanCrit, { issuerCurve: "P-256" });
+  check("162. a critical nameConstraints carries the negative extID -26 + reconstructs critical", Number(CB.read.int(extPair(sanCritEnc, 26).id)) === -26 && pki.schema.x509.parse(pki.schema.c509.parse(sanCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "nameConstraints"; })[0].critical === true);
+
+  // 14. fail-closed decode: a SAN [4] directoryName value that is not a Name array -> c509/bad-name; a nameConstraints value
+  //     that is not a 2-array -> c509/bad-extensions; a cRLDistributionPoints reasons past the 9 bits -> c509/bad-extensions.
+  check("163. a SAN [4] directoryName with a non-Name value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820382040a" })); }) === "c509/bad-name");
+  check("164. a nameConstraints value that is not a 2-element array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "82181a80" })); }) === "c509/bad-extensions");
+
+  // 15. the aggregate byte-exact oracle: one cert bearing SAN + IAN + AKI-3tuple + nameConstraints + AIA + CRLDP double-inverts.
+  var aggregate = await certWithExts([
+    sanExt([b.contextPrimitive(2, Buffer.from("a.ex", "latin1")), b.contextPrimitive(6, Buffer.from("https://b.ex", "latin1"))]),
+    b.sequence([b.oid(O("issuerAltName")), b.octetString(b.sequence([b.contextPrimitive(1, Buffer.from("i@ex.com", "latin1"))]))]),
+    b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID), b.contextConstructed(1, b.explicit(4, dirName("CA"))), b.contextPrimitive(2, Buffer.from([0x2a]))]))]),
+    b.sequence([b.oid(O("nameConstraints")), b.boolean(true), b.octetString(b.sequence([b.contextConstructed(0, b.sequence([b.contextPrimitive(7, Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]))]))]))]),
+    b.sequence([b.oid(O("authorityInfoAccess")), b.octetString(b.sequence([b.sequence([b.oid(O("ocsp")), b.contextPrimitive(6, Buffer.from("http://ocsp.ex", "latin1"))])]))]),
+    b.sequence([b.oid(O("cRLDistributionPoints")), b.octetString(b.sequence([b.sequence([b.explicit(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.ex", "latin1"))))])]))]),
+  ]);
+  var aggregateEnc = pki.schema.c509.encode(aggregate, { issuerCurve: "P-256" });
+  check("165. a cert bearing SAN + IAN + AKI-3tuple + NC + AIA + CRLDP double-inverts byte-exact", pki.schema.c509.parse(aggregateEnc).reconstructedDer.equals(aggregate) && extPair(aggregateEnc, 3) != null && extPair(aggregateEnc, 25) != null && extPair(aggregateEnc, 7) != null && extPair(aggregateEnc, 26) != null && extPair(aggregateEnc, 9) != null && extPair(aggregateEnc, 5) != null);
+
+  // 16. fail-closed decode of malformed compact general-name values (native C509 -> DER reconstruction, the
+  //     fail-closed tier: a malformed CBOR value must throw a typed c509/* verdict, never a partial DER).
+  function mkExt(cbufHex) { return V.mk({ 9: cbufHex }); }
+  var CBb = CB.build;
+  // a SAN GeneralNames is a FLAT array [int, value, ...]; sanVal wraps a single (int, value) general name.
+  function sanVal(intVal, val) { return CB.build.array([CB.build.int(3n), CBb.array([CBb.int(BigInt(intVal)), val])]).toString("hex"); }
+  check("166. a generic otherName (int 0) with a non-pair value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(0, CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("167. a generic otherName (int 0) whose value element is not a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(0, CBb.array([CBb.byteString(Buffer.from("2b06010401", "hex")), CBb.uint(5n)])))); }) === "c509/bad-extensions");
+  check("168. a generic otherName (int 0) whose inner bytes are not a DER element -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(0, CBb.array([CBb.byteString(Buffer.from("2b06010401", "hex")), CBb.byteString(Buffer.from("ff", "hex"))])))); }) === "c509/bad-extensions");
+  check("169. an id-on-hardwareModuleName (-1) whose serial element is not bytes -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-1, CBb.array([CBb.byteString(Buffer.from("2b06010401", "hex")), CBb.uint(5n)])))); }) === "c509/bad-extensions");
+  check("170. an id-on-SmtpUTF8Mailbox (-2) with a non-text value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-2, CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("171. an id-on-MACAddress (-3) with a wrong-length value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-3, CBb.byteString(Buffer.from("010203", "hex"))))); }) === "c509/bad-extensions");
+  check("172. a SAN iPAddress (7) with a wrong-length value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(7, CBb.byteString(Buffer.from("0102", "hex"))))); }) === "c509/bad-extensions");
+  // nameConstraints (extID 26) value = [ permittedSubtrees, excludedSubtrees ]; a subtrees list is a FLAT [int, value].
+  function ncVal(perm, excl) { return CB.build.array([CB.build.int(26n), CBb.array([perm, excl])]).toString("hex"); }
+  check("173. an NC iPAddress with a non-5/17-octet value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.array([CBb.int(7n), CBb.byteString(Buffer.from("c0000200", "hex"))]), CBb.nullValue()))); }) === "c509/bad-extensions");
+  check("174. an NC iPAddress prefix length past the address width -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.array([CBb.int(7n), CBb.byteString(Buffer.from("c0000200ff", "hex"))]), CBb.nullValue()))); }) === "c509/bad-extensions");
+  check("175. an NC GeneralSubtrees value that is not an array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.uint(5n), CBb.nullValue()))); }) === "c509/bad-extensions");
+  // cRLDistributionPoints (extID 5): a DistributionPoint that is not a 3-element array; a reasons value past the 9 bits.
+  function crlVal(inner) { return CB.build.array([CB.build.int(5n), inner]).toString("hex"); }
+  check("176. a CRLDP DistributionPoint that is not a 3-element array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(crlVal(CBb.array([CBb.array([CBb.textString("http://x")])])))); }) === "c509/bad-extensions");
+  check("177. a CRLDP reasons value past the 9 defined bits -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(crlVal(CBb.array([CBb.array([CBb.textString("http://x"), CBb.uint(0x400n), CBb.nullValue()])])))); }) === "c509/bad-extensions");
+
+  // 17. encode-side fallback: a DER general name the compact codec cannot invert makes the WHOLE extension fall
+  //     back to ~oid + byte-string (never a partial GeneralNames), and still double-inverts byte-exact.
+  var sanMultiRdn = await certWithExts([sanExt([b.explicit(4, b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.printable("A")]), b.sequence([b.oid(O("organizationName")), b.printable("B")])])]))])]);
+  var sanMultiRdnEnc = pki.schema.c509.encode(sanMultiRdn, { issuerCurve: "P-256" });
+  check("178. a SAN directoryName with a multi-value RDN falls back to ~oid + double-inverts", extPair(sanMultiRdnEnc, 3) == null && extOidIds(sanMultiRdnEnc).indexOf("551d11") >= 0 && pki.schema.c509.parse(sanMultiRdnEnc).reconstructedDer.equals(sanMultiRdn));
+  var sanSmtpBad = await certWithExts([sanExt([b.contextConstructed(0, Buffer.concat([b.oid(O("smtpUtf8Mailbox")), b.explicit(0, b.printable("not-utf8"))]))])]);
+  var sanSmtpBadEnc = pki.schema.c509.encode(sanSmtpBad, { issuerCurve: "P-256" });
+  check("179. an SmtpUTF8Mailbox otherName with a non-UTF8String value falls back to ~oid + double-inverts", extPair(sanSmtpBadEnc, 3) == null && pki.schema.c509.parse(sanSmtpBadEnc).reconstructedDer.equals(sanSmtpBad));
+
+  // 18. the AKI 3-tuple serial INTEGER content: a high-bit serial gets the 0x00 sign octet; a zero serial is 0x00.
+  var akiHiSerial = await certWithExts([b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(b.sequence([b.contextPrimitive(0, KID), b.contextConstructed(1, b.explicit(4, dirName("CA"))), b.contextPrimitive(2, Buffer.from([0x00, 0x80]))]))])]);
+  var akiHiSerialEnc = pki.schema.c509.encode(akiHiSerial, { issuerCurve: "P-256" });
+  check("180. an AKI 3-tuple with a high-bit serial (00 80) round-trips its INTEGER sign octet byte-exact", extPair(akiHiSerialEnc, 7) != null && pki.schema.c509.parse(akiHiSerialEnc).reconstructedDer.equals(akiHiSerial));
+
+  // 19. remaining fail-closed decode branches: an IA5 general name (rfc822/dNSName/URI) whose value is not
+  //     7-bit ASCII text; an iPAddress value that is not a byte string; a CRLDP fullName of the wrong type.
+  check("181. a SAN rfc822Name (1) with a non-text value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(1, CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("182. a SAN dNSName (2) with a non-ASCII IA5String text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(2, CBb.textString(String.fromCharCode(0xe9) + ".example")))); }) === "c509/bad-extensions");
+  check("183. a SAN iPAddress (7) with a non-byte-string value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(7, CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("184. an NC iPAddress with a non-byte-string value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.array([CBb.int(7n), CBb.uint(5n)]), CBb.nullValue()))); }) === "c509/bad-extensions");
+  check("185. a CRLDP fullName that is neither text nor an array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(crlVal(CBb.array([CBb.array([CBb.uint(5n), CBb.nullValue(), CBb.nullValue()])])))); }) === "c509/bad-extensions");
+  // encode-side: an id-on-MACAddress otherName whose inner OCTET STRING is not 6/8 octets falls back to ~oid.
+  var sanMacBad = await certWithExts([sanExt([b.contextConstructed(0, Buffer.concat([b.oid(O("macAddress")), b.explicit(0, b.octetString(Buffer.from([1, 2, 3, 4, 5, 6, 7])))]))])]);
+  var sanMacBadEnc = pki.schema.c509.encode(sanMacBad, { issuerCurve: "P-256" });
+  check("186. an id-on-MACAddress otherName with a wrong-length inner value falls back to ~oid + double-inverts", extPair(sanMacBadEnc, 3) == null && pki.schema.c509.parse(sanMacBadEnc).reconstructedDer.equals(sanMacBad));
+
+  // 20. encode-side CRLDP fallbacks (non-compact but valid RFC 5280 DistributionPoints): a non-URI fullName
+  //     member, a nameRelativeToCRLIssuer, a non-directoryName cRLIssuer -- each falls the whole ext back to ~oid.
+  function crldpExt(dp) { return b.sequence([b.oid(O("cRLDistributionPoints")), b.octetString(b.sequence([dp]))]); }
+  var dpDirFull = b.sequence([b.explicit(0, b.contextConstructed(0, b.explicit(4, dirName("CA"))))]);   // fullName [0] with a [4] directoryName
+  var crlDirFull = await certWithExts([crldpExt(dpDirFull)]);
+  var crlDirFullEnc = pki.schema.c509.encode(crlDirFull, { issuerCurve: "P-256" });
+  check("187. a CRLDP fullName with a directoryName member falls back to ~oid + double-inverts", extPair(crlDirFullEnc, 5) == null && pki.schema.c509.parse(crlDirFullEnc).reconstructedDer.equals(crlDirFull));
+  var dpUriIssuer = b.sequence([b.explicit(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a.io", "latin1")))), b.contextConstructed(2, b.contextPrimitive(6, Buffer.from("http://i.io", "latin1")))]);
+  var crlUriIssuer = await certWithExts([crldpExt(dpUriIssuer)]);
+  var crlUriIssuerEnc = pki.schema.c509.encode(crlUriIssuer, { issuerCurve: "P-256" });
+  check("188. a CRLDP cRLIssuer that is a URI (not a directoryName) falls back to ~oid + double-inverts", extPair(crlUriIssuerEnc, 5) == null && pki.schema.c509.parse(crlUriIssuerEnc).reconstructedDer.equals(crlUriIssuer));
+  var dpRelName = b.sequence([b.explicit(0, b.contextConstructed(1, b.sequence([b.oid(O("commonName")), b.printable("X")])))]);   // distributionPoint [0] EXPLICIT { nameRelativeToCRLIssuer [1] IMPLICIT RDN }
+  var crlRelName = await certWithExts([crldpExt(dpRelName)]);
+  var crlRelNameEnc = pki.schema.c509.encode(crlRelName, { issuerCurve: "P-256" });
+  check("189. a CRLDP nameRelativeToCRLIssuer distributionPoint falls back to ~oid + double-inverts", extPair(crlRelNameEnc, 5) == null && pki.schema.c509.parse(crlRelNameEnc).reconstructedDer.equals(crlRelName));
+  // encode-side: a hardwareModuleName otherName whose inner is not a 2-field SEQUENCE falls back to ~oid.
+  var sanHwBad = await certWithExts([sanExt([b.contextConstructed(0, Buffer.concat([b.oid(O("hardwareModuleName")), b.explicit(0, b.sequence([b.oid("1.2.3"), b.octetString(Buffer.from([1])), b.octetString(Buffer.from([2]))]))]))])]);
+  var sanHwBadEnc = pki.schema.c509.encode(sanHwBad, { issuerCurve: "P-256" });
+  check("190. a hardwareModuleName otherName with a non-2-field inner falls back to ~oid + double-inverts", extPair(sanHwBadEnc, 3) == null && pki.schema.c509.parse(sanHwBadEnc).reconstructedDer.equals(sanHwBad));
+
+  // 21. a C509 Name whose attributeType slot is not an integer fails in this module's domain (c509/bad-name),
+  //     never leaking cbor.read.int's cbor/unexpected-major fault -- on BOTH the top-level Name and every
+  //     sec. 8.13 directoryName general name (the attacker-controlled Name the compact codec newly routes here).
+  check("191. a SAN directoryName with a non-integer attribute type -> c509/bad-name (not cbor/*)", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(4, CBb.array([CBb.textString("x"), CBb.textString("A")])))); }) === "c509/bad-name");
+  check("192. a top-level subject Name with a non-integer attribute type -> c509/bad-name (not cbor/*)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: "8261786141" })); }) === "c509/bad-name");
+
+  // 22. an AKI whose authorityCertIssuer [1] is an EMPTY GeneralNames (a1 00) is a shape x509.sign refuses but
+  //     x509.parse accepts; the empty GeneralNames is not compact-representable, so encode() must FALL BACK to
+  //     the ~oid form (exercising the round-trip guard's fault path) rather than throw on a parseable cert.
+  var emptyAkiSigner = signing.makeSigner("ec-p256");
+  var emptyAkiPoint = pki.asn1.read.bitString(pki.asn1.decode(emptyAkiSigner.spki).children[1]).bytes;
+  var emptyAkiName = b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.utf8("leaf")])])]);
+  var emptyAkiVal = b.sequence([b.contextPrimitive(0, KID), b.contextConstructed(1, Buffer.alloc(0)), b.contextPrimitive(2, Buffer.from([0x2a]))]);
+  var emptyAkiSigAlg = b.sequence([b.oid(O("ecdsaWithSHA256"))]);
+  var emptyAkiTbs = b.sequence([
+    b.explicit(0, b.integer(2n)), b.integer(1n), emptyAkiSigAlg, emptyAkiName,
+    b.sequence([b.utcTime(new Date("2026-01-01T00:00:00Z")), b.utcTime(new Date("2027-01-01T00:00:00Z"))]),
+    emptyAkiName, b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(emptyAkiPoint, 0)]),
+    b.explicit(3, b.sequence([b.sequence([b.oid(O("authorityKeyIdentifier")), b.octetString(emptyAkiVal)])])),
+  ]);
+  var emptyAkiSig = b.sequence([b.integer(BigInt("0x01" + "00".repeat(31))), b.integer(BigInt("0x01" + "00".repeat(31)))]);
+  var emptyAkiDer = b.sequence([emptyAkiTbs, emptyAkiSigAlg, b.bitString(emptyAkiSig, 0)]);
+  var emptyAkiEnc = pki.schema.c509.encode(emptyAkiDer, { issuerCurve: "P-256" });
+  check("193. an AKI with an empty authorityCertIssuer [1] falls back to ~oid (not a throw) + double-inverts", extPair(emptyAkiEnc, 7) == null && extOidIds(emptyAkiEnc).indexOf("551d23") >= 0 && pki.schema.c509.parse(emptyAkiEnc).reconstructedDer.equals(emptyAkiDer));
+
+  // 23. an IA5 general name (rfc822/dNSName/URI) with an EMPTY text is rejected, matching the shared pkix leaf.
+  check("194. a SAN dNSName with an empty IA5String text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(2, CBb.textString("")))); }) === "c509/bad-extensions");
+
+  // 24. ReasonFlags bit 0 is reserved unused (RFC 5280 sec. 4.2.1.13; reason bits are 1..8): a native C509
+  //     cRLDistributionPoints whose reasons uint sets bit 0 is not a valid ReasonFlags and fails closed on
+  //     decode; a DER cert carrying such a ReasonFlags falls the whole ext back to ~oid on encode.
+  check("195. a CRLDP reasons uint that sets the reserved bit 0 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(crlVal(CBb.array([CBb.array([CBb.textString("http://x"), CBb.uint(1n), CBb.nullValue()])])))); }) === "c509/bad-extensions");
+  var dpBit0 = b.sequence([b.explicit(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://x.io", "latin1")))), b.contextPrimitive(1, Buffer.from([7, 0x80]))]);   // ReasonFlags = only the reserved bit 0
+  var crlBit0 = await certWithExts([crldpExt(dpBit0)]);
+  var crlBit0Enc = pki.schema.c509.encode(crlBit0, { issuerCurve: "P-256" });
+  check("196. a DER CRLDP ReasonFlags with the reserved bit 0 set falls back to ~oid + double-inverts", extPair(crlBit0Enc, 5) == null && pki.schema.c509.parse(crlBit0Enc).reconstructedDer.equals(crlBit0));
+
+  // 25. RFC 9598 constrains SmtpUTF8Mailbox to SIZE (1..MAX): a native C509 SAN with an empty id-on-SmtpUTF8Mailbox
+  //     value is not a valid otherName and fails closed rather than reconstructing an empty UTF8String.
+  check("197. an id-on-SmtpUTF8Mailbox otherName with an empty text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-2, CBb.textString("")))); }) === "c509/bad-extensions");
 
   console.log("CHECKS " + helpers.getChecks());
 }

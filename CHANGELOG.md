@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.32 — 2026-08-05
+
+pki.schema.c509 encodes and decodes the compact general-name extension values -- a C509 certificate's subjectAltName, issuer alternative name, name constraints, CRL distribution points, authority/subject information access, and the authority key identifier issuer form now ride their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation, not only this decoder.
+
+### Added
+
+- pki.schema.c509 encodes and decodes the compact value forms for the general-name-bearing extensions defined by draft-ietf-cose-cbor-encoded-cert-20 sec. 3.3: subjectAltName and issuerAltName (a flat array of (general-name type, value) pairs, or the bare dNSName as CBOR text for a single host name), nameConstraints (the permitted and excluded GeneralSubtrees, with the RFC 9549 sec. 2.2 address-plus-prefix-length form for an iPAddress constraint), cRLDistributionPoints and freshestCRL (each distribution point's URI full name with optional reasons and CRL issuer, or a single bare URI as CBOR text), authorityInfoAccess and subjectInfoAccess (each access description as a sec. 8.11 registry integer or unwrapped OID plus its URI), and the authorityKeyIdentifier key-identifier / authority-cert-issuer / serial form. One shared GeneralNames codec drives them all, covering every general-name form the sec. 8.13 registry defines -- rfc822Name, dNSName, directoryName, URI, iPAddress, registeredID, and otherName including the hardware-module-name (RFC 4108), SMTP UTF-8 mailbox (RFC 9598), and MAC-address specials. Each form inverts to the DER extnValue byte-for-byte in both directions, so a certificate carrying these extensions is the specific compact shape a conformant C509 implementation reads rather than an opaque DER byte string. The encoder is guarded: it emits the compact form only when it decodes back to the exact DER value, so a general name outside the registry (an X.400 address, an EDI party name), a non-canonical value, or a value the compact form cannot hold falls the whole extension back to the unwrapped-OID byte-string form instead of encoding a partial or lossy value; a malformed compact value fails closed with a typed C509Error.
+- The OID registry gains the id-on other-name type identifiers (hardware module name, SMTP UTF-8 mailbox, MAC address), the id-ad access-description methods (time stamping, CA repository, RPKI manifest / signed object / notify), and subject information access, resolvable through pki.oid.byName / pki.oid.name.
+
+### Changed
+
+- A C509 certificate carrying a general-name-bearing extension (subjectAltName, issuerAltName, nameConstraints, cRLDistributionPoints, freshestCRL, authorityInfoAccess, subjectInfoAccess, or the authorityKeyIdentifier issuer form) now encodes to -- and decodes from -- its compact CBOR value shape rather than the unwrapped-OID byte-string form an earlier release emitted; both reconstruct the same DER, but the CBOR bytes differ, so re-encode any C509 produced by an earlier release. A native C509 that carried a subjectAltName as a raw byte string under its extension integer, which is not a value form the draft defines, is now rejected.
+
 ## v0.3.31 — 2026-08-03
 
 pki.schema.c509 encodes and decodes the compact per-extension value forms -- a C509 certificate's keyUsage, basicConstraints, extended key usage, key identifiers, and other scalar extensions now ride in their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation, not only this decoder.
