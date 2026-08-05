@@ -727,6 +727,15 @@ async function run() {
   // 23. an IA5 general name (rfc822/dNSName/URI) with an EMPTY text is rejected, matching the shared pkix leaf.
   check("194. a SAN dNSName with an empty IA5String text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(2, CBb.textString("")))); }) === "c509/bad-extensions");
 
+  // 24. ReasonFlags bit 0 is reserved unused (RFC 5280 sec. 4.2.1.13; reason bits are 1..8): a native C509
+  //     cRLDistributionPoints whose reasons uint sets bit 0 is not a valid ReasonFlags and fails closed on
+  //     decode; a DER cert carrying such a ReasonFlags falls the whole ext back to ~oid on encode.
+  check("195. a CRLDP reasons uint that sets the reserved bit 0 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(crlVal(CBb.array([CBb.array([CBb.textString("http://x"), CBb.uint(1n), CBb.nullValue()])])))); }) === "c509/bad-extensions");
+  var dpBit0 = b.sequence([b.explicit(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://x.io", "latin1")))), b.contextPrimitive(1, Buffer.from([7, 0x80]))]);   // ReasonFlags = only the reserved bit 0
+  var crlBit0 = await certWithExts([crldpExt(dpBit0)]);
+  var crlBit0Enc = pki.schema.c509.encode(crlBit0, { issuerCurve: "P-256" });
+  check("196. a DER CRLDP ReasonFlags with the reserved bit 0 set falls back to ~oid + double-inverts", extPair(crlBit0Enc, 5) == null && pki.schema.c509.parse(crlBit0Enc).reconstructedDer.equals(crlBit0));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
