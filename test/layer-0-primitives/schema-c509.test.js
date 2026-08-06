@@ -836,6 +836,111 @@ async function run() {
   var cpLongEnc = encCp(cpLong);
   check("225. a UserNotice explicitText over 200 chars stays compact + double-inverts (RFC 5280 graceful handling)", extPair(cpLongEnc, 6) != null && Number(CB.read.int(CB.decode(extPair(cpLongEnc, 6).val.bytes).children[1].children[0])) === 2 && pki.schema.c509.parse(cpLongEnc).reconstructedDer.equals(cpLong));
 
+  // ==== policyMappings + policyConstraints compact value codecs (draft-20 sec. 3.3 / 8.8, RFC 5280 sec. 4.2.1.5 / 4.2.1.11) ====
+  function pmExt(maps, crit) { var f = [b.oid(O("policyMappings"))]; if (crit) f.push(b.boolean(true)); f.push(b.octetString(b.sequence(maps))); return b.sequence(f); }
+  function mapping(a, z) { return b.sequence([typeof a === "string" ? b.oid(a) : a, typeof z === "string" ? b.oid(z) : z]); }
+  function pcExt(rep, ipm, crit) { var fl = []; if (rep != null) fl.push(b.implicit(0, b.integer(BigInt(rep)))); if (ipm != null) fl.push(b.implicit(1, b.integer(BigInt(ipm)))); var f = [b.oid(O("policyConstraints"))]; if (crit) f.push(b.boolean(true)); f.push(b.octetString(b.sequence(fl))); return b.sequence(f); }
+  function pmVal(inner) { return CB.build.array([CB.build.int(27n), inner]).toString("hex"); }   // native policyMappings under extID 27
+  function pcVal(inner) { return CB.build.array([CB.build.int(28n), inner]).toString("hex"); }   // native policyConstraints under extID 28
+
+  // 1. a registered-int mapping + an unregistered ~oid mapping: registered members ride sec. 8.9 ints, the rest ~oid.
+  var pmMulti = await certWithExts([pmExt([mapping(O("domain-validated"), O("organization-validated")), mapping("1.3.6.1.4.1.99999.1", "1.3.6.1.4.1.99999.2")])]);
+  var pmMultiEnc = encCp(pmMulti);
+  check("226. policyMappings encodes under extID 27, registered->int, unregistered->~oid + double-inverts", (function () { var p = extPair(pmMultiEnc, 27); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 4 && Number(CB.read.int(a[0])) === 1 && Number(CB.read.int(a[1])) === 2 && a[2].majorType === 2 && a[3].majorType === 2 && pki.schema.c509.parse(pmMultiEnc).reconstructedDer.equals(pmMulti); })());
+
+  // 2. anyPolicy in a mapping is ACCEPTED: RFC 5280 sec. 4.2.1.5 "MUST NOT map to/from anyPolicy" is a generation
+  //    rule the toolkit's own DER decoder does not reject, so the reconstruct accepts exactly what the decoder accepts.
+  var pmAny = await certWithExts([pmExt([mapping(O("anyPolicy"), O("domain-validated"))])]);
+  var pmAnyEnc = encCp(pmAny);
+  check("227. anyPolicy in a policyMapping is accepted (a generation MUST-NOT the verifier does not reject) + double-inverts", (function () { var p = extPair(pmAnyEnc, 27); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 0 && Number(CB.read.int(a[1])) === 1 && pki.schema.c509.parse(pmAnyEnc).reconstructedDer.equals(pmAny); })());
+
+  // 3. double-inversion at scale: int/int, int/~oid, ~oid/~oid mappings on one cert stay a compact even-length array.
+  var pmScale = await certWithExts([pmExt([mapping(O("domain-validated"), O("organization-validated")), mapping(O("anyPolicy"), "1.3.6.1.4.1.99999.3"), mapping("1.3.6.1.4.1.99999.4", "1.3.6.1.4.1.99999.5")])]);
+  var pmScaleEnc = encCp(pmScale);
+  check("228. three mappings (int/int, int/~oid, ~oid/~oid) stay a compact even-length array + double-inverts", (function () { var p = extPair(pmScaleEnc, 27); if (p == null || p.val.majorType !== 4) return false; return CB.decode(p.val.bytes).children.length === 6 && pki.schema.c509.parse(pmScaleEnc).reconstructedDer.equals(pmScale); })());
+
+  // 4. criticality sign.
+  var pmCrit = await certWithExts([pmExt([mapping(O("anyPolicy"), O("domain-validated"))], true)]);
+  var pmCritEnc = encCp(pmCrit);
+  check("229. a critical policyMappings carries extID -27 + reconstructs critical", Number(CB.read.int(extPair(pmCritEnc, 27).id)) === -27 && pki.schema.x509.parse(pki.schema.c509.parse(pmCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "policyMappings"; })[0].critical === true);
+
+  // 5. the GSMA deep-arc / RPKI sec. 8.9 ints resolve inside a mapping (the same policy dispatch certificatePolicies uses).
+  var pmGsma = await certWithExts([pmExt([mapping(O("id-rspRole-euicc"), O("id-cp-ipAddr-asNumber"))])]);
+  var pmGsmaEnc = encCp(pmGsma);
+  check("230. a mapping of GSMA (int 26) -> RPKI (int 7) resolves both sec. 8.9 ints + double-inverts", (function () { var p = extPair(pmGsmaEnc, 27); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 26 && Number(CB.read.int(a[1])) === 7 && pki.schema.c509.parse(pmGsmaEnc).reconstructedDer.equals(pmGsma); })());
+
+  // 6. a native compact value decodes to the DER SEQUENCE OF SEQUENCE { OID, OID }.
+  check("231. a native policyMappings [0, 1] decodes to SEQUENCE { SEQUENCE { anyPolicy, domain-validated } }", (function () { var e = pki.schema.c509.parse(mkExt(pmVal(CBb.array([CBb.int(0n), CBb.int(1n)])))).extensions[0]; if (e.name !== "policyMappings") return false; var mp = pki.asn1.decode(e.value).children[0]; return pki.asn1.read.oid(mp.children[0]) === pki.oid.byName("anyPolicy") && pki.asn1.read.oid(mp.children[1]) === pki.oid.byName("domain-validated"); })());
+
+  // 7-9. fail-closed decode (native C509): wrong CBOR type, odd-length / empty arrays, an unregistered policy int.
+  check("232. a policyMappings value that is not a CBOR array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pmVal(CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("233. an odd-length policyMappings array (dangling half-mapping) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pmVal(CBb.array([CBb.int(0n)])))); }) === "c509/bad-extensions");
+  check("234. an empty policyMappings array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pmVal(CBb.array([])))); }) === "c509/bad-extensions");
+  check("235. a policyMappings member int with no sec. 8.9 row -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pmVal(CBb.array([CBb.int(5n), CBb.int(0n)])))); }) === "c509/bad-extensions");
+
+  // 10-12. policyConstraints: requireExplicitPolicy only, inhibitPolicyMapping only, both -- the fixed-2 [uint/null, uint/null].
+  var pcRep = await certWithExts([pcExt(0, null)]);
+  var pcRepEnc = encCp(pcRep);
+  check("236. policyConstraints requireExplicitPolicy only encodes under extID 28 to [0, null] + double-inverts", (function () { var p = extPair(pcRepEnc, 28); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 2 && Number(CB.read.int(a[0])) === 0 && a[1].majorType === 7 && a[1].ai === 22 && pki.schema.c509.parse(pcRepEnc).reconstructedDer.equals(pcRep); })());
+  var pcIpm = await certWithExts([pcExt(null, 3)]);
+  var pcIpmEnc = encCp(pcIpm);
+  check("237. policyConstraints inhibitPolicyMapping only encodes to [null, 3] + double-inverts", (function () { var p = extPair(pcIpmEnc, 28); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return a[0].majorType === 7 && a[0].ai === 22 && Number(CB.read.int(a[1])) === 3 && pki.schema.c509.parse(pcIpmEnc).reconstructedDer.equals(pcIpm); })());
+  var pcBoth = await certWithExts([pcExt(2, 5)]);
+  var pcBothEnc = encCp(pcBoth);
+  check("238. policyConstraints with both fields encodes to [2, 5] + double-inverts", (function () { var p = extPair(pcBothEnc, 28); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 2 && Number(CB.read.int(a[1])) === 5 && pki.schema.c509.parse(pcBothEnc).reconstructedDer.equals(pcBoth); })());
+
+  // 13. IMPLICIT-tag exactness: the reconstructed [0]/[1] fields are context-primitive (0x80/0x81), not EXPLICIT/constructed.
+  check("239. reconstructed policyConstraints uses IMPLICIT [0]/[1] primitive tags (not constructed)", (function () { var e = pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.uint(2n), CBb.uint(5n)])))).extensions[0]; if (e.name !== "policyConstraints") return false; var kids = pki.asn1.decode(e.value).children; return kids.length === 2 && kids[0].tagClass === "context" && kids[0].tagNumber === 0 && !kids[0].constructed && kids[1].tagClass === "context" && kids[1].tagNumber === 1 && !kids[1].constructed && pki.asn1.read.integerImplicit(kids[0], 0) === 2n && pki.asn1.read.integerImplicit(kids[1], 1) === 5n; })());
+
+  // 14. criticality sign (RFC 5280 sec. 4.2.1.11 MUST be critical -- the sign carries it either way).
+  var pcCrit = await certWithExts([pcExt(0, null, true)]);
+  var pcCritEnc = encCp(pcCrit);
+  check("240. a critical policyConstraints carries extID -28 + reconstructs critical", Number(CB.read.int(extPair(pcCritEnc, 28).id)) === -28 && pki.schema.x509.parse(pki.schema.c509.parse(pcCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "policyConstraints"; })[0].critical === true);
+
+  // 15. a native compact value decodes to the DER SEQUENCE { [0] SkipCerts }.
+  check("241. a native policyConstraints [2, null] decodes to SEQUENCE { [0] INTEGER 2 }", (function () { var e = pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.uint(2n), CBb.nullValue()])))).extensions[0]; if (e.name !== "policyConstraints") return false; var kids = pki.asn1.decode(e.value).children; return kids.length === 1 && kids[0].tagClass === "context" && kids[0].tagNumber === 0 && pki.asn1.read.integerImplicit(kids[0], 0) === 2n; })());
+
+  // 16-20. fail-closed decode (native C509): both-null empty PolicyConstraints, wrong length, non-uint / negative slot,
+  //         a SkipCerts past 2^31-1 (the reconstruct applies the same guard.range.uint31 the DER decoder does), wrong type.
+  check("242. a native policyConstraints [null, null] (empty PolicyConstraints) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.nullValue(), CBb.nullValue()])))); }) === "c509/bad-extensions");
+  check("243. a 1-element policyConstraints array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.uint(0n)])))); }) === "c509/bad-extensions");
+  check("244. a 3-element policyConstraints array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.uint(0n), CBb.nullValue(), CBb.uint(1n)])))); }) === "c509/bad-extensions");
+  check("245. a policyConstraints slot that is neither uint nor null -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.textString("x"), CBb.nullValue()])))); }) === "c509/bad-extensions");
+  check("246. a policyConstraints negative-int slot (SkipCerts is a uint) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.int(-1n), CBb.nullValue()])))); }) === "c509/bad-extensions");
+  check("247. a policyConstraints SkipCerts past 2^31-1 -> c509/bad-extensions (reconstruct bounds via guard.range.uint31)", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.array([CBb.uint(4294967296n), CBb.nullValue()])))); }) === "c509/bad-extensions");
+  check("248. a policyConstraints value that is not a CBOR array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(pcVal(CBb.uint(5n)))); }) === "c509/bad-extensions");
+
+  // sibling INTEGER-bound reconstruct sites narrowed through the same guard.range.uint31 the toolkit's own DER decoders
+  // apply (schema-pkix inhibitAnyPolicy / basicConstraints pathLen): a native count past 2^31-1 fails closed on decode,
+  // never reconstructing a DER the toolkit's own decoder would reject. (x509.sign validates these extensions, so an
+  // oversized DER cannot be built through it; the encode-side round-trip fallback on a reconstruct throw is covered
+  // by test 193.)
+  function iaVal(inner) { return CB.build.array([CB.build.int(30n), inner]).toString("hex"); }
+  function bcVal(inner) { return CB.build.array([CB.build.int(4n), inner]).toString("hex"); }
+  check("249. a native inhibitAnyPolicy SkipCerts past 2^31-1 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(iaVal(CBb.uint(4294967296n)))); }) === "c509/bad-extensions");
+  check("250. a native basicConstraints pathLen past 2^31-1 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(bcVal(CBb.uint(4294967296n)))); }) === "c509/bad-extensions");
+
+  // encode-side fallback: a MALFORMED policy-family extension (a cert x509.parse accepts but the compact codec
+  // cannot represent -- there is no valid-but-non-compact policyMappings/policyConstraints, so these are hand-built)
+  // falls the WHOLE ext back to the ~oid form + double-inverts, never throwing on a parseable cert or losing bytes.
+  function handCertExt(extDer) {
+    var s = signing.makeSigner("ec-p256");
+    var point = pki.asn1.read.bitString(pki.asn1.decode(s.spki).children[1]).bytes;
+    var nm = b.sequence([b.set([b.sequence([b.oid(O("commonName")), b.utf8("leaf")])])]);
+    var sigAlg = b.sequence([b.oid(O("ecdsaWithSHA256"))]);
+    var tbs = b.sequence([b.explicit(0, b.integer(2n)), b.integer(1n), sigAlg, nm, b.sequence([b.utcTime(new Date("2026-01-01T00:00:00Z")), b.utcTime(new Date("2027-01-01T00:00:00Z"))]), nm, b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(point, 0)]), b.explicit(3, b.sequence([extDer]))]);
+    var sig = b.sequence([b.integer(BigInt("0x01" + "00".repeat(31))), b.integer(BigInt("0x01" + "00".repeat(31)))]);
+    return b.sequence([tbs, sigAlg, b.bitString(sig, 0)]);
+  }
+  function fellBack(der, absId) { var enc = encCp(der); return extPair(enc, absId) == null && pki.schema.c509.parse(enc).reconstructedDer.equals(der); }
+  check("252. a policyMappings extnValue that is not a SEQUENCE falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyMappings")), b.octetString(b.integer(5n))])), 27));
+  check("253. a policyMappings mapping with other than 2 members falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyMappings")), b.octetString(b.sequence([b.sequence([b.oid(O("anyPolicy"))])]))])), 27));
+  check("254. a policyConstraints extnValue that is not a SEQUENCE falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.integer(5n))])), 28));
+  check("255. a policyConstraints with an unexpected [2] field falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.sequence([b.implicit(2, b.integer(1n))]))])), 28));
+  check("256. a policyConstraints with a negative SkipCerts falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.sequence([b.implicit(0, b.integer(-1n))]))])), 28));
+  check("257. a policyConstraints with descending [1] then [0] fields falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.sequence([b.implicit(1, b.integer(1n)), b.implicit(0, b.integer(2n))]))])), 28));
+  check("258. a policyConstraints SEQUENCE with three fields falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.sequence([b.implicit(0, b.integer(1n)), b.implicit(1, b.integer(2n)), b.implicit(2, b.integer(3n))]))])), 28));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

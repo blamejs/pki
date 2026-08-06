@@ -4,7 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.3.33 — 2026-08-06
+## v0.4.0 — 2026-08-06
+
+CRL issuance and verification, PKCS#12 build and open, attribute-certificate issuance, and the key-material lifecycle graduate to stable, and pki.schema.c509 adds the compact policyMappings and policyConstraints value forms -- a C509 certificate's policy mappings and policy constraints now ride their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation rather than only this decoder.
+
+### Added
+
+- pki.schema.c509 encodes and decodes the compact value forms for the policyMappings and policyConstraints extensions (draft-ietf-cose-cbor-encoded-cert-20 sec. 3.3): a policy mapping's issuerDomainPolicy and subjectDomainPolicy each ride the sec. 8.9 registry-integer / unwrapped-OID policy space the certificatePolicies extension uses (a policy mapping to or from the special anyPolicy is preserved, matching what a certificate's own decoder accepts), and a policy constraints value rides the fixed two-element [requireExplicitPolicy, inhibitPolicyMapping] array, each field a non-negative skip count or absent. Both directions invert to the DER extnValue byte-for-byte, so a certificate carrying either extension is the specific compact shape a conformant C509 implementation reads rather than an opaque DER byte string. The encoder is guarded: a value the compact form cannot hold falls the whole extension back to the unwrapped-OID byte-string form instead of encoding lossily; a malformed compact value -- an empty or both-absent policy constraints, an odd-length or empty policy-mappings array, a policy mapping member that is not a two-policy pair, or an unregistered policy integer -- fails closed with a typed C509Error.
+
+### Changed
+
+- pki.crl.sign / verify / isRevoked (RFC 5280 sec. 5), pki.pkcs12.build / open / verifyMac (RFC 7292 / RFC 9579), pki.attrcert.sign (RFC 5755), and the key-material lifecycle pki.key.encrypt / decrypt / export / import / generate / publicFromPrivate (PKCS#8 / RFC 5958, RFC 8018) graduate from experimental to stable. Their governing standards are settled and each is proven against an independent implementation in the integration harness (OpenSSL), or for the attribute-certificate format through the toolkit's own conformance-vector round-trip plus coverage-guided fuzzing. They are now covered by the stability contract and the LTS support window: a breaking change to any of them ships only after a prior deprecation cycle, never silently in a minor.
+- A C509 certificate carrying policyMappings or policyConstraints now encodes to -- and decodes from -- its compact CBOR value shape rather than the unwrapped-OID byte-string form an earlier release emitted; both reconstruct the same DER, but the CBOR bytes differ, so re-encode any C509 produced by an earlier release.
+
+### Fixed
+
+- The C509 encoder now bounds the basicConstraints path length and the inhibitAnyPolicy and policyConstraints skip counts to the same non-negative 31-bit range the toolkit's own certificate decoders enforce. A native C509 carrying one of these counts past that range now fails closed with a typed C509Error rather than reconstructing a DER an X.509 decoder -- this toolkit's included -- would then reject.
+
+## v0.3.33 — 2026-08-05
 
 pki.schema.c509 encodes and decodes the compact certificatePolicies value form -- a C509 certificate's policy identifiers ride their draft-20 registry integers (or unwrapped OIDs) and their CPS-URI and UserNotice qualifiers ride the specific compact CBOR shape, interoperating with a conformant C509 implementation rather than only this decoder.
 

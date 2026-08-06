@@ -101,6 +101,39 @@ async function run() {
     check("openssl x509 accepts the reconstructed certificatePolicies certificate", t.code === 0);
     check("openssl reads the reconstructed CPS URI", /cps\.interop\.example/.test(t.stdout || ""));
   });
+
+  // A certificate bearing the compact policyMappings + policyConstraints value forms: a registered policy mapping
+  // rides the draft-20 sec. 3.3 flat-pair array and a policy constraints skip-count pair rides the fixed 2-element
+  // array, and OpenSSL parses the reconstructed certificate carrying both extensions.
+  var pmExtDer = b.sequence([b.oid(O("policyMappings")), b.octetString(b.sequence([
+    b.sequence([b.oid(O("domain-validated")), b.oid(O("organization-validated"))]),
+  ]))]);
+  var pcExtDer = b.sequence([b.oid(O("policyConstraints")), b.boolean(true), b.octetString(b.sequence([
+    b.implicit(0, b.integer(0n)), b.implicit(1, b.integer(1n)),
+  ]))]);
+  var ps = signing.makeSigner("ec-p256");
+  var polDer = Buffer.from(await pki.x509.sign({
+    subject: [{ commonName: "pol leaf" }], subjectPublicKey: ps.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: [pmExtDer, pcExtDer],
+  }, { key: ps.key }));
+  var polC509 = pki.schema.c509.encode(polDer, { issuerCurve: "P-256" });
+  var polRecon = pki.schema.c509.parse(polC509).reconstructedDer;
+  check("policyMappings/policyConstraints cert type-3 reconstructs the source DER byte-for-byte", polRecon.equals(polDer));
+  // both rode their compact CBOR value form (extension ints 27 and 28 with array values), not the ~oid fallback.
+  var polExtsNode = pki.cbor.decode(polC509).children[9].children || [], pmCompact = false, pcCompact = false;
+  for (var pk = 0; pk + 1 < polExtsNode.length; pk += 2) {
+    if (polExtsNode[pk].majorType <= 1 && polExtsNode[pk + 1].majorType === 4) {
+      var pid = Math.abs(Number(pki.cbor.read.int(polExtsNode[pk])));
+      if (pid === 27) pmCompact = true;
+      if (pid === 28) pcCompact = true;
+    }
+  }
+  check("policyMappings + policyConstraints encode as compact CBOR arrays (not the ~oid fallback)", pmCompact && pcCompact);
+  ctx.withTmp(polRecon, "c509-recon-pol.der", function (p) {
+    var t = ctx.runOpenssl(["x509", "-inform", "DER", "-in", p, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 accepts the reconstructed policyMappings/policyConstraints certificate", t.code === 0);
+    check("openssl reads the reconstructed Policy Mappings + Policy Constraints", /Policy Mappings/.test(t.stdout || "") && /Policy Constraints/.test(t.stdout || ""));
+  });
 }
 
 Promise.resolve().then(run).then(
