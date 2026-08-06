@@ -740,6 +740,93 @@ async function run() {
   //     value is not a valid otherName and fails closed rather than reconstructing an empty UTF8String.
   check("197. an id-on-SmtpUTF8Mailbox otherName with an empty text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-2, CBb.textString("")))); }) === "c509/bad-extensions");
 
+  // ==== certificatePolicies compact value codec (draft-20 sec. 3.3 / 8.9 / 8.10, RFC 5280 sec. 4.2.1.4) ====
+  function cpExt(pis, crit) { var f = [b.oid(O("certificatePolicies"))]; if (crit) f.push(b.boolean(true)); f.push(b.octetString(b.sequence(pis))); return b.sequence(f); }
+  function pol(oidArg, quals) { var f = [typeof oidArg === "string" ? b.oid(oidArg) : oidArg]; if (quals) f.push(quals); return b.sequence(f); }
+  function cpsQ(uri) { return b.sequence([b.oid(O("cps")), b.ia5(uri)]); }
+  function unoticeQ(text) { return b.sequence([b.oid(O("unotice")), b.sequence([b.utf8(text)])]); }
+  function cpVal(inner) { return CB.build.array([CB.build.int(6n), inner]).toString("hex"); }
+  function encCp(der) { return pki.schema.c509.encode(der, { issuerCurve: "P-256" }); }
+  function cpInts(val) { var a = CB.decode(val.bytes).children, out = []; for (var i = 0; i < a.length; i += 2) out.push(a[i].majorType === 2 ? "~oid" : Number(CB.read.int(a[i]))); return out; }
+
+  // 1. a registered policy int + an unregistered ~oid policy; a bare policy carries an EMPTY qualifiers array.
+  var cpMulti = await certWithExts([cpExt([pol(O("domain-validated")), pol("1.3.6.1.4.1.99999.1")])]);
+  var cpMultiEnc = encCp(cpMulti);
+  check("198. certificatePolicies encodes under extID 6, registered->int, unregistered->~oid, bare->[] + double-inverts", (function () { var p = extPair(cpMultiEnc, 6); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 1 && a[1].majorType === 4 && a[1].children.length === 0 && a[2].majorType === 2 && pki.schema.c509.parse(cpMultiEnc).reconstructedDer.equals(cpMulti); })());
+
+  // 2/3/4. cps qualifier, unotice explicitText, and both on one policy.
+  var cpCps = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([cpsQ("http://cps.example")]))])]);
+  var cpCpsEnc = encCp(cpCps);
+  check("199. a CPS qualifier -> [1, uri] + double-inverts", (function () { var q = CB.decode(extPair(cpCpsEnc, 6).val.bytes).children[1].children; return Number(CB.read.int(q[0])) === 1 && CB.read.textString(q[1]) === "http://cps.example" && pki.schema.c509.parse(cpCpsEnc).reconstructedDer.equals(cpCps); })());
+  var cpUn = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([unoticeQ("Notice text")]))])]);
+  var cpUnEnc = encCp(cpUn);
+  check("200. a UserNotice explicitText utf8String -> [2, text] + double-inverts", (function () { var q = CB.decode(extPair(cpUnEnc, 6).val.bytes).children[1].children; return Number(CB.read.int(q[0])) === 2 && CB.read.textString(q[1]) === "Notice text" && pki.schema.c509.parse(cpUnEnc).reconstructedDer.equals(cpUn); })());
+  var cpBoth = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([cpsQ("http://c.ex"), unoticeQ("N")]))])]);
+  var cpBothEnc = encCp(cpBoth);
+  check("201. cps + unotice on one policy -> a flat [1, uri, 2, text] qualifiers array + double-inverts", (function () { var q = CB.decode(extPair(cpBothEnc, 6).val.bytes).children[1].children; return q.length === 4 && Number(CB.read.int(q[0])) === 1 && Number(CB.read.int(q[2])) === 2 && pki.schema.c509.parse(cpBothEnc).reconstructedDer.equals(cpBoth); })());
+
+  // 5/6/7. the three fallback triggers: a noticeRef, a non-UTF8 explicitText, an unregistered qualifier OID.
+  var cpNoticeRef = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("unotice")), b.sequence([b.sequence([b.utf8("Org"), b.sequence([b.integer(1n)])])])])]))])]);
+  var cpNoticeRefEnc = encCp(cpNoticeRef);
+  check("202. a UserNotice with a noticeRef falls back to ~oid + double-inverts", extPair(cpNoticeRefEnc, 6) == null && extOidIds(cpNoticeRefEnc).indexOf("551d20") >= 0 && pki.schema.c509.parse(cpNoticeRefEnc).reconstructedDer.equals(cpNoticeRef));
+  var cpIa5Note = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("unotice")), b.sequence([b.ia5("x")])])]))])]);
+  var cpIa5NoteEnc = encCp(cpIa5Note);
+  check("203. a UserNotice explicitText in the ia5String arm (not utf8String) falls back to ~oid + double-inverts", extPair(cpIa5NoteEnc, 6) == null && pki.schema.c509.parse(cpIa5NoteEnc).reconstructedDer.equals(cpIa5Note));
+  var cpUnkQ = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.2"), b.ia5("z")])]))])]);
+  var cpUnkQEnc = encCp(cpUnkQ);
+  check("204. a qualifier OID outside sec. 8.10 falls back to ~oid + double-inverts", extPair(cpUnkQEnc, 6) == null && pki.schema.c509.parse(cpUnkQEnc).reconstructedDer.equals(cpUnkQ));
+
+  // 8. double-inversion at scale + 10. the GSMA deep-arc / RPKI ints resolve to their sec. 8.9 integers.
+  var cpScale = await certWithExts([cpExt([pol(O("id-rspRole-euicc")), pol(O("id-cp-ipAddr-asNumber"), b.sequence([cpsQ("http://r.ex")])), pol(O("anyPolicy"), b.sequence([cpsQ("http://a.ex"), unoticeQ("hi")]))])]);
+  var cpScaleEnc = encCp(cpScale);
+  check("205. GSMA (int 26) + RPKI (int 7) + anyPolicy w/ 2 quals on one cert double-inverts + int rows resolve", (function () { var p = extPair(cpScaleEnc, 6); return p != null && cpInts(p.val).join(",") === "26,7,0" && pki.schema.c509.parse(cpScaleEnc).reconstructedDer.equals(cpScale); })());
+
+  // 9. criticality sign.
+  var cpCrit = await certWithExts([cpExt([pol(O("anyPolicy"))], true)]);
+  var cpCritEnc = encCp(cpCrit);
+  check("206. a critical certificatePolicies carries extID -6 + reconstructs critical", Number(CB.read.int(extPair(cpCritEnc, 6).id)) === -6 && pki.schema.x509.parse(pki.schema.c509.parse(cpCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "certificatePolicies"; })[0].critical === true);
+
+  // 11-13. fail-closed decode (native C509): wrong value type, odd-length arrays, unregistered policy/qualifier ints.
+  check("207. a certificatePolicies value that is not a CBOR array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "820618ff" })); }) === "c509/bad-extensions");
+  check("208. an odd-length certificatePolicies array (dangling policy) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n)])))); }) === "c509/bad-extensions");
+  check("209. a qualifiers slot that is not an array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.uint(5n)])))); }) === "c509/bad-extensions");
+  check("210. an odd-length qualifiers array (dangling qualifier) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(1n)])])))); }) === "c509/bad-extensions");
+  check("211. a policy int with no sec. 8.9 row -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(5n), CBb.array([])])))); }) === "c509/bad-extensions");
+  check("212. a ~oid / unregistered qualifierId in a native compact value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(9n), CBb.textString("x")])])))); }) === "c509/bad-extensions");
+
+  // 14. a native compact value decodes to the DER SEQUENCE OF PolicyInformation.
+  check("213. a native [0, [1, uri]] decodes to SEQUENCE { PolicyInformation { anyPolicy, { id-qt-cps, IA5String } } }", (function () { var e = pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(1n), CBb.textString("http://c")])])))).extensions[0]; if (e.name !== "certificatePolicies") return false; var pi = pki.asn1.decode(e.value).children[0]; return pki.asn1.read.oid(pi.children[0]) === pki.oid.byName("anyPolicy") && pki.asn1.read.oid(pi.children[1].children[0].children[0]) === pki.oid.byName("cps") && pki.asn1.read.string(pi.children[1].children[0].children[1]) === "http://c"; })());
+
+  // 15. empty explicitText / empty CPSuri fail closed (DisplayText SIZE 1..200 floor + CPSuri parity).
+  check("214. a UserNotice explicitText that is empty -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(2n), CBb.textString("")])])))); }) === "c509/bad-extensions");
+  check("215. a CPSuri that is empty -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(1n), CBb.textString("")])])))); }) === "c509/bad-extensions");
+
+  // 16. a bare policy with NO qualifiers stays compact ([int, []]), not a ~oid fallback.
+  var cpBare = await certWithExts([cpExt([pol(O("anyPolicy"))])]);
+  var cpBareEnc = encCp(cpBare);
+  check("216. a bare policy (no qualifiers) stays compact as [int, []] + double-inverts", (function () { var p = extPair(cpBareEnc, 6); return p != null && CB.decode(p.val.bytes).children[1].children.length === 0 && pki.schema.c509.parse(cpBareEnc).reconstructedDer.equals(cpBare); })());
+  // a CPS/unotice qualifier whose string BODY is malformed (a non-7-bit IA5String / a non-UTF-8 UTF8String --
+  // x509.sign keeps the qualifier body opaque, so build the raw TLV) is not compact-representable: the whole
+  // extension falls back to ~oid and double-inverts, never losing the malformed bytes.
+  var cpBadIa5 = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("cps")), b.raw(Buffer.from([0x16, 0x01, 0x80]))])]))])]);   // IA5String content 0x80 (high bit)
+  var cpBadIa5Enc = encCp(cpBadIa5);
+  check("217. a CPS qualifier with a non-7-bit IA5String body falls back to ~oid + double-inverts", extPair(cpBadIa5Enc, 6) == null && pki.schema.c509.parse(cpBadIa5Enc).reconstructedDer.equals(cpBadIa5));
+  var cpBadUtf8 = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("unotice")), b.sequence([b.raw(Buffer.from([0x0c, 0x01, 0x80]))])])]))])]);   // UTF8String content 0x80 (invalid UTF-8)
+  var cpBadUtf8Enc = encCp(cpBadUtf8);
+  check("218. a UserNotice explicitText with a non-UTF-8 UTF8String body falls back to ~oid + double-inverts", extPair(cpBadUtf8Enc, 6) == null && pki.schema.c509.parse(cpBadUtf8Enc).reconstructedDer.equals(cpBadUtf8));
+  // more fail-closed decode (native C509): a non-7-bit CPSuri text, a ~oid (non-int) qualifierId, a non-text qualifier value.
+  check("219. a native CPSuri text with a non-ASCII code point -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(1n), CBb.textString(String.fromCharCode(0xe9) + ".ex")])])))); }) === "c509/bad-extensions");
+  check("220. a native policyQualifierId that is a ~oid (not a sec. 8.10 int) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.byteString(Buffer.from("2b06010505070201", "hex")), CBb.textString("x")])])))); }) === "c509/bad-extensions");
+  check("221. a native policyQualifier value that is not a CBOR text -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(1n), CBb.uint(5n)])])))); }) === "c509/bad-extensions");
+  // encode-side fallback: a CPS qualifier whose value is a UTF8String (not IA5String), and a UserNotice that is
+  // not SEQUENCE { explicitText utf8String } (an empty UserNotice) -> the whole ext falls back to ~oid.
+  var cpCpsUtf8 = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("cps")), b.utf8("http://x")])]))])]);
+  var cpCpsUtf8Enc = encCp(cpCpsUtf8);
+  check("222. a CPS qualifier whose value is a UTF8String (not IA5String) falls back to ~oid + double-inverts", extPair(cpCpsUtf8Enc, 6) == null && pki.schema.c509.parse(cpCpsUtf8Enc).reconstructedDer.equals(cpCpsUtf8));
+  var cpEmptyUn = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("unotice")), b.sequence([])])]))])]);
+  var cpEmptyUnEnc = encCp(cpEmptyUn);
+  check("223. an empty UserNotice (not SEQUENCE { explicitText }) falls back to ~oid + double-inverts", extPair(cpEmptyUnEnc, 6) == null && pki.schema.c509.parse(cpEmptyUnEnc).reconstructedDer.equals(cpEmptyUn));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

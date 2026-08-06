@@ -74,6 +74,33 @@ async function run() {
     check("openssl x509 accepts the reconstructed subjectAltName certificate", t.code === 0);
     check("openssl reads the reconstructed Subject Alternative Name", /interop\.example/.test(t.stdout || ""));
   });
+
+  // A certificate bearing the compact certificatePolicies value form: a registered policy with a CPS URI and a
+  // UserNotice explicitText rides the draft-20 sec. 3.3 CBOR array, and OpenSSL reads the reconstructed policies.
+  var cpExtDer = b.sequence([b.oid(O("certificatePolicies")), b.octetString(b.sequence([
+    b.sequence([b.oid(O("domain-validated")), b.sequence([
+      b.sequence([b.oid(O("cps")), b.ia5("http://cps.interop.example")]),
+      b.sequence([b.oid(O("unotice")), b.sequence([b.utf8("Interop notice")])]),
+    ])]),
+  ]))]);
+  var cs = signing.makeSigner("ec-p256");
+  var cpDer = Buffer.from(await pki.x509.sign({
+    subject: [{ commonName: "cp leaf" }], subjectPublicKey: cs.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: [cpExtDer],
+  }, { key: cs.key }));
+  var cpC509 = pki.schema.c509.encode(cpDer, { issuerCurve: "P-256" });
+  var cpRecon = pki.schema.c509.parse(cpC509).reconstructedDer;
+  check("certificatePolicies cert type-3 reconstructs the source DER byte-for-byte", cpRecon.equals(cpDer));
+  var cpExtsNode = pki.cbor.decode(cpC509).children[9].children || [], cpCompact = false;
+  for (var kk = 0; kk + 1 < cpExtsNode.length; kk += 2) {
+    if (cpExtsNode[kk].majorType <= 1 && Math.abs(Number(pki.cbor.read.int(cpExtsNode[kk]))) === 6 && cpExtsNode[kk + 1].majorType === 4) cpCompact = true;
+  }
+  check("certificatePolicies encodes as the compact CBOR array (not the ~oid fallback)", cpCompact);
+  ctx.withTmp(cpRecon, "c509-recon-cp.der", function (p) {
+    var t = ctx.runOpenssl(["x509", "-inform", "DER", "-in", p, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 accepts the reconstructed certificatePolicies certificate", t.code === 0);
+    check("openssl reads the reconstructed CPS URI", /cps\.interop\.example/.test(t.stdout || ""));
+  });
 }
 
 Promise.resolve().then(run).then(

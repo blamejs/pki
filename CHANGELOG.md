@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.3.33 — 2026-08-06
+
+pki.schema.c509 encodes and decodes the compact certificatePolicies value form -- a C509 certificate's policy identifiers ride their draft-20 registry integers (or unwrapped OIDs) and their CPS-URI and UserNotice qualifiers ride the specific compact CBOR shape, interoperating with a conformant C509 implementation rather than only this decoder.
+
+### Added
+
+- pki.schema.c509 encodes and decodes the compact value form for the certificatePolicies extension (draft-ietf-cose-cbor-encoded-cert-20 sec. 3.3): each policy identifier is a sec. 8.9 registry integer -- the CA/Browser Forum validation levels, the RFC 3779 id-cp-ipAddr resource-certificate policies, and the GSMA SGP.22 id-rspRole roles -- or an unwrapped OID for a policy outside the registry; each policy qualifier is a sec. 8.10 integer (id-qt-cps / id-qt-unotice) with its text, reconstructing the CPS pointer as a URI IA5String and the UserNotice as an explicit-text UTF8String. Both directions invert to the DER extnValue byte-for-byte, so a certificate carrying policies is the specific compact shape a conformant C509 implementation reads rather than an opaque DER byte string. The encoder is guarded: a UserNotice with a noticeRef, a non-UTF8String explicit text, or a policy-qualifier identifier outside the sec. 8.10 registry is not compact-representable and falls the whole extension back to the unwrapped-OID byte-string form instead of encoding lossily; a malformed compact value (an empty UserNotice text, a control-byte CPS URI, an unregistered policy or qualifier integer) fails closed with a typed C509Error.
+- The OID registry gains the CA/Browser Forum certificate-policy identifiers (domain-, organization-, individual-validated, ev-guidelines), the RFC 3779 id-cp-ipAddr-asNumber policies, the GSMA SGP.22 id-rspRole roles, and the RFC 5280 id-qt policy qualifiers (cps, unotice), resolvable through pki.oid.byName / pki.oid.name.
+
+### Changed
+
+- A C509 certificate carrying certificatePolicies now encodes to -- and decodes from -- its compact CBOR value shape rather than the unwrapped-OID byte-string form an earlier release emitted; both reconstruct the same DER, but the CBOR bytes differ, so re-encode any C509 produced by an earlier release.
+
 ## v0.3.32 — 2026-08-05
 
 pki.schema.c509 encodes and decodes the compact general-name extension values -- a C509 certificate's subjectAltName, issuer alternative name, name constraints, CRL distribution points, authority/subject information access, and the authority key identifier issuer form now ride their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation, not only this decoder.

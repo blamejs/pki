@@ -731,6 +731,12 @@
     "reviewedAt": "0.3.32",
     "reviewBy": "0.4.0"
   },
+  "pki.cmp.session": {
+    "decision": "keep-experimental",
+    "reason": "The RFC 9810/9483 stateful CMP transaction orchestrator composes the still-experimental pki.cmp.build / pki.cmp.transfer / pki.cmp.verify surface and the shared pki.transport, and its session/opts shapes continue to absorb refinements as the remaining lightweight-profile transaction rules land; graduating would freeze the session surface prematurely. Graduate alongside the rest of the CMP surface once it is complete.",
+    "reviewedAt": "0.3.33",
+    "reviewBy": "0.4.0"
+  },
   "pki.crmf.buildCertTemplate": {
     "decision": "keep-experimental",
     "reason": "The thin CertTemplate encoder export rides the same still-settling RFC 4211 CertTemplate field set as pki.crmf.build; graduate alongside pki.crmf.build once the CMP enrollment surface is complete and the builder opts are frozen.",
