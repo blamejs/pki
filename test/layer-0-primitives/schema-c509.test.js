@@ -826,6 +826,15 @@ async function run() {
   var cpEmptyUn = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("unotice")), b.sequence([])])]))])]);
   var cpEmptyUnEnc = encCp(cpEmptyUn);
   check("223. an empty UserNotice (not SEQUENCE { explicitText }) falls back to ~oid + double-inverts", extPair(cpEmptyUnEnc, 6) == null && pki.schema.c509.parse(cpEmptyUnEnc).reconstructedDer.equals(cpEmptyUn));
+  // a policy OID MUST NOT appear more than once (RFC 5280 sec. 4.2.1.4); a native C509 that repeats one fails
+  // closed rather than reconstructing a certificatePolicies extension the toolkit's own DER decoder rejects.
+  check("224. a native certificatePolicies that repeats a policy OID -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([]), CBb.int(0n), CBb.array([])])))); }) === "c509/bad-extensions");
+  // (a >200-char explicitText is NOT rejected: RFC 5280 sec. 4.2.1.4 directs users to gracefully handle it, and
+  // draft-20 sec. 3.3's compact predicate is SIZE-silent -- so it stays compact and double-inverts byte-exact.)
+  var longText = new Array(251).join("x");   // 250 chars
+  var cpLong = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([unoticeQ(longText)]))])]);
+  var cpLongEnc = encCp(cpLong);
+  check("225. a UserNotice explicitText over 200 chars stays compact + double-inverts (RFC 5280 graceful handling)", extPair(cpLongEnc, 6) != null && Number(CB.read.int(CB.decode(extPair(cpLongEnc, 6).val.bytes).children[1].children[0])) === 2 && pki.schema.c509.parse(cpLongEnc).reconstructedDer.equals(cpLong));
 
   console.log("CHECKS " + helpers.getChecks());
 }
