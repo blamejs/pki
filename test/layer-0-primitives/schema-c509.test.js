@@ -1033,6 +1033,10 @@ async function run() {
   // a ~oid-form value that is a valid CONSTRUCTED DER element (a SEQUENCE) is a legitimately-typed ANY the codec
   //   has no single content reader for, so it passes on its framing and reconstructs (not every ANY is a string).
   check("289. a ~oid-form value that is a valid constructed DER element (SEQUENCE) is accepted as ANY + reconstructs", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("30020500"))).extensions[0]; if (e.name !== "subjectDirectoryAttributes") return false; var m = pki.asn1.decode(e.value).children[0].children[1].children[0]; return m.tagClass === "universal" && m.tagNumber === pki.asn1.TAGS.SEQUENCE; })());
+  // a constructed ~oid value is recursively strict-validated: a malformed NESTED element (a SEQUENCE holding an
+  //   empty INTEGER), and an out-of-order DER SET (X.690 sec. 11.6), each fail closed -- asn1.decode frames both.
+  check("290. a ~oid-form constructed value with a nested malformed element (SEQUENCE with an empty INTEGER) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("30050200020101"))); }) === "c509/bad-extensions");
+  check("291. a ~oid-form constructed value that is an unsorted DER SET -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("3106020102020101"))); }) === "c509/bad-extensions");
 
   console.log("CHECKS " + helpers.getChecks());
 }
