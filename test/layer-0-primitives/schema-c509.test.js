@@ -941,6 +941,85 @@ async function run() {
   check("257. a policyConstraints with descending [1] then [0] fields falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.sequence([b.implicit(1, b.integer(1n)), b.implicit(0, b.integer(2n))]))])), 28));
   check("258. a policyConstraints SEQUENCE with three fields falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("policyConstraints")), b.octetString(b.sequence([b.implicit(0, b.integer(1n)), b.implicit(1, b.integer(2n)), b.implicit(2, b.integer(3n))]))])), 28));
 
+  // ==== subjectDirectoryAttributes compact value codec (draft-20 sec. 3.3 / 8.6 / 8.8, RFC 5280 sec. 4.2.1.8) ====
+  function sdaExt(attrs, crit) { var f = [b.oid(O("subjectDirectoryAttributes"))]; if (crit) f.push(b.boolean(true)); f.push(b.octetString(b.sequence(attrs))); return b.sequence(f); }
+  function sdaAttr(typeName, valueTlvs) { return b.sequence([b.oid(O(typeName)), b.set(valueTlvs)]); }
+  function sdaVal(inner) { return CB.build.array([CB.build.int(24n), inner]).toString("hex"); }   // native SDA under extID 24
+
+  // 1. single registered attribute, single value -> [10, ["Director"]] (title = sec. 8.6 int 10, positive = utf8String).
+  var sdaTitle = await certWithExts([sdaExt([sdaAttr("title", [b.utf8("Director")])])]);
+  var sdaTitleEnc = encCp(sdaTitle);
+  check("259. subjectDirectoryAttributes encodes under extID 24, registered int + a value ARRAY (SDA-vs-Name) + double-inverts", (function () { var p = extPair(sdaTitleEnc, 24); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 10 && a[1].majorType === 4 && a[1].children.length === 1 && CB.read.textString(a[1].children[0]) === "Director" && pki.schema.c509.parse(sdaTitleEnc).reconstructedDer.equals(sdaTitle); })());
+
+  // 2. multi-value SET (SIZE > 1) -- the core reason SDA is not the Name codec.
+  var sdaMulti = await certWithExts([sdaExt([sdaAttr("organizationalUnitName", [b.utf8("Eng"), b.utf8("Ops")])])]);
+  var sdaMultiEnc = encCp(sdaMulti);
+  check("260. a subjectDirectoryAttributes attribute with a multi-value SET (SIZE > 1) round-trips + double-inverts", (function () { var p = extPair(sdaMultiEnc, 24); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 9 && a[1].majorType === 4 && a[1].children.length === 2 && pki.schema.c509.parse(sdaMultiEnc).reconstructedDer.equals(sdaMulti); })());
+
+  // 3. printableString sign -- countryName is PrintableString-restricted -> negative int.
+  var sdaCountry = await certWithExts([sdaExt([sdaAttr("countryName", [b.printable("US")])])]);
+  var sdaCountryEnc = encCp(sdaCountry);
+  check("261. a subjectDirectoryAttributes printableString attribute carries the negative sign + double-inverts", (function () { var p = extPair(sdaCountryEnc, 24); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === -4 && CB.read.textString(a[1].children[0]) === "US" && pki.schema.c509.parse(sdaCountryEnc).reconstructedDer.equals(sdaCountry); })());
+
+  // 4. a per-attribute ~oid form (an unregistered type) keeps the ext compact (extID 24), not a whole-ext ~oid fallback.
+  var sdaEmail = await certWithExts([sdaExt([sdaAttr("emailAddress", [b.ia5("a@b.example")])])]);
+  var sdaEmailEnc = encCp(sdaEmail);
+  check("262. a subjectDirectoryAttributes attribute of an unregistered type uses the per-attribute ~oid form (not a whole-ext fallback) + double-inverts", (function () { var p = extPair(sdaEmailEnc, 24); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a[0].majorType === 2 && a[1].majorType === 4 && a[1].children[0].majorType === 2 && pki.schema.c509.parse(sdaEmailEnc).reconstructedDer.equals(sdaEmail); })());
+
+  // 5. the headline trap: a mixed printable/utf8 SET cannot use one sign -> that attribute uses the ~oid+bytes form.
+  var sdaMixed = await certWithExts([sdaExt([sdaAttr("title", [b.printable("A"), b.utf8("B")])])]);
+  var sdaMixedEnc = encCp(sdaMixed);
+  check("263. a subjectDirectoryAttributes attribute with a mixed printable/utf8 SET uses the ~oid form for that attribute + double-inverts", (function () { var p = extPair(sdaMixedEnc, 24); if (p == null) return false; var a = CB.decode(p.val.bytes).children; return a[0].majorType === 2 && pki.schema.c509.parse(sdaMixedEnc).reconstructedDer.equals(sdaMixed); })());
+
+  // 6. multiple attributes, mixed forms -> a flat even-length compact array (extID 24, not a ~oid whole-ext fallback).
+  var sdaMany = await certWithExts([sdaExt([sdaAttr("title", [b.utf8("Dir")]), sdaAttr("countryName", [b.printable("US")]), sdaAttr("emailAddress", [b.ia5("a@b.ex")])])]);
+  var sdaManyEnc = encCp(sdaMany);
+  check("264. multiple subjectDirectoryAttributes attributes (int/utf8, int/printable, ~oid) stay a flat compact array + double-inverts", (function () { var p = extPair(sdaManyEnc, 24); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a.length === 6 && Number(CB.read.int(a[0])) === 10 && pki.schema.c509.parse(sdaManyEnc).reconstructedDer.equals(sdaMany); })());
+
+  // 7. criticality sign (accept, do not reject the RFC 5280 sec. 4.2.1.8 MUST-non-critical generation rule).
+  var sdaCrit = await certWithExts([sdaExt([sdaAttr("title", [b.utf8("D")])], true)]);
+  var sdaCritEnc = encCp(sdaCrit);
+  check("265. a critical subjectDirectoryAttributes carries extID -24 + reconstructs critical", Number(CB.read.int(extPair(sdaCritEnc, 24).id)) === -24 && pki.schema.x509.parse(pki.schema.c509.parse(sdaCritEnc).reconstructedDer).extensions.filter(function (e) { return e.name === "subjectDirectoryAttributes"; })[0].critical === true);
+
+  // 8/9. native compact value decodes to the DER SEQUENCE OF Attribute.
+  check("266. a native subjectDirectoryAttributes [10, [text]] decodes to SEQUENCE { SEQUENCE { OID title, SET { UTF8String } } }", (function () { var e = pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(10n), CBb.array([CBb.textString("Director")])])))).extensions[0]; if (e.name !== "subjectDirectoryAttributes") return false; var attr = pki.asn1.decode(e.value).children[0]; return pki.asn1.read.oid(attr.children[0]) === pki.oid.byName("title") && attr.children[1].tagNumber === pki.asn1.TAGS.SET && pki.asn1.read.string(attr.children[1].children[0]) === "Director"; })());
+  check("267. a native subjectDirectoryAttributes [10, [text, text]] reconstructs a 2-member SET", (function () { var e = pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(10n), CBb.array([CBb.textString("Eng"), CBb.textString("Ops")])])))).extensions[0]; if (e.name !== "subjectDirectoryAttributes") return false; var attr = pki.asn1.decode(e.value).children[0]; return attr.children[1].tagNumber === pki.asn1.TAGS.SET && attr.children[1].children.length === 2; })());
+
+  // 10-15. fail-closed decode (native C509): wrong type, odd/empty outer array, empty SET, unregistered int, bad ~oid value, non-int/~oid type.
+  check("268. a subjectDirectoryAttributes value that is not a CBOR array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("269. an odd-length subjectDirectoryAttributes array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(10n)])))); }) === "c509/bad-extensions");
+  check("270. an empty subjectDirectoryAttributes array -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([])))); }) === "c509/bad-extensions");
+  check("271. an empty attributeValue array (SET SIZE 0) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(10n), CBb.array([])])))); }) === "c509/bad-extensions");
+  check("272. an attribute type int with no sec. 8.6 row -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(11n), CBb.array([CBb.textString("x")])])))); }) === "c509/bad-extensions");
+  check("273. a ~oid-form value that is not a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.840.113549.1.9.1")), CBb.array([CBb.textString("x")])])))); }) === "c509/bad-extensions");
+  check("274. a subjectDirectoryAttributes attribute type that is neither int nor ~oid -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.textString("title"), CBb.array([CBb.textString("x")])])))); }) === "c509/bad-extensions");
+
+  // 16. native int-form fail-closed: a byte-string value under an int type (the int form is text-only).
+  check("275. a native subjectDirectoryAttributes int-form value that is not a CBOR text string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(10n), CBb.array([CBb.byteString(Buffer.from("41", "hex"))])])))); }) === "c509/bad-extensions");
+  // 17/18. per-attribute ~oid fallbacks that keep the WHOLE ext compact (extID 24): a registered type whose
+  //        value is not utf8/printableString, and an unregistered OID type. Both stay a compact array, first element ~oid.
+  var sdaIa5 = await certWithExts([sdaExt([sdaAttr("title", [b.ia5("x")])])]);
+  var sdaIa5Enc = encCp(sdaIa5);
+  check("276. a subjectDirectoryAttributes registered-type attribute with a non-utf8/printable value uses the per-attribute ~oid form + double-inverts", (function () { var p = extPair(sdaIa5Enc, 24); return p != null && p.val.majorType === 4 && CB.decode(p.val.bytes).children[0].majorType === 2 && pki.schema.c509.parse(sdaIa5Enc).reconstructedDer.equals(sdaIa5); })());
+  var sdaUnk = await certWithExts([b.sequence([b.oid(O("subjectDirectoryAttributes")), b.octetString(b.sequence([b.sequence([b.oid("1.2.3.4"), b.set([b.utf8("x")])])]))])]);
+  var sdaUnkEnc = encCp(sdaUnk);
+  check("277. a subjectDirectoryAttributes attribute of an unregistered OID type uses the per-attribute ~oid form + double-inverts", (function () { var p = extPair(sdaUnkEnc, 24); return p != null && p.val.majorType === 4 && CB.decode(p.val.bytes).children[0].majorType === 2 && pki.schema.c509.parse(sdaUnkEnc).reconstructedDer.equals(sdaUnk); })());
+  // 19-21. whole-ext ~oid fallbacks: a malformed SDA (a cert x509.parse accepts but the compact codec cannot
+  //        represent) falls the whole extension back to ~oid + double-inverts, never throwing on a parseable cert.
+  check("278. a subjectDirectoryAttributes extnValue that is not a SEQUENCE falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("subjectDirectoryAttributes")), b.octetString(b.integer(5n))])), 24));
+  check("279. a subjectDirectoryAttributes attribute that is not a 2-child SEQUENCE falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("subjectDirectoryAttributes")), b.octetString(b.sequence([b.sequence([b.oid(O("title"))])]))])), 24));
+  check("280. a subjectDirectoryAttributes attribute whose values is not a non-empty SET falls back to ~oid + double-inverts", fellBack(handCertExt(b.sequence([b.oid(O("subjectDirectoryAttributes")), b.octetString(b.sequence([b.sequence([b.oid(O("title")), b.utf8("x")])]))])), 24));
+
+  // 22-24. the ~oid-form value MUST be exactly one non-empty DER AttributeValue TLV -- an empty byte string
+  //         reconstructs an empty values SET (RFC 5280 sec. 4.2.1.8 SET OF SIZE 1..MAX) and a multi-TLV byte
+  //         string fans one value into several members (draft sec. 3.3: one bytes = one AttributeValue); there
+  //         is no downstream DER decoder (c509-only), so _sdaToDer self-enforces. And countryName/serialNumber
+  //         are PrintableString-restricted -- a non-negative (utf8String) sign fails closed, not coerced.
+  check("281. a ~oid-form subjectDirectoryAttributes value that is an EMPTY byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.alloc(0))])])))); }) === "c509/bad-extensions");
+  check("282. a ~oid-form value byte string carrying more than one DER TLV -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.concat([b.utf8("A"), b.utf8("B")]))])])))); }) === "c509/bad-extensions");
+  check("283. a countryName int with the non-negative (utf8String) sign -> c509/bad-extensions (PrintableString-restricted)", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(4n), CBb.array([CBb.textString("US")])])))); }) === "c509/bad-extensions");
+  check("284. a ~oid-form value byte string that is not well-formed DER -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.from("04", "hex"))])])))); }) === "c509/bad-extensions");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
