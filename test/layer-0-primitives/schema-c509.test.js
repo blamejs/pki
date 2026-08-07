@@ -1023,6 +1023,16 @@ async function run() {
   //     outside the PrintableString alphabet) fails in THIS module's domain (c509/bad-extensions), never leaking
   //     the b.printable Asn1Error (asn1/bad-printable-string) -- attacker-controlled native input, error-domain guard.
   check("285. a native subjectDirectoryAttributes value invalid for its PrintableString sign -> c509/bad-extensions (not asn1/*)", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(-10n), CBb.array([CBb.textString("a@b.example")])])))); }) === "c509/bad-extensions");
+  // 26-28. a ~oid-form value must be a strict DER element, not merely well-framed: asn1.decode frames a reserved
+  //         end-of-contents tag 0, an empty INTEGER, and an out-of-alphabet string, but a strict decoder rejects
+  //         each -- the reconstruct must splice nothing such a decoder rejects (validate via the per-type reader).
+  function sdaOidVal(hex) { return sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.from(hex, "hex"))])])); }
+  check("286. a ~oid-form value that is the reserved end-of-contents encoding (tag 0) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("0000"))); }) === "c509/bad-extensions");
+  check("287. a ~oid-form value that is an empty INTEGER -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("0200"))); }) === "c509/bad-extensions");
+  check("288. a ~oid-form value that is an IA5String with a non-ASCII octet -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("1601ff"))); }) === "c509/bad-extensions");
+  // a ~oid-form value that is a valid CONSTRUCTED DER element (a SEQUENCE) is a legitimately-typed ANY the codec
+  //   has no single content reader for, so it passes on its framing and reconstructs (not every ANY is a string).
+  check("289. a ~oid-form value that is a valid constructed DER element (SEQUENCE) is accepted as ANY + reconstructs", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("30020500"))).extensions[0]; if (e.name !== "subjectDirectoryAttributes") return false; var m = pki.asn1.decode(e.value).children[0].children[1].children[0]; return m.tagClass === "universal" && m.tagNumber === pki.asn1.TAGS.SEQUENCE; })());
 
   console.log("CHECKS " + helpers.getChecks());
 }
