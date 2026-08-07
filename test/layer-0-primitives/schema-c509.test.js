@@ -1019,6 +1019,10 @@ async function run() {
   check("282. a ~oid-form value byte string carrying more than one DER TLV -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.concat([b.utf8("A"), b.utf8("B")]))])])))); }) === "c509/bad-extensions");
   check("283. a countryName int with the non-negative (utf8String) sign -> c509/bad-extensions (PrintableString-restricted)", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(4n), CBb.array([CBb.textString("US")])])))); }) === "c509/bad-extensions");
   check("284. a ~oid-form value byte string that is not well-formed DER -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.from("04", "hex"))])])))); }) === "c509/bad-extensions");
+  // 25. a native value invalid for its int-form string type (a printableString sign over a value with characters
+  //     outside the PrintableString alphabet) fails in THIS module's domain (c509/bad-extensions), never leaking
+  //     the b.printable Asn1Error (asn1/bad-printable-string) -- attacker-controlled native input, error-domain guard.
+  check("285. a native subjectDirectoryAttributes value invalid for its PrintableString sign -> c509/bad-extensions (not asn1/*)", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(-10n), CBb.array([CBb.textString("a@b.example")])])))); }) === "c509/bad-extensions");
 
   console.log("CHECKS " + helpers.getChecks());
 }
