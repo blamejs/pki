@@ -453,6 +453,50 @@ async function testInputForms() {
   var wcSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", wcKp.publicKey));
   check("#120 a pki.webcrypto RSASSA-PKCS1-v1_5 CryptoKey signs a certificate", Buffer.isBuffer(await pki.x509.sign({ subject: caName, subjectPublicKey: wcSpki, notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } }, { key: wcKp.privateKey })));
 
+  // A CryptoKey from a DIFFERENT WebCrypto implementation is indistinguishable from this engine's
+  // own by type / algorithm / usages, but carries none of the key material this engine signs with.
+  // issuer.key is documented as taking a CryptoKey, so an extractable foreign key is re-imported
+  // through this engine, and a non-extractable one -- whose material cannot be reached at all --
+  // is refused with THAT reason rather than a raw type error from inside the crypto library.
+  var nodeWc = require("crypto").webcrypto;
+  var foreignKp = await nodeWc.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var foreignSpki = Buffer.from(await nodeWc.subtle.exportKey("spki", foreignKp.publicKey));
+  var foreignPkcs8 = Buffer.from(await nodeWc.subtle.exportKey("pkcs8", foreignKp.privateKey));
+  check("a platform WebCrypto CryptoKey signs a certificate", Buffer.isBuffer(
+    await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA }, { key: foreignKp.privateKey })));
+  // ... and the certificate it produces verifies under the matching public key, so the re-import
+  // carried the SAME key rather than quietly signing with something else.
+  var foreignDer = await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA }, { key: foreignKp.privateKey });
+  var foreignParsed = pki.schema.x509.parse(foreignDer);
+  check("the platform-key certificate verifies under its own public key",
+    (await pki.path.validate([foreignParsed], { time: NB, trustAnchor: { name: foreignParsed.subject, publicKey: foreignParsed.subjectPublicKeyInfo.bytes, algorithm: foreignParsed.subjectPublicKeyInfo.algorithm } }))
+      .results[0].checks.find(function (c) { return c.name === "signature"; }).ok === true);
+  var sealed = await nodeWc.subtle.importKey("pkcs8", foreignPkcs8, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  check("a non-extractable platform CryptoKey is refused, naming the real reason", await (async function () {
+    try { await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA }, { key: sealed }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /is not extractable/.test(e.message); }
+  })());
+  // The same path holds for a second key class, so it is the foreign-key handling that is generic
+  // and not one algorithm'"'"'s import parameters happening to line up.
+  var foreignRsa = await nodeWc.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  // A key that does not carry its permitted usages cannot be adopted without inventing them, so it
+  // is refused rather than being re-imported with whatever the operation happened to need.
+  check("a key object carrying no usages is refused", await (async function () {
+    try { await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA },
+      { key: { type: "private", extractable: true, algorithm: { name: "ECDSA", namedCurve: "P-256" } } }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /carrying its permitted usages/.test(e.message); }
+  })());
+  // A key object shaped like a CryptoKey but belonging to neither implementation -- what a userland
+  // WebCrypto polyfill hands back -- reaches the export step and cannot be exported; it is refused
+  // with that reason rather than with a rejection raised inside the crypto library.
+  var polyfillKey = { type: "private", extractable: true, algorithm: { name: "ECDSA", namedCurve: "P-256" }, usages: ["sign"] };
+  check("a CryptoKey-shaped key that cannot be exported is refused, naming the real reason", await (async function () {
+    try { await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA }, { key: polyfillKey }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /could not be exported for re-import/.test(e.message); }
+  })());
+  check("a platform WebCrypto RSA CryptoKey signs a certificate", Buffer.isBuffer(
+    await pki.x509.sign({ subject: caName, subjectPublicKey: Buffer.from(await nodeWc.subtle.exportKey("spki", foreignRsa.publicKey)), notBefore: NB, notAfter: NA }, { key: foreignRsa.privateKey })));
+
   // raw Name DER as subject (the escape hatch) round-trips.
   var rawName = B.sequence([B.set([B.sequence([B.oid(oidB("commonName")), B.utf8("Raw DN")])])]);
   check("raw Name DER subject round-trips", /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawName }), { key: s.key })).subject.dn));

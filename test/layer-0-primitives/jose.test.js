@@ -325,6 +325,46 @@ async function testInnerProfilesAndRsaVariants() {
   check("64. RS256 wrong-length signature rejected", (await acode(function () { return pki.jose.verify(Object.assign({}, rj, { signature: pki.jose.base64url.encode(Buffer.alloc(100)) }), { profile: "acme-outer", key: rsaJwk }); })) === "jose/bad-signature");
 }
 
+// opts.key is documented as a CryptoKey; one minted by a different WebCrypto implementation signs
+// here too, and the JWS it produces verifies -- so the key was adopted, not merely accepted.
+async function testForeignCryptoKeys() {
+  var nodeWc = require("crypto").webcrypto;
+  var ec = await nodeWc.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var jwk = await nodeWc.subtle.exportKey("jwk", ec.publicKey);
+  delete jwk.key_ops; delete jwk.ext;
+  var hdr = { alg: "ES256", url: "https://e/x", nonce: "AAAA", jwk: jwk };
+  var jws = await pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: ec.privateKey });
+  check("a platform WebCrypto CryptoKey signs a JWS", !!jws && typeof jws.signature === "string");
+  check("the JWS a platform key signed verifies", (await pki.jose.verify(jws, OUTER)).payload.equals(Buffer.from("{}")));
+  // A secret key takes the raw export path rather than the PKCS#8 one, so it is exercised too.
+  var mac = await nodeWc.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
+  var inner = await pki.jose.sign({ protected: { alg: "HS256", url: "https://e/x", kid: "acct-1" },
+    payload: Buffer.from("{}"), key: mac, profile: "eab-inner" });
+  check("a platform WebCrypto secret CryptoKey signs an inner JWS", !!inner && typeof inner.signature === "string");
+  // A key-shaped object whose type is none of private / public / secret names no export format at
+  // all, so it is refused before any material is reached for.
+  check("a CryptoKey-shaped key with an unusable type is refused", await (async function () {
+    var odd = { type: "neither", extractable: true, algorithm: { name: "ECDSA", namedCurve: "P-256" }, usages: ["sign"] };
+    // A type naming an inherited Object member must not resolve to a format either.
+    var proto = { type: "constructor", extractable: true, algorithm: { name: "ECDSA", namedCurve: "P-256" }, usages: ["sign"] };
+    try { await pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: proto }); return false; }
+    catch (e2) { if (!/private, public, or secret type/.test(e2.message)) return false; }
+    try { await pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: odd }); return false; }
+    catch (e) { return e.code === "jose/bad-input" && /private, public, or secret type/.test(e.message); }
+  })());
+  // A key'"'"'s usages are a capability restriction it carries. Adopting one must not widen it: a key
+  // marked verify-only must be refused here exactly as this engine'"'"'s own verify-only key is.
+  var macVerifyOnly = await nodeWc.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["verify"]);
+  check("a platform key whose usages exclude sign cannot sign", await (async function () {
+    try { await pki.jose.sign({ protected: { alg: "HS256", url: "https://e/x", kid: "acct-1" },
+      payload: Buffer.from("{}"), key: macVerifyOnly, profile: "eab-inner" }); return false; }
+    catch (e) { return e.code === "jose/bad-input" && /not permitted for .sign./.test(e.message); }
+  })());
+  var sealed = await nodeWc.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  check("a non-extractable platform CryptoKey is refused, naming the real reason",
+    (await acode(function () { return pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: sealed.privateKey }); })) === "jose/bad-input");
+}
+
 async function run() {
   testBase64url();
   testJsonReader();
@@ -333,6 +373,7 @@ async function run() {
   await testEncodeBoundaryGuards();
   await testProfileAndErrorBranches();
   await testInnerProfilesAndRsaVariants();
+  await testForeignCryptoKeys();
   console.log("CHECKS " + helpers.getChecks());
 }
 

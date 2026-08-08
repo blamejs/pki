@@ -4,6 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.5 — 2026-08-08
+
+A private key created outside this toolkit's own WebCrypto now signs and exports across the toolkit -- a key from the platform's WebCrypto, or from a separately-installed copy of this toolkit, previously reached the crypto library as a key it could not read and failed with a type error instead of a reason.
+
+### Fixed
+
+- Certificate, CRL, CSR, CMS, attribute-certificate, OCSP, CMP and CRMF signing, together with pki.key.export and pki.jose.sign, accept a private key created by the platform's WebCrypto or by a separately-installed copy of this toolkit. Previously only a key this toolkit's own engine created would work; any other reached the crypto library as a key with no material behind it and failed with a type error naming an internal property, giving a caller who had followed the documented contract nothing to act on. Signing, private-key export, public-key export and secret-key signing are all covered, across EC, Edwards and RSA keys.
+- A key that cannot be reached is refused with the reason and the ways forward -- import it through this toolkit's WebCrypto, or pass it as DER -- rather than being reported as an argument of the wrong type. That covers a key created non-extractable, which no implementation can export, and one belonging to an implementation that keeps its material behind its own interface. The non-extractable refusal holds on every path, including for a key whose handle this process could otherwise read directly, so the flag means the same thing wherever the key came from. A non-extractable key this toolkit created is unaffected and still signs, since it is used in place rather than exported.
+- A key's permitted usages travel with it. Re-importing is the one moment that restriction could be widened -- the new key is created with the usages the operation needs, not the ones the key was created with -- so every needed usage must be present on the original first. A key marked verify-only is refused rather than signing, which is what this toolkit's own engine already did for its own keys; the two now agree.
+- pki.webcrypto.subtle refuses a key created by a different WebCrypto implementation with a typed fault that names where it came from, and distinguishes it from an argument that is no key at all. The specification leaves cross-implementation use undefined; every operation that reads key material -- sign, verify, encrypt, decrypt, key derivation and encapsulation, wrapping, and export -- previously let a bare type error escape from inside the crypto library instead. The counterpart public key of a key-agreement operation, which travels in the algorithm rather than as the key argument, is checked on the same footing.
+
 ## v0.4.4 — 2026-08-08
 
 pki.schema.c509 encodes and decodes the RFC 3779 resource-delegation extensions -- a C509 certificate carrying IP address blocks or AS identifiers now parses at all, where before it was refused outright, and its addresses ride the compact form the specification defines.
