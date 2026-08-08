@@ -176,7 +176,7 @@ async function run() {
     return (!x.extensions || x.extensions.length === 0) && emptyExt.reconstructedDer.toString("hex").indexOf("a3023000") === -1;
   })());
 
-  // ==== conformance fixes round 2: signature algorithm + parameter/value type strictness ====
+  // ==== signature algorithm + parameter/value type strictness ====
   // a type-3 certificate with a non-ECDSA signature algorithm cannot have its r||s re-wrapped.
   check("65. a non-ECDSA type-3 signature algorithm -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "432b6570" })); }) === "c509/non-invertible");
   // a malformed (odd-length) ECDSA signature is a typed C509 error, never a raw TypeError.
@@ -186,7 +186,7 @@ async function run() {
   // a tag-48 MAC-address value that does not wrap a byte string fails closed.
   check("68. a tag-48 value not wrapping a byte string -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: "d83001" })); }) === "c509/bad-name");
 
-  // ==== conformance fixes round 3: parameter DER validity + ECDSA signature width ====
+  // ==== parameter DER validity + ECDSA signature width ====
   // supplied algorithm parameters that are not a single well-formed DER element fail closed.
   check("69. malformed algorithm parameters (trailing bytes) -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d040302430500ff" })); }) === "c509/non-invertible");
   // an ECDSA signature whose width is not 2x a supported curve field size fails closed.
@@ -201,7 +201,7 @@ async function run() {
   var compressed = pki.schema.c509.parse(V.mk({ 8: "582102" + "b1216ab96e5b3b3340f5bdf02e693f16213a04525ed44450b1019c2dfd3838ab" }));
   check("74. a correct-length compressed EC point is kept in the reconstruction", pki.schema.x509.parse(compressed.reconstructedDer).subjectPublicKeyInfo.algorithm.name === "ecPublicKey");
 
-  // ==== conformance fixes round 4: degenerate-value rejects (keyUsage, empty/oversized key material) ====
+  // ==== degenerate-value rejects (keyUsage, empty / oversized key material) ====
   // a keyUsage value beyond the 9 defined bits fails closed (also guards the 32-bit bitwise re-encoding).
   check("75. an out-of-range keyUsage value -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "190200" })); }) === "c509/non-invertible");
   // an empty EC subjectPublicKey byte string fails closed (never a raw read past the empty buffer).
@@ -211,7 +211,7 @@ async function run() {
   // a zero RSA modulus fails closed.
   check("78. a zero RSA modulus -> c509/bad-spki", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "00", 8: "40" })); }) === "c509/bad-spki");
 
-  // ==== conformance fixes round 5: ~oid extension value shape ====
+  // ==== ~oid extension value shape ====
   // a non-critical ~oid extension whose value is not a byte string fails closed.
   check("79. a non-critical ~oid extension value that is not a byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "8243551d0f01" })); }) === "c509/bad-extensions");
   // a critical ~oid extension whose [bytes] wrap does not hold a byte string fails closed.
@@ -260,6 +260,45 @@ async function run() {
   // C509 (a non-minimal serial) fails closed via the structured-path self-verify, as the verbatim path does.
   var hbBad = pki.schema.c509.parse(V.A1.type3); delete hbBad._fieldBytes; hbBad.serialNumberHex = "0001";
   check("85d. a structured re-emit that cannot parse -> a typed c509/*", codeSync(function () { return pki.schema.c509.encode(hbBad); }) === "c509/non-minimal-serial");
+
+  // ==== the X.509 version this format covers, and the omitted-extensions case ====================
+  // Both C509 certificate types are defined over X.509 v3 and the encoding carries no version
+  // field, so a v1 / v2 certificate is outside the FORMAT rather than a limit of this encoder --
+  // and must say so, instead of falling through to the byte-exactness self-verify whose verdict
+  // reads as a defect here. A v3 certificate whose extensions field is OMITTED is fully covered:
+  // draft sec. 3.1.10 encodes an omitted 'extensions' field as an empty CBOR array.
+  var vB = pki.asn1.build, vO = pki.oid.byName;
+  var vk = signing.makeSigner("ec-p256");
+  var vAlg = vB.sequence([vB.oid(vO("ecdsaWithSHA256"))]);
+  var vName = vB.sequence([vB.set([vB.sequence([vB.oid(vO("commonName")), vB.utf8("version-scope")])])]);
+  var vKey = require("crypto").createPrivateKey({ key: vk.key, format: "der", type: "pkcs8" });
+  // Built by hand because pki.x509.sign derives the version from the field set (v3 only when
+  // extensions are present), so it cannot express "v3 with no extensions" or a bare v1.
+  function certOfVersion(versionField, withExtension) {
+    var kids = [];
+    if (versionField !== null) kids.push(vB.explicit(0, vB.integer(BigInt(versionField))));
+    kids.push(vB.integer(7n), vAlg, vName,
+      vB.sequence([vB.utcTime(new Date("2026-01-01T00:00:00Z")), vB.utcTime(new Date("2027-01-01T00:00:00Z"))]),
+      vName, vk.spki);
+    if (withExtension) kids.push(vB.explicit(3, vB.sequence([vB.sequence([vB.oid(vO("ocspNoCheck")), vB.octetString(vB.nullValue())])])));
+    var tbs = vB.sequence(kids);
+    return vB.sequence([tbs, vAlg, vB.bitString(require("crypto").sign("sha256", tbs, { key: vKey, dsaEncoding: "der" }), 0)]);
+  }
+  var v1Der = certOfVersion(null, false), v2Der = certOfVersion(1, false), v3NoExt = certOfVersion(2, false);
+  check("85e. a v1 certificate is refused as outside the format, naming the version",
+    (function () { try { pki.schema.c509.encode(v1Der); return false; }
+      catch (e) { return e.code === "c509/non-invertible" && /X\.509 v3 certificates; got v1/.test(e.message); } })());
+  check("85f. a v2 certificate is refused the same way",
+    (function () { try { pki.schema.c509.encode(v2Der); return false; }
+      catch (e) { return e.code === "c509/non-invertible" && /got v2/.test(e.message); } })());
+  check("85g. a v3 certificate with the extensions field OMITTED encodes (sec. 3.1.10)",
+    Buffer.isBuffer(pki.schema.c509.encode(v3NoExt)));
+  check("85h. an omitted extensions field becomes an EMPTY CBOR array", (function () {
+    var slot = pki.cbor.decode(pki.schema.c509.encode(v3NoExt)).children[9];
+    return slot.majorType === 4 && (slot.children || []).length === 0;
+  })());
+  check("85i. the omitted-extensions certificate round-trips byte-exact",
+    pki.schema.c509.parse(pki.schema.c509.encode(v3NoExt)).reconstructedDer.equals(v3NoExt));
   check("86. encode of garbage DER -> a typed c509/*", /^c509\//.test(codeSync(function () { return pki.schema.c509.encode(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])); })));
 
   // the flagship forward transform across the EC arms: a v3 DER cert -> a smaller type-3 that reconstructs
@@ -1217,6 +1256,281 @@ async function run() {
   // the empty-issuer rule binds the EFFECTIVE issuer: a CBOR-null issuer means issuer == subject.
   check("340. a self-signed C509 (null issuer) with an empty subject -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "f6", 6: "80" })); }) === "c509/bad-name");
   check("334. a control byte in a name value is escaped in the rendered dn (never emitted raw)", (function () { var d = pki.schema.c509.parse(V.mk({ 6: nameField(1, "a" + String.fromCharCode(13) + "b") })).subject.dn; return d.indexOf(String.fromCharCode(13)) < 0 && d.indexOf("\\0D") >= 0; })());
+
+  // ==== RFC 3779 IPAddrBlocks / ASIdentifiers (ext ints 32-35, draft sec. 3.3) =================
+  // The draft ships a complete worked vector for these in Appendix A.5, so the encode side is
+  // pinned to the SPECIFICATION's own published CBOR rather than to this codec's own output.
+  var CBB = pki.cbor.build;
+  function ipBs(hex, unused) { return vB.bitString(Buffer.from(hex, "hex"), unused); }
+  function r3779Ext(name, value, critical) {
+    var f = [vB.oid(vO(name))];
+    if (critical) f.push(vB.boolean(true));
+    f.push(vB.octetString(value));
+    return vB.sequence(f);
+  }
+  async function r3779Enc(extDer) {
+    var der = Buffer.from(await pki.x509.sign({ subject: [{ commonName: "rfc3779" }], subjectPublicKey: vk.spki,
+      notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: [extDer] }, { key: vk.key }));
+    var enc = pki.schema.c509.encode(der);
+    var kids = pki.cbor.decode(enc).children[9].children;
+    return { der: der, enc: enc, id: kids[0], val: kids[1],
+             exact: pki.schema.c509.parse(enc).reconstructedDer.equals(der) };
+  }
+  // An extension identifier is an int only while the compact form applies; on fallback it is the
+  // ~oid byte string. Reading it with cbor.read.int directly would THROW on a regression and abort
+  // the whole run, hiding every later check -- so a fallback reports null and the check just fails.
+  function extIdInt(n) { return (n && (n.majorType === 0 || n.majorType === 1)) ? Number(pki.cbor.read.int(n)) : null; }
+  function cborShape(n) {
+    if (n.majorType === 7) return "null";
+    if (n.majorType === 2) return "h" + n.content.toString("hex");
+    if (n.majorType === 4) return "[" + (n.children || []).map(cborShape).join(", ") + "]";
+    return pki.cbor.read.int(n).toString();
+  }
+  // Appendix A.5's own IPAddrBlocks: IPv4 (192.0.2.0/24, 198.51.100.0/28, 203.0.113.0/24) and
+  // IPv6 (2001:db8:1234::/48 plus a range) -- int form, absent SAFI, and a nested range.
+  var a5Fam4 = vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("c00002", 0), ipBs("c6336400", 4), ipBs("cb0071", 0)])]);
+  var a5Fam6 = vB.sequence([vB.octetString(Buffer.from("0002", "hex")),
+    vB.sequence([ipBs("20010db81234", 0), vB.sequence([ipBs("3fff06", 0), ipBs("3fff0f", 0)])])]);
+  var a5 = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([a5Fam4, a5Fam6])));
+  check("341. an IPAddrBlocks extension rides compact int 32", extIdInt(a5.id) === 32);
+  check("342. its CBOR value is identical to the draft Appendix A.5 diagnostic",
+    cborShape(a5.val) === "[1, null, [29360130, 24770733054, -24770012047], 2, null, [316663873933876, [-316663852962606, 9]]]");
+  check("343. the A.5 certificate reconstructs byte-for-byte", a5.exact);
+  // IPAddressFamily is a parenthesized CDDL group, so the triples splice FLAT, never nest.
+  check("344. the value is one flat array of (AFI, SAFI, choice) triples", a5.val.majorType === 4 && a5.val.children.length === 6);
+  var inh = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")), vB.nullValue()])])));
+  check("345. an inherit address family encodes as null", cborShape(inh.val) === "[1, null, null]" && inh.exact);
+  // One sequence past 8 octets selects the bytes form for the WHOLE family (sec. 3.3, a SHALL).
+  var byt = await r3779Enc(r3779Ext("ipAddrBlocksV2", vB.sequence([vB.sequence([vB.octetString(Buffer.from("000201", "hex")),
+    vB.sequence([ipBs("20010db8123456780000", 0)])])])));
+  check("346. a present SAFI is carried and a >8-octet address selects the bytes form",
+    extIdInt(byt.id) === 34 && cborShape(byt.val) === "[2, 1, [h0020010db8123456780000]]" && byt.exact);
+  var asr = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(64496n), vB.sequence([vB.integer(64500n), vB.integer(64510n)])]))])));
+  check("347. ASIdentifiers carries an id and a range, delta-coded", extIdInt(asr.id) === 33 && cborShape(asr.val) === "[64496, [4, 10]]" && asr.exact);
+  var asi = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.nullValue())])));
+  check("348. an ASIdentifiers asnum inherit encodes as null", cborShape(asi.val) === "null" && asi.exact);
+  // RFC 3779 says both extensions SHOULD be critical, so the negative-int arm is the common case.
+  var asc = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(64496n)]))]), true));
+  check("349. a critical RFC 3779 extension carries the negative int", extIdInt(asc.id) === -33 && asc.exact);
+  var asv2 = await r3779Enc(r3779Ext("autonomousSysIdsV2", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(7n)]))])));
+  check("350. the RFC 8360 v2 twin rides int 35 through the same codec", extIdInt(asv2.id) === 35 && asv2.exact);
+
+  // A shape the compact form cannot carry EXACTLY falls back to the ~oid byte-string form with the
+  // original bytes intact -- it is never "corrected" into a conforming one, which would change the
+  // bytes the signature covers and hide the defect from a validator.
+  function r3779FellBack(r) { return r.id.majorType === 2 && r.exact; }
+  var ord = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a40", 0), ipBs("0a20", 4)])])])));
+  check("351. a non-ascending address list falls back, bytes preserved", r3779FellBack(ord));
+  var ord2 = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a20", 4), ipBs("0a40", 0)])])])));
+  check("352. the same two addresses in RFC 3779 order DO compact", extIdInt(ord2.id) === 32 && ord2.exact);
+  // Sorting is only one third of the canonical form. RFC 3779 sec. 2.2.3.6 also forbids any pair of
+  // entries OVERLAPPING and requires any CONTIGUOUS pair to have been combined already. All three
+  // bind together, so an address list is compacted only when it satisfies every one -- otherwise
+  // the compact form would be a second encoding of an address set that already has a canonical one.
+  // 10.0.0.0/8 then 10.0.0.0/16 ascends by the sort key yet the second is contained in the first;
+  // OpenSSL's own validator refuses it, so compacting it would launder a rejected certificate.
+  var ovl = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a", 0), ipBs("0a00", 0)])])])));
+  check("352a. an address list where one entry contains another falls back (no overlap)", r3779FellBack(ovl));
+  // 10.0.0.0/8 and 10.0.0.0/16 share a LOW address, so the strictly-ascending test already rejects
+  // them and the overlap test is never reached. A containment with a DIFFERING low address is the
+  // only shape that isolates it: 10.1.0.0/16 sorts after 10.0.0.0/8 yet lies inside it.
+  var ovl2 = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a", 0), ipBs("0a01", 0)])])])));
+  check("352a1. an ascending entry that still lies inside the previous one falls back", r3779FellBack(ovl2));
+  // ... and two genuinely disjoint, non-contiguous prefixes are unaffected by all three tests.
+  var disj = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a00", 7), ipBs("0b", 0)])])])));
+  check("352a2. two disjoint non-contiguous prefixes still compact", extIdInt(disj.id) === 32 && disj.exact);
+  // A range whose min is above its max denotes no addresses at all; it is not representable as a
+  // canonical entry, so the family declines rather than compacting an empty span.
+  var revRange = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([vB.sequence([ipBs("0a40", 0), ipBs("0a20", 0)])])])])));
+  check("352a3. a range whose min exceeds its max falls back", r3779FellBack(revRange));
+  // The encode-side mirror: a DER range that is exactly a prefix had to be written as a prefix, so
+  // it is not compacted -- its bytes are preserved and the defect stays visible to a validator.
+  var prefixRange = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([vB.sequence([ipBs("0a", 0), ipBs("0a", 0)])])])])));
+  check("352a4. a DER range that is exactly a prefix falls back", r3779FellBack(prefixRange));
+  // 10.0.0.0/9 and 10.128.0.0/9 abut exactly, so they were required to be one /8.
+  var adj = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a00", 7), ipBs("0a80", 7)])])])));
+  check("352b. two contiguous prefixes fall back (they had to be merged)", r3779FellBack(adj));
+  // The canonical form cannot be checked for an address family whose width this codec does not
+  // know, so such a family declines rather than compacting something unverifiable.
+  var unkAfi = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0063", "hex")),
+    vB.sequence([ipBs("0a20", 4)])])])));
+  check("352c. an address family of unknown width falls back", r3779FellBack(unkAfi));
+
+  var rdi = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(1n)])), vB.explicit(1, vB.sequence([vB.integer(2n)]))])));
+  check("353. a present rdi has no compact form and falls back (sec. 3.3)", r3779FellBack(rdi));
+  // RFC 3779 sec. 3.2.3.4 imposes the same three rules on AS identifiers, and they must hold ACROSS
+  // members: checking only within a range would admit a descending or contiguous pair.
+  var asDesc = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(64700n), vB.integer(64500n)]))])));
+  check("353a. a descending AS list falls back (sorted by increasing value)", r3779FellBack(asDesc));
+  var asAdj = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(64500n), vB.integer(64501n)]))])));
+  check("353b. two contiguous AS ids fall back (they had to be one range)", r3779FellBack(asAdj));
+  var asDup = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(64500n), vB.integer(64500n)]))])));
+  check("353c. a duplicated AS id falls back (no overlap)", r3779FellBack(asDup));
+  var asOvl = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.sequence([vB.integer(100n), vB.integer(200n)]), vB.integer(150n)]))])));
+  check("353d. an AS id inside the previous range falls back", r3779FellBack(asOvl));
+  // ... and a genuinely canonical list still compacts, so the gates are not simply refusing everything.
+  var asOk = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.sequence([vB.integer(100n), vB.integer(200n)]), vB.integer(202n)]))])));
+  check("353e. a sorted, non-overlapping, non-contiguous AS list still compacts", extIdInt(asOk.id) === 33 && asOk.exact);
+  var bigAs = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(4294967296n)]))])));
+  check("354. an ASId past 2^32-1 falls back rather than being truncated", r3779FellBack(bigAs));
+
+  // Decode side. The form choice is a SHALL, so accepting the wrong one would give one DER two CBOR
+  // encodings; every reject below is a malleability or bounds gate on attacker-supplied CBOR.
+  function extsHex(items) { return CBB.array(items).toString("hex"); }
+  function r3779Reject(hex) { return codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: hex })); }); }
+  check("355. a bytes-form family whose addresses all fit 8 octets -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.byteString(Buffer.from("00c00002", "hex"))])])])) === "c509/bad-extensions");
+  // The mixed member must EXCEED 8 octets, otherwise the "all fit 8 -> the int form was required"
+  // gate above fires first and this vector would pass without the mixed-form check existing at all.
+  check("356. a family mixing the int and bytes forms -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(29360130n), CBB.byteString(Buffer.from("0020010db8123456780000", "hex"))])])])) === "c509/bad-extensions");
+  check("357. a triple count that is not a multiple of three -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue()])])) === "c509/bad-extensions");
+  check("358. an empty IPAddrBlocks array -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([])])) === "c509/bad-extensions");
+  check("359. an empty address choice -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([])])])) === "c509/bad-extensions");
+  check("360. an AFI past two octets -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(65536n), CBB.nullValue(), CBB.array([CBB.uint(29360130n)])])])) === "c509/bad-extensions");
+  // The integer is (unusedBits + 1) || value, so its leading octet must be 1..8; zero is not one.
+  check("361. an IPAddress integer of zero -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0n)])])])) === "c509/bad-extensions");
+  // The bound is on the reconstructed ABSOLUTE, not the delta -- a chain can step out of range.
+  check("362. a delta chain that walks below one -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(29360130n), CBB.int(-29360130n)])])])) === "c509/bad-extensions");
+  check("363. an empty ASIdentifiers array -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([])])) === "c509/bad-extensions");
+  // The DECODE-side ASId bound. Check 354 covers the encode direction, which has its own bound --
+  // without these two, removing the decode bound changes nothing.
+  // An address may not be wider than its family (RFC 3779 sec. 2.2.3.8). Both forms and both
+  // directions bound it -- without the decode-side bound a native C509 would reconstruct into a DER
+  // carrying an over-wide address, from CBOR this codec had accepted.
+  check("362a. an over-wide address under AFI 1, int form -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(BigInt("0x01c0000201ff"))])])])) === "c509/bad-extensions");
+  check("362b. an over-wide address under AFI 1, bytes form -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.byteString(Buffer.from("0020010db8123456780000", "hex"))])])])) === "c509/bad-extensions");
+  check("362c. the same widths are legal under AFI 2 (IPv6)",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(2n), CBB.nullValue(), CBB.array([CBB.byteString(Buffer.from("0020010db8123456780000", "hex"))])])])) === "NO-THROW");
+  // A CBOR major type 7 is the WHOLE simple/float space -- true, false, undefined, every simple
+  // value and every float head. Only the simple value null (0xf6) means inherit, so testing the
+  // major type alone would let six distinct encodings reconstruct one identical certificate, all
+  // valid under its single signature. Every other null test in this module pins the simple value.
+  function inheritWith(simpleByte) {
+    return Buffer.concat([Buffer.from([0x82, 0x18, 0x20, 0x83, 0x01]), Buffer.from([simpleByte]), Buffer.from([0xf6])]).toString("hex");
+  }
+  check("362d. the canonical null (0xf6) is accepted in the SAFI slot", r3779Reject(inheritWith(0xf6)) === "NO-THROW");
+  check("362e. no other CBOR simple value passes as null", [0xf4, 0xf5, 0xf7, 0xf0].every(function (v) {
+    return r3779Reject(inheritWith(v)) === "c509/bad-extensions";
+  }));
+  // The SAFI slot is read first, so the same probe there would never reach the address-choice slot.
+  // This puts a canonical null in SAFI and the impostor in the CHOICE slot, isolating that test.
+  function choiceWith(simpleByte) {
+    return Buffer.concat([Buffer.from([0x82, 0x18, 0x20, 0x83, 0x01, 0xf6]), Buffer.from([simpleByte])]).toString("hex");
+  }
+  check("362e1. the address-choice slot accepts only the canonical null",
+    r3779Reject(choiceWith(0xf6)) === "NO-THROW" && [0xf4, 0xf5, 0xf7, 0xf0].every(function (v) {
+      return r3779Reject(choiceWith(v)) === "c509/bad-extensions";
+    }));
+  // The DECODE direction must enforce the same RFC 3779 canonical form the encode direction does,
+  // or a native C509 reconstructs a certificate an independent validator refuses -- from CBOR this
+  // codec had accepted. Both directions must hold or the pair is not a bijection.
+  // The ASIdentifiers value slot has its own inherit test, so it needs its own probe.
+  function asnumWith(simpleByte) {
+    return Buffer.concat([Buffer.from([0x82, 0x18, 0x21]), Buffer.from([simpleByte])]).toString("hex");
+  }
+  check("362e2. the ASIdentifiers slot accepts only the canonical null",
+    r3779Reject(asnumWith(0xf6)) === "NO-THROW" && [0xf4, 0xf5, 0xf7, 0xf0].every(function (v) {
+      return r3779Reject(asnumWith(v)) === "c509/bad-extensions";
+    }));
+  // RFC 3779 sec. 2.2.3.3 orders the FAMILIES too: unique per AFI/SAFI, ascending by addressFamily
+  // octets, and a family without a SAFI precedes the one sharing its AFI. An unsigned octet-string
+  // compare gives all three, because the two-octet form is a prefix of the three-octet one.
+  function fams(triples) { return extsHex([CBB.uint(32n), CBB.array(triples)]); }
+  var NUL = CBB.nullValue();
+  check("362o. address families in descending order are refused",
+    r3779Reject(fams([CBB.uint(2n), NUL, NUL, CBB.uint(1n), NUL, NUL])) === "c509/bad-extensions");
+  check("362p. the same address family twice is refused",
+    r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(1n), NUL, NUL])) === "c509/bad-extensions");
+  check("362q. a SAFI-bearing family before the plain one sharing its AFI is refused",
+    r3779Reject(fams([CBB.uint(1n), CBB.uint(1n), NUL, CBB.uint(1n), NUL, NUL])) === "c509/bad-extensions");
+  check("362r. ascending families are accepted",
+    r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(2n), NUL, NUL])) === "NO-THROW");
+  check("362s. a plain family before the SAFI-bearing one sharing its AFI is accepted",
+    r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(1n), CBB.uint(1n), NUL])) === "NO-THROW");
+  // RFC 3779 sec. 2.2.3.7 fixes which of the two arms a span uses: if the low address has every
+  // remaining bit zero and the high every remaining bit one, the span IS that prefix and the range
+  // arm is forbidden -- otherwise one address span would have two legal encodings.
+  // Without a family's address width NONE of the rules below can be evaluated -- the width bound
+  // has nothing to compare against and the low/high bounds driving order, overlap, adjacency and
+  // endpoint checks cannot be computed -- so a family this codec cannot measure is refused rather
+  // than waved through. The encode side already declined to compact one; this is its mirror.
+  // Asserting the REASON, not just the code: without the explicit width check the refusal still
+  // happens, but only because `length <= undefined` is false -- a coercion accident, not a rule,
+  // and one `width = width || 16` away from becoming an accept. The message pins the real check.
+  check("362v. an unknown address family carrying addresses is refused, naming the reason", (function () {
+    try { pki.schema.c509.parse(V.mk({ 9: extsHex([CBB.uint(32n), CBB.array([CBB.uint(0x63n), CBB.nullValue(), CBB.array([CBB.uint(0x010a20n)])])]) })); return false; }
+    catch (e) { return e.code === "c509/bad-extensions" && /no known address width/.test(e.message); }
+  })());
+  check("362w. an unknown family does not bypass the ordering rules",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(0x63n), CBB.nullValue(), CBB.array([CBB.uint(0x010a40n), CBB.uint(0x03FFE0n)])])])) === "c509/bad-extensions");
+  check("362x. an unknown family that INHERITS is still accepted (it carries no addresses)",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(0x63n), CBB.nullValue(), CBB.nullValue()])])) === "NO-THROW");
+  check("362t. a range that is exactly a prefix is refused on decode",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.array([CBB.uint(0x010an), CBB.uint(0n)])])])])) === "c509/bad-extensions");
+  check("362u. a span that is NOT a prefix keeps the range arm",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.array([CBB.uint(0x010a00n), CBB.uint(0x0100n)])])])])) === "NO-THROW");
+  check("362f. a descending address list is refused on decode",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x010a40n), CBB.uint(0x03FFE0n)])])])) === "c509/bad-extensions");
+  check("362g. an overlapping address list is refused on decode",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x01n), CBB.uint(0x109n)])])])) === "c509/bad-extensions");
+  check("362h. a contiguous address pair is refused on decode",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x080a00n), CBB.uint(0x80n)])])])) === "c509/bad-extensions");
+  // The draft's CDDL makes the AS deltas uint precisely because sec. 3.2.3.4 sorts ascending.
+  check("362i. a negative AS delta is refused on decode",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.uint(64700n), CBB.int(-200n)])])) === "c509/bad-extensions");
+  check("362j. a duplicated AS id is refused on decode",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.uint(64500n), CBB.uint(0n)])])) === "c509/bad-extensions");
+  check("362k. a contiguous AS pair is refused on decode",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.uint(64500n), CBB.uint(1n)])])) === "c509/bad-extensions");
+  check("362l. a canonical AS list still decodes",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.uint(64500n), CBB.uint(2n)])])) === "NO-THROW");
+  // DER requires a BIT STRING's declared unused bits to be zero. Enforced in this module so the
+  // caller sees its verdict rather than an asn1/* fault surfacing out of a CBOR-layer decode.
+  check("362m. an address whose declared unused bits are set -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x050a2fn)])])])) === "c509/bad-extensions");
+  check("362n. the same address with those bits cleared is accepted",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x050a20n)])])])) === "NO-THROW");
+  check("363a. a decoded ASId past 2^32-1 -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.uint(4294967296n)])])) === "c509/bad-extensions");
+  check("363b. an AS delta chain that steps past 2^32-1 -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.uint(4000000000n), CBB.uint(1000000000n)])])) === "c509/bad-extensions");
+  check("364. a non-ascending ASIdentifiers range -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(33n), CBB.array([CBB.array([CBB.uint(100n), CBB.uint(0n)])])])) === "c509/bad-extensions");
+  check("365. the A.5 IPv4 family parses from a native C509",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(29360130n), CBB.uint(24770733054n), CBB.int(-24770012047n)])])])) === "NO-THROW");
+  // The int domain reaches 2^64-1, so a Number narrowing anywhere in the chain would corrupt it.
+  // The leading octet IS the unused-bit count + 1, so it must be 1..8; 0xFF is not a DER one.
+  check("366. an IPAddress integer whose leading octet is not 1..8 -> c509/bad-extensions",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(72057594037927935n)])])])) === "c509/bad-extensions");
+  // 0x0120010db8123456 is a valid 7-octet IPv6 prefix and is well past 2^53, so any Number
+  // narrowing in the delta chain or the bound would corrupt it before it reached the DER.
+  check("366a. an IPAddress integer past 2^53 reconstructs without narrowing", (function () {
+    var v = BigInt("0x0120010db8123456");
+    var big = pki.schema.c509.parse(V.mk({ 9: extsHex([CBB.uint(32n), CBB.array([CBB.uint(2n), CBB.nullValue(), CBB.array([CBB.uint(v)])])]) }));
+    return v > 9007199254740991n && Buffer.isBuffer(big.reconstructedDer);
+  })());
+  check("367. all four RFC 3779 OIDs round-trip through the registry",
+    pki.oid.byName("ipAddrBlocks") === "1.3.6.1.5.5.7.1.7" && pki.oid.name("1.3.6.1.5.5.7.1.8") === "autonomousSysIds" &&
+    pki.oid.byName("ipAddrBlocksV2") === "1.3.6.1.5.5.7.1.28" && pki.oid.name("1.3.6.1.5.5.7.1.29") === "autonomousSysIdsV2");
 
   console.log("CHECKS " + helpers.getChecks());
 }
