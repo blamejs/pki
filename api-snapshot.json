@@ -800,6 +800,9 @@
             "NULL": {
               "kind": "number"
             },
+            "NUMERIC_STRING": {
+              "kind": "number"
+            },
             "OBJECT_IDENTIFIER": {
               "kind": "number"
             },

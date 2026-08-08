@@ -255,6 +255,20 @@ function testUniversalStringScalarRange() {
   // A valid UniversalString still decodes.
   var good = pki.asn1.encode(0x00, false, TAGS.UNIVERSAL_STRING, Buffer.from([0x00, 0x00, 0x00, 0x41]));
   check("valid UniversalString decodes", pki.asn1.read.string(pki.asn1.decode(good)) === "A");
+
+  // NumericString (X.680 sec. 41) permits ONLY the digits and SPACE -- it carries the X.520 syntax of the
+  // x121Address / internationalISDNNumber attributes, so it reads, and strictly: anything else is not a
+  // valid encoding of the type.
+  function numeric(s) { return pki.asn1.encode(0x00, false, TAGS.NUMERIC_STRING, Buffer.from(s, "latin1")); }
+  check("valid NumericString decodes", pki.asn1.read.string(pki.asn1.decode(numeric("123 456"))) === "123 456");
+  check("an empty NumericString decodes", pki.asn1.read.string(pki.asn1.decode(numeric(""))) === "");
+  check("a NumericString outside the digits-and-space set -> asn1/bad-numeric-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(numeric("12@4"))); }) === "asn1/bad-numeric-string");
+  check("a NumericString with a letter -> asn1/bad-numeric-string",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(numeric("12A"))); }) === "asn1/bad-numeric-string");
+  // NumericString has no DER constructed form (it is a primitive universal type).
+  check("a constructed NumericString -> asn1/constructed-primitive-type",
+    code(function () { pki.asn1.decode(Buffer.from([0x32, 0x03, 0x12, 0x01, 0x31])); }) === "asn1/constructed-primitive-type");
 }
 
 function testUtcTimeYearRange() {

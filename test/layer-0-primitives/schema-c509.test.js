@@ -1041,7 +1041,11 @@ async function run() {
   check("291. a ~oid-form constructed value that is an unsorted DER SET -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("3106020102020101"))); }) === "c509/bad-extensions");
   // a universal primitive with NO strict content validator is rejected, not accepted on framing alone: asn1.decode
   //   frames a malformed NumericString (12 01 40, "@" is outside its alphabet) and a high-tag-number type happily.
-  check("292. a ~oid-form value of a universal type with no strict validator (NumericString) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("120140"))); }) === "c509/bad-extensions");
+  check("292. a ~oid-form value that is a MALFORMED NumericString -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("120140"))); }) === "c509/bad-extensions");
+  // a VALID value of a type the codec can strictly validate stays usable -- an AttributeValue is ANY, so
+  //   refusing every unhandled tag would reject conformant certificates (NumericString carries the X.520
+  //   x121Address / internationalISDNNumber syntax).
+  check("292b. a ~oid-form value that is a VALID NumericString is accepted + reconstructs", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("1203313233"))).extensions[0]; var v = pki.asn1.decode(e.value).children[0].children[1].children[0]; return v.tagNumber === pki.asn1.TAGS.NUMERIC_STRING && pki.asn1.read.string(v) === "123"; })());
   check("293. a ~oid-form value of a high-tag-number universal type -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("1f81000141"))); }) === "c509/bad-extensions");
   // a plain GeneralizedTime value rides the compact form; the X.690 sec. 11.7 fractional-seconds relaxation is
   //   deliberately scoped to the codec + RFC 3161 timestamping, so a fractional value is not compact-representable
