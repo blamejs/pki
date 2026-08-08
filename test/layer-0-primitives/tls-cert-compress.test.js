@@ -118,6 +118,18 @@ function run() {
     pki.tls.parseCertificateMessage(listOf(1), { certificateType: "RawPublicKey" }).entries.length === 1);
   check("5m. RawPublicKey refuses a second entry (RFC 8446 sec. 4.4.2)",
     codeOf(function () { return pki.tls.parseCertificateMessage(listOf(2), { certificateType: "RawPublicKey" }); }) === "tls/bad-framing");
+  // A Certificate message is a handshake message BODY, framed by a uint24, so one past that
+  // ceiling could never have appeared on the wire. This entry point is reachable without going
+  // through decompression, so it applies the bound itself rather than inheriting it. The smallest
+  // over-limit message is only 4 bytes past: 1 context byte + a 3-byte list length of 0xffffff.
+  check("5n. a certificate message past the handshake framing limit -> tls/too-large", (function () {
+    var body = Buffer.alloc(0xffffff);
+    body.writeUIntBE(0xffffff - 5, 0, 3);
+    body.writeUInt16BE(0, 0xffffff - 2);
+    var over = Buffer.concat([Buffer.from([0]), Buffer.from([0xff, 0xff, 0xff]), body]);
+    return over.length === pki.C.LIMITS.TLS_CERT_MSG_MAX_BYTES + 4 &&
+      codeOf(function () { return pki.tls.parseCertificateMessage(over); }) === "tls/too-large";
+  })());
 
   // ==== the RFC 8879 sec. 5 bound, BOTH sides ================================================
   var good = zlib.deflateSync(MSG);
