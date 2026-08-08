@@ -1446,6 +1446,21 @@ async function run() {
     r3779Reject(asnumWith(0xf6)) === "NO-THROW" && [0xf4, 0xf5, 0xf7, 0xf0].every(function (v) {
       return r3779Reject(asnumWith(v)) === "c509/bad-extensions";
     }));
+  // RFC 3779 sec. 2.2.3.3 orders the FAMILIES too: unique per AFI/SAFI, ascending by addressFamily
+  // octets, and a family without a SAFI precedes the one sharing its AFI. An unsigned octet-string
+  // compare gives all three, because the two-octet form is a prefix of the three-octet one.
+  function fams(triples) { return extsHex([CBB.uint(32n), CBB.array(triples)]); }
+  var NUL = CBB.nullValue();
+  check("362o. address families in descending order are refused",
+    r3779Reject(fams([CBB.uint(2n), NUL, NUL, CBB.uint(1n), NUL, NUL])) === "c509/bad-extensions");
+  check("362p. the same address family twice is refused",
+    r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(1n), NUL, NUL])) === "c509/bad-extensions");
+  check("362q. a SAFI-bearing family before the plain one sharing its AFI is refused",
+    r3779Reject(fams([CBB.uint(1n), CBB.uint(1n), NUL, CBB.uint(1n), NUL, NUL])) === "c509/bad-extensions");
+  check("362r. ascending families are accepted",
+    r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(2n), NUL, NUL])) === "NO-THROW");
+  check("362s. a plain family before the SAFI-bearing one sharing its AFI is accepted",
+    r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(1n), CBB.uint(1n), NUL])) === "NO-THROW");
   check("362f. a descending address list is refused on decode",
     r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x010a40n), CBB.uint(0x03FFE0n)])])])) === "c509/bad-extensions");
   check("362g. an overlapping address list is refused on decode",
