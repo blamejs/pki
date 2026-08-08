@@ -68,7 +68,7 @@ function main() {
   } catch (e) {
     process.stderr.write("[generate-release-signing-key] node:crypto ML-DSA-65 keygen failed: " +
       ((e && e.message) || e) + "\n");
-    process.stderr.write("[generate-release-signing-key] ML-DSA requires the engine floor (Node >=24.18, OpenSSL 3.5).\n");
+    process.stderr.write("[generate-release-signing-key] ML-DSA requires the engine floor (Node >=24.19, OpenSSL 3.5).\n");
     process.exit(1);
   }
 

@@ -4,7 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.4.1 — 2026-08-08
+## v0.4.2 — 2026-08-08
+
+A NumericString attribute value no longer shares distinguished-name identity with a printable or UTF-8 value of the same characters -- the comparison that decides name chaining, revocation-issuer matching and name constraints. Alongside it, several C509 name-encoding conformance fixes and a move to Node 24.19.0.
+
+### Changed
+
+- The supported Node floor moves to 24.19.0, the current long-term-support release. Nothing is transpiled, so the supported version is the version the source runs on; the release is verified against that runtime.
+- pki.asn1.read.numericString reads a NumericString value, validated strictly to the digits and space the type permits. The shared string reader no longer accepts the type, so a caller that wants it asks for it by name.
+
+### Fixed
+
+- A NumericString attribute value no longer compares equal to a PrintableString or UTF8String attribute value carrying the same characters. RFC 5280 sec. 7.1 name comparison folds the directory-string types into one identity class, and NumericString is not one of them; because the previous release read it through the shared string reader, it entered that class and was treated as the same name by the comparison that decides certificate chaining, revocation-issuer matching and name-constraint evaluation. It now reads through its own reader and, as before, renders in the RFC 4514 hexadecimal form rather than as a plain string.
+- A natively signed C509 certificate is no longer accepted with, or built carrying, a negative attribute-type integer. The sign of that integer exists only to reproduce the string type of an original X.509 encoding, which a natively signed certificate does not have, so all of its integers are non-negative (draft-ietf-cose-cbor-encoded-cert-20 sec. 3.1.4); the toolkit previously read such a certificate and could also emit one that a conformant implementation must reject.
+- A country name or serial number attribute now keeps the string type its attribute integer's sign declares, and its restriction to the printable-string character subset is enforced on the characters instead. Both signs previously rebuilt the same certificate bytes, so two distinct compact encodings of one value produced one identical certificate under a single signature.
+- The rendered distinguished-name string now escapes its values (RFC 4514 sec. 2.4), so an attribute value containing a comma can no longer read as though the name held several attributes, and a control byte can no longer reach a log line unescaped.
+- An empty issuer name is now refused (RFC 5280 sec. 4.1.2.4 requires a non-empty issuer). It previously parsed and rebuilt a certificate that this toolkit's own certificate parser declines to load. An empty subject is still accepted; the profile pairs that with a subject alternative name, which this codec does not yet require.
+
+## v0.4.1 — 2026-08-07
 
 pki.schema.c509 encodes and decodes the compact subjectDirectoryAttributes value form -- a C509 certificate's subject directory attributes ride their draft-20 registry integers (or unwrapped OIDs) with their directory-string values, interoperating with a conformant C509 implementation rather than only this decoder.
 

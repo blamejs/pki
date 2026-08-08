@@ -6,7 +6,7 @@ vendors **nothing** — this directory holds only the manifest.
 ## Native-first crypto
 
 The toolkit's cryptography runs entirely on Node's built-in `node:crypto`. The
-engine floor (Node `>=24.18`) links OpenSSL 3.5, which provides:
+engine floor (Node `>=24.19`) links OpenSSL 3.5, which provides:
 
 - the full classical set — RSA (PKCS#1 v1.5, PSS, OAEP), ECDSA, EdDSA
   (Ed25519/Ed448), ECDH (incl. X25519/X448), AES (GCM/CBC/CTR/KW), HMAC, HKDF,
