@@ -4,7 +4,7 @@
 
 | Version          | First release | Security patches through   | Node minimum | Signature posture                       |
 |------------------|---------------|----------------------------|--------------|-----------------------------------------|
-| `v0.x` (pre-1.0) | 2026          | until v1.0 ships           | 24.18        | ML-DSA / SLH-DSA + classical (RSA/ECDSA/EdDSA) signatures via the WebCrypto engine |
+| `v0.x` (pre-1.0) | 2026          | until v1.0 ships           | 24.19        | ML-DSA / SLH-DSA + classical (RSA/ECDSA/EdDSA) signatures via the WebCrypto engine |
 | `v1.x`           | TBD           | first release + 24 months  | current LTS  | ML-DSA / SLH-DSA + classical signatures via the WebCrypto engine |
 
 ## What "security patches" means

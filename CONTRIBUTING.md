@@ -37,7 +37,7 @@ node scripts/test-integration.js
 docker compose -f docker-compose.test.yml down -v
 ```
 
-**Requirements:** Node.js 24.18 or newer. The toolkit runs on Node's crypto primitives as shipped and targets recent built-ins; older runtimes are out of scope. Nothing is transpiled — what ships is what runs.
+**Requirements:** Node.js 24.19 or newer. The toolkit runs on Node's crypto primitives as shipped and targets recent built-ins; older runtimes are out of scope. Nothing is transpiled — what ships is what runs.
 
 ## House rules
 

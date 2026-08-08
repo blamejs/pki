@@ -12,7 +12,7 @@
     "e2e": "node test/e2e.js"
   },
   "engines": {
-    "node": ">=24.18.0"
+    "node": ">=24.19.0"
   },
   "dependencies": {},
   "devDependencies": {}

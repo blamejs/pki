@@ -260,12 +260,18 @@ function testUniversalStringScalarRange() {
   // x121Address / internationalISDNNumber attributes, so it reads, and strictly: anything else is not a
   // valid encoding of the type.
   function numeric(s) { return pki.asn1.encode(0x00, false, TAGS.NUMERIC_STRING, Buffer.from(s, "latin1")); }
-  check("valid NumericString decodes", pki.asn1.read.string(pki.asn1.decode(numeric("123 456"))) === "123 456");
-  check("an empty NumericString decodes", pki.asn1.read.string(pki.asn1.decode(numeric(""))) === "");
+  check("valid NumericString decodes", pki.asn1.read.numericString(pki.asn1.decode(numeric("123 456"))) === "123 456");
+  check("an empty NumericString decodes", pki.asn1.read.numericString(pki.asn1.decode(numeric(""))) === "");
   check("a NumericString outside the digits-and-space set -> asn1/bad-numeric-string",
-    code(function () { pki.asn1.read.string(pki.asn1.decode(numeric("12@4"))); }) === "asn1/bad-numeric-string");
+    code(function () { pki.asn1.read.numericString(pki.asn1.decode(numeric("12@4"))); }) === "asn1/bad-numeric-string");
   check("a NumericString with a letter -> asn1/bad-numeric-string",
-    code(function () { pki.asn1.read.string(pki.asn1.decode(numeric("12A"))); }) === "asn1/bad-numeric-string");
+    code(function () { pki.asn1.read.numericString(pki.asn1.decode(numeric("12A"))); }) === "asn1/bad-numeric-string");
+  check("read.numericString refuses a non-NumericString node", code(function () { pki.asn1.read.numericString(pki.asn1.decode(pki.asn1.build.printable("12"))); }) === "asn1/unexpected-tag");
+  // NumericString is read ONLY through its own reader. read.string covers the DirectoryString-family types that
+  // RFC 5280 sec. 7.1 name comparison folds together; admitting NumericString there would put a NumericString
+  // attribute into the SAME distinguished-name identity class as a PrintableString/UTF8String one.
+  check("read.string does NOT accept a NumericString (it is not a DirectoryString type)",
+    code(function () { pki.asn1.read.string(pki.asn1.decode(numeric("123"))); }) === "asn1/expected-string");
   // NumericString has no DER constructed form (it is a primitive universal type).
   check("a constructed NumericString -> asn1/constructed-primitive-type",
     code(function () { pki.asn1.decode(Buffer.from([0x32, 0x03, 0x12, 0x01, 0x31])); }) === "asn1/constructed-primitive-type");

@@ -1019,7 +1019,11 @@ async function run() {
   //         are PrintableString-restricted -- a non-negative (utf8String) sign fails closed, not coerced.
   check("281. a ~oid-form subjectDirectoryAttributes value that is an EMPTY byte string -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.alloc(0))])])))); }) === "c509/bad-extensions");
   check("282. a ~oid-form value byte string carrying more than one DER TLV -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.concat([b.utf8("A"), b.utf8("B")]))])])))); }) === "c509/bad-extensions");
-  check("283. a countryName int with the non-negative (utf8String) sign -> c509/bad-extensions (PrintableString-restricted)", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(4n), CBb.array([CBb.textString("US")])])))); }) === "c509/bad-extensions");
+  // countryName / serialNumber carry a CHARACTER restriction (draft sec. 3.1.4 "SHALL contain only characters
+  //   from the 74-character ASCII subset permitted by PrintableString"), NOT a sign override -- the sign still
+  //   declares the string type, so the +N and -N encodings of one value must NOT reconstruct identical DER.
+  check("283. an SDA countryName with the non-negative sign rides utf8String (the sign declares the type)", (function () { var e = pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(4n), CBb.array([CBb.textString("US")])])))).extensions[0]; var v = pki.asn1.decode(e.value).children[0].children[1].children[0]; return v.tagNumber === pki.asn1.TAGS.UTF8_STRING; })());
+  check("283b. an SDA countryName whose characters leave the PrintableString subset -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(4n), CBb.array([CBb.textString("U@")])])))); }) === "c509/bad-extensions");
   check("284. a ~oid-form value byte string that is not well-formed DER -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.byteString(pki.asn1.encodeOidContent("1.2.3.4")), CBb.array([CBb.byteString(Buffer.from("04", "hex"))])])))); }) === "c509/bad-extensions");
   // 25. a native value invalid for its int-form string type (a printableString sign over a value with characters
   //     outside the PrintableString alphabet) fails in THIS module's domain (c509/bad-extensions), never leaking
@@ -1045,7 +1049,7 @@ async function run() {
   // a VALID value of a type the codec can strictly validate stays usable -- an AttributeValue is ANY, so
   //   refusing every unhandled tag would reject conformant certificates (NumericString carries the X.520
   //   x121Address / internationalISDNNumber syntax).
-  check("292b. a ~oid-form value that is a VALID NumericString is accepted + reconstructs", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("1203313233"))).extensions[0]; var v = pki.asn1.decode(e.value).children[0].children[1].children[0]; return v.tagNumber === pki.asn1.TAGS.NUMERIC_STRING && pki.asn1.read.string(v) === "123"; })());
+  check("292b. a ~oid-form value that is a VALID NumericString is accepted + reconstructs", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("1203313233"))).extensions[0]; var v = pki.asn1.decode(e.value).children[0].children[1].children[0]; return v.tagNumber === pki.asn1.TAGS.NUMERIC_STRING && pki.asn1.read.numericString(v) === "123"; })());
   check("293. a ~oid-form value of a high-tag-number universal type -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("1f81000141"))); }) === "c509/bad-extensions");
   // a plain GeneralizedTime value rides the compact form; the X.690 sec. 11.7 fractional-seconds relaxation is
   //   deliberately scoped to the codec + RFC 3161 timestamping, so a fractional value is not compact-representable
@@ -1117,8 +1121,12 @@ async function run() {
     var sig = b.sequence([b.integer(BigInt("0x01" + "00".repeat(31))), b.integer(BigInt("0x01" + "00".repeat(31)))]);
     return b.sequence([tbs, sigAlg, b.bitString(sig, 0)]);
   }
-  check("307. a DN attribute carrying an IA5String value on a non-IA5-only type -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(certWithDnAttr("commonName", b.ia5("leaf")), { issuerCurve: "P-256" }); }) === "c509/non-invertible");
-  check("308. a DN emailAddress carrying a non-IA5String value -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(certWithDnAttr("emailAddress", b.utf8("a@b.example")), { issuerCurve: "P-256" }); }) === "c509/non-invertible");
+  // NOTE these assert the SPECIFIC verdict text, not just the code: without the attribute/string-type check the
+  //   byte-exactness self-verify still throws c509/non-invertible, so a code-only assertion would pass either
+  //   way and guard nothing. The message is what distinguishes the precise check from the generic mismatch.
+  function encMsg(der) { try { pki.schema.c509.encode(der, { issuerCurve: "P-256" }); return "NO-THROW"; } catch (e) { return String(e.message || ""); } }
+  check("307. a DN attribute carrying an IA5String value on a non-IA5-only type -> the sec. 8.6 int-form verdict", /attribute commonName carries a IA5String value/.test(encMsg(certWithDnAttr("commonName", b.ia5("leaf")))));
+  check("308. a DN emailAddress carrying a non-IA5String value -> the sec. 8.6 int-form verdict", /attribute emailAddress carries a non-IA5String value/.test(encMsg(certWithDnAttr("emailAddress", b.utf8("a@b.example")))));
   // a native Name's (type, sign) pair DECLARES an X.509 string type, so its text must be valid for that type --
   //   checked at PARSE with the same builder the reconstruction uses, so a type-2 certificate (which never
   //   reconstructs) is held to the identical rule and the builder's asn1/* fault never reaches the parse surface.
@@ -1163,6 +1171,52 @@ async function run() {
   //   reads, a commonName longer than ub-common-name (64), so refusing one here would make encode reject a
   //   certificate this toolkit itself mints. Only the unambiguous bounds (non-empty, countryName exactly 2) bind.
   check("326. a commonName longer than the X.520 ub-common-name still parses (the maxima are not relying-party rejects)", pki.schema.c509.parse(V.mk({ 6: nameField(1, "A".repeat(70)) })).subject.dn === "CN=" + "A".repeat(70));
+  // draft sec. 3.1.4: "in natively signed C509 certificates all CBOR ints SHALL be non-negative". The sign only
+  //   exists to reproduce an original DER's string type, which a native certificate does not have.
+  check("327. a type-2 Name attribute type integer that is negative -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(type2WithSubject(nameField(-1, "RFC test CA"))); }) === "c509/bad-name");
+  check("328. a type-2 Name attribute type integer that is non-negative stays valid", pki.schema.c509.parse(type2WithSubject(nameField(1, "RFC test CA"))).subject.dn === "CN=RFC test CA");
+  check("329. a type-3 Name attribute type integer may be negative (it selects printableString)", pki.schema.c509.parse(V.mk({ 6: nameField(-1, "x") })).subject.dn === "CN=x");
+  // the sign DECLARES the string type for countryName/serialNumber too, so the +N and -N encodings of one value
+  //   must reconstruct DIFFERENT DER -- otherwise one X.509 signature would cover two distinct C509 encodings.
+  check("330. countryName +4 and -4 reconstruct DIFFERENT DER (no encoding malleability)", (function () {
+    function valueTag(i) { var r = pki.schema.c509.parse(V.mk({ 6: nameField(i, "SE") })); return pki.asn1.decode(r.reconstructedDer).children[0].children[5].children[0].children[0].children[1].tagNumber; }
+    return valueTag(-4) === pki.asn1.TAGS.PRINTABLE_STRING && valueTag(4) === pki.asn1.TAGS.UTF8_STRING;
+  })());
+  check("331. a countryName whose characters leave the PrintableString subset -> c509/bad-name regardless of sign", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(4, "S@") })); }) === "c509/bad-name");
+  // the rendered dn is an RFC 4514 string: every value is escaped through the shared guard, so a single
+  //   attribute containing a comma cannot render identically to a genuine multi-RDN name, and the string
+  //   agrees with what x509.parse renders for the very same reconstructed DER.
+  var dnSpoof = pki.schema.c509.parse(V.mk({ 6: nameField(1, "Good CA,O=Trusted") }));
+  var dnTwoRdn = pki.schema.c509.parse(V.mk({ 6: CB.build.array([CB.build.int(1n), CB.build.textString("Good CA"), CB.build.int(8n), CB.build.textString("Trusted")]).toString("hex") }));
+  check("332. a comma inside one attribute value is escaped, not confusable with a two-RDN name", dnSpoof.subject.dn !== dnTwoRdn.subject.dn && dnSpoof.subject.dn.indexOf("\\,") >= 0);
+  check("333. the escaped VALUE matches what x509.parse renders for the same reconstructed DER", (function () { var x = pki.schema.x509.parse(dnSpoof.reconstructedDer).subject.dn; return x.indexOf("Good CA\\,O=Trusted") >= 0 && dnSpoof.subject.dn.indexOf("Good CA\\,O=Trusted") >= 0; })());
+  // RFC 5280 sec. 4.1.2.4: the ISSUER must be a non-empty distinguished name (only the subject may be empty).
+  //   Accepting an empty issuer produced a reconstructedDer this toolkit's OWN x509.parse refuses to load.
+  check("335. an empty issuer Name -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: CB.build.array([]).toString("hex") })); }) === "c509/bad-name");
+  // (the profile pairs an empty subject with a subjectAltName; this codec does not yet require that pairing,
+  //  so this pins only that an empty subject is not rejected outright and still rebuilds a loadable certificate)
+  check("336. an empty SUBJECT Name is not rejected and its reconstruction re-parses", (function () { var r = pki.schema.c509.parse(V.mk({ 6: CB.build.array([]).toString("hex") })); pki.schema.x509.parse(r.reconstructedDer); return true; })());
+  // draft sec. 3.1.4 binds EVERY int in a natively signed certificate, so the rule must reach every NESTED Name
+  //   too -- the sec. 8.13 directoryName inside subjectAltName / nameConstraints / authorityKeyIdentifier /
+  //   cRLDistributionPoints, and the subjectDirectoryAttributes int form -- not only the top-level issuer/subject.
+  var CBb2 = CB.build;
+  function gnFlat(sign) { return [CBb2.int(4n), CBb2.array([CBb2.int(BigInt(sign)), CBb2.textString("evil")])]; }
+  function nestedExt(kind, sign) {
+    if (kind === "san") return CBb2.array([CBb2.int(3n), CBb2.array(gnFlat(sign))]).toString("hex");
+    if (kind === "nc") return CBb2.array([CBb2.int(26n), CBb2.array([CBb2.array(gnFlat(sign)), CBb2.nullValue()])]).toString("hex");
+    if (kind === "aki") return CBb2.array([CBb2.int(7n), CBb2.array([CBb2.byteString(Buffer.from("aabb", "hex")), CBb2.array(gnFlat(sign)), CBb2.byteString(Buffer.from("01", "hex"))])]).toString("hex");
+    if (kind === "crldp") return CBb2.array([CBb2.int(5n), CBb2.array([CBb2.array([CBb2.textString("http://x/c.crl"), CBb2.nullValue(), CBb2.array([CBb2.int(BigInt(sign)), CBb2.textString("evil")])])])]).toString("hex");
+    return CBb2.array([CBb2.int(24n), CBb2.array([CBb2.int(BigInt(sign < 0 ? -4 : 4)), CBb2.array([CBb2.textString("SE")])])]).toString("hex");
+  }
+  function type2WithExts(hex) { var g = t2Fields.slice(); g[9] = hex; return Buffer.from("8b" + g.join(""), "hex"); }
+  ["san", "nc", "aki", "crldp", "sda"].forEach(function (kind, i) {
+    check("337." + String.fromCharCode(97 + i) + " a type-2 negative attribute integer in a nested Name (" + kind + ") is rejected", /^c509\/bad-(name|extensions)$/.test(codeSync(function () { return pki.schema.c509.parse(type2WithExts(nestedExt(kind, -1))); })));
+    check("338." + String.fromCharCode(97 + i) + " the same nested Name with a non-negative integer stays valid in a type-2 (" + kind + ")", codeSync(function () { return pki.schema.c509.parse(type2WithExts(nestedExt(kind, 1))); }) === "NO-THROW");
+    check("339." + String.fromCharCode(97 + i) + " a type-3 may still carry the negative integer there (it selects printableString) (" + kind + ")", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: nestedExt(kind, -1) })); }) === "NO-THROW");
+  });
+  // the empty-issuer rule binds the EFFECTIVE issuer: a CBOR-null issuer means issuer == subject.
+  check("340. a self-signed C509 (null issuer) with an empty subject -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "f6", 6: "80" })); }) === "c509/bad-name");
+  check("334. a control byte in a name value is escaped in the rendered dn (never emitted raw)", (function () { var d = pki.schema.c509.parse(V.mk({ 6: nameField(1, "a" + String.fromCharCode(13) + "b") })).subject.dn; return d.indexOf(String.fromCharCode(13)) < 0 && d.indexOf("\\0D") >= 0; })());
 
   console.log("CHECKS " + helpers.getChecks());
 }

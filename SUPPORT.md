@@ -19,7 +19,7 @@ whatever you need.
 A tight report gets a fast answer. Please include:
 
 - The version you are on — a `v0.X.Y` tag, or the `main` `<sha>` you tested.
-- Your Node.js version (`node -v`). The toolkit targets Node 24.18+ and runs on
+- Your Node.js version (`node -v`). The toolkit targets Node 24.19+ and runs on
   the shipped runtime with no build step.
 - A **minimal reproducer**. Because most of the surface is parsing bytes, the
   best reproducer is usually the exact certificate, DER blob, PEM, or message

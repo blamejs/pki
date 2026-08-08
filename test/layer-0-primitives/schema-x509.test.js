@@ -13,6 +13,9 @@ var check = helpers.check;
 var vectors = helpers.vectors;
 var pkix = require("../../lib/schema-pkix");
 var oidReg = require("../../lib/oid");
+var signing = require("../helpers/signing");
+var guard = require("../../lib/guard-all");
+var errors = require("../../lib/framework-error");
 function code(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code; } }
 
 var EXPECT = vectors.CERT_EC_EXPECT;
@@ -803,6 +806,42 @@ function testMlKemCertificates() {
   var badCert = b.sequence([b.sequence(kids), good.children[1].bytes, good.children[2].bytes]);
   check("ML-KEM SPKI with NULL parameters -> rejected by the shared algorithmIdentifier choke point",
     code(function () { pki.schema.x509.parse(badCert); }) !== "NO-THROW");
+
+  // DISTINGUISHED-NAME IDENTITY: RFC 5280 sec. 7.1 name comparison folds the DirectoryString family together,
+  // so an attribute value read as a plain string enters that identity class -- the class guard.name.dnEqual
+  // decides name chaining, revocation-issuer matching and name constraints on. A NumericString is NOT a
+  // DirectoryString type, so it must NOT canonicalize to the same string as a PrintableString/UTF8String value
+  // with the same characters; it keeps the RFC 4514 hex form. (Admitting it to the shared string reader once
+  // widened this silently across the whole toolkit.)
+  var dnB = pki.asn1.build, dnO = pki.oid.byName;
+  function dnCertWith(valueTlv) {
+    var sk = signing.makeSigner("ec-p256");
+    var pt = pki.asn1.read.bitString(pki.asn1.decode(sk.spki).children[1]).bytes;
+    var nm = dnB.sequence([dnB.set([dnB.sequence([dnB.oid(dnO("commonName")), valueTlv])])]);
+    var alg = dnB.sequence([dnB.oid(dnO("ecdsaWithSHA256"))]);
+    var tbs = dnB.sequence([dnB.explicit(0, dnB.integer(2n)), dnB.integer(1n), alg, nm,
+      dnB.sequence([dnB.utcTime(new Date("2026-01-01T00:00:00Z")), dnB.utcTime(new Date("2027-01-01T00:00:00Z"))]), nm,
+      dnB.sequence([dnB.sequence([dnB.oid(dnO("ecPublicKey")), dnB.oid(dnO("prime256v1"))]), dnB.bitString(pt, 0)]),
+      dnB.explicit(3, dnB.sequence([dnB.sequence([dnB.oid(dnO("basicConstraints")), dnB.octetString(dnB.sequence([]))])]))]);
+    return dnB.sequence([tbs, alg, dnB.bitString(dnB.sequence([dnB.integer(1n), dnB.integer(1n)]), 0)]);
+  }
+  var numTlv = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NUMERIC_STRING, Buffer.from("123", "latin1"));
+  var dnPrintable = pki.schema.x509.parse(dnCertWith(dnB.printable("123"))).subject;
+  var dnNumeric = pki.schema.x509.parse(dnCertWith(numTlv)).subject;
+  var dnUtf8 = pki.schema.x509.parse(dnCertWith(dnB.utf8("123"))).subject;
+  check("a NumericString attribute value does NOT share DN identity with a PrintableString one",
+    guard.name.dnEqual(dnPrintable.rdns, dnNumeric.rdns, errors.CertificateError, "x509/bad-name", "dn") === false);
+  check("a NumericString attribute value keeps its RFC 4514 hex form, not a plain string",
+    dnNumeric.dn === "CN=#1203313233" && dnPrintable.dn === "CN=123");
+  // Falling to the opaque hex form must not mean skipping validation: the type has its own strict reader, so a
+  // value outside its alphabet is malformed DER and is refused rather than rendered as opaque bytes.
+  var numBad = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NUMERIC_STRING, Buffer.from("12@4", "latin1"));
+  check("a malformed NumericString attribute value is rejected, not rendered as opaque hex",
+    code(function () { pki.schema.x509.parse(dnCertWith(numBad)); }) === "x509/bad-atv");
+  check("a valid NumericString attribute value is still accepted in its type-distinct hex form",
+    dnNumeric.dn === "CN=#1203313233");
+  check("PrintableString and UTF8String DO still share DN identity (RFC 5280 sec. 7.1)",
+    guard.name.dnEqual(dnPrintable.rdns, dnUtf8.rdns, errors.CertificateError, "x509/bad-name", "dn") === true);
 }
 
 module.exports = { run: run };
