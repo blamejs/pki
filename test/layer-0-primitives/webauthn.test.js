@@ -694,7 +694,8 @@ async function testAndroidSafetyNet() {
       : crypto.createHash("sha256").update(Buffer.concat([authData, cdh])).digest().toString("base64");
     var header = { alg: o.alg || "RS256",
       x5c: o.x5cRaw || (o.x5c || [leafDer, rootDer]).map(function (d) { return d.toString("base64"); }) };
-    var payload = { nonce: nonce, timestampMs: 1767225600000, ctsProfileMatch: true, basicIntegrity: true };
+    var payload = Object.assign({ nonce: nonce, timestampMs: 1767225600000, ctsProfileMatch: true, basicIntegrity: true }, o.payloadExtra || {});
+    (o.payloadOmit || []).forEach(function (k) { delete payload[k]; });
     var h64 = b64uEnc(Buffer.from(JSON.stringify(header), "utf8"));
     var p64 = b64uEnc(Buffer.from(JSON.stringify(payload), "utf8"));
     var sig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" },
@@ -758,6 +759,26 @@ async function testAndroidSafetyNet() {
   // statement, refused before any field is trusted.
   check("safetynet: an attStmt carrying an unexpected field is refused",
     (await codeFor({ attStmtPairs: [[cText("ver"), cText("1")], [cText("response"), cBytes(Buffer.from("a.b.c", "utf8"))], [cText("extra"), cText("x")]] })) === "webauthn/bad-att-stmt");
+
+  // ---- device-integrity signals: surfaced, and enforced only on request ----
+  // The sec. 8.5 verification procedure never mentions these, so the attestation verdict does not
+  // turn on them -- but a relying party cannot apply its own policy to a signal it never sees, so
+  // they are surfaced, and a caller that asks for enforcement gets it.
+  var failedCts = await codeFor({ payloadExtra: { ctsProfileMatch: false, basicIntegrity: false } });
+  check("safetynet: a device that failed the compatibility suite still verifies per sec. 8.5",
+    failedCts && failedCts.verified === true);
+  check("safetynet: ... and the failing signals are surfaced for relying-party policy",
+    failedCts.safetyNet.ctsProfileMatch === false && failedCts.safetyNet.basicIntegrity === false);
+  check("safetynet: a passing device surfaces its signals too",
+    (await codeFor({})).safetyNet.ctsProfileMatch === true);
+  check("safetynet: opts.requireCtsProfileMatch refuses a device that failed",
+    (await codeFor({ payloadExtra: { ctsProfileMatch: false } }, { requireCtsProfileMatch: true })) === "webauthn/safetynet-cts-profile");
+  check("safetynet: opts.requireCtsProfileMatch refuses a response that omits the signal",
+    (await codeFor({ payloadOmit: ["ctsProfileMatch"] }, { requireCtsProfileMatch: true })) === "webauthn/safetynet-cts-profile");
+  check("safetynet: opts.requireCtsProfileMatch accepts a device that passed",
+    (await codeFor({}, { requireCtsProfileMatch: true })).verified === true);
+  check("safetynet: a non-boolean requireCtsProfileMatch is a config-time fault",
+    (await codeFor({}, { requireCtsProfileMatch: "yes" })) === "webauthn/bad-input");
 
   // ---- the remaining x5c / anchor shapes ----
   // An x5c entry is standard base64 of one DER certificate; neither half may be assumed.
