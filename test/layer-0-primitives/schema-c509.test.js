@@ -1115,6 +1115,15 @@ async function run() {
   }
   check("307. a DN attribute carrying an IA5String value on a non-IA5-only type -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(certWithDnAttr("commonName", b.ia5("leaf")), { issuerCurve: "P-256" }); }) === "c509/non-invertible");
   check("308. a DN emailAddress carrying a non-IA5String value -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(certWithDnAttr("emailAddress", b.utf8("a@b.example")), { issuerCurve: "P-256" }); }) === "c509/non-invertible");
+  // a native Name's (type, sign) pair DECLARES an X.509 string type, so its text must be valid for that type --
+  //   checked at PARSE with the same builder the reconstruction uses, so a type-2 certificate (which never
+  //   reconstructs) is held to the identical rule and the builder's asn1/* fault never reaches the parse surface.
+  function nameField(intVal, text) { return CB.build.array([CB.build.int(BigInt(intVal)), CB.build.textString(text)]).toString("hex"); }
+  var eAcute = String.fromCharCode(0xe9);
+  check("309. a native Name emailAddress (int 0) with a non-ASCII value -> c509/bad-name (not asn1/*)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(0, eAcute + "@b.example") })); }) === "c509/bad-name");
+  check("310. a native Name printableString-sign attribute with a non-PrintableString value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-1, eAcute) })); }) === "c509/bad-name");
+  check("311. a native Name countryName with a non-PrintableString value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-4, eAcute + "S") })); }) === "c509/bad-name");
+  check("312. a native Name utf8String-sign attribute with a non-ASCII value stays valid", pki.schema.c509.parse(V.mk({ 6: nameField(1, eAcute) })).subject.dn === "CN=" + eAcute);
 
   console.log("CHECKS " + helpers.getChecks());
 }
