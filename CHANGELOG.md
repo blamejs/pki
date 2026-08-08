@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.6 — 2026-08-08
+
+A C509 certificate now has one encoding where the specification defines one -- nine alternative spellings that rebuilt a byte-identical X.509 certificate, so that a single signature covered all of them, are refused, and the encoder emits the spelling it accepts.
+
+### Fixed
+
+- An attribute value now carries the one spelling the specification assigns it. A text value of even length drawn only from the characters 0-9 and a-f is a byte string; a value in EUI-64 form is a tagged MAC address, 48-bit when it matches the FF-FE marker pattern and 64-bit otherwise; anything else is text. Each alternative spelling rebuilt the identical certificate, so the one signature over it covered them all. An empty value spelled as an empty byte string is refused for the same reason -- it renders as the empty text, which already has a spelling.
+- A name holding a single common name is the bare value, not an array of one pair; an extensions field holding only a key usage is the single integer, not an array of two; and an alternative name holding exactly one DNS name is the bare text, not an array. Each of these compact forms is the encoding the specification defines for that case, and the long form of the same value is now refused rather than accepted alongside it. The long form remains the encoding for every case that is not the single one -- a name with two attributes, a key usage beside another extension, an alternative name with two entries.
+- A certificate whose issuer is identical to its subject encodes that issuer as the CBOR simple value null, which the specification requires and which this toolkit previously wrote out in full. Both directions changed: the encoder emits the null, and a certificate that spells the issuer out instead is refused. The comparison is made on the certificate's own bytes rather than on a normalized name, because the reconstruction rebuilds a null issuer from the subject -- two names that merely compare equal would rebuild different bytes and break the signature over them.
+- Algorithm parameters must be a complete element. An empty byte string is none, and it rebuilt the same algorithm identifier as the form that omits parameters entirely, giving one algorithm two encodings.
+- The encoder walks the same rules it enforces on the way in, so a certificate it emits is one it reads back. Previously it wrote an even-length-hex attribute value as text -- a spelling its own parser now refuses -- and wrote a self-signed certificate's issuer out in full.
+
+### Known limitations
+
+- One redundancy remains because the specification permits it: a registered algorithm may be encoded either as its registry integer or as its object identifier, and both are accepted, so a certificate using one is byte-different from the same certificate using the other. Identify a certificate by the X.509 bytes it reconstructs rather than by its C509 bytes.
+
 ## v0.4.5 — 2026-08-08
 
 A private key created outside this toolkit's own WebCrypto now signs and exports across the toolkit -- a key from the platform's WebCrypto, or from a separately-installed copy of this toolkit, previously reached the crypto library as a key it could not read and failed with a type error instead of a reason.

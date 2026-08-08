@@ -81,9 +81,15 @@ async function run() {
   // a ~oid signatureAlgorithm (bare OID content) resolves to the SAME name and reconstructs byte-exact.
   var oidAlg = pki.schema.c509.parse(V.mk({ 2: "482a8648ce3d040302" }));
   check("33. a ~oid signatureAlgorithm resolves + round-trips byte-exact", oidAlg.signatureAlgorithm.name === "ecdsaWithSHA256" && oidAlg.reconstructedDer.equals(V.A1.der));
-  // an [~oid, params] algorithm array form decodes with surfaced parameters.
-  var arrAlg = pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d04030240" }));
+  // an [~oid, params] algorithm array form decodes with surfaced parameters (a DER NULL here).
+  var arrAlg = pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d040302420500" }));
   check("34. an [~oid, params] algorithm array form decodes", arrAlg.signatureAlgorithm.name === "ecdsaWithSHA256");
+  // The parameters carry one complete DER element. An empty byte string is no element, and it rebuilds
+  // the same AlgorithmIdentifier the bare ~oid form already spells -- one algorithm, two encodings.
+  check("34a. empty [~oid, h(0)] algorithm parameters are refused", (function () {
+    try { pki.schema.c509.parse(V.mk({ 2: "82482a8648ce3d04030240" })); return false; }
+    catch (e) { return e.code === "c509/unknown-algorithm" && /must not be an empty byte string/.test(e.message); }
+  })());
 
   // ==== no-expiry validity (notAfter == null) ====
   var noExpiry = pki.schema.c509.parse(V.mk({ 5: "f6" }));
@@ -106,9 +112,19 @@ async function run() {
   check("41. an algorithm that is not int / ~oid / array -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "f5" })); }) === "c509/unknown-algorithm");
   check("42. an attribute value that is not a SpecialText -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "8201f5" })); }) === "c509/bad-name");
   check("43. an extensions field that is neither an array nor a keyUsage int -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: "6141" })); }) === "c509/bad-extensions");
-  // array-form extensions (int extensionID and ~oid extensionID) round-trip to the same keyUsage DER.
-  // The int-id form carries the compact KeyUsage value (uint 1 = digitalSignature, draft-20 sec. 3.3).
-  check("44. an array-form int-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "820201" })).reconstructedDer.equals(V.A1.der));
+  // An extensions field holding ONLY keyUsage has one encoding: sec. 3.1.10 omits the array and encodes
+  // the single int. The array spelling of that one case is a second encoding of the same extensions, so
+  // it is refused -- otherwise one X.509 signature would cover both.
+  check("44. an extensions array holding only keyUsage is refused (the int shortcut is the encoding)", (function () {
+    try { pki.schema.c509.parse(V.mk({ 9: "820201" })); return false; }
+    catch (e) { return e.code === "c509/bad-extensions" && /must be encoded as a single CBOR int/.test(e.message); }
+  })());
+  // The array form remains the encoding as soon as it is not that one case -- here keyUsage alongside a
+  // second extension, which has no int shortcut and so round-trips through the array.
+  check("44a. an array-form int-id keyUsage beside another extension is still accepted", (function () {
+    var two = pki.schema.c509.parse(V.mk({ 9: "84014501020304050201" }));   // [1, h(kid), 2, 1]
+    return two.extensions.length === 2 && two.extensions[1].name === "keyUsage";
+  })());
   check("45. an array-form ~oid-id extension round-trips byte-exact", pki.schema.c509.parse(V.mk({ 9: "8243551d0f4403020780" })).reconstructedDer.equals(V.A1.der));
   // a subjectPublicKey algorithm outside the reconstruction covered set (Ed25519 via ~oid) fails closed.
   check("46. an unsupported subjectPublicKey algorithm (type-3) -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "432b6570" })); }) === "c509/non-invertible");
@@ -1170,26 +1186,35 @@ async function run() {
   //   checked at PARSE with the same builder the reconstruction uses, so a type-2 certificate (which never
   //   reconstructs) is held to the identical rule and the builder's asn1/* fault never reaches the parse surface.
   function nameField(intVal, text) { return CB.build.array([CB.build.int(BigInt(intVal)), CB.build.textString(text)]).toString("hex"); }
+  // sec. 3.1.4 encodes a Name of one +1 commonName as the bare SpecialText, so a vector whose subject IS
+  // that one case must use this spelling -- the array spelling of it is a second encoding and is refused.
+  function bareName(text) { return CB.build.textString(text).toString("hex"); }
   var eAcute = String.fromCharCode(0xe9);
   check("309. a native Name emailAddress (int 0) with a non-ASCII value -> c509/bad-name (not asn1/*)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(0, eAcute + "@b.example") })); }) === "c509/bad-name");
   check("310. a native Name printableString-sign attribute with a non-PrintableString value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-1, eAcute) })); }) === "c509/bad-name");
   check("311. a native Name countryName with a non-PrintableString value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-4, eAcute + "S") })); }) === "c509/bad-name");
-  check("312. a native Name utf8String-sign attribute with a non-ASCII value stays valid", pki.schema.c509.parse(V.mk({ 6: nameField(1, eAcute) })).subject.dn === "CN=" + eAcute);
+  check("312. a native Name utf8String-sign attribute with a non-ASCII value stays valid", pki.schema.c509.parse(V.mk({ 6: bareName(eAcute) })).subject.dn === "CN=" + eAcute);
   // the tag-48 MAC SpecialText shortcut is only unambiguous for the BARE (always-commonName) Name form: inside the
   //   array form the attribute integer still declares the string type, so a MAC value rebuilds as THAT type.
-  function macNameField(intVal) { return CB.build.array([CB.build.int(BigInt(intVal)), CB.build.tag(48, CB.build.byteString(Buffer.from("0123456789AB", "hex")))]).toString("hex"); }
-  function dnValueTag(intVal) {
-    var recon = pki.schema.c509.parse(V.mk({ 6: macNameField(intVal) })).reconstructedDer;
+  // `pad` appends a second attribute so the name is not the single-+1-commonName case, whose one
+  // encoding is the bare SpecialText -- the array form is the encoding for every other name.
+  function macNameField(intVal, pad) {
+    var items = [CB.build.int(BigInt(intVal)), CB.build.tag(48, CB.build.byteString(Buffer.from("0123456789AB", "hex")))];
+    if (pad) items = items.concat([CB.build.int(-3n), CB.build.textString("S1")]);
+    return CB.build.array(items).toString("hex");
+  }
+  function dnValueTag(intVal, pad) {
+    var recon = pki.schema.c509.parse(V.mk({ 6: macNameField(intVal, pad) })).reconstructedDer;
     return pki.asn1.decode(recon).children[0].children[5].children[0].children[0].children[1].tagNumber;
   }
   check("313. a tag-48 MAC value under emailAddress rebuilds as an IA5String (its declared type)", dnValueTag(0) === pki.asn1.TAGS.IA5_STRING);
   check("314. a tag-48 MAC value under a printableString-sign attribute rebuilds as a PrintableString", dnValueTag(-1) === pki.asn1.TAGS.PRINTABLE_STRING);
-  check("315. a tag-48 MAC value under commonName still rebuilds as a UTF8String", dnValueTag(1) === pki.asn1.TAGS.UTF8_STRING);
+  check("315. a tag-48 MAC value under commonName still rebuilds as a UTF8String", dnValueTag(1, true) === pki.asn1.TAGS.UTF8_STRING);
   // an attribute's registered ASN.1 type carries a SIZE constraint as well as an alphabet: every
   //   DirectoryString-valued attribute and emailAddress are SIZE (1..MAX), and countryName SHALL have length 2
   //   (draft sec. 3.1.4 / X.520). Enforced in the one place the value is built, so DN and SDA cannot disagree.
   check("316. a native Name countryName whose value is not length 2 -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-4, "USA") })); }) === "c509/bad-name");
-  check("317. a native Name attribute with an empty value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(1, "") })); }) === "c509/bad-name");
+  check("317. a native Name attribute with an empty value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: bareName("") })); }) === "c509/bad-name");
   check("318. a native Name countryName of length 2 stays valid", pki.schema.c509.parse(V.mk({ 6: nameField(-4, "US") })).subject.dn === "C=US");
   check("319. an SDA countryName whose value is not length 2 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(-4n), CBb.array([CBb.textString("USA")])])))); }) === "c509/bad-extensions");
   check("320. an SDA emailAddress with an empty value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(0n), CBb.array([CBb.textString("")])])))); }) === "c509/bad-extensions");
@@ -1209,7 +1234,7 @@ async function run() {
   // The X.520 ub-* attribute MAXIMA are deliberately NOT enforced: pki.x509.sign issues, and pki.schema.x509.parse
   //   reads, a commonName longer than ub-common-name (64), so refusing one here would make encode reject a
   //   certificate this toolkit itself mints. Only the unambiguous bounds (non-empty, countryName exactly 2) bind.
-  check("326. a commonName longer than the X.520 ub-common-name still parses (the maxima are not relying-party rejects)", pki.schema.c509.parse(V.mk({ 6: nameField(1, "A".repeat(70)) })).subject.dn === "CN=" + "A".repeat(70));
+  check("326. a commonName longer than the X.520 ub-common-name still parses (the maxima are not relying-party rejects)", pki.schema.c509.parse(V.mk({ 6: bareName("A".repeat(70)) })).subject.dn === "CN=" + "A".repeat(70));
   // draft sec. 3.1.4: "in natively signed C509 certificates all CBOR ints SHALL be non-negative". The sign only
   //   exists to reproduce an original DER's string type, which a native certificate does not have.
   check("327. a type-2 Name attribute type integer that is negative -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(type2WithSubject(nameField(-1, "RFC test CA"))); }) === "c509/bad-name");
@@ -1225,7 +1250,7 @@ async function run() {
   // the rendered dn is an RFC 4514 string: every value is escaped through the shared guard, so a single
   //   attribute containing a comma cannot render identically to a genuine multi-RDN name, and the string
   //   agrees with what x509.parse renders for the very same reconstructed DER.
-  var dnSpoof = pki.schema.c509.parse(V.mk({ 6: nameField(1, "Good CA,O=Trusted") }));
+  var dnSpoof = pki.schema.c509.parse(V.mk({ 6: bareName("Good CA,O=Trusted") }));
   var dnTwoRdn = pki.schema.c509.parse(V.mk({ 6: CB.build.array([CB.build.int(1n), CB.build.textString("Good CA"), CB.build.int(8n), CB.build.textString("Trusted")]).toString("hex") }));
   check("332. a comma inside one attribute value is escaped, not confusable with a two-RDN name", dnSpoof.subject.dn !== dnTwoRdn.subject.dn && dnSpoof.subject.dn.indexOf("\\,") >= 0);
   check("333. the escaped VALUE matches what x509.parse renders for the same reconstructed DER", (function () { var x = pki.schema.x509.parse(dnSpoof.reconstructedDer).subject.dn; return x.indexOf("Good CA\\,O=Trusted") >= 0 && dnSpoof.subject.dn.indexOf("Good CA\\,O=Trusted") >= 0; })());
@@ -1255,7 +1280,7 @@ async function run() {
   });
   // the empty-issuer rule binds the EFFECTIVE issuer: a CBOR-null issuer means issuer == subject.
   check("340. a self-signed C509 (null issuer) with an empty subject -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 3: "f6", 6: "80" })); }) === "c509/bad-name");
-  check("334. a control byte in a name value is escaped in the rendered dn (never emitted raw)", (function () { var d = pki.schema.c509.parse(V.mk({ 6: nameField(1, "a" + String.fromCharCode(13) + "b") })).subject.dn; return d.indexOf(String.fromCharCode(13)) < 0 && d.indexOf("\\0D") >= 0; })());
+  check("334. a control byte in a name value is escaped in the rendered dn (never emitted raw)", (function () { var d = pki.schema.c509.parse(V.mk({ 6: bareName("a" + String.fromCharCode(13) + "b") })).subject.dn; return d.indexOf(String.fromCharCode(13)) < 0 && d.indexOf("\\0D") >= 0; })());
 
   // ==== RFC 3779 IPAddrBlocks / ASIdentifiers (ext ints 32-35, draft sec. 3.3) =================
   // The draft ships a complete worked vector for these in Appendix A.5, so the encode side is
@@ -1531,6 +1556,118 @@ async function run() {
   check("367. all four RFC 3779 OIDs round-trip through the registry",
     pki.oid.byName("ipAddrBlocks") === "1.3.6.1.5.5.7.1.7" && pki.oid.name("1.3.6.1.5.5.7.1.8") === "autonomousSysIds" &&
     pki.oid.byName("ipAddrBlocksV2") === "1.3.6.1.5.5.7.1.28" && pki.oid.name("1.3.6.1.5.5.7.1.29") === "autonomousSysIdsV2");
+
+  // ==== canonical encoding forms: one certificate, one C509 encoding ====
+  // The A.1 certificate reconstructs to a fixed 316-byte DER. Where the specification fixes WHICH
+  // spelling a value takes, a second spelling of the same value is refused -- otherwise the one
+  // X.509 signature over that DER would cover several distinct C509 byte strings, and two different
+  // certificates-on-the-wire would name one certificate. Each vector below is a spelling that
+  // reconstructed the A.1 DER byte-for-byte before these rules landed.
+  function reason(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e.code + ": " + e.message; } }
+
+  // sec. 3.1.4 -- a Name of one +1 commonName is encoded as the bare SpecialText.
+  check("368. the array spelling of a lone +1 commonName Name is refused",
+    /c509\/bad-name: .*must be encoded as a bare SpecialText/.test(
+      reason(function () { return pki.schema.c509.parse(V.mk({ 3: CB.build.array([CB.build.int(1n), CB.build.textString("RFC test CA")]).toString("hex") })); })));
+  check("368a. the bare spelling of that same Name still parses",
+    pki.schema.c509.parse(V.mk({ 3: CB.build.textString("RFC test CA").toString("hex") })).reconstructedDer.equals(V.A1.der));
+  // ... and a -1 (printableString) commonName has no bare form, so its array spelling is the encoding.
+  check("368b. a lone -1 commonName keeps the array spelling",
+    pki.schema.c509.parse(V.mk({ 3: CB.build.array([CB.build.int(-1n), CB.build.textString("RFC test CA")]).toString("hex") })).issuer.dn === "CN=RFC test CA");
+
+  // sec. 3.1.4 -- an even-length run of '0'-'9'/'a'-'f' is encoded as a byte string.
+  check("369. an even-length-hex attribute value spelled as text is refused",
+    /c509\/bad-name: .*must be encoded as a CBOR byte string/.test(
+      reason(function () { return pki.schema.c509.parse(V.mk({ 3: CB.build.textString("abcd").toString("hex") })); })));
+  check("369a. the byte-string spelling of that value parses",
+    pki.schema.c509.parse(V.mk({ 3: CB.build.byteString(Buffer.from("abcd", "hex")).toString("hex") })).issuer.dn === "CN=abcd");
+  // An empty value renders as the empty text, so the byte-string spelling of it has no value to carry.
+  check("369b. an empty byte-string attribute value is refused",
+    /c509\/bad-name: .*must be encoded as a CBOR text string/.test(
+      reason(function () { return pki.schema.c509.parse(V.mk({ 3: CB.build.byteString(Buffer.alloc(0)).toString("hex") })); })));
+
+  // sec. 3.1.4 -- an EUI-64 is a tag-48 MAC address, 48-bit when it matches HH-HH-HH-FF-FE-HH-HH-HH.
+  check("370. an EUI-64 attribute value spelled as text is refused",
+    /c509\/bad-name: .*must be encoded as a CBOR tag-48 MAC address/.test(
+      reason(function () { return pki.schema.c509.parse(V.mk({ 6: CB.build.textString("01-23-45-FF-FE-67-89-AB").toString("hex") })); })));
+  check("371. an FF-FE EUI-64 spelled as a 64-bit MAC address is refused",
+    /c509\/bad-name: .*must be encoded as a 48-bit MAC address/.test(
+      reason(function () { return pki.schema.c509.parse(V.mk({ 6: CB.build.tag(48, CB.build.byteString(Buffer.from("012345fffe6789ab", "hex"))).toString("hex") })); })));
+  check("371a. an EUI-64 with no FF-FE keeps the 64-bit spelling",
+    pki.schema.c509.parse(V.mk({ 6: CB.build.tag(48, CB.build.byteString(Buffer.from("0123456789abcdef", "hex"))).toString("hex") })).subject.dn === "CN=01-23-45-67-89-AB-CD-EF");
+
+  // sec. 3.3 -- a subjectAltName of exactly one dNSName omits the array and the int.
+  check("372. the array spelling of a single-dNSName subjectAltName is refused",
+    /c509\/bad-extensions: .*must be encoded as a bare CBOR text string/.test(
+      reason(function () {
+        return pki.schema.c509.parse(V.mk({ 9: CB.build.array([CB.build.int(3n), CB.build.array([CB.build.int(2n), CB.build.textString("a.example")])]).toString("hex") }));
+      })));
+  check("372a. the bare-text spelling of that same subjectAltName parses",
+    pki.schema.c509.parse(V.mk({ 9: CB.build.array([CB.build.int(3n), CB.build.textString("a.example")]).toString("hex") })).extensions[0].name === "subjectAltName");
+
+  // The encoder walks the SAME cascade, so a certificate it produces is one it can read back. Each
+  // commonName below lands on a different arm; all four must survive DER -> C509 -> DER byte-for-byte,
+  // and each must reach the arm the specification names rather than merely round-tripping by luck.
+  var armKp = await pki.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var armSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", armKp.publicKey));
+  var ARMS = [
+    ["abcd", 2, "even-length hex -> byte string"],
+    ["01-23-45-FF-FE-67-89-AB", 6, "FF-FE EUI-64 -> 48-bit tag 48"],
+    ["01-23-45-67-89-AB-CD-EF", 6, "EUI-64 -> 64-bit tag 48"],
+    ["Plain Name", 3, "anything else -> text"],
+  ];
+  for (var ai2 = 0; ai2 < ARMS.length; ai2++) {
+    var armDer = await pki.x509.sign({
+      subject: [{ commonName: ARMS[ai2][0] }], subjectPublicKey: armSpki, serialNumber: Buffer.from([1]),
+      notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
+      extensions: { keyUsage: ["digitalSignature"] },
+    }, { key: armKp.privateKey, issuer: { name: "CN=I", publicKey: armSpki } });
+    var armC509 = pki.schema.c509.encode(armDer);
+    check("373." + ai2 + " " + ARMS[ai2][2] + " -- the encoder's spelling is the one the decoder requires",
+      pki.cbor.decode(armC509).children[6].majorType === ARMS[ai2][1] &&
+      pki.schema.c509.parse(armC509).reconstructedDer.equals(armDer));
+  }
+  // The 48-bit arm is the one the specification's own worked example uses, so pin its width too.
+  check("373a. the FF-FE arm encodes a 6-octet MAC address, not an 8-octet one",
+    pki.cbor.decode(V.A1.type3).children[6].children[0].content.length === 6);
+
+  // sec. 3.1.4 -- an issuer identical to the subject MUST be the CBOR simple value null. Both
+  // directions: the encoder emits null, and the decoder refuses the issuer written out in full.
+  var ssDer = await pki.x509.sign({
+    subject: [{ commonName: "Self" }], subjectPublicKey: armSpki, serialNumber: Buffer.from([1]),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
+    extensions: { keyUsage: ["digitalSignature"] },
+  }, { key: armKp.privateKey, issuer: { name: [{ commonName: "Self" }], publicKey: armSpki } });
+  var ssC509 = pki.schema.c509.encode(ssDer);
+  var ssFields = pki.cbor.decode(ssC509).children;
+  check("374. a self-signed certificate encodes its issuer as the CBOR simple value null",
+    ssFields[3].majorType === 7 && ssFields[3].ai === 22);
+  check("374a. and that null-issuer encoding reconstructs the certificate byte-for-byte",
+    pki.schema.c509.parse(ssC509).reconstructedDer.equals(ssDer));
+  // The other spelling -- the issuer written out, which for a self-signed certificate is the subject
+  // field copied -- rebuilds the same DER, so it is a second encoding of one certificate.
+  var ssParts = ssFields.map(function (f) { return f.bytes; });
+  ssParts[3] = ssFields[6].bytes;
+  var ssSpelled = Buffer.concat([Buffer.from([0x80 + ssFields.length])].concat(ssParts));
+  check("375. spelling that issuer out instead of null is refused",
+    /c509\/bad-name: .*must be encoded as the CBOR simple value null/.test(
+      reason(function () { return pki.schema.c509.parse(ssSpelled); })));
+  // A certificate whose issuer genuinely differs from its subject keeps the spelled-out issuer.
+  check("375a. an issuer that differs from the subject is still spelled out",
+    pki.cbor.decode(pki.schema.c509.encode(V.A1.der)).children[3].majorType === 3);
+
+  // An algorithm carrying DER parameters has no registry int to ride, so it takes the [~oid, params]
+  // array. Reached by re-encoding a structured result (no _fieldBytes) whose algorithm carries them.
+  check("376. an algorithm carrying parameters encodes as the [~oid, params] array", (function () {
+    var built = pki.schema.c509.parse(V.A1.type3);
+    delete built._fieldBytes;                                  // force the structured encode path
+    built.signatureAlgorithm = { name: built.signatureAlgorithm.name, oid: built.signatureAlgorithm.oid,
+      parameters: Buffer.from("0500", "hex") };                // a DER NULL
+    var alg = pki.cbor.decode(pki.schema.c509.encode(built)).children[2];
+    return alg.majorType === 4 && alg.children.length === 2 && alg.children[1].content.equals(Buffer.from("0500", "hex"));
+  })());
+  // The remaining arm of _encAlgorithm -- a bare ~oid for an algorithm with neither a registry row nor
+  // parameters -- has no input that reaches it; the reason is recorded at the function itself.
 
   console.log("CHECKS " + helpers.getChecks());
 }
