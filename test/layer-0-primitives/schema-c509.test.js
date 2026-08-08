@@ -1469,6 +1469,21 @@ async function run() {
   // RFC 3779 sec. 2.2.3.7 fixes which of the two arms a span uses: if the low address has every
   // remaining bit zero and the high every remaining bit one, the span IS that prefix and the range
   // arm is forbidden -- otherwise one address span would have two legal encodings.
+  // Without a family's address width NONE of the rules below can be evaluated -- the width bound
+  // has nothing to compare against and the low/high bounds driving order, overlap, adjacency and
+  // endpoint checks cannot be computed -- so a family this codec cannot measure is refused rather
+  // than waved through. The encode side already declined to compact one; this is its mirror.
+  // Asserting the REASON, not just the code: without the explicit width check the refusal still
+  // happens, but only because `length <= undefined` is false -- a coercion accident, not a rule,
+  // and one `width = width || 16` away from becoming an accept. The message pins the real check.
+  check("362v. an unknown address family carrying addresses is refused, naming the reason", (function () {
+    try { pki.schema.c509.parse(V.mk({ 9: extsHex([CBB.uint(32n), CBB.array([CBB.uint(0x63n), CBB.nullValue(), CBB.array([CBB.uint(0x010a20n)])])]) })); return false; }
+    catch (e) { return e.code === "c509/bad-extensions" && /no known address width/.test(e.message); }
+  })());
+  check("362w. an unknown family does not bypass the ordering rules",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(0x63n), CBB.nullValue(), CBB.array([CBB.uint(0x010a40n), CBB.uint(0x03FFE0n)])])])) === "c509/bad-extensions");
+  check("362x. an unknown family that INHERITS is still accepted (it carries no addresses)",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(0x63n), CBB.nullValue(), CBB.nullValue()])])) === "NO-THROW");
   check("362t. a range that is exactly a prefix is refused on decode",
     r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.array([CBB.uint(0x010an), CBB.uint(0n)])])])])) === "c509/bad-extensions");
   check("362u. a span that is NOT a prefix keeps the range arm",
