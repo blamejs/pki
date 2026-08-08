@@ -986,6 +986,37 @@ async function testCryptoKeyConstructor() {
     ck2.usages.length === 1 && ck2.usages[0] === "sign");
 }
 
+// This engine reads key material through its own CryptoKey handle. A key minted by a different
+// WebCrypto implementation carries no such handle, so every operation that would reach for it
+// refuses with a typed verdict naming which implementation the key came from, rather than letting
+// a bare type error escape from inside the crypto library.
+async function testForeignKeyRefusal() {
+  var nodeWc = require("crypto").webcrypto;
+  var f = await nodeWc.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var ecdhF = await nodeWc.subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  var ecdhOwn = await subtle.generateKey({ name: "ECDH", namedCurve: "P-256" }, true, ["deriveBits"]);
+  var cases = [
+    ["sign", function () { return subtle.sign({ name: "ECDSA", hash: "SHA-256" }, f.privateKey, Buffer.from("m")); }],
+    ["verify", function () { return subtle.verify({ name: "ECDSA", hash: "SHA-256" }, f.publicKey, Buffer.alloc(64), Buffer.from("m")); }],
+    ["exportKey", function () { return subtle.exportKey("pkcs8", f.privateKey); }],
+    // The ECDH counterpart key rides in the algorithm, so it reaches no usage check of its own.
+    ["deriveBits public key", function () { return subtle.deriveBits({ name: "ECDH", public: ecdhF.publicKey }, ecdhOwn.privateKey, 256); }],
+  ];
+  for (var i = 0; i < cases.length; i++) {
+    check(cases[i][0] + " refuses a key from another WebCrypto implementation",
+      (await code(cases[i][1])) === "webcrypto/invalid-access");
+  }
+  // An object that is no key at all is told that, rather than told it came from elsewhere.
+  check("sign refuses a non-key object as one", await (async function () {
+    try { await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, { usages: ["sign"] }, Buffer.from("m")); return false; }
+    catch (e) { return e.code === "webcrypto/invalid-access" && /a CryptoKey is required/.test(e.message); }
+  })());
+  check("a foreign key is named as foreign, not as a non-key", await (async function () {
+    try { await subtle.sign({ name: "ECDSA", hash: "SHA-256" }, f.privateKey, Buffer.from("m")); return false; }
+    catch (e) { return /different WebCrypto implementation/.test(e.message); }
+  })());
+}
+
 async function run() {
   await testSurface();
   await testNodeErrorTyping();
@@ -1028,6 +1059,7 @@ async function run() {
   await testAsymImportCarriesLabel();
   await testRsaObjectHash();
   await testCryptoKeyConstructor();
+  await testForeignKeyRefusal();
   await testMldsaContext();
   await testMlKemImport();
 }

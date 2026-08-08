@@ -326,6 +326,44 @@ async function testEncryptCorners() {
   check("import with a lowercase algorithm name lands on the right usages", lc.type === "private" && lc.algorithm.name === "X25519");
 }
 
+// A CryptoKey minted by a DIFFERENT WebCrypto implementation is a CryptoKey -- export reaches its
+// material through the implementation that owns it rather than reporting it as the wrong type.
+async function testForeignCryptoKeys() {
+  var nodeWc = require("crypto").webcrypto;
+  var specs = [
+    ["ECDSA P-256", { name: "ECDSA", namedCurve: "P-256" }, ["sign", "verify"]],
+    ["Ed25519", { name: "Ed25519" }, ["sign", "verify"]],
+  ];
+  for (var i = 0; i < specs.length; i++) {
+    var kp = await nodeWc.subtle.generateKey(specs[i][1], true, specs[i][2]);
+    var priv = await pki.key.export(kp.privateKey);
+    var pub = await pki.key.export(kp.publicKey);
+    // The bytes are the key, not merely a Buffer: the strict decoder round-trips both halves.
+    check("a platform " + specs[i][0] + " private CryptoKey exports as PKCS#8",
+      Buffer.isBuffer(priv) && !!pki.schema.pkcs8.parse(priv));
+    check("a platform " + specs[i][0] + " public CryptoKey exports as SPKI",
+      Buffer.isBuffer(pub) && asn1.decode(pub).tagNumber === 16);
+    // ... and re-importing that export through this engine yields a key that signs, so the export
+    // carried the real material rather than an empty structure of the right shape.
+    var back = await pki.key.import(priv, { algorithm: specs[i][1] });
+    check("the exported platform " + specs[i][0] + " key re-imports and signs",
+      Buffer.isBuffer(Buffer.from(await pki.webcrypto.subtle.sign(
+        specs[i][1].name === "ECDSA" ? { name: "ECDSA", hash: "SHA-256" } : { name: "Ed25519" },
+        back, Buffer.from("m")))));
+  }
+  // A platform key that is not extractable cannot be reached by any implementation -- that is a
+  // permanent verdict, and it is reported as itself, not as a wrong-type argument.
+  var sealed = await nodeWc.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  check("a non-extractable platform CryptoKey is refused, naming the real reason", await (async function () {
+    try { await pki.key.export(sealed.privateKey); return false; }
+    catch (e) { return e.code === "key/bad-input" && /is not extractable/.test(e.message); }
+  })());
+  // This engine's own non-extractable key is refused by its own export rule, unchanged.
+  var own = await pki.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  check("this engine's own non-extractable key is still refused by export",
+    (await codeOf(pki.key.export(own.privateKey))) !== "NO-THROW");
+}
+
 async function main() {
   await testExportRoundTrip();
   await testPbes2RoundTrip();
@@ -336,6 +374,7 @@ async function main() {
   await testEdges();
   await testOptionsAndUsages();
   await testEncryptCorners();
+  await testForeignCryptoKeys();
   console.log("CHECKS " + helpers.getChecks());
 }
 
