@@ -81,6 +81,27 @@ function run() {
   check("5. a non-empty certificate_request_context is surfaced raw", parsed.certificateRequestContext.equals(Buffer.from([0xab, 0xcd])));
   check("5a. an empty certificate_request_context is the empty buffer", pki.tls.parseCertificateMessage(MSG).certificateRequestContext.length === 0);
   check("5b. per-entry extensions are surfaced raw (empty here)", parsed.entries[0].extensions.length === 0);
+  // RFC 8446 sec. 4.2: an Extension is a uint16 type plus a uint16-prefixed value, so the
+  // extensions vector is a whole number of them. Walking it is what stops a malformed Certificate
+  // message being reported as structurally valid -- a one-byte vector cannot be an Extension.
+  function entryWithExts(extBytes) {
+    var elen = Buffer.alloc(2); elen.writeUInt16BE(extBytes.length);
+    var e = Buffer.concat([Buffer.from([0, 0, 1]), Buffer.from([0x41]), elen, extBytes]);
+    var len = Buffer.alloc(3); len.writeUIntBE(e.length, 0, 3);
+    return Buffer.concat([Buffer.from([0]), len, e]);
+  }
+  check("5b1. an empty extensions vector decodes to no records",
+    pki.tls.parseCertificateMessage(entryWithExts(Buffer.alloc(0))).entries[0].extensionList.length === 0);
+  check("5b2. well-formed extensions decode to their type and raw value", (function () {
+    var l = pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x2b, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x01, 0xff]))).entries[0].extensionList;
+    return l.length === 2 && l[0].type === 43 && l[0].data.length === 0 && l[1].type === 10 && l[1].data.length === 1 && l[1].data[0] === 0xff;
+  })());
+  check("5b3. an extensions vector too short to be an Extension -> tls/bad-framing",
+    codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0xff]))); }) === "tls/bad-framing");
+  check("5b4. a truncated extension header -> tls/truncated",
+    codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x2b, 0x00]))); }) === "tls/truncated");
+  check("5b5. an extension value length past the vector -> tls/bad-framing",
+    codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x2b, 0x00, 0x09, 0x01]))); }) === "tls/bad-framing");
   var empty = certMessage([]);
   check("5c. an empty certificate list is a valid message with no entries", pki.tls.parseCertificateMessage(empty).entries.length === 0);
   check("5d. RawPublicKey surfaces the slot as spki, not certData", (function () {
