@@ -648,6 +648,231 @@ async function run() {
   var _pubPerturbed = Buffer.from(_realPub); _pubPerturbed[4] = _pubPerturbed[4] ^ 0x01;
   check("verify: tpm certInfo attested Name != nameAlg||H(pubArea) -> webauthn/verify-failed",
     (await codeOfAsync(function () { return pki.webauthn.verify(_tpmWithPubArea(_pubPerturbed), clientHash("tpm")); })) === "webauthn/verify-failed");
+
+  await testAndroidSafetyNet();
+}
+
+// ---- android-safetynet (WebAuthn sec. 8.5) ----------------------------------
+// Google retired the SafetyNet Attestation API, so there is no live producer to capture a vector
+// from and none will exist again -- the surviving use is a relying party re-checking attestations it
+// stored years ago. The statements below are therefore minted here: this toolkit's own issuer builds
+// the chain and signs the JWS, which exercises every sec. 8.5 bind on the SHIPPED consumer path.
+async function testAndroidSafetyNet() {
+  var SN_TIME = new Date("2026-06-01T00:00:00Z");
+  function b64uEnc(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+
+  // One builder serves the accept vector and every reject vector, each breaking exactly one bind.
+  async function mint(o) {
+    o = o || {};
+    var NB = o.notBefore || new Date("2026-01-01T00:00:00Z"), NA = o.notAfter || new Date("2027-01-01T00:00:00Z");
+    var rsa = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" };
+    var rootKp = await pki.webcrypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
+    var leafKp = await pki.webcrypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
+    var rootSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", rootKp.publicKey));
+    var leafSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", leafKp.publicKey));
+    var rootName = [{ commonName: "Test Google Internet Authority" }];
+    var rootDer = await pki.x509.sign({
+      subject: rootName, subjectPublicKey: rootSpki, serialNumber: Buffer.from([1]), notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+    }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
+    var host = o.hostname || "attest.android.com";
+    var leafExts = { keyUsage: ["digitalSignature"] };
+    if (!o.noSan) leafExts.subjectAltName = [{ dNSName: host }];
+    var leafDer = await pki.x509.sign({
+      subject: [{ commonName: host }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]), notBefore: NB, notAfter: NA,
+      extensions: leafExts,
+    }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
+
+    var authData = (function () {
+      var m = pki.cbor.read.map(pki.cbor.decode(attObj("packed")));
+      for (var i = 0; i < m.length; i++) if (pki.cbor.read.textString(m[i][0]) === "authData") return m[i][1].content;
+      throw new Error("no authData in the KAT");
+    })();
+    var cdh = clientHash("packed");
+    // sec. 8.5 bullet 3: the nonce is STANDARD base64 (not base64url) of SHA-256(authData||cdh).
+    var nonce = o.nonce !== undefined ? o.nonce
+      : crypto.createHash("sha256").update(Buffer.concat([authData, cdh])).digest().toString("base64");
+    var header = { alg: o.alg || "RS256",
+      x5c: o.x5cRaw || (o.x5c || [leafDer, rootDer]).map(function (d) { return d.toString("base64"); }) };
+    var payload = Object.assign({ nonce: nonce, timestampMs: 1767225600000, ctsProfileMatch: true, basicIntegrity: true }, o.payloadExtra || {});
+    (o.payloadOmit || []).forEach(function (k) { delete payload[k]; });
+    var h64 = b64uEnc(Buffer.from(JSON.stringify(header), "utf8"));
+    var p64 = b64uEnc(Buffer.from(JSON.stringify(payload), "utf8"));
+    var sig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "RSASSA-PKCS1-v1_5" },
+      (o.signWithRoot ? rootKp : leafKp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
+    var jws = h64 + "." + p64 + "." + b64uEnc(o.badSig ? Buffer.alloc(sig.length, 9) : sig);
+    var pairs = o.attStmtPairs || [[cText("ver"), cText("214516005")], [cText("response"), cBytes(Buffer.from(jws, "utf8"))]];
+    return { attObj: attObjOf("android-safetynet", pairs, authData), cdh: cdh, rootDer: rootDer };
+  }
+  async function codeFor(mintOpts, optsOverride) {
+    var f = await mint(mintOpts || {});
+    var opts = Object.assign({ verifySafetyNetJws: true, safetyNetRoots: [f.rootDer], time: SN_TIME }, optsOverride || {});
+    try { return await pki.webauthn.verify(f.attObj, f.cdh, opts); } catch (e) { return e.code || e.constructor.name; }
+  }
+
+  // The format is OFF unless the caller opts in, so the verdict for a caller who has not is
+  // byte-identical to the one this format gave before the arm existed.
+  var offCase = await mint({});
+  check("safetynet: with the opt off the format is still unsupported",
+    (await codeOfAsync(function () { return pki.webauthn.verify(offCase.attObj, offCase.cdh, {}); })) === "webauthn/unsupported-format");
+  check("safetynet: opting in without a root is refused (no bundled root, no TOFU)",
+    (await codeOfAsync(function () { return pki.webauthn.verify(offCase.attObj, offCase.cdh, { verifySafetyNetJws: true, time: SN_TIME }); })) === "webauthn/safetynet-no-root");
+  check("safetynet: an empty root list is refused", (await codeFor({}, { safetyNetRoots: [] })) === "webauthn/safetynet-no-root");
+  check("safetynet: a non-boolean opt is a config-time fault", (await codeFor({}, { verifySafetyNetJws: "yes" })) === "webauthn/bad-input");
+
+  // sec. 8.5 bullet 5: a statement that satisfies every bind returns Basic with the x5c trust path.
+  var okRes = await codeFor({});
+  check("safetynet: a well-formed statement verifies as Basic with the x5c trust path",
+    okRes && okRes.verified === true && okRes.fmt === "android-safetynet" &&
+    okRes.attestationType === "Basic" && okRes.trustPath.length === 2);
+
+  // Each bind, broken one at a time.
+  check("safetynet: a nonce not bound to this registration is refused (bullet 3)",
+    (await codeFor({ nonce: Buffer.alloc(32, 7).toString("base64") })) === "webauthn/safetynet-nonce-mismatch");
+  check("safetynet: the nonce is standard base64, not base64url (bullet 3)",
+    (await codeFor({ nonce: "not-the-right-nonce" })) === "webauthn/safetynet-nonce-mismatch");
+  // A suffix of the expected name must not pass -- the match is exact, never a suffix or wildcard.
+  check("safetynet: a leaf issued to another hostname is refused (bullet 4)",
+    (await codeFor({ hostname: "attest.android.com.evil.test" })) === "webauthn/safetynet-bad-hostname");
+  check("safetynet: a signature that does not verify is refused (bullet 4)",
+    (await codeFor({ badSig: true })) === "webauthn/verify-failed");
+  check("safetynet: a signature by a key other than the x5c leaf is refused (bullet 4)",
+    (await codeFor({ signWithRoot: true })) === "webauthn/verify-failed");
+  // The alg is pinned rather than read from the token -- the JWS algorithm-confusion class.
+  check("safetynet: a JWS alg other than RS256 is refused",
+    (await codeFor({ alg: "HS256" })) === "webauthn/unsupported-algorithm");
+  check("safetynet: a header with no x5c chain is refused",
+    (await codeFor({ x5c: [] })) === "webauthn/bad-att-stmt");
+  // The hostname alone proves nothing: the chain must reach the root the CALLER supplied.
+  var unrelated = await mint({});
+  var subject = await mint({});
+  check("safetynet: a chain that does not reach the supplied root is refused (bullet 4)",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(subject.attObj, subject.cdh,
+        { verifySafetyNetJws: true, safetyNetRoots: [unrelated.rootDer], time: SN_TIME });
+    })) === "webauthn/safetynet-cert-untrusted");
+  check("safetynet: a chain outside its validity window is refused",
+    (await codeFor({}, { time: new Date("2030-01-01T00:00:00Z") })) === "webauthn/safetynet-cert-untrusted");
+  check("safetynet: a supplied root that is not a certificate is a config-time fault",
+    (await codeFor({}, { safetyNetRoots: [Buffer.from([1, 2, 3])] })) === "webauthn/bad-input");
+  // sec. 8.5 syntax: attStmt is exactly {ver, response} -- an extra field is a non-canonical
+  // statement, refused before any field is trusted.
+  check("safetynet: an attStmt carrying an unexpected field is refused",
+    (await codeFor({ attStmtPairs: [[cText("ver"), cText("1")], [cText("response"), cBytes(Buffer.from("a.b.c", "utf8"))], [cText("extra"), cText("x")]] })) === "webauthn/bad-att-stmt");
+
+  // ---- a JWS segment must be a JSON OBJECT ----
+  // null, a number, a string and an array are all valid JSON, so the parse succeeds and any later
+  // field read would escape this module's typed contract as a raw TypeError.
+  function rawJws(headerJson, payloadJson) {
+    var h = b64uEnc(Buffer.from(headerJson, "utf8")), p = b64uEnc(Buffer.from(payloadJson, "utf8"));
+    return { attStmtPairs: [[cText("ver"), cText("1")],
+      [cText("response"), cBytes(Buffer.from(h + "." + p + "." + b64uEnc(Buffer.alloc(8)), "utf8"))]] };
+  }
+  var nonObject = ["null", "42", "\"text\"", "[1,2]"];
+  for (var nj = 0; nj < nonObject.length; nj++) {
+    var asHeader = await codeFor(rawJws(nonObject[nj], "{}"));
+    var asPayload = await codeFor(rawJws(JSON.stringify({ alg: "RS256", x5c: ["AA=="] }), nonObject[nj]));
+    check("safetynet: a JWS header that is JSON " + nonObject[nj] + " is refused typed",
+      asHeader === "webauthn/bad-att-stmt");
+    check("safetynet: a JWS payload that is JSON " + nonObject[nj] + " is refused typed",
+      asPayload === "webauthn/bad-att-stmt" || asPayload === "webauthn/bad-att-cert");
+  }
+
+  // ---- when the chain is judged ----
+  // These attestations are historical, so a leaf valid at signing time is routinely expired now.
+  // The signed timestamp in the response is what the chain is judged against by default, and an
+  // explicit opts.time overrides it.
+  var past = await mint({
+    notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"),
+    payloadExtra: { timestampMs: Date.UTC(2020, 5, 1) },
+  });
+  var histRes = await pki.webauthn.verify(past.attObj, past.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [past.rootDer] });
+  check("safetynet: a stored attestation whose chain has since expired still verifies at its signed time",
+    histRes.verified === true);
+  check("safetynet: an explicit opts.time overrides the signed timestamp and refuses out of window",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(past.attObj, past.cdh,
+        { verifySafetyNetJws: true, safetyNetRoots: [past.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+    })) === "webauthn/safetynet-cert-untrusted");
+
+  // ---- device-integrity signals: surfaced, and enforced only on request ----
+  // The sec. 8.5 verification procedure never mentions these, so the attestation verdict does not
+  // turn on them -- but a relying party cannot apply its own policy to a signal it never sees, so
+  // they are surfaced, and a caller that asks for enforcement gets it.
+  var failedCts = await codeFor({ payloadExtra: { ctsProfileMatch: false, basicIntegrity: false } });
+  check("safetynet: a device that failed the compatibility suite still verifies per sec. 8.5",
+    failedCts && failedCts.verified === true);
+  check("safetynet: ... and the failing signals are surfaced for relying-party policy",
+    failedCts.safetyNet.ctsProfileMatch === false && failedCts.safetyNet.basicIntegrity === false);
+  check("safetynet: a passing device surfaces its signals too",
+    (await codeFor({})).safetyNet.ctsProfileMatch === true);
+  check("safetynet: opts.requireCtsProfileMatch refuses a device that failed",
+    (await codeFor({ payloadExtra: { ctsProfileMatch: false } }, { requireCtsProfileMatch: true })) === "webauthn/safetynet-cts-profile");
+  check("safetynet: opts.requireCtsProfileMatch refuses a response that omits the signal",
+    (await codeFor({ payloadOmit: ["ctsProfileMatch"] }, { requireCtsProfileMatch: true })) === "webauthn/safetynet-cts-profile");
+  check("safetynet: opts.requireCtsProfileMatch accepts a device that passed",
+    (await codeFor({}, { requireCtsProfileMatch: true })).verified === true);
+  check("safetynet: a non-boolean requireCtsProfileMatch is a config-time fault",
+    (await codeFor({}, { requireCtsProfileMatch: "yes" })) === "webauthn/bad-input");
+
+  // ---- the remaining x5c / anchor shapes ----
+  // An x5c entry is standard base64 of one DER certificate; neither half may be assumed.
+  check("safetynet: an x5c entry that is not canonical base64 is refused",
+    (await codeFor({ x5cRaw: ["not!base64!"] })) === "webauthn/bad-att-stmt");
+  check("safetynet: an x5c entry that is not a certificate is refused",
+    (await codeFor({ x5cRaw: [Buffer.from([1, 2, 3, 4]).toString("base64")] })) === "webauthn/bad-att-cert");
+  check("safetynet: an x5c entry that is not a string is refused",
+    (await codeFor({ x5cRaw: [42] })) === "webauthn/bad-att-stmt");
+  // The response must be a three-part JWS compact serialization (RFC 7515 sec. 3.1) before any
+  // field inside it is read -- an empty, mis-segmented, or undecodable response never reaches the
+  // signature or the nonce.
+  function rawResponse(text) {
+    return { attStmtPairs: [[cText("ver"), cText("1")], [cText("response"), cBytes(Buffer.from(text, "utf8"))]] };
+  }
+  check("safetynet: an empty response is refused", (await codeFor(rawResponse(""))) === "webauthn/bad-att-stmt");
+  check("safetynet: a response that is not three segments is refused",
+    (await codeFor(rawResponse("only.two"))) === "webauthn/bad-att-stmt");
+  check("safetynet: a response whose segments do not decode is refused",
+    (await codeFor(rawResponse("!!!.@@@.###"))) === "webauthn/bad-att-stmt");
+  // A leaf with no subjectAltName at all falls back to the commonName, the way hostname matching
+  // has been specified since RFC 6125 -- and it still has to be the right name.
+  // When a SAN is present it is authoritative and the commonName is not consulted: a leaf naming the
+  // host ONLY in its SAN must verify, and one naming it only in a commonName it contradicts must not.
+  var sanOnly = await codeFor({ cn: "wrong.example" });
+  check("safetynet: a leaf naming the host in its SAN verifies even when the commonName differs",
+    sanOnly && sanOnly.verified === true);
+  check("safetynet: a SAN that names another host is refused even when the commonName is right",
+    (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
+  var noSanOk = await codeFor({ noSan: true });
+  check("safetynet: a leaf naming the host only in its commonName verifies",
+    noSanOk && noSanOk.verified === true && noSanOk.attestationType === "Basic");
+  check("safetynet: a leaf whose commonName is another host is refused",
+    (await codeFor({ noSan: true, hostname: "other.example" })) === "webauthn/safetynet-bad-hostname");
+  // opts.time is optional; omitted, the chain is checked against now rather than the check being
+  // skipped. The refusal side of the same branch is pinned by the explicit-time vector above ("a
+  // chain outside its validity window is refused"), so an absent time cannot mean "do not check".
+  var noTime = await mint({});
+  var noTimeRes = await pki.webauthn.verify(noTime.attObj, noTime.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [noTime.rootDer] });
+  check("safetynet: with no opts.time a currently-valid chain verifies", noTimeRes.verified === true);
+  // A root may be handed over already parsed, not only as DER.
+  var parsedRoot = await mint({});
+  var parsedRes = await pki.webauthn.verify(parsedRoot.attObj, parsedRoot.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [pki.schema.x509.parse(parsedRoot.rootDer)], time: SN_TIME });
+  check("safetynet: a root supplied as a parsed certificate is accepted", parsedRes.verified === true);
+  check("safetynet: a root that is neither DER nor a certificate is a config-time fault",
+    (await codeFor({}, { safetyNetRoots: [{}] })) === "webauthn/bad-input");
+  // Several anchors are tried in turn, so a caller holding a rotation set is not forced to guess
+  // which one applies -- and the first that validates ends the search.
+  var multi = await mint({});
+  var spare = await mint({});
+  var firstOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [multi.rootDer, spare.rootDer], time: SN_TIME });
+  check("safetynet: the first matching root of several ends the search", firstOk.verified === true);
+  var secondOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [spare.rootDer, multi.rootDer], time: SN_TIME });
+  check("safetynet: a later root in the list still anchors the chain", secondOk.verified === true);
 }
 
 module.exports = { run: run };
