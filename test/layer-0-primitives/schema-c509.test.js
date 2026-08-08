@@ -964,7 +964,9 @@ async function run() {
   // 4. a per-attribute ~oid form (an unregistered type) keeps the ext compact (extID 24), not a whole-ext ~oid fallback.
   var sdaEmail = await certWithExts([sdaExt([sdaAttr("emailAddress", [b.ia5("a@b.example")])])]);
   var sdaEmailEnc = encCp(sdaEmail);
-  check("262. a subjectDirectoryAttributes attribute of an unregistered type uses the per-attribute ~oid form (not a whole-ext fallback) + double-inverts", (function () { var p = extPair(sdaEmailEnc, 24); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return a[0].majorType === 2 && a[1].majorType === 4 && a[1].children[0].majorType === 2 && pki.schema.c509.parse(sdaEmailEnc).reconstructedDer.equals(sdaEmail); })());
+  // emailAddress is an IA5String-only attribute, so it rides its sec. 8.6 NON-NEGATIVE int (0) with text values
+  // (draft sec. 3.1.4) -- its type, not a sign, fixes the string type -- and reconstructs the IA5String exactly.
+  check("262. a subjectDirectoryAttributes emailAddress rides the sec. 8.6 int 0 with IA5String values + double-inverts", (function () { var p = extPair(sdaEmailEnc, 24); if (p == null || p.val.majorType !== 4) return false; var a = CB.decode(p.val.bytes).children; return Number(CB.read.int(a[0])) === 0 && a[1].majorType === 4 && CB.read.textString(a[1].children[0]) === "a@b.example" && pki.schema.c509.parse(sdaEmailEnc).reconstructedDer.equals(sdaEmail); })());
 
   // 5. the headline trap: a mixed printable/utf8 SET cannot use one sign -> that attribute uses the ~oid+bytes form.
   var sdaMixed = await certWithExts([sdaExt([sdaAttr("title", [b.printable("A"), b.utf8("B")])])]);
@@ -1080,6 +1082,39 @@ async function run() {
   //   comparison must use the class NUMBER -- the class NAMES do not sort in that order.
   check("303. a ~oid-form SET whose members ascend by tag CLASS (universal then context) is accepted", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("3106020101800141"))).extensions[0]; return e.name === "subjectDirectoryAttributes" && e.value.length > 0; })());
   check("304. a ~oid-form SET whose members descend by tag class AND octets -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("3106800141020101"))); }) === "c509/bad-extensions");
+  // emailAddress in a distinguished NAME rides the same sec. 8.6 int 0 / IA5String rule, in both directions:
+  //   a certificate whose subject carries one encodes to the compact form and reconstructs byte-for-byte.
+  var emailDnSigner = signing.makeSigner("ec-p256");
+  var emailDnDer = Buffer.from(await pki.x509.sign({
+    subject: [{ commonName: "mail leaf" }, { emailAddress: "a@b.example" }], subjectPublicKey: emailDnSigner.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: false } },
+  }, { key: emailDnSigner.key }));
+  check("305. a subject DN carrying an emailAddress encodes compactly and reconstructs byte-for-byte", (function () {
+    var enc = encCp(emailDnDer);
+    return pki.schema.c509.parse(enc).reconstructedDer.equals(emailDnDer) && pki.schema.c509.parse(enc).subject.dn.indexOf("a@b.example") >= 0;
+  })());
+  // an SDA emailAddress whose value is NOT an IA5String cannot use the int form (its type fixes the string type),
+  //   so that attribute falls back to the per-attribute ~oid form and still double-inverts.
+  var sdaEmailUtf8 = await certWithExts([sdaExt([sdaAttr("emailAddress", [b.utf8("a@b.example")])])]);
+  var sdaEmailUtf8Enc = encCp(sdaEmailUtf8);
+  check("306. an SDA emailAddress with a non-IA5String value uses the per-attribute ~oid form + double-inverts", (function () { var p = extPair(sdaEmailUtf8Enc, 24); return p != null && CB.decode(p.val.bytes).children[0].majorType === 2 && pki.schema.c509.parse(sdaEmailUtf8Enc).reconstructedDer.equals(sdaEmailUtf8); })());
+  // a DN attribute whose string type contradicts its IA5-only-ness is refused with a precise verdict rather than
+  //   encoded into an int form whose reconstruction would differ from the source bytes.
+  function certWithDnAttr(attrOidName, valueTlv) {
+    var hs = signing.makeSigner("ec-p256");
+    var point = pki.asn1.read.bitString(pki.asn1.decode(hs.spki).children[1]).bytes;
+    var nm = b.sequence([b.set([b.sequence([b.oid(O(attrOidName)), valueTlv])])]);
+    var sigAlg = b.sequence([b.oid(O("ecdsaWithSHA256"))]);
+    var tbs = b.sequence([b.explicit(0, b.integer(2n)), b.integer(1n), sigAlg, nm,
+      b.sequence([b.utcTime(new Date("2026-01-01T00:00:00Z")), b.utcTime(new Date("2027-01-01T00:00:00Z"))]), nm,
+      b.sequence([b.sequence([b.oid(O("ecPublicKey")), b.oid(O("prime256v1"))]), b.bitString(point, 0)]),
+      b.explicit(3, b.sequence([b.sequence([b.oid(O("basicConstraints")), b.octetString(b.sequence([]))])]))]);
+    var sig = b.sequence([b.integer(BigInt("0x01" + "00".repeat(31))), b.integer(BigInt("0x01" + "00".repeat(31)))]);
+    return b.sequence([tbs, sigAlg, b.bitString(sig, 0)]);
+  }
+  check("307. a DN attribute carrying an IA5String value on a non-IA5-only type -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(certWithDnAttr("commonName", b.ia5("leaf")), { issuerCurve: "P-256" }); }) === "c509/non-invertible");
+  check("308. a DN emailAddress carrying a non-IA5String value -> c509/non-invertible", codeSync(function () { return pki.schema.c509.encode(certWithDnAttr("emailAddress", b.utf8("a@b.example")), { issuerCurve: "P-256" }); }) === "c509/non-invertible");
 
   console.log("CHECKS " + helpers.getChecks());
 }

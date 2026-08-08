@@ -72,4 +72,15 @@ var report = spawnSync(
   [C8, "report", "--temp-directory=" + MERGE, "--reports-dir=" + COV].concat(INCLUDE, reporters),
   { cwd: ROOT, stdio: "inherit", env: process.env }
 );
-process.exit(report.status || 0);
+// spawnSync reports a SIGNAL kill (or a failure to spawn) as a NULL status, so `status || 0` would exit 0 after
+// an OOM-killed or never-started reporter and hand a downstream gate a missing/partial lcov. Anything other than
+// a clean exit 0 fails the run.
+if (report.error) {
+  process.stderr.write("[coverage-unified] merged report could not run: " + report.error.message + "\n");
+  process.exit(1);
+}
+if (report.status !== 0) {
+  process.stderr.write("[coverage-unified] merged report FAILED (" + (report.signal ? "signal " + report.signal : "exit " + report.status) + ") -- the report is missing or partial\n");
+  process.exit(report.status || 1);
+}
+process.exit(0);
