@@ -352,6 +352,14 @@ async function testForeignCryptoKeys() {
     try { await pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: odd }); return false; }
     catch (e) { return e.code === "jose/bad-input" && /private, public, or secret type/.test(e.message); }
   })());
+  // A key'"'"'s usages are a capability restriction it carries. Adopting one must not widen it: a key
+  // marked verify-only must be refused here exactly as this engine'"'"'s own verify-only key is.
+  var macVerifyOnly = await nodeWc.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["verify"]);
+  check("a platform key whose usages exclude sign cannot sign", await (async function () {
+    try { await pki.jose.sign({ protected: { alg: "HS256", url: "https://e/x", kid: "acct-1" },
+      payload: Buffer.from("{}"), key: macVerifyOnly, profile: "eab-inner" }); return false; }
+    catch (e) { return e.code === "jose/bad-input" && /not permitted for .sign./.test(e.message); }
+  })());
   var sealed = await nodeWc.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
   check("a non-extractable platform CryptoKey is refused, naming the real reason",
     (await acode(function () { return pki.jose.sign({ protected: hdr, payload: Buffer.from("{}"), key: sealed.privateKey }); })) === "jose/bad-input");

@@ -479,6 +479,13 @@ async function testInputForms() {
   // The same path holds for a second key class, so it is the foreign-key handling that is generic
   // and not one algorithm'"'"'s import parameters happening to line up.
   var foreignRsa = await nodeWc.subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  // A key that does not carry its permitted usages cannot be adopted without inventing them, so it
+  // is refused rather than being re-imported with whatever the operation happened to need.
+  check("a key object carrying no usages is refused", await (async function () {
+    try { await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA },
+      { key: { type: "private", extractable: true, algorithm: { name: "ECDSA", namedCurve: "P-256" } } }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /carrying its permitted usages/.test(e.message); }
+  })());
   // A key object shaped like a CryptoKey but belonging to neither implementation -- what a userland
   // WebCrypto polyfill hands back -- reaches the export step and cannot be exported; it is refused
   // with that reason rather than with a rejection raised inside the crypto library.
