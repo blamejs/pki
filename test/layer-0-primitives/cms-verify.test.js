@@ -226,6 +226,21 @@ async function testUnsupportedAlgorithm() {
   p3.signerInfos[0].digestAlgorithm.name = "not-a-real-digest";
   var r3 = await pki.cms.verify(p3);
   check("EdDSA + signedAttrs + unmapped digest -> unsupported-algorithm verdict", r3.valid === false && r3.signers[0].code === "cms/unsupported-algorithm");
+
+  // A bare key OID (rsaEncryption / ecPublicKey) takes its SIGNATURE hash from the SignerInfo
+  // digestAlgorithm. RFC 8702 sec. 3.2 gives RSASSA-PKCS1-v1_5-with-SHAKE and ECDSA-with-SHAKE
+  // their OWN signature OIDs and never pairs a bare key OID with a SHAKE digestAlgorithm, so the
+  // combination is non-conformant. It must keep THIS module's precise unsupported-algorithm
+  // verdict: an extendable-output function is a message-digest algorithm here, never a signature
+  // hash, so it must not reach the engine and come back as a relabeled foreign fault.
+  for (var i = 0; i < 2; i++) {
+    var shakeName = i === 0 ? "shake128" : "shake256";
+    var p4 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
+    p4.signerInfos[0].digestAlgorithm.name = shakeName;
+    var r4 = await pki.cms.verify(p4);
+    check("rsaEncryption + " + shakeName + " digestAlgorithm -> unsupported-algorithm verdict",
+      r4.valid === false && r4.signers[0].code === "cms/unsupported-algorithm");
+  }
 }
 
 // Build an RSASSA-PSS-params SEQUENCE (RFC 4055), each field overridable so a vector can pin

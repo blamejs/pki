@@ -38,6 +38,17 @@ async function testDigest() {
   check("SHA-1(abc) [legacy compat]", hex(await subtle.digest("SHA-1", abc)) === "a9993e364706816aba3e25717850c26c9cd0d89d");
   check("SHA-512(abc) length", (await subtle.digest("SHA-512", abc)).byteLength === 64);
   check("SHA3-256(abc)", hex(await subtle.digest("SHA3-256", abc)) === "3a985da74fe225b2045c172d6bd390bd855f086e3e9d525b46bfe24511431532");
+
+  // FIPS 202 extendable-output functions, as message digests. The output length is fixed
+  // by the NAME (RFC 8702 sec. 4: SHAKE128 32 bytes, SHAKE256 64) rather than chosen by the
+  // caller, so the length assertions are load-bearing -- a SHAKE256 squeezed to 32 bytes is
+  // a different digest, and the composite Ed448 arm signs over exactly these bytes.
+  check("SHAKE128(abc) [RFC 8702 32-byte output]",
+    hex(await subtle.digest("SHAKE128", abc)) === "5881092dd818bf5cf8a3ddb793fbcba74097d5c526a6d35f97b83351940f2cc8");
+  check("SHAKE256(abc) [RFC 8702 64-byte output]",
+    hex(await subtle.digest("SHAKE256", abc)) === "483366601360a8771c6863080cc4114d8db44530f8f1e1ee4f94ea37e78b5739d5a15bef186a5386c75744c0527e1faa9f8726e462a12a4feb06bd8801e751e4");
+  check("SHAKE128 output is 32 bytes", (await subtle.digest("SHAKE128", abc)).byteLength === 32);
+  check("SHAKE256 output is 64 bytes", (await subtle.digest("SHAKE256", abc)).byteLength === 64);
   // _toBuf must surface a detached-backed BufferSource as a typed webcrypto/data
   // error, not a raw TypeError from Buffer.from -- for both a view and a raw
   // ArrayBuffer whose backing store was transferred away.
@@ -628,6 +639,34 @@ async function testNormalizeAndDigestEdges() {
     (await code(function () { return subtle.digest({ foo: 1 }, Buffer.from("x")); })) === "webcrypto/syntax");
   check("digest with an unsupported hash rejects (not-supported)",
     (await code(function () { return subtle.digest("SHA-999", Buffer.from("x")); })) === "webcrypto/not-supported");
+  check("digest rejects a SHAKE name that is not a FIPS 202 function (not-supported)",
+    (await code(function () { return subtle.digest("SHAKE512", Buffer.from("x")); })) === "webcrypto/not-supported");
+
+  // An extendable-output function is a digest ONLY. It is deliberately absent from the hash
+  // table the signature / MAC / derivation operations resolve through, so those keep rejecting
+  // it with this engine's typed error instead of surfacing a raw error from the crypto library.
+  check("HKDF rejects a SHAKE hash (not-supported)", (await code(async function () {
+    var k = await subtle.importKey("raw", new Uint8Array(32), "HKDF", false, ["deriveBits"]);
+    return subtle.deriveBits({ name: "HKDF", hash: "SHAKE256", salt: new Uint8Array(0), info: new Uint8Array(0) }, k, 256);
+  })) === "webcrypto/not-supported");
+  check("PBKDF2 rejects a SHAKE hash (not-supported)", (await code(async function () {
+    var k = await subtle.importKey("raw", new Uint8Array(8), "PBKDF2", false, ["deriveBits"]);
+    return subtle.deriveBits({ name: "PBKDF2", hash: "SHAKE256", salt: new Uint8Array(8), iterations: 10 }, k, 256);
+  })) === "webcrypto/not-supported");
+  check("ECDSA sign rejects a SHAKE hash (not-supported)", (await code(async function () {
+    var kp = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+    return subtle.sign({ name: "ECDSA", hash: "SHAKE256" }, kp.privateKey, new Uint8Array(4));
+  })) === "webcrypto/not-supported");
+
+  // A CryptoKey is never minted carrying a hash the engine cannot use: the entry point
+  // refuses it, rather than returning a key whose first sign / verify / wrap fails after
+  // the caller has already paid for the key generation.
+  check("importKey raw HMAC refuses an unusable hash at the entry point",
+    (await code(function () { return subtle.importKey("raw", new Uint8Array(32), { name: "HMAC", hash: "SHAKE256" }, false, ["sign"]); })) === "webcrypto/not-supported");
+  check("importKey jwk HMAC refuses an unusable hash at the entry point",
+    (await code(function () { return subtle.importKey("jwk", { kty: "oct", k: "AAAAAAAAAAAAAAAAAAAAAA" }, { name: "HMAC", hash: "SHAKE256" }, false, ["sign"]); })) === "webcrypto/not-supported");
+  check("generateKey RSA refuses an unusable hash before generating the key",
+    (await code(function () { return subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHAKE256" }, false, ["sign", "verify"]); })) === "webcrypto/not-supported");
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length

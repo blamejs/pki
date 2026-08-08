@@ -46,6 +46,7 @@ async function testRoundTrip() {
     "id-MLDSA65-Ed25519-SHA512",      // EdDSA
     "id-MLDSA65-RSA3072-PSS-SHA512",  // RSA-PSS
     "id-MLDSA87-ECDSA-P521-SHA512",   // the largest ML-DSA + P-521
+    "id-MLDSA87-Ed448-SHAKE256",      // Ed448, pre-hashed with SHAKE256 rather than a SHA-2 digest
   ];
   for (var i = 0; i < arms.length; i++) {
     var s = makeCompositeSigner(arms[i]);

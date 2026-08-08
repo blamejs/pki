@@ -84,17 +84,52 @@ security-only patches after the next major releases.
   detached-backed input (a transferred / structuredClone'd view whose bytes are
   gone, so it reads as zero-length) fails closed with a typed error at the byte
   boundary instead of being processed as empty.
-- **Decompression bombs (CWE-409).** `pki.cms.decompress` (RFC 3274 CompressedData)
-  inflates the RFC 1950 ZLIB stream through a bounded primitive: the decompressed
-  output is capped at `C.LIMITS.COMPRESS_MAX_BYTES` (16 MiB, tightened downward via
-  `opts.maxOutputBytes`) and the inflate stops at the bound BEFORE the output is
-  materialized (Node's `maxOutputLength`), so a tiny stream that would expand to
-  gigabytes throws `cms/decompress-too-large` rather than exhausting memory. Every
-  other malformed / truncated / corrupt stream collapses to the uniform
-  `cms/decompress-failed` (no per-errno telemetry). CompressedData carries no
-  integrity, confidentiality, or authentication (RFC 8551 §2.4.5) — the decompress
-  verdict has no `authenticated` / `valid` field, so a caller cannot mistake
-  size-reduction for protection; sign or encrypt the result if you need it.
+- **Decompression bombs (CWE-409).** Every decompression in the toolkit runs through
+  one bounded primitive, so the defence cannot be picked up by one caller and missed
+  by the next. The output is capped AT the decompressor (Node's `maxOutputLength`),
+  which stops at the bound BEFORE the output is materialized, so a tiny stream that
+  would expand to gigabytes is refused rather than allocated. `pki.cms.decompress`
+  (RFC 3274 CompressedData, RFC 1950 ZLIB) caps at `C.LIMITS.COMPRESS_MAX_BYTES`
+  (16 MiB, tightened downward via `opts.maxOutputBytes`) and throws
+  `cms/decompress-too-large`. `pki.tls.decompressCertificate` (RFC 8879) caps at the message's OWN declared `uncompressed_length` — so an
+  attacker's declaration is its own ceiling — bounded in turn by the RFC 8446 §4
+  handshake framing limit `C.LIMITS.TLS_CERT_MSG_MAX_BYTES` (2^24-1) and by any
+  tighter caller cap, and throws `tls/too-large`. Every other malformed / truncated /
+  corrupt stream collapses to a uniform per-domain code (no per-errno telemetry).
+- **Compressed-stream malleability (CWE-20).** A decompressor stops at the end of the
+  first complete frame and silently ignores anything after it, so appended bytes — or
+  a whole second frame — would recover identical content and give one content
+  unboundedly many encodings, breaking any digest taken over the compressed object.
+  The shared primitive requires the whole input to be exactly one frame: the consumed
+  input length must equal the input length, or the stream is refused
+  (`cms/decompress-failed` / `tls/decompress-failed`). This is the same rule the DER
+  layer applies when it rejects trailing bytes.
+- **Silent frame truncation (CWE-354).** A decompressor must fault on a frame it could not
+  finish. Some runtimes instead return a SHORT result and report the whole input as
+  consumed, so neither the output nor a consumed-length check can see that the frame was
+  cut — a peer strips a frame's tail and the receiver processes a prefix as though it were
+  the whole message. The shared primitive probes each algorithm once at startup and drops
+  any whose decompressor behaves that way, so it is neither advertised nor accepted rather
+  than offered with a truncation that cannot be detected. On the current LTS Node this
+  drops zstd from `pki.tls`, leaving zlib and brotli; it returns on a runtime that faults.
+- **Unbounded certificate-entry allocation (CWE-770).** A TLS Certificate message's byte
+  ceiling does not bound how many `CertificateEntry` elements it declares: the smallest legal
+  entry is 6 bytes, so a message well inside the framing limit can declare hundreds of
+  thousands, each costing far more heap than wire. `pki.tls.parseCertificateMessage` caps the
+  count at `C.LIMITS.TLS_CERT_MAX_ENTRIES` (100, matching `PATH_MAX_CERTS` — a chain longer
+  than the path validator accepts has nothing to offer), and at exactly one under a negotiated
+  RawPublicKey type, which RFC 8446 §4.4.2 requires.
+- **Compressed certificate length agreement (RFC 8879 §5).** `pki.tls.decompressCertificate`
+  enforces the bound on both sides: the cap above catches output larger than declared,
+  and an explicit comparison catches output SMALLER than declared (`tls/length-mismatch`)
+  — the direction no cap can see. An algorithm outside the RFC 8879 registry, one the
+  runtime cannot decompress, or one the receiver never advertised is refused before any
+  decompressor is handed the bytes.
+- CMS CompressedData carries no integrity, confidentiality, or authentication
+  (RFC 8551 §2.4.5) — the decompress verdict has no `authenticated` / `valid` field,
+  so a caller cannot mistake size-reduction for protection; sign or encrypt the result
+  if you need it. The same holds for a decompressed certificate message: it is
+  structure, not trust — path-validate the certificates it carries.
 - **PBES2 private-key decryption is not a padding oracle (CWE-208).** `pki.key.decrypt`
   (RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2) reads the attacker-controlled
   PBKDF2 salt and iteration count, and validates the parameter structure and IV length,

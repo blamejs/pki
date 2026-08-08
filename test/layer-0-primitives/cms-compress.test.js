@@ -90,11 +90,15 @@ async function run() {
   var good = zlib.deflateSync(MSG);
   check("13. a truncated zlib stream -> cms/decompress-failed", (await codeOf(function () { return pki.cms.decompress(buildCD({ stream: good.subarray(0, good.length - 4) })); })) === "cms/decompress-failed");
   check("13a. a wrong-magic stream -> cms/decompress-failed", (await codeOf(function () { return pki.cms.decompress(buildCD({ stream: Buffer.from([0x00, 0x00, 0x00, 0x00]) })); })) === "cms/decompress-failed");
-  // Trailing bytes AFTER a complete RFC 1950 stream are tolerated (the stream self-delimits via its
-  // ADLER32 trailer; Node's zlib -- like the reference zlib and `openssl cms -uncompress` -- ignores
-  // them, and the DER OCTET STRING length is the real boundary). Recovery is exact; no integrity is
-  // claimed either way (RFC 8551 sec. 2.4.5), so matching the reference beats a non-interoperable reject.
-  check("13b. a complete stream with trailing garbage decompresses to the correct content (zlib tolerates it, like openssl)", Buffer.compare((await pki.cms.decompress(buildCD({ stream: Buffer.concat([good, Buffer.from("garbage")]) }))).content, MSG) === 0);
+  // The whole OCTET STRING must be the compressed stream. A zlib stream self-delimits via its
+  // ADLER32 trailer, so an inflater stops there and ignores whatever follows -- which would let a
+  // caller append arbitrary bytes, or a second entire stream, and still recover identical content.
+  // That is encoding malleability: the same content would have unboundedly many encodings, and a
+  // digest over the compressed object would stop identifying it. The DER layer refuses trailing
+  // bytes for this reason and so does this one, even though a permissive inflater recovers.
+  check("13b. a complete stream with trailing garbage -> cms/decompress-failed", (await codeOf(function () { return pki.cms.decompress(buildCD({ stream: Buffer.concat([good, Buffer.from("garbage")]) })); })) === "cms/decompress-failed");
+  check("13b1. a single trailing byte is enough to refuse the stream", (await codeOf(function () { return pki.cms.decompress(buildCD({ stream: Buffer.concat([good, Buffer.from([0x00])]) })); })) === "cms/decompress-failed");
+  check("13b2. a second complete stream appended -> cms/decompress-failed (one content, one encoding)", (await codeOf(function () { return pki.cms.decompress(buildCD({ stream: Buffer.concat([good, zlib.deflateSync(Buffer.from("second"))]) })); })) === "cms/decompress-failed");
 
   // ==== Config-time (tier-1 cms/bad-input) =========================================================
   check("14. non-Buffer content -> cms/bad-input", (await codeOf(function () { return pki.cms.compress(42); })) === "cms/bad-input");
