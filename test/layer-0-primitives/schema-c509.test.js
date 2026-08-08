@@ -1134,6 +1134,18 @@ async function run() {
   check("313. a tag-48 MAC value under emailAddress rebuilds as an IA5String (its declared type)", dnValueTag(0) === pki.asn1.TAGS.IA5_STRING);
   check("314. a tag-48 MAC value under a printableString-sign attribute rebuilds as a PrintableString", dnValueTag(-1) === pki.asn1.TAGS.PRINTABLE_STRING);
   check("315. a tag-48 MAC value under commonName still rebuilds as a UTF8String", dnValueTag(1) === pki.asn1.TAGS.UTF8_STRING);
+  // an attribute's registered ASN.1 type carries a SIZE constraint as well as an alphabet: every
+  //   DirectoryString-valued attribute and emailAddress are SIZE (1..MAX), and countryName SHALL have length 2
+  //   (draft sec. 3.1.4 / X.520). Enforced in the one place the value is built, so DN and SDA cannot disagree.
+  check("316. a native Name countryName whose value is not length 2 -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-4, "USA") })); }) === "c509/bad-name");
+  check("317. a native Name attribute with an empty value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(1, "") })); }) === "c509/bad-name");
+  check("318. a native Name countryName of length 2 stays valid", pki.schema.c509.parse(V.mk({ 6: nameField(-4, "US") })).subject.dn === "C=US");
+  check("319. an SDA countryName whose value is not length 2 -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(-4n), CBb.array([CBb.textString("USA")])])))); }) === "c509/bad-extensions");
+  check("320. an SDA emailAddress with an empty value -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(0n), CBb.array([CBb.textString("")])])))); }) === "c509/bad-extensions");
+  // symmetry: a certificate carrying such a value still ENCODES -- the extension degrades to the byte-exact
+  //   ~oid form rather than emitting a compact value this decoder would reject.
+  var sdaBadCountry = await certWithExts([sdaExt([sdaAttr("countryName", [b.printable("USA")])])]);
+  check("321. an SDA countryName outside its SIZE falls back to the ~oid form on encode + double-inverts", fellBack(sdaBadCountry, 24));
 
   console.log("CHECKS " + helpers.getChecks());
 }
