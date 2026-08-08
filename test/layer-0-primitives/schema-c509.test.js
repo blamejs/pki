@@ -1124,6 +1124,16 @@ async function run() {
   check("310. a native Name printableString-sign attribute with a non-PrintableString value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-1, eAcute) })); }) === "c509/bad-name");
   check("311. a native Name countryName with a non-PrintableString value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(V.mk({ 6: nameField(-4, eAcute + "S") })); }) === "c509/bad-name");
   check("312. a native Name utf8String-sign attribute with a non-ASCII value stays valid", pki.schema.c509.parse(V.mk({ 6: nameField(1, eAcute) })).subject.dn === "CN=" + eAcute);
+  // the tag-48 MAC SpecialText shortcut is only unambiguous for the BARE (always-commonName) Name form: inside the
+  //   array form the attribute integer still declares the string type, so a MAC value rebuilds as THAT type.
+  function macNameField(intVal) { return CB.build.array([CB.build.int(BigInt(intVal)), CB.build.tag(48, CB.build.byteString(Buffer.from("0123456789AB", "hex")))]).toString("hex"); }
+  function dnValueTag(intVal) {
+    var recon = pki.schema.c509.parse(V.mk({ 6: macNameField(intVal) })).reconstructedDer;
+    return pki.asn1.decode(recon).children[0].children[5].children[0].children[0].children[1].tagNumber;
+  }
+  check("313. a tag-48 MAC value under emailAddress rebuilds as an IA5String (its declared type)", dnValueTag(0) === pki.asn1.TAGS.IA5_STRING);
+  check("314. a tag-48 MAC value under a printableString-sign attribute rebuilds as a PrintableString", dnValueTag(-1) === pki.asn1.TAGS.PRINTABLE_STRING);
+  check("315. a tag-48 MAC value under commonName still rebuilds as a UTF8String", dnValueTag(1) === pki.asn1.TAGS.UTF8_STRING);
 
   console.log("CHECKS " + helpers.getChecks());
 }
