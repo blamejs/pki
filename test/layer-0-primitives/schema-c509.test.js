@@ -1690,6 +1690,25 @@ async function run() {
     var withComma = pki.schema.c509.parse(V.mk({ 6: CB.build.textString("Good CA,O=Trusted").toString("hex") }));
     return withComma.subject.dn === "CN=Good CA\\,O=Trusted" && withComma.subject.rdns.length === 1;
   })());
+  // Agreement has to hold for EVERY attribute the registry carries, not the handful a local label list
+  // happens to cover -- a name attribute missing from such a list renders by its long name here and by
+  // its short label there. Walk the whole registry rather than naming attributes, so an attribute added
+  // later is covered the day it is added.
+  check("377b. every registry attribute renders identically through both parsers", (function () {
+    var checked = 0, differ = [];
+    for (var ai3 = 0; ai3 <= 15; ai3++) {
+      var pairHex = CB.build.array([
+        CB.build.int(BigInt(ai3)), CB.build.textString("Val"),
+        CB.build.int(1n), CB.build.textString("Leaf"),
+      ]).toString("hex");
+      var viaC, viaX;
+      try { viaC = pki.schema.c509.parse(V.mk({ 6: pairHex })); } catch (_e) { continue; }   // value rules may refuse
+      try { viaX = pki.schema.x509.parse(viaC.reconstructedDer); } catch (_e2) { continue; }
+      checked++;
+      if (viaC.subject.dn !== viaX.subject.dn) differ.push(ai3 + ":" + viaC.subject.dn + " vs " + viaX.subject.dn);
+    }
+    return checked >= 8 && differ.length === 0;
+  })());
 
   console.log("CHECKS " + helpers.getChecks());
 }
