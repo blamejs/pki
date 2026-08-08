@@ -1150,6 +1150,19 @@ async function run() {
   //   ~oid form rather than emitting a compact value this decoder would reject.
   var sdaBadCountry = await certWithExts([sdaExt([sdaAttr("countryName", [b.printable("USA")])])]);
   check("321. an SDA countryName outside its SIZE falls back to the ~oid form on encode + double-inverts", fellBack(sdaBadCountry, 24));
+  // the BARE single-commonName Name form is held to the same value rules as the array form -- proven on a
+  //   NATIVELY-SIGNED (type-2) certificate, which never reconstructs and so is the path a decode-time check must
+  //   cover; the array form alone would leave it unguarded.
+  var t2Fields = CB.decode(V.A1.type2).children.map(function (c) { return c.bytes.toString("hex"); });
+  function type2WithSubject(hex) { var g = t2Fields.slice(); g[6] = hex; return Buffer.from("8b" + g.join(""), "hex"); }
+  check("322. a type-2 bare-form Name with an empty commonName -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(type2WithSubject(CB.build.textString("").toString("hex"))); }) === "c509/bad-name");
+  check("323. a type-2 bare-form Name with an empty byte-string value -> c509/bad-name", codeSync(function () { return pki.schema.c509.parse(type2WithSubject(CB.build.byteString(Buffer.alloc(0)).toString("hex"))); }) === "c509/bad-name");
+  check("324. a type-2 bare-form Name with a normal commonName stays valid", pki.schema.c509.parse(type2WithSubject(CB.build.textString("ok").toString("hex"))).subject.dn === "CN=ok");
+  check("325. a type-2 bare-form tag-48 MAC commonName stays valid", pki.schema.c509.parse(type2WithSubject(CB.build.tag(48, CB.build.byteString(Buffer.from("0123456789AB", "hex"))).toString("hex"))).subject.eui64 != null);
+  // The X.520 ub-* attribute MAXIMA are deliberately NOT enforced: pki.x509.sign issues, and pki.schema.x509.parse
+  //   reads, a commonName longer than ub-common-name (64), so refusing one here would make encode reject a
+  //   certificate this toolkit itself mints. Only the unambiguous bounds (non-empty, countryName exactly 2) bind.
+  check("326. a commonName longer than the X.520 ub-common-name still parses (the maxima are not relying-party rejects)", pki.schema.c509.parse(V.mk({ 6: nameField(1, "A".repeat(70)) })).subject.dn === "CN=" + "A".repeat(70));
 
   console.log("CHECKS " + helpers.getChecks());
 }
