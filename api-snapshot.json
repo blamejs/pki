@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.4.0",
+  "packageVersion": "0.4.1",
   "surface": {
     "C": {
       "kind": "object",
@@ -798,6 +798,9 @@
               "kind": "number"
             },
             "NULL": {
+              "kind": "number"
+            },
+            "NUMERIC_STRING": {
               "kind": "number"
             },
             "OBJECT_IDENTIFIER": {

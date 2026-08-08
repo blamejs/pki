@@ -134,6 +134,33 @@ async function run() {
     check("openssl x509 accepts the reconstructed policyMappings/policyConstraints certificate", t.code === 0);
     check("openssl reads the reconstructed Policy Mappings + Policy Constraints", /Policy Mappings/.test(t.stdout || "") && /Policy Constraints/.test(t.stdout || ""));
   });
+
+  // A certificate bearing the compact subjectDirectoryAttributes value form: registered (title, a multi-value
+  // organizationalUnitName SET) and a ~oid-form (emailAddress) attribute ride the draft-20 sec. 3.3 flat array,
+  // and OpenSSL parses the reconstructed certificate carrying the extension.
+  var sdaExtDer = b.sequence([b.oid(O("subjectDirectoryAttributes")), b.octetString(b.sequence([
+    b.sequence([b.oid(O("title")), b.set([b.utf8("Director")])]),
+    b.sequence([b.oid(O("organizationalUnitName")), b.set([b.utf8("Eng"), b.utf8("Ops")])]),
+    b.sequence([b.oid(O("emailAddress")), b.set([b.ia5("ca@interop.example")])]),
+  ]))]);
+  var das = signing.makeSigner("ec-p256");
+  var sdaDer = Buffer.from(await pki.x509.sign({
+    subject: [{ commonName: "sda leaf" }], subjectPublicKey: das.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: [sdaExtDer],
+  }, { key: das.key }));
+  var sdaC509 = pki.schema.c509.encode(sdaDer, { issuerCurve: "P-256" });
+  var sdaRecon = pki.schema.c509.parse(sdaC509).reconstructedDer;
+  check("subjectDirectoryAttributes cert type-3 reconstructs the source DER byte-for-byte", sdaRecon.equals(sdaDer));
+  var sdaExtsNode = pki.cbor.decode(sdaC509).children[9].children || [], sdaCompact = false;
+  for (var si = 0; si + 1 < sdaExtsNode.length; si += 2) {
+    if (sdaExtsNode[si].majorType <= 1 && Math.abs(Number(pki.cbor.read.int(sdaExtsNode[si]))) === 24 && sdaExtsNode[si + 1].majorType === 4) sdaCompact = true;
+  }
+  check("subjectDirectoryAttributes encodes as the compact CBOR array (not the ~oid fallback)", sdaCompact);
+  ctx.withTmp(sdaRecon, "c509-recon-sda.der", function (p) {
+    var t = ctx.runOpenssl(["x509", "-inform", "DER", "-in", p, "-noout", "-text"], { allowNonZero: true });
+    check("openssl x509 accepts the reconstructed subjectDirectoryAttributes certificate", t.code === 0);
+    check("openssl reads the reconstructed subjectDirectoryAttributes extension", /Subject Directory Attributes|X509v3 Subject Directory|2\.5\.29\.9/.test(t.stdout || ""));
+  });
 }
 
 Promise.resolve().then(run).then(

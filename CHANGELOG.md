@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.1 — 2026-08-08
+
+pki.schema.c509 encodes and decodes the compact subjectDirectoryAttributes value form -- a C509 certificate's subject directory attributes ride their draft-20 registry integers (or unwrapped OIDs) with their directory-string values, interoperating with a conformant C509 implementation rather than only this decoder.
+
+### Added
+
+- pki.schema.c509 encodes and decodes the compact value form for the subjectDirectoryAttributes extension (draft-ietf-cose-cbor-encoded-cert-20 sec. 3.3): a flat array of (attribute type, attribute values) pairs where each type is a sec. 8.6 registry integer (the sign selecting the directory-string type) or an unwrapped OID, and each values slot is a non-empty array holding the attribute's SET of one or more values -- the string values for a registry-integer type, or the raw DER attribute values for an unwrapped-OID type. Both directions invert to the DER extnValue byte-for-byte, so a certificate carrying the extension is the specific compact shape a conformant C509 implementation reads rather than an opaque DER byte string. The encoder is guarded per attribute and per extension: an attribute whose value is not a directory string, or whose value SET mixes string types, uses the unwrapped-OID form for that attribute (keeping the rest of the extension compact); a value the compact form cannot represent falls the whole extension back to the unwrapped-OID byte-string form instead of encoding lossily; and a malformed compact value fails closed with a typed C509Error.
+- The OID registry gains the subjectDirectoryAttributes certificate-extension identifier (2.5.29.9), resolvable through pki.oid.byName / pki.oid.name.
+- The ASN.1 codec reads NumericString (pki.asn1.TAGS.NUMERIC_STRING), the X.520 syntax of the x121Address and internationalISDNNumber directory attributes. It is validated strictly like every other string type: a value outside the digits-and-space set the type permits is rejected as malformed rather than decoded.
+
+### Changed
+
+- A C509 certificate carrying subjectDirectoryAttributes now encodes to -- and decodes from -- its compact CBOR value shape rather than the unwrapped-OID byte-string form an earlier release emitted; both reconstruct the same DER, but the CBOR bytes differ, so re-encode any C509 produced by an earlier release.
+
 ## v0.4.0 — 2026-08-06
 
 CRL issuance and verification, PKCS#12 build and open, attribute-certificate issuance, and the key-material lifecycle graduate to stable, and pki.schema.c509 adds the compact policyMappings and policyConstraints value forms -- a C509 certificate's policy mappings and policy constraints now ride their specific draft-20 CBOR shape and interoperate with a conformant C509 implementation rather than only this decoder.
