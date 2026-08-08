@@ -84,6 +84,17 @@ security-only patches after the next major releases.
   detached-backed input (a transferred / structuredClone'd view whose bytes are
   gone, so it reads as zero-length) fails closed with a typed error at the byte
   boundary instead of being processed as empty.
+- **One signature covering several encodings.** A type-3 C509 certificate is a
+  re-encoding of an X.509 certificate, and the X.509 signature covers the bytes it
+  rebuilds -- not the C509 bytes themselves. Where the specification fixes which
+  spelling a value takes, this decoder accepts only that spelling, so a certificate
+  has one C509 encoding rather than several that rebuild it identically. Without
+  that, code identifying, caching or deduplicating a certificate by its C509 bytes
+  would see distinct byte strings for one certificate, each carrying a signature
+  that verifies. The encoder walks the same rules, so what it emits is what it
+  accepts. One redundancy the specification itself permits remains -- a registered
+  algorithm may ride as its registry integer or as its object identifier -- so
+  identify a certificate by the X.509 bytes it reconstructs, never by its C509 bytes.
 - **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
   created by a different WebCrypto implementation is indistinguishable from one of
   this engine's by type, algorithm and usages while holding its material somewhere
