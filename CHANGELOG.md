@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.8 — 2026-08-08
+
+A stored android-safetynet WebAuthn attestation can be re-verified in full -- the signature, the registration binding, and the certificate chain -- behind an opt-in and against a root the caller supplies.
+
+### Added
+
+- pki.webauthn.verify verifies the android-safetynet attestation format, which it previously refused as unsupported. Enable it with opts.verifySafetyNetJws and supply the Google root(s) to anchor the chain to as opts.safetyNetRoots -- both are required, and with either missing the call is refused rather than falling back to a weaker check. The format is off by default and this library bundles no root, because the service that produced these statements is retired and choosing a trust anchor on a caller's behalf is not this library's decision to make. A caller who does not enable it sees the same result as before.
+- Every binding the specification states is checked, and each failure names which one: the response must be a three-part JWS whose algorithm is RS256, its signature must verify under the certificate in its own header, its nonce must match this registration's authenticator data and client data, the certificate must be issued to attest.android.com, and the chain must validate to one of the supplied roots. The algorithm is pinned rather than read from the token, so a statement cannot select its own verification algorithm. The hostname is matched exactly against the certificate's subject alternative name, falling back to its common name only when it carries no alternative name at all -- a name merely ending in attest.android.com does not pass. The chain goes through full path validation, so an expired or otherwise non-conforming certificate cannot pass on a signature alone. On success the result reports attestation type Basic with the embedded chain as its trust path.
+- Device-integrity signals in the response -- whether the device passed the compatibility test suite, the reported timestamp, the requesting package -- are deliberately not gated on, because the specification does not make them part of attestation verification. They remain relying-party policy.
+
 ## v0.4.7 — 2026-08-08
 
 One certificate now renders one distinguished-name string whichever parser read it -- a C509 certificate's subject and issuer strings joined their components without the separating space every other parser in the toolkit uses.
