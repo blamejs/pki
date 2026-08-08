@@ -21,12 +21,11 @@ var pki = helpers.pki;
 var check = helpers.check;
 
 var KAT = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "composite", "kat.json"), "utf8"));
-// The arms Node's WebCrypto surface cannot verify (brainpool curves; the
-// SHAKE256/64 pre-hash): registered + params-guarded, deferred at verify.
+// The arms Node's WebCrypto surface cannot verify (the two brainpool curves):
+// registered + params-guarded, deferred at verify.
 var DEFERRED = {
   "id-MLDSA65-ECDSA-brainpoolP256r1-SHA512": 1,
   "id-MLDSA87-ECDSA-brainpoolP384r1-SHA512": 1,
-  "id-MLDSA87-Ed448-SHAKE256": 1,
 };
 var T = new Date("2030-01-01T00:00:00Z");
 
@@ -65,6 +64,18 @@ async function run() {
   check("composite: intact self-signed cert verifies (baseline)", (await verifyDer(der)) === true);
   check("composite: a corrupted ML-DSA component fails the whole signature (AND, not OR)", (await verifyDer(flip(20))) === false);
   check("composite: a corrupted traditional component fails the whole signature (AND, not OR)", (await verifyDer(flip(MLDSA65_SIG + 20))) === false);
+
+  // 2b. The same AND-combination over the Ed448 arm, whose pre-hash is SHAKE256 rather
+  //     than a SHA-2 digest. Its ML-DSA-87 signature is the fixed first 4627 bytes and
+  //     the Ed448 signature is the 114-byte remainder.
+  var e448 = KAT.tests.find(function (x) { return x.tcId === "id-MLDSA87-Ed448-SHAKE256"; });
+  var eder = Buffer.from(e448.x5c, "base64");
+  var eoff = eder.indexOf(pki.schema.x509.parse(eder).signatureValue.bytes);
+  var MLDSA87_SIG = 4627;
+  function eflip(k) { var b = Buffer.from(eder); b[eoff + k] ^= 0xff; return b; }
+  check("composite Ed448/SHAKE256: intact cert verifies against the draft-19 KAT", (await verifyDer(eder)) === true);
+  check("composite Ed448/SHAKE256: a corrupted ML-DSA component fails the whole signature", (await verifyDer(eflip(20))) === false);
+  check("composite Ed448/SHAKE256: a corrupted Ed448 component fails the whole signature", (await verifyDer(eflip(MLDSA87_SIG + 20))) === false);
 
   // 3. Registry + params-absent policy: the 18 composite OIDs round-trip by name
   //    and every one demands absent AlgorithmIdentifier parameters (draft sec. 5.3).

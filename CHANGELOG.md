@@ -4,7 +4,28 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.4.2 — 2026-08-08
+## v0.4.3 — 2026-08-08
+
+pki.tls encodes and decodes RFC 8879 compressed certificate messages -- the largest payload a TLS handshake carries, and the one post-quantum chains grow by kilobytes -- with the two-sided decompression bound the specification requires. Alongside it, SHAKE128 and SHAKE256 join the digest surface, which brings the Ed448 composite signature arm into service.
+
+### Added
+
+- pki.tls.decompressCertificate and pki.tls.compressCertificate encode and decode an RFC 8879 CompressedCertificate. Decompression applies the bound RFC 8879 sec. 5 requires on both sides: the decompressor is capped at the message's own declared uncompressed length, so a decompression bomb is refused as its output would exceed that declaration rather than after the memory is committed, and the recovered length must then equal the declaration exactly. A caller's own cap applies independently and can only tighten the limit, never raise it. An algorithm outside the registry, one this runtime cannot decompress, or one absent from the caller's advertised set is refused before any decompressor runs; an empty compressed body is a framing violation; and trailing bytes are refused, so one chain has exactly one encoding. compressCertificate decodes its own output before returning it, so a message this toolkit produces cannot be one this toolkit refuses, and refuses to emit one whose own framing would exceed the handshake limit.
+- All three registered compression algorithms are implemented, and each is offered only where the running Node can decompress it safely. A decompressor is required to fault on a frame it could not finish; where one instead returns a short result and reports the whole input as consumed, a peer could cut a frame's tail and have the receiver process a prefix as if it were the entire message. Any algorithm whose decompressor behaves that way is dropped at startup and is then neither advertised nor accepted, rather than being offered with a truncation it cannot detect. On the current long-term-support Node this drops zstd, leaving zlib and brotli; it returns by itself on a runtime that reports the fault.
+- pki.tls.parseCertificateMessage decodes the RFC 8446 sec. 4.4.2 Certificate message itself, surfacing each entry's certificate DER exactly as it arrived -- ready for pki.schema.x509.parse and never re-serialized -- alongside its raw extensions and the certificate request context. The certificate type is negotiated by a separate extension and is not present in the message, so it is declared through an option rather than inferred from the bytes. The number of entries is bounded: a message's byte ceiling does not limit how many it declares, since the smallest legal entry is six bytes, so a message well inside the framing limit could otherwise declare hundreds of thousands and exhaust memory. The cap matches the longest chain the path validator will accept, and is exactly one under a negotiated RawPublicKey type, which RFC 8446 sec. 4.4.2 requires.
+- pki.webcrypto.subtle.digest computes SHAKE128 and SHAKE256, at the 32- and 64-byte lengths RFC 8702 sec. 4 fixes for message-digest use. The length follows from the name rather than being chosen by the caller, so a digest cannot be squeezed to a non-conforming width. The extendable-output functions are a digest route only: the signature, MAC and key-derivation operations continue to refuse them with the same typed error as before.
+- The composite signature arm id-MLDSA87-Ed448-SHAKE256 now verifies and signs. It was registered and parameter-guarded but failed closed as unsupported because its SHAKE256 pre-hash was unavailable; it is now checked byte-for-byte against the composite specification's own known-answer certificate, and both components must pass for the signature to be accepted. Sixteen of the eighteen arms now verify; the two remaining are the brainpool-curve arms.
+
+### Changed
+
+- pki.cms.sign and pki.cms.verify compute their message digests through the crypto engine rather than each holding a private digest table. Behaviour is unchanged; the digest algorithms a signer and a verifier accept are now defined in one place.
+
+### Fixed
+
+- pki.cms.decompress refuses a stream carrying bytes after the end of the compressed data. A decompressor stops at the end of the first complete frame and ignores whatever follows, so arbitrary bytes -- or a second entire frame -- could be appended and the same content still recovered. That gave one content unboundedly many encodings, so a digest over the compressed object no longer identified what it decompressed to. The whole octet string must now be exactly one frame, which is what the DER layer already required of its own encodings.
+- An unusable hash is now refused when a key is created rather than when it is first used. pki.webcrypto.subtle.importKey and generateKey recorded the requested hash without resolving it, so a name this engine cannot use produced a CryptoKey that failed only at its first sign, verify or wrap -- after the caller had already paid for the key generation. The name is now resolved at the entry point, through the same table the operations use, so what a key can be created with and what it can be used with cannot diverge.
+
+## v0.4.2 — 2026-08-07
 
 A NumericString attribute value no longer shares distinguished-name identity with a printable or UTF-8 value of the same characters -- the comparison that decides name chaining, revocation-issuer matching and name constraints. Alongside it, several C509 name-encoding conformance fixes and a move to Node 24.19.0.
 
