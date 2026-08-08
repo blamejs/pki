@@ -833,6 +833,13 @@ function testMlKemCertificates() {
     guard.name.dnEqual(dnPrintable.rdns, dnNumeric.rdns, errors.CertificateError, "x509/bad-name", "dn") === false);
   check("a NumericString attribute value keeps its RFC 4514 hex form, not a plain string",
     dnNumeric.dn === "CN=#1203313233" && dnPrintable.dn === "CN=123");
+  // Falling to the opaque hex form must not mean skipping validation: the type has its own strict reader, so a
+  // value outside its alphabet is malformed DER and is refused rather than rendered as opaque bytes.
+  var numBad = pki.asn1.encode(0x00, false, pki.asn1.TAGS.NUMERIC_STRING, Buffer.from("12@4", "latin1"));
+  check("a malformed NumericString attribute value is rejected, not rendered as opaque hex",
+    code(function () { pki.schema.x509.parse(dnCertWith(numBad)); }) === "x509/bad-atv");
+  check("a valid NumericString attribute value is still accepted in its type-distinct hex form",
+    dnNumeric.dn === "CN=#1203313233");
   check("PrintableString and UTF8String DO still share DN identity (RFC 5280 sec. 7.1)",
     guard.name.dnEqual(dnPrintable.rdns, dnUtf8.rdns, errors.CertificateError, "x509/bad-name", "dn") === true);
 }
