@@ -1669,6 +1669,28 @@ async function run() {
   // The remaining arm of _encAlgorithm -- a bare ~oid for an algorithm with neither a registry row nor
   // parameters -- has no input that reaches it; the reason is recorded at the function itself.
 
+  // ==== one certificate, one rendered dn ====
+  // The C509 and X.509 parsers render a name through different code, so they can drift apart on the
+  // separator and leave one certificate with two dn strings -- which they did, C509 joining with ","
+  // where every other renderer joins with ", ". Pin them against each other on a name with several
+  // RDNs, which is the only place a separator difference shows.
+  check("377. the C509 and X.509 renderers agree on a multi-RDN name", (function () {
+    var multi = CB.build.array([
+      CB.build.int(-4n), CB.build.textString("US"),          // C=US   (printableString sign)
+      CB.build.int(-6n), CB.build.textString("Acme"),        // ST=Acme
+      CB.build.int(1n), CB.build.textString("Leaf"),         // CN=Leaf
+    ]).toString("hex");
+    var viaC509 = pki.schema.c509.parse(V.mk({ 6: multi }));
+    var viaX509 = pki.schema.x509.parse(viaC509.reconstructedDer);
+    return viaC509.subject.dn === viaX509.subject.dn && viaC509.subject.dn === "C=US, ST=Acme, CN=Leaf";
+  })());
+  // The separator is the one `openssl x509 -subject` prints (the interop gate pins that), and a comma
+  // INSIDE a value stays escaped per RFC 4514 sec. 2.4 so it cannot read as a second RDN.
+  check("377a. a comma inside a value stays escaped and cannot read as a separator", (function () {
+    var withComma = pki.schema.c509.parse(V.mk({ 6: CB.build.textString("Good CA,O=Trusted").toString("hex") }));
+    return withComma.subject.dn === "CN=Good CA\\,O=Trusted" && withComma.subject.rdns.length === 1;
+  })());
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.7 — 2026-08-08
+
+One certificate now renders one distinguished-name string whichever parser read it -- a C509 certificate's subject and issuer strings joined their components without the separating space every other parser in the toolkit uses.
+
+### Fixed
+
+- A C509 certificate's subject and issuer strings now use the same spelling as every other parser in the toolkit -- components separated by a comma and a space, which is what openssl prints for the same certificate. Previously the C509 parser omitted the space, so one certificate had two different rendered names depending on the parser that read it, and code comparing or logging them saw a difference where there was none. The two renderers are now checked against each other on a multi-component name, so the divergence cannot return.
+- Where these strings are built now states what they are: a display form listing the components in the certificate's own order, escaped so that a comma inside a value cannot read as a separator between components. It is not an LDAP distinguished name, which reverses the component order and omits the space, and must not be passed to a directory client as one. Name comparison never used these strings and still does not.
+
 ## v0.4.6 — 2026-08-08
 
 A C509 certificate now has one encoding where the specification defines one -- nine alternative spellings that rebuilt a byte-identical X.509 certificate, so that a single signature covered all of them, are refused, and the encoder emits the spelling it accepts.
