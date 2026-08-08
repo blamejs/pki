@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.4 — 2026-08-08
+
+pki.schema.c509 encodes and decodes the RFC 3779 resource-delegation extensions -- a C509 certificate carrying IP address blocks or AS identifiers now parses at all, where before it was refused outright, and its addresses ride the compact form the specification defines.
+
+### Added
+
+- pki.schema.c509 encodes and decodes the RFC 3779 IPAddrBlocks and ASIdentifiers extensions in their compact value form, together with their RFC 8360 v2 twins, which the specification encodes identically. Previously these extensions had no registry entry, so a conformant C509 certificate carrying one was refused rather than falling back -- a C509 resource certificate could not be read at all. An address family carries its address-family identifier and optional sub-identifier, and its addresses as either the delta-coded integer form or the byte-string form; the prefix length rides the unused-bit count, so a prefix ending in zero bits survives exactly. Both directions reproduce the worked example published in the specification's own appendix, byte for byte.
+- Which address form applies is fixed by the specification, not chosen by the sender: the byte-string form applies to a whole address family as soon as any one of its addresses exceeds eight octets, and the integer form applies otherwise. The decoder enforces that, so a family that used the wrong form -- or mixed the two -- is refused instead of giving one certificate two valid encodings.
+- The compact form is used only for a list already in the canonical order RFC 3779 requires: sorted, with no pair of entries overlapping, and with any two contiguous entries already combined into one. All three rules bind together, and the same three apply to AS identifiers. A list that breaks any of them keeps its original bytes, because compacting it would give an address set a second encoding when it already has a canonical one -- and because such a certificate is one an independent validator rejects, so re-encoding it would quietly turn a refused certificate into an accepted one. An address wider than its address family allows is likewise refused, in both directions.
+
+### Fixed
+
+- A certificate whose version is not v3 is now refused with the reason, rather than reported as one this encoder could not reconstruct. Both C509 certificate types are defined over X.509 v3 and the encoding carries no version field, so a v1 or v2 certificate is outside the format; it previously fell through to the byte-exactness self-check, whose verdict reads as a defect in the encoder rather than a certificate the format does not cover. A v3 certificate whose extensions field is omitted was and remains fully supported -- the specification encodes that as an empty array.
+
 ## v0.4.3 — 2026-08-08
 
 pki.tls encodes and decodes RFC 8879 compressed certificate messages -- the largest payload a TLS handshake carries, and the one post-quantum chains grow by kilobytes -- with the two-sided decompression bound the specification requires. Alongside it, SHAKE128 and SHAKE256 join the digest surface, which brings the Ed448 composite signature arm into service.

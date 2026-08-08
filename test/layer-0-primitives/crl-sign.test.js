@@ -108,6 +108,10 @@ async function testReasonCodeRules() {
   var u = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: 0 }] }, issuerOf(s)));
   check("unspecified(0) reason omitted -> entry has no extensions", u.revokedCertificates[0].crlEntryExtensions.length === 0);
   check("an unspecified(0)-only CRL is v1", u.version === 1);
+  // A CRLReason arrives as a registry name or its number; anything else is rejected rather than coerced.
+  function withReason(r) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: r }] }, issuerOf(s)); }
+  check("unknown CRLReason name -> crl/bad-reason-code", await codeOf(withReason("nope")) === "crl/bad-reason-code");
+  check("non-name non-number reason -> crl/bad-reason-code", await codeOf(withReason({})) === "crl/bad-reason-code");
 }
 
 // ---- sec. 5.1.1.2 -- signature == signatureAlgorithm, single source ----
@@ -132,6 +136,19 @@ async function testCrlNumberCap() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: big21 }, issuerOf(s))) === "crl/bad-crl-number");
   var c = pki.schema.crl.parse(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: big20 }, issuerOf(s)));
   check("20-octet cRLNumber accepted + round-trips", (crlExt(c, "cRLNumber") || {}).value === BigInt("0x" + big20.toString("hex")));
+
+  // Every accepted cRLNumber spelling normalizes to the same INTEGER, and every other type is rejected --
+  // the same coercion deltaCRLIndicator's baseCRLNumber rides, so closing it here closes both callers.
+  function crlNum(v) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: v }, issuerOf(s)); }
+  async function crlNumValue(v) { return (crlExt(pki.schema.crl.parse(await crlNum(v)), "cRLNumber") || {}).value; }
+  check("safe-integer number cRLNumber -> INTEGER 9", (await crlNumValue(9)) === 9n);
+  check("non-safe-integer number cRLNumber -> crl/bad-crl-number", await codeOf(crlNum(Math.pow(2, 53))) === "crl/bad-crl-number");
+  check("decimal string cRLNumber -> INTEGER 255", (await crlNumValue("255")) === 255n);
+  check("0x-hex string cRLNumber -> INTEGER 255", (await crlNumValue("0xff")) === 255n);
+  check("unparseable string cRLNumber -> crl/bad-crl-number", await codeOf(crlNum("zzz")) === "crl/bad-crl-number");
+  check("empty-Buffer cRLNumber -> INTEGER 0", (await crlNumValue(Buffer.alloc(0))) === 0n);
+  check("boolean cRLNumber -> crl/bad-crl-number", await codeOf(crlNum(true)) === "crl/bad-crl-number");
+  check("negative cRLNumber -> crl/bad-crl-number (INTEGER 0..MAX)", await codeOf(crlNum(-1n)) === "crl/bad-crl-number");
 }
 
 // ---- sec. 5.2.1 -- authorityKeyIdentifier: keyIdentifier method only, non-critical ----
@@ -146,6 +163,32 @@ async function testAkiShape() {
   check("AKI is SEQUENCE { [0] keyIdentifier } only", v.children.length === 1 && v.children[0].tagClass === "context" && v.children[0].tagNumber === 0);
   var ski = pki.schema.x509.parse(s.cert).extensions.filter(function (x) { return x.oid === byName("subjectKeyIdentifier"); })[0];
   check("AKI key id == the issuer cert SKI", Buffer.compare(v.children[0].content, asn1.read.octetString(asn1.decode(ski.value))) === 0);
+
+  // sec. 5.2.1 -- the keyIdentifier source, arm by arm. All four CRLs below are signed under the SAME key,
+  // so the emitted key id is the only thing that varies and it names which arm ran. The minimalCert helper
+  // stores an SKI that is deliberately NOT the sec. 4.2.1.2 method-1 derivation, so "took the stored SKI"
+  // and "re-derived from the SPKI" are observably different values rather than a coincidence.
+  async function akiKeyId(issuer) {
+    var d = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { authorityKeyIdentifier: true } }, issuer);
+    return asn1.decode(crlExt(pki.schema.crl.parse(d), "authorityKeyIdentifier").value).children[0].content;
+  }
+  var derived = await akiKeyId(issuerOf(s));                       // no issuer cert -> derive from the issuer SPKI
+  var stored = await akiKeyId({ cert: s.cert, key: s.key });       // issuer cert with a readable SKI -> use it
+  check("no issuer cert -> AKI key id derived from the issuer SPKI", Buffer.isBuffer(derived) && derived.length === 20);
+  check("a readable issuer-cert SKI is used verbatim, not re-derived", Buffer.compare(stored, derived) !== 0);
+  // An issuer cert whose SKI value is not a readable OCTET STRING: the decode faults and the key id is
+  // re-derived from the issuer SPKI (a correct sec. 5.2.1 key id) rather than the CRL failing or the AKI
+  // being dropped. Same key as above, so the fallback must land on exactly the derived value.
+  var badSkiCert = signing.minimalCert(s.spki, { ski: true, badSki: true });
+  check("unreadable issuer-cert SKI -> AKI re-derived from the SPKI",
+    Buffer.compare(await akiKeyId({ cert: badSkiCert, key: s.key }), derived) === 0);
+  // A parsed certificate carrying no extensions array at all is still a usable issuer.
+  var noExts = pki.schema.x509.parse(s.cert);
+  delete noExts.extensions;
+  check("issuer cert with no extensions -> AKI re-derived from the SPKI",
+    Buffer.compare(await akiKeyId({ cert: noExts, key: s.key }), derived) === 0);
+  check("authorityKeyIdentifier that is neither true nor a Buffer -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { authorityKeyIdentifier: 5 } }, issuerOf(s))) === "crl/bad-input");
 }
 
 // ---- sec. 5.1.1.3 -- verify over the raw tbs, per algorithm, fail-closed ----
@@ -175,6 +218,72 @@ async function testVerifyAlgorithmConfusion() {
   check("ECDSA CRL against an Ed25519 SPKI -> verify false", (await pki.crl.verify(der, { publicKey: ed.spki })) === false);
 }
 
+// ---- verify accepts every documented crl / issuer shape, and rejects the rest ----
+
+async function testVerifyInputShapes() {
+  var s = makeSigner("ec-p256");
+  var spec = { thisUpdate: TU, nextUpdate: NU, crlNumber: 1n };
+  var der = await pki.crl.sign(spec, issuerOf(s));
+  var pem = await pki.crl.sign(spec, issuerOf(s), { pem: true });
+  // The crl argument: DER Buffer (covered above), PEM string, or an already-parsed CRL.
+  check("verify accepts a PEM CRL string", (await pki.crl.verify(pem, { publicKey: s.spki })) === true);
+  check("verify accepts a parsed CRL object", (await pki.crl.verify(pki.schema.crl.parse(der), { publicKey: s.spki })) === true);
+  check("verify of a non-CRL value -> crl/bad-input", await codeOf(pki.crl.verify(5, { publicKey: s.spki })) === "crl/bad-input");
+  // An object that merely looks like a parsed CRL but is missing a signed field is not accepted as one.
+  var shallow = pki.schema.crl.parse(der);
+  check("verify of a parsed CRL missing signatureValue -> crl/bad-input",
+    await codeOf(pki.crl.verify({ tbsBytes: shallow.tbsBytes, signatureAlgorithm: shallow.signatureAlgorithm }, { publicKey: s.spki })) === "crl/bad-input");
+  // The issuer argument: raw SPKI Buffer, { publicKey }, { cert } (DER or parsed), or a parsed certificate.
+  check("verify accepts a raw SPKI Buffer issuer", (await pki.crl.verify(der, s.spki)) === true);
+  check("verify with no issuer -> crl/bad-input", await codeOf(pki.crl.verify(der, null)) === "crl/bad-input");
+  check("verify with an unrecognized issuer shape -> crl/bad-input", await codeOf(pki.crl.verify(der, {})) === "crl/bad-input");
+  var ca = makeSigner("ec-p256");
+  var caDer = await pki.x509.sign({
+    subject: "CA verify shapes", subjectPublicKey: ca.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: ca.key });
+  var caParsed = pki.schema.x509.parse(caDer);
+  var crlByCa = await pki.crl.sign(spec, { cert: caParsed, key: ca.key });
+  check("verify accepts a { cert } DER issuer", (await pki.crl.verify(crlByCa, { cert: caDer })) === true);
+  check("verify accepts a { cert } parsed-certificate issuer", (await pki.crl.verify(crlByCa, { cert: caParsed })) === true);
+  check("verify accepts a parsed certificate as the issuer", (await pki.crl.verify(crlByCa, caParsed)) === true);
+  // Every accepted issuer shape still resolves to a real key -- the wrong CA's cert fails closed.
+  check("a parsed-certificate issuer for the wrong CA -> verify false", (await pki.crl.verify(crlByCa, pki.schema.x509.parse(s.cert))) === false);
+}
+
+// ---- the signing key must actually match the resolved scheme -- faults are typed, never a partial CRL ----
+
+async function testSignerKeyFaults() {
+  var ec = makeSigner("ec-p256"), ed = makeSigner("ed25519");
+  var spec = { thisUpdate: TU, nextUpdate: NU, crlNumber: 1n };
+  function withIssuer(i) { return pki.crl.sign(spec, i); }
+  // The scheme resolves from the issuer SPKI, so a key that cannot sign under it fails closed rather than
+  // emitting a CRL whose signature no relying party can check.
+  check("issuer SPKI and signing key of different algorithms -> crl/bad-input",
+    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: ed.key })) === "crl/bad-input");
+  check("an unusable signing key -> crl/bad-input",
+    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]) })) === "crl/bad-input");
+  check("a signing key of an unsupported type -> crl/bad-input",
+    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: 5 })) === "crl/bad-input");
+  // A key whose algorithm cannot produce signatures at all is refused at scheme resolution, with the
+  // registry's own verdict -- not silently downgraded to some default signature algorithm.
+  var kem = require("node:crypto").generateKeyPairSync("ml-kem-768").publicKey.export({ format: "der", type: "spki" });
+  check("a key-encapsulation SPKI as the issuer key -> crl/unsupported-algorithm",
+    await codeOf(withIssuer({ name: "CN=X", publicKey: kem, key: ec.key })) === "crl/unsupported-algorithm");
+  check("an unknown digestAlgorithm override -> crl/unsupported-algorithm",
+    await codeOf(pki.crl.sign(spec, issuerOf(ec), { digestAlgorithm: "not-a-hash" })) === "crl/unsupported-algorithm");
+  // An undecodable PEM signing key is reported as a key-decoding fault, not as a signing failure -- the
+  // verdict names what the caller got wrong.
+  check("an undecodable PEM signing key -> crl/bad-input",
+    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: "-----BEGIN PRIVATE KEY-----\nnot base64 at all\n-----END PRIVATE KEY-----" })) === "crl/bad-input");
+  // issuer.key may be a CryptoKey rather than PKCS#8 bytes; the CRL it produces must verify like any other.
+  var ck = await pki.webcrypto.subtle.importKey("pkcs8", ec.key, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  var ckDer = await pki.crl.sign(spec, { name: "CN=X", publicKey: ec.spki, key: ck });
+  check("a CryptoKey issuer.key signs a CRL that verifies", (await pki.crl.verify(ckDer, { publicKey: ec.spki })) === true);
+  check("a CryptoKey of the wrong algorithm -> crl/bad-input",
+    await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: await pki.webcrypto.subtle.importKey("pkcs8", ed.key, { name: "Ed25519" }, false, ["sign"]) })) === "crl/bad-input");
+}
+
 // ---- sec. 5.2.5 -- IssuingDistributionPoint gates ----
 
 async function testIdpGates() {
@@ -187,6 +296,36 @@ async function testIdpGates() {
   check("empty IDP -> crl/bad-idp", await codeOf(idp({})) === "crl/bad-idp");
   check("two scope booleans TRUE -> crl/bad-idp", await codeOf(idp({ onlyContainsUserCerts: true, onlyContainsCACerts: true })) === "crl/bad-idp");
   check("onlyContainsAttributeCerts=TRUE -> crl/bad-idp", await codeOf(idp({ onlyContainsAttributeCerts: true })) === "crl/bad-idp");
+  check("non-object IDP -> crl/bad-idp", await codeOf(idp("x")) === "crl/bad-idp");
+  check("unknown IDP field -> crl/bad-idp", await codeOf(idp({ bogus: 1 })) === "crl/bad-idp");
+  // distributionPoint [0] { fullName [0] IMPLICIT GeneralNames } -- accepted as a list or a single GeneralName.
+  var fn = asn1.decode(crlExt(pki.schema.crl.parse(await idp({ fullName: [{ uniformResourceIdentifier: "http://x/crl" }] })), "issuingDistributionPoint").value);
+  check("IDP fullName emits distributionPoint [0]", fn.children.length === 1 && fn.children[0].tagClass === "context" && fn.children[0].tagNumber === 0);
+  check("IDP accepts a single-object fullName",
+    !!crlExt(pki.schema.crl.parse(await idp({ fullName: { uniformResourceIdentifier: "http://x" } })), "issuingDistributionPoint"));
+  check("IDP fullName [] -> crl/bad-idp (GeneralNames is SIZE(1..MAX))", await codeOf(idp({ fullName: [] })) === "crl/bad-idp");
+}
+
+// ---- sec. 5.2.6 / 5.2.7 -- freshestCRL + authorityInfoAccess on a complete (non-delta) CRL ----
+
+async function testFreshestAndAia() {
+  var s = makeSigner("ec-p256");
+  function withExt(e) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: e }, issuerOf(s)); }
+  // freshestCRL is a SEQUENCE OF DistributionPoint. A bare GeneralName list is one DP's fullName; an array
+  // of { fullName } objects is one DP each. Both emit; neither is rejected as the other's shape.
+  var f1 = crlExt(pki.schema.crl.parse(await withExt({ freshestCRL: [{ uniformResourceIdentifier: "http://x/f.crl" }] })), "freshestCRL");
+  check("freshestCRL from a GeneralName list -> one distribution point", f1 && asn1.decode(f1.value).children.length === 1);
+  check("freshestCRL is non-critical (sec. 5.2.6)", f1.critical === false);
+  var f2 = crlExt(pki.schema.crl.parse(await withExt({ freshestCRL: [{ fullName: { uniformResourceIdentifier: "http://x" } }, { fullName: [{ uniformResourceIdentifier: "http://y" }] }] })), "freshestCRL");
+  check("freshestCRL from { fullName } distribution points -> one DP each", f2 && asn1.decode(f2.value).children.length === 2);
+  check("empty freshestCRL -> crl/bad-input", await codeOf(withExt({ freshestCRL: [] })) === "crl/bad-input");
+  // authorityInfoAccess is a SEQUENCE OF AccessDescription, caIssuers-only (sec. 5.2.7).
+  var a = crlExt(pki.schema.crl.parse(await withExt({ authorityInfoAccess: [{ uniformResourceIdentifier: "http://ca/ca.crt" }] })), "authorityInfoAccess");
+  check("authorityInfoAccess present + non-critical (sec. 5.2.7)", a && a.critical === false);
+  var ad = asn1.decode(a.value).children[0];
+  check("authorityInfoAccess accessMethod is caIssuers", asn1.read.oid(ad.children[0]) === byName("caIssuers"));
+  check("authorityInfoAccess accessLocation is the [6] URI GeneralName", ad.children[1].tagClass === "context" && ad.children[1].tagNumber === 6);
+  check("empty authorityInfoAccess -> crl/bad-input", await codeOf(withExt({ authorityInfoAccess: [] })) === "crl/bad-input");
 }
 
 // ---- sec. 5.2.4 / 5.2.6 -- delta CRL indicator + freshestCRL conflict ----
@@ -214,6 +353,21 @@ async function testPemAndIsRevoked() {
   // normalizes the query the same way schema-crl surfaces serialNumberHex, so the padded forms match.
   check("isRevoked returns the matching entry (sign padding preserved)", pki.crl.isRevoked(der, 0xabcdn).serialNumberHex === "00abcd");
   check("isRevoked returns null for an absent serial", pki.crl.isRevoked(der, 0x9999n) === null);
+  // Every documented serialNumber spelling resolves to the SAME entry -- a lookup must not depend on which
+  // form the caller happens to hold, or a revoked certificate would read as unlisted.
+  function found(v) { var e = pki.crl.isRevoked(der, v); return e && e.serialNumberHex === "00abcd"; }
+  check("isRevoked accepts a safe-integer serial", found(43981));
+  check("isRevoked accepts a 0x-hex string serial", found("0xabcd"));
+  check("isRevoked accepts a decimal string serial", found("43981"));
+  check("isRevoked accepts a magnitude Buffer serial", found(Buffer.from([0xab, 0xcd])));
+  function serialCode(v) { try { pki.crl.isRevoked(der, v); return null; } catch (e) { return e && e.code; } }
+  check("isRevoked non-safe-integer serial -> crl/bad-input", serialCode(Math.pow(2, 53)) === "crl/bad-input");
+  check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
+  check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
+  check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");
+  check("isRevoked empty-Buffer serial -> crl/bad-input (serials are positive)", serialCode(Buffer.alloc(0)) === "crl/bad-input");
+  // isRevoked shares the crl-shape coercion with verify, so a PEM string is a valid list to look up in.
+  check("isRevoked accepts a PEM CRL string", pki.crl.isRevoked(pem, 0xabcdn) !== null);
 }
 
 // ---- config-time fail-closed ----
@@ -229,6 +383,22 @@ async function testFailClosed() {
   // RFC 5280 sec. 5.1.2.6 -- a CRL must not list the same serial number twice.
   check("duplicate revoked serial number -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 5n, revocationDate: RD }, { serialNumber: 5n, revocationDate: RD }] }, issuerOf(s))) === "crl/bad-input");
+  // Structural inputs are type-checked rather than coerced -- a mis-shaped spec is a permanent verdict.
+  check("non-object non-array extensions -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: 42 }, issuerOf(s))) === "crl/bad-input");
+  check("non-array revoked -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: {} }, issuerOf(s))) === "crl/bad-input");
+  check("null revoked entry -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [null] }, issuerOf(s))) === "crl/bad-input");
+  check("non-array entry extensions -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: {} }] }, issuerOf(s))) === "crl/bad-input");
+  check("issuer.cert that is not a certificate -> crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU }, { cert: {}, key: s.key })) === "crl/bad-input");
+  check("a non-object CRL spec -> crl/bad-input", await codeOf(pki.crl.sign(null, issuerOf(s))) === "crl/bad-input");
+  check("an omitted issuer -> crl/bad-input", await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU })) === "crl/bad-input");
+  // sec. 5.1.2.3 -- with no issuer.cert to take the DN from, one must be supplied explicitly.
+  check("no issuer DN and no issuer.cert -> crl/bad-issuer",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU }, { publicKey: s.spki, key: s.key })) === "crl/bad-issuer");
 }
 
 // ---- sec. 5.2.3 / 5.2.4 -- a delta CRL MUST carry a cRLNumber greater than its baseCRLNumber ----
@@ -253,6 +423,20 @@ async function testIssuerCertCrlSign() {
   var caNoCrlSign = pki.schema.x509.parse(await pki.x509.sign(Object.assign({ subject: "CA no cRLSign", extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "digitalSignature"] } }, base), { key: s.key }));
   check("issuer cert whose keyUsage omits cRLSign -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: caNoCrlSign, key: s.key })) === "crl/bad-input");
+  // An unreadable keyUsage is NOT treated as "no keyUsage extension" (which would be unrestricted): the
+  // cRLSign gate fails closed on a value it cannot decode.
+  var kuBad = pki.asn1.build.sequence([pki.asn1.build.oid(byName("keyUsage")), pki.asn1.build.boolean(true), pki.asn1.build.octetString(Buffer.from([0xff, 0xff]))]);
+  check("issuer cert with a malformed keyUsage -> crl/bad-key-usage",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: signing.minimalCert(s.spki, { exts: [kuBad] }), key: s.key })) === "crl/bad-key-usage");
+  // A fault raised while reading a caller-supplied certificate object that is NOT already a typed CRL error
+  // is normalized to one, so the primitive's contract -- every failure is a CrlError carrying a stable code
+  // -- holds even for an issuer object the parser did not produce.
+  var hostile = pki.schema.x509.parse(s.cert);
+  var trap = { oid: byName("keyUsage"), critical: true };
+  Object.defineProperty(trap, "value", { get: function () { throw new RangeError("unreadable extension value"); } });
+  hostile.extensions = [trap];
+  check("an untyped fault reading the issuer keyUsage is normalized to crl/bad-input",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: hostile, key: s.key })) === "crl/bad-input");
 }
 
 // ---- sec. 5.2 -- the pre-encoded Extension escape hatch is held to the profile (criticality + delta rules) ----
@@ -322,6 +506,36 @@ async function testPreEncodedExtProfile() {
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(1, Buffer.from([0xff])), B.contextPrimitive(2, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
   check("pre-encoded IDP with onlyContainsAttributeCerts -> crl/bad-idp",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: [extDer("issuingDistributionPoint", true, B.sequence([B.contextPrimitive(5, Buffer.from([0xff]))]))] }, issuerOf(s))) === "crl/bad-idp");
+
+  function withExts(list) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: list }, issuerOf(s)); }
+  function withEntryExts(list) { return pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, extensions: list }] }, issuerOf(s)); }
+  // A recognized extension's value is DECODED on the escape hatch, never emitted opaque: content that is not
+  // well-formed DER is rejected rather than copied through to the wire.
+  check("pre-encoded ext whose value is not valid DER -> crl/bad-input",
+    await codeOf(withExts([extDer("issuingDistributionPoint", true, Buffer.from([0xff, 0xff]))])) === "crl/bad-input");
+  // The sec. 5.2.3 cRLNumber bounds bind the hatch exactly as they bind spec.crlNumber.
+  check("pre-encoded negative cRLNumber -> crl/bad-crl-number",
+    await codeOf(withExts([extDer("cRLNumber", false, B.integer(-1n))])) === "crl/bad-crl-number");
+  check("pre-encoded 21-octet cRLNumber -> crl/bad-crl-number",
+    await codeOf(withExts([extDer("cRLNumber", false, B.integer(BigInt("0x7f" + "ff".repeat(20))))])) === "crl/bad-crl-number");
+  // A pre-encoded IDP member must be context-tagged (sec. 5.2.5 -- every field is a context tag).
+  check("pre-encoded IDP with a universal-tagged member -> crl/bad-idp",
+    await codeOf(withExts([extDer("issuingDistributionPoint", true, B.sequence([B.integer(1n)]))])) === "crl/bad-idp");
+  // sec. 5.2 -- at most one instance of an extension, counting the object form and the hatch together.
+  check("spec.crlNumber plus a pre-encoded cRLNumber -> crl/bad-input (duplicate)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: [extDer("cRLNumber", false, B.integer(2n))] }, issuerOf(s))) === "crl/bad-input");
+  // A recognized non-INTEGER extension's value must be a SEQUENCE.
+  check("pre-encoded authorityKeyIdentifier with a non-SEQUENCE value -> crl/bad-input",
+    await codeOf(withExts([extDer("authorityKeyIdentifier", false, B.integer(1n))])) === "crl/bad-input");
+  // The same one-instance rule on entry extensions: spec.reason emits reasonCode, so a pre-encoded one collides.
+  check("entry reason plus a pre-encoded reasonCode -> crl/bad-input (duplicate)",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [{ serialNumber: 1n, revocationDate: RD, reason: "keyCompromise", extensions: [extDer("reasonCode", false, B.enumerated(1n))] }] }, issuerOf(s))) === "crl/bad-input");
+  check("pre-encoded reasonCode encoded as INTEGER not ENUMERATED -> crl/bad-reason-code",
+    await codeOf(withEntryExts([extDer("reasonCode", false, B.integer(1n))])) === "crl/bad-reason-code");
+  // The conforming pre-encoded entry extension is accepted and reaches the wire intact (v2 by sec. 5.1.2.1).
+  var pe = pki.schema.crl.parse(await withEntryExts([extDer("reasonCode", false, B.enumerated(1n))]));
+  check("conforming pre-encoded entry reasonCode accepted", (entryExt(pe.revokedCertificates[0], "reasonCode") || {}).value === 1);
+  check("a pre-encoded entry extension forces v2", pe.version === 2);
 }
 
 async function main() {
@@ -335,7 +549,10 @@ async function main() {
   await testAkiShape();
   await testVerifyPerAlgorithm();
   await testVerifyAlgorithmConfusion();
+  await testVerifyInputShapes();
+  await testSignerKeyFaults();
   await testIdpGates();
+  await testFreshestAndAia();
   await testDeltaAndFreshest();
   await testDeltaRequiresCrlNumber();
   await testIssuerCertCrlSign();
