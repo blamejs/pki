@@ -364,6 +364,36 @@ async function testForeignCryptoKeys() {
     (await codeOf(pki.key.export(own.privateKey))) !== "NO-THROW");
 }
 
+// A separately-installed copy of this toolkit is the same code under a different class identity, so
+// its CryptoKey fails an `instanceof` check here exactly as a third party's would -- while its key
+// material sits in a handle this process can read directly. A caller holding one must not be turned
+// away, and the extractable contract must still hold for it.
+async function testSecondEngineCopy() {
+  var wcPath = require.resolve("../../lib/webcrypto.js");
+  var original = require.cache[wcPath];
+  delete require.cache[wcPath];
+  var second = require(wcPath);
+  require.cache[wcPath] = original;                 // restore before anything else re-requires it
+  check("a second copy of the engine is a distinct CryptoKey class",
+    second.CryptoKey !== original.exports.CryptoKey);
+  var kp = await second.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var priv = await pki.key.export(kp.privateKey);
+  check("a private key from a second copy of this toolkit exports",
+    Buffer.isBuffer(priv) && !!pki.schema.pkcs8.parse(priv));
+  check("a public key from a second copy of this toolkit exports",
+    asn1.decode(await pki.key.export(kp.publicKey)).tagNumber === 16);
+  var hm = await second.webcrypto.subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
+  check("a secret key from a second copy signs an inner JWS", !!(await pki.jose.sign({
+    protected: { alg: "HS256", url: "https://e/x", kid: "acct-1" }, payload: Buffer.from("{}"),
+    key: hm, profile: "eab-inner" })).signature);
+  // The material is reachable through the handle, but extractable:false is a promise -- keep it.
+  var sealed = await second.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
+  check("a non-extractable key from a second copy is still refused", await (async function () {
+    try { await pki.key.export(sealed.privateKey); return false; }
+    catch (e) { return e.code === "key/bad-input" && /is not extractable/.test(e.message); }
+  })());
+}
+
 async function main() {
   await testExportRoundTrip();
   await testPbes2RoundTrip();
@@ -375,6 +405,7 @@ async function main() {
   await testOptionsAndUsages();
   await testEncryptCorners();
   await testForeignCryptoKeys();
+  await testSecondEngineCopy();
   console.log("CHECKS " + helpers.getChecks());
 }
 

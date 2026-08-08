@@ -88,8 +88,13 @@ security-only patches after the next major releases.
   created by a different WebCrypto implementation is indistinguishable from one of
   this engine's by type, algorithm and usages while holding its material somewhere
   this engine cannot read. Every entry point that takes a key decides which of the
-  two it has before using it: the `pki.*` verbs export a foreign key through the
-  implementation that owns it and re-import it, and `pki.webcrypto.subtle` -- where
+  two it has before using it: the `pki.*` verbs export a foreign key through whichever
+  implementation holds its material -- the platform's WebCrypto, or a separately-installed
+  copy of this toolkit, whose handle this process can read -- and re-import it; a key whose
+  implementation keeps its material beyond reach is refused rather than guessed at. An
+  `extractable: false` key is refused on every one of those paths, including the one that
+  could read its handle directly, because that flag is a promise the key carries with it.
+  `pki.webcrypto.subtle` -- where
   the specification leaves cross-implementation use undefined -- refuses it with a
   typed fault naming where it came from. Neither lets a bare type error naming an
   internal property escape from inside the crypto library, and neither ever
