@@ -102,6 +102,19 @@ function run() {
     codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x2b, 0x00]))); }) === "tls/truncated");
   check("5b5. an extension value length past the vector -> tls/bad-framing",
     codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x2b, 0x00, 0x09, 0x01]))); }) === "tls/bad-framing");
+  // RFC 8446 sec. 4.2: "There MUST NOT be more than one extension of the same type in a given
+  // extension block." Two records of one type make the block mean different things to a consumer
+  // that reads the first and one that reads the last -- the same ambiguity a duplicate DER SET
+  // member creates, so it is refused rather than surfaced.
+  check("5b6. two extensions of the same type -> tls/bad-framing",
+    codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x2b, 0x00, 0x00, 0x00, 0x2b, 0x00, 0x00]))); }) === "tls/bad-framing");
+  check("5b7. a duplicate is refused even when the values differ",
+    codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x0a, 0x00, 0x01, 0x01, 0x00, 0x0a, 0x00, 0x01, 0x02]))); }) === "tls/bad-framing");
+  check("5b8. distinct types in any order are still accepted",
+    pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x33, 0x00, 0x00, 0x00, 0x0a, 0x00, 0x00, 0x00, 0x2b, 0x00, 0x00]))).entries[0].extensionList.length === 3);
+  // type 0 must not be special-cased away by a falsy-keyed seen-set.
+  check("5b9. extension type 0 duplicated is refused (no falsy-key hole)",
+    codeOf(function () { return pki.tls.parseCertificateMessage(entryWithExts(Buffer.from([0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00]))); }) === "tls/bad-framing");
   var empty = certMessage([]);
   check("5c. an empty certificate list is a valid message with no entries", pki.tls.parseCertificateMessage(empty).entries.length === 0);
   check("5d. RawPublicKey surfaces the slot as spki, not certData", (function () {
