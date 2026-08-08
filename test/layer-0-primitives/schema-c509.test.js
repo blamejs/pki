@@ -1037,6 +1037,49 @@ async function run() {
   //   empty INTEGER), and an out-of-order DER SET (X.690 sec. 11.6), each fail closed -- asn1.decode frames both.
   check("290. a ~oid-form constructed value with a nested malformed element (SEQUENCE with an empty INTEGER) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("30050200020101"))); }) === "c509/bad-extensions");
   check("291. a ~oid-form constructed value that is an unsorted DER SET -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("3106020102020101"))); }) === "c509/bad-extensions");
+  // a universal primitive with NO strict content validator is rejected, not accepted on framing alone: asn1.decode
+  //   frames a malformed NumericString (12 01 40, "@" is outside its alphabet) and a high-tag-number type happily.
+  check("292. a ~oid-form value of a universal type with no strict validator (NumericString) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("120140"))); }) === "c509/bad-extensions");
+  check("293. a ~oid-form value of a high-tag-number universal type -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("1f81000141"))); }) === "c509/bad-extensions");
+  // a plain GeneralizedTime value rides the compact form; the X.690 sec. 11.7 fractional-seconds relaxation is
+  //   deliberately scoped to the codec + RFC 3161 timestamping, so a fractional value is not compact-representable
+  //   here and fails closed (on encode it degrades to the byte-exact ~oid form, losing nothing).
+  check("294. a ~oid-form value that is a plain GeneralizedTime rides the compact form + reconstructs byte-exact", (function () {
+    var s = "20260101000000Z", tlv = Buffer.concat([Buffer.from([0x18, s.length]), Buffer.from(s, "latin1")]);
+    var e = pki.schema.c509.parse(mkExt(sdaOidVal(tlv.toString("hex")))).extensions[0];
+    if (e.name !== "subjectDirectoryAttributes") return false;
+    var v = pki.asn1.decode(e.value).children[0].children[1].children[0];
+    return v.tagNumber === pki.asn1.TAGS.GENERALIZED_TIME && v.bytes.equals(tlv);
+  })());
+  check("294b. a ~oid-form fractional-seconds GeneralizedTime is not compact-representable -> c509/bad-extensions", (function () {
+    var s = "20260101000000.5Z", tlv = Buffer.concat([Buffer.from([0x18, s.length]), Buffer.from(s, "latin1")]);
+    return codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal(tlv.toString("hex")))); }) === "c509/bad-extensions";
+  })());
+
+  // ==== the shared strict-DER gate for every raw-spliced ANY value on the reconstruct path ====
+  // AlgorithmIdentifier.parameters, a generic otherName's [0] EXPLICIT inner TLV, and a ~oid-form SDA
+  // AttributeValue are all caller-supplied ANY bytes spliced verbatim. Framing alone (asn1.decode) admits an
+  // empty INTEGER / reserved tag 0 / a non-minimal INTEGER, which reconstruct a certificate an independent
+  // decoder refuses to load and this toolkit's own readers reject -- so all three route through one strict gate.
+  function algField(paramsHex) { return "8248" + "2a8648ce3d040302" + (0x40 + paramsHex.length / 2).toString(16) + paramsHex; }
+  check("295. type-3 algorithm parameters that are a framed-but-invalid DER element -> c509/non-invertible", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: algField("0200") })); }) === "c509/non-invertible");
+  check("296. type-3 algorithm parameters that are a valid NULL still reconstruct (no over-rejection)", pki.schema.c509.parse(V.mk({ 2: algField("0500") })).reconstructedDer.length > 0);
+  check("297. a generic otherName inner value that is a non-minimal INTEGER -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(0, CBb.array([CBb.byteString(Buffer.from("2b06010401", "hex")), CBb.byteString(Buffer.from("02020001", "hex"))])))); }) === "c509/bad-extensions");
+  check("298. a ~oid-form value of a universal CONSTRUCTED type with no structure validator (EXTERNAL) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("2800"))); }) === "c509/bad-extensions");
+  // a nested SET's required order depends on a type the ANY does not carry (SET OF orders by octets, a structured
+  //   SET by tag, and they differ across the constructed bit), so a value canonical under EITHER reading is
+  //   accepted and only one canonical under NEITHER is refused -- a repeated tag proves SET OF, where octets bind.
+  check("299. a ~oid-form SET ordered by TAG (a structured SET: SEQUENCE before PrintableString) is accepted", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("31053000130141"))).extensions[0]; return e.name === "subjectDirectoryAttributes" && e.value.length > 0; })());
+  check("300. a ~oid-form SET ordered by OCTETS (the SET OF reading of the same members) is also accepted", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("31051301413000"))).extensions[0]; return e.name === "subjectDirectoryAttributes" && e.value.length > 0; })());
+  // the declared attributeValue order must ALREADY be canonical: asn1.build.set sorts, so accepting a non-canonical
+  //   order would silently rewrite it and let many distinct C509 encodings reconstruct one certificate.
+  check("301. a subjectDirectoryAttributes attributeValue list in non-canonical order -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaVal(CBb.array([CBb.int(10n), CBb.array([CBb.textString("B"), CBb.textString("A")])])))); }) === "c509/bad-extensions");
+  // the c509CertificateType slot is guarded in this module's domain, never leaking the CBOR reader's fault.
+  check("302. a non-integer c509CertificateType -> c509/bad-certificate-type (not cbor/*)", codeSync(function () { return pki.schema.c509.parse(V.mk({ 0: CB.build.textString("x").toString("hex") })); }) === "c509/bad-certificate-type");
+  // tag order ranks by tag CLASS first (universal < application < context < private, X.680 sec. 8.6), so the
+  //   comparison must use the class NUMBER -- the class NAMES do not sort in that order.
+  check("303. a ~oid-form SET whose members ascend by tag CLASS (universal then context) is accepted", (function () { var e = pki.schema.c509.parse(mkExt(sdaOidVal("3106020101800141"))).extensions[0]; return e.name === "subjectDirectoryAttributes" && e.value.length > 0; })());
+  check("304. a ~oid-form SET whose members descend by tag class AND octets -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(sdaOidVal("3106800141020101"))); }) === "c509/bad-extensions");
 
   console.log("CHECKS " + helpers.getChecks());
 }
