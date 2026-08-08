@@ -659,12 +659,12 @@ async function run() {
 // the chain and signs the JWS, which exercises every sec. 8.5 bind on the SHIPPED consumer path.
 async function testAndroidSafetyNet() {
   var SN_TIME = new Date("2026-06-01T00:00:00Z");
-  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2027-01-01T00:00:00Z");
   function b64uEnc(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 
   // One builder serves the accept vector and every reject vector, each breaking exactly one bind.
   async function mint(o) {
     o = o || {};
+    var NB = o.notBefore || new Date("2026-01-01T00:00:00Z"), NA = o.notAfter || new Date("2027-01-01T00:00:00Z");
     var rsa = { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" };
     var rootKp = await pki.webcrypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
     var leafKp = await pki.webcrypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
@@ -759,6 +759,42 @@ async function testAndroidSafetyNet() {
   // statement, refused before any field is trusted.
   check("safetynet: an attStmt carrying an unexpected field is refused",
     (await codeFor({ attStmtPairs: [[cText("ver"), cText("1")], [cText("response"), cBytes(Buffer.from("a.b.c", "utf8"))], [cText("extra"), cText("x")]] })) === "webauthn/bad-att-stmt");
+
+  // ---- a JWS segment must be a JSON OBJECT ----
+  // null, a number, a string and an array are all valid JSON, so the parse succeeds and any later
+  // field read would escape this module's typed contract as a raw TypeError.
+  function rawJws(headerJson, payloadJson) {
+    var h = b64uEnc(Buffer.from(headerJson, "utf8")), p = b64uEnc(Buffer.from(payloadJson, "utf8"));
+    return { attStmtPairs: [[cText("ver"), cText("1")],
+      [cText("response"), cBytes(Buffer.from(h + "." + p + "." + b64uEnc(Buffer.alloc(8)), "utf8"))]] };
+  }
+  var nonObject = ["null", "42", "\"text\"", "[1,2]"];
+  for (var nj = 0; nj < nonObject.length; nj++) {
+    var asHeader = await codeFor(rawJws(nonObject[nj], "{}"));
+    var asPayload = await codeFor(rawJws(JSON.stringify({ alg: "RS256", x5c: ["AA=="] }), nonObject[nj]));
+    check("safetynet: a JWS header that is JSON " + nonObject[nj] + " is refused typed",
+      asHeader === "webauthn/bad-att-stmt");
+    check("safetynet: a JWS payload that is JSON " + nonObject[nj] + " is refused typed",
+      asPayload === "webauthn/bad-att-stmt" || asPayload === "webauthn/bad-att-cert");
+  }
+
+  // ---- when the chain is judged ----
+  // These attestations are historical, so a leaf valid at signing time is routinely expired now.
+  // The signed timestamp in the response is what the chain is judged against by default, and an
+  // explicit opts.time overrides it.
+  var past = await mint({
+    notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"),
+    payloadExtra: { timestampMs: Date.UTC(2020, 5, 1) },
+  });
+  var histRes = await pki.webauthn.verify(past.attObj, past.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [past.rootDer] });
+  check("safetynet: a stored attestation whose chain has since expired still verifies at its signed time",
+    histRes.verified === true);
+  check("safetynet: an explicit opts.time overrides the signed timestamp and refuses out of window",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(past.attObj, past.cdh,
+        { verifySafetyNetJws: true, safetyNetRoots: [past.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+    })) === "webauthn/safetynet-cert-untrusted");
 
   // ---- device-integrity signals: surfaced, and enforced only on request ----
   // The sec. 8.5 verification procedure never mentions these, so the attestation verdict does not
