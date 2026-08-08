@@ -1350,6 +1350,11 @@ async function run() {
   var revRange = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
     vB.sequence([vB.sequence([ipBs("0a40", 0), ipBs("0a20", 0)])])])])));
   check("352a3. a range whose min exceeds its max falls back", r3779FellBack(revRange));
+  // The encode-side mirror: a DER range that is exactly a prefix had to be written as a prefix, so
+  // it is not compacted -- its bytes are preserved and the defect stays visible to a validator.
+  var prefixRange = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([vB.sequence([ipBs("0a", 0), ipBs("0a", 0)])])])])));
+  check("352a4. a DER range that is exactly a prefix falls back", r3779FellBack(prefixRange));
   // 10.0.0.0/9 and 10.128.0.0/9 abut exactly, so they were required to be one /8.
   var adj = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
     vB.sequence([ipBs("0a00", 7), ipBs("0a80", 7)])])])));
@@ -1461,6 +1466,13 @@ async function run() {
     r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(2n), NUL, NUL])) === "NO-THROW");
   check("362s. a plain family before the SAFI-bearing one sharing its AFI is accepted",
     r3779Reject(fams([CBB.uint(1n), NUL, NUL, CBB.uint(1n), CBB.uint(1n), NUL])) === "NO-THROW");
+  // RFC 3779 sec. 2.2.3.7 fixes which of the two arms a span uses: if the low address has every
+  // remaining bit zero and the high every remaining bit one, the span IS that prefix and the range
+  // arm is forbidden -- otherwise one address span would have two legal encodings.
+  check("362t. a range that is exactly a prefix is refused on decode",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.array([CBB.uint(0x010an), CBB.uint(0n)])])])])) === "c509/bad-extensions");
+  check("362u. a span that is NOT a prefix keeps the range arm",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.array([CBB.uint(0x010a00n), CBB.uint(0x0100n)])])])])) === "NO-THROW");
   check("362f. a descending address list is refused on decode",
     r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(), CBB.array([CBB.uint(0x010a40n), CBB.uint(0x03FFE0n)])])])) === "c509/bad-extensions");
   check("362g. an overlapping address list is refused on decode",
