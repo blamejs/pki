@@ -574,7 +574,7 @@ module.exports = {
           var theirToken = reserve("their.token");
           ctx.runOpenssl(["ts", "-reply", "-queryfile", theirReq, "-signer", tsaCert, "-inkey", tsaKey, "-config", tsaCnf, "-token_out", "-out", theirToken]);
           var ca = pki.schema.x509.parse(ctx.fs.readFileSync(caCert));
-          var anchor = { name: ca.subject, publicKey: ca.subjectPublicKeyInfo.bytes, algorithm: ca.signatureAlgorithm.oid };
+          var anchor = { name: ca.subject, publicKey: ca.subjectPublicKeyInfo.bytes, algorithm: ca.subjectPublicKeyInfo.algorithm.oid };
           var tokenBytes = ctx.fs.readFileSync(theirToken);
           var v = await tsp.verify(tokenBytes, data, { trustAnchor: anchor });
           ctx.check("pki.tsp.verify accepts openssl's timestamp token against the CA anchor", v.valid === true);

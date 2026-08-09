@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.4.10",
+  "packageVersion": "0.4.11",
   "surface": {
     "C": {
       "kind": "object",
@@ -87,6 +87,27 @@
               "kind": "number"
             },
             "MAX_DECODE_DEPTH_CEILING": {
+              "kind": "number"
+            },
+            "MDS_BLOB_HEADER_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MDS_BLOB_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MDS_BLOB_SIG_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MDS_MAX_ANCHORS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MDS_MAX_ENTRIES": {
+              "kind": "number"
+            },
+            "MDS_MAX_KEY_IDS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MDS_MAX_STATUS_REPORTS_PER_ENTRY": {
               "kind": "number"
             },
             "MERKLE_MAX_PROOF_NODES": {
@@ -1336,6 +1357,27 @@
               "kind": "number"
             },
             "MAX_DECODE_DEPTH_CEILING": {
+              "kind": "number"
+            },
+            "MDS_BLOB_HEADER_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MDS_BLOB_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MDS_BLOB_SIG_MAX_BYTES": {
+              "kind": "number"
+            },
+            "MDS_MAX_ANCHORS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MDS_MAX_ENTRIES": {
+              "kind": "number"
+            },
+            "MDS_MAX_KEY_IDS_PER_ENTRY": {
+              "kind": "number"
+            },
+            "MDS_MAX_STATUS_REPORTS_PER_ENTRY": {
               "kind": "number"
             },
             "MERKLE_MAX_PROOF_NODES": {
@@ -3180,6 +3222,14 @@
     "webauthn": {
       "kind": "object",
       "members": {
+        "metadataAnchors": {
+          "kind": "function",
+          "arity": 1
+        },
+        "metadataFor": {
+          "kind": "function",
+          "arity": 2
+        },
         "parseAttestationObject": {
           "kind": "function",
           "arity": 1
@@ -3187,6 +3237,10 @@
         "verify": {
           "kind": "function",
           "arity": 3
+        },
+        "verifyMetadataBlob": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -3435,6 +3489,9 @@
     "pki.tsp.verify": "0.2.19",
     "pki.webauthn.parseAttestationObject": "0.2.5",
     "pki.webauthn.verify": "0.2.5",
+    "pki.webauthn.verifyMetadataBlob": "0.4.11",
+    "pki.webauthn.metadataFor": "0.4.11",
+    "pki.webauthn.metadataAnchors": "0.4.11",
     "pki.webcrypto.CryptoKey": "0.1.0",
     "pki.webcrypto.subtle": "0.1.0",
     "pki.webcrypto": "0.1.0",

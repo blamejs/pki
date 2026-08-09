@@ -91,6 +91,11 @@ var SPEC_PATTERNS = [
   new RegExp("^PKCS#\\d+" + _SPEC_OPT + "$"),
   new RegExp("^W3C \\S.*$"),
   new RegExp("^CA/Browser Forum\\b.*$"),
+  // The FIDO Alliance metadata specification, scoped to the revision cited: FIDO
+  // publishes each revision at its own dated URL, so the version is what makes the
+  // reference linkable. A later revision adds its own row here and in _specUrl
+  // together, which is what keeps the recognized set and the linkable set identical.
+  new RegExp("^FIDO Metadata Service v3\\.0" + _SPEC_OPT + "$"),
   // Supply-chain / attestation normative references (not IETF RFCs): DSSE
   // (secure-systems-lab/dsse), the Sigstore bundle (sigstore/protobuf-specs),
   // SLSA provenance (slsa.dev), and the in-toto attestation framework.

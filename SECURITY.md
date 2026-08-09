@@ -701,6 +701,37 @@ security-only patches after the next major releases.
   `webauthn/*` error — a signature that does not verify is a verdict, never a silent
   pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that emit it, never
   for signing.
+- **Metadata-catalogue forgery and rollback (FIDO MDS).** A metadata BLOB decides which
+  roots an authenticator model is allowed to chain to and whether that model is still
+  trusted, so a reader that parses before it verifies hands an attacker the trust
+  decision. `pki.webauthn.verifyMetadataBlob` establishes the JWS signature and chains
+  the BLOB's own signing certificate to an operator-supplied FIDO root **before** a
+  single byte of the payload is read: a BLOB that does not verify never reaches the JSON
+  reader, the entry walk, or any per-entry certificate decode. No FIDO root is bundled
+  and there is no trust-on-first-use — which metadata authority to trust is the
+  operator's decision, exactly as a root store is for path validation. A replayed older
+  catalogue (one whose sequence number does not exceed the number the caller already
+  holds) is refused as a rollback, and one past its `nextUpdate` is refused as stale,
+  both fail-closed and both opt-outable only by the caller. Byte, entry-count, and
+  per-entry anchor-count ceilings bound the decode and the per-entry certificate parsing,
+  since a byte ceiling alone does not bound how many items are declared inside it. When a
+  verified catalogue is supplied to `verify`, the attestation trust path must fully VALIDATE
+  to a root that authenticator's own model registered — the same path validation any chain
+  gets, not a name comparison against the top of the path, which is a value an attacker
+  controls — and a model carrying a disqualifying status report is refused, so a revoked
+  authenticator cannot present an otherwise well-formed attestation and be reported as
+  verified. An authenticator that declares no model identity is looked up by the key
+  identifiers of its attestation certificates rather than being silently exempt from any of
+  this. Which identifier is allowed to select the entry depends on what the attestation
+  signature actually covers: the **fido-u2f** signature is computed over named fields
+  (`0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F`) and does **not**
+  include the AAGUID, so for that format those bytes are attacker-editable and never select
+  the entry — the attestation certificate does. Without that rule, setting the AAGUID to a
+  listed model that shares the vendor's registered root would resolve to *that* model's entry
+  and skip the real one's status reports, letting a revoked authenticator present itself as
+  its healthy sibling. Note for relying parties: `res.aaguid` is reported as the authenticator
+  presented it, and for a fido-u2f attestation it is not signature-bound — use
+  `res.metadata.aaguid`, which names the entry that was actually matched.
 - **CMS SignedData preimage substitution.** `pki.cms.verify` checks a SignedData
   signature over the exact bytes RFC 5652 §5.4 defines, never a re-derived copy. When
   signed attributes are present, the message-digest attribute must equal the digest of

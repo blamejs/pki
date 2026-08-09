@@ -833,6 +833,62 @@ async function testCompoundAttestation() {
   check("compound: the credential binding comes from the shared authenticatorData",
     Buffer.isBuffer(okRes.aaguid) && !!okRes.credentialPublicKey);
 
+  // Metadata enforcement reads the ELEMENTS' paths. The top-level path is empty by design here, so
+  // treating that as "nothing to anchor" would refuse every compound attestation out of hand --
+  // including ones whose certificate-bearing elements do chain to the model's registered roots.
+  // The elements here chain to a vendor root this project does not hold, so the reachable
+  // assertion is that the verdict is a real lookup outcome and NOT the not-applicable short circuit.
+  var mdsHelper = require("../helpers/mds-blob");
+  var mdsFixture = await mdsHelper.mint({});
+  var compoundMd = await pki.webauthn.verifyMetadataBlob(mdsFixture.blob,
+    { rootCertificates: [mdsFixture.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var compoundVerdict = await codeOfAsync(function () {
+    return pki.webauthn.verify(compoundOf([PACKED, NONE]), clientHash("packed"),
+      { metadata: compoundMd, time: new Date("2026-06-01T00:00:00Z") });
+  });
+  check("compound: metadata is applied to the elements' paths, not refused as not applicable",
+    compoundVerdict !== "webauthn/metadata-not-applicable" && /^webauthn\/metadata-/.test(compoundVerdict));
+  // Which identifier may name an element's entry is decided by THAT element's format, not by the
+  // statement as a whole. A mixed compound holding a fido-u2f element (whose AAGUID is unsigned)
+  // alongside a packed element (whose AAGUID is signed) must not force the packed element down the
+  // certificate-identifier path -- a conforming entry indexed only by its AAGUID would not be found
+  // there. The packed element here is the one whose lookup is observable: the catalogue lists the
+  // authenticator's AAGUID, so an AAGUID-keyed lookup reaches an entry and the verdict is about its
+  // anchors, whereas a certificate-keyed lookup could only ever report the model as unlisted.
+  var MIXED_AAGUID = "11111111-1111-1111-1111-111111111111";
+  var mixed = await mdsHelper.mintMixedCompound(MIXED_AAGUID);
+  var mixedVerified = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash, {});
+  check("compound: the mixed fixture verifies, with a path on each element",
+    mixedVerified.verified === true && mixedVerified.compound.length === 2 &&
+    mixedVerified.compound[0].trustPath.length > 0 && mixedVerified.compound[1].trustPath.length > 0);
+  // The catalogue lists the packed element's model by AAGUID and the u2f element's certificate by
+  // key identifier -- each element under the identifier its own format actually signs. Both must
+  // resolve, which only happens when the choice is made per element.
+  var u2fKeyId = require("../../lib/webauthn-mds.js").certKeyIdentifier(pki.schema.x509.parse(mixed.u2fCertDer));
+  var mixedBlob = await mdsHelper.mint({ entries: [
+    { aaguid: MIXED_AAGUID, statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [mixed.rootDer.toString("base64")] } },
+    { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [mixed.rootDer.toString("base64")] } },
+  ] });
+  var mixedMd = await pki.webauthn.verifyMetadataBlob(mixedBlob.blob,
+    { rootCertificates: [mixedBlob.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var mixedBound = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+    { metadata: mixedMd, time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: each element is looked up by the identifier its own format signs",
+    mixedBound.verified === true && mixedBound.metadata.entries.length === 2 &&
+    mixedBound.metadata.entries[0].aaguid === MIXED_AAGUID &&
+    mixedBound.metadata.entries[1].keyIdentifiers.indexOf(u2fKeyId) !== -1);
+
+  // A compound whose elements carry no certificate at all genuinely has nothing to anchor, and
+  // that IS the not-applicable case -- so the distinction is drawn on the elements, not on the
+  // (always empty) top-level path.
+  check("compound: a compound with no certificate-bearing element is not applicable",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([NONE, el("none", cMap([]))]), clientHash("packed"),
+        { metadata: compoundMd, time: new Date("2026-06-01T00:00:00Z") });
+    })) === "webauthn/metadata-not-applicable");
+
   // Fail-closed policy: sec. 8.9 leaves the threshold to the relying party, and this toolkit
   // requires every element. A compound must not launder a failed element behind a passing one.
   var badPacked = el("packed", partsOf("packed").attStmt.bytes);
@@ -970,6 +1026,33 @@ async function testAndroidSafetyNet() {
   check("safetynet: a well-formed statement verifies as Basic with the x5c trust path",
     okRes && okRes.verified === true && okRes.fmt === "android-safetynet" &&
     okRes.attestationType === "Basic" && okRes.trustPath.length === 2);
+
+  // A stored response's service chain has usually expired by the time the registration is examined,
+  // which is why the format judges it at the signed timestamp rather than the current clock. A
+  // later check of that SAME path -- the metadata anchor check -- has to use the same instant, or it
+  // refuses the very registration the format verifier just accepted.
+  // The chain here is genuinely expired now and valid only at the signed timestamp, so the vector
+  // discriminates: an anchor check that reset the instant to the current clock would refuse it.
+  var snStored = await mint({
+    notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"),
+    payloadExtra: { timestampMs: Date.UTC(2020, 5, 1) },
+  });
+  var snRes = await pki.webauthn.verify(snStored.attObj, snStored.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer] });
+  check("safetynet: the instant the chain was judged at is surfaced",
+    snRes.chainValidatedAt instanceof Date && snRes.chainValidatedAt.getTime() === Date.UTC(2020, 5, 1));
+  // android-safetynet binds the whole authenticatorData (the nonce is its digest), so the AAGUID is
+  // signed and the entry is keyed by it.
+  var snAaguid = snRes.aaguid.toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+  var snBlob = await require("../helpers/mds-blob").mint({ aaguid: snAaguid,
+    anchors: [snStored.rootDer.toString("base64")] });
+  var snMd = await pki.webauthn.verifyMetadataBlob(snBlob.blob,
+    { rootCertificates: [snBlob.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  // No opts.time is given, so the anchor check must fall back to the instant the format established
+  // from signed data rather than to "now" -- against which this chain expired years ago.
+  check("safetynet: metadata binds a stored response at the instant its own format judged it",
+    (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
+      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).verified === true);
 
   // Each bind, broken one at a time.
   check("safetynet: a nonce not bound to this registration is refused (bullet 3)",
