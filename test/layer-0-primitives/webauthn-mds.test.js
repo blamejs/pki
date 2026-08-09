@@ -293,7 +293,7 @@ async function run() {
     try { mds.certKeyIdentifier(base.attRootDer); return false; } catch (e) { return e.code === "webauthn/bad-input"; }
   })());
 
-  var u2fLike = await mint({ aaguid: null, statementExtra: { attestationCertificateKeyIdentifiers: [leafKeyId.toUpperCase()] } });
+  var u2fLike = await mint({ aaguid: null, keyIdentifiers: [leafKeyId.toUpperCase()] });
   var mdU2f = await pki.webauthn.verifyMetadataBlob(u2fLike.blob, { rootCertificates: [u2fLike.rootDer], time: T });
   check("mds: an entry is found by attestation-certificate key identifier",
     !!mds.metadataForKeyIdentifier(mdU2f, leafKeyId));
@@ -314,16 +314,16 @@ async function run() {
   check("mds: an aaguid-shaped identifier is not looked up among key identifiers",
     pki.webauthn.metadataFor(mdU2f, "01020304-0506-0708-090a-0b0c0d0e0f10") === null);
   check("mds: a key identifier that is not 40 hex is refused when the BLOB is read",
-    (await codeFor({ statementExtra: { attestationCertificateKeyIdentifiers: ["zz"] } })) === "webauthn/bad-metadata-blob");
+    (await codeFor({ keyIdentifiers: ["zz"] })) === "webauthn/bad-metadata-blob");
   check("mds: a non-array attestationCertificateKeyIdentifiers is refused",
-    (await codeFor({ statementExtra: { attestationCertificateKeyIdentifiers: leafKeyId } })) === "webauthn/bad-metadata-blob");
+    (await codeFor({ keyIdentifiers: leafKeyId })) === "webauthn/bad-metadata-blob");
   check("mds: more key identifiers than the ceiling is refused",
-    (await codeFor({ statementExtra: { attestationCertificateKeyIdentifiers: new Array(pki.C.LIMITS.MDS_MAX_KEY_IDS_PER_ENTRY + 1).fill(leafKeyId) } })) === "webauthn/too-large");
+    (await codeFor({ keyIdentifiers: new Array(pki.C.LIMITS.MDS_MAX_KEY_IDS_PER_ENTRY + 1).fill(leafKeyId) })) === "webauthn/too-large");
   // Two entries claiming one key identifier give the lookup the same undefined choice a duplicate
   // aaguid does, so it is refused for the same reason.
   check("mds: two entries claiming one key identifier are refused", (await codeFor({ entries: [
-    { statusReports: [{ status: "FIDO_CERTIFIED" }], metadataStatement: { attestationCertificateKeyIdentifiers: [leafKeyId] } },
-    { statusReports: [{ status: "FIDO_CERTIFIED" }], metadataStatement: { attestationCertificateKeyIdentifiers: [leafKeyId] } },
+    { statusReports: [{ status: "FIDO_CERTIFIED" }], attestationCertificateKeyIdentifiers: [leafKeyId] },
+    { statusReports: [{ status: "FIDO_CERTIFIED" }], attestationCertificateKeyIdentifiers: [leafKeyId] },
   ] })) === "webauthn/duplicate-metadata-entry");
 
   // ---- end to end through the shipped verb, on a u2f attestation with its own root ----
@@ -337,7 +337,7 @@ async function run() {
     u2fRes.aaguid.equals(Buffer.alloc(16)) && /^[0-9a-f]{40}$/.test(u2fKeyId));
 
   var u2fMeta = await mint({ aaguid: null, anchors: [u2f.rootDer.toString("base64")],
-    statementExtra: { attestationCertificateKeyIdentifiers: [u2fKeyId] } });
+    keyIdentifiers: [u2fKeyId] });
   var mdU2fReal = await pki.webauthn.verifyMetadataBlob(u2fMeta.blob, { rootCertificates: [u2fMeta.rootDer], time: T });
   var bound = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdU2fReal, time: T });
   check("mds: a u2f attestation binds to the entry keyed by its attestation certificate",
@@ -346,7 +346,7 @@ async function run() {
   // The anchor check must VALIDATE the path, not merely recognise a name: an entry registering a
   // different root must not match, even though that root is a perfectly good certificate.
   var u2fWrongRoot = await mint({ aaguid: null, anchors: [base.attRootDer.toString("base64")],
-    statementExtra: { attestationCertificateKeyIdentifiers: [u2fKeyId] } });
+    keyIdentifiers: [u2fKeyId] });
   var mdWrong = await pki.webauthn.verifyMetadataBlob(u2fWrongRoot.blob, { rootCertificates: [u2fWrongRoot.rootDer], time: T });
   check("mds: a u2f attestation whose registered root it does not reach is refused",
     (await codeOf(function () { return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdWrong, time: T }); })) === "webauthn/metadata-untrusted");
@@ -362,14 +362,14 @@ async function run() {
   // A disqualifying status denies on the key-identifier path exactly as it does on the aaguid path.
   var u2fRevoked = await mint({ aaguid: null, anchors: [u2f.rootDer.toString("base64")],
     statusReports: [{ status: "REVOKED", effectiveDate: "2026-02-01" }],
-    statementExtra: { attestationCertificateKeyIdentifiers: [u2fKeyId] } });
+    keyIdentifiers: [u2fKeyId] });
   var mdU2fRevoked = await pki.webauthn.verifyMetadataBlob(u2fRevoked.blob, { rootCertificates: [u2fRevoked.rootDer], time: T });
   check("mds: a revoked u2f model is refused on the key-identifier path too",
     (await codeOf(function () { return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdU2fRevoked, time: T }); })) === "webauthn/metadata-status");
   // An entry that registers no attestation root at all cannot anchor anything, so a caller who
   // asked for metadata enforcement is told so rather than handed a pass.
   var u2fNoAnchor = await mint({ aaguid: null, anchors: [],
-    statementExtra: { attestationCertificateKeyIdentifiers: [u2fKeyId] } });
+    keyIdentifiers: [u2fKeyId] });
   var mdNoAnchor = await pki.webauthn.verifyMetadataBlob(u2fNoAnchor.blob, { rootCertificates: [u2fNoAnchor.rootDer], time: T });
   check("mds: an entry registering no attestation root is refused, not treated as unconstrained",
     (await codeOf(function () { return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdNoAnchor, time: T }); })) === "webauthn/metadata-no-anchor");
@@ -483,6 +483,64 @@ async function run() {
   var csrShaped = { subject: {}, subjectPublicKeyInfo: { bytes: Buffer.alloc(8) }, signatureAlgorithm: { oid: "1.2.840.10045.4.3.2" } };
   check("mds: a request-shaped object (no validity) is not accepted as an anchor",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [csrShaped], time: T }); })) === "webauthn/bad-input");
+
+  // ---- the identifier lives on the ENTRY; the statement's copy is read too ----
+  // sec. 3.1.1 puts attestationCertificateKeyIdentifiers on the entry, a sibling of
+  // metadataStatement. sec. 3.2 defines the same field inside the statement and live entries carry
+  // both, so the union is indexed -- and an identifier repeated across the two is one entry naming
+  // itself twice, not two entries claiming one authenticator.
+  var inStatement = await mint({ aaguid: null, statementExtra: { attestationCertificateKeyIdentifiers: [leafKeyId] } });
+  var mdInStatement = await pki.webauthn.verifyMetadataBlob(inStatement.blob, { rootCertificates: [inStatement.rootDer], time: T });
+  check("mds: the metadataStatement copy of the identifier is indexed too",
+    !!mds.metadataForKeyIdentifier(mdInStatement, leafKeyId));
+  var bothLevels = await mint({ aaguid: null, keyIdentifiers: [leafKeyId],
+    statementExtra: { attestationCertificateKeyIdentifiers: [leafKeyId] } });
+  var mdBoth = await pki.webauthn.verifyMetadataBlob(bothLevels.blob, { rootCertificates: [bothLevels.rootDer], time: T });
+  check("mds: one identifier on both levels is one entry, not a duplicate claim",
+    !!mds.metadataForKeyIdentifier(mdBoth, leafKeyId) && mdBoth.entries[0].keyIdentifiers.length === 1);
+
+  // ---- the BLOB's signing certificate must be allowed to sign ----
+  // RFC 5280 sec. 4.2.1.3: a certificate carrying keyUsage may only be used as it asserts. The path
+  // validation that follows checks the CHAIN, not the target's application-level usage, so nothing
+  // else would catch a leaf restricted to, say, key encipherment being used to sign the catalogue.
+  var noSignKp = await pki.webcrypto.subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var noSignSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", noSignKp.publicKey));
+  var noSignCert = await pki.x509.sign({
+    subject: [{ commonName: "No Signing Usage" }], subjectPublicKey: noSignSpki, serialNumber: Buffer.from([7]),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
+    extensions: { keyUsage: ["keyAgreement"] },
+  }, { key: noSignKp.privateKey, name: [{ commonName: "No Signing Usage" }], publicKey: noSignSpki });
+  check("mds: an x5c leaf whose keyUsage omits digitalSignature may not sign the BLOB",
+    (await codeFor({ x5cRaw: [noSignCert.toString("base64")] })) === "webauthn/bad-att-cert");
+
+  // ---- a malformed status report is refused, not read as a clean bill of health ----
+  // The gate treats a missing status as "nothing disqualifying", so a report that omits it would
+  // silently vouch for the authenticator whose status it was supposed to carry.
+  check("mds: a status report that is not an object is refused",
+    (await codeFor({ statusReports: [42] })) === "webauthn/bad-metadata-blob");
+  check("mds: a status report with no status is refused",
+    (await codeFor({ statusReports: [{ effectiveDate: "2026-01-01" }] })) === "webauthn/bad-metadata-blob");
+  check("mds: a status report whose status is not a string is refused",
+    (await codeFor({ statusReports: [{ status: 7 }] })) === "webauthn/bad-metadata-blob");
+
+  // ---- latest-by-date must not resolve a tie by array position ----
+  // Two reports on the same date are equally current, so a disqualifying one among them cannot be
+  // dropped because of where the catalogue happened to list it.
+  var tie = [{ status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-03-01" }, { status: "REVOKED", effectiveDate: "2026-03-01" }];
+  check("mds: a same-day disqualifying report denies under latest-by-date",
+    mds.statusDenied({ index: 0, statusReports: tie }, { statusPolicy: "latest-by-date" }) === true);
+  check("mds: and the verdict does not change when the tie is listed the other way round",
+    mds.statusDenied({ index: 0, statusReports: tie.slice().reverse() }, { statusPolicy: "latest-by-date" }) === true);
+
+  // ---- a policy option supplied in the wrong type must not read as "off" ----
+  // A caller writing rejectUnknownStatus: "true" from a config file is asking for the stricter
+  // behaviour; comparing against `true` would record it as disabled and accept the authenticator.
+  check("mds: a non-boolean rejectUnknownStatus is refused, not coerced to off",
+    (await codeFor({}, { rejectUnknownStatus: "true" })) === "webauthn/bad-input");
+  check("mds: a non-boolean allowStale is refused", (await codeFor({}, { allowStale: 1 })) === "webauthn/bad-input");
+  check("mds: a non-boolean requireRollbackCheck is refused", (await codeFor({}, { requireRollbackCheck: "yes" })) === "webauthn/bad-input");
+  check("mds: an unrecognised statusPolicy is refused rather than degrading silently",
+    (await codeFor({}, { statusPolicy: "newest" })) === "webauthn/bad-input");
 
   console.log("CHECKS " + helpers.getChecks());
 }

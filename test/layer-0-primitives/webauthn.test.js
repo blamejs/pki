@@ -833,6 +833,30 @@ async function testCompoundAttestation() {
   check("compound: the credential binding comes from the shared authenticatorData",
     Buffer.isBuffer(okRes.aaguid) && !!okRes.credentialPublicKey);
 
+  // Metadata enforcement reads the ELEMENTS' paths. The top-level path is empty by design here, so
+  // treating that as "nothing to anchor" would refuse every compound attestation out of hand --
+  // including ones whose certificate-bearing elements do chain to the model's registered roots.
+  // The elements here chain to a vendor root this project does not hold, so the reachable
+  // assertion is that the verdict is a real lookup outcome and NOT the not-applicable short circuit.
+  var mdsHelper = require("../helpers/mds-blob");
+  var mdsFixture = await mdsHelper.mint({});
+  var compoundMd = await pki.webauthn.verifyMetadataBlob(mdsFixture.blob,
+    { rootCertificates: [mdsFixture.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var compoundVerdict = await codeOfAsync(function () {
+    return pki.webauthn.verify(compoundOf([PACKED, NONE]), clientHash("packed"),
+      { metadata: compoundMd, time: new Date("2026-06-01T00:00:00Z") });
+  });
+  check("compound: metadata is applied to the elements' paths, not refused as not applicable",
+    compoundVerdict !== "webauthn/metadata-not-applicable" && /^webauthn\/metadata-/.test(compoundVerdict));
+  // A compound whose elements carry no certificate at all genuinely has nothing to anchor, and
+  // that IS the not-applicable case -- so the distinction is drawn on the elements, not on the
+  // (always empty) top-level path.
+  check("compound: a compound with no certificate-bearing element is not applicable",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([NONE, el("none", cMap([]))]), clientHash("packed"),
+        { metadata: compoundMd, time: new Date("2026-06-01T00:00:00Z") });
+    })) === "webauthn/metadata-not-applicable");
+
   // Fail-closed policy: sec. 8.9 leaves the threshold to the relying party, and this toolkit
   // requires every element. A compound must not launder a failed element behind a passing one.
   var badPacked = el("packed", partsOf("packed").attStmt.bytes);

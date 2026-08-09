@@ -41,11 +41,18 @@ async function mint(o) {
 
   // `aaguid: null` omits it entirely -- the U2F shape, where the authenticator declares no model
   // identity and the catalogue keys it by its attestation certificates instead.
+  //
+  // MDS v3.0 sec. 3.1.1 puts `attestationCertificateKeyIdentifiers` on the ENTRY, a sibling of
+  // `metadataStatement`. `keyIdentifiers` places it there, which is what a conforming BLOB looks
+  // like; `statementExtra` still reaches inside the statement, for the sec. 3.2 copy live entries
+  // also carry. A fixture that only ever populated the statement would validate an implementation
+  // that reads the wrong level against itself.
   var entry = {
     statusReports: o.statusReports || [{ status: "FIDO_CERTIFIED_L1", effectiveDate: "2026-01-01" }],
     timeOfLastStatusChange: "2026-01-01",
     metadataStatement: Object.assign({ attestationRootCertificates: o.anchors || [attRootDer.toString("base64")] }, o.statementExtra || {}) };
   if (o.aaguid !== null) entry.aaguid = o.aaguid || "01020304-0506-0708-090a-0b0c0d0e0f10";
+  if (o.keyIdentifiers !== undefined) entry.attestationCertificateKeyIdentifiers = o.keyIdentifiers;
   var payload = Object.assign({ legalHeader: "Test metadata, not for production use.",
     no: o.no === undefined ? 42 : o.no, nextUpdate: o.nextUpdate === undefined ? "2027-06-01" : o.nextUpdate,
     entries: o.entries || [entry] }, o.payloadExtra || {});
