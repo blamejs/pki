@@ -510,6 +510,43 @@ async function run() {
   check("mds: a request-shaped object (no validity) is not accepted as an anchor",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [csrShaped], time: T }); })) === "webauthn/bad-input");
 
+  // ---- a report that names one certificate is about THAT certificate ----
+  // A whole batch of authenticators is listed under one entry, so a key-compromise report naming a
+  // single attestation certificate must not deny every device the entry covers -- while a report
+  // that names nothing, or names something unreadable, still applies to all of them.
+  var u2fLeaf = pki.schema.x509.parse(u2f.attCertDer);
+  var otherLeafDer = (await require("../helpers/mds-blob").mintU2fAttestation()).attCertDer;
+  var scoped = { index: 0, statusReports: [{ status: "ATTESTATION_KEY_COMPROMISE",
+    certificate: otherLeafDer.toString("base64") }] };
+  check("mds: a key-compromise report naming another certificate does not deny this one",
+    mds.statusDenied(scoped, md, u2fLeaf) === false);
+  check("mds: a key-compromise report naming THIS certificate denies it",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "ATTESTATION_KEY_COMPROMISE",
+      certificate: u2f.attCertDer.toString("base64") }] }, md, u2fLeaf) === true);
+  check("mds: a report naming no certificate applies to the whole entry",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "ATTESTATION_KEY_COMPROMISE" }] }, md, u2fLeaf) === true);
+  // An unreadable scope is not a narrower scope: the report keeps applying.
+  check("mds: a report whose named certificate does not decode still applies",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "ATTESTATION_KEY_COMPROMISE",
+      certificate: "bm90LWEtY2VydA==" }] }, md, u2fLeaf) === true);
+  check("mds: with no certificate to compare against, the report applies",
+    mds.statusDenied(scoped, md, null) === true);
+
+  // ---- an anchor is recognised by name AND key, so a cross-signed root still anchors ----
+  // The same root reissued by a cross-signing CA carries the anchor's subject and public key but is
+  // not self-issued. Identifying it by self-issuedness would leave it in the path, where it cannot
+  // verify under an anchor that never issued it -- refusing a chain that is in fact anchored.
+  var crossed = await mint({ crossSignRoot: true });
+  var crossTerminal = pki.schema.x509.parse(Buffer.from(JSON.parse(
+    Buffer.from(crossed.blob.toString("ascii").split(".")[0].replace(/-/g, "+").replace(/_/g, "/"), "base64").toString("utf8")
+  ).x5c[1], "base64"));
+  var selfSignedRoot = pki.schema.x509.parse(crossed.rootDer);
+  check("mds: the cross certificate carries the anchor's name and key but is not self-issued",
+    crossTerminal.subjectPublicKeyInfo.bytes.equals(selfSignedRoot.subjectPublicKeyInfo.bytes) &&
+    crossTerminal.issuer.dn !== crossTerminal.subject.dn);
+  check("mds: a chain terminating in a cross-signed form of the root still anchors to it",
+    (await pki.webauthn.verifyMetadataBlob(crossed.blob, { rootCertificates: [crossed.rootDer], time: T })).no === 42);
+
   // ---- a verified catalogue expires at the point of USE, not only at parse ----
   // The result is a plain object a caller may hold indefinitely, so a catalogue fetched while fresh
   // and reused after its nextUpdate would keep authorizing an authenticator whose status reports

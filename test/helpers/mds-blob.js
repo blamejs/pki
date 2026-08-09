@@ -57,8 +57,23 @@ async function mint(o) {
     no: o.no === undefined ? 42 : o.no, nextUpdate: o.nextUpdate === undefined ? "2027-06-01" : o.nextUpdate,
     entries: o.entries || [entry] }, o.payloadExtra || {});
   (o.payloadOmit || []).forEach(function (k) { delete payload[k]; });
+  // crossSignRoot terminates the chain in a CROSS-SIGNED form of this fixture's own root: a
+  // certificate carrying the root's subject and public key but issued by an unrelated CA, so it is
+  // not self-issued. The signer leaf is unchanged and the chain is still anchored by the root's key
+  // -- only the certificate that carries that key is a different one. Built here, inside the mint,
+  // because it has to be the SAME root the returned rootDer anchors to.
+  var chain = o.x5c || [leafDer, rootDer];
+  if (o.crossSignRoot) {
+    var xCa = await pair();
+    var crossDer = await pki.x509.sign({
+      subject: [{ commonName: "Test FIDO Metadata Root" }], subjectPublicKey: root.spki,
+      serialNumber: Buffer.from([44]), notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+    }, { key: xCa.kp.privateKey, name: [{ commonName: "Cross Signing CA" }], publicKey: xCa.spki });
+    chain = [leafDer, crossDer];
+  }
   var header = Object.assign({ alg: o.alg || "ES256", typ: "JWT",
-    x5c: o.x5cRaw || (o.x5c || [leafDer, rootDer]).map(function (d) { return d.toString("base64"); }) }, o.headerExtra || {});
+    x5c: o.x5cRaw || chain.map(function (d) { return d.toString("base64"); }) }, o.headerExtra || {});
 
   // headerRaw / payloadRaw substitute the serialized JSON wholesale, for a vector whose defect is
   // the JSON's own shape (a valid document that is not an object) rather than any field in it.
