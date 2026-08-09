@@ -44,7 +44,16 @@ var GUARD = path.join(ROOT, "scripts", "check-pack-against-gitignore.js");
 // list names the paths under test, and the files themselves.
 function makePackFixture(files, gitignore) {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "pki-pack-guard-"));
-  cp.spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  // The fixture's hermeticity DEPENDS on this repo existing: without it `git check-ignore` walks up
+  // to whatever repository encloses the temp directory, and the guard then answers about THIS repo's
+  // ignore rules instead of the fixture's. A silent failure here surfaces later as the guard's own
+  // verdict being wrong, which reads as a real gate failure -- so name the setup fault instead.
+  var init = cp.spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  if (init.error || init.status !== 0) {
+    throw new Error("pack-guard fixture setup failed: `git init` in " + dir + " exited "
+      + (init.error ? String(init.error.message) : String(init.status))
+      + " -- the fixture would not be hermetic, so the guard's verdict would describe the wrong repository");
+  }
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
     name: "pack-guard-fixture",
     version: "1.0.0",

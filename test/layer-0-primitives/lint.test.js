@@ -483,6 +483,18 @@ function run() {
     has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("a".repeat(201)))])), "lint/rfc5280/explicit-text-too-long"));
   check("an explicitText of exactly 200 characters does not fire the length rule",
     !has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("a".repeat(200)))])), "lint/rfc5280/explicit-text-too-long"));
+  // SIZE (1..200) has TWO ends. The upper one is the one the RFC tells certificate users to handle
+  // gracefully; the lower one has no such carve-out -- an empty DisplayText is a degenerate value no
+  // conforming CA emits, and reporting only the ceiling leaves half the constraint unenforced.
+  check("an empty explicitText is reported against the SIZE lower bound",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.utf8(""))])), "lint/rfc5280/explicit-text-empty"));
+  check("an empty IA5String explicitText is reported the same way",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.ia5(""))])), "lint/rfc5280/explicit-text-empty"));
+  check("an empty NoticeReference organization is reported too",
+    has(pki.lint.certificate(policyCert([b.sequence([b.oid(pki.oid.byName("unotice")),
+      b.sequence([b.sequence([b.utf8(""), b.sequence([b.integer(1n)])])])])])), "lint/rfc5280/explicit-text-empty"));
+  check("a one-character explicitText satisfies the lower bound",
+    !has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("x"))])), "lint/rfc5280/explicit-text-empty"));
   // The bound is on CHARACTERS: 150 astral characters are a conforming notice occupying 300 UTF-16
   // units and 600 UTF-8 octets, so a `.length` or byte count would report a false positive here.
   check("a 150-character astral explicitText (300 UTF-16 units) does not fire the length rule",
