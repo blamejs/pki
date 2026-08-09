@@ -550,6 +550,20 @@ async function run() {
   check("mds: a USER_VERIFICATION_BYPASS report carrying another certificate still denies",
     mds.statusDenied({ index: 0, statusReports: [{ status: "USER_VERIFICATION_BYPASS",
       certificate: otherLeafDer.toString("base64") }] }, md, u2fLeaf) === true);
+  // Scope is settled BEFORE recency. A newer report about someone else's certificate must not be
+  // selected as "the latest" and thereby displace an older revocation that does apply -- the entry
+  // would be cleared by a report that was never about this authenticator at all.
+  check("mds: a newer report about another certificate cannot displace an applicable revocation",
+    mds.statusDenied({ index: 0, statusReports: [
+      { status: "REVOKED", effectiveDate: "2026-01-01" },
+      { status: "ATTESTATION_KEY_COMPROMISE", effectiveDate: "2026-05-01", certificate: otherLeafDer.toString("base64") },
+    ] }, { statusPolicy: "latest-by-date" }, u2fLeaf) === true);
+  // And a newer report that DOES concern this certificate still governs.
+  check("mds: a newer report about this certificate governs under latest-by-date",
+    mds.statusDenied({ index: 0, statusReports: [
+      { status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-01-01" },
+      { status: "ATTESTATION_KEY_COMPROMISE", effectiveDate: "2026-05-01", certificate: u2f.attCertDer.toString("base64") },
+    ] }, { statusPolicy: "latest-by-date" }, u2fLeaf) === true);
 
   // ---- an anchor is recognised by name AND key, so a cross-signed root still anchors ----
   // The same root reissued by a cross-signing CA carries the anchor's subject and public key but is
