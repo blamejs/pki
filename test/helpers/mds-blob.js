@@ -160,4 +160,83 @@ async function mintU2fAttestation() {
     rootDer: rootDer, attCertDer: attCertDer, withAaguid: withAaguid };
 }
 
-module.exports = { mint: mint, b64u: b64u, mintU2fAttestation: mintU2fAttestation };
+// A compound (sec. 8.9) whose two certificate-bearing elements use DIFFERENT formats: one packed,
+// whose AAGUID is covered by its signature, and one fido-u2f, whose AAGUID is not.
+//
+// This shape is what distinguishes a per-element identifier choice from a single choice made for
+// the whole statement. Both elements are minted here and signed over the SAME authenticatorData --
+// which is what sec. 8.9 requires -- carrying a NON-zero AAGUID, so the packed element has a real
+// model identity to be looked up by while the u2f element's copy of that field is unsigned.
+async function mintMixedCompound(aaguidHex) {
+  var nodeCrypto = require("node:crypto");
+  var fs = require("fs"), path = require("path");
+  var KAT = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "webauthn", "py-webauthn-kat.json"), "utf8"));
+  function kb64u(s) { var b = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "="; return Buffer.from(b, "base64"); }
+
+  var src = pki.webauthn.parseAttestationObject(kb64u(KAT.formats.fido_u2f.attestationObject));
+  var clientDataHash = nodeCrypto.createHash("sha256").update(kb64u(KAT.formats.fido_u2f.clientDataJSON)).digest();
+  // The AAGUID lives at offset 37: rpIdHash(32) + flags(1) + signCount(4).
+  var authDataBytes = Buffer.from(src.authDataBytes);
+  Buffer.from(aaguidHex.replace(/-/g, ""), "hex").copy(authDataBytes, 37);
+  var ad = pki.webauthn.parseAttestationObject(kb64u(KAT.formats.fido_u2f.attestationObject)).authData;
+
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2027-01-01T00:00:00Z");
+  var ec = { name: "ECDSA", namedCurve: "P-256" };
+  async function pair() {
+    var kp = await pki.webcrypto.subtle.generateKey(ec, true, ["sign", "verify"]);
+    return { kp: kp, spki: Buffer.from(await pki.webcrypto.subtle.exportKey("spki", kp.publicKey)) };
+  }
+  function derSig(raw) {
+    var ab = pki.asn1.build;
+    return ab.sequence([
+      ab.integer(BigInt("0x" + raw.subarray(0, raw.length / 2).toString("hex"))),
+      ab.integer(BigInt("0x" + raw.subarray(raw.length / 2).toString("hex"))),
+    ]);
+  }
+  var root = await pair(), u2fKey = await pair(), packedKey = await pair();
+  var rootDer = await pki.x509.sign({
+    subject: [{ commonName: "Test Mixed Root CA" }], subjectPublicKey: root.spki, serialNumber: Buffer.from([1]),
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: root.kp.privateKey, name: [{ commonName: "Test Mixed Root CA" }], publicKey: root.spki });
+  async function leafFor(k, cn, serial) {
+    return pki.x509.sign({
+      subject: [{ countryName: "US" }, { organizationName: "Test" }, { organizationalUnitName: "Authenticator Attestation" }, { commonName: cn }],
+      subjectPublicKey: k.spki, serialNumber: Buffer.from([serial]), notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { critical: true, cA: false } },
+    }, { key: root.kp.privateKey, name: [{ commonName: "Test Mixed Root CA" }], publicKey: root.spki });
+  }
+  var u2fCertDer = await leafFor(u2fKey, "Test U2F Attestation", 2);
+  var packedCertDer = await leafFor(packedKey, "Test Packed Attestation", 3);
+
+  // fido-u2f (sec. 8.6): 0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F.
+  var ck = ad.credentialPublicKey;
+  var pubU2F = Buffer.concat([Buffer.from([0x04]), Buffer.from(ck.x), Buffer.from(ck.y)]);
+  var u2fSig = derSig(Buffer.from(await pki.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, u2fKey.kp.privateKey,
+    Buffer.concat([Buffer.from([0x00]), Buffer.from(ad.rpIdHash), clientDataHash, Buffer.from(ad.credentialId), pubU2F]))));
+  // packed (sec. 8.2): the signature covers authenticatorData || clientDataHash.
+  var packedSig = derSig(Buffer.from(await pki.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" }, packedKey.kp.privateKey,
+    Buffer.concat([authDataBytes, clientDataHash]))));
+
+  var b = pki.cbor.build;
+  function element(fmt, attStmt) { return b.map([[b.textString("fmt"), b.textString(fmt)], [b.textString("attStmt"), attStmt]]); }
+  var attestationObject = b.map([
+    [b.textString("fmt"), b.textString("compound")],
+    [b.textString("attStmt"), b.array([
+      element("packed", b.map([
+        [b.textString("alg"), b.int(-7)],
+        [b.textString("sig"), b.byteString(packedSig)],
+        [b.textString("x5c"), b.array([b.byteString(packedCertDer)])],
+      ])),
+      element("fido-u2f", b.map([
+        [b.textString("sig"), b.byteString(u2fSig)],
+        [b.textString("x5c"), b.array([b.byteString(u2fCertDer)])],
+      ])),
+    ])],
+    [b.textString("authData"), b.byteString(authDataBytes)],
+  ]);
+  return { attestationObject: attestationObject, clientDataHash: clientDataHash, rootDer: rootDer,
+    packedCertDer: packedCertDer, u2fCertDer: u2fCertDer };
+}
+
+module.exports = { mint: mint, b64u: b64u, mintU2fAttestation: mintU2fAttestation, mintMixedCompound: mintMixedCompound };

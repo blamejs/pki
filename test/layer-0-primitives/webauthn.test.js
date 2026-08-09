@@ -848,6 +848,38 @@ async function testCompoundAttestation() {
   });
   check("compound: metadata is applied to the elements' paths, not refused as not applicable",
     compoundVerdict !== "webauthn/metadata-not-applicable" && /^webauthn\/metadata-/.test(compoundVerdict));
+  // Which identifier may name an element's entry is decided by THAT element's format, not by the
+  // statement as a whole. A mixed compound holding a fido-u2f element (whose AAGUID is unsigned)
+  // alongside a packed element (whose AAGUID is signed) must not force the packed element down the
+  // certificate-identifier path -- a conforming entry indexed only by its AAGUID would not be found
+  // there. The packed element here is the one whose lookup is observable: the catalogue lists the
+  // authenticator's AAGUID, so an AAGUID-keyed lookup reaches an entry and the verdict is about its
+  // anchors, whereas a certificate-keyed lookup could only ever report the model as unlisted.
+  var MIXED_AAGUID = "11111111-1111-1111-1111-111111111111";
+  var mixed = await mdsHelper.mintMixedCompound(MIXED_AAGUID);
+  var mixedVerified = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash, {});
+  check("compound: the mixed fixture verifies, with a path on each element",
+    mixedVerified.verified === true && mixedVerified.compound.length === 2 &&
+    mixedVerified.compound[0].trustPath.length > 0 && mixedVerified.compound[1].trustPath.length > 0);
+  // The catalogue lists the packed element's model by AAGUID and the u2f element's certificate by
+  // key identifier -- each element under the identifier its own format actually signs. Both must
+  // resolve, which only happens when the choice is made per element.
+  var u2fKeyId = require("../../lib/webauthn-mds.js").certKeyIdentifier(pki.schema.x509.parse(mixed.u2fCertDer));
+  var mixedBlob = await mdsHelper.mint({ entries: [
+    { aaguid: MIXED_AAGUID, statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [mixed.rootDer.toString("base64")] } },
+    { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [mixed.rootDer.toString("base64")] } },
+  ] });
+  var mixedMd = await pki.webauthn.verifyMetadataBlob(mixedBlob.blob,
+    { rootCertificates: [mixedBlob.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var mixedBound = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+    { metadata: mixedMd, time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: each element is looked up by the identifier its own format signs",
+    mixedBound.verified === true && mixedBound.metadata.entries.length === 2 &&
+    mixedBound.metadata.entries[0].aaguid === MIXED_AAGUID &&
+    mixedBound.metadata.entries[1].keyIdentifiers.indexOf(u2fKeyId) !== -1);
+
   // A compound whose elements carry no certificate at all genuinely has nothing to anchor, and
   // that IS the not-applicable case -- so the distinction is drawn on the elements, not on the
   // (always empty) top-level path.
