@@ -790,5 +790,23 @@
     "reason": "The RFC 7030 / 8951 EST enrollment verbs ride the still-experimental shared pki.transport and the network-client surface that is still absorbing hardening as ACME / CMP / CT clients compose the same transport. Graduate alongside pki.transport.https once the surface is settled.",
     "reviewedAt": "0.4.0",
     "reviewBy": "0.5.0"
+  },
+  "pki.tls.compressCertificate": {
+    "decision": "keep-experimental",
+    "reason": "RFC 8879 is a settled standard and the surface has not moved since it shipped, but the graduation bar here is interop-proven, and TLS certificate compression is the one shipped wire format with no independent implementation to cross-check against: the interop harness validates every other emitted structure through OpenSSL or NSS, and neither speaks compress_certificate. Graduate once a peer that negotiates the extension can round-trip a compressed Certificate message this toolkit produced -- a spec-settled format whose only validator is its own decoder has not met the bar the rest of the toolkit is held to.",
+    "reviewedAt": "0.4.9",
+    "reviewBy": "0.5.0"
+  },
+  "pki.tls.decompressCertificate": {
+    "decision": "keep-experimental",
+    "reason": "RFC 8879 is a settled standard and the surface has not moved since it shipped, but the graduation bar here is interop-proven, and TLS certificate compression is the one shipped wire format with no independent implementation to cross-check against: the interop harness validates every other emitted structure through OpenSSL or NSS, and neither speaks compress_certificate. Graduate once a peer that negotiates the extension can round-trip a compressed Certificate message this toolkit produced -- a spec-settled format whose only validator is its own decoder has not met the bar the rest of the toolkit is held to.",
+    "reviewedAt": "0.4.9",
+    "reviewBy": "0.5.0"
+  },
+  "pki.tls.parseCertificateMessage": {
+    "decision": "keep-experimental",
+    "reason": "RFC 8879 is a settled standard and the surface has not moved since it shipped, but the graduation bar here is interop-proven, and TLS certificate compression is the one shipped wire format with no independent implementation to cross-check against: the interop harness validates every other emitted structure through OpenSSL or NSS, and neither speaks compress_certificate. Graduate once a peer that negotiates the extension can round-trip a compressed Certificate message this toolkit produced -- a spec-settled format whose only validator is its own decoder has not met the bar the rest of the toolkit is held to.",
+    "reviewedAt": "0.4.9",
+    "reviewBy": "0.5.0"
   }
 }

@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.9 — 2026-08-09
+
+A WebAuthn compound attestation now verifies -- every nested statement must pass, so a wrapper cannot launder a failed attestation behind one that succeeds -- and the certificate chains an attestation carries are bounded by count, not only by size.
+
+### Added
+
+- pki.webauthn.verify verifies the compound attestation format, which it previously refused as unsupported. Every nested statement must verify for the attestation to verify -- the specification leaves the threshold to relying-party policy, and this is the fail-closed reading of it. The result reports attestation type Compound and carries each element's own verdict, attestation type and certificate chain in order, so a caller applies its own policy to the parts rather than to a merged verdict that could overstate or understate any of them. The combined trust path is empty by construction: several elements produce several independent chains, and presenting them as one ordered path would misrepresent what was validated.
+- The nested statements are held to the format's own syntax: at least two of them, each exactly a format identifier and a statement, each identifier matched case-sensitively against the supported set, and none of them compound -- the specification spells that exclusion out, so nesting is impossible by construction rather than by a depth counter. Which CBOR shape a statement takes is now a property of the format rather than a fixed rule, so accommodating the array-shaped compound statement leaves every other format's contract unchanged, and a compound presented in the older map shape is refused.
+
+### Fixed
+
+- The number of certificates an attestation may carry is now bounded. Both the attestation statement's certificate array and a JSON Web Signature certificate header capped the size of each certificate but not how many there were, so a statement could present thousands of small certificates and each one cost a parse and, downstream, a full path validation -- work far out of proportion to the bytes on the wire. A single bound now covers every place a chain arrives, set well above any real attestation chain.
+
 ## v0.4.8 — 2026-08-08
 
 A stored android-safetynet WebAuthn attestation can be re-verified in full -- the signature, the registration binding, and the certificate chain -- behind an opt-in and against a root the caller supplies.

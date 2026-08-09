@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.4.8",
+  "packageVersion": "0.4.9",
   "surface": {
     "C": {
       "kind": "object",
@@ -174,6 +174,12 @@
               "kind": "number"
             },
             "TRUST_MAX_OCTAL_BYTES": {
+              "kind": "number"
+            },
+            "WEBAUTHN_COMPOUND_MAX_STATEMENTS": {
+              "kind": "number"
+            },
+            "WEBAUTHN_X5C_MAX_CERTS": {
               "kind": "number"
             }
           }
@@ -1417,6 +1423,12 @@
               "kind": "number"
             },
             "TRUST_MAX_OCTAL_BYTES": {
+              "kind": "number"
+            },
+            "WEBAUTHN_COMPOUND_MAX_STATEMENTS": {
+              "kind": "number"
+            },
+            "WEBAUTHN_X5C_MAX_CERTS": {
               "kind": "number"
             }
           }
