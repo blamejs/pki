@@ -165,7 +165,7 @@ function makeTsa(ext, opts) {
   var parsed = pki.schema.x509.parse(cert);
   return {
     cert: cert, key: kp.privateKey.export({ format: "der", type: "pkcs8" }),
-    anchor: { name: parsed.subject, publicKey: parsed.subjectPublicKeyInfo.bytes, algorithm: parsed.signatureAlgorithm.oid },
+    anchor: { name: parsed.subject, publicKey: parsed.subjectPublicKeyInfo.bytes, algorithm: parsed.subjectPublicKeyInfo.algorithm.oid },
   };
 }
 
@@ -509,7 +509,7 @@ async function testChainAndBindings() {
   var interCert = signedCert("ChainInter", "ChainRoot", interKp, rootKp, [bcCA]);
   var leafCert = signedCert("ChainLeaf", "ChainInter", leafKp, interKp, [ekuExt([TS_EKU], true)]);
   var rootP = pki.schema.x509.parse(rootCert);
-  var anchor = { name: rootP.subject, publicKey: rootP.subjectPublicKeyInfo.bytes, algorithm: rootP.signatureAlgorithm.oid };
+  var anchor = { name: rootP.subject, publicKey: rootP.subjectPublicKeyInfo.bytes, algorithm: rootP.subjectPublicKeyInfo.algorithm.oid };
   var chainTok = await pki.tsp.sign(imprint("sha256"), { cert: leafCert, key: leafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
   // #1: a TSA under an intermediate -- without the intermediate embedded, it cannot chain to the root.
   var noInter = await pki.tsp.verify(chainTok, DATA, { trustAnchor: anchor });
@@ -551,7 +551,7 @@ async function testChainAndBindings() {
   var ssInter = signedCert("SSInter", "SSRoot", ssInterKp, ssRootKp, [bcCA], 5);       // serial 5 -- same as the leaf
   var ssLeaf = signedCert("SSLeaf", "SSInter", ssLeafKp, ssInterKp, [ekuExt([TS_EKU], true)], 5);
   var ssRootP = pki.schema.x509.parse(ssRoot);
-  var ssAnchor = { name: ssRootP.subject, publicKey: ssRootP.subjectPublicKeyInfo.bytes, algorithm: ssRootP.signatureAlgorithm.oid };
+  var ssAnchor = { name: ssRootP.subject, publicKey: ssRootP.subjectPublicKeyInfo.bytes, algorithm: ssRootP.subjectPublicKeyInfo.algorithm.oid };
   var ssTok = await pki.tsp.sign(imprint("sha256"), { cert: ssLeaf, key: ssLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
   check("intermediate reusing the leaf serial still chains (issuer+serial identity)", (await pki.tsp.verify(spliceCert(ssTok, ssInter), DATA, { trustAnchor: ssAnchor })).valid === true);
 
@@ -629,7 +629,7 @@ async function testChainAndBindings() {
   var btDecoy = signedCert("BTInter", "BTRoot", btDecoyKp, btRootKp, [bcCA]);        // same subject DN, different key
   var btLeaf = signedCert("BTTSA", "BTInter", btLeafKp, btInterKp, [ekuExt([TS_EKU], true)]);
   var btRootP = pki.schema.x509.parse(btRoot);
-  var btAnchor = { name: btRootP.subject, publicKey: btRootP.subjectPublicKeyInfo.bytes, algorithm: btRootP.signatureAlgorithm.oid };
+  var btAnchor = { name: btRootP.subject, publicKey: btRootP.subjectPublicKeyInfo.bytes, algorithm: btRootP.subjectPublicKeyInfo.algorithm.oid };
   var btTok = await pki.tsp.sign(imprint("sha256"), { cert: btLeaf, key: btLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
   check("same-subject issuer certs -> backtracking finds the real issuer", (await pki.tsp.verify(btTok, DATA, { trustAnchor: btAnchor, certs: [btDecoy, btInter] })).valid === true);
 
@@ -643,7 +643,7 @@ async function testChainAndBindings() {
   var dosTok = await pki.tsp.sign(imprint("sha256"), { cert: dosLeaf, key: dosLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
   var dosAnchorKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dosAnchorP = pki.schema.x509.parse(signedCert("MRoot", "MRoot", dosAnchorKp, dosAnchorKp, [bcCA]));
-  var dosAnchor = { name: dosAnchorP.subject, publicKey: dosAnchorP.subjectPublicKeyInfo.bytes, algorithm: dosAnchorP.signatureAlgorithm.oid };
+  var dosAnchor = { name: dosAnchorP.subject, publicKey: dosAnchorP.subjectPublicKeyInfo.bytes, algorithm: dosAnchorP.subjectPublicKeyInfo.algorithm.oid };
   check("interlinked same-subject certs stay bounded -> verdict (MAX_TSA_CHAINS)", (await pki.tsp.verify(dosTok, DATA, { trustAnchor: dosAnchor, certs: dosCerts })).valid === false);
 
   // a keyUsage asserting a signing bit but encoded as a NON-minimal NamedBitList (a trailing zero
