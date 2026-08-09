@@ -730,6 +730,23 @@ async function testTpmObjectAttributePolicy() {
   // nothing -- the same failure the top-level enumeration prevents, one level down.
   check("tpm policy: a misspelled authPolicy key is a config-time fault",
     (await codeFor({ authPolicy: { alow: [Buffer.alloc(32, 1)] } })) === "webauthn/bad-input");
+  // Every one of these tables is indexed by a caller-supplied name. An inherited Object member
+  // resolves to a truthy non-value, which in a "is this name known?" lookup reads as "known" and
+  // leaves the policy applying nothing -- a fail-open, and the worst kind, because the caller
+  // believes they selected a policy. All three tables are null-prototype; all three are pinned.
+  var inherited = ["constructor", "toString", "__proto__", "valueOf", "hasOwnProperty"];
+  var profileRefused = true, keyRefused = true, attrRefused = true;
+  for (var pi = 0; pi < inherited.length; pi++) {
+    // Built through JSON so `__proto__` is a real own property rather than a prototype assignment
+    // -- which is exactly how a policy read from a config file or a request body arrives.
+    var named = JSON.stringify(inherited[pi]);
+    if ((await codeFor({ profile: inherited[pi] })) !== "webauthn/bad-input") profileRefused = false;
+    if ((await codeFor(JSON.parse("{" + named + ": true}"))) !== "webauthn/bad-input") keyRefused = false;
+    if ((await codeFor({ objectAttributes: JSON.parse("{" + named + ": true}") })) !== "webauthn/bad-input") attrRefused = false;
+  }
+  check("tpm policy: an inherited Object name is not a valid profile", profileRefused);
+  check("tpm policy: an inherited Object name is not a valid policy key", keyRefused);
+  check("tpm policy: an inherited Object name is not a valid attribute name", attrRefused);
   // Node's hex decoder stops at the first non-hex character and yields an empty buffer for a
   // non-string, so an unvalidated entry could decode into a digest the policy meant to exclude --
   // including the Empty Policy. Each entry is type- and shape-checked before it is decoded.
