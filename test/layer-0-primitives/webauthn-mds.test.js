@@ -510,6 +510,28 @@ async function run() {
   check("mds: a request-shaped object (no validity) is not accepted as an anchor",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [csrShaped], time: T }); })) === "webauthn/bad-input");
 
+  // ---- a verified catalogue expires at the point of USE, not only at parse ----
+  // The result is a plain object a caller may hold indefinitely, so a catalogue fetched while fresh
+  // and reused after its nextUpdate would keep authorizing an authenticator whose status reports
+  // have since revoked it -- exactly what nextUpdate exists to prevent.
+  var shortLived = await mint({ aaguid: null, keyIdentifiers: [u2fKeyId],
+    anchors: [u2f.rootDer.toString("base64")], nextUpdate: "2026-06-02" });
+  var mdShort = await pki.webauthn.verifyMetadataBlob(shortLived.blob, { rootCertificates: [shortLived.rootDer], time: T });
+  check("mds: the catalogue verifies while it is current", mdShort.stale === false);
+  check("mds: and it still governs at a time within its validity",
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdShort, time: T })).verified === true);
+  check("mds: but a catalogue reused after its nextUpdate is refused",
+    (await codeOf(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdShort, time: new Date("2026-07-01T00:00:00Z") });
+    })) === "webauthn/metadata-stale");
+  // The caller's original opt-out rides on the result rather than having to be repeated: a
+  // catalogue verified with allowStale stays usable, which is what the operator asked for.
+  var staleAccepted = await pki.webauthn.verifyMetadataBlob(shortLived.blob,
+    { rootCertificates: [shortLived.rootDer], time: T, allowStale: true });
+  check("mds: a catalogue verified with allowStale keeps governing past its nextUpdate",
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+      { metadata: staleAccepted, time: new Date("2026-07-01T00:00:00Z") })).verified === true);
+
   // ---- each path answers to its OWN entry ----
   // The status gate must consult the entry that governs the path being checked. Resolving one entry
   // for the whole statement and reusing it lets an unsigned ordering decide whose status report is
