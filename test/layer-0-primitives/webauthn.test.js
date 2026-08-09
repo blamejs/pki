@@ -726,6 +726,23 @@ async function testTpmObjectAttributePolicy() {
     (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex")] } })).verified === true);
   check("tpm policy: a non-array allow-list is a config-time fault",
     (await codeFor({ authPolicy: { allow: "deadbeef" } })) === "webauthn/bad-input");
+  // A misspelled NESTED key would leave the allow-list unset and the policy silently doing
+  // nothing -- the same failure the top-level enumeration prevents, one level down.
+  check("tpm policy: a misspelled authPolicy key is a config-time fault",
+    (await codeFor({ authPolicy: { alow: [Buffer.alloc(32, 1)] } })) === "webauthn/bad-input");
+  // Node's hex decoder stops at the first non-hex character and yields an empty buffer for a
+  // non-string, so an unvalidated entry could decode into a digest the policy meant to exclude --
+  // including the Empty Policy. Each entry is type- and shape-checked before it is decoded.
+  var badEntries = [null, 42, {}, "", "abc", "zz", plain.tpm.authPolicy.toString("hex") + "zz"];
+  var allRefused = true;
+  for (var bi = 0; bi < badEntries.length; bi++) {
+    if ((await codeFor({ authPolicy: { allow: [badEntries[bi]] } })) !== "webauthn/bad-input") allRefused = false;
+  }
+  check("tpm policy: an allow-list entry that is not a Buffer or canonical hex is refused", allRefused);
+  // The specific danger: a digest followed by junk must not silently truncate back to that digest
+  // and authorize the very key the caller wrote the allow-list to exclude.
+  check("tpm policy: a hex entry with trailing junk does not truncate into a match",
+    (await codeFor({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex") + "zz"] } })) === "webauthn/bad-input");
 }
 
 // ---- compound attestation (WebAuthn sec. 8.9) --------------------------------
