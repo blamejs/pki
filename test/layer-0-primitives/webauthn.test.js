@@ -747,6 +747,36 @@ async function testTpmObjectAttributePolicy() {
   check("tpm policy: an inherited Object name is not a valid profile", profileRefused);
   check("tpm policy: an inherited Object name is not a valid policy key", keyRefused);
   check("tpm policy: an inherited Object name is not a valid attribute name", attrRefused);
+
+  // The policy is checked inside the tpm arm, so an attestation in any other format would never
+  // reach it. A caller who demanded a TPM-bound key must not therefore accept a `none` or `packed`
+  // attestation that carries no TPM public area at all -- the requirement is refused at dispatch.
+  var otherFormats = ["packed", "apple", "android_key", "fido_u2f"];
+  var bypassRefused = true;
+  for (var oi = 0; oi < otherFormats.length; oi++) {
+    var got = await codeOfAsync((function (fmt) {
+      return function () { return pki.webauthn.verify(attObj(fmt), clientHash(fmt), { tpmPolicy: { profile: "hardware-bound" } }); };
+    })(otherFormats[oi]));
+    if (got !== "webauthn/tpm-policy") bypassRefused = false;
+  }
+  // `none` is the sharpest case -- it always verifies and carries no key properties at all -- and
+  // has no KAT fixture, so it is assembled from the packed statement's authenticatorData.
+  var noneAuth = (function () {
+    var m = pki.cbor.read.map(pki.cbor.decode(attObj("packed")));
+    for (var i = 0; i < m.length; i++) if (pki.cbor.read.textString(m[i][0]) === "authData") return m[i][1].content;
+    throw new Error("no authData in the KAT");
+  })();
+  if ((await codeOfAsync(function () {
+    return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { tpmPolicy: { profile: "hardware-bound" } });
+  })) !== "webauthn/tpm-policy") bypassRefused = false;
+  // ... and that same `none` attestation still verifies when no TPM policy was asked for.
+  check("tpm policy: a none attestation still verifies when no policy is requested",
+    (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), {})).verified === true);
+  check("tpm policy: a non-TPM attestation cannot silently ignore a requested TPM policy", bypassRefused);
+  // ... and the same policy on a genuine TPM attestation still verifies, so the dispatch gate
+  // refuses the formats that cannot satisfy it without blocking the one that can.
+  check("tpm policy: the gate does not block the format that can satisfy it",
+    (await withPolicy({ profile: "hardware-bound" })).verified === true);
   // Node's hex decoder stops at the first non-hex character and yields an empty buffer for a
   // non-string, so an unvalidated entry could decode into a digest the policy meant to exclude --
   // including the Empty Policy. Each entry is type- and shape-checked before it is decoded.
