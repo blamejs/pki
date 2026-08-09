@@ -62,7 +62,21 @@ async function mint(o) {
   // not self-issued. The signer leaf is unchanged and the chain is still anchored by the root's key
   // -- only the certificate that carries that key is a different one. Built here, inside the mint,
   // because it has to be the SAME root the returned rootDer anchors to.
+  // x5cSelfOnly signs the BLOB with the ROOT's own key and presents only the root: a chain that IS
+  // the anchor, with nothing left to chain once the anchor is recognised.
   var chain = o.x5c || [leafDer, rootDer];
+  var selfOnlyDer = null;
+  if (o.x5cSelfOnly) {
+    // A self-signed certificate that both signs the BLOB and IS the pinned anchor, so it asserts
+    // digitalSignature as well as certificate signing -- a CA certificate restricted to signing
+    // certificates may not sign a JWS, and the verifier is right to refuse one that tries.
+    selfOnlyDer = await pki.x509.sign({
+      subject: [{ commonName: "Test Self-Anchored Signer" }], subjectPublicKey: root.spki,
+      serialNumber: Buffer.from([55]), notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["digitalSignature", "keyCertSign", "cRLSign"] },
+    }, { key: root.kp.privateKey, name: [{ commonName: "Test Self-Anchored Signer" }], publicKey: root.spki });
+    chain = [selfOnlyDer];
+  }
   if (o.crossSignRoot) {
     var xCa = await pair();
     var crossDer = await pki.x509.sign({
@@ -84,11 +98,11 @@ async function mint(o) {
   var p64 = o.payloadRaw64 !== undefined ? o.payloadRaw64
     : b64u(Buffer.from(o.payloadRaw === undefined ? JSON.stringify(payload) : o.payloadRaw, "utf8"));
   var sig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" },
-    (o.signWithRoot ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
+    ((o.signWithRoot || o.x5cSelfOnly) ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
   // signerKey is the leaf's private half: a consumer that mutates the payload can re-sign, so a
   // mutation arrives past the signature gate instead of being rejected ahead of the payload reader.
   return { blob: Buffer.from(h64 + "." + p64 + "." + b64u(o.badSig ? Buffer.alloc(sig.length, 9) : sig), "utf8"),
-    rootDer: rootDer, otherDer: otherDer, attRootDer: attRootDer, aaguid: entry.aaguid || null,
+    rootDer: selfOnlyDer || rootDer, otherDer: otherDer, attRootDer: attRootDer, aaguid: entry.aaguid || null,
     signerKey: leaf.kp.privateKey };
 }
 

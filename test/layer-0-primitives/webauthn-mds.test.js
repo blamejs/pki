@@ -531,6 +531,16 @@ async function run() {
       certificate: "bm90LWEtY2VydA==" }] }, md, u2fLeaf) === true);
   check("mds: with no certificate to compare against, the report applies",
     mds.statusDenied(scoped, md, null) === true);
+  // The qualifier narrows only the status the specification gives it meaning for. Every other
+  // disqualifying status is about the MODEL, so a certificate attached to one of those is a
+  // nonconforming field -- reading it as a narrower scope would let a malformed REVOKED excuse the
+  // authenticator it names as revoked.
+  check("mds: a REVOKED report carrying another certificate still denies",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "REVOKED",
+      certificate: otherLeafDer.toString("base64") }] }, md, u2fLeaf) === true);
+  check("mds: a USER_VERIFICATION_BYPASS report carrying another certificate still denies",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "USER_VERIFICATION_BYPASS",
+      certificate: otherLeafDer.toString("base64") }] }, md, u2fLeaf) === true);
 
   // ---- an anchor is recognised by name AND key, so a cross-signed root still anchors ----
   // The same root reissued by a cross-signing CA carries the anchor's subject and public key but is
@@ -546,6 +556,17 @@ async function run() {
     crossTerminal.issuer.dn !== crossTerminal.subject.dn);
   check("mds: a chain terminating in a cross-signed form of the root still anchors to it",
     (await pki.webauthn.verifyMetadataBlob(crossed.blob, { rootCertificates: [crossed.rootDer], time: T })).no === 42);
+  // A chain that is ONLY the anchor is anchored: the signature was verified under that certificate's
+  // key, and the certificate carries the anchor's name and key, so there is nothing left to chain.
+  // It is still refused when the identity does not hold -- an empty path is trusted only because
+  // the anchor itself was stripped from it, never merely because it ended up empty.
+  var soleAnchor = await mint({ x5cSelfOnly: true });
+  check("mds: an x5c consisting only of the anchor is directly trusted",
+    (await pki.webauthn.verifyMetadataBlob(soleAnchor.blob, { rootCertificates: [soleAnchor.rootDer], time: T })).no === 42);
+  check("mds: and the same single-certificate chain is refused against an unrelated root",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(soleAnchor.blob, { rootCertificates: [soleAnchor.otherDer], time: T });
+    })) === "webauthn/metadata-untrusted");
 
   // ---- a verified catalogue expires at the point of USE, not only at parse ----
   // The result is a plain object a caller may hold indefinitely, so a catalogue fetched while fresh
