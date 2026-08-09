@@ -247,6 +247,17 @@ async function run() {
     mds.statusDenied(revokedEntry, { statusPolicy: function (r) { return r.length > 0; } }) === true);
   check("mds: a function policy returning a truthy non-true does not deny",
     mds.statusDenied(revokedEntry, { statusPolicy: function () { return "yes"; } }) === false);
+  // A caller's predicate receives the entry's reports AS GIVEN. Filtering them first would defeat
+  // the entry-wide policies a predicate exists for -- "deny whenever any attestation key is
+  // compromised" would be evaluated against an array with exactly those reports removed.
+  var mineCert = (await require("../helpers/mds-blob").mintU2fAttestation()).attCertDer;
+  var theirCert = (await require("../helpers/mds-blob").mintU2fAttestation()).attCertDer;
+  var scopedReports = [{ status: "ATTESTATION_KEY_COMPROMISE", certificate: theirCert.toString("base64") }];
+  var sawRaw = null;
+  mds.statusDenied({ index: 0, statusReports: scopedReports },
+    { statusPolicy: function (r) { sawRaw = r; return false; } }, pki.schema.x509.parse(mineCert));
+  check("mds: a function policy sees the reports as given, not a scope-filtered copy",
+    sawRaw !== null && sawRaw.length === 1 && sawRaw[0].status === "ATTESTATION_KEY_COMPROMISE");
   // latest-by-date: the array is not stated to be chronological, and in the live metadata several
   // entries are not in date order -- one of them flipping its verdict between "last element" and
   // "newest by date", in the direction that matters.
