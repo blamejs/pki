@@ -263,10 +263,24 @@ async function run() {
     mds.statusDenied({ index: 0, statusReports: remediated.statusReports.slice().reverse() }, { statusPolicy: "latest-by-date" }) === false);
   check("mds: latest-by-date with no usable date falls back to every report",
     mds.statusDenied({ index: 0, statusReports: [{ status: "REVOKED" }] }, { statusPolicy: "latest-by-date" }) === true);
-  check("mds: latest-by-date ignores a malformed effectiveDate when choosing the newest",
+  // effectiveDate is optional, so a report without a usable one cannot be shown to be OLDER than
+  // anything -- and dropping it would let an entry clear a REVOKED simply by adding a dated clean
+  // report. Where the ordering cannot be established, the report still counts.
+  check("mds: a report whose date is malformed is still considered under latest-by-date",
     mds.statusDenied({ index: 0, statusReports: [
       { status: "REVOKED", effectiveDate: "2026-02-30" },
       { status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-01-01" },
+    ] }, { statusPolicy: "latest-by-date" }) === true);
+  check("mds: an undated report is still considered under latest-by-date",
+    mds.statusDenied({ index: 0, statusReports: [
+      { status: "REVOKED" },
+      { status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-05-01" },
+    ] }, { statusPolicy: "latest-by-date" }) === true);
+  // The remediation case still works, because there both reports carry usable dates.
+  check("mds: a dated remediation still clears a dated revocation under latest-by-date",
+    mds.statusDenied({ index: 0, statusReports: [
+      { status: "REVOKED", effectiveDate: "2026-01-01" },
+      { status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-03-01" },
     ] }, { statusPolicy: "latest-by-date" }) === false);
 
   // ---- the authenticator with no AAGUID (U2F), keyed by attestation-certificate key identifier ----
@@ -495,6 +509,25 @@ async function run() {
   var csrShaped = { subject: {}, subjectPublicKeyInfo: { bytes: Buffer.alloc(8) }, signatureAlgorithm: { oid: "1.2.840.10045.4.3.2" } };
   check("mds: a request-shaped object (no validity) is not accepted as an anchor",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [csrShaped], time: T }); })) === "webauthn/bad-input");
+
+  // ---- each path answers to its OWN entry ----
+  // The status gate must consult the entry that governs the path being checked. Resolving one entry
+  // for the whole statement and reusing it lets an unsigned ordering decide whose status report is
+  // read -- for a compound, a healthy element listed first would suppress a revoked sibling's.
+  // Driven here through the single-path case, which is the same code: the entry that governs the
+  // u2f path is the one whose status denies, whatever else the catalogue also lists.
+  var revokedU2f = await mint({ aaguid: null, keyIdentifiers: [u2fKeyId],
+    anchors: [u2f.rootDer.toString("base64")],
+    statusReports: [{ status: "REVOKED", effectiveDate: "2026-02-01" }],
+    entries: [
+      { aaguid: "01020304-0506-0708-090a-0b0c0d0e0f10", statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+        metadataStatement: { attestationRootCertificates: [] } },
+      { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "REVOKED", effectiveDate: "2026-02-01" }],
+        metadataStatement: { attestationRootCertificates: [u2f.rootDer.toString("base64")] } },
+    ] });
+  var mdMixed = await pki.webauthn.verifyMetadataBlob(revokedU2f.blob, { rootCertificates: [revokedU2f.rootDer], time: T });
+  check("mds: a catalogue holding a healthy entry alongside a revoked one still denies the revoked path",
+    (await codeOf(function () { return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdMixed, time: T }); })) === "webauthn/metadata-status");
 
   // ---- the identifier lives on the ENTRY; the statement's copy is read too ----
   // sec. 3.1.1 puts attestationCertificateKeyIdentifiers on the entry, a sibling of
