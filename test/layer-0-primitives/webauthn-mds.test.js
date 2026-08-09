@@ -558,6 +558,19 @@ async function run() {
   check("mds: and once it takes effect, it governs",
     mds.statusDenied({ index: 0, statusReports: future }, { statusPolicy: "latest-by-date" }, null,
       new Date("2027-01-01T00:00:00Z")) === false);
+  // The rule holds under EVERY policy, not just latest-by-date: a scheduled revocation must deny
+  // from the date it names, not from the moment the catalogue is published.
+  check("mds: a future-dated revocation does not deny before its effective date under the default policy",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "REVOKED", effectiveDate: "2026-12-01" }] }, md, null, T) === false);
+  check("mds: and it denies once that date arrives",
+    mds.statusDenied({ index: 0, statusReports: [{ status: "REVOKED", effectiveDate: "2026-12-01" }] }, md, null,
+      new Date("2027-01-01T00:00:00Z")) === true);
+  // When every dated report is still in the future, none of them is in force -- not all of them.
+  check("mds: an entry whose only reports are future-dated denies nothing yet",
+    mds.statusDenied({ index: 0, statusReports: [
+      { status: "REVOKED", effectiveDate: "2026-11-01" },
+      { status: "USER_VERIFICATION_BYPASS", effectiveDate: "2026-12-01" },
+    ] }, { statusPolicy: "latest-by-date" }, null, T) === false);
   // A historical verdict does not get the benefit of reports filed after the instant asked about.
   check("mds: a historical instant does not see later reports",
     mds.statusDenied({ index: 0, statusReports: [
