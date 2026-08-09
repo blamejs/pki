@@ -701,6 +701,14 @@ async function testCompoundAttestation() {
     // the packed element verified against the WRONG clientDataHash cannot verify
     return pki.webauthn.verify(compoundOf([badPacked, NONE]), clientHash("tpm"), {});
   })) === "webauthn/compound-element-failed");
+  // Most format arms do their structural checks SYNCHRONOUSLY, so an element that fails before the
+  // first await must be reported with the same element context as one that fails after it -- a
+  // `none` element carrying a non-empty statement throws on the spot.
+  var syncFail = el("none", cMap([[cText("x"), cText("y")]]));
+  check("compound: an element that fails synchronously carries the same element context",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([syncFail, NONE]), clientHash("packed"), {});
+    })) === "webauthn/compound-element-failed");
 
   // sec. 8.9 syntax: 2* elements, each exactly { fmt, attStmt }, and none of them compound.
   check("compound: fewer than two elements is refused",
