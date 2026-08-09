@@ -530,6 +530,41 @@ async function run() {
   check("mds: a request-shaped object (no validity) is not accepted as an anchor",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [csrShaped], time: T }); })) === "webauthn/bad-input");
 
+  // ---- only a catalogue this toolkit verified may decide anything ----
+  // A result restored from a cache has the right property names but has been through none of the
+  // signature and chain checks that give a catalogue its authority, and an attacker who can write
+  // that cache would be choosing which roots an authenticator may chain to.
+  var roundTripped = JSON.parse(JSON.stringify(md));
+  check("mds: a catalogue restored from a cache is not a verified result", (function () {
+    try { pki.webauthn.metadataFor(roundTripped, base.aaguid); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+  check("mds: and it cannot be used to enforce metadata on an attestation",
+    (await codeOf(function () { return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: roundTripped, time: T }); })) === "webauthn/bad-input");
+  check("mds: a hand-built lookalike is refused", (function () {
+    try { pki.webauthn.metadataFor({ byAaguid: {}, byKeyIdentifier: {}, entries: [] }, base.aaguid); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+  check("mds: the genuine result still works", !!pki.webauthn.metadataFor(md, base.aaguid));
+
+  // ---- a report dated in the future has not taken effect ----
+  // Letting a future-dated report be "the latest" would allow a clean report filed for next month
+  // to displace a revocation that is in force today.
+  var future = [{ status: "REVOKED", effectiveDate: "2026-03-01" },
+    { status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-12-01" }];
+  check("mds: a future-dated clean report does not displace a revocation in force",
+    mds.statusDenied({ index: 0, statusReports: future }, { statusPolicy: "latest-by-date" }, null, T) === true);
+  // Once that date arrives, the same catalogue reads the other way.
+  check("mds: and once it takes effect, it governs",
+    mds.statusDenied({ index: 0, statusReports: future }, { statusPolicy: "latest-by-date" }, null,
+      new Date("2027-01-01T00:00:00Z")) === false);
+  // A historical verdict does not get the benefit of reports filed after the instant asked about.
+  check("mds: a historical instant does not see later reports",
+    mds.statusDenied({ index: 0, statusReports: [
+      { status: "REVOKED", effectiveDate: "2026-05-01" },
+      { status: "FIDO_CERTIFIED_L2", effectiveDate: "2026-05-15" },
+    ] }, { statusPolicy: "latest-by-date" }, null, new Date("2026-05-10T00:00:00Z")) === true);
+
   // ---- a report that names one certificate is about THAT certificate ----
   // A whole batch of authenticators is listed under one entry, so a key-compromise report naming a
   // single attestation certificate must not deny every device the entry covers -- while a report
