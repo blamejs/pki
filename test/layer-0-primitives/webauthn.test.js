@@ -1027,6 +1027,33 @@ async function testAndroidSafetyNet() {
     okRes && okRes.verified === true && okRes.fmt === "android-safetynet" &&
     okRes.attestationType === "Basic" && okRes.trustPath.length === 2);
 
+  // A stored response's service chain has usually expired by the time the registration is examined,
+  // which is why the format judges it at the signed timestamp rather than the current clock. A
+  // later check of that SAME path -- the metadata anchor check -- has to use the same instant, or it
+  // refuses the very registration the format verifier just accepted.
+  // The chain here is genuinely expired now and valid only at the signed timestamp, so the vector
+  // discriminates: an anchor check that reset the instant to the current clock would refuse it.
+  var snStored = await mint({
+    notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"),
+    payloadExtra: { timestampMs: Date.UTC(2020, 5, 1) },
+  });
+  var snRes = await pki.webauthn.verify(snStored.attObj, snStored.cdh,
+    { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer] });
+  check("safetynet: the instant the chain was judged at is surfaced",
+    snRes.chainValidatedAt instanceof Date && snRes.chainValidatedAt.getTime() === Date.UTC(2020, 5, 1));
+  // android-safetynet binds the whole authenticatorData (the nonce is its digest), so the AAGUID is
+  // signed and the entry is keyed by it.
+  var snAaguid = snRes.aaguid.toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
+  var snBlob = await require("../helpers/mds-blob").mint({ aaguid: snAaguid,
+    anchors: [snStored.rootDer.toString("base64")] });
+  var snMd = await pki.webauthn.verifyMetadataBlob(snBlob.blob,
+    { rootCertificates: [snBlob.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  // No opts.time is given, so the anchor check must fall back to the instant the format established
+  // from signed data rather than to "now" -- against which this chain expired years ago.
+  check("safetynet: metadata binds a stored response at the instant its own format judged it",
+    (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
+      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).verified === true);
+
   // Each bind, broken one at a time.
   check("safetynet: a nonce not bound to this registration is refused (bullet 3)",
     (await codeFor({ nonce: Buffer.alloc(32, 7).toString("base64") })) === "webauthn/safetynet-nonce-mismatch");

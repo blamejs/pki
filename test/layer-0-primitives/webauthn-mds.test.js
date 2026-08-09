@@ -513,6 +513,16 @@ async function run() {
   })) === "webauthn/too-large");
   // The ceiling is measured on the input, not on a copy of it -- measuring the converted buffer
   // means materializing an oversized input in order to discover it should have been refused.
+  // A string's length counts UTF-16 code units, not the UTF-8 bytes the conversion produces, so a
+  // string of multi-byte characters can sit under a character-count ceiling and expand past the
+  // byte ceiling during the copy -- the allocation the bound exists to prevent.
+  check("mds: a multi-byte string is measured in bytes, not characters",
+    (await codeOf(function () {
+      // Built at runtime so this file stays pure ASCII: U+00E9 encodes to two UTF-8 bytes.
+      var twoByte = String.fromCharCode(0xe9);
+      var chars = Math.floor(pki.C.LIMITS.MDS_BLOB_MAX_BYTES / 2) + 1;   // under the char count...
+      return pki.webauthn.verifyMetadataBlob(twoByte.repeat(chars), { rootCertificates: [base.rootDer], time: T });
+    })) === "webauthn/too-large");                                        // ...but over it in bytes
   check("mds: an oversized string BLOB is refused",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob("A".repeat(pki.C.LIMITS.MDS_BLOB_MAX_BYTES + 1), { rootCertificates: [base.rootDer], time: T }); })) === "webauthn/too-large");
 
