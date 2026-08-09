@@ -209,6 +209,17 @@ function run() {
   check("policy: the consistency check refuses an over-long authPolicy digest", code(function () {
     tpm.assertObjectAttributePolicy(pubWith({ authPolicy: Buffer.alloc(65, 1) }), policy({ consistency: true }), E, PCODE, MCODE);
   }) === MCODE);
+  // sec. 8.3.3.11 verbatim: encryptedDuplication "shall not be SET in any object that has fixedTPM
+  // SET" -- a key that cannot leave its TPM cannot be duplicated at all. bit 1 = fixedTPM,
+  // bit 11 = encryptedDuplication.
+  check("policy: the consistency check refuses encryptedDuplication with fixedTPM", code(function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: (1 << 1) | (1 << 11) }), policy({ consistency: true }), E, PCODE, MCODE);
+  }) === MCODE);
+  // The same bit is fine on a duplicable object, so the rule is the pairing and not the bit.
+  check("policy: encryptedDuplication alone is accepted (the rule is the pairing)", (function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: (1 << 11) }), policy({ consistency: true }), E, PCODE, MCODE);
+    return true;
+  })());
   // An absent policy runs nothing at all -- the default-off proof at the validator boundary.
   check("policy: a null policy applies no rule", (function () {
     tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: 0xffffffff }), null, E, PCODE, MCODE);
