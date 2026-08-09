@@ -357,6 +357,7 @@ async function run() {
       { ref: "RFC 8949", linked: true }, { ref: "draft-ietf-cose-cbor-encoded-cert", linked: true },
       { ref: "FIPS 186-5", linked: true }, { ref: "SP 800-56A", linked: true }, { ref: "X.509", linked: true },
       { ref: "SEC 1", linked: true }, { ref: "W3C WebCryptoAPI", linked: true },
+      { ref: "FIDO Metadata Service v3.0 sec. 3.1", linked: true },
       { ref: "ISO/IEC 7816-4", linked: false }, { ref: "ANSI X9.62", linked: false }, { ref: "IEC 62443", linked: false },
       { ref: "PKCS#7", linked: false }, { ref: "CA/Browser Forum Baseline", linked: false }, { ref: "DSSE", linked: false },
       { ref: "Sigstore bundle", linked: false }, { ref: "SLSA provenance", linked: false }, { ref: "in-toto", linked: false },

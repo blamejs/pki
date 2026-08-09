@@ -71,6 +71,7 @@ jobs:
           - composite-verify
           - inspect-cert
           - webauthn-parse
+          - webauthn-mds
           - lint-certificate
           - cms-verify
           - cms-sign

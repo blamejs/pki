@@ -201,6 +201,10 @@ function fixturesFor(tag) {
     // pki.webauthn: a real packed attestation + its clientDataHash so the parse
     // and verify examples run the actual decode + attestation-statement verify.
     attestationObject: webauthnAttObj, clientDataHash: webauthnClientHash,
+    // pki.webauthn metadata: a minted signed BLOB + its root, and the verified result and one
+    // entry, so the lookup and anchor examples run against a real verified catalogue.
+    mdsBlobBytes: mdsBlobBytes, fidoRootDer: fidoRootDer, mdsMetadata: mdsMetadata,
+    mdsEntry: mdsEntry, mdsAaguid: mdsAaguid, mdsTime: new Date("2026-06-01T00:00:00Z"),
     // pki.cms: a real detached SignedData + its external content so verify's example
     // runs the full parse + message-digest + signature verification path.
     p7sDer: cmsDetachedDer, detachedBytes: cmsDetachedContent,
@@ -250,6 +254,12 @@ var acmeAccountKey = null, acmeTransport = null;
 // anchor cert. Built at run() start (async: the CA chain is x509-signed). The @example's signer key/cert/spki
 // reuse signFixtureSigner (a real EC signer), matching the CRMF proof-of-possession key to the protection key.
 var cmpTransport = null, cmpCaCert = null;
+// pki.webauthn metadata fixtures: a minted, signed FIDO Metadata Service BLOB and the root it chains
+// to, plus the verified result and one entry, so the metadata @examples run the real
+// verify -> lookup -> anchor-decode path. The live FIDO BLOB cannot be a committed fixture (it is
+// signed by a root this project does not hold, it expires, and its sequence number moves), so the
+// same shared builder the metadata vectors drive mints one. Built at run() start (async).
+var mdsBlobBytes = null, fidoRootDer = null, mdsMetadata = null, mdsEntry = null, mdsAaguid = null;
 
 // Concatenated source of every test/**/*.test.js EXCEPT this harness, so a
 // primitive path mentioned only here can never satisfy its own TESTED gate.
@@ -301,6 +311,13 @@ async function run() {
   await cmpHelper.init(pki, signFixtureSigner.spki);   // the issued leaf carries the @example's signer key (the key-match passes)
   cmpCaCert = cmpHelper.caCert;
   cmpTransport = cmpHelper.fakeCa(pki, [cmpHelper.ip(0, 0, cmpHelper.leafCert), cmpHelper.pkiconf()]).transport;
+
+  var minted = await require("../helpers/mds-blob").mint({});
+  mdsBlobBytes = minted.blob;
+  fidoRootDer = minted.rootDer;
+  mdsAaguid = minted.aaguid;
+  mdsMetadata = await pki.webauthn.verifyMetadataBlob(mdsBlobBytes, { rootCertificates: [fidoRootDer], time: new Date("2026-06-01T00:00:00Z") });
+  mdsEntry = pki.webauthn.metadataFor(mdsMetadata, mdsAaguid);
 
   var docs = parser.parseTree(path.join(ROOT, "lib"));
 

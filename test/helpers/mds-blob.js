@@ -1,0 +1,156 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+//
+// A minted FIDO Metadata Service BLOB and the trust material to verify it.
+//
+// The live FIDO BLOB cannot be a committed fixture: it is signed by a root this project does not
+// hold, it expires, and its sequence number moves, so every vector built on it would rot. Minting
+// one keeps the whole shape under test -- the JWS, the x5c chain to a root, the payload, the status
+// reports, the per-entry attestation anchors -- with every field a vector needs to break.
+//
+// One builder, so a vector breaks exactly one thing and everything else stays conformant. Every
+// option defaults to the valid value; passing one substitutes a single defect.
+
+var pki = require("../../index.js");
+
+function b64u(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
+
+async function mint(o) {
+  o = o || {};
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2027-01-01T00:00:00Z");
+  var ec = { name: "ECDSA", namedCurve: "P-256" };
+  async function pair() {
+    var kp = await pki.webcrypto.subtle.generateKey(ec, true, ["sign", "verify"]);
+    return { kp: kp, spki: Buffer.from(await pki.webcrypto.subtle.exportKey("spki", kp.publicKey)) };
+  }
+  async function ca(name, k) {
+    return pki.x509.sign({ subject: [{ commonName: name }], subjectPublicKey: k.spki, serialNumber: Buffer.from([1]),
+      notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+    }, { key: k.kp.privateKey, name: [{ commonName: name }], publicKey: k.spki });
+  }
+  var root = await pair(), leaf = await pair(), other = await pair(), attRoot = await pair();
+  var rootDer = await ca("Test FIDO Metadata Root", root);
+  var otherDer = await ca("Unrelated Root", other);
+  var attRootDer = await ca("Test Attestation Root", attRoot);
+  var leafDer = await pki.x509.sign({
+    subject: [{ commonName: "Test MDS Signer" }], subjectPublicKey: leaf.spki, serialNumber: Buffer.from([2]),
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },
+  }, { key: root.kp.privateKey, name: [{ commonName: "Test FIDO Metadata Root" }], publicKey: root.spki });
+
+  // `aaguid: null` omits it entirely -- the U2F shape, where the authenticator declares no model
+  // identity and the catalogue keys it by its attestation certificates instead.
+  var entry = {
+    statusReports: o.statusReports || [{ status: "FIDO_CERTIFIED_L1", effectiveDate: "2026-01-01" }],
+    timeOfLastStatusChange: "2026-01-01",
+    metadataStatement: Object.assign({ attestationRootCertificates: o.anchors || [attRootDer.toString("base64")] }, o.statementExtra || {}) };
+  if (o.aaguid !== null) entry.aaguid = o.aaguid || "01020304-0506-0708-090a-0b0c0d0e0f10";
+  var payload = Object.assign({ legalHeader: "Test metadata, not for production use.",
+    no: o.no === undefined ? 42 : o.no, nextUpdate: o.nextUpdate === undefined ? "2027-06-01" : o.nextUpdate,
+    entries: o.entries || [entry] }, o.payloadExtra || {});
+  (o.payloadOmit || []).forEach(function (k) { delete payload[k]; });
+  var header = Object.assign({ alg: o.alg || "ES256", typ: "JWT",
+    x5c: o.x5cRaw || (o.x5c || [leafDer, rootDer]).map(function (d) { return d.toString("base64"); }) }, o.headerExtra || {});
+
+  // headerRaw / payloadRaw substitute the serialized JSON wholesale, for a vector whose defect is
+  // the JSON's own shape (a valid document that is not an object) rather than any field in it.
+  // payloadRaw64 substitutes the encoded segment itself, for a segment that is not decodable at all
+  // -- and because the signature is computed over the segments as written, the BLOB still verifies,
+  // so the fault surfaces at the payload reader instead of being masked by the signature gate.
+  var h64 = b64u(Buffer.from(o.headerRaw === undefined ? JSON.stringify(header) : o.headerRaw, "utf8"));
+  var p64 = o.payloadRaw64 !== undefined ? o.payloadRaw64
+    : b64u(Buffer.from(o.payloadRaw === undefined ? JSON.stringify(payload) : o.payloadRaw, "utf8"));
+  var sig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" },
+    (o.signWithRoot ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
+  // signerKey is the leaf's private half: a consumer that mutates the payload can re-sign, so a
+  // mutation arrives past the signature gate instead of being rejected ahead of the payload reader.
+  return { blob: Buffer.from(h64 + "." + p64 + "." + b64u(o.badSig ? Buffer.alloc(sig.length, 9) : sig), "utf8"),
+    rootDer: rootDer, otherDer: otherDer, attRootDer: attRootDer, aaguid: entry.aaguid || null,
+    signerKey: leaf.kp.privateKey };
+}
+
+// A fido-u2f attestation minted end to end, with its own root.
+//
+// The real u2f attestation in the test vectors chains to a vendor root this project does not hold,
+// so it cannot be used for a vector that requires the trust path to actually VALIDATE to a
+// registered anchor. This mints the same shape with a root under test control: a U2F authenticator
+// declares no AAGUID (its authenticatorData carries all zeroes), which is exactly the case the
+// metadata catalogue keys by attestation-certificate key identifier instead.
+//
+// The authenticatorData is taken from the real vector, so the credential public key, the flags and
+// the rpIdHash are genuine; only the attestation certificate and the signature over the
+// verificationData are re-made, which is what the anchor check reads.
+async function mintU2fAttestation() {
+  var nodeCrypto = require("node:crypto");
+  var fs = require("fs"), path = require("path");
+  var KAT = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "webauthn", "py-webauthn-kat.json"), "utf8"));
+  function kb64u(s) { var b = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "="; return Buffer.from(b, "base64"); }
+
+  var att = pki.webauthn.parseAttestationObject(kb64u(KAT.formats.fido_u2f.attestationObject));
+  var authDataBytes = att.authDataBytes;
+  var clientDataHash = nodeCrypto.createHash("sha256").update(kb64u(KAT.formats.fido_u2f.clientDataJSON)).digest();
+
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2027-01-01T00:00:00Z");
+  var ec = { name: "ECDSA", namedCurve: "P-256" };
+  async function pair() {
+    var kp = await pki.webcrypto.subtle.generateKey(ec, true, ["sign", "verify"]);
+    return { kp: kp, spki: Buffer.from(await pki.webcrypto.subtle.exportKey("spki", kp.publicKey)) };
+  }
+  var root = await pair(), attKey = await pair();
+  var rootDer = await pki.x509.sign({
+    subject: [{ commonName: "Test U2F Root CA" }], subjectPublicKey: root.spki, serialNumber: Buffer.from([1]),
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: root.kp.privateKey, name: [{ commonName: "Test U2F Root CA" }], publicKey: root.spki });
+  var attCertDer = await pki.x509.sign({
+    subject: [{ commonName: "Test U2F Attestation" }], subjectPublicKey: attKey.spki, serialNumber: Buffer.from([2]),
+    notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },
+  }, { key: root.kp.privateKey, name: [{ commonName: "Test U2F Root CA" }], publicKey: root.spki });
+
+  // WebAuthn sec. 8.6: the signature covers 0x00 || rpIdHash || clientDataHash || credentialId ||
+  // publicKeyU2F, where publicKeyU2F is the uncompressed EC point of the credential key.
+  var ad = att.authData;
+  var ck = ad.credentialPublicKey;
+  var pubU2F = Buffer.concat([Buffer.from([0x04]), Buffer.from(ck.x), Buffer.from(ck.y)]);
+  var verificationData = Buffer.concat([Buffer.from([0x00]), Buffer.from(ad.rpIdHash),
+    clientDataHash, Buffer.from(ad.credentialId), pubU2F]);
+  // fido-u2f carries a DER ECDSA signature (sec. 8.6), while WebCrypto produces the raw r||s pair,
+  // so the pair is re-encoded as the SEQUENCE the format expects. Encoding through the toolkit's own
+  // INTEGER builder keeps the minimal, non-negative form a strict decoder requires.
+  var raw = Buffer.from(await pki.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" },
+    attKey.kp.privateKey, verificationData));
+  var ab = pki.asn1.build;
+  var sig = ab.sequence([
+    ab.integer(BigInt("0x" + raw.subarray(0, raw.length / 2).toString("hex"))),
+    ab.integer(BigInt("0x" + raw.subarray(raw.length / 2).toString("hex"))),
+  ]);
+
+  var b = pki.cbor.build;
+  function assemble(ad) {
+    return b.map([
+      [b.textString("fmt"), b.textString("fido-u2f")],
+      [b.textString("attStmt"), b.map([
+        [b.textString("sig"), b.byteString(sig)],
+        [b.textString("x5c"), b.array([b.byteString(attCertDer)])],
+      ])],
+      [b.textString("authData"), b.byteString(ad)],
+    ]);
+  }
+  // withAaguid rewrites the 16 AAGUID bytes and reuses the SAME signature -- which is the whole
+  // point, and why it needs no key. The fido-u2f signature covers
+  // 0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F, which does NOT include the
+  // AAGUID, so anyone holding a genuine attestation can rewrite that field and it still verifies. A
+  // verifier that reports the field as an identity, or resolves an unlisted value out of some other
+  // key space, is vouching for bytes nothing signed. AAGUID sits at offset 37 of authenticatorData:
+  // rpIdHash(32) + flags(1) + signCount(4).
+  function withAaguid(hex) {
+    var ad = Buffer.from(authDataBytes);
+    Buffer.from(hex.replace(/-/g, ""), "hex").copy(ad, 37);
+    return assemble(ad);
+  }
+  return { attestationObject: assemble(authDataBytes), clientDataHash: clientDataHash,
+    rootDer: rootDer, attCertDer: attCertDer, withAaguid: withAaguid };
+}
+
+module.exports = { mint: mint, b64u: b64u, mintU2fAttestation: mintU2fAttestation };
