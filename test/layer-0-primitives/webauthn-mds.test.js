@@ -488,6 +488,15 @@ async function run() {
   // ---- the ceilings, at every layer that declares a count ----
   check("mds: a header above its own ceiling is refused before the signature check",
     (await codeFor({ headerExtra: { pad: "A".repeat(pki.C.LIMITS.MDS_BLOB_HEADER_MAX_BYTES + 1) } })) === "webauthn/too-large");
+  // The signature is read before anything is authenticated and every supported algorithm has a
+  // tightly bounded signature, so an oversized segment is refused before it is decoded rather than
+  // materialized and handed to the verifier.
+  check("mds: a signature segment above its ceiling is refused before it is decoded",
+    (await codeOf(function () {
+      var parts = base.blob.toString("ascii").split(".");
+      var huge = parts[0] + "." + parts[1] + "." + "A".repeat(pki.C.LIMITS.MDS_BLOB_SIG_MAX_BYTES * 2);
+      return pki.webauthn.verifyMetadataBlob(huge, { rootCertificates: [base.rootDer], time: T });
+    })) === "webauthn/too-large");
   check("mds: more status reports than the ceiling is refused", (await codeFor({
     statusReports: new Array(pki.C.LIMITS.MDS_MAX_STATUS_REPORTS_PER_ENTRY + 1).fill({ status: "FIDO_CERTIFIED" }),
   })) === "webauthn/too-large");
