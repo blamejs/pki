@@ -515,6 +515,26 @@ function run() {
   check("a NoticeReference organization over 200 characters is measured too",
     has(pki.lint.certificate(policyCert([b.sequence([b.oid(oid.byName("unotice")),
       b.sequence([b.sequence([b.utf8("o".repeat(201)), b.sequence([b.integer(1n)])])])])])), "lint/rfc5280/explicit-text-too-long"));
+  // A DisplayText that does not decode under its own declared string type is not analyzable, and a
+  // lenient decode would invent one: 201 octets of 0x80 read leniently become 201 replacement
+  // characters and would fire the length rule over text that was never valid. Nothing is reported.
+  var badUtf8 = Buffer.concat([Buffer.from([0x0c, 0x81, 0xc9]), Buffer.alloc(201, 0x80)]);
+  var repBad = pki.lint.certificate(policyCert([unoticeOf(b.raw(badUtf8))]));
+  check("an explicitText that is not valid UTF-8 raises no length finding over a substituted decode",
+    !has(repBad, "lint/rfc5280/explicit-text-too-long") && !has(repBad, "lint/rfc5280/explicit-text-not-nfc"));
+  // An odd-length BMPString cannot be UCS-2 at all; a decoder that dropped the trailing octet would
+  // silently analyze a value the bytes do not contain. The rules that read the TEXT stay silent --
+  // but the encoding rule reads only the ASN.1 TAG, so it must still fire: a certificate using a
+  // prohibited encoding does not escape that finding by also being malformed inside.
+  var oddBmp = pki.lint.certificate(policyCert([unoticeOf(rawString(0x1e, Buffer.from([0, 0x68, 0])))]));
+  check("an odd-length BMPString explicitText is not analyzed as if the stray octet were absent",
+    !has(oddBmp, "lint/rfc5280/explicit-text-too-long") && !has(oddBmp, "lint/rfc5280/explicit-text-control-chars"));
+  check("an odd-length BMPString explicitText STILL reports the prohibited encoding",
+    encodingOf(oddBmp) === "BMPString");
+  // Same for a VisibleString whose contents do not decode: the tag alone establishes the violation.
+  var badVis = pki.lint.certificate(policyCert([unoticeOf(rawString(0x1a, Buffer.from([0x1b, 0x5b, 0x30, 0x6d])))]));
+  check("a VisibleString explicitText reports the prohibited encoding regardless of its contents",
+    encodingOf(badVis) === "VisibleString");
   // A cPSuri is an IA5String with no SIZE, so the DisplayText rules must not leak onto it.
   check("a long cPSuri raises no DisplayText finding",
     !has(pki.lint.certificate(policyCert([b.sequence([b.oid(oid.byName("cps")), b.ia5("http://x.test/" + "p".repeat(300))])])), "lint/rfc5280/explicit-text-too-long"));

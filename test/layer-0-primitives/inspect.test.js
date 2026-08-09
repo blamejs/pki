@@ -153,6 +153,25 @@ function run() {
     b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrEmpty])])]))])));
   check("inspect: a NoticeReference with no numbers renders cleanly, no dangling marker",
     /unotice organization: Solo CA\n/.test(polNrE) && polNrE.indexOf("Solo CA #") < 0);
+  // A DisplayText is decoded through the strict reader, so a value that is not valid under its own
+  // declared string type takes the hex fallback rather than rendering a repaired version of itself:
+  // showing an operator U+FFFD where the certificate holds 0x80, or a BMPString with its trailing
+  // octet quietly dropped, would misreport the bytes the certificate actually carries.
+  // The VisibleString / BMPString arms have no builder (nothing in the toolkit emits them), so their
+  // TLVs are assembled directly.
+  function rawString(tag, bytes) { return b.raw(Buffer.concat([Buffer.from([tag, bytes.length]), bytes])); }
+  var badUtf8Q = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.raw(Buffer.from([0x0c, 0x02, 0x80, 0x41]))])]);
+  var polBad = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([badUtf8Q])])]))])));
+  check("inspect: an explicitText that is not valid UTF-8 hex-dumps rather than rendering a repair",
+    /unotice: [0-9a-f]{2}:/.test(polBad) && polBad.indexOf("�") < 0);
+  var oddBmpQ = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([rawString(0x1e, Buffer.from([0, 0x68, 0]))])]);
+  var polOdd = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([oddBmpQ])])]))])));
+  check("inspect: an odd-length BMPString explicitText hex-dumps rather than dropping the stray octet",
+    /unotice: [0-9a-f]{2}:/.test(polOdd));
   // An unregistered qualifier keeps the raw-value path -- the userNotice arm must not swallow it.
   var polUnk = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
     b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")),
