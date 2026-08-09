@@ -388,6 +388,16 @@ async function run() {
   // narrowing what legitimately decrypts.
   check("an AuthEnvelopedData with its own AEAD algorithm still opens and reports authenticated",
     (await pki.cms.decrypt(aeadEnv, algKm)).authenticated === true);
+  // The mode mismatch is a STRUCTURAL property of the message -- knowable from the algorithm identifier
+  // alone, with no key material. It must therefore be decided BEFORE recipient acquisition: two password
+  // recipients both match one password, and a per-candidate check would run PBKDF2 for each before
+  // noticing, then collapse its distinct verdict into the ambiguous-candidate loop's uniform one, so the
+  // caller would be told their key was wrong when the message's own algorithm was.
+  var samePw = await pki.cms.encrypt(MSG, [{ password: "pw" }, { password: "pw" }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  check("a mode mismatch is reported precisely even when several recipients match the key material",
+    (await codeOf(function () { return pki.cms.decrypt(_swapContentEncAlg(samePw, O("aes256-GCM")), { password: "pw" }); })) === "cms/unsupported-algorithm");
+  check("the same message with its own algorithm still opens through one of those recipients",
+    Buffer.compare((await pki.cms.decrypt(samePw, { password: "pw" })).content, MSG) === 0);
 
   // orchestrator routing
   check("pki.schema.parse routes an emitted EncryptedData to cms", pki.schema.parse(cekEnv).contentTypeName === "encryptedData");

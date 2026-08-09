@@ -146,6 +146,15 @@ function run() {
     b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrQ])])]))])));
   check("inspect: a NoticeReference renders its organization AND its notice numbers",
     /unotice organization: Example CA #1, 7/.test(polNr) && /unotice explicitText: Notice one/.test(polNr));
+  // A noticeNumbers member that is not an INTEGER makes the reference incomplete: rendering the
+  // organization with only the numbers that happened to decode would present a partial reference as a
+  // whole one, and the number is what identifies WHICH notice is meant. The qualifier hex-dumps.
+  var nrBadNum = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.sequence([b.utf8("Partial CA"), b.sequence([b.integer(1n), b.utf8("not-a-number")])])])]);
+  var polBadNum = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrBadNum])])]))])));
+  check("inspect: a NoticeReference with a non-INTEGER notice number hex-dumps rather than rendering part of it",
+    polBadNum.indexOf("Partial CA") < 0 && /unotice: [0-9a-f]{2}:/.test(polBadNum));
   // A NoticeReference with no numbers must not render a dangling separator.
   var nrEmpty = b.sequence([b.oid(pki.oid.byName("unotice")),
     b.sequence([b.sequence([b.utf8("Solo CA"), b.sequence([])])])]);
