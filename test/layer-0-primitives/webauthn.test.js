@@ -651,6 +651,81 @@ async function run() {
 
   await testAndroidSafetyNet();
   await testCompoundAttestation();
+  await testTpmObjectAttributePolicy();
+}
+
+// ---- TPM object-attribute policy (TPM 2.0 Part 2 sec. 8.3, NOT WebAuthn sec. 8.3) ------------
+// WebAuthn sec. 8.3 constrains only pubArea's `parameters` and `unique` fields -- `objectAttributes`
+// and `authPolicy` appear nowhere in it. They are therefore SURFACED for relying-party policy and
+// gated only when a caller asks by name. Every vector drives opts rather than a forged fixture:
+// pubArea is hashed into certInfo.attested.name, so a mutated pubArea fails the Name check long
+// before any policy code runs, and re-deriving certInfo would need the AIK private key.
+async function testTpmObjectAttributePolicy() {
+  var ATT = attObj("tpm"), CDH = clientHash("tpm");
+  function withPolicy(p) { return pki.webauthn.verify(ATT, CDH, { tpmPolicy: p }); }
+  async function codeFor(p) { try { await withPolicy(p); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
+
+  // Default off: with no tpmPolicy the verdict is what it was before this existed.
+  var plain = await pki.webauthn.verify(ATT, CDH, {});
+  check("tpm policy: absent, the attestation verifies exactly as before", plain.verified === true && plain.attestationType === "AttCA");
+  // Surfacing is the load-bearing half -- an RP cannot apply policy to a field it never sees.
+  check("tpm policy: the object attributes are surfaced as named booleans",
+    plain.tpm.attributes.fixedTPM === true && plain.tpm.attributes.sign === true && plain.tpm.attributes.restricted === false);
+  check("tpm policy: the raw objectAttributes word and authPolicy digest are surfaced",
+    typeof plain.tpm.objectAttributes === "number" && Buffer.isBuffer(plain.tpm.authPolicy));
+
+  // The one defined preset holds on real hardware -- that is why those six bits are the preset.
+  check("tpm policy: the hardware-bound profile accepts a genuine attestation",
+    (await withPolicy({ profile: "hardware-bound" })).verified === true);
+  // A demanded bit the key does not have is refused, in both directions.
+  check("tpm policy: a required-SET attribute the key lacks is refused",
+    (await codeFor({ objectAttributes: { restricted: true } })) === "webauthn/tpm-policy");
+  check("tpm policy: a required-CLEAR attribute the key sets is refused",
+    (await codeFor({ objectAttributes: { decrypt: false } })) === "webauthn/tpm-policy");
+  // An explicit map layers over the preset, so one bit can be overridden without losing the rest.
+  check("tpm policy: an explicit attribute overrides the profile",
+    (await codeFor({ profile: "hardware-bound", objectAttributes: { sign: false } })) === "webauthn/tpm-policy");
+
+  // The trap: userWithAuth CLEAR is the STRICTER setting (Table 33 bit 6 -- CLEAR means only a
+  // policy session may approve USER-role use). This statement has it SET, so demanding it CLEAR
+  // must refuse; a caller who writes `userWithAuth: true` believing it hardens anything has it
+  // backwards, and the vector records which direction is which.
+  check("tpm policy: demanding userWithAuth CLEAR refuses a key that sets it",
+    (await codeFor({ objectAttributes: { userWithAuth: false } })) === "webauthn/tpm-policy");
+
+  // Config-time faults: a typo must never silently disable the check the caller thinks they set.
+  check("tpm policy: a non-object policy is a config-time fault", (await codeFor("hardware-bound")) === "webauthn/bad-input");
+  check("tpm policy: an unknown top-level key is a config-time fault",
+    (await codeFor({ objectAttribute: {} })) === "webauthn/bad-input");
+  check("tpm policy: an unknown profile is a config-time fault",
+    (await codeFor({ profile: "maximum-security" })) === "webauthn/bad-input");
+  check("tpm policy: an unknown attribute name is a config-time fault",
+    (await codeFor({ objectAttributes: { fixedTpm: true } })) === "webauthn/bad-input");
+  check("tpm policy: a non-boolean attribute value is a config-time fault",
+    (await codeFor({ objectAttributes: { fixedTPM: "yes" } })) === "webauthn/bad-input");
+  // sec. 8.3.3.5 NOTE 1: sensitiveDataOrigin asserts the TPM generated the key only when fixedTPM
+  // is also SET. Demanding it alone asserts nothing, so it is refused at config time rather than
+  // giving the caller a check that quietly means less than they think.
+  check("tpm policy: sensitiveDataOrigin without fixedTPM is refused as meaningless",
+    (await codeFor({ objectAttributes: { sensitiveDataOrigin: true } })) === "webauthn/bad-input");
+
+  // Structural opt-ins, both satisfied by genuine hardware.
+  check("tpm policy: the reserved-bit check passes on a genuine attestation",
+    (await withPolicy({ reservedBitsClear: true })).verified === true);
+  check("tpm policy: the consistency check passes on a genuine attestation",
+    (await withPolicy({ consistency: true })).verified === true);
+
+  // authPolicy: this statement carries a real 32-octet digest.
+  check("tpm policy: requiring a non-Empty authPolicy passes when one is present",
+    (await withPolicy({ authPolicy: { present: true } })).verified === true);
+  check("tpm policy: an authPolicy allow-list containing the key's digest passes",
+    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy] } })).verified === true);
+  check("tpm policy: an allow-list the digest is absent from is refused",
+    (await codeFor({ authPolicy: { allow: [Buffer.alloc(32, 7)] } })) === "webauthn/tpm-policy");
+  check("tpm policy: an allow-list entry may be a hex string",
+    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex")] } })).verified === true);
+  check("tpm policy: a non-array allow-list is a config-time fault",
+    (await codeFor({ authPolicy: { allow: "deadbeef" } })) === "webauthn/bad-input");
 }
 
 // ---- compound attestation (WebAuthn sec. 8.9) --------------------------------
