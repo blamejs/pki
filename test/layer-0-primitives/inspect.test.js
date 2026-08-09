@@ -170,6 +170,26 @@ function run() {
   check("inspect: an AIA directoryName accessLocation renders its DN, not a bare tag",
     /OCSP - DirName:CN=OCSP Responder/.test(aiaDir) && aiaDir.indexOf("OCSP - [4]") < 0);
 
+  // Every accessLocation name form the renderer handles gets its own vector: the arms are a chain of
+  // independent branches, so the iPAddress case above exercises exactly one of them and says nothing
+  // about the rest. A form that renders its value raw would be the interesting failure, so each
+  // assertion pins the labelled shape rather than merely that the value appears somewhere.
+  function aiaWith(methodName, locDer) {
+    return pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName(methodName)), locDer])]))])));
+  }
+  check("inspect: an AIA dNSName accessLocation renders as DNS:",
+    /OCSP - DNS:ocsp\.example/.test(aiaWith("ocsp", b.contextPrimitive(2, Buffer.from("ocsp.example")))));
+  check("inspect: an AIA rfc822Name accessLocation renders as email:",
+    /CA Issuers - email:ca@example\.test/.test(aiaWith("caIssuers", b.contextPrimitive(1, Buffer.from("ca@example.test")))));
+  check("inspect: an AIA uniformResourceIdentifier accessLocation renders as URI:",
+    /CA Issuers - URI:http:\/\/ca\.example\/ca\.cer/.test(aiaWith("caIssuers", b.contextPrimitive(6, Buffer.from("http://ca.example/ca.cer")))));
+  // An accessMethod outside the two named ones keeps its dotted OID rather than being dropped.
+  var aiaUnk = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+    b.octetString(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.5"), b.contextPrimitive(6, Buffer.from("http://x.test"))])]))])));
+  check("inspect: an unregistered AIA accessMethod keeps its dotted OID",
+    /1\.3\.6\.1\.4\.1\.99999\.5 - URI:http:\/\/x\.test/.test(aiaUnk));
+
   // An RFC 4514 separator (a comma) in a DN attribute value must be escaped so it
   // cannot masquerade as an extra RDN. Mutate the issuer CN "pkijs.com" (the first
   // occurrence) so the '.' becomes a ',' in place; parse stays structural.
