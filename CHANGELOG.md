@@ -4,6 +4,26 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.12 — 2026-08-09
+
+A CMS message can no longer declare one content cipher and be opened with another: the declared algorithm's mode is now bound to the container that carries it, so an EnvelopedData naming an authenticated cipher is refused rather than opened, unauthenticated, under a result that reported it as authenticated.
+
+### Added
+
+- pki.lint reports the RFC 5280 sec. 4.2.1.4 rules for a certificate policy's user notice, at the strength the specification states each one: encoding a notice as VisibleString or BMPString is an error, since conforming CAs must not; a notice longer than 200 characters and one containing control characters are warnings; a UTF8String notice that is not in Unicode normalization form C is a notice. The length is measured in characters, so a conforming notice whose accented or emoji characters occupy more storage than 200 units is not reported. The rules live in the linter and not the decoder deliberately: the same section directs certificate users to handle an over-long notice gracefully, so a verifier that refused one would reject certificates that exist and are otherwise valid.
+- The length rule covers a notice reference's organization as well as the explicit text, since the bound belongs to the DisplayText type rather than to one of the two fields that use it.
+
+### Changed
+
+- pki.inspect renders a certificate policy's user notice as text. A user notice is a constructed value, so it previously fell to the hexadecimal fallback and an operator could not read the notice the qualifier exists to display; its explicit text and its notice reference now render, the reference carrying its organization together with the notice numbers that identify which notice is meant.
+- pki.inspect renders an authority-information-access location given as a directory name. It previously printed a bare form tag, hiding the responder or issuer identity the entry exists to convey, while the same name form already printed as a distinguished name elsewhere in the report.
+- The producing entry points state their error contract completely. pki.x509.sign, pki.csr.sign, pki.crl.sign and pki.attrcert.sign accept raw DER for a name, a pre-encoded extension, or a public key; a structural fault in those bytes raises the format's own error, while a malformed leaf inside them raises the codec's, which the parsing entry points already documented and these did not.
+
+### Fixed
+
+- A CMS content cipher is now bound to the container that declares it. An EnvelopedData must name a CBC cipher and an AuthEnvelopedData an AEAD one, checked before the content-encryption key is used; a mismatch is refused as an unsupported algorithm naming both the cipher and the container. Previously only the cipher's key length was resolved, and because AES-CBC and AES-GCM share key lengths, an EnvelopedData whose algorithm identifier had been changed to the same-size AES-GCM identifier decrypted successfully as unauthenticated CBC while reporting the AEAD algorithm in its result -- so a caller inspecting contentEncryptionAlgorithm to establish that the content was authenticated was answered from a field the decryption had not honoured. The reverse pairing was refused only incidentally, by a later dereference of parameters the AEAD path expects, rather than by a stated rule.
+- The password-recipient inner cipher is resolved through the same identifier-keyed table. It previously required a CBC mode by matching the algorithm identifier's display name, which pki.oid.register can rebind, so a caller that had registered a name over a built-in one could change which ciphers that check admitted.
+
 ## v0.4.11 — 2026-08-09
 
 A WebAuthn attestation can now be bound to the roots the authenticator's own model actually registered, by reading a FIDO Metadata Service BLOB that is verified and chained to a root you supply before any of its contents are parsed.

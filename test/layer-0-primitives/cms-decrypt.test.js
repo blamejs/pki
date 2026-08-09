@@ -350,6 +350,45 @@ async function run() {
   check("an EnvelopedData naming no recipients is refused as malformed, not as unmatched",
     (await codeOf(function () { return pki.cms.decrypt(noRecips, { key: rsa.key, cert: rsa.cert }); })) === "cms/bad-recipient-infos");
 
+  // ---- algorithm resolution fails CLOSED with its own distinct code, never the uniform verdict ----
+  // The content cipher is resolved AFTER the CEK unwraps, so an unresolvable contentEncryptionAlgorithm
+  // must surface as cms/unsupported-algorithm -- naming the real reason -- and must never be collapsed
+  // into cms/decrypt-failed, which would tell an operator their key was wrong when the algorithm was.
+  var algEnv = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var algKm = { key: rsa.key, cert: rsa.cert };
+  check("an unregistered contentEncryptionAlgorithm OID -> cms/unsupported-algorithm, not decrypt-failed",
+    (await codeOf(function () { return pki.cms.decrypt(_swapContentEncAlg(algEnv, "1.3.6.1.4.1.99999.4.1"), algKm); })) === "cms/unsupported-algorithm");
+  // A REGISTERED OID that is not a content cipher takes the same path: the reject is driven by the
+  // absence of a key length for the OID, not by whether the OID happens to be known to the registry.
+  check("a registered non-cipher OID as the content algorithm -> cms/unsupported-algorithm",
+    (await codeOf(function () { return pki.cms.decrypt(_swapContentEncAlg(algEnv, O("sha256")), algKm); })) === "cms/unsupported-algorithm");
+  // ---- the declared cipher MODE is bound to the container's authentication model ----
+  // RFC 5083 sec. 2.1 / RFC 5084 sec. 3: an AEAD content cipher belongs in AuthEnvelopedData, a plain
+  // CBC cipher in EnvelopedData. Nothing but the key LENGTH used to separate them, so swapping the OID
+  // to the same-length algorithm of the other mode was accepted and the content was opened in the
+  // WRONG mode -- an EnvelopedData naming AES-GCM was CBC-decrypted while the result still reported
+  // the AEAD algorithm name, telling an operator the content was authenticated when it was not.
+  // Both directions are asserted: fixing only the one an attacker reaches first leaves its mirror live.
+  for (var gcmName of ["aes128-GCM", "aes192-GCM", "aes256-GCM"]) {
+    check("an EnvelopedData declaring " + gcmName + " (an AEAD cipher) is refused, never opened as CBC",
+      (await codeOf(function () { return pki.cms.decrypt(_swapContentEncAlg(algEnv, O(gcmName)), algKm); })) === "cms/unsupported-algorithm");
+  }
+  var aeadEnv = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  for (var cbcName of ["aes128-CBC", "aes192-CBC", "aes256-CBC"]) {
+    check("an AuthEnvelopedData declaring " + cbcName + " (a non-AEAD cipher) is refused with a typed error",
+      (await codeOf(function () { return pki.cms.decrypt(_swapContentEncAlg(aeadEnv, O(cbcName)), algKm); })) === "cms/unsupported-algorithm");
+  }
+  // The reject must be a typed PkiError, never a raw TypeError: the CBC-in-AuthEnvelopedData case
+  // dereferenced AEAD parameters the parser leaves null, which is the shape the fuzz contract forbids.
+  check("the mode mismatch raises a PkiError, not a raw runtime fault", await (async function () {
+    try { await pki.cms.decrypt(_swapContentEncAlg(aeadEnv, O("aes256-CBC")), algKm); return false; }
+    catch (e) { return e instanceof pki.errors.PkiError; }
+  })());
+  // The matching mode still round-trips in each container, so the check binds the mode without
+  // narrowing what legitimately decrypts.
+  check("an AuthEnvelopedData with its own AEAD algorithm still opens and reports authenticated",
+    (await pki.cms.decrypt(aeadEnv, algKm)).authenticated === true);
+
   // orchestrator routing
   check("pki.schema.parse routes an emitted EncryptedData to cms", pki.schema.parse(cekEnv).contentTypeName === "encryptedData");
 
@@ -381,6 +420,28 @@ function _rebuildContentIv(der, ivLen) {
   var newEdKids = ed.children.slice(0, ed.children.length - 1).map(function (c) { return b2.raw(c.bytes); }).concat([b2.sequence(newEciKids)]);
   return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(newEdKids))]);
 }
+// Swap the contentEncryptionAlgorithm OID, leaving its parameters and the wrapped CEK intact: the CEK
+// still unwraps, so the reject can only come from the content-cipher resolution itself.
+// The content info is located STRUCTURALLY -- the SEQUENCE right after the recipientInfos SET -- because
+// EnvelopedData ends with it while AuthEnvelopedData carries authAttrs and the mac after it, so indexing
+// from the end silently edits the wrong node in one of the two containers.
+function _swapContentEncAlg(der, newOid) {
+  var b2 = pki.asn1.build;
+  var ci = pki.asn1.decode(der);
+  var ed = ci.children[1].children[0];
+  var riIdx = -1;
+  ed.children.forEach(function (c, i) { if (c.tagClass === "universal" && c.tagNumber === 17) riIdx = i; });
+  var eciIdx = riIdx + 1;
+  var eci = ed.children[eciIdx];
+  var alg = eci.children[1];
+  var newAlgKids = [b2.oid(newOid)];
+  for (var j = 1; j < alg.children.length; j++) newAlgKids.push(b2.raw(alg.children[j].bytes));
+  var newEciKids = [b2.raw(eci.children[0].bytes), b2.sequence(newAlgKids)];
+  for (var i = 2; i < eci.children.length; i++) newEciKids.push(b2.raw(eci.children[i].bytes));
+  var newEdKids = ed.children.map(function (c, i) { return i === eciIdx ? b2.sequence(newEciKids) : b2.raw(c.bytes); });
+  return b2.sequence([b2.raw(ci.children[0].bytes), b2.explicit(0, b2.sequence(newEdKids))]);
+}
+
 // Prepend a dummy RecipientEncryptedKey (a non-matching rid) before the real one in a kari, so the
 // recipient's own rek is at index 1 -- exercises rid-matched rek selection instead of "take element 0".
 function _prependDummyKariRek(der) {

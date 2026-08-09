@@ -129,6 +129,47 @@ function run() {
   check("inspect: issuer/serial-only AKI renders its values, not keyid:(none)",
     /DirName:CN=aki-ca/.test(aki) && /serial:0x42/.test(aki) && aki.indexOf("keyid:(none)") < 0);
 
+  // A userNotice qualifier is a constructed SEQUENCE, so the printable-content test cannot read it and
+  // it would hex-dump -- leaving the operator unable to read the very text the qualifier exists to show.
+  // Both DisplayText positions render, through the same shared reader pki.lint measures.
+  var cpsQ = b.sequence([b.oid(pki.oid.byName("cps")), b.ia5("http://cps.example")]);
+  var unQ = b.sequence([b.oid(pki.oid.byName("unotice")), b.sequence([b.utf8("Reliance limited. See CPS.")])]);
+  var pol = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([cpsQ, unQ])])]))])));
+  check("inspect: a userNotice explicitText renders as text, not a hex dump",
+    /unotice explicitText: Reliance limited\. See CPS\./.test(pol) && /cps: http:\/\/cps\.example/.test(pol));
+  // A NoticeReference is identified by organization AND noticeNumbers -- rendering the organization
+  // text alone drops the key that says WHICH notice is meant, which the previous hex dump preserved.
+  var nrQ = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.sequence([b.utf8("Example CA"), b.sequence([b.integer(1n), b.integer(7n)])]), b.utf8("Notice one")])]);
+  var polNr = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrQ])])]))])));
+  check("inspect: a NoticeReference renders its organization AND its notice numbers",
+    /unotice organization: Example CA #1, 7/.test(polNr) && /unotice explicitText: Notice one/.test(polNr));
+  // A NoticeReference with no numbers must not render a dangling separator.
+  var nrEmpty = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.sequence([b.utf8("Solo CA"), b.sequence([])])])]);
+  var polNrE = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrEmpty])])]))])));
+  check("inspect: a NoticeReference with no numbers renders cleanly, no dangling marker",
+    /unotice organization: Solo CA\n/.test(polNrE) && polNrE.indexOf("Solo CA #") < 0);
+  // An unregistered qualifier keeps the raw-value path -- the userNotice arm must not swallow it.
+  var polUnk = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")),
+      b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.6"), b.ia5("z")])])])]))])));
+  check("inspect: an unregistered policy qualifier still renders its value",
+    /1\.3\.6\.1\.4\.1\.99999\.6: z/.test(polUnk));
+
+  // An AIA accessLocation in the directoryName form must print the DN. It previously fell to the
+  // bracketed-tag fallback and rendered a bare "[4]", hiding the responder identity -- while the same
+  // GeneralName form already printed as DirName in the AKI renderer above.
+  var aiaDn = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("OCSP Responder")])])]);
+  var aiaDir = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("ocsp")), b.contextConstructed(4, aiaDn)])]))])));
+  check("inspect: an AIA directoryName accessLocation renders its DN, not a bare tag",
+    /OCSP - DirName:CN=OCSP Responder/.test(aiaDir) && aiaDir.indexOf("OCSP - [4]") < 0);
+
   // An RFC 4514 separator (a comma) in a DN attribute value must be escaped so it
   // cannot masquerade as an extra RDN. Mutate the issuer CN "pkijs.com" (the first
   // occurrence) so the '.' becomes a ',' in place; parse stays structural.
