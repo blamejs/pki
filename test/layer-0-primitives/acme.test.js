@@ -626,6 +626,41 @@ async function testBuilders() {
 }
 
 // ---- ARI (RFC 9773) --------------------------------------------------
+// pki.acme.client's config boundary. Each option carries the account IDENTITY or the signing
+// algorithm, so a missing one cannot be defaulted -- there is nothing safe to default it TO, and a
+// client constructed without one would sign requests the server attributes to the wrong account or
+// cannot verify at all. Each is named separately so the operator is told which is absent.
+function testClientConfig() {
+  var DIR = "https://acme.test/directory";
+  var OK = { accountKey: "k", accountJwk: { kty: "EC" }, alg: "ES256" };
+  function without(k) { var o = Object.assign({}, OK); delete o[k]; return o; }
+  check("client: no opts at all names the account key", code(function () { pki.acme.client(DIR); }) === "acme/bad-input");
+  check("client: a missing accountKey is named", code(function () { pki.acme.client(DIR, without("accountKey")); }) === "acme/bad-input");
+  check("client: a missing accountJwk is named", code(function () { pki.acme.client(DIR, without("accountJwk")); }) === "acme/bad-input");
+  check("client: a missing alg is named", code(function () { pki.acme.client(DIR, without("alg")); }) === "acme/bad-input");
+  // The JWK must be an OBJECT: a string that merely looks like one would be carried into the
+  // protected header and produce a signature the server cannot bind to a key.
+  check("client: a non-object accountJwk is refused",
+    code(function () { pki.acme.client(DIR, Object.assign({}, OK, { accountJwk: "{\"kty\":\"EC\"}" })); }) === "acme/bad-input");
+  // Each rejection names its own field rather than sharing one message, so the operator does not
+  // have to bisect their config to find out which is missing.
+  function msg(fn) { try { fn(); return ""; } catch (e) { return e.message; } }
+  check("client: each missing option produces its own message",
+    new Set([msg(function () { pki.acme.client(DIR, without("accountKey")); }),
+      msg(function () { pki.acme.client(DIR, without("accountJwk")); }),
+      msg(function () { pki.acme.client(DIR, without("alg")); })]).size === 3);
+
+  // The directory URL is gated before any socket. RFC 8555 sec. 6.1 requires https, and userinfo in
+  // the authority is refused rather than stripped -- a URL carrying credentials is not silently
+  // rewritten into one that does not.
+  check("client: a plain-http directory URL is refused",
+    code(function () { pki.acme.client("http://acme.test/directory", OK); }) === "acme/insecure-url");
+  check("client: a directory URL carrying userinfo is refused, not stripped",
+    code(function () { pki.acme.client("https://user@acme.test/directory", OK); }) === "acme/bad-url");
+  check("client: an unparseable directory URL is refused",
+    code(function () { pki.acme.client("not a url", OK); }) === "acme/bad-url");
+}
+
 function testAri() {
   var keyId = Buffer.from("aabbccddeeff00112233445566778899aabbccdd", "hex");
   var cert = makeCert({ exts: [akiExt(keyId)] });
@@ -689,6 +724,7 @@ function run() {
   }).then(function () {
     return testBuilders();
   }).then(function () {
+    testClientConfig();
     testAri();
     console.log("CHECKS " + helpers.getChecks());
   });

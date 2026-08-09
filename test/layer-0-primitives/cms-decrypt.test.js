@@ -320,6 +320,36 @@ async function run() {
   check("a malformed recipient-key PEM -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(envCbc, { key: "-----BEGIN PRIVATE KEY-----\nnot-b64!!\n-----END PRIVATE KEY-----\n", cert: rsa.cert }); })) === "cms/bad-input");
   check("a malformed recipient-cert PEM (decrypt) -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(envCbc, { key: rsa.key, cert: "-----BEGIN CERTIFICATE-----\nnot-b64!!\n-----END CERTIFICATE-----\n" }); })) === "cms/bad-input");
 
+  // ---- the entry boundary ----
+  // The key material is what decides WHICH recipient the message is opened as, so a caller who
+  // passes nothing usable must be told at the boundary rather than reaching the recipient walk and
+  // failing there as though no recipient matched -- two very different diagnoses for the operator.
+  check("decrypt with no key material at all -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.decrypt(envCbc, null); })) === "cms/bad-input");
+  check("decrypt with a non-object key material -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.decrypt(envCbc, "a-password"); })) === "cms/bad-input");
+  // A ContentInfo of a type decrypt does not open is a caller mistake, named as one rather than
+  // pursued into a recipient walk that would report it as an unmatched recipient.
+  // Degenerate but WELL-FORMED, so it clears the parse and reaches the content-type check itself --
+  // an unparseable structure would fault earlier and prove nothing about this branch.
+  var notEncrypted = bp.sequence([bp.oid(O("signedData")), bp.explicit(0, bp.sequence([
+    bp.integer(1n), bp.setOf([]), bp.sequence([bp.oid(O("data"))]), bp.setOf([]),
+  ]))]);
+  check("decrypt of a structure that is not an encrypted content type -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.decrypt(notEncrypted, { password: "x" }); })) === "cms/bad-input");
+  // A message carrying an empty RecipientInfos SET names nobody who can open it. RFC 5652 sec. 6.1
+  // makes it SIZE(1..MAX), so the SCHEMA rejects it as malformed -- it never reaches the recipient
+  // walk. The exact code is what this pins: degrading to cms/no-matching-recipient would report a
+  // structurally invalid message as merely "not addressed to you", which is a different diagnosis
+  // and a weaker one.
+  var noRecips = bp.sequence([bp.oid(O("envelopedData")), bp.explicit(0, bp.sequence([
+    bp.integer(0n), bp.setOf([]),
+    bp.sequence([bp.oid(O("data")), bp.sequence([bp.oid(O("aes256-CBC")), bp.octetString(Buffer.alloc(16))]),
+      bp.contextPrimitive(0, Buffer.alloc(16))]),
+  ]))]);
+  check("an EnvelopedData naming no recipients is refused as malformed, not as unmatched",
+    (await codeOf(function () { return pki.cms.decrypt(noRecips, { key: rsa.key, cert: rsa.cert }); })) === "cms/bad-recipient-infos");
+
   // orchestrator routing
   check("pki.schema.parse routes an emitted EncryptedData to cms", pki.schema.parse(cekEnv).contentTypeName === "encryptedData");
 

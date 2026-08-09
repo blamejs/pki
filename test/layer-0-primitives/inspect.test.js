@@ -405,6 +405,74 @@ function run() {
   check("inspect: an ecPublicKey with no public key renders (0 bit), no pub block",
     /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(0 bit\)/.test(ecNullPub) && ecNullPub.indexOf("pub:") < 0);
 
+  // Every GeneralName form, each through the shipped renderer. These are what an operator reads to
+  // decide what a certificate actually authorises, so a form rendered wrongly -- or silently
+  // dropped -- misrepresents the certificate's reach. Each case is a distinct arm: the othername
+  // hex fallback, the two DirName shapes, the IP-address formatter, and the generic kind:value.
+  function sanOf(names) {
+    return mkParsed({ extensions: [{ oid: pki.oid.byName("subjectAltName"), name: "subjectAltName",
+      critical: false, value: b.sequence(names) }] });
+  }
+  function sanLine(names) {
+    var ls = pki.inspect.certificate(sanOf(names)).split("\n");
+    var i = ls.findIndex(function (l) { return /Alternative Name/.test(l); });
+    return (ls[i + 1] || "").trim();
+  }
+  var dirNameDer = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("Dir Subject")])])]);
+  check("inspect: an otherName renders as a hex dump of its own bytes",
+    /^othername:a0:18:06:0a:2b:06:01:04:01:82:37:14:02:03/.test(
+      sanLine([b.contextConstructed(0, Buffer.concat([b.oid("1.3.6.1.4.1.311.20.2.3"), b.explicit(0, b.utf8("upn@test"))]))])));
+  check("inspect: an rfc822Name renders as email:", sanLine([b.contextPrimitive(1, Buffer.from("a@b.test", "ascii"))]) === "email:a@b.test");
+  check("inspect: a dNSName renders as DNS:", sanLine([b.contextPrimitive(2, Buffer.from("a.test", "ascii"))]) === "DNS:a.test");
+  check("inspect: a directoryName renders its distinguished name", sanLine([b.explicit(4, dirNameDer)]) === "DirName:CN=Dir Subject");
+  check("inspect: a URI renders as URI:", sanLine([b.contextPrimitive(6, Buffer.from("http://u.test", "ascii"))]) === "URI:http://u.test");
+  // The address is formatted, not hex-dumped: an operator comparing a name constraint against a
+  // network needs to read it as an address.
+  check("inspect: an IPv4 address renders in dotted-quad form",
+    sanLine([b.contextPrimitive(7, Buffer.from([10, 0, 0, 1]))]) === "IP Address:10.0.0.1");
+  check("inspect: an IPv6 address renders in colon-hex form",
+    sanLine([b.contextPrimitive(7, Buffer.alloc(16, 0x11))]) === "IP Address:1111:1111:1111:1111:1111:1111:1111:1111");
+  check("inspect: a registeredID renders its OID",
+    sanLine([b.contextPrimitive(8, pki.asn1.encodeOidContent("1.2.3.4"))]) === "Registered ID:1.2.3.4");
+  // Several names on one extension are joined, not truncated to the first.
+  check("inspect: every name in the extension is rendered, not just the first",
+    sanLine([b.contextPrimitive(2, Buffer.from("a.test", "ascii")), b.contextPrimitive(2, Buffer.from("b.test", "ascii"))])
+      === "DNS:a.test, DNS:b.test");
+
+  // Where revocation is published, and under which reasons. Each of these is a separate arm, and
+  // each carries operator meaning: a distribution point scoped to particular reasons is NOT a
+  // general revocation source, and an indirect CRL names its issuer instead of a location -- so
+  // rendering only the first shape would misreport where revocation must be checked.
+  function extBlock(name, value) {
+    var ls = pki.inspect.certificate(mkParsed({ extensions: [{ oid: pki.oid.byName(name), name: name,
+      critical: false, value: value }] })).split("\n");
+    var i = ls.findIndex(function (l) { return /Extensions:/i.test(l); });
+    var j = ls.findIndex(function (l) { return /Signature Algorithm:/.test(l) && ls.indexOf(l) > i; });
+    return ls.slice(i + 1, j > i ? j : undefined).map(function (s) { return s.trim(); }).filter(Boolean).join("\n");
+  }
+  function uriName(s) { return b.contextPrimitive(6, Buffer.from(s, "ascii")); }
+  check("inspect: a CRL distribution point renders its full name",
+    extBlock("cRLDistributionPoints", b.sequence([b.sequence([
+      b.contextConstructed(0, b.contextConstructed(0, uriName("http://c.test/a.crl"))),
+    ])])) === "X509v3 CRL Distribution Points:\nFull Name:\nURI:http://c.test/a.crl");
+  check("inspect: a distribution point scoped to reasons names them",
+    /Reasons: Key Compromise, Affiliation Changed/.test(
+      extBlock("cRLDistributionPoints", b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, uriName("http://c.test/a.crl"))),
+        b.implicit(1, b.namedBitString([1, 3])),
+      ])]))));
+  // An indirect CRL carries only a cRLIssuer -- dropping it would leave the operator with a
+  // distribution point that appears to say nothing.
+  check("inspect: a distribution point with only a cRLIssuer renders the issuer",
+    extBlock("cRLDistributionPoints", b.sequence([b.sequence([
+      b.contextConstructed(2, uriName("http://i.test")),
+    ])])) === "X509v3 CRL Distribution Points:\nCRL Issuer:\nURI:http://i.test");
+  check("inspect: authority information access renders each method with its location",
+    extBlock("authorityInfoAccess", b.sequence([
+      b.sequence([b.oid(pki.oid.byName("ocsp")), uriName("http://o.test")]),
+      b.sequence([b.oid(pki.oid.byName("caIssuers")), uriName("http://i.test")]),
+    ])) === "Authority Information Access:\nOCSP - URI:http://o.test\nCA Issuers - URI:http://i.test");
+
   // A pre-parsed extension whose OID has a decoder but whose name has no renderer
   // (only reachable via the pre-parsed fast path -- a genuine parse keeps name<->oid
   // consistent, enforced by the completeness gate) falls back to a hex dump of the
