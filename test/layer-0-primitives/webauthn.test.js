@@ -650,6 +650,104 @@ async function run() {
     (await codeOfAsync(function () { return pki.webauthn.verify(_tpmWithPubArea(_pubPerturbed), clientHash("tpm")); })) === "webauthn/verify-failed");
 
   await testAndroidSafetyNet();
+  await testCompoundAttestation();
+}
+
+// ---- compound attestation (WebAuthn sec. 8.9) --------------------------------
+// The attStmt is an ARRAY of nested statements, each verified over the SAME authenticatorData and
+// clientDataHash. Built here from the real KAT statements, so each element is a genuine attestation
+// rather than a shape that merely parses.
+async function testCompoundAttestation() {
+  // Lift the { fmt, attStmt } of a real KAT attestation, and its authData, so a compound can be
+  // assembled from statements that actually verify.
+  function partsOf(fmt) {
+    var m = pki.cbor.read.map(pki.cbor.decode(attObj(fmt)));
+    var out = {};
+    m.forEach(function (kv) { out[pki.cbor.read.textString(kv[0])] = kv[1]; });
+    return out;
+  }
+  var packed = partsOf("packed");
+  var AUTH_DATA = packed.authData.content;
+  // The local cText/cMap/cArr builders emit raw CBOR bytes, and a lifted KAT node's own bytes are
+  // at .bytes -- one builder family throughout, so an element is byte-identical to the statement
+  // it was lifted from.
+  function el(fmtText, attStmtBytes) { return cMap([[cText("fmt"), cText(fmtText)], [cText("attStmt"), attStmtBytes]]); }
+  function compoundOf(elements, authData) {
+    return cMap([[cText("fmt"), cText("compound")], [cText("attStmt"), cArr(elements)],
+      [cText("authData"), cBytes(authData || AUTH_DATA)]]);
+  }
+  var NONE = el("none", cMap([]));
+  var PACKED = el("packed", packed.attStmt.bytes);
+
+  // sec. 8.9 bullet 2: a compound whose elements all verify returns a combined result.
+  var okRes = await pki.webauthn.verify(compoundOf([PACKED, NONE]), clientHash("packed"), {});
+  check("compound: a statement whose elements all verify returns a combined result",
+    okRes.verified === true && okRes.fmt === "compound" && okRes.attestationType === "Compound");
+  check("compound: each element's own verdict is surfaced in order",
+    okRes.compound.length === 2 && okRes.compound[0].fmt === "packed" &&
+    okRes.compound[0].attestationType === "Basic" && okRes.compound[1].fmt === "none");
+  // Two independent chains cannot form one ordered path, so the top-level trust path is empty and
+  // each element carries its own.
+  check("compound: the trust path is per-element, not merged",
+    okRes.trustPath.length === 0 && okRes.compound[0].trustPath.length > 0);
+  // The credential binding comes from the shared authenticatorData, as for every other format.
+  check("compound: the credential binding comes from the shared authenticatorData",
+    Buffer.isBuffer(okRes.aaguid) && !!okRes.credentialPublicKey);
+
+  // Fail-closed policy: sec. 8.9 leaves the threshold to the relying party, and this toolkit
+  // requires every element. A compound must not launder a failed element behind a passing one.
+  var badPacked = el("packed", partsOf("packed").attStmt.bytes);
+  check("compound: one failing element fails the whole statement", (await codeOfAsync(function () {
+    // the packed element verified against the WRONG clientDataHash cannot verify
+    return pki.webauthn.verify(compoundOf([badPacked, NONE]), clientHash("tpm"), {});
+  })) === "webauthn/compound-element-failed");
+
+  // sec. 8.9 syntax: 2* elements, each exactly { fmt, attStmt }, and none of them compound.
+  check("compound: fewer than two elements is refused",
+    (await codeOfAsync(function () { return pki.webauthn.verify(compoundOf([NONE]), clientHash("packed"), {}); })) === "webauthn/bad-att-stmt");
+  check("compound: a nested compound is refused (the syntax forbids it)",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([el("compound", cArr([NONE, NONE])), NONE]), clientHash("packed"), {});
+    })) === "webauthn/bad-att-stmt");
+  check("compound: an element carrying an unexpected field is refused",
+    (await codeOfAsync(function () {
+      var extra = cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cMap([])], [cText("x"), cText("y")]]);
+      return pki.webauthn.verify(compoundOf([extra, NONE]), clientHash("packed"), {});
+    })) === "webauthn/bad-att-stmt");
+  check("compound: an element with an unknown format is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([el("not-a-format", cMap([])), NONE]), clientHash("packed"), {});
+    })) === "webauthn/unsupported-format");
+  // sec. 8.1: identifiers match case-sensitively, so "None" is not "none".
+  check("compound: a format identifier is matched case-sensitively",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([el("None", cMap([])), NONE]), clientHash("packed"), {});
+    })) === "webauthn/unsupported-format");
+  // An element whose attStmt has the wrong CBOR shape for its format never reaches the walk.
+  check("compound: an element whose attStmt is the wrong CBOR shape is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(compoundOf([el("none", cArr([])), NONE]), clientHash("packed"), {});
+    })) === "webauthn/bad-att-stmt");
+  // Not a spec rule -- a resource bound. Each element costs a verify and possibly a path validation.
+  var many = [];
+  for (var i = 0; i < 17; i++) many.push(NONE);
+  check("compound: more nested statements than the verify bound is refused",
+    (await codeOfAsync(function () { return pki.webauthn.verify(compoundOf(many), clientHash("packed"), {}); })) === "webauthn/bad-att-stmt");
+
+  // The envelope is registry-driven: an array attStmt is legal ONLY for compound, and a map
+  // attStmt is still refused for compound. Neither format's contract leaks into the other.
+  // The map-shaped `none` must still parse -- called directly, so a regression surfaces as its own
+  // throw rather than as a bare false.
+  pki.webauthn.parseAttestationObject(attObjOf("none", [], AUTH_DATA));
+  check("compound: a non-compound format still refuses an array attStmt", (function () {
+    var arrayNone = cMap([[cText("fmt"), cText("none")], [cText("attStmt"), cArr([])],
+      [cText("authData"), cBytes(AUTH_DATA)]]);
+    return codeOf(function () { return pki.webauthn.parseAttestationObject(arrayNone); }) === "webauthn/bad-attestation-object";
+  })());
+  check("compound: a compound with a map attStmt is refused",
+    codeOf(function () {
+      return pki.webauthn.parseAttestationObject(attObjOf("compound", [], packed.authData.content));
+    }) === "webauthn/bad-attestation-object");
 }
 
 // ---- android-safetynet (WebAuthn sec. 8.5) ----------------------------------
@@ -759,6 +857,14 @@ async function testAndroidSafetyNet() {
   // statement, refused before any field is trusted.
   check("safetynet: an attStmt carrying an unexpected field is refused",
     (await codeFor({ attStmtPairs: [[cText("ver"), cText("1")], [cText("response"), cBytes(Buffer.from("a.b.c", "utf8"))], [cText("extra"), cText("x")]] })) === "webauthn/bad-att-stmt");
+
+  // ---- the certificate chain is bounded by COUNT, not only by entry size ----
+  // Capping each entry's bytes does not bound how many there are, and each one costs a DER parse
+  // and, downstream, a path validation. A chain longer than any real attestation is refused.
+  var many = [];
+  for (var mc = 0; mc < 11; mc++) many.push("AA==");
+  check("safetynet: an x5c chain longer than the parse bound is refused",
+    (await codeFor({ x5cRaw: many })) === "webauthn/bad-att-stmt");
 
   // ---- a JWS segment must be a JSON OBJECT ----
   // null, a number, a string and an array are all valid JSON, so the parse succeeds and any later

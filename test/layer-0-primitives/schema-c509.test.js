@@ -1669,6 +1669,42 @@ async function run() {
   // The remaining arm of _encAlgorithm -- a bare ~oid for an algorithm with neither a registry row nor
   // parameters -- has no input that reaches it; the reason is recorded at the function itself.
 
+  // ==== reject paths reached only by hostile bytes ====
+  // Each of these is a fail-closed rule with no accept-side vector to exercise it, so without one
+  // the check could be deleted and every test would still pass.
+  function sanReject(hex) { return codeSync(function () { return pki.schema.c509.parse(V.mk({ 9: hex })); }); }
+  // A GeneralName IA5String ([1] rfc822Name / [2] dNSName / [6] URI) is non-empty and ASCII-only:
+  // an empty value would rebuild an empty IA5String, and a non-ASCII byte is not IA5.
+  check("378. an empty IA5String general name is refused",
+    sanReject(sanVal(2, CBb.textString(""))) === "c509/bad-extensions");
+  check("378a. a non-ASCII IA5String general name is refused",
+    sanReject(sanVal(2, CBb.textString("a" + String.fromCharCode(0xe9) + ".example"))) === "c509/bad-extensions");
+  // sec. 8.13: an id-on-MACAddress otherName value is a byte string of 6 or 8 octets.
+  check("379. an id-on-MACAddress general name that is not a byte string is refused",
+    sanReject(sanVal(10, CBb.textString("01-23-45-67-89-AB"))) === "c509/bad-extensions");
+  // extKeyUsage rides registry ints; one with no row cannot be rebuilt as an OID.
+  check("380. an extKeyUsage integer with no registry row is refused",
+    r3779Reject(extsHex([CBB.int(10n), CBB.array([CBB.int(9999n)])])) === "c509/bad-extensions");
+  // RFC 3779 sec. 2.2.3.8: an address is a byte string whose FIRST octet is the unused-bit count.
+  check("381. an empty IPAddress byte sequence is refused",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(),
+      CBB.array([CBB.byteString(Buffer.alloc(0))])])])) === "c509/bad-extensions");
+  check("381a. an IPAddress unused-bit count above 7 is refused",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(),
+      CBB.array([CBB.byteString(Buffer.from([8, 10]))])])])) === "c509/bad-extensions");
+  // sec. 2.2.3.9: a range is exactly [min, max].
+  check("382. an IPAddress range that is not a two-element array is refused",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(),
+      CBB.array([CBB.array([CBB.byteString(Buffer.from([0, 10]))])])])])) === "c509/bad-extensions");
+  // Which address form applies is fixed per family, so a family may not mix the two.
+  check("383. an IPAddressFamily mixing the byte and integer address forms is refused",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(),
+      CBB.array([CBB.uint(0x0a000000n), CBB.byteString(Buffer.from([0, 11]))])])])) === "c509/bad-extensions");
+  // A range whose lower bound exceeds its upper bound describes no addresses at all.
+  check("384. an IPAddress range whose bounds are inverted is refused",
+    r3779Reject(extsHex([CBB.uint(32n), CBB.array([CBB.uint(1n), CBB.nullValue(),
+      CBB.array([CBB.array([CBB.byteString(Buffer.from([0, 20])), CBB.byteString(Buffer.from([0, 10]))])])])])) === "c509/bad-extensions");
+
   // ==== one certificate, one rendered dn ====
   // The C509 and X.509 parsers render a name through different code, so they can drift apart on the
   // separator and leave one certificate with two dn strings -- which they did, C509 joining with ","
