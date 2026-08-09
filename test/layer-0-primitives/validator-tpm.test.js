@@ -169,6 +169,62 @@ function run() {
   check("pubKeyEqualsCose: unsupported pub type -> structural code", code(function () {
     tpm.pubKeyEqualsCose({ type: 0x0008 }, { kty: 2 }, E, MCODE, PCODE);
   }) === PCODE);
+
+  // ---- object-attribute policy: the arms no real attestation can reach ----------------------
+  // pubArea is hashed into certInfo.attested.name and the AIK signature covers it, so a mutated
+  // pubArea fails the Name check long before any policy code runs -- re-deriving certInfo would
+  // need the AIK private key. The only genuine TPM statement available carries a 32-octet
+  // authPolicy and no reserved bits, so the Empty-Policy and reserved-bit arms are driven here,
+  // against the validator directly, rather than left unexercised.
+  function pubWith(o) {
+    o = o || {};
+    var oa = o.objectAttributes === undefined ? 0x00060472 : o.objectAttributes;
+    return { objectAttributes: oa >>> 0, attributes: tpm.decodeObjectAttributes(oa),
+      authPolicy: o.authPolicy === undefined ? Buffer.alloc(32, 1) : o.authPolicy };
+  }
+  function policy(p) { return tpm.normalizeObjectAttributePolicy(p, E, MCODE); }
+
+  // A zero-length digest IS the Empty Policy -- the key is usable with no policy session at all.
+  check("policy: requiring a non-Empty authPolicy refuses the Empty Policy", code(function () {
+    tpm.assertObjectAttributePolicy(pubWith({ authPolicy: Buffer.alloc(0) }), policy({ authPolicy: { present: true } }), E, PCODE, MCODE);
+  }) === PCODE);
+  check("policy: requiring a non-Empty authPolicy accepts a present digest", (function () {
+    tpm.assertObjectAttributePolicy(pubWith({}), policy({ authPolicy: { present: true } }), E, PCODE, MCODE);
+    return true;
+  })());
+  // TPM 2.0 Part 2 Table 33 marks bits 0, 3, 15:12 and 31:20 "shall be zero". Bit 31 is inside
+  // that mask, so the check must survive the sign bit rather than reading a negative int32.
+  check("policy: a set reserved bit is refused when the caller asks", code(function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: 0x80060472 }), policy({ reservedBitsClear: true }), E, PCODE, MCODE);
+  }) === MCODE);
+  check("policy: the reserved-bit check passes on a clean attribute word", (function () {
+    tpm.assertObjectAttributePolicy(pubWith({}), policy({ reservedBitsClear: true }), E, PCODE, MCODE);
+    return true;
+  })());
+  // Part 2 sec. 8.3.3: a restricted key that both signs and decrypts is not a defined combination.
+  check("policy: the consistency check refuses restricted with both sign and decrypt", code(function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: 0x00070472 }), policy({ consistency: true }), E, PCODE, MCODE);
+  }) === MCODE);
+  // A TPM2B_DIGEST is at most 64 octets; a longer one is not a digest this structure can carry.
+  check("policy: the consistency check refuses an over-long authPolicy digest", code(function () {
+    tpm.assertObjectAttributePolicy(pubWith({ authPolicy: Buffer.alloc(65, 1) }), policy({ consistency: true }), E, PCODE, MCODE);
+  }) === MCODE);
+  // sec. 8.3.3.11 verbatim: encryptedDuplication "shall not be SET in any object that has fixedTPM
+  // SET" -- a key that cannot leave its TPM cannot be duplicated at all. bit 1 = fixedTPM,
+  // bit 11 = encryptedDuplication.
+  check("policy: the consistency check refuses encryptedDuplication with fixedTPM", code(function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: (1 << 1) | (1 << 11) }), policy({ consistency: true }), E, PCODE, MCODE);
+  }) === MCODE);
+  // The same bit is fine on a duplicable object, so the rule is the pairing and not the bit.
+  check("policy: encryptedDuplication alone is accepted (the rule is the pairing)", (function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: (1 << 11) }), policy({ consistency: true }), E, PCODE, MCODE);
+    return true;
+  })());
+  // An absent policy runs nothing at all -- the default-off proof at the validator boundary.
+  check("policy: a null policy applies no rule", (function () {
+    tpm.assertObjectAttributePolicy(pubWith({ objectAttributes: 0xffffffff }), null, E, PCODE, MCODE);
+    return true;
+  })());
 }
 
 module.exports = { run: run };
