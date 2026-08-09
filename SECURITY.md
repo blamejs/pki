@@ -722,7 +722,16 @@ security-only patches after the next major releases.
   authenticator cannot present an otherwise well-formed attestation and be reported as
   verified. An authenticator that declares no model identity is looked up by the key
   identifiers of its attestation certificates rather than being silently exempt from any of
-  this.
+  this. Which identifier is allowed to select the entry depends on what the attestation
+  signature actually covers: the **fido-u2f** signature is computed over named fields
+  (`0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F`) and does **not**
+  include the AAGUID, so for that format those bytes are attacker-editable and never select
+  the entry — the attestation certificate does. Without that rule, setting the AAGUID to a
+  listed model that shares the vendor's registered root would resolve to *that* model's entry
+  and skip the real one's status reports, letting a revoked authenticator present itself as
+  its healthy sibling. Note for relying parties: `res.aaguid` is reported as the authenticator
+  presented it, and for a fido-u2f attestation it is not signature-bound — use
+  `res.metadata.aaguid`, which names the entry that was actually matched.
 - **CMS SignedData preimage substitution.** `pki.cms.verify` checks a SignedData
   signature over the exact bytes RFC 5652 §5.4 defines, never a re-derived copy. When
   signed attributes are present, the message-digest attribute must equal the digest of

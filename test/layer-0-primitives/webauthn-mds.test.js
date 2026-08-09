@@ -413,11 +413,23 @@ async function run() {
   var forged = u2f.withAaguid("99999999-9999-9999-9999-999999999999");
   check("mds: the forged attestation still verifies on its own (the signature does not cover the aaguid)",
     (await pki.webauthn.verify(forged, u2f.clientDataHash, {})).verified === true);
-  check("mds: a declared aaguid the catalogue does not list is refused, not resolved by key identifier",
-    (await codeOf(function () { return pki.webauthn.verify(forged, u2f.clientDataHash, { metadata: mdU2fReal, time: T }); })) === "webauthn/metadata-not-found");
-  check("mds: and the refusal names the aaguid that was looked for",
-    await pki.webauthn.verify(forged, u2f.clientDataHash, { metadata: mdU2fReal, time: T })
-      .then(function () { return false; }, function (e) { return e.message.indexOf("99999999-9999") !== -1 && e.message.indexOf("key identifier") === -1; }));
+  // The forged field is IGNORED for this format rather than trusted, so the attestation still binds
+  // to its own entry through the certificate -- the forgery buys nothing instead of redirecting the
+  // lookup.
+  check("mds: a forged aaguid is ignored for a format that does not sign it, and the true entry still binds",
+    (await pki.webauthn.verify(forged, u2f.clientDataHash, { metadata: mdU2fReal, time: T })).metadata.anchors === 1);
+  // For fido-u2f the aaguid is not under the signature at all, so it must not select the entry even
+  // when the value IS listed: pointing it at a listed model that shares the vendor's registered root
+  // would resolve to that model's entry and skip the real U2F entry's status reports, letting a
+  // revoked authenticator present itself as its healthy sibling. The certificate decides instead --
+  // so the refusal names the key identifier, and a forged listed aaguid changes nothing.
+  // The decisive case: the forged aaguid names an entry the catalogue DOES list, whose registered
+  // root the u2f certificate also chains to. Keying on the certificate is what refuses it.
+  var siblingModel = await mint({ aaguid: "99999999-9999-9999-9999-999999999999",
+    anchors: [u2f.rootDer.toString("base64")], statusReports: [{ status: "FIDO_CERTIFIED_L2" }] });
+  var mdSibling = await pki.webauthn.verifyMetadataBlob(siblingModel.blob, { rootCertificates: [siblingModel.rootDer], time: T });
+  check("mds: a u2f attestation cannot borrow a LISTED model's entry by forging its aaguid",
+    (await codeOf(function () { return pki.webauthn.verify(forged, u2f.clientDataHash, { metadata: mdSibling, time: T }); })) === "webauthn/metadata-not-found");
 
   // ---- verify's own option boundary ----
   // Every option here gates the verdict or supplies trust material, so a typo is not a no-op: a
