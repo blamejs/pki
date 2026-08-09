@@ -556,6 +556,28 @@ async function run() {
     catch (e) { return e.code === "webauthn/bad-input"; }
   })());
   check("mds: the genuine result still works", !!pki.webauthn.metadataFor(md, base.aaguid));
+  // Provenance alone would not be enough: the verified catalogue is handed to the caller, so
+  // anything holding a reference could rewrite the very fields the gates checked and the object
+  // would still pass the identity test. It is frozen, so the catalogue that decides a later
+  // verification is the one the signature covered.
+  var frozenEntry = pki.webauthn.metadataFor(md, base.aaguid);
+  check("mds: the verified catalogue is frozen", Object.isFrozen(md));
+  check("mds: and so are its entries and their statements",
+    Object.isFrozen(frozenEntry) && Object.isFrozen(frozenEntry.metadataStatement) &&
+    Object.isFrozen(frozenEntry.statusReports));
+  check("mds: rewriting the freshness opt-out does not take", (function () {
+    try { md.allowStale = true; } catch (_e) { /* strict-mode throw is also a refusal */ }
+    return md.allowStale === false;
+  })());
+  check("mds: rewriting an entry's registered roots does not take", (function () {
+    var before = frozenEntry.metadataStatement.attestationRootCertificates.length;
+    try { frozenEntry.metadataStatement.attestationRootCertificates = []; } catch (_e) { /* ditto */ }
+    return frozenEntry.metadataStatement.attestationRootCertificates.length === before;
+  })());
+  check("mds: and a status report cannot be swapped for a clean one", (function () {
+    try { frozenEntry.statusReports[0] = { status: "FIDO_CERTIFIED_L3" }; } catch (_e) { /* ditto */ }
+    return frozenEntry.statusReports[0].status === "FIDO_CERTIFIED_L1";
+  })());
 
   // ---- a report dated in the future has not taken effect ----
   // Letting a future-dated report be "the latest" would allow a clean report filed for next month
