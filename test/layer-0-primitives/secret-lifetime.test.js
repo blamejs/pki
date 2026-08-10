@@ -623,6 +623,18 @@ async function run() {
       viewLeak.length === 0);
   } finally { t.restore(); }
 
+  // A key-transport recipient's content key arrives as the RSA decryption output. The engine clears
+  // the provider's buffer once it has copied it out, and the CMS layer clears the copy once the
+  // content is open -- so nothing along that chain is left holding the recovered key.
+  var ktRec = makeRecipient("rsa");
+  var ktEnv2 = await pki.cms.encrypt(MSG, [{ cert: ktRec.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  t = tap();
+  try {
+    var ktOut = await pki.cms.decrypt(ktEnv2, { key: ktRec.key, cert: ktRec.cert });
+    check("the key-transport content decrypts correctly", Buffer.compare(ktOut.content, MSG) === 0);
+    wipedAll(t, "decrypt.out", "pki.cms.decrypt wipes the key-transport content key it recovered");
+  } finally { t.restore(); }
+
   // Same contract for a caller-supplied password buffer: passwordBytes hands a Buffer straight
   // through, so a wipe placed on it would destroy the caller's credential.
   var callerPw = Buffer.from("hunter2-hunter2-");
