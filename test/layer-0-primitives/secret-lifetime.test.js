@@ -377,8 +377,8 @@ async function run() {
   try {
     for (var w = 0; w < 12; w++) {
       try {
-        var bad = await pki.cms.decrypt(edEnv, { password: "wrong-" + w, iterations: 1000 });
-        if (Buffer.isBuffer(bad.content) && Buffer.compare(bad.content, MSG) === 0) leaked++;
+        var wrongOut = await pki.cms.decrypt(edEnv, { password: "wrong-" + w, iterations: 1000 });
+        if (Buffer.isBuffer(wrongOut.content) && Buffer.compare(wrongOut.content, MSG) === 0) leaked++;
       } catch (e) {
         if (e.code === "cms/decrypt-failed") threwUniform++; else throw e;
       }
