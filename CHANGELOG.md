@@ -4,6 +4,25 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.13 — 2026-08-10
+
+A KEM shared secret and the key it derives are now wiped as soon as they stop being needed -- on the failing path as well as the succeeding one, which is the path an attacker chooses.
+
+### Added
+
+- A KEM shared secret and the key-encryption key derived from it are wiped as soon as they stop being needed, satisfying NIST SP 800-227 RS5 / sec. 4.2 and RFC 9629 sec. 7. The wipe runs in a finally, so a decryption that FAILS clears the same buffers a successful one does -- a wipe on the success path alone would preserve the secret in exactly the case an attacker can force. Only buffers this library allocated are cleared; a caller's key material, certificate, and the returned plaintext are never written to, and the plaintext remains usable after the wipe.
+- This is best-effort and is documented as such rather than overstated. The runtime copies a shared secret into places no code can reach -- the decapsulation result on its way out, and again when it is imported as key material -- and may relocate a buffer's backing store. Wiping the copies the library holds shortens the window in which a secret is readable; it does not mean a secret never persists in memory.
+- pki.oid.kemParams resolves an ML-KEM parameter set to its FIPS 203 Table 3 sizes, by dotted OID or by registered name.
+
+### Changed
+
+- The ML-KEM ciphertext-length check FIPS 203 sec. 7.3 requires of a decapsulating party is now performed by the crypto engine, so a caller reaching decapsulateBits directly is covered rather than only the CMS path that happens to call it today. It reports webcrypto/bad-kem-ciphertext, naming the parameter set and both lengths, where the failure was previously indistinguishable from any other decapsulation fault; a ciphertext whose length is valid for a DIFFERENT parameter set is refused as such rather than treated as merely short. The check is on length ONLY: a correct-length ciphertext that has been tampered with still resolves to a pseudo-random shared secret, because turning that into an error would give an attacker a decryption oracle. No engine detail reaches a CMS caller: a structurally valid message whose decryption fails for any secret-dependent reason still reports the single uniform cms/decrypt-failed verdict. A message whose ML-KEM ciphertext length does not match the parameter set the message itself declares is a separate case and always was -- including a length that would be valid for a different set -- because the strict parser rejects it up front and names it: the mismatch is a structural fault, decidable from the message alone, with nothing about it depending on a key.
+- The ML-KEM parameter sizes resolve from one registry instead of three separate tables in three modules. The encapsulation-key lengths were already duplicated verbatim in two of them, and each new consumer meant another copy that could drift; a parameter set is a property of the algorithm identifier, so it now lives beside the registry that resolves one. Behaviour is unchanged.
+
+### Fixed
+
+- The roadmap attributed two rules to NIST SP 800-227 that it does not state: implicit rejection and re-encapsulation are FIPS 203's, reached through SP 800-227's requirement to comply with the KEM's own standard, and SP 800-227 sec. 4.3 explicitly permits a shared secret to be used directly, truncated, or split into segments -- the unconditional key-derivation requirement comes from RFC 9629 sec. 5. The entry now states what each document requires.
+
 ## v0.4.12 — 2026-08-09
 
 A CMS message can no longer declare one content cipher and be opened with another: the declared algorithm's mode is now bound to the container that carries it, so an EnvelopedData naming an authenticated cipher is refused rather than opened, unauthenticated, under a result that reported it as authenticated.

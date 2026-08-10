@@ -128,8 +128,16 @@ async function testPqcSign() {
     (await code(function () { return subtle.encapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey); })) === "webcrypto/invalid-access");
   check("decapsulateBits rejects a public key -> invalid-access",
     (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.publicKey, e768.ciphertext); })) === "webcrypto/invalid-access");
-  check("decapsulateBits rejects a wrong-length ciphertext -> operation",
-    (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(100)); })) === "webcrypto/operation");
+  // FIPS 203 sec. 7.3: the ciphertext-length check is the one per-execution input check the
+  // decapsulating party owes, so the engine performs it and names it -- a direct caller gets the
+  // real reason rather than a generic operation failure, and a future composite-KEM or HPKE
+  // consumer inherits the check instead of having to remember it.
+  check("decapsulateBits rejects a wrong-length ciphertext, naming the reason",
+    (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(100)); })) === "webcrypto/bad-kem-ciphertext");
+  // The cross-parameter-set case: 1568 octets is a VALID ML-KEM-1024 ciphertext, and wrong here.
+  // A check written as "too short" rather than "not this parameter set's length" would miss it.
+  check("decapsulateBits rejects an ML-KEM-1024-length ciphertext under an ML-KEM-768 key",
+    (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(1568)); })) === "webcrypto/bad-kem-ciphertext");
   check("encapsulateBits/decapsulateBits reject a non-ML-KEM algorithm -> not-supported",
     (await code(function () { return subtle.encapsulateBits({ name: "AES-GCM" }, kp768.publicKey); })) === "webcrypto/not-supported");
   // FO implicit rejection: a right-length tampered ciphertext decapsulates to a DIFFERENT
