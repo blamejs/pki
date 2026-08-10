@@ -2384,6 +2384,40 @@ function testOcspResponderAuthReinlined() {
   _report("no lib function re-inlines OCSP responder authorization outside " + HOME, bad);
 }
 
+function testRawSecretExportIsWiped() {
+  // class: raw-secret-export-unwiped
+  // A no-argument `_handle.export()` returns a FRESH Buffer holding a secret key's raw
+  // material -- an AES content key, a derived KEK, a KDF's input keying material. That
+  // copy is the toolkit's own allocation, and left behind it keeps a full copy of the key
+  // readable for the process lifetime, so it must be cleared once the operation has
+  // consumed it (NIST SP 800-227 sec. 4.2, RFC 9629 sec. 7).
+  //
+  // The rule is "the function that takes the export also clears it" rather than "call a
+  // particular helper": a check anchored on a helper's NAME goes silently green the moment
+  // the helper is renamed, while this one keeps holding. It fires on a new export site in a
+  // file nobody has written yet, which is the point -- the failure mode is one arm of a
+  // dispatch clearing its export while a sibling arm on the same dispatch does not.
+  //
+  // Argument-bearing forms -- export({ format: "jwk" | "der" ... }) -- carry public or
+  // already-encoded material and are deliberately not this shape.
+  var RAW_EXPORT = /_handle\s*\.\s*export\s*\(\s*\)/;
+  var WIPES = /guard\.secret\.zeroize/;
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var src = fs.readFileSync(f, "utf8");
+    if (!RAW_EXPORT.test(_stripCommentsAndLiterals(src))) return;
+    _functionRegions(src).forEach(function (r) {
+      var body = _stripCommentsAndLiterals(r.body);
+      if (RAW_EXPORT.test(body) && !WIPES.test(body)) {
+        bad.push({ file: _relPath(f), line: r.startLine,
+          content: "function `" + r.name + "` exports raw secret key material but never clears it — wipe the export once the operation has consumed it, so a copy of the key does not outlive the operation" });
+      }
+    });
+  });
+  bad = _filterMarkers(bad, "raw-secret-export-unwiped");
+  _report("every function that exports raw secret key material also clears it (function-granular)", bad);
+}
+
 function testGuardShapeReinlined() {
   // class: guard-shape-reinlined
   // Function-granular, DERIVED guard enforcement. Each shape-enforced guard
@@ -2834,6 +2868,7 @@ function run() {
   testCborMapPairAccessOutsideCodec();
   testOcspResponderAuthReinlined();
   testGuardShapeReinlined();
+  testRawSecretExportIsWiped();
   testConstantTimeCompareShortCircuited();
   testEveryGuardEnforced();
   testGuardErrorFactoryNotClass();
