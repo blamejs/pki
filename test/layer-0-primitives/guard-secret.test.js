@@ -60,6 +60,13 @@ function run() {
       code(function () { secret.zeroize(det, E, "test/bad-secret", "detached"); }) === "test/bad-secret");
   }
 
+  // ---- zeroizeAll: absent is a no-op for the LIST too, not only for its members ----
+  // The whole point of the no-op contract is that a `finally` needs no branch around the call, and
+  // a caller that never reached the point of collecting intermediates has no list to pass.
+  check("zeroizeAll(null) does not throw", code(function () { secret.zeroizeAll(null, E, "test/bad-secret", "none"); }) === "NO-THROW");
+  check("zeroizeAll(undefined) does not throw", code(function () { secret.zeroizeAll(undefined, E, "test/bad-secret", "none"); }) === "NO-THROW");
+  check("zeroizeAll([]) does not throw", code(function () { secret.zeroizeAll([], E, "test/bad-secret", "empty"); }) === "NO-THROW");
+
   // ---- zeroizeAll tolerates holes ----
   var a = Buffer.from([7, 7]), b = Buffer.from([8, 8, 8]);
   secret.zeroizeAll([a, null, b, undefined], E, "test/bad-secret", "list");
