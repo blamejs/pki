@@ -285,12 +285,17 @@ security-only patches after the next major releases.
   explicit unauthenticated verdict alongside the content — not a bare, trustworthy-looking
   result — and can reject it. Callers that require integrity should check `authenticated`
   (or send AES-GCM AuthEnvelopedData, the encrypt default).
-- **KEM secret lifetime (CWE-226 / CWE-244).** A KEM shared secret and the key-encryption
-  key derived from it are wiped as soon as they stop being needed (NIST SP 800-227 RS5 / sec. 4.2,
-  RFC 9629 sec. 7), in a `finally` so a FAILING decryption clears the same buffers a succeeding one
-  does -- a wrong key or a tampered ciphertext is the case an attacker can force, so a success-only
-  wipe would preserve the secret exactly when it matters. Only buffers the toolkit allocated are
-  cleared; caller-owned key material and the returned plaintext are never written to. This is
+- **Key-establishment secret lifetime (CWE-226 / CWE-244).** Every secret the toolkit ALLOCATES
+  during key establishment is wiped as soon as it stops being needed (NIST SP 800-227 RS5 / sec. 4.2,
+  RFC 9629 sec. 7): a KEM shared secret and the key-encryption key derived from it, the raw
+  ECDH / X25519 / X448 agreement secret, the copy a KDF makes of its input keying material, the
+  password-derived key-encryption key, and the AES content-encryption key exported on every
+  encrypt and decrypt. The wipe runs in a `finally` so a FAILING decryption clears the same buffers
+  a succeeding one does -- a wrong key or a tampered ciphertext is the case an attacker can force,
+  so a success-only wipe would preserve the secret exactly when it matters. A message's content key
+  is shared by all its recipients, so it is cleared once the message is complete rather than per
+  recipient. Only buffers the toolkit allocated are cleared; a caller's key, password, KEK or
+  supplied content key, and the returned plaintext, are never written to. This is
   BEST EFFORT: the runtime copies a shared secret where no JS can reach it and may relocate a
   backing store, so the window in which a secret is readable is shortened, not eliminated.
   Separately, the FIPS 203 sec. 7.3 ciphertext-length check runs at the crypto engine so a direct

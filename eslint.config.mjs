@@ -134,6 +134,10 @@ export default [
       "**/.git/**",
       ".test-output/**",
       ".scratch/**",
+      // Untracked working directories. They never exist in CI, so linting them locally
+      // makes a full-tree run disagree with the gate it is meant to reproduce -- which
+      // invites scoping the local run to a subset and missing what CI will catch.
+      ".references/**",
       ".claude/**",
     ],
   },

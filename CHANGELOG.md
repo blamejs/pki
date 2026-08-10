@@ -4,7 +4,38 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.4.13 — 2026-08-10
+## v0.4.14 — 2026-08-10
+
+Every key-establishment secret this library allocates is now wiped when it stops being needed -- the classical ones too, not only the post-quantum ones.
+
+### Changed
+
+- Raw secret key material is now reached through a single path that clears the copy it hands out, so a new operation cannot obtain that material without the wipe. Behaviour of the public API is unchanged.
+
+### Fixed
+
+- The raw shared secret of an ECDH / X25519 / X448 key agreement is cleared once the derived bits have been produced, including on the exit where the caller asks for the whole secret and on the error when more bits are requested than the curve provides. It was previously left readable for the process lifetime after every key-agreement operation.
+- The AES content-encryption key is cleared after every encrypt and decrypt. The key material was exported into a fresh buffer on each call and never cleared, so an application that encrypted or decrypted repeatedly accumulated a readable copy of each content key. This covers GCM, CBC and CTR in both directions.
+- A key-derivation function now clears the copy it makes of its input keying material. This was already done for HKDF; the X9.63 and PBKDF2 derivations on the same dispatch did not, and the X9.63 one holds the ECDH shared secret of an RFC 5753 key-agreement recipient.
+- The content-encryption key of an enveloped message is cleared once the message is built, and the recovered one is cleared once the content is open. Because that key is wrapped for every recipient, it is cleared exactly once at the end rather than per recipient -- a message with several recipients still opens correctly for each of them.
+- The password-derived key-encryption key of a password recipient, and the password-derived content key of a password-protected EncryptedData, are cleared on both the producing and consuming sides -- including when the password is wrong, which is the path an attacker repeats.
+- When a PKCS#1 v1.5 key-transport unwrap hits a decode fault, the decryptor continues with a fresh random substitute content key so the failure stays indistinguishable from any other bad-key path (RFC 3218). That substitute is now cleared too -- it is allocated only on the failing path, which is the one an attacker drives repeatedly.
+- The message-authentication key of an AuthenticatedData is cleared on both sides -- generated, wrapped for every recipient and then cleared once by the producer, and cleared by the consumer after the MAC and message-digest checks, including when a tampered message fails them.
+- Password-based private-key protection clears the key it derives. pki.key.encrypt / pki.key.decrypt and the shared PBES2 encrypt / decrypt used by PKCS#12 each left the password-derived key readable after use -- the key guarding a private key, which is the most sensitive thing this library encrypts.
+- PKCS#12 integrity clears the password-derived MAC key on both sides -- when a store is built and when its MAC is recomputed to verify it -- and the legacy-PBE decryption arm clears its derived key, which its PBES2 sibling on the same dispatch already did. The PBMAC1 key, shared by both, is cleared as well.
+- HPKE clears the raw Diffie-Hellman output on every DHKEM arm -- base and authenticated, sealing and opening -- including the concatenated form the authenticated modes build from two agreements.
+- A key-derivation function returns an exact-sized buffer the caller wholly owns rather than a window onto a larger accumulator. Where the requested key size is not a multiple of the digest length -- an RC2 key from a SHA-1 block, an X9.63 or HPKE derivation of an odd length -- clearing the returned key previously left the unused tail of the final derived block readable behind it.
+- Key-derivation intermediates are cleared as they are superseded: the HPKE extract and key-schedule pseudorandom keys, and each digest round and input block of the PKCS#12 derivation, whose accumulator is now allocated once at its final size rather than regrown each round (which abandoned an unreachable password-derived copy per iteration).
+- An HPKE recipient clears the shared secret it derives once the key schedule has consumed it, and the single-shot seal / open clear the encryption context they build and discard -- its AEAD key, base nonce and exporter secret. A context obtained from setupS / setupR belongs to the caller and is untouched, so a multi-message exchange is unaffected.
+- A derivation or decryption result is cleared once it has been copied out to the caller. The PBKDF2 and X9.63 outputs, and the RSA-OAEP decryption output -- which for a key-transport recipient is the recovered content key -- were each copied into the returned buffer and then abandoned, leaving key material readable that no caller could reach to clear.
+- A password supplied as a string or Uint8Array is encoded into a buffer this library allocates, and that credential encoding is now cleared once the derivation has consumed it -- previously only a caller-supplied Buffer was handled, and it was handled by leaving it alone, so the common case left the encoded password readable. A caller-supplied Buffer is still borrowed and never written to.
+- The RFC 3211 password key-wrap clears its plaintext intermediates. Both the formatting block built around the content key when wrapping, and the recovered block when unwrapping, held a complete copy of that key and were abandoned -- on the unwrap side including the two validation rejects, which are the paths an attacker induces by tampering with the wrapped key.
+- Wrapping a key clears the plaintext serialization it makes of that key -- the very material the wrap protects -- on the delegated RSA-OAEP / AES-GCM branch as well as AES-KW. HPKE clears the labeled input copy its extract step builds around a shared secret or PSK, and clears the sender secret when setup itself rejects.
+- A password is encoded only after its options validate, so a rejected iteration count or salt cannot abandon a credential copy; the PKCS#12 derivation clears the block-repeated salt and password fills it builds; and the HPKE expand clears each round feedback input, which carries the previous output block.
+- The PKCS#12 password encoding is cleared at every site that builds one -- store integrity on both sides and legacy-PBE decryption -- but only when this library allocated it. A password supplied as a Buffer is passed through that encoder unchanged, so it stays borrowed and is never written to, exactly as on the CMS paths.
+- Deriving a key clears the transient bits it derives once they have been imported into the key object, including when the import itself rejects.
+
+## v0.4.13 — 2026-08-09
 
 A KEM shared secret and the key it derives are now wiped as soon as they stop being needed -- on the failing path as well as the succeeding one, which is the path an attacker chooses.
 
