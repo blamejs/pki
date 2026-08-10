@@ -155,6 +155,26 @@ function run() {
     b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrBadNum])])]))])));
   check("inspect: a NoticeReference with a non-INTEGER notice number hex-dumps rather than rendering part of it",
     polBadNum.indexOf("Partial CA") < 0 && /unotice: [0-9a-f]{2}:/.test(polBadNum));
+  // UserNotice ::= SEQUENCE { noticeRef NoticeReference OPTIONAL, explicitText DisplayText OPTIONAL }
+  // fixes both the ORDER and the CARDINALITY of its members. Collecting every recognized member and
+  // ignoring the rest would render a structurally invalid notice as though it were well formed --
+  // the qualifier body is opaque to the shared validator, so nothing upstream rejects these.
+  function noticeOf(members) {
+    return b.sequence([b.oid(pki.oid.byName("unotice")), b.sequence(members)]);
+  }
+  function polOf(q) {
+    return pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([q])])]))])));
+  }
+  var nrOk = b.sequence([b.utf8("Ref CA"), b.sequence([b.integer(1n)])]);
+  check("inspect: two explicitText members hex-dump (DisplayText appears at most once)",
+    /unotice: [0-9a-f]{2}:/.test(polOf(noticeOf([b.utf8("first"), b.utf8("second")]))));
+  check("inspect: an explicitText before its noticeRef hex-dumps (the order is fixed)",
+    /unotice: [0-9a-f]{2}:/.test(polOf(noticeOf([b.utf8("text"), nrOk]))));
+  check("inspect: an unexpected extra member hex-dumps rather than being ignored",
+    /unotice: [0-9a-f]{2}:/.test(polOf(noticeOf([nrOk, b.utf8("text"), b.integer(9n)]))));
+  check("inspect: the conforming noticeRef-then-explicitText layout still renders",
+    /unotice organization: Ref CA #1/.test(polOf(noticeOf([nrOk, b.utf8("text")]))));
   // A NoticeReference with no numbers must not render a dangling separator.
   var nrEmpty = b.sequence([b.oid(pki.oid.byName("unotice")),
     b.sequence([b.sequence([b.utf8("Solo CA"), b.sequence([])])])]);
