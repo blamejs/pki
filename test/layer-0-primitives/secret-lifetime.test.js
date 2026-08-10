@@ -548,6 +548,24 @@ async function run() {
     wipedAll(t, "dh.z", "pki.hpke.open wipes the raw key-agreement secret");
   } finally { t.restore(); }
 
+  // The single-shot entry points build a context, use it once and drop it, so the context's own key
+  // material is theirs to clear. The multi-message API hands the context to the caller instead, and
+  // must NOT clear it -- the caller is still using it.
+  var oneShot = pki.hpke.seal(hpkeIds, hkp.publicKey, {}, Buffer.from("aad"), MSG);
+  check("the single-shot payload round-trips after its context is cleared",
+    Buffer.compare(Buffer.from(pki.hpke.open(hpkeIds, oneShot.enc, hkp.privateKey, {}, Buffer.from("aad"), oneShot.ct)), MSG) === 0);
+
+  // A caller-held context must NOT be cleared: its lifetime belongs to the caller, and clearing it
+  // would break the second and later messages of a multi-message exchange.
+  var ctxS = pki.hpke.setupS(hpkeIds, hkp.publicKey, {});
+  var hm1 = ctxS.context.seal(Buffer.from("aad"), Buffer.from("first"));
+  var hm2 = ctxS.context.seal(Buffer.from("aad"), Buffer.from("second"));
+  var ctxR = pki.hpke.setupR(hpkeIds, ctxS.enc, hkp.privateKey, {});
+  var got1 = Buffer.from(ctxR.open(Buffer.from("aad"), hm1));
+  var got2 = Buffer.from(ctxR.open(Buffer.from("aad"), hm2));
+  check("a caller-held context still seals and opens a SECOND message (its lifetime is the caller's)",
+    got1.toString() === "first" && got2.toString() === "second");
+
   // A hostile AuthenticatedData whose recipient unwraps to a key that is merely TOO SHORT is the
   // case where a substitute must not be assigned over the recovered key: doing so drops the only
   // reference to a real recovered secret and clears the random replacement instead. The message is
