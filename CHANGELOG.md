@@ -32,6 +32,7 @@ Every key-establishment secret this library allocates is now wiped when it stops
 - The RFC 3211 password key-wrap clears its plaintext intermediates. Both the formatting block built around the content key when wrapping, and the recovered block when unwrapping, held a complete copy of that key and were abandoned -- on the unwrap side including the two validation rejects, which are the paths an attacker induces by tampering with the wrapped key.
 - Wrapping a key clears the plaintext serialization it makes of that key -- the very material the wrap protects -- on the delegated RSA-OAEP / AES-GCM branch as well as AES-KW. HPKE clears the labeled input copy its extract step builds around a shared secret or PSK, and clears the sender secret when setup itself rejects.
 - A password is encoded only after its options validate, so a rejected iteration count or salt cannot abandon a credential copy; the PKCS#12 derivation clears the block-repeated salt and password fills it builds; and the HPKE expand clears each round feedback input, which carries the previous output block.
+- The PKCS#12 password re-encoding is cleared at every site that builds one -- store integrity on both sides and legacy-PBE decryption -- since that encoding is always a copy this library allocates rather than the caller buffer.
 
 ## v0.4.13 — 2026-08-09
 
