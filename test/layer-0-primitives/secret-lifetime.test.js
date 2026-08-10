@@ -83,7 +83,7 @@ function tap() {
   nodeCrypto.createDecipheriv = function (alg, key) { grab("cipher.key", key); return real.createDecipheriv.apply(this, arguments); };
   // pbkdf2Sync returns the password-derived KEK / content key the CMS layer holds directly.
   real.pbkdf2Sync = nodeCrypto.pbkdf2Sync;
-  nodeCrypto.pbkdf2Sync = function () { return grab("pbkdf2.kek", real.pbkdf2Sync.apply(this, arguments)); };
+  nodeCrypto.pbkdf2Sync = function (pw) { grab("pbkdf2.pw", pw); return grab("pbkdf2.kek", real.pbkdf2Sync.apply(this, arguments)); };
   // randomBytes is how the CEK is born; IVs, nonces and salts come from it too, so captures are
   // labelled by length and the CEK assertions select the content-key size explicitly.
   real.randomBytes = nodeCrypto.randomBytes;
@@ -633,6 +633,36 @@ async function run() {
     var ktOut = await pki.cms.decrypt(ktEnv2, { key: ktRec.key, cert: ktRec.cert });
     check("the key-transport content decrypts correctly", Buffer.compare(ktOut.content, MSG) === 0);
     wipedAll(t, "decrypt.out", "pki.cms.decrypt wipes the key-transport content key it recovered");
+  } finally { t.restore(); }
+
+  // Ownership decides whether a password ENCODING may be cleared. A string password is encoded into
+  // a buffer this library allocated -- the common case, and a credential copy it must clear -- while
+  // a caller-supplied Buffer is borrowed and must survive. Both are checked, because getting this
+  // wrong in either direction is a defect: leaving the encoding readable, or destroying the
+  // caller's credential.
+  var strPwEnv = await pki.cms.encrypt(MSG, [{ password: "a-string-password", iterations: 1000 }],
+    { contentEncryptionAlgorithm: "aes-256-cbc" });
+  t = tap();
+  try {
+    var strPwOut = await pki.cms.decrypt(strPwEnv, { password: "a-string-password" });
+    check("a string password still round-trips after its encoding is cleared",
+      Buffer.compare(strPwOut.content, MSG) === 0);
+    wipedAll(t, "pbkdf2.pw", "a string password's encoding is cleared once the derivation consumed it");
+  } finally { t.restore(); }
+
+  var bufPw = Buffer.from("a-buffer-password");
+  var bufPwCopy = Buffer.from(bufPw);
+  var bufPwEnv = await pki.cms.encrypt(MSG, [{ password: bufPw, iterations: 1000 }],
+    { contentEncryptionAlgorithm: "aes-256-cbc" });
+  t = tap();
+  try {
+    var bufPwOut = await pki.cms.decrypt(bufPwEnv, { password: bufPw });
+    check("a caller-supplied password Buffer survives both directions intact",
+      Buffer.compare(bufPw, bufPwCopy) === 0 && Buffer.compare(bufPwOut.content, MSG) === 0);
+    // The mirror assertion: this one must NOT be cleared, because it is the caller's.
+    var pwCaps = t.of("pbkdf2.pw");
+    check("the caller's password Buffer reached the derivation and was left readable",
+      pwCaps.length > 0 && pwCaps.every(function (c) { return anyNonZero(c.buf); }));
   } finally { t.restore(); }
 
   // Same contract for a caller-supplied password buffer: passwordBytes hands a Buffer straight
