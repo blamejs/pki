@@ -30,6 +30,7 @@ Every key-establishment secret this library allocates is now wiped when it stops
 - A derivation or decryption result is cleared once it has been copied out to the caller. The PBKDF2 and X9.63 outputs, and the RSA-OAEP decryption output -- which for a key-transport recipient is the recovered content key -- were each copied into the returned buffer and then abandoned, leaving key material readable that no caller could reach to clear.
 - A password supplied as a string or Uint8Array is encoded into a buffer this library allocates, and that credential encoding is now cleared once the derivation has consumed it -- previously only a caller-supplied Buffer was handled, and it was handled by leaving it alone, so the common case left the encoded password readable. A caller-supplied Buffer is still borrowed and never written to.
 - The RFC 3211 password key-wrap clears its plaintext intermediates. Both the formatting block built around the content key when wrapping, and the recovered block when unwrapping, held a complete copy of that key and were abandoned -- on the unwrap side including the two validation rejects, which are the paths an attacker induces by tampering with the wrapped key.
+- Wrapping a key clears the plaintext serialization it makes of that key -- the very material the wrap protects -- on the delegated RSA-OAEP / AES-GCM branch as well as AES-KW. HPKE clears the labeled input copy its extract step builds around a shared secret or PSK, and clears the sender secret when setup itself rejects.
 
 ## v0.4.13 — 2026-08-09
 
