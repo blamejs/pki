@@ -665,6 +665,18 @@ async function run() {
       pwCaps.length > 0 && pwCaps.every(function (c) { return anyNonZero(c.buf); }));
   } finally { t.restore(); }
 
+  // PKCS#12 takes its password through a DIFFERENT encoder than the CMS paths (RFC 7292 App. B
+  // BMPString rather than UTF-8), and that encoder also returns a caller-supplied Buffer as-is. So
+  // the ownership rule has to hold there independently -- clearing what looks like "the encoding"
+  // would destroy the caller's credential.
+  var p12BufPw = Buffer.from("p12-buffer-password");
+  var p12BufCopy = Buffer.from(p12BufPw);
+  var p12BufStore = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: p12Rec.cert }] }] },
+    { password: p12BufPw, mac: { algorithm: "hmac", hash: "sha256", iterations: 1024 } });
+  var p12BufOpened = await pki.pkcs12.open(p12BufStore, p12BufPw);
+  check("a caller-supplied PKCS#12 password Buffer survives build and open intact",
+    Buffer.compare(p12BufPw, p12BufCopy) === 0 && p12BufOpened != null);
+
   // Same contract for a caller-supplied password buffer: passwordBytes hands a Buffer straight
   // through, so a wipe placed on it would destroy the caller's credential.
   var callerPw = Buffer.from("hunter2-hunter2-");
