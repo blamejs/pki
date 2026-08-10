@@ -32,6 +32,7 @@ var pki = helpers.pki;
 var signing = require("../helpers/signing");
 var makeRecipient = signing.makeRecipient;
 var subtle = pki.webcrypto.subtle;
+var bld = pki.asn1.build;
 
 var MSG = Buffer.from("secret-lifetime round-trip payload");
 
@@ -74,6 +75,12 @@ function tap() {
     ko.export = function () { return grab("key.export", realExport.apply(null, arguments)); };
     return ko;
   };
+  // The classic PKCS#12 KDF (RFC 7292 App. B) is a JS loop, not a node primitive, so the only view
+  // of the key it derives is the moment it is handed to a cipher or HMAC.
+  real.createHmac = nodeCrypto.createHmac;
+  nodeCrypto.createHmac = function (alg, key) { grab("hmac.key", key); return real.createHmac.apply(this, arguments); };
+  real.createDecipheriv = nodeCrypto.createDecipheriv;
+  nodeCrypto.createDecipheriv = function (alg, key) { grab("cipher.key", key); return real.createDecipheriv.apply(this, arguments); };
   // pbkdf2Sync returns the password-derived KEK / content key the CMS layer holds directly.
   real.pbkdf2Sync = nodeCrypto.pbkdf2Sync;
   nodeCrypto.pbkdf2Sync = function () { return grab("pbkdf2.kek", real.pbkdf2Sync.apply(this, arguments)); };
@@ -84,6 +91,25 @@ function tap() {
   // A KEK the CMS layer derives is Buffer.from(<the ArrayBuffer deriveBits returned>) -- a VIEW, so
   // wiping the CMS-side Buffer clears this ArrayBuffer and the capture observes it. Nothing at the
   // node:crypto layer sees these, which is why the engine tap alone cannot cover the CMS wipes.
+  // A key the CMS layer recovered is handed to the engine as RAW bytes. HMAC verify uses the key
+  // handle directly and never exports it, so an import-time capture is the only view of a recovered
+  // MAC key. Captures here include CALLER-owned material too (a caller may import its own raw key),
+  // so assertions on this label name the specific buffer they mean.
+  var realImport = subtle.importKey;
+  var hadOwnImport = Object.prototype.hasOwnProperty.call(subtle, "importKey");
+  subtle.importKey = function (format, keyData) {
+    if (format === "raw") grab("import.raw", keyData);
+    return realImport.apply(this, arguments);
+  };
+  // A key-transport unwrap yields the recovered key as the RSA decryption output. When that key is
+  // rejected as too short it is never imported, so this is the only place it can be observed.
+  var realDecrypt = subtle.decrypt;
+  var hadOwnDecrypt = Object.prototype.hasOwnProperty.call(subtle, "decrypt");
+  subtle.decrypt = async function () {
+    var out = await realDecrypt.apply(this, arguments);
+    if (out instanceof ArrayBuffer) grab("decrypt.out", new Uint8Array(out));
+    return out;
+  };
   var hadOwnDerive = Object.prototype.hasOwnProperty.call(subtle, "deriveBits");
   var realDerive = subtle.deriveBits;
   subtle.deriveBits = async function () {
@@ -93,6 +119,8 @@ function tap() {
   };
   real._restoreDerive = function () {
     if (hadOwnDerive) subtle.deriveBits = realDerive; else delete subtle.deriveBits;
+    if (hadOwnImport) subtle.importKey = realImport; else delete subtle.importKey;
+    if (hadOwnDecrypt) subtle.decrypt = realDecrypt; else delete subtle.decrypt;
   };
   return {
     caps: caps,
@@ -104,6 +132,8 @@ function tap() {
       nodeCrypto.createSecretKey = real.createSecretKey;
       nodeCrypto.pbkdf2Sync = real.pbkdf2Sync;
       nodeCrypto.randomBytes = real.randomBytes;
+      nodeCrypto.createHmac = real.createHmac;
+      nodeCrypto.createDecipheriv = real.createDecipheriv;
       real._restoreDerive();
     },
   };
@@ -119,6 +149,15 @@ function wipedAll(t, label, what) {
   check(what + ": at least one secret buffer was captured", got.length > 0);
   check(what + ": every captured buffer held real secret material", got.length > 0 && got.every(function (c) { return anyNonZero(c.snap); }));
   check(what + ": every captured buffer is zeroed", got.length > 0 && got.every(function (c) { return allZero(c.buf); }));
+}
+
+// The raw-import captures of a given length: used where the only view of a recovered key is the
+// moment it is handed to the engine.
+function wipedRaw(t, len, what) {
+  var got = t.of("import.raw").filter(function (c) { return c.buf.length === len; });
+  check(what + ": a " + len + "-octet key was imported", got.length > 0);
+  check(what + ": it held real key material", got.length > 0 && got.every(function (c) { return anyNonZero(c.snap); }));
+  check(what + ": it is zeroed afterwards", got.length > 0 && got.every(function (c) { return allZero(c.buf); }));
 }
 
 function wiped(t, label, want, what) {
@@ -390,6 +429,161 @@ async function run() {
 
   var edOut = await pki.cms.decrypt(edEnv, { password: "pw", iterations: 1000 });
   check("the password-protected EncryptedData still opens with the right password", Buffer.compare(edOut.content, MSG) === 0);
+
+  // When a key-transport unwrap fails, the decryptor substitutes a FRESH RANDOM content key and
+  // decrypts with it, so the failure emerges from the content stage like every other bad-key path
+  // (RFC 3218 implicit rejection). That substitute is allocated inside the content stage, so it is
+  // that stage's to clear -- a wipe placed only where the recovered key lives would clear the null
+  // it replaced and leave the substitute behind, on precisely the path an attacker drives.
+  // The substitution is the PKCS#1 v1.5 arm, which this library never EMITS (v1.5 is decrypt-only),
+  // so the message is built by hand -- a hostile message is exactly the case that reaches it. A
+  // wrong-length RSA ciphertext is a decode fault, which is what triggers the substitution.
+  var rsaA = makeRecipient("rsa");
+  var v15Ktri = bld.sequence([bld.integer(0n), bld.sequence([bld.sequence([]), bld.integer(1n)]),
+    bld.sequence([bld.oid(pki.oid.byName("rsaEncryption")), bld.nullValue()]), bld.octetString(Buffer.alloc(128))]);
+  var v15Eci = bld.sequence([bld.oid(pki.oid.byName("data")),
+    bld.sequence([bld.oid(pki.oid.byName("aes256-CBC")), bld.octetString(Buffer.alloc(16))]),
+    bld.contextPrimitive(0, Buffer.alloc(16))]);
+  var v15Env = bld.sequence([bld.oid(pki.oid.byName("envelopedData")),
+    bld.explicit(0, bld.sequence([bld.integer(0n), bld.setOf([v15Ktri]), v15Eci]))]);
+  t = tap();
+  try {
+    // The substitute key is random and the content is unauthenticated CBC, so this does not reliably
+    // throw -- the deterministic property is that it never yields plaintext. Either way the
+    // substitute must be cleared.
+    var leakedV15 = false;
+    try {
+      var v15Out = await pki.cms.decrypt(v15Env, { key: rsaA.key, cert: rsaA.cert }, { recipientIndex: 0 });
+      leakedV15 = Buffer.isBuffer(v15Out.content) && Buffer.compare(v15Out.content, MSG) === 0;
+    } catch (e) {
+      if (e.code !== "cms/decrypt-failed") throw e;
+    }
+    check("a v1.5 decode fault never yields plaintext (implicit rejection, no oracle)", leakedV15 === false);
+    wipedAll(t, "random.32", "pki.cms.decrypt wipes the implicit-rejection substitute content key");
+  } finally { t.restore(); }
+
+  // AuthenticatedData is the sibling of the enveloped path: its MAC key plays the CEK's role -- it is
+  // generated once, wrapped for every recipient, and recovered by one. It owes the identical duty on
+  // both sides, and on the failing path.
+  var authRec = makeRecipient("rsa");
+  t = tap();
+  try {
+    await pki.cms.authenticate(MSG, [{ cert: authRec.cert }]);
+    wiped(t, "random.32", 1, "pki.cms.authenticate wipes the message-authentication key it generated");
+  } finally { t.restore(); }
+
+  var authMsg = await pki.cms.authenticate(MSG, [{ cert: authRec.cert }]);
+  t = tap();
+  try {
+    var authOut = await pki.cms.decrypt(authMsg, { key: authRec.key, cert: authRec.cert });
+    check("the authenticated content still verifies and is returned", Buffer.compare(authOut.content, MSG) === 0 && authOut.authenticated === true);
+    wipedRaw(t, 32, "pki.cms.decrypt wipes the message-authentication key it recovered");
+  } finally { t.restore(); }
+
+  // The reachable failure here is a TAMPERED message, not a wrong key: a wrong key fails while
+  // recovering the MAC key, before one exists to clear. Flipping a byte of the content leaves the
+  // structure and the MAC over the authenticated attributes intact, so the key IS recovered and the
+  // recomputed message-digest is what rejects (RFC 5652 sec. 9.3) -- the key must be cleared there.
+  var tampered = Buffer.from(authMsg);
+  var at = tampered.indexOf(MSG);
+  check("the authenticated content was located for tampering", at > 0);
+  tampered[at] ^= 0xff;
+  t = tap();
+  try {
+    var authThrew = null;
+    try { await pki.cms.decrypt(tampered, { key: authRec.key, cert: authRec.cert }); } catch (e) { authThrew = e; }
+    check("a tampered AuthenticatedData fails closed with the uniform verdict",
+      authThrew !== null && authThrew.code === "cms/decrypt-failed");
+    wipedRaw(t, 32, "pki.cms.decrypt wipes the message-authentication key on the FAILURE path");
+  } finally { t.restore(); }
+
+  // Password-based private-key protection derives a key that guards a PRIVATE KEY -- the most
+  // sensitive thing this library encrypts. Both directions clear it.
+  var pkRec = makeRecipient("ec-p256");
+  var pkDer = pkRec.key;   // an unencrypted PKCS#8 private key, as DER
+  {
+    t = tap();
+    try {
+      var encPk = await pki.key.encrypt(pkDer, "pw-for-the-private-key", { iterations: 1000 });
+      wipedAll(t, "pbkdf2.kek", "pki.key.encrypt wipes the password-derived key protecting a private key");
+      t.restore(); t = tap();
+      var backPk = await pki.key.decrypt(encPk, "pw-for-the-private-key");
+      check("the private key still decrypts to the same DER", Buffer.compare(Buffer.from(backPk), Buffer.from(pkDer)) === 0);
+      wipedAll(t, "pbkdf2.kek", "pki.key.decrypt wipes the password-derived key protecting a private key");
+      t.restore(); t = tap();
+      var pkThrew = null;
+      try { await pki.key.decrypt(encPk, "the-wrong-password"); } catch (e) { pkThrew = e; }
+      check("a wrong private-key password fails closed", pkThrew !== null);
+      wipedAll(t, "pbkdf2.kek", "pki.key.decrypt wipes the derived key on the FAILURE path");
+    } finally { t.restore(); }
+  }
+
+  // PKCS#12 integrity: the classic MAC key comes from the RFC 7292 App. B KDF, not from PBKDF2, so
+  // it is observed where it is handed to the HMAC. Both sides -- the store's producer and the
+  // verifier -- derive it, and both must clear it.
+  var p12Rec = makeRecipient("ec-p256");
+  t = tap();
+  try {
+    var p12 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: p12Rec.cert }] }] },
+      { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 2048 } });
+    wipedAll(t, "hmac.key", "pki.pkcs12.build wipes the password-derived MAC key");
+    t.restore(); t = tap();
+    var opened = await pki.pkcs12.open(p12, "1234");
+    check("the PKCS#12 store still opens and its integrity verifies", opened != null);
+    wipedAll(t, "hmac.key", "pki.pkcs12.open wipes the password-derived MAC key it recomputed");
+  } finally { t.restore(); }
+
+  // HPKE reaches the same raw Diffie-Hellman output the WebCrypto path does, through its own code,
+  // so the KEM shared secret is cleared on every DHKEM arm rather than only where the engine sees it.
+  var S = pki.hpke.suites;
+  var hpkeIds = { kem: S.KEM.DHKEM_X25519_HKDF_SHA256, kdf: S.KDF.HKDF_SHA256, aead: S.AEAD.AES_256_GCM };
+  var hkp = nodeCrypto.generateKeyPairSync("x25519");
+  t = tap();
+  try {
+    var sealed = pki.hpke.seal(hpkeIds, hkp.publicKey, {}, Buffer.from("aad"), MSG);
+    wipedAll(t, "dh.z", "pki.hpke.seal wipes the raw key-agreement secret");
+    t.restore(); t = tap();
+    var openedHpke = pki.hpke.open(hpkeIds, sealed.enc, hkp.privateKey, {}, Buffer.from("aad"), sealed.ct);
+    check("the HPKE payload still opens after the wipe", Buffer.compare(Buffer.from(openedHpke), MSG) === 0);
+    wipedAll(t, "dh.z", "pki.hpke.open wipes the raw key-agreement secret");
+  } finally { t.restore(); }
+
+  // A hostile AuthenticatedData whose recipient unwraps to a key that is merely TOO SHORT is the
+  // case where a substitute must not be assigned over the recovered key: doing so drops the only
+  // reference to a real recovered secret and clears the random replacement instead. The message is
+  // built by hand -- this library never emits a short MAC key -- by OAEP-encrypting 8 octets under
+  // the recipient's own public key and splicing that in as the encrypted key.
+  var shortRec = makeRecipient("rsa");
+  var realAuth = await pki.cms.authenticate(MSG, [{ cert: shortRec.cert }], { authenticatedAttributes: false });
+  var adRoot = pki.asn1.decode(realAuth);
+  var adSeq = adRoot.children[1].children[0];             // [0] EXPLICIT -> AuthenticatedData
+  var ktri = adSeq.children[1].children[0];               // SET OF RecipientInfo -> ktri
+  var shortPub = await subtle.importKey("spki", pki.schema.x509.parse(shortRec.cert).subjectPublicKeyInfo.bytes,
+    { name: "RSA-OAEP", hash: "SHA-256" }, false, ["encrypt"]);
+  var shortWrapped = Buffer.from(await subtle.encrypt({ name: "RSA-OAEP" }, shortPub, Buffer.alloc(8, 0x9c)));
+  var spliced = bld.sequence([bld.oid(pki.oid.byName("authData")), bld.explicit(0, bld.sequence([
+    bld.raw(adSeq.children[0].bytes),
+    bld.setOf([bld.sequence([bld.raw(ktri.children[0].bytes), bld.raw(ktri.children[1].bytes),
+      bld.raw(ktri.children[2].bytes), bld.octetString(shortWrapped)])]),
+    bld.raw(adSeq.children[2].bytes), bld.raw(adSeq.children[3].bytes), bld.raw(adSeq.children[4].bytes),
+  ]))]);
+  t = tap();
+  try {
+    var shortThrew = null;
+    try { await pki.cms.decrypt(spliced, { key: shortRec.key, cert: shortRec.cert }); } catch (e) { shortThrew = e; }
+    check("a short recovered MAC key fails closed with the uniform verdict",
+      shortThrew !== null && shortThrew.code === "cms/decrypt-failed");
+    // BOTH must be cleared: the 8-octet key that WAS recovered, and the 16-octet substitute. The
+    // substitute's presence is itself the proof this branch ran -- nothing else allocates 16 random
+    // octets here -- and the recovered key is observed as the RSA decryption output, because the
+    // whole point of the fix is that it is no longer imported.
+    var recovered = t.of("decrypt.out").filter(function (c) { return c.buf.length === 8; });
+    check("the recovered MAC key was 8 octets, so the short-key branch ran", recovered.length === 1);
+    check("the recovered short MAC key held real material", recovered.length === 1 && anyNonZero(recovered[0].snap));
+    check("the recovered short MAC key is cleared, not just the substitute",
+      recovered.length === 1 && allZero(recovered[0].buf));
+    wipedAll(t, "random.16", "the substitute MAC key is cleared when the recovered key is too short");
+  } finally { t.restore(); }
 
   // Same contract for a caller-supplied password buffer: passwordBytes hands a Buffer straight
   // through, so a wipe placed on it would destroy the caller's credential.
