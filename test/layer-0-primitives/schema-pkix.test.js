@@ -154,6 +154,47 @@ function testPolicyDecoders() {
   check("cp PolicyQualifierInfo with a trailing extra field rejected",
     code(function () { cp(b.sequence([b.sequence([b.oid(P1), b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.nullValue(), b.integer(1n)])])])])); }) === "path/bad-policy");
 
+  // ---- DisplayText SIZE(1..200) is deliberately NOT a decode-time reject, RFC 5280 sec. 4.2.1.4 ----
+  // The bound is real and stated twice -- the ASN.1 SIZE and the prose "a string with a maximum size
+  // of 200 characters" -- but the same section closes: "some non-conforming CAs exceed this limit.
+  // Therefore, certificate users SHOULD gracefully handle explicitText with more than 200
+  // characters." A decoder IS that certificate user, so refusing one would violate a SHOULD and
+  // reject certificates that exist in the wild and are otherwise valid. These vectors pin the ACCEPT
+  // so the bound cannot later be "fixed" into the decoder; pki.lint is where it is reported.
+  var OID_UNOTICE = oid.byName("unotice");
+  function unoticeCp(displayTextDer) {
+    return b.sequence([b.sequence([b.oid(P1), b.sequence([
+      b.sequence([b.oid(OID_UNOTICE), b.sequence([displayTextDer])]),
+    ])])]);
+  }
+  var over201 = "a".repeat(201);
+  check("cp explicitText of exactly 200 characters is accepted",
+    !!cp(unoticeCp(b.utf8("a".repeat(200)))));
+  check("cp explicitText of 201 characters is accepted, not refused (sec. 4.2.1.4 graceful handling)",
+    !!cp(unoticeCp(b.utf8(over201))));
+  check("cp an over-long IA5String explicitText is likewise accepted",
+    !!cp(unoticeCp(b.ia5(over201))));
+  check("cp an over-long NoticeReference organization is accepted too",
+    !!cp(b.sequence([b.sequence([b.oid(P1), b.sequence([
+      b.sequence([b.oid(OID_UNOTICE), b.sequence([b.sequence([b.utf8(over201), b.sequence([b.integer(1n)])])])]),
+    ])])])));
+  // 200 CHARACTERS occupying 400 octets in UTF-8 -- the case that makes an octet-length test wrong
+  // wherever the bound IS measured. U+00E9 is two UTF-8 bytes; built at runtime so this source stays
+  // pure ASCII.
+  var twoByte = String.fromCharCode(0xe9);
+  check("cp a 200-character explicitText occupying 400 octets is accepted",
+    !!cp(unoticeCp(b.utf8(twoByte.repeat(200)))));
+  // A cPSuri qualifier is an IA5String with NO length bound, so the DisplayText rule must not
+  // leak onto it.
+  check("cp a long cPSuri is NOT bounded by the DisplayText rule",
+    !!cp(b.sequence([b.sequence([b.oid(P1), b.sequence([
+      b.sequence([b.oid(oid.byName("cps")), b.ia5("https://x.test/" + "p".repeat(300))]),
+    ])])])));
+  // The counter every reporting layer shares: code points, so an astral character counts once and a
+  // conforming 150-character notice is not misread as 300.
+  check("displayTextChars counts code points and the shared bound is 200",
+    pkix.displayTextChars(String.fromCodePoint(0x1f600).repeat(150)) === 150 && pkix.DISPLAY_TEXT_MAX === 200);
+
   var pm = DEC.byOid[OID_PM];
   var m = pm(b.sequence([b.sequence([b.oid(P1), b.oid(P2)])]));
   check("pm mapping decodes", m.length === 1 && m[0].issuerDomainPolicy === P1 && m[0].subjectDomainPolicy === P2);

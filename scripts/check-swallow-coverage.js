@@ -104,6 +104,21 @@ function main() {
     console.error("[check-swallow-coverage] coverage/lcov.info not found -- run `npm run coverage` first.");
     process.exit(2);
   }
+  // The report records LINE NUMBERS; the swallows are found by re-reading the source now. If a lib
+  // file changed after the report was written, the two describe different code -- and this gate
+  // fails in BOTH directions: it reports a swallow that has since moved (noise), and it can mark a
+  // genuinely unproven swallow as covered because some unrelated line now sits at that number
+  // (a gate that passes while proving nothing). Refuse to run rather than answer from stale data.
+  var lcovAt = fs.statSync(LCOV).mtimeMs;
+  var stale = fs.readdirSync(LIB_DIR).filter(function (f) {
+    return /\.js$/.test(f) && fs.statSync(path.join(LIB_DIR, f)).mtimeMs > lcovAt;
+  });
+  if (stale.length) {
+    console.error("[check-swallow-coverage] STALE: " + stale.length + " lib file(s) changed after coverage/lcov.info was written"
+      + " (" + stale.slice(0, 3).join(", ") + (stale.length > 3 ? ", ..." : "") + ").");
+    console.error("[check-swallow-coverage] Line numbers would not line up with the source. Re-run `npm run coverage` first.");
+    process.exit(2);
+  }
   var cov = parseLcov(fs.readFileSync(LCOV, "utf8"));
   var bad = [];
   var swallowCount = 0, coveredCount = 0, markedCount = 0;

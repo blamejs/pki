@@ -869,6 +869,65 @@ async function run() {
   var cpBadUtf8 = await certWithExts([cpExt([pol(O("anyPolicy"), b.sequence([b.sequence([b.oid(O("unotice")), b.sequence([b.raw(Buffer.from([0x0c, 0x01, 0x80]))])])]))])]);   // UTF8String content 0x80 (invalid UTF-8)
   var cpBadUtf8Enc = encCp(cpBadUtf8);
   check("218. a UserNotice explicitText with a non-UTF-8 UTF8String body falls back to ~oid + double-inverts", extPair(cpBadUtf8Enc, 6) == null && pki.schema.c509.parse(cpBadUtf8Enc).reconstructedDer.equals(cpBadUtf8));
+
+  // 17. graceful handling of an over-long explicitText, in the CBOR->DER direction (check 225 pins the
+  // DER->CBOR side). RFC 5280 sec. 4.2.1.4 states a 200-character maximum and then directs certificate
+  // users to gracefully handle a notice that exceeds it, so the transcoder transcodes rather than
+  // refusing -- and the boundary is measured where it is reported, in CHARACTERS: 150 astral characters
+  // are a conforming notice occupying 300 UTF-16 units, which a `.length` test would misjudge.
+  function cpNotice(text) { return mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(2n), CBb.textString(text)])]))); }
+  // ---- fail-closed decode of the compact GeneralName / subtree / EKU value forms ----
+  // Each of these expands a compact CBOR value into DER, so a value the registry cannot resolve or that
+  // violates the target type's own rule must be REFUSED rather than reconstructed into a certificate the
+  // toolkit's own DER decoder would then reject. The pairs assert the accept beside the reject, so a
+  // check that simply refused everything would not pass.
+  // extKeyUsage rides extID 8; a SINGLE KeyPurposeId omits the array (draft-20 sec. 3.3), so the value
+  // is a bare int rather than a one-element array.
+  function ekuVal(inner) { return CB.build.array([CB.build.int(8n), inner]).toString("hex"); }
+  check("218e. an extKeyUsage int with no C509 registry row -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(ekuVal(CBb.int(9999n)))); }) === "c509/bad-extensions");
+  check("218f. a registered extKeyUsage int decodes", codeSync(function () { return pki.schema.c509.parse(mkExt(ekuVal(CBb.int(1n)))); }) === "NO-THROW");
+  // An IA5String GeneralName must be non-empty and 7-bit: an empty or non-ASCII value would reconstruct
+  // an [n] IA5String the shared pkix leaf refuses, so the compact side refuses it first. Driven on
+  // rfc822Name / URI rather than dNSName -- a SAN holding exactly one dNSName has its own bare-text
+  // encoding rule, which rejects first and would make these pass without reaching the IA5 check at all.
+  check("218g. an empty rfc822Name GeneralName -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(1, CBb.textString("")))); }) === "c509/bad-extensions");
+  check("218h. a non-empty rfc822Name GeneralName decodes",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(1, CBb.textString("a@b.test")))); }) === "NO-THROW");
+  check("218h2. a URI GeneralName with a non-ASCII code point -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(6, CBb.textString("http://x" + String.fromCharCode(0xe9) + ".test")))); }) === "c509/bad-extensions");
+  check("218h3. an ASCII URI GeneralName decodes",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(6, CBb.textString("http://x.test")))); }) === "NO-THROW");
+  // id-on-hardwareModuleName (-1): a [ ~oid, bytes ] pair, both members typed.
+  var hwOid = CBb.byteString(Buffer.from("2b06010401", "hex"));
+  check("218i. a hardwareModuleName otherName that is not a 2-element array -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-1, CBb.uint(5n)))); }) === "c509/bad-extensions");
+  check("218j. a hardwareModuleName hwSerialNum that is not a byte string -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-1, CBb.array([hwOid, CBb.textString("nope")])))); }) === "c509/bad-extensions");
+  check("218k. a well-formed hardwareModuleName otherName decodes",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-1, CBb.array([hwOid, CBb.byteString(Buffer.from([1, 2, 3]))])))); }) === "NO-THROW");
+  // id-on-MACAddress (-3): a byte string of exactly 6 (EUI-48) or 8 (EUI-64) octets.
+  check("218l. an id-on-MACAddress value that is not a byte string -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-3, CBb.textString("00:11:22:33:44:55")))); }) === "c509/bad-extensions");
+  check("218m. an id-on-MACAddress of a length that is neither 6 nor 8 -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-3, CBb.byteString(Buffer.alloc(7))))); }) === "c509/bad-extensions");
+  check("218n. a 6-octet (EUI-48) id-on-MACAddress decodes",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(sanVal(-3, CBb.byteString(Buffer.alloc(6))))); }) === "NO-THROW");
+  // GeneralSubtrees is a flat (int, value) pair list, so an empty or odd-length array is malformed.
+  check("218o. an empty GeneralSubtrees array -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.array([]), CBb.nullValue()))); }) === "c509/bad-extensions");
+  check("218p. an odd-length GeneralSubtrees array (dangling base) -> c509/bad-extensions",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.array([CBb.int(2n)]), CBb.nullValue()))); }) === "c509/bad-extensions");
+  check("218q. a well-formed GeneralSubtrees pair decodes",
+    codeSync(function () { return pki.schema.c509.parse(mkExt(ncVal(CBb.array([CBb.int(2n), CBb.textString("host.example")]), CBb.nullValue()))); }) === "NO-THROW");
+
+  check("218a. an explicitText of exactly 200 characters decodes", codeSync(function () { return pki.schema.c509.parse(cpNotice("a".repeat(200))); }) === "NO-THROW");
+  check("218b. an explicitText over 200 characters decodes rather than being refused (sec. 4.2.1.4 graceful handling)", codeSync(function () { return pki.schema.c509.parse(cpNotice("a".repeat(201))); }) === "NO-THROW");
+  check("218c. a 150-character astral explicitText (300 UTF-16 units) decodes", codeSync(function () { return pki.schema.c509.parse(cpNotice(String.fromCodePoint(0x1f600).repeat(150))); }) === "NO-THROW");
+  check("218d. the shared character counter measures code points, not UTF-16 units",
+    require("../../lib/schema-pkix.js").displayTextChars(String.fromCodePoint(0x1f600).repeat(150)) === 150
+    && require("../../lib/schema-pkix.js").DISPLAY_TEXT_MAX === 200);
   // more fail-closed decode (native C509): a non-7-bit CPSuri text, a ~oid (non-int) qualifierId, a non-text qualifier value.
   check("219. a native CPSuri text with a non-ASCII code point -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.int(1n), CBb.textString(String.fromCharCode(0xe9) + ".ex")])])))); }) === "c509/bad-extensions");
   check("220. a native policyQualifierId that is a ~oid (not a sec. 8.10 int) -> c509/bad-extensions", codeSync(function () { return pki.schema.c509.parse(mkExt(cpVal(CBb.array([CBb.int(0n), CBb.array([CBb.byteString(Buffer.from("2b06010505070201", "hex")), CBb.textString("x")])])))); }) === "c509/bad-extensions");

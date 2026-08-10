@@ -538,6 +538,158 @@ async function testCoverageEdges() {
   check("subject omitted -> empty-subject rule (needs SAN)", await codeOf(pki.x509.sign({ subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, caIssuer)) === "x509/bad-input");
 }
 
+// The shared name / extension-value builder's documented rejects (lib/pki-build.js), driven through
+// pki.x509.sign. Every one is a config-time contract an operator can trip on a typo, and each is a
+// distinct failure mode the module advertises -- so each gets its own vector rather than being
+// represented by a neighbour that happens to throw the same code.
+async function testSharedBuilderRejects() {
+  var s = makeSigner("ed25519");
+  var B = pki.asn1.build;
+  function base(over) { return Object.assign({ subject: "e", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, over); }
+  function sign(over, issuer) { return pki.x509.sign(base(over), issuer || { key: s.key }); }
+
+  // ---- distinguished-name specs ----
+  check("an empty-string DN attribute value -> x509/bad-name",
+    await codeOf(sign({ subject: [{ commonName: "" }] })) === "x509/bad-name");
+  check("a null DN attribute value -> x509/bad-name",
+    await codeOf(sign({ subject: [{ commonName: null }] })) === "x509/bad-name");
+  check("an unregistered DN attribute name -> x509/bad-name",
+    await codeOf(sign({ subject: [{ notAnAttribute: "x" }] })) === "x509/bad-name");
+  check("an RDN that is not an object -> x509/bad-name",
+    await codeOf(sign({ subject: ["Common Name"] })) === "x509/bad-name");
+  check("an RDN given as a Buffer -> x509/bad-name",
+    await codeOf(sign({ subject: [Buffer.from([0x30, 0x00])] })) === "x509/bad-name");
+  check("an RDN object with no attributes -> x509/bad-name",
+    await codeOf(sign({ subject: [{}] })) === "x509/bad-name");
+  check("a name that is neither string, array nor Buffer -> x509/bad-name",
+    await codeOf(sign({ subject: 42 })) === "x509/bad-name");
+  // Raw Name DER goes through the same RDNSequence parser the decoder uses, so a well-formed TLV that
+  // is not a Name is refused rather than riding into the certificate unvalidated.
+  check("raw Name DER that is not valid DER -> x509/bad-name",
+    await codeOf(sign({ subject: Buffer.from([0x30, 0x7f, 0x01]) })) === "x509/bad-name");
+  check("raw Name DER whose RDN is not a SET -> x509/bad-rdn",
+    await codeOf(sign({ subject: B.sequence([B.integer(1n)]) })) === "x509/bad-rdn");
+  check("raw Name DER whose RDN member is not an AttributeTypeAndValue SEQUENCE -> x509/bad-atv",
+    await codeOf(sign({ subject: B.sequence([B.set([B.integer(1n)])]) })) === "x509/bad-atv");
+  check("raw Name DER that is not a SEQUENCE at all -> x509/bad-name",
+    await codeOf(sign({ subject: B.octetString(Buffer.from([1])) })) === "x509/bad-name");
+  // A leaf fault inside an otherwise well-formed Name surfaces the codec's own DER code rather than an
+  // x509/* one: pki-build re-throws an Asn1Error unchanged, so a caller filtering on the x509 domain
+  // alone would miss this. Pinned so the two-domain contract is visible rather than incidental.
+  check("a raw Name whose attribute type is not an OID surfaces the codec's DER fault",
+    await codeOf(sign({ subject: B.sequence([B.set([B.sequence([B.integer(1n), B.utf8("x")])])]) })) === "asn1/unexpected-tag");
+  check("a countryName that is not two letters -> x509/bad-name",
+    await codeOf(sign({ subject: [{ countryName: "USA" }] })) === "x509/bad-name");
+
+  // ---- GeneralName specs (subjectAltName) ----
+  check("a GeneralName that is not an object -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: ["host.example"] } })) === "x509/bad-input");
+  check("a GeneralName given as a Buffer -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: [Buffer.from([1])] } })) === "x509/bad-input");
+  check("a GeneralName with two forms at once -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: [{ dNSName: "a.example", rfc822Name: "b@example" }] } })) === "x509/bad-input");
+  check("an empty GeneralName value -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: [{ dNSName: "" }] } })) === "x509/bad-input");
+  check("a non-ASCII value in an IA5String GeneralName form -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: [{ dNSName: "h" + String.fromCharCode(0xe9) + "st.example" }] } })) === "x509/bad-input");
+  check("an empty subjectAltName list -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: [] } })) === "x509/bad-input");
+
+  // ---- keyUsage / extendedKeyUsage ----
+  check("an empty keyUsage list -> x509/bad-input",
+    await codeOf(sign({ extensions: { keyUsage: [] } })) === "x509/bad-input");
+  check("a keyUsage that is not an array -> x509/bad-input",
+    await codeOf(sign({ extensions: { keyUsage: "digitalSignature" } })) === "x509/bad-input");
+  check("an unknown keyUsage bit name -> x509/bad-input",
+    await codeOf(sign({ extensions: { keyUsage: ["digitalSignature", "notABit"] } })) === "x509/bad-input");
+  check("an empty extendedKeyUsage list -> x509/bad-input",
+    await codeOf(sign({ extensions: { extendedKeyUsage: [] } })) === "x509/bad-input");
+  check("an extendedKeyUsage that is not an array -> x509/bad-input",
+    await codeOf(sign({ extensions: { extendedKeyUsage: "serverAuth" } })) === "x509/bad-input");
+
+  // ---- basicConstraints ----
+  check("a non-boolean basicConstraints cA -> x509/bad-input",
+    await codeOf(sign({ extensions: { basicConstraints: { cA: "yes" } } })) === "x509/bad-input");
+  check("a non-boolean basicConstraints critical -> x509/bad-input",
+    await codeOf(sign({ extensions: { basicConstraints: { cA: true, critical: "yes" } } })) === "x509/bad-input");
+  check("a non-integer pathLen -> x509/bad-input",
+    await codeOf(sign({ extensions: { basicConstraints: { cA: true, pathLen: 1.5 } } })) === "x509/bad-input");
+  check("a negative pathLen -> x509/bad-input",
+    await codeOf(sign({ extensions: { basicConstraints: { cA: true, pathLen: -1 } } })) === "x509/bad-input");
+  check("a non-numeric pathLen -> x509/bad-input",
+    await codeOf(sign({ extensions: { basicConstraints: { cA: true, pathLen: "2" } } })) === "x509/bad-input");
+  check("an unknown basicConstraints field -> x509/bad-input",
+    await codeOf(sign({ extensions: { basicConstraints: { cA: true, pathLenConstraint: 2 } } })) === "x509/bad-input");
+
+  // ---- certificatePolicies ----
+  check("an empty certificatePolicies list -> x509/bad-input",
+    await codeOf(sign({ extensions: { certificatePolicies: [] } })) === "x509/bad-input");
+  check("a certificatePolicies that is not an array -> x509/bad-input",
+    await codeOf(sign({ extensions: { certificatePolicies: "anyPolicy" } })) === "x509/bad-input");
+  // The duplicate is caught on the OID, so a registered NAME and its dotted form collide -- the check
+  // an operator most needs and the one a name-only comparison would miss.
+  check("the same policy twice by name -> x509/bad-input",
+    await codeOf(sign({ extensions: { certificatePolicies: ["anyPolicy", "anyPolicy"] } })) === "x509/bad-input");
+  check("a policy repeated as a name and as its dotted OID -> x509/bad-input",
+    await codeOf(sign({ extensions: { certificatePolicies: ["anyPolicy", pki.oid.byName("anyPolicy")] } })) === "x509/bad-input");
+  check("an unknown policy token that is neither a registered name nor dotted -> x509/bad-input",
+    await codeOf(sign({ extensions: { certificatePolicies: ["not a policy"] } })) === "x509/bad-input");
+  // A dotted string passes the shape check but b.oid is the authoritative arc-bounds test: a first arc
+  // of 1 caps the second at 39, and the failure must surface as this producer's code, not a leaked oid/*.
+  check("a dotted OID violating the X.660 arc bounds -> x509/bad-input",
+    await codeOf(sign({ extensions: { certificatePolicies: ["1.40.1"] } })) === "x509/bad-input");
+  check("an out-of-range arc in an extendedKeyUsage OID -> x509/bad-input",
+    await codeOf(sign({ extensions: { extendedKeyUsage: ["1.99.1"] } })) === "x509/bad-input");
+
+  // ---- pre-encoded extension array (the escape hatch) ----
+  check("a pre-encoded extension that is not valid DER -> x509/bad-input",
+    await codeOf(sign({ extensions: [Buffer.from([0x30, 0x7f, 0x01])] })) === "x509/bad-input");
+  check("a pre-encoded extension whose extnID is not an OID -> x509/bad-input",
+    await codeOf(sign({ extensions: [B.sequence([B.integer(1n), B.octetString(B.nullValue())])] })) === "x509/bad-input");
+  check("a pre-encoded extension whose critical field is not a BOOLEAN -> x509/bad-input",
+    await codeOf(sign({ extensions: [B.sequence([B.oid(pki.oid.byName("ocspNoCheck")), B.integer(1n), B.octetString(B.nullValue())])] })) === "x509/bad-input");
+  check("a pre-encoded extension whose extnValue is not an OCTET STRING -> x509/bad-input",
+    await codeOf(sign({ extensions: [B.sequence([B.oid(pki.oid.byName("ocspNoCheck")), B.integer(1n)])] })) === "x509/bad-input");
+  check("an extensions spec that is neither an object nor an array -> x509/bad-input",
+    await codeOf(sign({ extensions: "basicConstraints" })) === "x509/bad-input");
+  // An EMPTY extensions spec is not an error at this entry: the certificate version derives from the
+  // field set, so `[]` / `{}` issue a v1 certificate with no extensions block. (The builder's
+  // "must carry at least one" rejects belong to the CSR extensionRequest path, covered in csr-sign.)
+  var v1Empty = pki.schema.x509.parse(await sign({ extensions: [] }));
+  var v1EmptyObj = pki.schema.x509.parse(await sign({ extensions: {} }));
+  check("an empty extensions array issues a v1 certificate with no extensions",
+    v1Empty.version === 1 && (v1Empty.extensions || []).length === 0);
+  check("an empty extensions object does the same",
+    v1EmptyObj.version === 1 && (v1EmptyObj.extensions || []).length === 0);
+
+  // ---- issuer signing-key SPKI ----
+  check("an issuer publicKey SPKI with no children -> x509/bad-spki",
+    await codeOf(sign({}, { name: "CA", publicKey: B.sequence([]), key: s.key })) === "x509/bad-spki");
+  check("an issuer publicKey SPKI that is not a SEQUENCE -> x509/bad-spki",
+    await codeOf(sign({}, { name: "CA", publicKey: B.integer(1n), key: s.key })) === "x509/bad-spki");
+  check("an issuer publicKey with an empty AlgorithmIdentifier -> x509/bad-algorithm-identifier",
+    await codeOf(sign({}, { name: "CA", publicKey: B.sequence([B.sequence([]), B.bitString(Buffer.from([1]), 0)]), key: s.key })) === "x509/bad-algorithm-identifier");
+  // The same two-domain split as the raw-Name case above: a STRUCTURAL fault in caller-supplied DER is
+  // an x509/* code, but a LEAF read fault surfaces the codec's own asn1/* code unchanged.
+  check("an issuer publicKey whose algorithm field is not an OID surfaces the codec's DER fault",
+    await codeOf(sign({}, { name: "CA", publicKey: B.sequence([B.sequence([B.integer(1n)]), B.bitString(Buffer.from([1]), 0)]), key: s.key })) === "asn1/unexpected-tag");
+
+  // That two-domain contract is documented on every producer that accepts raw DER, so it is asserted
+  // across all of them together: a contract stated in four @primitive blocks but pinned for only one
+  // would let the other three drift to a different code without a test noticing.
+  var ec = makeSigner("ec-p256");
+  var badName = B.sequence([B.set([B.sequence([B.integer(1n), B.utf8("x")])])]);
+  var goodName = B.sequence([B.set([B.sequence([B.oid(pki.oid.byName("commonName")), B.utf8("CA")])])]);
+  var rawIssuer = { name: badName, publicKey: ec.spki, key: ec.key };
+  var attrSpec = { holder: { entityName: [{ directoryName: goodName }] }, notBeforeTime: NB, notAfterTime: NA, attributes: [{ type: "role", value: B.sequence([]) }] };
+  check("csr.sign surfaces the codec's DER fault for a malformed raw subject Name",
+    await codeOf(pki.csr.sign({ subject: badName, subjectPublicKey: ec.spki }, { key: ec.key })) === "asn1/unexpected-tag");
+  check("crl.sign surfaces the codec's DER fault for a malformed raw issuer Name",
+    await codeOf(pki.crl.sign({ thisUpdate: NB, nextUpdate: NA, revoked: [] }, rawIssuer)) === "asn1/unexpected-tag");
+  check("attrcert.sign surfaces the codec's DER fault for a malformed raw issuer Name",
+    await codeOf(pki.attrcert.sign(attrSpec, rawIssuer)) === "asn1/unexpected-tag");
+}
+
 async function testKeyMatchAndTimeAndSan() {
   var B = pki.asn1.build, oidB = pki.oid.byName;
   // (Fix) the signing key must correspond to the issuer public key -- a mismatched but same-algorithm
@@ -626,6 +778,7 @@ async function main() {
   await testDottedOidPurposes();
   await testInputForms();
   await testCoverageEdges();
+  await testSharedBuilderRejects();
   await testKeyMatchAndTimeAndSan();
   await testFailClosed();
   await testOpensslInterop();

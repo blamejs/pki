@@ -266,7 +266,14 @@ security-only patches after the next major releases.
   the failure surfaces later, uniformly, exactly like every other bad key; v1.5 is
   never emitted. Integrity is verified before any plaintext is released, and a CBC
   EnvelopedData (unauthenticated content) surfaces `authenticated: false` in the
-  verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt default. A
+  verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt default.
+  The declared content cipher's MODE is bound to the container carrying it before any
+  key is used — an EnvelopedData must name a CBC cipher and an AuthEnvelopedData an
+  AEAD one (RFC 5083 §2.1 / RFC 5084 §3) — so a message whose algorithm identifier has
+  been switched to the same-key-length cipher of the other mode is refused rather than
+  opened in the mode it was not encrypted under and reported under the algorithm it
+  falsely declared. The mode is resolved from the identifier, not from the display name
+  that identifier resolves to, so a caller-registered name cannot widen what is admitted. A
   password recipient's PBKDF2 iteration count is capped (`cms/iteration-limit`, a
   caller-lowerable bound) so an attacker-inflated count cannot force unbounded work.
   `pki.smime.decrypt` (RFC 8551) inherits every one of these properties unchanged: it

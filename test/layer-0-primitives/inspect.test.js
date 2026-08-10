@@ -129,6 +129,115 @@ function run() {
   check("inspect: issuer/serial-only AKI renders its values, not keyid:(none)",
     /DirName:CN=aki-ca/.test(aki) && /serial:0x42/.test(aki) && aki.indexOf("keyid:(none)") < 0);
 
+  // A userNotice qualifier is a constructed SEQUENCE, so the printable-content test cannot read it and
+  // it would hex-dump -- leaving the operator unable to read the very text the qualifier exists to show.
+  // Both DisplayText positions render, through the same shared reader pki.lint measures.
+  var cpsQ = b.sequence([b.oid(pki.oid.byName("cps")), b.ia5("http://cps.example")]);
+  var unQ = b.sequence([b.oid(pki.oid.byName("unotice")), b.sequence([b.utf8("Reliance limited. See CPS.")])]);
+  var pol = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([cpsQ, unQ])])]))])));
+  check("inspect: a userNotice explicitText renders as text, not a hex dump",
+    /unotice explicitText: Reliance limited\. See CPS\./.test(pol) && /cps: http:\/\/cps\.example/.test(pol));
+  // A NoticeReference is identified by organization AND noticeNumbers -- rendering the organization
+  // text alone drops the key that says WHICH notice is meant, which the previous hex dump preserved.
+  var nrQ = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.sequence([b.utf8("Example CA"), b.sequence([b.integer(1n), b.integer(7n)])]), b.utf8("Notice one")])]);
+  var polNr = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrQ])])]))])));
+  check("inspect: a NoticeReference renders its organization AND its notice numbers",
+    /unotice organization: Example CA #1, 7/.test(polNr) && /unotice explicitText: Notice one/.test(polNr));
+  // A noticeNumbers member that is not an INTEGER makes the reference incomplete: rendering the
+  // organization with only the numbers that happened to decode would present a partial reference as a
+  // whole one, and the number is what identifies WHICH notice is meant. The qualifier hex-dumps.
+  var nrBadNum = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.sequence([b.utf8("Partial CA"), b.sequence([b.integer(1n), b.utf8("not-a-number")])])])]);
+  var polBadNum = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrBadNum])])]))])));
+  check("inspect: a NoticeReference with a non-INTEGER notice number hex-dumps rather than rendering part of it",
+    polBadNum.indexOf("Partial CA") < 0 && /unotice: [0-9a-f]{2}:/.test(polBadNum));
+  // UserNotice ::= SEQUENCE { noticeRef NoticeReference OPTIONAL, explicitText DisplayText OPTIONAL }
+  // fixes both the ORDER and the CARDINALITY of its members. Collecting every recognized member and
+  // ignoring the rest would render a structurally invalid notice as though it were well formed --
+  // the qualifier body is opaque to the shared validator, so nothing upstream rejects these.
+  function noticeOf(members) {
+    return b.sequence([b.oid(pki.oid.byName("unotice")), b.sequence(members)]);
+  }
+  function polOf(q) {
+    return pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([q])])]))])));
+  }
+  var nrOk = b.sequence([b.utf8("Ref CA"), b.sequence([b.integer(1n)])]);
+  check("inspect: two explicitText members hex-dump (DisplayText appears at most once)",
+    /unotice: [0-9a-f]{2}:/.test(polOf(noticeOf([b.utf8("first"), b.utf8("second")]))));
+  check("inspect: an explicitText before its noticeRef hex-dumps (the order is fixed)",
+    /unotice: [0-9a-f]{2}:/.test(polOf(noticeOf([b.utf8("text"), nrOk]))));
+  check("inspect: an unexpected extra member hex-dumps rather than being ignored",
+    /unotice: [0-9a-f]{2}:/.test(polOf(noticeOf([nrOk, b.utf8("text"), b.integer(9n)]))));
+  check("inspect: the conforming noticeRef-then-explicitText layout still renders",
+    /unotice organization: Ref CA #1/.test(polOf(noticeOf([nrOk, b.utf8("text")]))));
+  // A NoticeReference with no numbers must not render a dangling separator.
+  var nrEmpty = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.sequence([b.utf8("Solo CA"), b.sequence([])])])]);
+  var polNrE = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([nrEmpty])])]))])));
+  check("inspect: a NoticeReference with no numbers renders cleanly, no dangling marker",
+    /unotice organization: Solo CA\n/.test(polNrE) && polNrE.indexOf("Solo CA #") < 0);
+  // A DisplayText is decoded through the strict reader, so a value that is not valid under its own
+  // declared string type takes the hex fallback rather than rendering a repaired version of itself:
+  // showing an operator U+FFFD where the certificate holds 0x80, or a BMPString with its trailing
+  // octet quietly dropped, would misreport the bytes the certificate actually carries.
+  // The VisibleString / BMPString arms have no builder (nothing in the toolkit emits them), so their
+  // TLVs are assembled directly.
+  function rawString(tag, bytes) { return b.raw(Buffer.concat([Buffer.from([tag, bytes.length]), bytes])); }
+  var badUtf8Q = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([b.raw(Buffer.from([0x0c, 0x02, 0x80, 0x41]))])]);
+  var polBad = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([badUtf8Q])])]))])));
+  check("inspect: an explicitText that is not valid UTF-8 hex-dumps rather than rendering a repair",
+    /unotice: [0-9a-f]{2}:/.test(polBad) && polBad.indexOf("�") < 0);
+  var oddBmpQ = b.sequence([b.oid(pki.oid.byName("unotice")),
+    b.sequence([rawString(0x1e, Buffer.from([0, 0x68, 0]))])]);
+  var polOdd = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")), b.sequence([oddBmpQ])])]))])));
+  check("inspect: an odd-length BMPString explicitText hex-dumps rather than dropping the stray octet",
+    /unotice: [0-9a-f]{2}:/.test(polOdd));
+  // An unregistered qualifier keeps the raw-value path -- the userNotice arm must not swallow it.
+  var polUnk = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("certificatePolicies")),
+    b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("anyPolicy")),
+      b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.6"), b.ia5("z")])])])]))])));
+  check("inspect: an unregistered policy qualifier still renders its value",
+    /1\.3\.6\.1\.4\.1\.99999\.6: z/.test(polUnk));
+
+  // An AIA accessLocation in the directoryName form must print the DN. It previously fell to the
+  // bracketed-tag fallback and rendered a bare "[4]", hiding the responder identity -- while the same
+  // GeneralName form already printed as DirName in the AKI renderer above.
+  var aiaDn = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("OCSP Responder")])])]);
+  var aiaDir = pki.inspect.certificate(injectExt(
+    b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName("ocsp")), b.contextConstructed(4, aiaDn)])]))])));
+  check("inspect: an AIA directoryName accessLocation renders its DN, not a bare tag",
+    /OCSP - DirName:CN=OCSP Responder/.test(aiaDir) && aiaDir.indexOf("OCSP - [4]") < 0);
+
+  // Every accessLocation name form the renderer handles gets its own vector: the arms are a chain of
+  // independent branches, so the iPAddress case above exercises exactly one of them and says nothing
+  // about the rest. A form that renders its value raw would be the interesting failure, so each
+  // assertion pins the labelled shape rather than merely that the value appears somewhere.
+  function aiaWith(methodName, locDer) {
+    return pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+      b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName(methodName)), locDer])]))])));
+  }
+  check("inspect: an AIA dNSName accessLocation renders as DNS:",
+    /OCSP - DNS:ocsp\.example/.test(aiaWith("ocsp", b.contextPrimitive(2, Buffer.from("ocsp.example")))));
+  check("inspect: an AIA rfc822Name accessLocation renders as email:",
+    /CA Issuers - email:ca@example\.test/.test(aiaWith("caIssuers", b.contextPrimitive(1, Buffer.from("ca@example.test")))));
+  check("inspect: an AIA uniformResourceIdentifier accessLocation renders as URI:",
+    /CA Issuers - URI:http:\/\/ca\.example\/ca\.cer/.test(aiaWith("caIssuers", b.contextPrimitive(6, Buffer.from("http://ca.example/ca.cer")))));
+  // An accessMethod outside the two named ones keeps its dotted OID rather than being dropped.
+  var aiaUnk = pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
+    b.octetString(b.sequence([b.sequence([b.oid("1.3.6.1.4.1.99999.5"), b.contextPrimitive(6, Buffer.from("http://x.test"))])]))])));
+  check("inspect: an unregistered AIA accessMethod keeps its dotted OID",
+    /1\.3\.6\.1\.4\.1\.99999\.5 - URI:http:\/\/x\.test/.test(aiaUnk));
+
   // An RFC 4514 separator (a comma) in a DN attribute value must be escaped so it
   // cannot masquerade as an extra RDN. Mutate the issuer CN "pkijs.com" (the first
   // occurrence) so the '.' becomes a ',' in place; parse stays structural.
@@ -404,6 +513,74 @@ function run() {
   var ecNullPub = pki.inspect.certificate(mkParsed({ subjectPublicKeyInfo: { algorithm: { name: "ecPublicKey" }, publicKey: null } }));
   check("inspect: an ecPublicKey with no public key renders (0 bit), no pub block",
     /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(0 bit\)/.test(ecNullPub) && ecNullPub.indexOf("pub:") < 0);
+
+  // Every GeneralName form, each through the shipped renderer. These are what an operator reads to
+  // decide what a certificate actually authorises, so a form rendered wrongly -- or silently
+  // dropped -- misrepresents the certificate's reach. Each case is a distinct arm: the othername
+  // hex fallback, the two DirName shapes, the IP-address formatter, and the generic kind:value.
+  function sanOf(names) {
+    return mkParsed({ extensions: [{ oid: pki.oid.byName("subjectAltName"), name: "subjectAltName",
+      critical: false, value: b.sequence(names) }] });
+  }
+  function sanLine(names) {
+    var ls = pki.inspect.certificate(sanOf(names)).split("\n");
+    var i = ls.findIndex(function (l) { return /Alternative Name/.test(l); });
+    return (ls[i + 1] || "").trim();
+  }
+  var dirNameDer = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8("Dir Subject")])])]);
+  check("inspect: an otherName renders as a hex dump of its own bytes",
+    /^othername:a0:18:06:0a:2b:06:01:04:01:82:37:14:02:03/.test(
+      sanLine([b.contextConstructed(0, Buffer.concat([b.oid("1.3.6.1.4.1.311.20.2.3"), b.explicit(0, b.utf8("upn@test"))]))])));
+  check("inspect: an rfc822Name renders as email:", sanLine([b.contextPrimitive(1, Buffer.from("a@b.test", "ascii"))]) === "email:a@b.test");
+  check("inspect: a dNSName renders as DNS:", sanLine([b.contextPrimitive(2, Buffer.from("a.test", "ascii"))]) === "DNS:a.test");
+  check("inspect: a directoryName renders its distinguished name", sanLine([b.explicit(4, dirNameDer)]) === "DirName:CN=Dir Subject");
+  check("inspect: a URI renders as URI:", sanLine([b.contextPrimitive(6, Buffer.from("http://u.test", "ascii"))]) === "URI:http://u.test");
+  // The address is formatted, not hex-dumped: an operator comparing a name constraint against a
+  // network needs to read it as an address.
+  check("inspect: an IPv4 address renders in dotted-quad form",
+    sanLine([b.contextPrimitive(7, Buffer.from([10, 0, 0, 1]))]) === "IP Address:10.0.0.1");
+  check("inspect: an IPv6 address renders in colon-hex form",
+    sanLine([b.contextPrimitive(7, Buffer.alloc(16, 0x11))]) === "IP Address:1111:1111:1111:1111:1111:1111:1111:1111");
+  check("inspect: a registeredID renders its OID",
+    sanLine([b.contextPrimitive(8, pki.asn1.encodeOidContent("1.2.3.4"))]) === "Registered ID:1.2.3.4");
+  // Several names on one extension are joined, not truncated to the first.
+  check("inspect: every name in the extension is rendered, not just the first",
+    sanLine([b.contextPrimitive(2, Buffer.from("a.test", "ascii")), b.contextPrimitive(2, Buffer.from("b.test", "ascii"))])
+      === "DNS:a.test, DNS:b.test");
+
+  // Where revocation is published, and under which reasons. Each of these is a separate arm, and
+  // each carries operator meaning: a distribution point scoped to particular reasons is NOT a
+  // general revocation source, and an indirect CRL names its issuer instead of a location -- so
+  // rendering only the first shape would misreport where revocation must be checked.
+  function extBlock(name, value) {
+    var ls = pki.inspect.certificate(mkParsed({ extensions: [{ oid: pki.oid.byName(name), name: name,
+      critical: false, value: value }] })).split("\n");
+    var i = ls.findIndex(function (l) { return /Extensions:/i.test(l); });
+    var j = ls.findIndex(function (l) { return /Signature Algorithm:/.test(l) && ls.indexOf(l) > i; });
+    return ls.slice(i + 1, j > i ? j : undefined).map(function (s) { return s.trim(); }).filter(Boolean).join("\n");
+  }
+  function uriName(s) { return b.contextPrimitive(6, Buffer.from(s, "ascii")); }
+  check("inspect: a CRL distribution point renders its full name",
+    extBlock("cRLDistributionPoints", b.sequence([b.sequence([
+      b.contextConstructed(0, b.contextConstructed(0, uriName("http://c.test/a.crl"))),
+    ])])) === "X509v3 CRL Distribution Points:\nFull Name:\nURI:http://c.test/a.crl");
+  check("inspect: a distribution point scoped to reasons names them",
+    /Reasons: Key Compromise, Affiliation Changed/.test(
+      extBlock("cRLDistributionPoints", b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, uriName("http://c.test/a.crl"))),
+        b.implicit(1, b.namedBitString([1, 3])),
+      ])]))));
+  // An indirect CRL carries only a cRLIssuer -- dropping it would leave the operator with a
+  // distribution point that appears to say nothing.
+  check("inspect: a distribution point with only a cRLIssuer renders the issuer",
+    extBlock("cRLDistributionPoints", b.sequence([b.sequence([
+      b.contextConstructed(2, uriName("http://i.test")),
+    ])])) === "X509v3 CRL Distribution Points:\nCRL Issuer:\nURI:http://i.test");
+  check("inspect: authority information access renders each method with its location",
+    extBlock("authorityInfoAccess", b.sequence([
+      b.sequence([b.oid(pki.oid.byName("ocsp")), uriName("http://o.test")]),
+      b.sequence([b.oid(pki.oid.byName("caIssuers")), uriName("http://i.test")]),
+    ])) === "Authority Information Access:\nOCSP - URI:http://o.test\nCA Issuers - URI:http://i.test");
 
   // A pre-parsed extension whose OID has a decoder but whose name has no renderer
   // (only reachable via the pre-parsed fast path -- a genuine parse keeps name<->oid

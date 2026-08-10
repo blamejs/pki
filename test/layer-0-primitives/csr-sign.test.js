@@ -125,6 +125,47 @@ async function testExtensionRequest() {
   }, { cert: caCert, key: ca.key }));
   var res = await pki.path.validate([leaf], { time: new Date("2027-06-01Z"), trustAnchor: { name: caCert.subject, publicKey: caCert.subjectPublicKeyInfo.bytes, algorithm: caCert.subjectPublicKeyInfo.algorithm.oid } });
   check("a CA copies the requested SAN into a valid issued cert", res.valid === true && leaf.extensions.some(function (e) { return (e.name || e.oid) === "subjectAltName"; }));
+
+  // The extensionRequest spec's own shape contract. Unlike an issued certificate's `extensions` -- where
+  // an empty spec legitimately yields a v1 certificate -- a CSR's extensionRequest ATTRIBUTE only exists
+  // to carry extensions, so an empty one is a request that asks for nothing and is refused rather than
+  // emitting a meaningless attribute a CA would have to interpret.
+  function req(extensionRequest) {
+    return pki.csr.sign({ subject: "x", subjectPublicKey: s.spki, extensionRequest: extensionRequest }, { key: s.key });
+  }
+  check("an empty pre-encoded extensionRequest array -> csr/bad-input", await codeOf(req([])) === "csr/bad-input");
+  check("an extensionRequest object requesting nothing -> csr/bad-input", await codeOf(req({})) === "csr/bad-input");
+  check("an extensionRequest that is neither an object nor an array -> csr/bad-input", await codeOf(req("subjectAltName")) === "csr/bad-input");
+  check("an extensionRequest given as a number -> csr/bad-input", await codeOf(req(7)) === "csr/bad-input");
+  // basicConstraints in a REQUEST goes through the same spec validation as in an issued certificate, so
+  // the field-level contract cannot diverge between the requesting and the issuing side.
+  check("a non-boolean basicConstraints cA in a request -> csr/bad-input",
+    await codeOf(req({ basicConstraints: { cA: "yes" } })) === "csr/bad-input");
+  check("an unknown basicConstraints field in a request -> csr/bad-input",
+    await codeOf(req({ basicConstraints: { cA: true, pathLenConstraint: 2 } })) === "csr/bad-input");
+  var bcReq = pki.schema.csr.parse(await req({ basicConstraints: { cA: true, pathLen: 1 } }));
+  check("a valid basicConstraints request round-trips",
+    bcReq.attributes[0].extensions.some(function (e) { return (e.name || e.oid) === "basicConstraints"; }));
+  // A pre-encoded requested extension whose OID the shared decoders KNOW is decoded at build time, so a
+  // malformed value is refused here rather than riding into a signed request a CA would then reject. The
+  // decoder's OWN typed code surfaces (not a generic bad-input), which is what names the offending field
+  // to the operator -- and it is why the builder's generic-wrap fallback has no reachable input: every
+  // shared decoder types its faults, so nothing untyped reaches it.
+  function preEnc(name, valueDer) { return B.sequence([B.oid(pki.oid.byName(name)), B.octetString(valueDer)]); }
+  check("a requested keyUsage whose value is not a BIT STRING -> csr/bad-key-usage",
+    await codeOf(req([preEnc("keyUsage", B.integer(1n))])) === "csr/bad-key-usage");
+  check("a requested basicConstraints whose value is not a SEQUENCE -> csr/bad-basic-constraints",
+    await codeOf(req([preEnc("basicConstraints", B.integer(1n))])) === "csr/bad-basic-constraints");
+  check("a requested subjectAltName whose value is not GeneralNames -> csr/bad-extension-value",
+    await codeOf(req([preEnc("subjectAltName", B.integer(1n))])) === "csr/bad-extension-value");
+  check("a requested certificatePolicies with a non-OID policy identifier -> csr/bad-policy",
+    await codeOf(req([preEnc("certificatePolicies", B.sequence([B.sequence([B.integer(1n)])]))])) === "csr/bad-policy");
+  // An extension OID the decoders do NOT know is passed through opaque -- the escape hatch works.
+  var opaque = pki.schema.csr.parse(await req([B.sequence([B.oid("1.3.6.1.4.1.99999.7"), B.octetString(B.integer(1n))])]));
+  check("an unrecognized requested extension OID rides through opaque",
+    opaque.attributes[0].extensions.some(function (e) { return (e.oid || e.name) === "1.3.6.1.4.1.99999.7"; }));
+  check("the same requested extension twice -> csr/bad-input",
+    await codeOf(req([sanDer, sanDer])) === "csr/bad-input");
 }
 
 // ---- challengePassword -----------------------------------------------------

@@ -301,6 +301,27 @@ async function run() {
   check("25g3. an over-uint31 pollRep checkAfter -> cmp/bad-poll-rep", await codeOf(pki.cmp.build({ header: HDR, body: { pollRep: [{ certReqId: 0, checkAfter: 0x80000000 }] } }, SIG)) === "cmp/bad-poll-rep");
   check("25h. a certificate [0] EXPLICIT wrapper (the CHOICE tag) is 0xA0", (function () { var kp = asn1.decode(asn1.decode(mIp.bodyBytes).children[0].children[1].children[0].children[2].bytes); return kp.children[0].bytes[0] === 0xa0; })());
 
+  // ---- every body arm rejects a malformed spec with its OWN code ----
+  // These are config-time shapes, so the operator's diagnosis depends on the arm that faulted: a
+  // shared or degraded code would send them to the wrong half of a message they are assembling.
+  // Each case is asserted on the EXACT code, so a later refactor that collapses these onto one
+  // generic cmp/bad-input is caught rather than silently accepted.
+  var BAD_BODIES = [
+    ["pollReq that is not an array", { pollReq: "x" }, "cmp/bad-poll-req"],
+    ["a pollReq entry that is not an object", { pollReq: ["x"] }, "cmp/bad-poll-req"],
+    ["a RevDetails that is not an object", { rr: ["x"] }, "cmp/bad-rev-req"],
+    ["an ip arm that is not an object", { ip: "x" }, "cmp/bad-cert-rep"],
+    ["an ip.response that is not an array", { ip: { response: "x" } }, "cmp/bad-cert-rep"],
+    ["an ip.caPubs that is present but empty", { ip: { response: [], caPubs: [] } }, "cmp/bad-cert-rep"],
+    ["a CertStatus that is not an object", { certConf: ["x"] }, "cmp/bad-cert-status"],
+    ["a genm that is not an array", { genm: "x" }, "cmp/bad-info-type-and-value"],
+  ];
+  for (var bi = 0; bi < BAD_BODIES.length; bi++) {
+    var bc = BAD_BODIES[bi];
+    check("26" + String.fromCharCode(97 + bi) + ". " + bc[0] + " -> " + bc[2],
+      (await codeOf(pki.cmp.build({ header: HDR, body: bc[1] }, SIG))) === bc[2]);
+  }
+
   // ---- orchestrator dispatch ----
   check("22. pki.schema.parse detect-routes the built DER to cmp", pki.schema.parse(irDer).body.arm === "ir");
 

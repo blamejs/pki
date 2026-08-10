@@ -44,7 +44,16 @@ var GUARD = path.join(ROOT, "scripts", "check-pack-against-gitignore.js");
 // list names the paths under test, and the files themselves.
 function makePackFixture(files, gitignore) {
   var dir = fs.mkdtempSync(path.join(os.tmpdir(), "pki-pack-guard-"));
-  cp.spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  // The fixture's hermeticity DEPENDS on this repo existing: without it `git check-ignore` walks up
+  // to whatever repository encloses the temp directory, and the guard then answers about THIS repo's
+  // ignore rules instead of the fixture's. A silent failure here surfaces later as the guard's own
+  // verdict being wrong, which reads as a real gate failure -- so name the setup fault instead.
+  var init = cp.spawnSync("git", ["init", "-q"], { cwd: dir, encoding: "utf8" });
+  if (init.error || init.status !== 0) {
+    throw new Error("pack-guard fixture setup failed: `git init` in " + dir + " exited "
+      + (init.error ? String(init.error.message) : String(init.status))
+      + " -- the fixture would not be hermetic, so the guard's verdict would describe the wrong repository");
+  }
   fs.writeFileSync(path.join(dir, "package.json"), JSON.stringify({
     name: "pack-guard-fixture",
     version: "1.0.0",
@@ -57,7 +66,63 @@ function makePackFixture(files, gitignore) {
 }
 
 function runGuard(cwd) {
-  return cp.spawnSync(process.execPath, [GUARD], { cwd: cwd, encoding: "utf8" });
+  return cp.spawnSync(process.execPath, [GUARD], { cwd: cwd, encoding: "utf8", env: guardEnv() });
+}
+// The guard shells out to `npm pack --dry-run` and `git check-ignore`, so an environment without
+// those tools fails it for a reason unrelated to the rule under test. Availability is measured from
+// the ENVIRONMENT directly -- never inferred from the guard's own failure output. Reading the guard's
+// diagnostics to decide whether to skip would make the gate disable itself on precisely the
+// regressions it exists to catch: a broken npm invocation, broken JSON parsing, or a mis-issued
+// git call would all look like "the tool is missing" and silently skip every behavioral test.
+// A restricted environment often HAS npm while npm cannot write its default cache, so `npm --version`
+// succeeds and `npm pack` fails with EPERM. Point npm at a scratch cache instead, which lets the group
+// actually RUN there rather than skip -- a gate that executes is worth more than one that opts out.
+// Created only while the pack-guard group runs, and removed in a finally so a failing check does not
+// leave it behind. Allocating it at module load would strand a cache directory under the system temp
+// on every invocation of this file -- including the runs that skip the group entirely.
+var NPM_CACHE = null;
+function withScratchNpmCache(fn) {
+  NPM_CACHE = fs.mkdtempSync(path.join(os.tmpdir(), "pki-npm-cache-"));
+  try { return fn(); }
+  finally {
+    // A cleanup fault must not mask the group's verdict, and a leftover temp dir is not a test result.
+    try { fs.rmSync(NPM_CACHE, { recursive: true, force: true }); } catch (_e) { /* best-effort */ }
+    NPM_CACHE = null;
+  }
+}
+// Every CASE variant of the key is removed before the scratch one is set. Windows treats environment
+// names case-insensitively, so a parent that already exports NPM_CONFIG_CACHE (pointing at the very
+// location that cannot be written) would survive alongside a lowercase addition and keep winning --
+// leaving the group skipped in exactly the restricted environment this exists to let it run in.
+function guardEnv() {
+  var env = {};
+  Object.keys(process.env).forEach(function (k) {
+    if (k.toLowerCase() !== "npm_config_cache") env[k] = process.env[k];
+  });
+  env.npm_config_cache = NPM_CACHE;
+  return env;
+}
+function toolAvailable(cmd) {
+  var r = cp.spawnSync(cmd + " --version", [], { encoding: "utf8", shell: true });
+  return !r.error && r.status === 0;
+}
+
+// Decided ONCE for the whole pack-guard group rather than inside each test: every one of them shells
+// out to the same guard, so per-test skips would have to be repeated, and the test added next year
+// would omit its copy and fail the suite in exactly the environment the skip exists to tolerate.
+// The npm side probes the OPERATION the guard performs, not merely that a binary answers --version:
+// an environment can have npm and still be unable to pack. The probe runs `npm pack` DIRECTLY rather
+// than through the guard, so a regression inside the guard stays a test failure instead of being
+// reclassified as an unavailable environment.
+function packGuardRunnable() {
+  if (!toolAvailable("git")) return false;
+  var dir = makePackFixture(["keep.txt"], null);
+  try {
+    var r = cp.spawnSync("npm pack --dry-run --ignore-scripts --json", [], {
+      cwd: dir, encoding: "utf8", shell: true, env: guardEnv(),
+    });
+    return !r.error && r.status === 0;
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 }
 
 function testPackGuardClean() {
@@ -191,10 +256,16 @@ function testSsdfAttestationRequiresCommit() {
 }
 
 function run() {
-  testPackGuardClean();
-  testPackGuardRefusesIgnoredPath();
-  testPackGuardAllowsNegationUnignored();
-  testPackGuardExemptsGeneratedSbom();
+  withScratchNpmCache(function () {
+    if (packGuardRunnable()) {
+      testPackGuardClean();
+      testPackGuardRefusesIgnoredPath();
+      testPackGuardAllowsNegationUnignored();
+      testPackGuardExemptsGeneratedSbom();
+    } else {
+      console.log("  SKIP the pack-guard group: npm pack / git check-ignore cannot run in this environment");
+    }
+  });
   testScopedPurlKeepsNamespaceSeparator();
   testSbomHashesVerifiedAgainstDisk();
   testSbomEmptyManifestStillEmits();

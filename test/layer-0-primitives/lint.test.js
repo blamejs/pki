@@ -465,6 +465,92 @@ function run() {
   check("a non-KEM cert never carries the rfc9935 rows",
     !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-usage") && !has(pki.lint.certificate(REAL), "lint/rfc9935/kem-key-length"));
 
+  // ---- RFC 5280 4.2.1.4 userNotice DisplayText ----
+  // These four rules live here rather than in the decoder because 4.2.1.4 directs certificate users
+  // to gracefully handle an over-long explicitText: a verifier that rejected one would refuse
+  // certificates that exist in the wild. The linter is the layer that may report them, so each rule
+  // is pinned firing on its own defect AND silent on a conforming notice (no false positive).
+  function policyCert(qualifiers) {
+    var v = b.sequence([b.sequence([b.oid(oid.byName("anyPolicy")), b.sequence(qualifiers)])]);
+    return makeCert({ exts: [ext("certificatePolicies", false, v), ski()] });
+  }
+  function unoticeOf(displayTextDer) { return b.sequence([b.oid(oid.byName("unotice")), b.sequence([displayTextDer])]); }
+  var dtClean = pki.lint.certificate(policyCert([unoticeOf(b.utf8("A short conforming notice"))]));
+  check("a conforming explicitText raises none of the 4.2.1.4 findings",
+    !has(dtClean, "lint/rfc5280/explicit-text-too-long") && !has(dtClean, "lint/rfc5280/explicit-text-bad-encoding")
+    && !has(dtClean, "lint/rfc5280/explicit-text-control-chars") && !has(dtClean, "lint/rfc5280/explicit-text-not-nfc"));
+  check("an explicitText over 200 characters -> lint/rfc5280/explicit-text-too-long (warn, not a reject)",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("a".repeat(201)))])), "lint/rfc5280/explicit-text-too-long"));
+  check("an explicitText of exactly 200 characters does not fire the length rule",
+    !has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("a".repeat(200)))])), "lint/rfc5280/explicit-text-too-long"));
+  // SIZE (1..200) has TWO ends. The upper one is the one the RFC tells certificate users to handle
+  // gracefully; the lower one has no such carve-out -- an empty DisplayText is a degenerate value no
+  // conforming CA emits, and reporting only the ceiling leaves half the constraint unenforced.
+  check("an empty explicitText is reported against the SIZE lower bound",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.utf8(""))])), "lint/rfc5280/explicit-text-empty"));
+  check("an empty IA5String explicitText is reported the same way",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.ia5(""))])), "lint/rfc5280/explicit-text-empty"));
+  check("an empty NoticeReference organization is reported too",
+    has(pki.lint.certificate(policyCert([b.sequence([b.oid(pki.oid.byName("unotice")),
+      b.sequence([b.sequence([b.utf8(""), b.sequence([b.integer(1n)])])])])])), "lint/rfc5280/explicit-text-empty"));
+  check("a one-character explicitText satisfies the lower bound",
+    !has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("x"))])), "lint/rfc5280/explicit-text-empty"));
+  // The bound is on CHARACTERS: 150 astral characters are a conforming notice occupying 300 UTF-16
+  // units and 600 UTF-8 octets, so a `.length` or byte count would report a false positive here.
+  check("a 150-character astral explicitText (300 UTF-16 units) does not fire the length rule",
+    !has(pki.lint.certificate(policyCert([unoticeOf(b.utf8(String.fromCodePoint(0x1f600).repeat(150)))])), "lint/rfc5280/explicit-text-too-long"));
+  // VisibleString (tag 26) and BMPString (tag 30) are the two arms conforming CAs MUST NOT use;
+  // the TLVs are built raw so the fixture does not depend on a builder for an arm nothing emits.
+  function rawString(tag, bytes) { return b.raw(Buffer.concat([Buffer.from([tag, bytes.length]), bytes])); }
+  // The finding must NAME which of the two forbidden encodings was used -- a report that fires but
+  // misnames the encoding sends the operator to the wrong value. Asserting only the finding id would
+  // pass while the context said VisibleString for every BMPString.
+  function encodingOf(rep) {
+    var f = rep.findings.filter(function (x) { return x.id === "lint/rfc5280/explicit-text-bad-encoding"; })[0];
+    return f && f.context && f.context.encoding;
+  }
+  check("an explicitText encoded as VisibleString -> the finding, naming VisibleString",
+    encodingOf(pki.lint.certificate(policyCert([unoticeOf(rawString(0x1a, Buffer.from("hi")))]))) === "VisibleString");
+  check("an explicitText encoded as BMPString -> the finding, naming BMPString",
+    encodingOf(pki.lint.certificate(policyCert([unoticeOf(rawString(0x1e, Buffer.from([0, 0x68, 0, 0x69])))]))) === "BMPString");
+  check("an IA5String explicitText is permitted (4.2.1.4 allows it) and raises no encoding finding",
+    !has(pki.lint.certificate(policyCert([unoticeOf(b.ia5("plain"))])), "lint/rfc5280/explicit-text-bad-encoding"));
+  // The control byte is built at runtime so this source stays pure ASCII.
+  check("an explicitText carrying a control character -> lint/rfc5280/explicit-text-control-chars",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("bad" + String.fromCharCode(7) + "text"))])), "lint/rfc5280/explicit-text-control-chars"));
+  check("a decomposed UTF8String explicitText -> lint/rfc5280/explicit-text-not-nfc (notice)",
+    has(pki.lint.certificate(policyCert([unoticeOf(b.utf8("cafe" + String.fromCharCode(0x0301)))])), "lint/rfc5280/explicit-text-not-nfc"));
+  check("the composed (NFC) form of the same text raises no normalization finding",
+    !has(pki.lint.certificate(policyCert([unoticeOf(b.utf8(("cafe" + String.fromCharCode(0x0301)).normalize("NFC")))])), "lint/rfc5280/explicit-text-not-nfc"));
+  // NoticeReference.organization is a DisplayText too, so the SIZE bound must be reported there as
+  // well -- measuring explicitText alone would leave the sibling field unchecked.
+  check("a NoticeReference organization over 200 characters is measured too",
+    has(pki.lint.certificate(policyCert([b.sequence([b.oid(oid.byName("unotice")),
+      b.sequence([b.sequence([b.utf8("o".repeat(201)), b.sequence([b.integer(1n)])])])])])), "lint/rfc5280/explicit-text-too-long"));
+  // A DisplayText that does not decode under its own declared string type is not analyzable, and a
+  // lenient decode would invent one: 201 octets of 0x80 read leniently become 201 replacement
+  // characters and would fire the length rule over text that was never valid. Nothing is reported.
+  var badUtf8 = Buffer.concat([Buffer.from([0x0c, 0x81, 0xc9]), Buffer.alloc(201, 0x80)]);
+  var repBad = pki.lint.certificate(policyCert([unoticeOf(b.raw(badUtf8))]));
+  check("an explicitText that is not valid UTF-8 raises no length finding over a substituted decode",
+    !has(repBad, "lint/rfc5280/explicit-text-too-long") && !has(repBad, "lint/rfc5280/explicit-text-not-nfc"));
+  // An odd-length BMPString cannot be UCS-2 at all; a decoder that dropped the trailing octet would
+  // silently analyze a value the bytes do not contain. The rules that read the TEXT stay silent --
+  // but the encoding rule reads only the ASN.1 TAG, so it must still fire: a certificate using a
+  // prohibited encoding does not escape that finding by also being malformed inside.
+  var oddBmp = pki.lint.certificate(policyCert([unoticeOf(rawString(0x1e, Buffer.from([0, 0x68, 0])))]));
+  check("an odd-length BMPString explicitText is not analyzed as if the stray octet were absent",
+    !has(oddBmp, "lint/rfc5280/explicit-text-too-long") && !has(oddBmp, "lint/rfc5280/explicit-text-control-chars"));
+  check("an odd-length BMPString explicitText STILL reports the prohibited encoding",
+    encodingOf(oddBmp) === "BMPString");
+  // Same for a VisibleString whose contents do not decode: the tag alone establishes the violation.
+  var badVis = pki.lint.certificate(policyCert([unoticeOf(rawString(0x1a, Buffer.from([0x1b, 0x5b, 0x30, 0x6d])))]));
+  check("a VisibleString explicitText reports the prohibited encoding regardless of its contents",
+    encodingOf(badVis) === "VisibleString");
+  // A cPSuri is an IA5String with no SIZE, so the DisplayText rules must not leak onto it.
+  check("a long cPSuri raises no DisplayText finding",
+    !has(pki.lint.certificate(policyCert([b.sequence([b.oid(oid.byName("cps")), b.ia5("http://x.test/" + "p".repeat(300))])])), "lint/rfc5280/explicit-text-too-long"));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
