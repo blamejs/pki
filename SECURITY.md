@@ -285,6 +285,18 @@ security-only patches after the next major releases.
   explicit unauthenticated verdict alongside the content — not a bare, trustworthy-looking
   result — and can reject it. Callers that require integrity should check `authenticated`
   (or send AES-GCM AuthEnvelopedData, the encrypt default).
+- **KEM secret lifetime (CWE-226 / CWE-244).** A KEM shared secret and the key-encryption
+  key derived from it are wiped as soon as they stop being needed (NIST SP 800-227 RS5 / sec. 4.2,
+  RFC 9629 sec. 7), in a `finally` so a FAILING decryption clears the same buffers a succeeding one
+  does -- a wrong key or a tampered ciphertext is the case an attacker can force, so a success-only
+  wipe would preserve the secret exactly when it matters. Only buffers the toolkit allocated are
+  cleared; caller-owned key material and the returned plaintext are never written to. This is
+  BEST EFFORT: the runtime copies a shared secret where no JS can reach it and may relocate a
+  backing store, so the window in which a secret is readable is shortened, not eliminated.
+  Separately, the FIPS 203 sec. 7.3 ciphertext-length check runs at the crypto engine so a direct
+  `decapsulateBits` caller inherits it; it checks LENGTH only, because a correct-length tampered
+  ciphertext must still implicit-reject to a pseudo-random secret rather than throw -- a throw
+  there would be a decryption oracle, and the CMS uniform verdict depends on it not being one.
 - **S/MIME header protection: injection + downgrade + outer-header trust
   (CWE-93 / CWE-345).** `pki.smime` header protection (RFC 9788) inlines the
   protected headers on the Cryptographic Payload so the CMS signature/encryption

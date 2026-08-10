@@ -184,6 +184,56 @@ function testConfigTimeValidation() {
     typeof arcs[2] === "bigint" && arcs[2] === 340282366920938463463374607431768211456n);
 }
 
+// The ML-KEM parameter sets are a property OF the algorithm identifier, so they resolve from the
+// registry rather than from whichever module needed a size first. These vectors pin the FIPS 203
+// Table 3 values and -- the load-bearing part -- that the previously separate per-module tables are
+// GONE: three copies of the same constants is how one consumer silently disagrees with another, and
+// the encapsulation-key lengths were already duplicated verbatim in two modules before this landed.
+function testKemParams() {
+  var fs = require("fs"), path = require("path");
+  var LIB = path.join(__dirname, "..", "..", "lib");
+  var EXPECT = {
+    "id-ml-kem-512": { ek: 800, dk: 1632, ct: 768, ss: 32 },
+    "id-ml-kem-768": { ek: 1184, dk: 2400, ct: 1088, ss: 32 },
+    "id-ml-kem-1024": { ek: 1568, dk: 3168, ct: 1568, ss: 32 },
+  };
+  Object.keys(EXPECT).forEach(function (n) {
+    var row = pki.oid.kemParams(n);
+    var want = EXPECT[n];
+    check("kemParams(" + n + ") carries the FIPS 203 Table 3 sizes",
+      !!row && row.ek === want.ek && row.dk === want.dk && row.ct === want.ct && row.ss === want.ss);
+    check("kemParams resolves " + n + " by dotted OID to the SAME row",
+      pki.oid.kemParams(pki.oid.byName(n)) === row);
+  });
+  check("kemParams fails closed for a non-KEM identifier", pki.oid.kemParams("1.2.3.4") === undefined);
+  // The rows are PUBLIC and now govern a security check: decapsulateBits reads .ct to enforce the
+  // FIPS 203 sec. 7.3 ciphertext length. A shared mutable row would let any code in the process
+  // rewrite that bound once, for everyone -- so the row is frozen and a write to it does not take.
+  var row768 = pki.oid.kemParams("id-ml-kem-768");
+  check("a kemParams row is frozen", Object.isFrozen(row768));
+  try { row768.ct = 100; } catch (_e) { /* strict-mode callers get a TypeError; both outcomes are fine */ }
+  check("a write to a kemParams row does not take effect", pki.oid.kemParams("id-ml-kem-768").ct === 1088);
+  try { row768.newField = 1; } catch (_e2) { /* likewise */ }
+  check("a kemParams row cannot be extended", pki.oid.kemParams("id-ml-kem-768").newField === undefined);
+  check("kemParams fails closed for an unregistered name", pki.oid.kemParams("id-ml-kem-9999") === undefined);
+  // Fail-closed means fail-closed for EVERY input, including the names every object inherits.
+  // A plain-object registry answers "toString" with a function, so a caller probing an untrusted
+  // identifier would receive a truthy row for a parameter set that does not exist.
+  ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"].forEach(function (k) {
+    check("kemParams fails closed for the inherited name " + JSON.stringify(k), pki.oid.kemParams(k) === undefined);
+  });
+  // No module may reintroduce a literal size table: a re-inlined copy is exactly the drift the
+  // registry removes, and it would not show up in any behavioural test until the two disagreed.
+  var LITERALS = [/\bek:\s*800\b/, /\bdk:\s*1632\b/, /=\s*1088;/, /\[800,\s*1184,\s*1568\]/];
+  var offenders = [];
+  fs.readdirSync(LIB).filter(function (f) { return /\.js$/.test(f); }).forEach(function (f) {
+    var src = fs.readFileSync(path.join(LIB, f), "utf8");
+    if (LITERALS.some(function (re) { return re.test(src); })) offenders.push(f);
+  });
+  check("no lib module carries its own ML-KEM size table (the registry is the sole source)",
+    offenders.length === 0, offenders.join(", "));
+}
+
 function run() {
   testRegistry();
   testRegister();
@@ -191,6 +241,7 @@ function run() {
   testDer();
   testSlhDsa();
   testParamsMustBeAbsent();
+  testKemParams();
   testConfigTimeValidation();
 }
 
