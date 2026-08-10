@@ -585,6 +585,26 @@ async function run() {
     wipedAll(t, "random.16", "the substitute MAC key is cleared when the recovered key is too short");
   } finally { t.restore(); }
 
+  // A derived key handed back as a VIEW over a larger allocation is the subtle form of this bug:
+  // clearing what the caller received leaves the rest of the final digest block -- password-derived
+  // material -- readable behind it. A legacy PKCS#12 store uses key sizes that are NOT a multiple of
+  // the digest length (RC2 wants 5 octets of a 20-octet SHA-1 block), so the whole backing buffer
+  // must be observed, not just the returned window.
+  var viewLeak = [];
+  t = tap();
+  try {
+    var legacy = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: p12Rec.cert }] }] },
+      { password: "1234", mac: { algorithm: "hmac", hash: "sha1", iterations: 1024 } });
+    check("a SHA-1-MAC PKCS#12 store still builds", Buffer.isBuffer(legacy) || typeof legacy === "string");
+    t.of("hmac.key").forEach(function (c) {
+      // Look past the caller's window at the ENTIRE backing allocation.
+      var whole = Buffer.from(c.buf.buffer, 0, c.buf.buffer.byteLength);
+      if (anyNonZero(whole)) viewLeak.push(c.buf.length + "/" + whole.length);
+    });
+    check("no password-derived material survives behind the returned key window",
+      viewLeak.length === 0);
+  } finally { t.restore(); }
+
   // Same contract for a caller-supplied password buffer: passwordBytes hands a Buffer straight
   // through, so a wipe placed on it would destroy the caller's credential.
   var callerPw = Buffer.from("hunter2-hunter2-");

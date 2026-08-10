@@ -24,6 +24,8 @@ Every key-establishment secret this library allocates is now wiped when it stops
 - Password-based private-key protection clears the key it derives. pki.key.encrypt / pki.key.decrypt and the shared PBES2 encrypt / decrypt used by PKCS#12 each left the password-derived key readable after use -- the key guarding a private key, which is the most sensitive thing this library encrypts.
 - PKCS#12 integrity clears the password-derived MAC key on both sides -- when a store is built and when its MAC is recomputed to verify it -- and the legacy-PBE decryption arm clears its derived key, which its PBES2 sibling on the same dispatch already did. The PBMAC1 key, shared by both, is cleared as well.
 - HPKE clears the raw Diffie-Hellman output on every DHKEM arm -- base and authenticated, sealing and opening -- including the concatenated form the authenticated modes build from two agreements.
+- A key-derivation function returns an exact-sized buffer the caller wholly owns rather than a window onto a larger accumulator. Where the requested key size is not a multiple of the digest length -- an RC2 key from a SHA-1 block, an X9.63 or HPKE derivation of an odd length -- clearing the returned key previously left the unused tail of the final derived block readable behind it.
+- Key-derivation intermediates are cleared as they are superseded: the HPKE extract and key-schedule pseudorandom keys, and each digest round and input block of the PKCS#12 derivation, whose accumulator is now allocated once at its final size rather than regrown each round (which abandoned an unreachable password-derived copy per iteration).
 
 ## v0.4.13 — 2026-08-09
 
