@@ -33,6 +33,7 @@ Every key-establishment secret this library allocates is now wiped when it stops
 - Wrapping a key clears the plaintext serialization it makes of that key -- the very material the wrap protects -- on the delegated RSA-OAEP / AES-GCM branch as well as AES-KW. HPKE clears the labeled input copy its extract step builds around a shared secret or PSK, and clears the sender secret when setup itself rejects.
 - A password is encoded only after its options validate, so a rejected iteration count or salt cannot abandon a credential copy; the PKCS#12 derivation clears the block-repeated salt and password fills it builds; and the HPKE expand clears each round feedback input, which carries the previous output block.
 - The PKCS#12 password encoding is cleared at every site that builds one -- store integrity on both sides and legacy-PBE decryption -- but only when this library allocated it. A password supplied as a Buffer is passed through that encoder unchanged, so it stays borrowed and is never written to, exactly as on the CMS paths.
+- Deriving a key clears the transient bits it derives once they have been imported into the key object, including when the import itself rejects.
 
 ## v0.4.13 — 2026-08-09
 
