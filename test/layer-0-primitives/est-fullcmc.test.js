@@ -291,6 +291,21 @@ async function run() {
   check("G1t. and nothing was sent for it",
     noSend.calls.length === 0);
 
+  // G1u -- the CMC-fault upgrade belongs to REJECTION statuses only. A non-error
+  // response that fails its own validation (a 200 whose smime-type is missing or
+  // unrecognized) must report THAT, even when the body happens to be a readable
+  // signed CMC rejection: otherwise a malformed 200 answers as a clean refusal and
+  // the validation it failed is never reported.
+  check("G1u. a 200 with no smime-type reports the content-type fault, not a CMC verdict",
+    // The EXACT code, not merely "not cmc-failed": an assertion broader than the
+    // claim would pass on any other failure and prove nothing about this one.
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" },
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 2, null)], [])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/bad-content-type");
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });
