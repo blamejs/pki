@@ -11,11 +11,13 @@
     ],
     "Changed": [
       "Merging can only ever turn an undetermined verdict into good or revoked. A delta that combines with no complete CRL held locally is still consulted for the revocations it lists, and still withholds good, so an unmergeable delta -- including one naming a base the verifier does not have -- can never erase a revocation. Where several current deltas exist for one scope, which RFC 5280 sec. 5.2.4 permits, the one with the latest thisUpdate is selected rather than the set being treated as a fault.",
-      "The reasons field of a certificate's cRLDistributionPoints is now rejected unless minimally encoded, matching the rule already applied to keyUsage (X.690 sec. 11.2.2 named bit lists). Two encodings of one reason set previously both parsed, which would leave the reason intersection computed over an encoding the rules forbid."
+      "The reasons field of a certificate's cRLDistributionPoints is now rejected unless minimally encoded, matching the rule already applied to keyUsage (X.690 sec. 11.2.2 named bit lists). Two encodings of one reason set previously both parsed, which would leave the reason intersection computed over an encoding the rules forbid.",
+      "A delta CRL indicator that is not marked critical, which RFC 5280 sec. 5.2.4 requires it to be, does not make the CRL mergeable. Such a CRL is still treated as a delta and still consulted for the revocations it lists, as before, but it cannot release a certificate its base revoked -- releasing rests on a conforming indicator."
     ],
     "Fixed": [
       "Holding a delta CRL alongside its base is no longer worse than holding the base alone. Any authoritative delta previously forced the whole verdict to undetermined.",
-      "A CRL that covers no revocation reasons for the certificate -- a shard whose distribution point does not correspond to it -- is now checked for currency and signature before it is consulted at all. Such a CRL is still read for revocations, so without those checks an expired or forged one could have revoked a certificate it never legitimately covered, or, as a delta, released a certificate its base genuinely revoked."
+      "A CRL that covers no revocation reasons for the certificate -- a shard whose distribution point does not correspond to it -- is now checked for currency and signature before it is consulted at all. Such a CRL is still read for revocations, so without those checks an expired or forged one could have revoked a certificate it never legitimately covered, or, as a delta, released a certificate its base genuinely revoked.",
+      "A delta CRL superseded by a more recent one for the same scope no longer affects the verdict in either direction. It could previously contribute a revocation that the selected, later delta had released -- resurrecting a revocation the CA withdrew -- while its own release was correctly ignored."
     ]
   }
 }

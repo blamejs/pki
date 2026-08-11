@@ -2157,6 +2157,34 @@ async function testRfc5280ConformanceMusts() {
   check("R29 selecting the later clean delta lets the base's hold stand (revoked)",
     resR29b.valid === false && failCodes(resR29b).indexOf("path/revoked") !== -1);
 
+  // A SUPERSEDED delta does not speak for its scope in EITHER direction. The selected (later)
+  // delta decides: an older delta revoking a certificate that the newer one released must not
+  // resurrect the revocation the CA withdrew, just as an older release cannot override a newer
+  // clean delta. Ignoring only one of the two would be incoherent.
+  var supBase = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(85), freshestExt([distPoint(shardDpn)])] });
+  var supOldRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-01-01T00:00:00Z"),
+    revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }], extensions: [crlNumberExt(86), deltaExt(85)] });
+  var supNewReleasing = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
+    revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(87), deltaExt(85)] });
+  var resSuperseded = await run([leafShard], { time: T2027, trustAnchor: anchor,
+    revocationChecker: pki.path.crlChecker([supBase, supOldRevoking, supNewReleasing]) });
+  check("a superseded delta's revocation does not resurrect what the selected delta released",
+    resSuperseded.valid === true);
+
+  // sec. 5.2.4 makes deltaCRLIndicator a MUST-be-critical extension. A non-critical one is still
+  // treated as a delta and still consulted for revocation (the shipped behaviour), but it does not
+  // earn the new capability of being MERGED -- merging can release a certificate, and that must
+  // rest on a conforming indicator.
+  var ncBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [crlNumberExt(88), freshestExt([distPoint(shardDpn)])] });
+  var ncDeltaRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(89), deltaExt(88, false)] });
+  var resNonCritical = await run([leafShard], { time: T2027, trustAnchor: anchor,
+    revocationChecker: pki.path.crlChecker([ncBase, ncDeltaRelease]) });
+  check("a NON-CRITICAL delta indicator cannot merge, so it cannot release a held certificate",
+    resNonCritical.valid === false);
+
   // R24 / R25 / R26 / R27 -- each merge precondition, one at a time, on the
   // hold/release pair: a failed merge must never let the release stand.
   var mmBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
