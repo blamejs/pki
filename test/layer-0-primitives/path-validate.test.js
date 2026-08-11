@@ -1877,6 +1877,383 @@ async function testRfc5280ConformanceMusts() {
   var resPartClean = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPartClean]) });
   check("control: a clean partition-scoped CRL cannot establish good (undetermined)", resPartClean.valid === false && failCodes(resPartClean).indexOf("path/revocation-undetermined") !== -1);
 
+  // -------------------------------------------------------------------------
+  // RFC 5280 sec. 6.3.3 reason-mask accumulation + delta-CRL merge.
+  //
+  // A CA that partitions revocations by reason code publishes no single CRL
+  // covering all reasons, and a CA that publishes a delta alongside its base
+  // makes holding BOTH strictly worse than holding the base alone. Both shapes
+  // now reach a real verdict: interim_reasons_mask is accumulated across
+  // corresponding distribution points until the eight legal reasons are covered
+  // (sec. 6.3.3(d)(1)-(4),(l)), and a delta is merged onto its base under the
+  // sec. 5.2.4 / 6.3.3(c) preconditions with the (i) -> (j) -> (k) scan order.
+  //
+  // The invariant that bounds the whole feature: the merge may only turn
+  // UNDETERMINED into good/revoked. It may NEVER turn a revoked into a good.
+  // -------------------------------------------------------------------------
+
+  // ReasonFlags (sec. 4.2.1.13) as minimal-DER NamedBitList CONTENT: the leading
+  // octet is the unused-bit count and trailing zero octets are dropped (X.690
+  // 11.2.2). Built from the bit list so a vector never hand-encodes a mask.
+  function reasonBits(bits) {
+    var hi = Math.max.apply(null, bits);
+    var nBytes = Math.floor(hi / 8) + 1;
+    var out = Buffer.alloc(nBytes);
+    bits.forEach(function (bit) { out[Math.floor(bit / 8)] |= 0x80 >> (bit % 8); });
+    return Buffer.concat([Buffer.from([7 - (hi % 8)]), out]);
+  }
+  function deltaExt(baseNumber, critical) { return ext("2.5.29.27", critical !== false, b.integer(BigInt(baseNumber))); }
+
+  var SHARD_URL = "http://crl.example/shard";
+  var shardDpn = dpnFull([gnUri(SHARD_URL)]);
+  var leafShard = await mkCert({ subject: "ShardL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(shardDpn)])] });
+
+  // R14 -- THE MONOTONICITY TRAP. A delta naming a base this verifier does not
+  // hold (baseCRLNumber 30 vs the base's cRLNumber 10) merges with nothing. A
+  // literal reading of sec. 6.3.3(c) drops it entirely, leaving the clean base to
+  // report GOOD -- turning a shipped `revoked` into a `valid`. It must stay
+  // revoked: an unmerged delta is still consulted for revocation.
+  var monoBase = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(10), freshestExt([distPoint(shardDpn)])] });
+  var monoDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }],
+    extensions: [crlNumberExt(31), deltaExt(30)] });
+  var resMono = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([monoBase, monoDelta]) });
+  check("R14 an unmergeable delta still revokes -- the merge never turns revoked into good",
+    resMono.valid === false && failCodes(resMono).indexOf("path/revoked") !== -1);
+
+  // R1 (headline) -- two reason shards whose masks union to all-reasons, neither
+  // listing the serial, both corresponding to the leaf's DP -> good.
+  var shardA = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(20), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 8]) })] });
+  var shardB = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(21), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
+  var resR1 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
+  check("R1 two reason shards covering all eight reasons establish good", resR1.valid === true);
+
+  // R3 -- one shard alone is partial coverage and still fails closed.
+  var resR3 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA]) });
+  check("R3 a single reason shard cannot establish good (partial coverage)",
+    resR3.valid === false && failCodes(resR3).indexOf("path/revocation-undetermined") !== -1);
+
+  // R2 -- shards whose union falls short of all-reasons stay undetermined.
+  var shardShort = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(22), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([3, 4]) })] });
+  var resR2 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardShort]) });
+  check("R2 shards whose union is short of all-reasons stay undetermined",
+    resR2.valid === false && failCodes(resR2).indexOf("path/revocation-undetermined") !== -1);
+
+  // R4 -- OVERLAPPING shards that together cover 1..8: the accumulator is a
+  // union, not a sum, so double-counted reasons must not over- or under-count.
+  var ovlA = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(23), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5]) })] });
+  var ovlB = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(24), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([4, 5, 6, 7, 8]) })] });
+  var resR4 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([ovlA, ovlB]) });
+  check("R4 overlapping shards union to full coverage", resR4.valid === true);
+
+  // R10 -- a shard that does NOT correspond to the leaf's DP contributes nothing
+  // to coverage, but a serial it lists is still a genuine revocation.
+  var otherDpn = dpnFull([gnUri("http://crl.example/other")]);
+  var nonCorrRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
+    extensions: [crlNumberExt(25), idpExt({ distributionPoint: otherDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
+  var resR10 = await run([leafShard], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([nonCorrRev]) });
+  check("R10 a non-corresponding shard still revokes a serial it lists",
+    resR10.valid === false && failCodes(resR10).indexOf("path/revoked") !== -1);
+  var nonCorrClean = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(26), idpExt({ distributionPoint: otherDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
+  var resR10b = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([nonCorrClean]) });
+  check("R10 a non-corresponding shard contributes nothing to coverage",
+    resR10b.valid === false && failCodes(resR10b).indexOf("path/revocation-undetermined") !== -1);
+
+  // A shard that covers NO reasons for this certificate contributes nothing to coverage -- but it
+  // is still SCANNED for revocations, so it must clear every authenticity gate first. Recording
+  // "no coverage" must never short-circuit the currency and signature checks: an unsigned or
+  // expired shard that lists the serial would otherwise falsely revoke a certificate, which is a
+  // denial of service any attacker who can hand over a CRL bundle could mount.
+  var forgedNonCorr = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
+    extensions: [crlNumberExt(31), idpExt({ distributionPoint: otherDpn })],
+    mutateSig: function (sig) { var c = Buffer.from(sig); c[c.length - 1] ^= 0xff; return c; } });
+  var resForged = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([forgedNonCorr]) });
+  check("a non-corresponding shard with a BAD SIGNATURE cannot revoke",
+    resForged.valid === false && failCodes(resForged).indexOf("path/revoked") === -1);
+  var staleNonCorr = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
+    nextUpdate: new Date("2026-06-01T00:00:00Z"),
+    extensions: [crlNumberExt(32), idpExt({ distributionPoint: otherDpn })] });
+  var resStale = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([staleNonCorr]) });
+  check("a non-corresponding shard that is STALE cannot revoke",
+    resStale.valid === false && failCodes(resStale).indexOf("path/revoked") === -1);
+  // ... while a properly signed, current one still does (the gates reject the bad, not the shape).
+  var goodNonCorr = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
+    extensions: [crlNumberExt(33), idpExt({ distributionPoint: otherDpn })] });
+  var resGoodNC = await run([leafShard], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([goodNonCorr]) });
+  check("control: a signed, current non-corresponding shard still revokes what it lists",
+    resGoodNC.valid === false && failCodes(resGoodNC).indexOf("path/revoked") !== -1);
+
+  // The severe form of the same class: a FORGED delta must not be able to SUPPRESS a real
+  // revocation. Because the merged pair searches the delta first and a removeFromCRL there releases
+  // the certificate without the base ever being searched, an unsigned delta that slipped past the
+  // gates would erase the base's genuine revocation and -- with any clean full-scope CRL supplying
+  // coverage -- produce `good`. That is the exact inversion of the monotonicity rule, so it gets its
+  // own vector rather than relying on the false-revocation one above.
+  var legitRevokingBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }],
+    extensions: [crlNumberExt(50), freshestExt([distPoint(shardDpn)]), idpExt({ distributionPoint: otherDpn })] });
+  var forgedReleasingDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(51), deltaExt(50), idpExt({ distributionPoint: otherDpn })],
+    mutateSig: function (sig) { var c = Buffer.from(sig); c[c.length - 1] ^= 0xff; return c; } });
+  var cleanCoverage = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(52)] });
+  var resSuppress = await run([leafShard], { time: T2027, trustAnchor: anchor,
+    revocationChecker: pki.path.crlChecker([legitRevokingBase, forgedReleasingDelta, cleanCoverage]) });
+  check("a forged delta cannot suppress a genuine revocation on its base",
+    resSuppress.valid === false && failCodes(resSuppress).indexOf("path/revoked") !== -1);
+
+  // R12 -- an UNDEFINED ReasonFlags bit (9) is ignored: it can neither complete
+  // coverage on its own nor break the union that the defined bits achieve.
+  var oddBitShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(27), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 8, 9]) })] });
+  var restShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(28), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
+  var resR12 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([oddBitShard, restShard]) });
+  check("R12 an undefined ReasonFlags bit neither completes nor breaks coverage", resR12.valid === true);
+
+  // R13 -- ReasonFlags bit 0 is `unused`, not a reason: sec. 6.3.2(a)'s legal set is the eight
+  // NAMED reasons. A shard asserting only bit 0 covers nothing, so it must read as no coverage at
+  // all rather than as partial coverage; and bit 0 alongside the eight must not disturb them.
+  var bitZeroOnly = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(34), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([0]) })] });
+  var resBit0 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bitZeroOnly]) });
+  check("R13 a shard asserting only ReasonFlags bit 0 establishes no coverage",
+    resBit0.valid === false && failCodes(resBit0).indexOf("path/revocation-undetermined") !== -1);
+  var bitZeroPlusAll = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(35), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([0, 1, 2, 3, 4, 5, 6, 7, 8]) })] });
+  var resBit0All = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bitZeroPlusAll]) });
+  check("R13 bit 0 alongside all eight named reasons still establishes good", resBit0All.valid === true);
+
+  // R11 -- the criticality decision governs the WHOLE IDP scope. A NON-CRITICAL IDP is one a
+  // relying party may ignore entirely (sec. 5.2.5 @3601), so its onlySomeReasons cannot establish
+  // coverage either -- two non-critical shards whose masks would union to all-reasons must still
+  // fail closed. This preserves the shipped property that an onlySomeReasons shard could only ever
+  // withhold good, never grant it.
+  function ncIdpExt(o) { return ext("2.5.29.28", false, idpVal(o)); }
+  // NO distributionPoint on these: with one, the correspondence gate already refuses a
+  // non-critical IDP, so the shards would fall to interim 0 for that reason and prove nothing
+  // about the reason mask itself.
+  var ncShardA = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(36), ncIdpExt({ onlySomeReasons: reasonBits([1, 2, 8]) })] });
+  var ncShardB = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(37), ncIdpExt({ onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
+  var resNcShards = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([ncShardA, ncShardB]) });
+  check("R11 two NON-CRITICAL reason shards cannot establish good even when their masks union",
+    resNcShards.valid === false && failCodes(resNcShards).indexOf("path/revocation-undetermined") !== -1);
+  // ... and the same shards marked CRITICAL do, so the gate is criticality and nothing else.
+  var resCritShards = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
+  check("control: the same reason coverage marked critical does establish good", resCritShards.valid === true);
+
+  // R8 / R9 regressions -- the shipped shapes must survive the rewrite.
+  var fullScopeForShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(29), idpExt({ distributionPoint: shardDpn })] });
+  var resR8 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([fullScopeForShard]) });
+  check("R8 a DP-matched CRL with no onlySomeReasons still establishes good", resR8.valid === true);
+  var noIdpCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(30)] });
+  var resR9 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([noIdpCrl]) });
+  check("R9 a full-scope CRL with no IDP still covers a CDP-bearing certificate", resR9.valid === true);
+
+  // R15 -- clean base + clean delta -> good. Holding both must not be worse than
+  // holding the base alone (which is what the shipped `sawDelta` block did).
+  var mergeBase = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(40), freshestExt([distPoint(shardDpn)])] });
+  var mergeDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(41), deltaExt(40)] });
+  var resR15 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mergeBase, mergeDelta]) });
+  check("R15 a clean base merged with its clean delta establishes good", resR15.valid === true);
+
+  // R16 -- hold then release: (i) finds removeFromCRL on the delta, (j) is
+  // skipped because cert_status is no longer UNREVOKED, (k) normalizes to
+  // UNREVOKED. The base's certificateHold entry never gets to stand.
+  var holdBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [crlNumberExt(50), freshestExt([distPoint(shardDpn)])] });
+  var releaseDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(51), deltaExt(50)] });
+  var resR16 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([holdBase, releaseDelta]) });
+  check("R16 a delta releasing the serial from hold establishes good", resR16.valid === true);
+
+  // R17 -- the same hold WITHOUT the delta stays revoked: (k) must not fire on
+  // its own.
+  var resR17 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([holdBase]) });
+  check("R17 a certificateHold with no delta stays revoked",
+    resR17.valid === false && failCodes(resR17).indexOf("path/revoked") !== -1);
+
+  // R20 / R21 -- the delta locator gate (sec. 6.3.3(a)(2)): a delta is merged
+  // only when the certificate OR the complete CRL carries freshestCRL.
+  var baseNoLocator = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(60)] });
+  var deltaNoLocator = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(61), deltaExt(60)] });
+  var resR20 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseNoLocator, deltaNoLocator]) });
+  check("R20 no freshestCRL on either side means no merge (undetermined)",
+    resR20.valid === false && failCodes(resR20).indexOf("path/revocation-undetermined") !== -1);
+  var leafFreshest = await mkCert({ subject: "FreshL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(shardDpn)]), freshestExt([distPoint(dpnFull([gnUri("http://crl.example/delta")]))])] });
+  var resR21 = await run([leafFreshest], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseNoLocator, deltaNoLocator]) });
+  check("R21 a certificate-side freshestCRL is a sufficient delta locator", resR21.valid === true);
+
+  // R22 -- useDeltas: false (sec. 6.3.1(b)) turns the merge off entirely.
+  var resR22 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mergeBase, mergeDelta], { useDeltas: false }) });
+  check("R22 useDeltas:false leaves the delta unmerged (undetermined)",
+    resR22.valid === false && failCodes(resR22).indexOf("path/revocation-undetermined") !== -1);
+
+  // R18 / R19 -- the revocation REASON is surfaced by step (i): from the entry's
+  // reasonCode, or `unspecified` (0) when the entry carries none (T4 -- a shard
+  // entry is not required to carry one).
+  var reasonChecker = pki.path.crlChecker([mergeBase,
+    await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }], extensions: [crlNumberExt(42), deltaExt(40)] })]);
+  var reasonVerdict = await reasonChecker.check(pki.schema.x509.parse(leafShard), { workingPublicKey: anchor.publicKey, issuerCert: null }, { time: T2027 });
+  check("R18 a delta revocation surfaces its reasonCode and name",
+    reasonVerdict.status === "revoked" && reasonVerdict.reasonCode === 1 && /keyCompromise/.test(reasonVerdict.reason || ""));
+  var noReasonChecker = pki.path.crlChecker([mergeBase,
+    await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(43), deltaExt(40)] })]);
+  var noReasonVerdict = await noReasonChecker.check(pki.schema.x509.parse(leafShard), { workingPublicKey: anchor.publicKey, issuerCert: null }, { time: T2027 });
+  check("R19 an entry with no reasonCode reports unspecified (0)",
+    noReasonVerdict.status === "revoked" && noReasonVerdict.reasonCode === 0);
+
+  // R39 / R40 -- ReasonFlags is a NamedBitList, so a non-minimal encoding is not
+  // DER (X.690 sec. 11.2.2). The certificate-side  decoder must reject
+  // both shapes: a trailing zero octet, and an unused-bit count that does not
+  // match the last set bit. The consumer effect is what makes this load-bearing --
+  // a certificate whose DP  will not decode can no longer establish
+  // sec. 6.3.3(b)(2)(i) correspondence, so a shard contributes NO coverage rather
+  // than having its onlySomeReasons intersected against a value DER forbids.
+  var allBitsTrailingZero = Buffer.from([0x00, 0x7F, 0x80, 0x00]);  // bits 1..8 set, trailing zero octet
+  var allBitsWrongUnused = Buffer.from([0x00, 0x7F, 0x80]);         // last set bit is 8, so unusedBits must be 7
+  var allShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(72), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
+  var leafTrailingZero = await mkCert({ subject: "BadReasonsL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(shardDpn, allBitsTrailingZero)])] });
+  var resR39 = await run([leafTrailingZero], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
+  check("R39 a DP whose ReasonFlags has a trailing zero octet cannot establish correspondence",
+    resR39.valid === false && failCodes(resR39).indexOf("path/revocation-undetermined") !== -1);
+  var leafWrongUnused = await mkCert({ subject: "BadUnusedL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(shardDpn, allBitsWrongUnused)])] });
+  var resR40 = await run([leafWrongUnused], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
+  check("R40 a DP whose ReasonFlags unused-bit count is not minimal cannot establish correspondence",
+    resR40.valid === false && failCodes(resR40).indexOf("path/revocation-undetermined") !== -1);
+  // The control that makes the two above meaningful: the SAME reason set, encoded
+  // minimally, does correspond and does establish good.
+  var leafGoodReasons = await mkCert({ subject: "GoodReasonsL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(shardDpn, reasonBits([1, 2, 3, 4, 5, 6, 7, 8]))])] });
+  var resR39c = await run([leafGoodReasons], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
+  check("control: the same reason set encoded minimally establishes good", resR39c.valid === true);
+
+  // R41 -- the same rule on the CRL side: a non-minimal onlySomeReasons leaves the
+  // IDP malformed, so the CRL is unusable for coverage AND for revocation.
+  var badIdpShard = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
+    extensions: [crlNumberExt(70), idpExt({ distributionPoint: shardDpn, onlySomeReasons: allBitsTrailingZero })] });
+  var resR41 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([badIdpShard]) });
+  check("R41 a CRL whose onlySomeReasons is non-minimal is unusable entirely",
+    resR41.valid === false && failCodes(resR41).indexOf("path/revocation-undetermined") !== -1);
+
+  // R5 (d)(1) -- the certificate DP's `reasons` BOUNDS the CRL's onlySomeReasons:
+  // the interim mask is their INTERSECTION, so a DP limited to {1,2} cannot be
+  // covered by an all-reasons shard alone.
+  var leafDpReasons = await mkCert({ subject: "DpReasonsL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
+    extensions: [cdpExt([distPoint(shardDpn, reasonBits([1, 2]))])] });
+  var allReasonShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(71), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
+  var resR5 = await run([leafDpReasons], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allReasonShard]) });
+  check("R5 the certificate DP's reasons bound the CRL's onlySomeReasons (intersection)",
+    resR5.valid === false && failCodes(resR5).indexOf("path/revocation-undetermined") !== -1);
+
+  // R29 (T2) -- two CURRENT deltas for one base are LEGAL; the one with the later
+  // thisUpdate is selected, never treated as a fault.
+  var t2Base = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [crlNumberExt(80), freshestExt([distPoint(shardDpn)])] });
+  var deltaEarlyClean = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-01-01T00:00:00Z"),
+    extensions: [crlNumberExt(81), deltaExt(80)] });
+  var deltaLateRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
+    revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(82), deltaExt(80)] });
+  var resR29 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([t2Base, deltaEarlyClean, deltaLateRelease]) });
+  check("R29 with two current deltas the later thisUpdate is selected (release wins)", resR29.valid === true);
+  // Swap which delta is later: the clean one is selected, so (j) finds the hold.
+  var deltaLateClean = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
+    extensions: [crlNumberExt(83), deltaExt(80)] });
+  var deltaEarlyRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-01-01T00:00:00Z"),
+    revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(84), deltaExt(80)] });
+  var resR29b = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([t2Base, deltaLateClean, deltaEarlyRelease]) });
+  check("R29 selecting the later clean delta lets the base's hold stand (revoked)",
+    resR29b.valid === false && failCodes(resR29b).indexOf("path/revoked") !== -1);
+
+  // A SUPERSEDED delta does not speak for its scope in EITHER direction. The selected (later)
+  // delta decides: an older delta revoking a certificate that the newer one released must not
+  // resurrect the revocation the CA withdrew, just as an older release cannot override a newer
+  // clean delta. Ignoring only one of the two would be incoherent.
+  var supBase = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(85), freshestExt([distPoint(shardDpn)])] });
+  var supOldRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-01-01T00:00:00Z"),
+    revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }], extensions: [crlNumberExt(86), deltaExt(85)] });
+  var supNewReleasing = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
+    revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(87), deltaExt(85)] });
+  var resSuperseded = await run([leafShard], { time: T2027, trustAnchor: anchor,
+    revocationChecker: pki.path.crlChecker([supBase, supOldRevoking, supNewReleasing]) });
+  check("a superseded delta's revocation does not resurrect what the selected delta released",
+    resSuperseded.valid === true);
+
+  // sec. 5.2.4 makes deltaCRLIndicator a MUST-be-critical extension. A non-critical one is still
+  // treated as a delta and still consulted for revocation (the shipped behaviour), but it does not
+  // earn the new capability of being MERGED -- merging can release a certificate, and that must
+  // rest on a conforming indicator.
+  var ncBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [crlNumberExt(88), freshestExt([distPoint(shardDpn)])] });
+  var ncDeltaRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(89), deltaExt(88, false)] });
+  var resNonCritical = await run([leafShard], { time: T2027, trustAnchor: anchor,
+    revocationChecker: pki.path.crlChecker([ncBase, ncDeltaRelease]) });
+  check("a NON-CRITICAL delta indicator cannot merge, so it cannot release a held certificate",
+    resNonCritical.valid === false);
+
+  // R24 / R25 / R26 / R27 -- each merge precondition, one at a time, on the
+  // hold/release pair: a failed merge must never let the release stand.
+  var mmBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [crlNumberExt(90), freshestExt([distPoint(shardDpn)]), idpExt({ distributionPoint: shardDpn })] });
+  var mmDeltaNoIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(91), deltaExt(90)] });
+  var resR24 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mmBase, mmDeltaNoIdp]) });
+  check("R24 a delta omitting the base's IDP is not merged (never good)", resR24.valid === false);
+  var mmDeltaOtherIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(92), deltaExt(90), idpExt({ distributionPoint: otherDpn })] });
+  var resR25 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mmBase, mmDeltaOtherIdp]) });
+  check("R25 a delta whose IDP differs from the base's is not merged", resR25.valid === false);
+  var eqBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [crlNumberExt(95), freshestExt([distPoint(shardDpn)])] });
+  var eqDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [crlNumberExt(95), deltaExt(95)] });
+  var resR27 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([eqBase, eqDelta]) });
+  check("R27 a delta whose cRLNumber does not exceed the base's is not merged", resR27.valid === false);
+
+  // ... and a number PAST the RFC 5280 sec. 5.2.3 20-octet ceiling is non-conforming, so it does
+  // not earn the merge -- which can release a certificate. The CRL is still consulted for
+  // revocation; only the new capability is withheld. pki.crl.sign enforces the same ceiling when
+  // emitting, so this is the consumer half of a rule the producer already keeps.
+  var over = 1n << 168n;   // 22 octets encoded
+  var overBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [ext("2.5.29.20", false, b.integer(over)), freshestExt([distPoint(shardDpn)])] });
+  var overDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [ext("2.5.29.20", false, b.integer(over + 1n)), ext("2.5.29.27", true, b.integer(over))] });
+  var resOver = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([overBase, overDelta]) });
+  check("a CRL number past the 20-octet ceiling cannot merge, so it cannot release a held certificate",
+    resOver.valid === false);
+
+  // R36 (MUST 36) -- 20-octet CRL numbers compare as BigInts, never narrowed.
+  var big = (1n << 158n) + 7n;
+  var bigBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [ext("2.5.29.20", false, b.integer(big)), freshestExt([distPoint(shardDpn)])] });
+  var bigDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [ext("2.5.29.20", false, b.integer(big + 1n)), ext("2.5.29.27", true, b.integer(big))] });
+  var resR36 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bigBase, bigDelta]) });
+  check("R36 20-octet CRL numbers merge correctly (BigInt, never narrowed)", resR36.valid === true);
+
+  // R49 -- the accumulator is per-CALL state, not per-checker: two checks with one
+  // checker instance must agree, or a mask left over from the first would leak in.
+  var reentrantChecker = pki.path.crlChecker([shardA, shardB]);
+  var reentA = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: reentrantChecker });
+  var reentB = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: reentrantChecker });
+  check("R49 the reason mask is per-call state (a reused checker agrees with itself)",
+    reentA.valid === true && reentB.valid === true);
+
   // An EC certificate whose SPKI OMITS the curve parameters inherits them from
   // its issuer (RFC 5280 6.1.4(f)); the inherited parameters are spliced back so
   // importKey can consume the key, rather than rejecting a valid cert.
