@@ -17,11 +17,19 @@
  *      the signer's public key, so a passing check does not depend on pki.cms.verify agreeing
  *      with pki.cms.sign. A flipped signature byte fails it.
  *
- * What OpenSSL's OID table covers is itself the honest boundary: it names RFC 5272's original
- * id-cmc controls (statusInfo, transactionId, senderNonce, recipientNonce, popLinkRandom) and
- * both id-cct content types, but NONE of RFC 6402's later additions (the 30..37 range, which
- * includes identityProofV2). So this oracle confirms the envelope and the classic controls and
- * is silent about the V2 controls -- it is not evidence either way about those.
+ * WHAT THIS DOES NOT PROVE, because the distinction matters more than the checks:
+ * `asn1parse` without `-item` is a generic DER dumper plus an OID table. It establishes that the
+ * bytes are well-formed DER and that OpenSSL recognizes the OIDs in them. It does NOT drive a CMC
+ * template, so it does not validate the schema, CHOICE-arm resolution on TaggedRequest, IMPLICIT
+ * tagging, or OPTIONAL field ordering -- a structurally plausible message with the wrong arm would
+ * pass here. Treat it as a real but WEAK oracle: it is the strongest one available without a second
+ * package, not a conformance check. A format-aware oracle (Bouncy Castle's asn1.cmc, which resolves
+ * the arms and can also PRODUCE a PKIResponse) belongs beside it, not replaced by it.
+ *
+ * The OID table is the same story: it names RFC 5272's original id-cmc controls (statusInfo,
+ * transactionId, senderNonce, recipientNonce, popLinkRandom) and both id-cct content types, but
+ * NONE of RFC 6402's later additions (the 30..37 range, which includes identityProofV2). So this
+ * is silent about the V2 controls -- not evidence either way about those.
  *
  * Runs under scripts/test-integration.js; the service-check gate confirms `openssl` first.
  */
