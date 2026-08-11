@@ -438,6 +438,15 @@ async function testKeyOnlySigner() {
   // enrollment key held in an HSM is a non-extractable CryptoKey: its public half
   // cannot be derived, which is the point of it, so the comparison simply does not
   // apply there and signing proceeds.
+  // The skip for an unexportable key is for an opaque HANDLE, and nothing else.
+  // A composite key is a plain object the derivation also declines, and treating
+  // that as "cannot check" would skip the comparison for a key whose halves are
+  // perfectly readable -- the fail-open this check exists to prevent.
+  await rejects("key-only signer: a key the check cannot read is refused, not skipped", function () {
+    return pki.cms.sign(CONTENT, { key: { mldsa: keyPkcs8, trad: keyPkcs8 }, spki: spki, keyIdentifier: keyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
   // The single-SignerInfo rule is RFC 5272 sec. 3.2's, so it binds for a Full PKI
   // Request and not for ordinary CMS. Applying it to every content type would
   // refuse a multi-signer SignedData that nothing objects to -- CMS permits
