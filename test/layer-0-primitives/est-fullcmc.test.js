@@ -251,6 +251,19 @@ async function run() {
   check("G1n. the request posted is the request that was correlated",
     (await reqInFlight).outcome === "issued" && t1m.calls[0].body === pki.est.transferEncode(requestDer));
 
+  // G1r -- the richer est/cmc-failed is an UPGRADE for an actual rejection, never
+  // a substitute that contradicts itself. A CMC body inside an HTTP failure that
+  // says the request was issued is the server disagreeing with its own status
+  // line; reporting "the server rejected the Full PKI Request: issued" would hand
+  // the caller a success wrapped in a rejection, so the HTTP fault stands instead.
+  check("G1r. a success CMC body inside an HTTP failure leaves the HTTP fault reported",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 500, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/http-error");
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });

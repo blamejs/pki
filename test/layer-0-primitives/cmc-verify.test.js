@@ -75,6 +75,20 @@ function fakeSignerInfo() {
     b.sequence([b.oid("1.2.840.113549.1.1.1"), b.nullValue()]), b.octetString(Buffer.alloc(8, 1))]);
 }
 
+// A SignerInfo whose issuerAndSerialNumber names a real certificate, so the CMS
+// verifier FINDS the signer -- and then rejects the signature, which is a
+// different verdict from not being able to look one up at all.
+function matchingSignerInfo(certDer) {
+  var c = pki.schema.x509.parse(certDer);
+  var sid = b.sequence([b.raw(c.issuer.bytes), b.integer(c.serialNumber)]);
+  var signedAttrs = b.contextConstructed(0, Buffer.concat([
+    b.sequence([b.oid("1.2.840.113549.1.9.3"), b.set([b.oid(ID_CCT_PKI_RESPONSE)])]),
+    b.sequence([b.oid("1.2.840.113549.1.9.4"), b.set([b.octetString(Buffer.alloc(32, 5))])]),
+  ]));
+  return b.sequence([b.integer(1n), sid, b.sequence([b.oid(SHA256), b.nullValue()]), signedAttrs,
+    b.sequence([b.oid("1.2.840.10045.4.3.2")]), b.octetString(Buffer.alloc(8, 2))]);
+}
+
 function response(controls, certsDer) { return _response(controls, certsDer, true); }
 // The same message with NO SignerInfo at all -- the shape RFC 5272 sec. 4.2 says
 // a Full PKI Response is not.
@@ -353,6 +367,23 @@ async function run() {
     // verdict says so -- the opt-out permits proceeding without a check, it does
     // not suppress one that was possible.
     unverified.outcome === "issued" && unverified.signatureVerified === false);
+
+  check("PD14e3. with SEVERAL signers the opt-out weighs every one, not just the first",
+    // One signer whose certificate is missing must not carry a DIFFERENT signer's
+    // failed signature through beside it: the opt-out covers "could not check",
+    // and here one of them WAS checked and rejected.
+    (await acode(function () {
+      var twoSigners = b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([
+        b.integer(3n), b.set([b.sequence([b.oid(SHA256), b.nullValue()])]),
+        b.sequence([b.oid(ID_CCT_PKI_RESPONSE),
+          b.explicit(0, b.octetString(b.sequence([b.sequence([statusV2(1, 0, null)]), b.sequence([]), b.sequence([])])))]),
+        b.contextConstructed(0, certDer),
+        // The first names a certificate nobody supplied; the second names the one
+        // embedded above -- so it IS found -- over a signature that is not its.
+        b.set([fakeSignerInfo(), matchingSignerInfo(certDer)]),
+      ]))]);
+      return pki.cmc.verify(twoSigners, { allowUnverified: true });
+    })) === "cmc/unverified-response");
 
   check("PD14e2. the opt-out does not excuse a signature that is present and WRONG",
     // allowUnverified covers "could not check", never "checked and it failed".
