@@ -430,6 +430,31 @@ async function run() {
   check("PD14h. options mutated after the call do not change what was already decided",
     mutated.outcome === "issued" && mutated.signatureVerified === false);
 
+  // PD14i -- the OTHER carrier RFC 5272 sec. 3.2 permits. An AuthenticatedData
+  // response is authenticated by its MAC, and a caller holding the key should get
+  // an AUTHENTICATED verdict rather than being pushed through the opt-out, which
+  // would report signatureVerified:false for a response whose MAC checked out.
+  var authBody = b.sequence([b.sequence([statusV2(1, 0, null)]), b.sequence([]), b.sequence([])]);
+  var authResp = await pki.cms.authenticate(authBody, [{ password: "s3cret" }],
+    { contentType: "id-cct-PKIResponse" });
+
+  var authOk = await pki.cmc.verify(authResp, { recipient: { password: "s3cret" } });
+  check("PD14i. an AuthenticatedData response verifies under the recipient key",
+    authOk.outcome === "issued" && authOk.signatureVerified === true);
+
+  check("PD14j. a wrong recipient key is refused, in this layer's own code",
+    // cms/decrypt-failed is oracle-free by design; it is re-thrown as the CMC
+    // verdict with the cause chained rather than leaking the CMS code out here.
+    (await acode(function () {
+      return pki.cmc.verify(authResp, { recipient: { password: "wrong" } });
+    })) === "cmc/unverified-response");
+
+  check("PD14k. with neither a key nor the opt-out it is still refused",
+    (await acode(function () { return pki.cmc.verify(authResp, {}); })) === "cmc/unverified-response");
+
+  check("PD14l. the opt-out still works and still says nothing was checked",
+    (await pki.cmc.verify(authResp, { allowUnverified: true })).signatureVerified === false);
+
   // ---- input discipline ------------------------------------------------
   check("V1. a Full PKI REQUEST handed to verify is refused (it interprets responses)",
     (await acode(function () {
