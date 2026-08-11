@@ -164,6 +164,42 @@ async function run() {
         body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
       tls: TLS, allowUnverifiedResponse: true })).issuedCertificates.length === 2);
 
+  // G1o/G1p -- two requests may deliberately share ONE public key (different
+  // subjects, same key), and a CA answering both returns two certificates for it.
+  // How many certificates should match a key is answered by how many requests
+  // asked for it: refusing the second as ambiguous would reject the complete,
+  // correct response, and accepting one would let a half-answer through.
+  var sameKeyCsrA = await pki.csr.sign({ subject: "a.example", subjectPublicKey: spki }, { key: key });
+  var sameKeyCsrB = await pki.csr.sign({ subject: "b.example", subjectPublicKey: spki }, { key: key });
+  var sharedReq = await pki.cmc.build({ requests: [{ tcr: sameKeyCsrA }, { tcr: sameKeyCsrB }] },
+    { cert: clientCert, key: key });
+  var certA = await pki.x509.sign({ subject: "a.example", subjectPublicKey: spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z") }, { key: key });
+  var certB = await pki.x509.sign({ subject: "b.example", subjectPublicKey: spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z") }, { key: key });
+
+  check("G1o. two requests sharing a key are answered by two certificates for it",
+    (await pki.est.fullcmc("https://ca.example", sharedReq, {
+      transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+        body: pki.est.transferEncode(certsOnly([certA, certB].sort(Buffer.compare))) }),
+      tls: TLS, allowUnverifiedResponse: true })).issuedCertificates.length === 2);
+
+  check("G1p. one certificate for two such requests is still a half-answer",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", sharedReq, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certA])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/no-issued-cert");
+
+  check("G1q. more certificates for a key than requests for it is ambiguous",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {   // ONE request for this key
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certA, certB].sort(Buffer.compare))) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/ambiguous-issued-cert");
+
   check("G1g. the issued certificate is named, not left for the caller to guess from the bag",
     // The bag holds the unrelated certificate too; `certificate` is the one whose
     // key the request actually asked to have certified.
