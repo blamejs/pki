@@ -481,6 +481,25 @@ async function run() {
         { key: s.key, spki: s.spki, keyIdentifier: Buffer.alloc(20, 0xcd) });
     })) === "cmc/bad-signer");
 
+  // F14h -- the identifier says WHICH request; the KEY is what makes the claim
+  // true. A Subject Key Identifier is caller-chosen, so a signer holding one key
+  // can name the identifier of a request asking to certify a different one. The
+  // CA would then resolve the SID to the requested key and be unable to verify
+  // the carrier at all, so the signature must be by the key the request names.
+  var other = await signer();
+  var csrOtherKeySameSki = await pki.csr.sign(
+    { subject: "other.example", subjectPublicKey: other.spki, extensionRequest: { subjectKeyIdentifier: ski } },
+    { key: other.key });
+  check("F14h. a key-only signer whose key is not the one that request asks to certify is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrOtherKeySameSki }] },
+        { key: s.key, spki: s.spki, keyIdentifier: ski });   // identifier agrees, key does not
+    })) === "cmc/bad-signer");
+
+  check("F14i. the same request signed by the key it actually names builds",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: csrOtherKeySameSki }] },
+      { key: other.key, spki: other.spki, keyIdentifier: ski })).kind === "pkiData");
+
   check("F14g. a key-only signer may not sign alongside others (sec. 3.2: one SignerInfo)",
     // A request key has no certificate and so no independent identity; signing
     // beside another signer would leave the CA a signer set it cannot reason

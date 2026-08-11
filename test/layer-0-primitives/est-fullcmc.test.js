@@ -193,6 +193,28 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", certDer, { transport: noCall, tls: TLS });
     })) === "est/bad-input");
 
+  // G1m -- the exchange's meaning is fixed at the call, not a turn later. A
+  // caller that flips allowUnverifiedResponse on the next line must not be able
+  // to reach back into a request already in flight and switch off the signature
+  // check it was started with.
+  var liveOpts = { transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+    body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+    tls: TLS, allowUnverifiedResponse: true };
+  var inFlight = pki.est.fullcmc("https://ca.example", requestDer, liveOpts);
+  liveOpts.allowUnverifiedResponse = false;    // flipped after the call
+  check("G1m. options changed after the call do not alter the exchange already begun",
+    (await inFlight).outcome === "issued");
+
+  // ...and the request bytes likewise: they are parsed for the correlation keys
+  // now and transmitted later, so the two must not be able to disagree.
+  var liveReq = Buffer.from(requestDer);
+  var t1m = fakeTransport({ status: 200, headers: ct("certs-only"),
+    body: pki.est.transferEncode(certsOnly([certDer])) });
+  var reqInFlight = pki.est.fullcmc("https://ca.example", liveReq, { transport: t1m, tls: TLS, allowUnverifiedResponse: true });
+  liveReq.fill(0x41);                          // rewritten on the next line
+  check("G1n. the request posted is the request that was correlated",
+    (await reqInFlight).outcome === "issued" && t1m.calls[0].body === pki.est.transferEncode(requestDer));
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });
