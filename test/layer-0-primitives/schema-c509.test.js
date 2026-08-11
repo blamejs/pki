@@ -1449,6 +1449,47 @@ async function run() {
     vB.sequence([ipBs("0a20", 4)])])])));
   check("352c. an address family of unknown width falls back", r3779FellBack(unkAfi));
 
+  // Every remaining shape the compact form cannot carry EXACTLY. Each must fall back to the
+  // byte-string form with its DER preserved -- a mis-compaction here would silently change which
+  // addresses a certificate authorizes, which is the whole risk this codec carries.
+  //
+  // An addressesOrRanges that is not a non-empty SEQUENCE: the CHOICE arm is present but carries
+  // nothing this form can describe.
+  var emptyChoice = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([])])])));
+  check("352d. a family whose addressesOrRanges is empty falls back", r3779FellBack(emptyChoice));
+  // A member that is neither a BIT STRING prefix nor a two-BIT-STRING range -- an address form
+  // outside the RFC 3779 CHOICE entirely.
+  var alienMember = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([vB.contextPrimitive(3, Buffer.from("0a", "hex"))])])])));
+  check("352e. a member that is neither a prefix nor a range falls back", r3779FellBack(alienMember));
+  // A range whose two members are BIT STRINGs but whose enclosing SEQUENCE has the wrong arity.
+  var badArity = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([vB.sequence([ipBs("0a", 0), ipBs("0b", 0), ipBs("0c", 0)])])])])));
+  check("352f. a range SEQUENCE of the wrong arity falls back", r3779FellBack(badArity));
+  // A prefix LONGER than the family's addresses: 5 octets under AFI 1 (IPv4 is 4). Compacting it
+  // would silently truncate the address.
+  var overWide = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([ipBs("0a0000000100", 0)])])])));
+  check("352g. a prefix wider than the address family falls back", r3779FellBack(overWide));
+  // The address-successor helper's overflow arm: a range starting at the maximum address has no
+  // successor, so adjacency cannot be tested and the family declines.
+  var maxAddr = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0001", "hex")),
+    vB.sequence([vB.sequence([ipBs("ffffffff", 0), ipBs("ffffffff", 0)])])])])));
+  check("352h. a range at the maximum address falls back (no successor to test adjacency)", r3779FellBack(maxAddr));
+  // An AFI whose leading octet is out of range entirely (RFC 3779 registers 1 and 2).
+  var wildAfi = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0801", "hex")),
+    vB.sequence([ipBs("0a", 0)])])])));
+  check("352i. an out-of-range address-family identifier falls back", r3779FellBack(wildAfi));
+  // The BYTES form carrying a RANGE: any sequence past 8 octets switches the whole family to the
+  // byte-string form, and a range in that form is emitted as a two-element array. The endpoints are
+  // deliberately NOT a power-of-two-aligned block -- a range that is exactly a prefix had to be
+  // written as a prefix, so it would decline for that reason instead and prove nothing here.
+  var wideRange = await r3779Enc(r3779Ext("ipAddrBlocks", vB.sequence([vB.sequence([vB.octetString(Buffer.from("0002", "hex")),
+    vB.sequence([vB.sequence([ipBs("20010db8000000000000000000000001", 0), ipBs("20010db8000000000000000000000005", 0)])])])])));
+  check("352j. an IPv6 range rides the byte-string form and round-trips exactly",
+    extIdInt(wideRange.id) === 32 && wideRange.exact);
+
   var rdi = await r3779Enc(r3779Ext("autonomousSysIds", vB.sequence([vB.explicit(0, vB.sequence([vB.integer(1n)])), vB.explicit(1, vB.sequence([vB.integer(2n)]))])));
   check("353. a present rdi has no compact form and falls back (sec. 3.3)", r3779FellBack(rdi));
   // RFC 3779 sec. 3.2.3.4 imposes the same three rules on AS identifiers, and they must hold ACROSS

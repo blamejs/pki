@@ -4,6 +4,27 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.4.15 — 2026-08-11
+
+A CA that partitions revocations by reason code, or publishes a delta CRL alongside its base, now gets a real answer instead of "undetermined".
+
+### Added
+
+- Reason coverage ACCUMULATES. Each CRL that corresponds to one of the certificate's distribution points contributes its interim reason mask (RFC 5280 sec. 6.3.3(d)(1)-(4)), and the certificate reads good once the CRLs together cover all eight revocation reasons (sec. 6.3.3(l)). Previously only a CRL that covered every reason by itself could establish good, so a reason-partitioned CA could never be satisfied. Partial coverage still fails closed, and a shard that does not correspond to the certificate contributes nothing while still being consulted for revocation.
+- Delta CRLs are MERGED onto a complete CRL they may be combined with (sec. 5.2.4(a)-(d), sec. 6.3.3(c)): same issuer, byte-identical issuing distribution point and authority key identifier, and a base number the complete CRL's own number covers. The delta is searched first, the complete CRL only if the delta left the certificate unrevoked, and a removeFromCRL entry then releases it -- so a certificate placed on hold and later released reaches good rather than staying rejected. A delta is merged only when the certificate or the complete CRL carries a freshestCRL locator (sec. 6.3.3(a)(2)).
+- pki.path.crlChecker(crls, opts) takes opts.useDeltas (sec. 6.3.1(b)), default true. With it false a delta is never merged; it is still consulted for revocation.
+- A revoked verdict carries reasonCode -- the CRLReason integer, 0 for unspecified when the entry has no reasonCode extension -- and a reason naming it, so an operator learns that a certificate was revoked for keyCompromise rather than only that it was revoked.
+
+### Changed
+
+- Merging can only ever turn an undetermined verdict into good or revoked. A delta that combines with no complete CRL held locally is still consulted for the revocations it lists, and still withholds good, so an unmergeable delta -- including one naming a base the verifier does not have -- can never erase a revocation. Where several current deltas exist for one scope, which RFC 5280 sec. 5.2.4 permits, the one with the latest thisUpdate is selected rather than the set being treated as a fault.
+- The reasons field of a certificate's cRLDistributionPoints is now rejected unless minimally encoded, matching the rule already applied to keyUsage (X.690 sec. 11.2.2 named bit lists). Two encodings of one reason set previously both parsed, which would leave the reason intersection computed over an encoding the rules forbid.
+
+### Fixed
+
+- Holding a delta CRL alongside its base is no longer worse than holding the base alone. Any authoritative delta previously forced the whole verdict to undetermined.
+- A CRL that covers no revocation reasons for the certificate -- a shard whose distribution point does not correspond to it -- is now checked for currency and signature before it is consulted at all. Such a CRL is still read for revocations, so without those checks an expired or forged one could have revoked a certificate it never legitimately covered, or, as a delta, released a certificate its base genuinely revoked.
+
 ## v0.4.14 — 2026-08-10
 
 Every key-establishment secret this library allocates is now wiped when it stops being needed -- the classical ones too, not only the post-quantum ones.
