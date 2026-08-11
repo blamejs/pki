@@ -425,8 +425,10 @@ async function run() {
   // pendInfo, so a v1 control carrying the extended shape in either encoding is
   // expressing something v1 cannot say -- and reading a failure verdict out of it
   // would treat a malformed control as a valid rejection.
-  function statusInfoV1(bodyPartID, status, bodyList, otherInfo) {
+  function statusInfoV1(bodyPartID, status, bodyList, otherInfo, statusString) {
     var fields = [b.integer(BigInt(status)), b.sequence(bodyList)];
+    // sec. 6.1.1 order: the OPTIONAL statusString PRECEDES the OPTIONAL otherInfo.
+    if (statusString != null) fields.push(b.utf8(statusString));
     if (otherInfo != null) fields.push(otherInfo);
     return taggedAttr(bodyPartID, ID_CMC_STATUS_INFO, [b.sequence(fields)]);
   }
@@ -449,6 +451,22 @@ async function run() {
     // The rejection above must be about the extended arm, not about v1 controls.
     cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
       statusInfoV1(1, 2, [b.integer(1n)], b.integer(9n))], [], []))).statuses[0].failInfo === 9);
+
+  // D2b -- the OPTIONAL statusString, actually populated. RFC 5272 sec. 6.1.1 makes
+  // it the human-readable explanation a CA sends with a rejection, so it is on the
+  // common path, not an edge. Every existing status vector omitted it -- the helper
+  // even takes the parameter and no caller passed one -- so the field was decoded by
+  // code no test ever ran.
+  var d2b = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+    statusInfoV2(1, 2, [b.sequence([b.integer(1n)])], null, "request denied by policy")], [], [])));
+  check("D2b. a status control's OPTIONAL statusString is decoded",
+    d2b.statuses[0].statusString === "request denied by policy");
+
+  check("D2c. a v1 status control's statusString is decoded on the same terms",
+    // Both status shapes reach the same reader; covering only V2 would leave the
+    // v1 path exactly as untested as this whole field was.
+    cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+      statusInfoV1(1, 2, [b.integer(1n)], null, "v1 denied")], [], []))).statuses[0].statusString === "v1 denied");
 
   // C9 -- a TaggedContentInfo's payload is surfaced RAW, but it must still BE a
   // ContentInfo. Not decoding a content type this layer may not know is one

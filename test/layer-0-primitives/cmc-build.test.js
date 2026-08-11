@@ -501,6 +501,35 @@ async function run() {
   check("F18. a signer mutated after the call does not change who signed",
     (await pki.cms.verify(signedWith, { certs: [s.cert] })).valid === true);
 
+  // ---- F19: the exchange binding is a NAMED spec field, not hand-encoded ----
+  // pki.cmc.verify checks a response against transactionId / senderNonce / dataReturn.
+  // If the builder does not take those by name, a caller writes the natural thing,
+  // the fields are silently dropped, and the request ships with no replay defence --
+  // which neither side can then detect, because verify only enforces the halves the
+  // client says it sent.
+  var bindNonce = Buffer.alloc(16, 0x5a);
+  var bound = await pki.cmc.build(
+    { requests: [{ tcr: csrDer }], transactionId: 4242, senderNonce: bindNonce, dataReturn: Buffer.from("st8") },
+    { cert: s.cert, key: s.key });
+  var bp = pki.schema.cmc.parse(bound);
+  check("F19. transactionId / senderNonce / dataReturn are emitted as controls",
+    bp.controls.length === 3 &&
+    bp.controls.some(function (c) { return c.attrType === pki.oid.byName("id-cmc-transactionId"); }) &&
+    bp.controls.some(function (c) { return c.attrType === pki.oid.byName("id-cmc-senderNonce"); }) &&
+    bp.controls.some(function (c) { return c.attrType === pki.oid.byName("id-cmc-dataReturn"); }));
+
+  check("F19b. an unknown spec field is refused rather than silently dropped",
+    // The failure this guards is invisible: the message builds and signs, and simply
+    // does not carry what was asked for.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionID: 1 }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19c. a transactionId that is not an integer is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionId: 1.5 }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
   // ---- F14: signing with the request's own key (RFC 5272 sec. 3.2) ------
   // The case the key-only signer exists for: enrolling a brand-new key, so there
   // is no certificate to identify the signer by. Sec. 3.2 then requires (a) the

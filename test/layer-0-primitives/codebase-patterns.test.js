@@ -1827,6 +1827,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmp-verify.js:_verify",
         "lib/cmp-session.js:session",
         "lib/cmc-build.js:_certReqIdOf", "lib/cmc-build.js:_claimRawElement",
+        "lib/cmc-build.js:_asBigInt",
         "lib/cms-sign.js:_dedupe", "lib/pki-build.js:skiKeyId",
         "lib/cmp-build.js:_classifyCmpResponse", "lib/x509-sign.js:_hasCriticalSan",
       ],
@@ -2545,6 +2546,45 @@ function testConstantTimeCompareShortCircuited() {
   _report("no constant-time compare is short-circuited by &&/|| (codebase-wide)", bad);
 }
 
+// class: asn1-reader-does-not-exist
+//
+// A call to `asn1.read.<name>` naming a reader the codec does not export. The
+// invariant: every leaf read goes through a reader that exists, so a decode path
+// fails with the toolkit's typed PkiError rather than a raw TypeError.
+//
+// This shape is worth a detector precisely because nothing else catches it. It is
+// not a syntax error, eslint sees a normal property access, and the call throws
+// only when that exact branch executes -- so an OPTIONAL field decoded by a
+// mistyped reader ships green through every gate until a peer sends the field. A
+// raw `TypeError: asn1.read.utf8 is not a function` from a parser is also a
+// fuzz-contract violation (hostile bytes may only succeed or throw a PkiError) and
+// leaves a caller unable to tell malformed input from a broken decoder.
+//
+// DERIVED, so it cannot drift: the set of valid names is read OFF pki.asn1.read at
+// run time rather than duplicated here, which means a reader added or removed
+// tomorrow needs no edit, and a NEW format module typing `read.bmpString` is caught
+// on its first commit.
+function testAsn1ReaderExists() {
+  var real = Object.keys(require("../../lib/asn1-der").read);
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var src = fs.readFileSync(f, "utf8");
+    // Comments stripped so a doc block naming a reader does not count as a call.
+    var body = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+    var re = /\basn1\.read\.([A-Za-z_$][\w$]*)/g;
+    var m;
+    while ((m = re.exec(body))) {
+      if (real.indexOf(m[1]) !== -1) continue;
+      bad.push({ file: rel, line: body.slice(0, m.index).split("\n").length,
+        content: "asn1-reader-does-not-exist: asn1.read." + m[1] + " is not exported by the codec, so this " +
+          "decode throws a raw TypeError instead of a typed PkiError. Readers are: " + real.join(" ") });
+    }
+  });
+  bad = _filterMarkers(bad, "asn1-reader-does-not-exist");
+  _report("every asn1.read.<name> call names a reader the codec actually exports", bad);
+}
+
 function testEveryGuardEnforced() {
   // class: guard-without-enforcement
   // Anti-drift META-check -- the guard-family analog of the @primitive comment-
@@ -2882,6 +2922,7 @@ function run() {
   testGuardShapeReinlined();
   testRawSecretExportIsWiped();
   testConstantTimeCompareShortCircuited();
+  testAsn1ReaderExists();
   testEveryGuardEnforced();
   testGuardErrorFactoryNotClass();
   testValidatorShapeReinlined();
