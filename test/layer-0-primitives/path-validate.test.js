@@ -2224,6 +2224,19 @@ async function testRfc5280ConformanceMusts() {
   var resR27 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([eqBase, eqDelta]) });
   check("R27 a delta whose cRLNumber does not exceed the base's is not merged", resR27.valid === false);
 
+  // ... and a number PAST the RFC 5280 sec. 5.2.3 20-octet ceiling is non-conforming, so it does
+  // not earn the merge -- which can release a certificate. The CRL is still consulted for
+  // revocation; only the new capability is withheld. pki.crl.sign enforces the same ceiling when
+  // emitting, so this is the consumer half of a rule the producer already keeps.
+  var over = 1n << 168n;   // 22 octets encoded
+  var overBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
+    extensions: [ext("2.5.29.20", false, b.integer(over)), freshestExt([distPoint(shardDpn)])] });
+  var overDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
+    extensions: [ext("2.5.29.20", false, b.integer(over + 1n)), ext("2.5.29.27", true, b.integer(over))] });
+  var resOver = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([overBase, overDelta]) });
+  check("a CRL number past the 20-octet ceiling cannot merge, so it cannot release a held certificate",
+    resOver.valid === false);
+
   // R36 (MUST 36) -- 20-octet CRL numbers compare as BigInts, never narrowed.
   var big = (1n << 158n) + 7n;
   var bigBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
