@@ -312,13 +312,26 @@ async function run() {
     { cert: certDer, key: await pki.key.export(pair.privateKey) },
     { eContentType: "id-cct-PKIResponse" });
 
-  check("PD14b. a signed response with no signer certificates supplied is refused by default",
-    // Deliberately NO opt-out here: this is the default posture, and the default
-    // must be a refusal rather than a quiet pass.
-    (await acode(function () { return pki.cmc.verify(signedResp, {}); })) === "cmc/unverified-response");
+  check("PD14b. a response whose signer certificate is nowhere to be found is refused by default",
+    // Not embedded and not supplied, so nothing can check the signature.
+    // Deliberately NO opt-out here: the default posture must be a refusal rather
+    // than a quiet pass.
+    (await acode(function () {
+      return pki.cmc.verify(response([statusV2(1, 0, null)]), {});
+    })) === "cmc/unverified-response");
+
+  var okEmbedded = await pki.cmc.verify(signedResp, {});
+  check("PD14b2. a response carrying its own signer certificate verifies with no help",
+    // The ordinary shape: a conforming SignedData embeds the signer certificate,
+    // which is what pki.cmc.build emits and what a CA sends. Requiring the caller
+    // to ALSO pass it would make build-then-verify fail on a message that already
+    // contains everything needed.
+    okEmbedded.outcome === "issued" && okEmbedded.signatureVerified === true);
 
   var okVerified = await pki.cmc.verify(signedResp, { certs: [certDer] });
-  check("PD14c. supplying the signer certificate verifies the carrier and yields the verdict",
+  check("PD14c. supplying the signer certificate also verifies the carrier",
+    // `certs` supplements the embedded bag for the case where the message does
+    // not carry the signer; it is not the only source.
     okVerified.outcome === "issued" && okVerified.signatureVerified === true);
 
   // Note what `certs` does and does not do: it supplies certificates for SIGNER
@@ -333,9 +346,19 @@ async function run() {
       return pki.cmc.verify(tampered, { certs: [certDer] });
     })) === "cmc/unverified-response");
 
-  var unverified = await pki.cmc.verify(signedResp, { allowUnverified: true });
+  var unverified = await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true });
   check("PD14e. the bootstrap opt-out is explicit and says so in the verdict",
+    // Driven on a response whose signer certificate is absent, which is the case
+    // the opt-out exists for. Where the signature CAN be checked it is, and the
+    // verdict says so -- the opt-out permits proceeding without a check, it does
+    // not suppress one that was possible.
     unverified.outcome === "issued" && unverified.signatureVerified === false);
+
+  check("PD14e2. the opt-out does not excuse a signature that is present and WRONG",
+    // allowUnverified covers "could not check", never "checked and it failed".
+    (await acode(function () {
+      return pki.cmc.verify(tampered, { certs: [certDer], allowUnverified: true });
+    })) === "cmc/unverified-response");
 
   // PD14f -- the verdict must describe the bytes the signature was checked
   // against. verify() parses synchronously and verifies in a later promise turn,

@@ -386,10 +386,13 @@ security-only patches after the next major releases.
   truncated echo cannot match on a prefix. Where several status controls are
   present the WORST governs, so a rejection cannot hide behind an earlier
   success. The carrier's own signature is not assumed: RFC 5272 §3.2.1.3.4
-  requires it, and verification is fail-closed with a NAMED opt-out
-  (`allowUnverified`, which reports `signatureVerified: false`) rather than a
-  silent default, so no caller receives a verdict believing a check ran that did
-  not. A carrier bearing no signer at all is refused. Nothing in the response is
+  requires it. A conforming response carries its own signer certificate and is
+  checked against it with nothing asked of the caller; where the signer is found
+  nowhere, verification is fail-closed with a NAMED opt-out (`allowUnverified`,
+  which reports `signatureVerified: false`) rather than a silent default, so no
+  caller receives a verdict believing a check ran that did not. That opt-out
+  covers only "could not check" -- a signature that is present and wrong is
+  always a refusal -- and a carrier bearing no signer at all is refused. Nothing in the response is
   trusted: the certificate bag and any Publish Trust Anchors control are
   surfaced as data for `pki.path.validate`, never added to a store.
 - **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded

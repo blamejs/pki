@@ -422,6 +422,18 @@ async function testKeyOnlySigner() {
   check("key-only signer: NO certificates field is emitted (there is no certificate)",
     !m.certificates || m.certificates.length === 0);
 
+  // A key-only signer names a public key it does not otherwise prove it holds:
+  // the identifier and the signature scheme come from `spki`, the signature from
+  // `key`. Two different keys produce a well-formed SignerInfo nobody can verify,
+  // because the recipient resolves the identifier to the declared key and checks
+  // a signature made by another. There is no certificate here to catch it.
+  var strangerPair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var strangerKey = await pki.key.export(strangerPair.privateKey);
+  await rejects("key-only signer: a `key` that is not the declared `spki`", function () {
+    return pki.cms.sign(CONTENT, { key: strangerKey, spki: spki, keyIdentifier: keyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
   // The signature, verified directly. The signed attributes are signed as a SET OF
   // (RFC 5652 sec. 5.4), which is the [0] IMPLICIT node re-tagged to a universal
   // SET -- reconstructing that is the whole point of the check.
