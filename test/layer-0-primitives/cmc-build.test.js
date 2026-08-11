@@ -452,6 +452,21 @@ async function run() {
       return pki.cmc.build({ requests: [{ tcr: b.sequence([]) }] }, { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  check("F16d. a crm arm that is not a CertReqMsg is refused, like a tcr that is not a CSR",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ crm: b.sequence([b.integer(1n)]) }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F18b. rewriting the signer's key BYTES after the call does not change who signed",
+    // Re-pointing signer.key is one way to change who signs; rewriting the PKCS#8
+    // buffer it already points at is the other.
+    await (async function () {
+      var pooledKey = Buffer.from(s.key);
+      var p = pki.cmc.build({ requests: [{ tcr: csrDer }] }, { cert: s.cert, key: pooledKey });
+      pooledKey.fill(0x41);
+      return (await pki.cms.verify(await p, { certs: [s.cert] })).valid === true;
+    })());
+
   check("F16b. a TaggedContentInfo with the wrong field count is refused",
     (await acode(function () {
       // { bodyPartID, contentInfo, EXTRA } -- a shape the parser does not accept.
