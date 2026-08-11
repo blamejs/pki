@@ -445,6 +445,13 @@ async function run() {
         { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  check("F16a. an empty SEQUENCE is not a CertificationRequest either",
+    // The right TAG is not the same as the right structure: the readback checks
+    // the CMC shape around the request, so the request itself has to be parsed.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: b.sequence([]) }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
   check("F16b. a TaggedContentInfo with the wrong field count is refused",
     (await acode(function () {
       // { bodyPartID, contentInfo, EXTRA } -- a shape the parser does not accept.

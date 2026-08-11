@@ -450,6 +450,16 @@ async function run() {
     cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
       statusInfoV1(1, 2, [b.integer(1n)], b.integer(9n))], [], []))).statuses[0].failInfo === 9);
 
+  // C9 -- a TaggedContentInfo's payload is surfaced RAW, but it must still BE a
+  // ContentInfo. Not decoding a content type this layer may not know is one
+  // thing; handing back an INTEGER as a "CMS message" no CMS reader will accept
+  // is another.
+  check("C9. a cmsSequence element whose payload cannot be a ContentInfo is refused",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+        [b.sequence([b.integer(1n), b.integer(9n)])], [])));
+    }) === "cmc/bad-cms-sequence");
+
   // D6 -- the 2008 module tags the same arm [1]. Both encodings appear on the
   // wire; supporting only one is the partial-rule trap.
   var d6 = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
