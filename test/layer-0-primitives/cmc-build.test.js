@@ -399,6 +399,78 @@ async function run() {
       return pki.cmc.verify(respDer, { transactionId: Number(sentTxn) + 1, senderNonce: sentNonce, certs: [s.cert] });
     })) === "cmc/transaction-mismatch");
 
+  // F15 -- a crm arm's certReqId is caller-determined, so it is RESERVED up front
+  // like every other caller-chosen identifier; the reservation then has to be
+  // CLAIMED when the arm is encoded. Without the claim the reservation is still
+  // outstanding when a cmsSequence element asks for the same number, that element
+  // is taken for the reservation's owner, and the builder emits a PKIData carrying
+  // the identifier twice -- which its own parser refuses. A collision must be
+  // refused at build time, not discovered by the recipient.
+  var crmId5 = await pki.crmf.build(
+    { certReqId: 5, certTemplate: { subject: "crm.example", publicKey: s.spki } }, { key: s.key });
+  var tciId5 = b.sequence([b.integer(5n), b.raw(await pki.cms.sign(Buffer.from("x"), { cert: s.cert, key: s.key }))]);
+  check("F15. a cmsSequence element colliding with a crm arm's certReqId is refused at build time",
+    // The build-side collision code, the same one every other caller-supplied
+    // clash raises -- not the parse-side cmc/duplicate-body-part-id, which is the
+    // recipient discovering what the producer should never have emitted.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ crm: crmId5 }], cmsSequence: [tciId5] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // ---- F14: signing with the request's own key (RFC 5272 sec. 3.2) ------
+  // The case the key-only signer exists for: enrolling a brand-new key, so there
+  // is no certificate to identify the signer by. Sec. 3.2 then requires (a) the
+  // certification request to carry a Subject Key Identifier extension, (b) the
+  // subjectKeyIdentifier form of SignerIdentifier, and (c) its value to be the
+  // one that request declares. (b) is structural; (a) and (c) are agreement
+  // between the signer and the requests beside it, and are checked at build time
+  // because a mismatch produces a signed request no CA can act on.
+  var ski = Buffer.alloc(20, 0xab);
+  var csrWithSki = await csrFor(s, { extensionRequest: { subjectKeyIdentifier: ski } });
+
+  var keyOnly = await pki.cmc.build({ requests: [{ tcr: csrWithSki }] },
+    { key: s.key, spki: s.spki, keyIdentifier: ski });
+  var koParsed = pki.schema.cmc.parse(keyOnly);
+  check("F14. a request signed by its own requested key builds, carrying no certificate",
+    koParsed.kind === "pkiData" && koParsed.requests.length === 1 &&
+    (koParsed.cms.certificates || []).length === 0);
+
+  check("F14b. a key-only signer naming an identifier no request declares is refused (sec. 3.2c)",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrWithSki }] },
+        { key: s.key, spki: s.spki, keyIdentifier: Buffer.alloc(20, 0xcd) });
+    })) === "cmc/bad-signer");
+
+  check("F14c. a request with no Subject Key Identifier extension cannot carry a key-only signer (sec. 3.2a)",
+    // The CSR here declares nothing, so there is no value the SignerInfo could
+    // legitimately name -- which is exactly what sec. 3.2a forbids.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }] },
+        { key: s.key, spki: s.spki, keyIdentifier: ski });
+    })) === "cmc/bad-signer");
+
+  // Sec. 3.2 names BOTH key-bearing arms -- the signing key may belong to a
+  // request "included in the TaggedRequest tcr or crm fields" -- so a CRMF
+  // enrolment of a brand-new key is the same flow and must build.
+  var crmWithSki = await pki.crmf.build(
+    { certReqId: 7, certTemplate: { subject: "crm.example", publicKey: s.spki,
+      extensions: { subjectKeyIdentifier: ski } } }, { key: s.key });
+  check("F14e. the crm arm supports a key-only signer on the same terms as tcr (sec. 3.2)",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ crm: crmWithSki }] },
+      { key: s.key, spki: s.spki, keyIdentifier: ski })).kind === "pkiData");
+
+  check("F14f. a crm arm declaring a different identifier is still refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ crm: crmWithSki }] },
+        { key: s.key, spki: s.spki, keyIdentifier: Buffer.alloc(20, 0xcd) });
+    })) === "cmc/bad-signer");
+
+  check("F14d. a signer WITH a certificate is untouched by the rule",
+    // Sec. 3.2's three rules apply only when the signature is made with a
+    // request's key; a certified signer identifies itself by its certificate.
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: csrDer }] },
+      { cert: s.cert, key: s.key })).kind === "pkiData");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

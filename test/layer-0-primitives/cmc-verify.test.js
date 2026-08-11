@@ -347,7 +347,9 @@ async function run() {
   var raced = Buffer.from(signedResp);
   var racedOutcome = null, racedError = null;
   var racePromise = pki.cmc.verify(raced, { certs: [certDer] });
-  Promise.resolve().then(function () { raced.fill(0x41); });   // rewrite mid-flight
+  raced.fill(0x41);                       // rewritten on the very next line -- the
+                                          // easiest version of the race to hit, and
+                                          // the one a deferred snapshot loses to
   try { racedOutcome = await racePromise; } catch (e) { racedError = e; }
   check("PD14f. rewriting the caller's buffer between parse and verify cannot forge a verified verdict",
     // Either answer is correct -- what must NOT happen is `issued` with
@@ -358,6 +360,21 @@ async function run() {
     // The snapshot is what makes this hold: parse and verify both read the private
     // copy, so the overwrite cannot reach either half.
     racedError === null && racedOutcome.statuses.length === 1);
+
+  // PD14h -- both sides of the comparison are frozen, not just the response.
+  // The binding checks run after the signature check's await, so a `sent` the
+  // caller keeps mutating would be read post-mutation: the nonce would be
+  // compared against a value the request never carried, and flipping
+  // allowUnverified before its promise turn would skip the signature check the
+  // default posture requires.
+  var liveNonce = Buffer.alloc(16, 7);
+  var liveSent = { allowUnverified: true };
+  var mutating = pki.cmc.verify(response([statusV2(1, 0, null)]), liveSent);
+  liveSent.allowUnverified = false;                 // flip AFTER the call, before its turn
+  liveNonce.fill(0xff);
+  var mutated = await mutating;
+  check("PD14h. options mutated after the call do not change what was already decided",
+    mutated.outcome === "issued" && mutated.signatureVerified === false);
 
   // ---- input discipline ------------------------------------------------
   check("V1. a Full PKI REQUEST handed to verify is refused (it interprets responses)",

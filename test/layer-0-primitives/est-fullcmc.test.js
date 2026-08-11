@@ -122,6 +122,58 @@ async function run() {
   check("G1e. the body is the RFC 8951 base64 transfer encoding of the request DER",
     t1.calls[0].body === pki.est.transferEncode(requestDer));
 
+  // G1f/G1g -- a certs-only body carries no status and no request reference, so
+  // the ONLY thing tying it to this exchange is a public-key match against what
+  // was submitted (RFC 5272 sec. 4.1 forbids picking positionally). Without that,
+  // a bag holding an unrelated certificate -- or just a CA chain -- reads as a
+  // successful issuance for a request it never answered.
+  var otherPair = await pki.key.generate("Ed25519");
+  var otherCert = await pki.x509.sign({
+    subject: "someone.else.example", subjectPublicKey: await pki.key.export(otherPair.publicKey),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+  }, { key: await pki.key.export(otherPair.privateKey) });
+
+  check("G1f. a certs-only bag carrying only an unrelated certificate is not an issuance",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([otherCert])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/no-issued-cert");
+
+  // G1h -- a request carrying TWO certification requests is only answered when
+  // BOTH are: a bag holding one of the two certificates is a partial enrolment,
+  // and calling it issued would report the unanswered half as done.
+  var secondCsr = await pki.csr.sign(
+    { subject: "second.example", subjectPublicKey: await pki.key.export(otherPair.publicKey) },
+    { key: await pki.key.export(otherPair.privateKey) });
+  var twoReq = await pki.cmc.build({ requests: [{ tcr: csrDer }, { tcr: secondCsr }] },
+    { cert: clientCert, key: key });
+
+  check("G1h. a two-request message answered by only one certificate is not an issuance",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", twoReq, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/no-issued-cert");
+
+  check("G1i. answering both requests issues, and every issued certificate is surfaced",
+    (await pki.est.fullcmc("https://ca.example", twoReq, {
+      transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+        body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
+      tls: TLS, allowUnverifiedResponse: true })).issuedCertificates.length === 2);
+
+  check("G1g. the issued certificate is named, not left for the caller to guess from the bag",
+    // The bag holds the unrelated certificate too; `certificate` is the one whose
+    // key the request actually asked to have certified.
+    (await pki.est.fullcmc("https://ca.example", requestDer, {
+      transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+        // A CMS certificates SET is DER-ordered, so the bag is sorted rather than
+        // written in the order that would make the point read most directly.
+        body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
+      tls: TLS, allowUnverifiedResponse: true })).certificate.equals(certDer));
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });

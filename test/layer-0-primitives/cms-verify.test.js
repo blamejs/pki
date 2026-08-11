@@ -570,7 +570,7 @@ async function testParseVerifyReadSameBytes() {
   var raced = Buffer.from(der);
   var out = null, err = null;
   var p = pki.cms.verify(raced);
-  Promise.resolve().then(function () { raced.fill(0x41); });   // rewrite mid-flight
+  raced.fill(0x41);                       // rewritten on the very next line
   try { out = await p; } catch (e) { err = e; }
 
   // Without the private copy the overwrite lands on the very bytes the signature
