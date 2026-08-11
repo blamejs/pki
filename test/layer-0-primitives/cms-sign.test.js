@@ -434,6 +434,22 @@ async function testKeyOnlySigner() {
       { eContentType: "id-cct-PKIData" });
   }, "cms/bad-input");
 
+  // ...and that check must not lock out the keys this signer exists to serve. An
+  // enrollment key held in an HSM is a non-extractable CryptoKey: its public half
+  // cannot be derived, which is the point of it, so the comparison simply does not
+  // apply there and signing proceeds.
+  // Generated extractable, then the private half re-imported non-extractable --
+  // the shape a key that lives in a token has, without needing one.
+  var hsmGen = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var hsmSpki = await pki.key.export(hsmGen.publicKey);
+  var hsmKey = await subtle.importKey("pkcs8", await pki.key.export(hsmGen.privateKey),
+    { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  var hsmDer = await pki.cms.sign(CONTENT,
+    { key: hsmKey, spki: hsmSpki, keyIdentifier: Buffer.from(await subtle.digest("SHA-1", hsmSpki)) },
+    { eContentType: "id-cct-PKIData" });
+  check("key-only signer: a NON-EXTRACTABLE private key still signs",
+    pki.schema.cms.parse(hsmDer).signerInfos.length === 1);
+
   // The signature, verified directly. The signed attributes are signed as a SET OF
   // (RFC 5652 sec. 5.4), which is the [0] IMPLICIT node re-tagged to a universal
   // SET -- reconstructing that is the whole point of the check.
