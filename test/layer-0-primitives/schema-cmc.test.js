@@ -486,6 +486,24 @@ async function run() {
         [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1"), b.integer(9n)])])], [])));
     }) === "cmc/bad-cms-sequence");
 
+  // C9d/C9e -- [0] EXPLICIT wraps EXACTLY ONE value (X.690). Checking the tag but
+  // not the arity leaves an empty wrapper and a multi-value one both looking like a
+  // content info, and pki.schema.cms.parse refuses each with cms/not-a-content-info
+  // -- so the builder's readback would pass a message its own CMS reader will not.
+  check("C9d. an EMPTY [0] content wrapper is not a ContentInfo",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+        [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1"),
+          b.contextConstructed(0, Buffer.alloc(0))])])], [])));
+    }) === "cmc/bad-cms-sequence");
+
+  check("C9e. nor one wrapping more than one value",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+        [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1"),
+          b.contextConstructed(0, Buffer.concat([b.integer(1n), b.integer(2n)]))])])], [])));
+    }) === "cmc/bad-cms-sequence");
+
   check("C9c. a bare contentType with no content is accepted (the field is OPTIONAL)",
     cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
       [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1")])])], []))).cmsSequence.length === 1);

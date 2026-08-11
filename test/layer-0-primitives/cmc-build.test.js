@@ -525,6 +525,22 @@ async function run() {
       return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionID: 1 }, { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  check("F19d. a key the table lists but nothing reads would defeat the guard, so there is none",
+    // `identification` is attached through identityProof.identity. Listing it as a
+    // spec field of its own would put it back through the door and leave it out of
+    // the message -- accepted and silently absent, which is what this guard exists
+    // to stop.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], identification: "device" },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19e. the documented route to an Identification control still works",
+    // identityProof.identity emits it, which is why the standalone key is not needed.
+    pki.schema.cmc.parse(await pki.cmc.build(
+      { requests: [{ tcr: csrDer }], identityProof: { secret: "s3cret", identity: "device" } },
+      { cert: s.cert, key: s.key })).controls.length === 2);
+
   check("F19c. a transactionId that is not an integer is refused",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionId: 1.5 }, { cert: s.cert, key: s.key });
