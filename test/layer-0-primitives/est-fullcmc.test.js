@@ -174,6 +174,25 @@ async function run() {
         body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
       tls: TLS, allowUnverifiedResponse: true })).certificate.equals(certDer));
 
+  // G1j/G1k -- the bytes are about to be labelled `smime-type=CMC-request`, so
+  // they are confirmed to BE one before anything leaves the process. A caller
+  // mistake belongs at the entry point, not POSTed to a CA under a label that
+  // does not describe it.
+  var noCall = fakeTransport({ status: 200, headers: ct("certs-only"),
+    body: pki.est.transferEncode(certsOnly([certDer])) });
+  check("G1j. a Full PKI RESPONSE handed in as the request is refused before the POST",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example",
+        pkiResponse([statusV2(1, 0, null)], [certDer]), { transport: noCall, tls: TLS });
+    })) === "est/bad-input");
+  check("G1k. and nothing was sent",
+    noCall.calls.length === 0);
+
+  check("G1l. bytes that are not CMC at all are refused the same way",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", certDer, { transport: noCall, tls: TLS });
+    })) === "est/bad-input");
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });

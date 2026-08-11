@@ -243,9 +243,25 @@ async function run() {
   check("F6g. the altered derivation differs from the plain one",
     Buffer.compare(alteredKey, plainKey) !== 0);
 
-  check("F6d. an identityProof secret shorter than 16 characters is refused (IP3)",
+  // F6d -- sec. 6.2.1's "Implementations MUST be able to support tokens at least
+  // 16 characters long" is a requirement on what this code must ACCEPT, not a
+  // floor every token must clear. Enforcing it as a minimum would invert the
+  // clause and refuse a shorter secret a CA legitimately provisioned, whose
+  // strength is that CA's policy to set.
+  check("F6d. a short shared secret provisioned by the CA is accepted, not second-guessed",
+    pki.schema.cmc.parse(await pki.cmc.build(
+      { requests: [{ tcr: csrDer }], identityProof: { secret: "short" } },
+      { cert: s.cert, key: s.key })).kind === "pkiData");
+
+  check("F6d2. a token of exactly the length sec. 6.2.1 names is supported",
+    // The capability the clause actually requires.
+    pki.schema.cmc.parse(await pki.cmc.build(
+      { requests: [{ tcr: csrDer }], identityProof: { secret: "0123456789abcdef" } },
+      { cert: s.cert, key: s.key })).kind === "pkiData");
+
+  check("F6d3. an empty secret is still refused -- that is not a credential",
     (await acode(function () {
-      return pki.cmc.build({ requests: [{ tcr: csrDer }], identityProof: { secret: "short" } },
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], identityProof: { secret: "" } },
         { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
@@ -463,6 +479,15 @@ async function run() {
     (await acode(function () {
       return pki.cmc.build({ requests: [{ crm: crmWithSki }] },
         { key: s.key, spki: s.spki, keyIdentifier: Buffer.alloc(20, 0xcd) });
+    })) === "cmc/bad-signer");
+
+  check("F14g. a key-only signer may not sign alongside others (sec. 3.2: one SignerInfo)",
+    // A request key has no certificate and so no independent identity; signing
+    // beside another signer would leave the CA a signer set it cannot reason
+    // about. Checked across the WHOLE array, not just its first element.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrWithSki }] },
+        [{ cert: s.cert, key: s.key }, { key: s.key, spki: s.spki, keyIdentifier: ski }]);
     })) === "cmc/bad-signer");
 
   check("F14d. a signer WITH a certificate is untouched by the rule",
