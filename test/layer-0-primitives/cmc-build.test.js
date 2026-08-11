@@ -433,6 +433,40 @@ async function run() {
       return pki.cmc.build({ requests: [{ crm: crmId5 }], cmsSequence: [tciId5] }, { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  // F16 -- the builder must not sign a message its own parser refuses. Every arm
+  // splices caller-supplied DER, so the assembled body is read back before
+  // signing: whatever the parser rejects is a build-time refusal rather than a
+  // request whose recipient cannot decode it.
+  var innerCms = await pki.cms.sign(Buffer.from("inner"), { cert: s.cert, key: s.key });
+
+  check("F16. a tcr that is not a CertificationRequest is refused at build time",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: b.octetString(Buffer.from([1, 2, 3])) }] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F16b. a TaggedContentInfo with the wrong field count is refused",
+    (await acode(function () {
+      // { bodyPartID, contentInfo, EXTRA } -- a shape the parser does not accept.
+      var bad = b.sequence([b.integer(60n), b.raw(innerCms), b.integer(1n)]);
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], cmsSequence: [bad] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F16c. an otherMsg missing its value is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        otherMsgSequence: [b.sequence([b.integer(61n), b.oid("1.3.6.1.4.1.99999.1")])] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // F17 -- the message is assembled at the CALL, so a caller reusing a pooled
+  // request buffer on the next line cannot have something else signed in its place.
+  var pooled = Buffer.from(csrDer);
+  var pending = pki.cmc.build({ requests: [{ tcr: pooled }] }, { cert: s.cert, key: s.key });
+  pooled.fill(0x41);
+  check("F17. a request buffer rewritten right after the call does not change what was signed",
+    pki.schema.cmc.parse(await pending).requests.length === 1);
+
   // ---- F14: signing with the request's own key (RFC 5272 sec. 3.2) ------
   // The case the key-only signer exists for: enrolling a brand-new key, so there
   // is no certificate to identify the signer by. Sec. 3.2 then requires (a) the
