@@ -2028,6 +2028,26 @@ async function testRfc5280ConformanceMusts() {
   var resBit0All = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bitZeroPlusAll]) });
   check("R13 bit 0 alongside all eight named reasons still establishes good", resBit0All.valid === true);
 
+  // R11 -- the criticality decision governs the WHOLE IDP scope. A NON-CRITICAL IDP is one a
+  // relying party may ignore entirely (sec. 5.2.5 @3601), so its onlySomeReasons cannot establish
+  // coverage either -- two non-critical shards whose masks would union to all-reasons must still
+  // fail closed. This preserves the shipped property that an onlySomeReasons shard could only ever
+  // withhold good, never grant it.
+  function ncIdpExt(o) { return ext("2.5.29.28", false, idpVal(o)); }
+  // NO distributionPoint on these: with one, the correspondence gate already refuses a
+  // non-critical IDP, so the shards would fall to interim 0 for that reason and prove nothing
+  // about the reason mask itself.
+  var ncShardA = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(36), ncIdpExt({ onlySomeReasons: reasonBits([1, 2, 8]) })] });
+  var ncShardB = await mkCrl({ issuer: "Root", signWith: "ed25519",
+    extensions: [crlNumberExt(37), ncIdpExt({ onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
+  var resNcShards = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([ncShardA, ncShardB]) });
+  check("R11 two NON-CRITICAL reason shards cannot establish good even when their masks union",
+    resNcShards.valid === false && failCodes(resNcShards).indexOf("path/revocation-undetermined") !== -1);
+  // ... and the same shards marked CRITICAL do, so the gate is criticality and nothing else.
+  var resCritShards = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
+  check("control: the same reason coverage marked critical does establish good", resCritShards.valid === true);
+
   // R8 / R9 regressions -- the shipped shapes must survive the rewrite.
   var fullScopeForShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(29), idpExt({ distributionPoint: shardDpn })] });
