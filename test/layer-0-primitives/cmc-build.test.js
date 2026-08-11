@@ -500,6 +500,20 @@ async function run() {
     pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: csrOtherKeySameSki }] },
       { key: other.key, spki: other.spki, keyIdentifier: ski })).kind === "pkiData");
 
+  check("F14j. a renewal may not be signed key-only (sec. 6.3.3)",
+    // A renewal carries no Identity Proof; what stands in for it is the signature
+    // by the certificate being renewed, which associates the original identity
+    // with the request. A key-only signer has no certificate, so a renewal signed
+    // that way leaves the CA nothing to authenticate the renewal against.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrWithSki }], renewal: true },
+        { key: s.key, spki: s.spki, keyIdentifier: ski });
+    })) === "cmc/bad-signer");
+
+  check("F14k. the same renewal signed by a certificate builds",
+    pki.schema.cmc.parse(await pki.cmc.build(
+      { requests: [{ tcr: csrWithSki }], renewal: true }, { cert: s.cert, key: s.key })).kind === "pkiData");
+
   check("F14g. a key-only signer may not sign alongside others (sec. 3.2: one SignerInfo)",
     // A request key has no certificate and so no independent identity; signing
     // beside another signer would leave the CA a signer set it cannot reason

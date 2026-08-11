@@ -420,6 +420,36 @@ async function run() {
     d5.statuses[0].extendedFailInfo !== null &&
     d5.statuses[0].extendedFailInfo.failInfoOID === "1.3.6.1.4.1.99999.9");
 
+  // D5b / D5c -- the extendedFailInfo arm belongs to CMCStatusInfoV2 alone. RFC
+  // 5272 sec. 6.1.1 gives the v1 otherInfo exactly two arms, failInfo and
+  // pendInfo, so a v1 control carrying the extended shape in either encoding is
+  // expressing something v1 cannot say -- and reading a failure verdict out of it
+  // would treat a malformed control as a valid rejection.
+  function statusInfoV1(bodyPartID, status, bodyList, otherInfo) {
+    var fields = [b.integer(BigInt(status)), b.sequence(bodyList)];
+    if (otherInfo != null) fields.push(otherInfo);
+    return taggedAttr(bodyPartID, ID_CMC_STATUS_INFO, [b.sequence(fields)]);
+  }
+
+  check("D5b. a v1 status control cannot carry the untagged extendedFailInfo shape",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        statusInfoV1(1, 2, [b.integer(1n)],
+          b.sequence([b.oid("1.3.6.1.4.1.99999.9"), b.octetString(Buffer.from([1]))]))], [], [])));
+    }) === "cmc/bad-status-info");
+
+  check("D5c. nor the [1] IMPLICIT one",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+        statusInfoV1(1, 2, [b.integer(1n)],
+          b.contextConstructed(1, Buffer.concat([b.oid("1.3.6.1.4.1.99999.9"), b.octetString(Buffer.from([1]))])))], [], [])));
+    }) === "cmc/bad-status-info");
+
+  check("D5d. the two arms v1 DOES define still work",
+    // The rejection above must be about the extended arm, not about v1 controls.
+    cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
+      statusInfoV1(1, 2, [b.integer(1n)], b.integer(9n))], [], []))).statuses[0].failInfo === 9);
+
   // D6 -- the 2008 module tags the same arm [1]. Both encodings appear on the
   // wire; supporting only one is the partial-rule trap.
   var d6 = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
