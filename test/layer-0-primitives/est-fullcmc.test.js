@@ -31,6 +31,7 @@ var ID_CCT_PKI_RESPONSE = "1.3.6.1.5.5.7.12.3";
 var ID_SIGNED_DATA = "1.2.840.113549.1.7.2";
 var ID_DATA = "1.2.840.113549.1.7.1";
 var SHA256 = "2.16.840.1.101.3.4.2.1";
+var ID_CCT_PKI_DATA = "1.3.6.1.5.5.7.12.2";
 var ID_CMC_STATUS_INFO_V2 = "1.3.6.1.5.5.7.7.25";
 var ID_CMC_TRUSTED_ANCHORS = "1.3.6.1.5.5.7.7.26";
 var TLS = { anchors: [] };   // presence is what the gate checks; no socket is opened
@@ -263,6 +264,32 @@ async function run() {
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
         tls: TLS, allowUnverifiedResponse: true });
     })) === "est/http-error");
+
+  // G1s -- a request mixing a readable arm with an unreadable one must not be
+  // sent. The CMC parser validates request arms only far enough to find their
+  // identity, so a malformed one reaches the correlation as "no key" -- and a
+  // response covering only the readable arm would then look like a complete
+  // issuance for a request that also asked for something else.
+  var mixed = b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([
+    b.integer(3n), b.set([b.sequence([b.oid(SHA256), b.nullValue()])]),
+    b.sequence([b.oid(ID_CCT_PKI_DATA), b.explicit(0, b.octetString(b.sequence([
+      b.sequence([]),
+      b.sequence([
+        b.contextConstructed(0, Buffer.concat([b.integer(1n), csrDer])),          // readable
+        b.contextConstructed(0, Buffer.concat([b.integer(2n), b.sequence([])])),  // not a CSR
+      ]),
+      b.sequence([]), b.sequence([]),
+    ])))]),
+    b.set([]),
+  ]))]);
+  var noSend = fakeTransport({ status: 200, headers: ct("certs-only"),
+    body: pki.est.transferEncode(certsOnly([certDer])) });
+  check("G1s. a request whose second arm cannot be read is refused before sending",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", mixed, { transport: noSend, tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/bad-input");
+  check("G1t. and nothing was sent for it",
+    noSend.calls.length === 0);
 
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
