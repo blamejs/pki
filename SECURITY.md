@@ -376,6 +376,22 @@ security-only patches after the next major releases.
   certificate's own distribution point with no reason restriction — a
   non-corresponding, reason-scoped, non-critical-IDP, or delta shard stays
   revocation-only, and a listed serial reports revoked regardless.
+- **Enrollment-response replay and unauthenticated verdicts (CMC).**
+  `pki.cmc.verify` binds a Full PKI Response to the request that provoked it
+  before it reports anything: the Transaction Identifier, the Sender/Recipient
+  Nonce echo and the Data Return echo each apply once the client sent that half,
+  and an absent or differing echo is then a refusal rather than a missing
+  optional field — so a response captured from one exchange cannot be replayed
+  into another. The nonce is compared in constant time and by full value, so a
+  truncated echo cannot match on a prefix. Where several status controls are
+  present the WORST governs, so a rejection cannot hide behind an earlier
+  success. The carrier's own signature is not assumed: RFC 5272 §3.2.1.3.4
+  requires it, and verification is fail-closed with a NAMED opt-out
+  (`allowUnverified`, which reports `signatureVerified: false`) rather than a
+  silent default, so no caller receives a verdict believing a check ran that did
+  not. A carrier bearing no signer at all is refused. Nothing in the response is
+  trusted: the certificate bag and any Publish Trust Anchors control are
+  surfaced as data for `pki.path.validate`, never added to a store.
 - **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
   blobs inside octet strings, where every re-decode would restart the depth cap
   from zero; the PKCS#12 parser carries one cross-decode budget over all of them

@@ -39,6 +39,7 @@ var ct        = require("./lib/ct");
 var tls       = require("./lib/tls-cert-compress");
 var cms       = require("./lib/cms-verify");
 var smime     = require("./lib/smime");
+var cmc       = require("./lib/cmc-verify");
 var tsp       = require("./lib/tsp-sign");
 var ocsp      = require("./lib/ocsp");
 var x509      = require("./lib/x509-sign");
@@ -93,6 +94,9 @@ module.exports = {
   tls:       tls,
   cms:       cms,
   smime:     smime,
+  // `cmc` interprets an RFC 5272 Full PKI Response into one terminal verdict;
+  // `pki.schema.cmc` is the decoder underneath it.
+  cmc:       cmc,
   tsp:       tsp,
   ocsp:      ocsp,
   // `x509` is the certificate-issuance producing side -- pki.x509.sign builds and

@@ -395,9 +395,82 @@ async function testSlhDsa() {
   check("SLH-DSA sha2-256f + mismatched sha256 digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(wrongMd)));
 }
 
+// A KEY-ONLY signer: `{ key, spki, keyIdentifier }` with no certificate. RFC 5272
+// sec. 3.2 needs exactly this to sign a Full PKI Request with the key of a
+// certification request it carries -- there is no certificate yet.
+//
+// Such a SignedData CANNOT be checked by pki.cms.verify (no certificate matches
+// the sid) nor by `openssl cms -verify` (it needs a signer certificate), so the
+// signature is proven by RECONSTRUCTING the signed-attributes SET-OF preimage and
+// verifying it against the request's own SPKI. Saying so here rather than
+// pretending cms.verify closes it.
+async function testKeyOnlySigner() {
+  var subtle = pki.webcrypto.subtle;
+  var pair = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var keyPkcs8 = await pki.key.export(pair.privateKey);
+  var spki = await pki.key.export(pair.publicKey);
+  var keyId = Buffer.from(await subtle.digest("SHA-1", spki));   // the SKI the request would declare
+
+  var der = await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki, keyIdentifier: keyId },
+    { eContentType: "id-cct-PKIData" });
+  var m = pki.schema.cms.parse(der);
+
+  check("key-only signer: the SignerInfo is version 3", m.signerInfos[0].version === 3);
+  check("key-only signer: the sid is the subjectKeyIdentifier form carrying the request's key id",
+    m.signerInfos[0].sid.subjectKeyIdentifier != null &&
+    Buffer.compare(m.signerInfos[0].sid.subjectKeyIdentifier, keyId) === 0);
+  check("key-only signer: NO certificates field is emitted (there is no certificate)",
+    !m.certificates || m.certificates.length === 0);
+
+  // The signature, verified directly. The signed attributes are signed as a SET OF
+  // (RFC 5652 sec. 5.4), which is the [0] IMPLICIT node re-tagged to a universal
+  // SET -- reconstructing that is the whole point of the check.
+  var si = pki.schema.cms.parse(der).signerInfos[0];
+  var attrsDer = si.signedAttrsBytes;
+  var preimage = Buffer.concat([Buffer.from([0x31]), attrsDer.subarray(1)]);   // [0] IMPLICIT -> SET
+  var pub = await subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  // CMS carries an ECDSA signature as DER SEQUENCE(r, s); WebCrypto verifies the
+  // raw fixed-width r||s pair, so unwrap it here rather than reach for a private
+  // helper.
+  var sigNode = pki.asn1.decode(si.signature);
+  var fixed = function (n) {
+    var v = pki.asn1.read.integer(n);
+    var hex = v.toString(16);
+    return Buffer.from(hex.padStart(64, "0"), "hex");
+  };
+  var raw = Buffer.concat([fixed(sigNode.children[0]), fixed(sigNode.children[1])]);
+  var ok = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, raw, preimage);
+  check("key-only signer: the signature verifies against the request's own SPKI", ok === true);
+
+  // PD3(c): "If the request key is used for signing, there MUST be only one
+  // SignerInfo in the SignedData."
+  var withCert = makeSigner("ec-p256");
+  check("key-only signer alongside a second signer is refused (RFC 5272 sec. 3.2)",
+    (await (async function () {
+      try {
+        await pki.cms.sign(CONTENT, [{ key: keyPkcs8, spki: spki, keyIdentifier: keyId }, withCert],
+          { eContentType: "id-cct-PKIData" });
+        return "NO-THROW";
+      } catch (e) { return e.code; }
+    })()) === "cms/bad-input");
+
+  check("a key-only signer with no keyIdentifier is refused",
+    (await (async function () {
+      try { await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki }, { eContentType: "id-cct-PKIData" }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })()) === "cms/bad-input");
+
+  check("a signer with neither cert nor spki is still refused",
+    (await (async function () {
+      try { await pki.cms.sign(CONTENT, { key: keyPkcs8 }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })()) === "cms/bad-input");
+}
+
 async function run() {
   await testPssSpkiParams();
   await testSlhDsa();
+  await testKeyOnlySigner();
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();

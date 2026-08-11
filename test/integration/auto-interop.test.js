@@ -44,6 +44,7 @@ var NO_FIXTURE_YET = {
   "pki.schema.smime":    "oracle available (`openssl cms` emits the ESS signing-certificate attribute); register a fixtures row keyed to a pki.schema.smime.parse* primitive to cover it and drop this skip",
   "pki.schema.crmf":     "openssl has no offline CRMF generator (`openssl cmp` needs a live server); add a fixtures row when an oracle path exists",
   "pki.schema.cmp":      "openssl's `cmp` subcommand is client-only (needs a live server as the oracle peer); add a fixtures row when an oracle path exists",
+  "pki.schema.cmc":      "openssl has no CMC support at all (no `cmc` subcommand; `cmp` is RFC 4210, a different protocol) and NSS ships no RFC 5272 PKIData/PKIResponse generator; the CMS carrier the messages ride in IS cross-checked by the cms interop, so add a fixtures row when a CMC oracle exists",
   "pki.schema.attrcert": "openssl cannot emit RFC 5755 attribute certificates; add a fixtures row when an independent oracle exists",
   "pki.schema.csrattrs": "openssl/NSS have no generator for the EST CSR Attributes wire format (RFC 8951 / 9908 CsrAttrs); add a fixtures row when an independent oracle exists",
   "pki.schema.c509":     "openssl/NSS have no C509 (draft-ietf-cose-cbor-encoded-cert) codec; the type-3 reconstruction emits standard DER that is byte-exact to the Appendix A known-answer certificates and is cross-checked by the x509 interop, so there is no independent C509 oracle to add until a C509 toolchain exists",

@@ -1,0 +1,409 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+/**
+ * Layer 0 -- pki.cmc.build (RFC 5272 sec. 3.2, 6.2.1, 6.3.1.1; RFC 6402).
+ *
+ * The producing half of the CMC message layer: assemble a Full PKI Request
+ * (PKIData), attach its controls, and sign it into a CMS SignedData whose
+ * encapsulated content type is id-cct-PKIData. Spec-first vectors, RED-first --
+ * pki.cmc.build is undefined until the module lands.
+ *
+ * The rules this file exists to pin:
+ *   - PD2: all FOUR sequences are emitted, each possibly empty.
+ *   - PD8: body part identifiers are unique across the WHOLE message and 0 is
+ *     reserved, so the allocator never issues it and a caller-supplied clash is
+ *     refused rather than silently renumbered.
+ *   - IP1: the Identity Proof witness is computed over the reqSequence bytes
+ *     "encoded exactly as it appears in the Full PKI Request including the
+ *     sequence type and length". The vector re-slices those bytes out of the
+ *     EMITTED DER and recomputes -- a witness taken over a re-serialization
+ *     would still agree with itself, so only the emitted-bytes check can tell
+ *     the two apart.
+ *   - PL1: a POP Link Witness requires the POP Link Random control to be present
+ *     in the same request; R is >= 512 bits.
+ *   - PD5: a renewal omits Identification / Identity Proof.
+ */
+
+var nodeCrypto = require("node:crypto");
+var helpers = require("../helpers");
+var pki = helpers.pki;
+var check = helpers.check;
+var b = pki.asn1.build;
+
+var ID_CCT_PKI_DATA = "1.3.6.1.5.5.7.12.2";
+var ID_CMC_IDENTITY_PROOF_V2 = "1.3.6.1.5.5.7.7.34";   // RFC 5272 sec. 6.2.1 body + its own module
+var ID_CMC_POP_LINK_RANDOM = "1.3.6.1.5.5.7.7.22";
+var ID_CMC_IDENTIFICATION = "1.3.6.1.5.5.7.7.2";
+var ID_CMC_TRANSACTION_ID = "1.3.6.1.5.5.7.7.5";
+var ID_CMC_SENDER_NONCE = "1.3.6.1.5.5.7.7.6";
+var SECRET = "a-shared-secret-at-least-16-chars";
+
+async function acode(fn) {
+  try { await fn(); return "NO-THROW"; }
+  catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); }
+}
+
+async function signer() {
+  var pair = await pki.key.generate("Ed25519");
+  var key = await pki.key.export(pair.privateKey);
+  var spki = await pki.key.export(pair.publicKey);
+  var cert = await pki.x509.sign({
+    subject: "cmc-client.example", subjectPublicKey: spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+  }, { key: key });
+  return { key: key, spki: spki, cert: cert };
+}
+
+async function csrFor(s, opts) {
+  return await pki.csr.sign(Object.assign({ subject: "cmc-client.example", subjectPublicKey: s.spki }, opts || {}),
+    { key: s.key });
+}
+
+// Re-slice the reqSequence TLV out of an EMITTED request, independently of the
+// parser's own surfaced range, so IP1 is checked against the bytes on the wire.
+function reqSequenceOf(der) {
+  return pki.schema.cmc.parse(der).reqSequenceBytes;
+}
+
+async function run() {
+  var s = await signer();
+  var csrDer = await csrFor(s);
+
+  // ---- PD1 / PD2: the envelope and the four sequences -------------------
+  var basic = await pki.cmc.build({ requests: [{ tcr: csrDer }] }, { cert: s.cert, key: s.key });
+  var parsed = pki.schema.cmc.parse(basic);
+  check("F1. a built request is a SignedData over id-cct-PKIData that cms.verify accepts",
+    parsed.kind === "pkiData" &&
+    parsed.cms.encapContentInfo.eContentType === ID_CCT_PKI_DATA);
+  check("F1b. the signature verifies through the shipped consumer path",
+    (await pki.cms.verify(basic)).valid === true);
+  check("F1c. the tcr arm round-trips to the CSR that went in",
+    parsed.requests.length === 1 && parsed.requests[0].arm === "tcr" &&
+    Buffer.compare(parsed.requests[0].certificationRequestBytes, csrDer) === 0);
+  check("F1d. all four sequences are emitted, the unused ones empty (PD2)",
+    parsed.controls.length === 0 && parsed.cmsSequence.length === 0 && parsed.otherMsgs.length === 0);
+
+  // ---- PD8: identity allocation ----------------------------------------
+  var two = await pki.cmc.build({
+    requests: [{ tcr: csrDer }, { tcr: csrDer }],
+    controls: [{ type: "id-cmc-transactionId", value: b.integer(7n) }],
+  }, { cert: s.cert, key: s.key });
+  var p2 = pki.schema.cmc.parse(two);
+  var ids = p2.requests.map(function (r) { return r.bodyPartID; })
+    .concat(p2.controls.map(function (c) { return c.bodyPartID; }));
+  check("F1e. allocated body part identifiers are unique and never 0 (PD8)",
+    ids.length === 3 && new Set(ids).size === 3 && ids.indexOf(0) === -1);
+
+  check("F7. a caller assigning the same bodyPartID twice is refused, never renumbered",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartID: 5 }, { tcr: csrDer, bodyPartID: 5 }] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F7b. a caller assigning the reserved bodyPartID 0 is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartID: 0 }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // F7c/F7d -- the cmsSequence and otherMsgSequence elements carry body part
+  // identities too (RFC 5272 sec. 3.2.1.3 / 3.2.1.4), so they draw from the SAME
+  // space. Passing them through without claiming their identifiers lets the
+  // builder emit a PKIData that its own parser refuses -- the producing-side
+  // mirror of the whole-message uniqueness rule.
+  var tci = function (id) {
+    return b.sequence([b.integer(BigInt(id)),
+      b.sequence([b.oid("1.2.840.113549.1.7.1"), b.explicit(0, b.octetString(Buffer.from([1])))])]);
+  };
+  var om = function (id) {
+    return b.sequence([b.integer(BigInt(id)), b.oid("1.3.6.1.4.1.99999.3"), b.octetString(Buffer.from([9]))]);
+  };
+
+  check("F7c. a cmsSequence element colliding with a control is refused at build time",
+    (await acode(function () {
+      return pki.cmc.build({
+        requests: [{ tcr: csrDer, bodyPartID: 8 }],
+        cmsSequence: [tci(8)],
+      }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F7d. an otherMsgSequence element colliding with a cmsSequence element is refused",
+    (await acode(function () {
+      return pki.cmc.build({
+        requests: [{ tcr: csrDer }],
+        cmsSequence: [tci(21)], otherMsgSequence: [om(21)],
+      }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // F7g/F7h -- the SAME ordering rule inside the requests list. Every identifier
+  // the CALLER determines must be reserved before any is generated, and there are
+  // FOUR sources of those: an explicit request bodyPartID, a crm arm's fixed
+  // certReqId, a cmsSequence element, an otherMsgSequence element. Reserving only
+  // some of them makes acceptance depend on the order the caller happened to
+  // write the list in.
+  var orderedReq = await pki.cmc.build({
+    requests: [{ tcr: csrDer }, { tcr: csrDer, bodyPartID: 1 }],
+  }, { cert: s.cert, key: s.key });
+  var orq = pki.schema.cmc.parse(orderedReq);
+  check("F7g. an auto-id request before an explicit id=1 request does not steal it",
+    orq.requests.length === 2 && orq.requests[1].bodyPartID === 1 && orq.requests[0].bodyPartID !== 1);
+
+  var crmFixed = await pki.crmf.build({ certReqId: 3, certTemplate: { subject: "crm.example", publicKey: s.spki } },
+    { key: s.key });
+  var crmFirst = await pki.cmc.build({
+    requests: [{ tcr: csrDer }, { crm: crmFixed }],   // its certReqId is 3, and fixed
+  }, { cert: s.cert, key: s.key });
+  var cfq = pki.schema.cmc.parse(crmFirst);
+  check("F7h. an auto-id request does not steal a crm arm's fixed certReqId",
+    cfq.requests[1].bodyPartID === 3 && cfq.requests[0].bodyPartID !== 3);
+
+  // F7f -- allocation ORDER. The caller pinned nothing that conflicts: request 1,
+  // a cmsSequence element at 2, and a generated control that could take 3. If the
+  // allocator hands out numbers before reserving what the caller already spent,
+  // the control takes 2 and the caller's own element then "collides" with it --
+  // rejecting a spec that was never ambiguous.
+  var ordered = await pki.cmc.build({
+    requests: [{ tcr: csrDer, bodyPartID: 1 }],
+    identityProof: { secret: SECRET },
+    cmsSequence: [tci(2)],
+  }, { cert: s.cert, key: s.key });
+  var op2 = pki.schema.cmc.parse(ordered);
+  check("F7f. a generated control does not steal an identifier a caller-supplied element already uses",
+    op2.requests[0].bodyPartID === 1 && op2.cmsSequence.length === 1 &&
+    op2.controls.every(function (c) { return c.bodyPartID !== 1 && c.bodyPartID !== 2; }));
+
+  // ...and the accepting side: distinct identities across all four kinds build
+  // AND re-parse, which is what proves the two sides agree.
+  var allFour = await pki.cmc.build({
+    requests: [{ tcr: csrDer, bodyPartID: 31 }],
+    controls: [{ type: "id-cmc-transactionId", value: b.integer(1n) }],
+    cmsSequence: [tci(32)], otherMsgSequence: [om(33)],
+  }, { cert: s.cert, key: s.key });
+  var af = pki.schema.cmc.parse(allFour);
+  check("F7e. a message using all four element kinds with distinct identities builds and re-parses",
+    af.requests.length === 1 && af.controls.length === 1 &&
+    af.cmsSequence.length === 1 && af.otherMsgs.length === 1);
+
+  // ---- IP1: the witness is over the EMITTED reqSequence bytes -----------
+  var proofed = await pki.cmc.build({
+    requests: [{ tcr: csrDer }],
+    identityProof: { secret: SECRET },
+  }, { cert: s.cert, key: s.key });
+  var pp = pki.schema.cmc.parse(proofed);
+  var proofControl = pp.controls.filter(function (c) { return c.attrType === ID_CMC_IDENTITY_PROOF_V2; })[0];
+  check("F6. an identityProof request carries an Identity Proof V2 control", !!proofControl);
+
+  // Recompute independently: key = SHA-256(secret as UTF-8), witness =
+  // HMAC-SHA256(reqSequence bytes, key).
+  var ipv2 = pki.asn1.decode(proofControl.values[0]);
+  var witness = pki.asn1.read.octetString(ipv2.children[2]);
+  var macKey = nodeCrypto.createHash("sha256").update(SECRET, "utf8").digest();
+  var expect = nodeCrypto.createHmac("sha256", macKey).update(reqSequenceOf(proofed)).digest();
+  check("F6b. the witness equals HMAC(emitted reqSequence TLV, hash(secret)) (RFC 5272 sec. 6.2.1)",
+    Buffer.compare(witness, expect) === 0);
+
+  // The mutation half: a DIFFERENT request must move the witness. A witness
+  // computed over a re-serialization would agree with itself either way, so this
+  // is what distinguishes "over the emitted bytes" from "over something equal".
+  var csr2 = await csrFor(s, { subject: "other.example" });
+  var proofed2 = await pki.cmc.build({ requests: [{ tcr: csr2 }], identityProof: { secret: SECRET } },
+    { cert: s.cert, key: s.key });
+  var pc2 = pki.schema.cmc.parse(proofed2).controls
+    .filter(function (c) { return c.attrType === ID_CMC_IDENTITY_PROOF_V2; })[0];
+  var witness2 = pki.asn1.read.octetString(pki.asn1.decode(pc2.values[0]).children[2]);
+  check("F6c. changing a request changes the witness (it tracks the emitted bytes)",
+    Buffer.compare(witness, witness2) !== 0);
+
+  // F6e -- RFC 5272 sec. 6.2.3: the Identification control is OPTIONAL ("servers
+  // MAY require" it), but when it IS present "the derivation of the key in Step 2
+  // is altered so that the hash of the concatenation of the shared-secret and the
+  // UTF8 identity value (without the type and length bytes) are hashed rather
+  // than just the shared-secret". Same control set, DIFFERENT key -- a producer
+  // that ignores the alteration emits a witness a conforming server rejects.
+  var IDENTITY = "device-4711";
+  var identified = await pki.cmc.build({
+    requests: [{ tcr: csrDer }],
+    identityProof: { secret: SECRET, identity: IDENTITY },
+  }, { cert: s.cert, key: s.key });
+  var ip = pki.schema.cmc.parse(identified);
+  var idControl = ip.controls.filter(function (c) { return c.attrType === ID_CMC_IDENTIFICATION; })[0];
+  check("F6e. an identityProof with an identity emits the Identification control carrying it",
+    !!idControl && pki.asn1.read.string(pki.asn1.decode(idControl.values[0])) === IDENTITY);
+
+  var idProof = ip.controls.filter(function (c) { return c.attrType === ID_CMC_IDENTITY_PROOF_V2; })[0];
+  var idWitness = pki.asn1.read.octetString(pki.asn1.decode(idProof.values[0]).children[2]);
+  var alteredKey = nodeCrypto.createHash("sha256")
+    .update(Buffer.concat([Buffer.from(SECRET, "utf8"), Buffer.from(IDENTITY, "utf8")])).digest();
+  var alteredExpect = nodeCrypto.createHmac("sha256", alteredKey).update(reqSequenceOf(identified)).digest();
+  check("F6f. the MAC key is hash(shared-secret || identity), not hash(shared-secret) (sec. 6.2.3)",
+    Buffer.compare(idWitness, alteredExpect) === 0);
+
+  // ...and the two derivations really differ, so F6f is not passing by accident.
+  var plainKey = nodeCrypto.createHash("sha256").update(SECRET, "utf8").digest();
+  check("F6g. the altered derivation differs from the plain one",
+    Buffer.compare(alteredKey, plainKey) !== 0);
+
+  check("F6d. an identityProof secret shorter than 16 characters is refused (IP3)",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], identityProof: { secret: "short" } },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // ---- PL1: the POP Link Witness needs its Random in the same request ----
+  var linked = await pki.cmc.build({
+    requests: [{ tcr: csrDer }],
+    popLink: { secret: SECRET },
+  }, { cert: s.cert, key: s.key });
+  var lp = pki.schema.cmc.parse(linked);
+  var randomControl = lp.controls.filter(function (c) { return c.attrType === ID_CMC_POP_LINK_RANDOM; })[0];
+  check("F8. a popLink request carries the POP Link Random control (PL1: it MUST be included)",
+    !!randomControl);
+  var R = pki.asn1.read.octetString(pki.asn1.decode(randomControl.values[0]));
+  check("F8b. R is at least 512 bits by default (PL1 SHOULD)", R.length >= 64);
+
+  // ---- PD5: a renewal omits Identification / Identity Proof -------------
+  var renewal = await pki.cmc.build({ requests: [{ tcr: csrDer }], renewal: true }, { cert: s.cert, key: s.key });
+  var rp = pki.schema.cmc.parse(renewal);
+  check("F10. a renewal emits no Identification and no Identity Proof control (PD5)",
+    rp.controls.every(function (c) {
+      return c.attrType !== ID_CMC_IDENTIFICATION && c.attrType !== ID_CMC_IDENTITY_PROOF_V2;
+    }));
+  // sec. 3.2 (a) says "The Identification and Identity Proof controls are
+  // absent" -- Identity Proof covers BOTH the v1 control (id-cmc 3) and V2
+  // (id-cmc 34). A denylist naming only one leaves the other emittable.
+  check("F10c. a renewal carrying the v1 Identity Proof control is refused (PD5 covers both versions)",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], renewal: true,
+        controls: [{ type: "id-cmc-identityProof", value: b.octetString(Buffer.from([1])) }] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  check("F10d. a renewal carrying the V2 Identity Proof control is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], renewal: true,
+        controls: [{ type: "id-cmc-identityProofV2", value: b.octetString(Buffer.from([1])) }] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  check("F10e. a renewal carrying the Identification control is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], renewal: true,
+        controls: [{ type: "id-cmc-identification", value: b.utf8("me") }] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F10b. a renewal that ALSO asks for an identityProof is refused (PD5)",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], renewal: true, identityProof: { secret: SECRET } },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  // ---- the crm / orm arms ----------------------------------------------
+  var crmDer = await pki.crmf.build({ certReqId: 3, certTemplate: { subject: "crm.example", publicKey: s.spki } },
+    { key: s.key });
+  var withCrm = await pki.cmc.build({ requests: [{ crm: crmDer }] }, { cert: s.cert, key: s.key });
+  var cp = pki.schema.cmc.parse(withCrm);
+  check("C2f. the crm arm is emitted IMPLICIT and its certReqId is the body part identity",
+    cp.requests[0].arm === "crm" && cp.requests[0].bodyPartID === 3);
+  check("C2g. the emitted CertReqMsg re-parses through pki.schema.crmf",
+    pki.schema.crmf.parse(b.sequence([cp.requests[0].certReqMsgBytes]))
+      .messages[0].certReq.certTemplate.subject.dn === "CN=crm.example");
+
+  var withOrm = await pki.cmc.build({
+    requests: [{ orm: { type: "1.3.6.1.4.1.99999.7", value: b.octetString(Buffer.from([1, 2, 3])) } }],
+  }, { cert: s.cert, key: s.key });
+  var op = pki.schema.cmc.parse(withOrm);
+  check("C3b. the orm arm is emitted with its type and raw value",
+    op.requests[0].arm === "orm" && op.requests[0].requestMessageType === "1.3.6.1.4.1.99999.7");
+
+  // ---- control placement (RFC 6402 sec. 2.6) ----------------------------
+  check("E8b. a responseBody control asked for in a PKIData is refused at build time",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "id-cmc-responseBody", value: b.octetString(Buffer.from([1])) }] },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/control-misplaced");
+
+  // ---- input discipline -------------------------------------------------
+  check("B1c. a request naming two arms at once is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer, crm: crmDer }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("B1d. a request naming no arm is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{}] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("B1e. a non-object spec is refused",
+    (await acode(function () { return pki.cmc.build(7, { cert: s.cert, key: s.key }); })) === "cmc/bad-input");
+
+  // ---- F11: the round trip ----------------------------------------------
+  var full = await pki.cmc.build({
+    requests: [{ tcr: csrDer }],
+    controls: [
+      { type: "id-cmc-transactionId", value: b.integer(99n) },
+      { type: "id-cmc-senderNonce", value: b.octetString(Buffer.alloc(16, 5)) },
+    ],
+  }, { cert: s.cert, key: s.key });
+  var fp = pki.schema.cmc.parse(full);
+  check("F11. every control that went in comes back out, in order",
+    fp.controls.length === 2 && fp.controls[0].attrType === ID_CMC_TRANSACTION_ID &&
+    fp.controls[1].attrType === ID_CMC_SENDER_NONCE);
+
+  // ---- the two halves meet ---------------------------------------------
+  // The producing and interpreting sides share one transaction: build a request
+  // carrying a transactionId + senderNonce, then have verify accept the response
+  // that echoes exactly those. This is the only vector that proves the two
+  // modules agree about what a transaction IS, rather than each being
+  // self-consistent.
+  var TXN = 20260811;
+  var NONCE = nodeCrypto.randomBytes(16);
+  var req = await pki.cmc.build({
+    requests: [{ tcr: csrDer }],
+    controls: [
+      { type: "id-cmc-transactionId", value: b.integer(BigInt(TXN)) },
+      { type: "id-cmc-senderNonce", value: b.octetString(NONCE) },
+    ],
+  }, { cert: s.cert, key: s.key });
+
+  var sentControls = pki.schema.cmc.parse(req).controls;
+  var sentTxn = pki.asn1.read.integer(pki.asn1.decode(
+    sentControls.filter(function (c) { return c.attrType === ID_CMC_TRANSACTION_ID; })[0].values[0]));
+  var sentNonce = pki.asn1.read.octetString(pki.asn1.decode(
+    sentControls.filter(function (c) { return c.attrType === ID_CMC_SENDER_NONCE; })[0].values[0]));
+  check("F12. the emitted transactionId and senderNonce are the ones the caller asked for",
+    sentTxn === BigInt(TXN) && Buffer.compare(sentNonce, NONCE) === 0);
+
+  // The CA's reply, echoing them back the way RFC 5272 sec. 6.6 requires.
+  function attr(id, type, values) { return b.sequence([b.integer(BigInt(id)), b.oid(type), b.set(values)]); }
+  var respBody = b.sequence([
+    b.sequence([
+      attr(1, ID_CMC_TRANSACTION_ID, [b.integer(BigInt(TXN))]),
+      attr(2, "1.3.6.1.5.5.7.7.7", [b.octetString(sentNonce)]),          // recipientNonce echo
+    ]),
+    b.sequence([]), b.sequence([]),
+  ]);
+  var respDer = await pki.cms.sign(respBody, { cert: s.cert, key: s.key },
+    { eContentType: "id-cct-PKIResponse" });
+  // Real verification here, not the opt-out: this response is genuinely signed,
+  // so the vector proves the whole chain -- build, sign, parse, authenticate,
+  // bind, interpret -- rather than only the interpretation half.
+  var verdict = await pki.cmc.verify(respDer,
+    { transactionId: Number(sentTxn), senderNonce: sentNonce, certs: [s.cert] });
+  check("F13. pki.cmc.verify accepts the response to a pki.cmc.build request (the two halves agree)",
+    verdict.outcome === "issued" && verdict.signatureVerified === true);
+
+  // ...and rejects the same response against a DIFFERENT transaction, which is
+  // what makes the previous check mean something.
+  check("F13b. the same response is refused for a different transaction",
+    (await acode(function () {
+      return pki.cmc.verify(respDer, { transactionId: Number(sentTxn) + 1, senderNonce: sentNonce, certs: [s.cert] });
+    })) === "cmc/transaction-mismatch");
+
+  console.log("CHECKS " + helpers.getChecks());
+}
+
+module.exports = { run: run };
+
+if (require.main === module) {
+  run().then(null, function (e) { console.error((e && e.stack) || e); process.exit(1); });
+}

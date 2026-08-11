@@ -559,7 +559,29 @@ async function testMlDsaVerify() {
   check("R15 no-attrs ML-DSA ignores a present digestAlgorithm parameter", (await pki.cms.verify(m15, { content: CONTENT })).valid === true);
 }
 
+// The result must describe the bytes the signature was checked against. verify()
+// parses synchronously and verifies in a later promise turn, so a caller's buffer
+// rewritten in that gap must not be able to yield a valid result over content the
+// signature never covered -- the accidental form of this is a pooled read buffer
+// recycled across concurrent verifies, not an attacker.
+async function testParseVerifyReadSameBytes() {
+  var der = await pki.cms.sign(Buffer.from("the bytes that were actually signed"), makeSigner("ec-p256"));
+
+  var raced = Buffer.from(der);
+  var out = null, err = null;
+  var p = pki.cms.verify(raced);
+  Promise.resolve().then(function () { raced.fill(0x41); });   // rewrite mid-flight
+  try { out = await p; } catch (e) { err = e; }
+
+  // Without the private copy the overwrite lands on the very bytes the signature
+  // covers, so this comes back invalid or throws. Passing means parse and verify
+  // both read memory the caller can no longer reach.
+  check("TOCTOU. a buffer rewritten between parse and verify does not affect the verdict",
+    err === null && out.valid === true && out.signers.length === 1);
+}
+
 async function run() {
+  await testParseVerifyReadSameBytes();
   await testAcceptKats();
   await testMultiSigner();
   await testSignerIdentifier();

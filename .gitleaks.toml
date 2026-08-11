@@ -94,6 +94,7 @@ stopwords = [
   "responderKeyPkcs8",
   "issuerKeyPkcs8",
   "rogueIssuerKeyPkcs8",
+  "recipientKeyPkcs8",
 ]
 
 [[allowlists]]

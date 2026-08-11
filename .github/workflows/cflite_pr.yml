@@ -53,6 +53,7 @@ jobs:
           - crmf-parse
           - pkcs12-parse
           - cmp-parse
+          - cmc-parse
           - ct-parse
           - ct-verify
           - ct-log-list

@@ -22,6 +22,14 @@
  *      *.test.js (advertised surface must be exercised by name).
  *
  *   4. README    — every `@module` namespace is described in README.md.
+ *
+ * On (2) and its limit: the fixtures below are INJECTED into the example's scope,
+ * so an example reading `pki.asn1.decode(der)` passes here on the harness's `der`
+ * while an operator copying that same line off the wiki page gets a
+ * ReferenceError. That gap is measured by jsdoc-example-execution.test.js, which
+ * runs each example on nothing but `pki` and carries a ratchet pushing the corpus
+ * toward being self-contained. The fixture set here covers what has not converted
+ * yet; it shrinks as that ratchet rises.
  */
 
 var path = require("node:path");

@@ -408,11 +408,34 @@ function testClassify() {
     var ab = new ArrayBuffer(16); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
     pki.est.classifyResponse(500, { "content-type": "text/plain" }, b, { op: "cacerts" });
   }) === "est/http-error");
-  // 60. fullcmc is a real path (paths() emits it) but its CMC response is deferred
-  //     -> a precise est/fullcmc-not-supported, never a silently-accepted 200.
-  check("60. fullcmc classification rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "fullcmc" }); }) === "est/fullcmc-not-supported");
+  // 60. /fullcmc responses are CLASSIFIED, not refused (RFC 7030 sec. 4.3.2).
+  //
+  // FC5: a 200 must be application/pkcs7-mime with smime-type EITHER certs-only OR
+  // CMC-response -- the CA chooses which arm it answers with, and both are legal.
+  check("60. fullcmc 200 accepts the certs-only arm",
+    pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.alloc(0), { op: "fullcmc" }).status === "ok");
+  check("60a. fullcmc 200 accepts the CMC-response arm",
+    pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=CMC-response" }, Buffer.alloc(0), { op: "fullcmc" }).status === "ok");
+  // FC3a: RFC 5273 sec. 3 prose spells it CMC-Request while Table 1 and RFC 7030 spell
+  // CMC-request, so the comparison is case-insensitive in BOTH directions.
+  check("60b. fullcmc smime-type comparison is case-insensitive (sec. 3 vs Table 1 disagree)",
+    pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=cmc-RESPONSE" }, Buffer.alloc(0), { op: "fullcmc" }).status === "ok");
+  // ... and an arm that is neither is still a content-type fault, not a silent accept.
+  check("60c. fullcmc 200 with a foreign smime-type is a content-type fault",
+    code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=pkcs7-mime" }, Buffer.alloc(0), { op: "fullcmc" }); }) === "est/bad-content-type");
+
+  // FC8 / FC8a: 404 now carries a THIRD meaning, so all three are pinned together --
+  // adding one branch without re-deriving the others is exactly how this goes wrong.
+  check("60d. FC8 fullcmc 404 means the service is not implemented",
+    pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "fullcmc" }).status === "not-implemented");
+  check("60e. FC8 fullcmc 501 means the same",
+    pki.est.classifyResponse(501, {}, Buffer.alloc(0), { op: "fullcmc" }).status === "not-implemented");
+  check("60f. FC8a cacerts 404 is still an http-error (unchanged)",
+    code(function () { pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "cacerts" }); }) === "est/http-error");
+  check("60g. FC8a csrattrs 404 is still none-available (unchanged)",
+    pki.est.classifyResponse(404, {}, Buffer.alloc(0), { op: "csrattrs" }).status === "none-available");
   // 60b. an unrecognized operation name -> est/unsupported-operation (not a pass).
-  check("60b. unrecognized op rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "bogus" }); }) === "est/unsupported-operation");
+  check("60h. unrecognized op rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "bogus" }); }) === "est/unsupported-operation");
 }
 
 // ---- adversarial / edge-branch coverage (error + fail-closed paths) ----
