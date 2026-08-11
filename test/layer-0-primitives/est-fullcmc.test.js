@@ -181,6 +181,28 @@ async function run() {
   check("G2. a CMC-response 200 yields issued, with the certificates from the CMS bag (PR5)",
     r2.outcome === "issued" && r2.certificates.length === 1 && r2.controls.length === 1);
 
+  // G2b -- the SAME correlation on this arm. A status control is the server's
+  // word that it issued something; the key match is what shows it issued
+  // something to THIS request. A success status over a bag holding only an
+  // unrelated certificate is not an issuance here any more than it is on the
+  // certs-only arm -- the rule is one rule, applied to both.
+  check("G2b. a success status over a bag with no requested key is not an issuance",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [otherCert])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/no-issued-cert");
+
+  check("G2c. a non-issued outcome is NOT correlated -- it is no claim a certificate exists",
+    // CMCStatus popRequired(6). Correlating an answer that asks for more from the
+    // client would turn "not yet" into a failure: a CA that has not issued has
+    // nothing to return, and there is nothing to match.
+    (await pki.est.fullcmc("https://ca.example", requestDer, {
+      transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+        body: pki.est.transferEncode(pkiResponse([statusV2(1, 6, null)], [])) }),
+      tls: TLS, allowUnverifiedResponse: true })).outcome === "pop-required");
+
   var t3 = fakeTransport({ status: 200, headers: { "content-type": 'application/pkcs7-mime; smime-type="CMC-RESPONSE"' },
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });
   check("G3. a quoted, upper-case smime-type is accepted (FC3a: compare case-insensitively)",
