@@ -460,6 +460,18 @@ async function run() {
         [b.sequence([b.integer(1n), b.integer(9n)])], [])));
     }) === "cmc/bad-cms-sequence");
 
+  check("C9b. nor one whose content field is not the [0] EXPLICIT content",
+    // The leading OID alone is not enough: `SEQUENCE { OID, INTEGER }` would be
+    // surfaced as a content info that no CMS reader accepts.
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+        [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1"), b.integer(9n)])])], [])));
+    }) === "cmc/bad-cms-sequence");
+
+  check("C9c. a bare contentType with no content is accepted (the field is OPTIONAL)",
+    cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+      [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1")])])], []))).cmsSequence.length === 1);
+
   // D6 -- the 2008 module tags the same arm [1]. Both encodings appear on the
   // wire; supporting only one is the partial-rule trap.
   var d6 = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([
