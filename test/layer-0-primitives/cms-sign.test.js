@@ -438,6 +438,20 @@ async function testKeyOnlySigner() {
   // enrollment key held in an HSM is a non-extractable CryptoKey: its public half
   // cannot be derived, which is the point of it, so the comparison simply does not
   // apply there and signing proceeds.
+  // The single-SignerInfo rule is RFC 5272 sec. 3.2's, so it binds for a Full PKI
+  // Request and not for ordinary CMS. Applying it to every content type would
+  // refuse a multi-signer SignedData that nothing objects to -- CMS permits
+  // several, and a key-only signer's certificate can reach a verifier by other
+  // means.
+  var certSigner = makeSigner("ec-p256");
+  await rejects("key-only + another signer under id-cct-PKIData", function () {
+    return pki.cms.sign(CONTENT, [certSigner, { key: keyPkcs8, spki: spki, keyIdentifier: keyId }],
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+  check("the same pair over ordinary content is not this rule's business",
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT,
+      [certSigner, { key: keyPkcs8, spki: spki, keyIdentifier: keyId }])).signerInfos.length === 2);
+
   // Generated extractable, then the private half re-imported non-extractable --
   // the shape a key that lives in a token has, without needing one.
   var hsmGen = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);

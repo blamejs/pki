@@ -474,6 +474,18 @@ async function run() {
   check("F17. a request buffer rewritten right after the call does not change what was signed",
     pki.schema.cmc.parse(await pending).requests.length === 1);
 
+  // F18 -- the signer is fixed at the call too. cms.sign reads the key inside its
+  // own promise chain, so swapping it afterwards would sign with the replacement
+  // while the original certificate stayed embedded -- a message whose signature
+  // does not belong to the certificate beside it.
+  var other18 = await signer();
+  var liveSigner = { cert: s.cert, key: s.key };
+  var signing = pki.cmc.build({ requests: [{ tcr: csrDer }] }, liveSigner);
+  liveSigner.key = other18.key;                       // swapped on the next line
+  var signedWith = await signing;
+  check("F18. a signer mutated after the call does not change who signed",
+    (await pki.cms.verify(signedWith, { certs: [s.cert] })).valid === true);
+
   // ---- F14: signing with the request's own key (RFC 5272 sec. 3.2) ------
   // The case the key-only signer exists for: enrolling a brand-new key, so there
   // is no certificate to identify the signer by. Sec. 3.2 then requires (a) the
