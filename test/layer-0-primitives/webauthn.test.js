@@ -892,6 +892,26 @@ async function testCallerAnchors() {
       return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
         { metadata: verifiedRevoked, rootCertificates: [u2f.rootDer], time: T });
     })) === "webauthn/metadata-status");
+
+  // A status report is judged AT the validation instant, not merely by existing. A revocation
+  // scheduled for a date after the instant being verified has not taken effect yet, so it must
+  // not deny -- and the same entry must deny once the instant reaches it. Both directions are
+  // asserted because only the pair distinguishes a live effective-date comparison from one
+  // reading an unset instant, which would filter nothing and revoke everything immediately.
+  var scheduled = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [u2f.rootDer.toString("base64")],
+    keyIdentifiers: [require("../../lib/webauthn-mds").certKeyIdentifier(unanchored.trustPath[unanchored.trustPath.length - 1])],
+    statusReports: [{ status: "REVOKED", effectiveDate: "2027-01-01" }] });
+  var verifiedScheduled = await pki.webauthn.verifyMetadataBlob(scheduled.blob,
+    { rootCertificates: [scheduled.rootDer], time: T });
+  check("anchors: a revocation dated after the validation instant has not taken effect",
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+      { metadata: verifiedScheduled, time: T })).attestationVerified === true);
+  check("anchors: the same entry denies once the validation instant reaches its effective date",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { metadata: verifiedScheduled, time: new Date("2027-06-01T00:00:00Z") });
+    })) === "webauthn/metadata-status");
 }
 
 // ---- the ceremony boundary (WebAuthn sec. 7.1) ------------------------------------------------
@@ -1243,6 +1263,13 @@ async function testCompoundAttestation() {
   // anchored === total would reject exactly the configuration this supports.
   check("compound: mixed-route coverage reports every element as anchored, not just the fallback's",
     combined.anchoredElements.total === 2 && combined.anchoredElements.anchored === 2);
+  // And the verdict names BOTH routes and keeps the governed entries. Reporting only
+  // "rootCertificates" would attribute the whole evaluation to the weaker half and drop the
+  // catalogue entry that governed the listed element -- the part an auditor most needs.
+  check("compound: a mixed-route verdict names both routes",
+    combined.anchoredTo === "metadata+rootCertificates");
+  check("compound: a mixed-route verdict keeps the metadata entries that governed",
+    !!combined.metadata && Array.isArray(combined.metadata.entries) && combined.metadata.entries.length === 1);
 
   // And a compound where EVERY element misses still reports the miss, so the documented
   // pinned-roots fallback for models the catalogue does not cover keeps working.
@@ -1418,6 +1445,13 @@ async function testAndroidSafetyNet() {
     { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer] });
   check("safetynet: the instant the chain was judged at is surfaced",
     snRes.chainValidatedAt instanceof Date && snRes.chainValidatedAt.getTime() === Date.UTC(2020, 5, 1));
+  // This attestation's x5c chain WAS validated -- against opts.safetyNetRoots, which the format
+  // requires -- so a verdict of `anchoredTo: null` would say the path went unchecked, and a caller
+  // enforcing `anchoredTo !== null` would refuse an attestation that is in fact anchored.
+  check("safetynet: the route that anchored the path is named, not reported as unchecked",
+    snRes.anchoredTo === "safetyNetRoots");
+  check("safetynet: coverage is reported for the route that ran",
+    !!snRes.anchoredElements && snRes.anchoredElements.total === 1 && snRes.anchoredElements.anchored === 1);
   // android-safetynet binds the whole authenticatorData (the nonce is its digest), so the AAGUID is
   // signed and the entry is keyed by it.
   var snAaguid = snRes.aaguid.toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
@@ -1430,6 +1464,11 @@ async function testAndroidSafetyNet() {
   check("safetynet: metadata binds a stored response at the instant its own format judged it",
     (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
       { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).attestationVerified === true);
+  // A second route does not erase the first: both anchored this path, and both are named.
+  check("safetynet: metadata does not displace the format's own anchoring route",
+    (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
+      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).anchoredTo
+      === "metadata+safetyNetRoots");
 
   // Each bind, broken one at a time.
   check("safetynet: a nonce not bound to this registration is refused (bullet 3)",
