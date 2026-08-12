@@ -539,6 +539,20 @@ async function testKeyOnlySigner() {
   check("key-only signer: a NON-EXTRACTABLE private key still signs",
     pki.schema.cms.parse(hsmDer).signerInfos.length === 1);
 
+  // ... and its declared public key is still PROVEN, not taken on the caller's
+  // word. The correspondence comes from the signature, which an opaque handle can
+  // produce as readily as an exportable key -- so there is no key kind for which
+  // this check is skipped, and signing with handle A while declaring a valid
+  // same-algorithm key B is refused rather than emitted as an unverifiable
+  // SignerInfo.
+  var otherEc = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var otherSpki = await pki.key.export(otherEc.publicKey);
+  var otherKeyId = Buffer.from(await subtle.digest("SHA-1", otherSpki));
+  await rejects("key-only signer: an opaque key with SOMEONE ELSE'S spki is refused", function () {
+    return pki.cms.sign(CONTENT, { key: hsmKey, spki: otherSpki, keyIdentifier: otherKeyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
   // The signature, verified directly. The signed attributes are signed as a SET OF
   // (RFC 5652 sec. 5.4), which is the [0] IMPLICIT node re-tagged to a universal
   // SET -- reconstructing that is the whole point of the check.

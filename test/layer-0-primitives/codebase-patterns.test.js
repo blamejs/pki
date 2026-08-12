@@ -1811,6 +1811,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>", "lib/crl-sign.js:<top>",
         "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/schema-cmc.js:<top>",
         "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err", "lib/crl-sign.js:_err",
+        // The run continues past the factories: makeNS(domain) then makeBuilder({...})
+        // with that domain's error class and schemas. Same idiom, same reason -- the
+        // builder itself lives once in pki-build.js and each module binds its own domain.
+        "lib/cms-sign.js:_signE", "lib/tsp-sign.js:_signE", "lib/x509-sign.js:_signE", "lib/csr-sign.js:_signE", "lib/attrcert-sign.js:_signE", "lib/crmf-sign.js:_signE", "lib/cmp-build.js:_signE", "lib/crl-sign.js:_signE",
       ],
       mode: "family-subset",
       reason: "producing-module header: require(codec/oid/sign-scheme/guard/framework-error) + the two per-domain error factories (_err full-code, _signE domain-prefixed) + O()=oid.byName; the resolver/signer are shared in sign-scheme.js and each module binds a different domain -- nothing further extractable. Applies to the <top> require run and the shared _err factory shape.",
