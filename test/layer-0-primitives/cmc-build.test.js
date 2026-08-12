@@ -319,6 +319,20 @@ async function run() {
   var cp = pki.schema.cmc.parse(withCrm);
   check("C2f. the crm arm is emitted IMPLICIT and its certReqId is the body part identity",
     cp.requests[0].arm === "crm" && cp.requests[0].bodyPartID === 3);
+  // A crm identity comes from its CertReqMsg's own certReqId and cannot be
+  // overridden. Taking the certReqId while quietly discarding a supplied
+  // bodyPartID is the same silent-drop the unknown-field door exists to stop --
+  // the only reason to state an identity is that something already references it,
+  // so the message would be signed with a control pointing at no request in it.
+  check("C2f2. a crm request whose bodyPartID disagrees with its certReqId is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ crm: crmDer, bodyPartID: 9 }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("C2f3. and one that AGREES is accepted -- the caller is confirming, not overriding",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ crm: crmDer, bodyPartID: 3 }] },
+      { cert: s.cert, key: s.key })).requests[0].bodyPartID === 3);
+
   check("C2g. the emitted CertReqMsg re-parses through pki.schema.crmf",
     pki.schema.crmf.parse(b.sequence([cp.requests[0].certReqMsgBytes]))
       .messages[0].certReq.certTemplate.subject.dn === "CN=crm.example");

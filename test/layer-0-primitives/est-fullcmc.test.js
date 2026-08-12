@@ -51,6 +51,13 @@ function statusV2(id, status, other) {
   return attr(id, ID_CMC_STATUS_INFO_V2, [b.sequence(f)]);
 }
 
+// The same status with the bodyList naming an explicit body part, so a vector can
+// report on a part the request never sent.
+function statusV2About(bodyPart, status) {
+  return attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+    b.integer(BigInt(status)), b.sequence([b.sequence([b.integer(BigInt(bodyPart))])])])]);
+}
+
 // A Full PKI Response in a SignedData, certificates in the CMS bag (RFC 5272 sec. 4.2).
 // A structurally present SignerInfo: RFC 5272 sec. 3.2.1.3.4 makes verifying the
 // carrier's signature mandatory, so a Full PKI Response with no signer is refused
@@ -305,6 +312,25 @@ async function run() {
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 2, null)], [])) }),
         tls: TLS, allowUnverifiedResponse: true });
     })) === "est/bad-content-type");
+
+  // G1u2 -- the verb retains WHICH body parts it sent, so a status about one it
+  // never sent is refused. The transaction and nonce cannot catch this: a server
+  // can echo both correctly and still report on a different message. The request
+  // above carries one certification request, so a status about body part 999 is
+  // about something that was never in it.
+  check("G1u2. a status reporting on a body part the request never sent is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2About(999, 0)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "cmc/body-part-unknown");
+
+  check("G1u3. and a status about the body part it DID send is accepted",
+    (await pki.est.fullcmc("https://ca.example", requestDer, {
+      transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+        body: pki.est.transferEncode(pkiResponse([statusV2About(1, 0)], [certDer])) }),
+      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
 
   // G1v -- the AuthenticatedData carrier, reachable AUTHENTICATED from the verb an
   // operator actually calls. A capability that exists only one layer down is not

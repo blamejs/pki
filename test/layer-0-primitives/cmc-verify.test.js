@@ -53,6 +53,12 @@ function statusV2(id, status, other) {
   if (other) f.push(other);
   return attr(id, ID_CMC_STATUS_INFO_V2, [b.sequence(f)]);
 }
+// The same status with the bodyList naming an explicit body part, so a vector can
+// choose WHICH part the status reports on rather than always body part 1.
+function statusV2b(bodyPart, status) {
+  return attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+    b.integer(BigInt(status)), b.sequence([b.sequence([b.integer(BigInt(bodyPart))])])])]);
+}
 
 // A PKIResponse in a SignedData carrier. certs go in the CMS certificates [0]
 // bag, which is where RFC 5272 sec. 4.2 puts the ISSUED certificates -- never
@@ -435,6 +441,31 @@ async function run() {
     // legitimately want; what is refused is the CLAIM that a signature was checked.
     (await pki.cmc.verify(pki.schema.cms.parse(signedResp), { allowUnverified: true }))
       .signatureVerified === false);
+
+  // PD14j -- what the response is ABOUT is bound too. A status names its body
+  // parts in the bodyList; one naming a part the request never sent is an answer
+  // to a different message, and the transaction and nonce cannot catch it -- a
+  // server can echo both correctly while reporting on something else.
+  check("PD14j. a status reporting on a body part the request never sent is refused",
+    (await acode(function () {
+      return pki.cmc.verify(response([statusV2b(999, 0)]), { bodyPartIDs: [1], allowUnverified: true });
+    })) === "cmc/body-part-unknown");
+
+  check("PD14j2. a status on a body part the request DID send is accepted",
+    // statusV2's bodyList names body part 1.
+    (await pki.cmc.verify(response([statusV2(1, 0, null)]), { bodyPartIDs: [1], allowUnverified: true }))
+      .outcome === "issued");
+
+  check("PD14j3. body part 0 -- the reference to the enclosing PKIData -- is always in the set",
+    // sec. 3.2.1 reserves 0 for the message itself, so a status about the request
+    // as a whole is in the set by definition and needs no entry.
+    (await pki.cmc.verify(response([statusV2b(0, 0)]), { bodyPartIDs: [1], allowUnverified: true }))
+      .outcome === "issued");
+
+  check("PD14j4. and with no retained set the check does not apply",
+    // The same asymmetry as every other half of the binding: checked only when the
+    // client kept it.
+    (await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true })).outcome === "issued");
 
   // PD14h -- both sides of the comparison are frozen, not just the response.
   // The binding checks run after the signature check's await, so a `sent` the
