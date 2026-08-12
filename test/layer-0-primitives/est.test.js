@@ -374,6 +374,19 @@ function testClassify() {
   check("56b. content-type prefix look-alike rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mimeevil" }, Buffer.alloc(0), { op: "cacerts" }); }) === "est/bad-content-type");
   // 56c. the exact token, bare or with parameters -> ok.
   check("56c. exact content-type with params ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
+  // 56e. The same ambiguity ONE LEVEL UP: HTTP field names are case-insensitive
+  // (RFC 9110 sec. 5.1), so these two keys are one field carrying two values. A
+  // reader that lowercases into a map and a reader that prefers the exact key keep
+  // DIFFERENT ones, and this client has both -- so the two stages could route the
+  // same body down different arms.
+  check("56e. the same header field under two spellings is refused",
+    code(function () {
+      return pki.est.classifyResponse(200,
+        { "content-type": "application/pkcs7-mime; smime-type=certs-only",
+          "Content-Type": "application/pkcs7-mime; smime-type=server-generated-key" },
+        Buffer.alloc(0), { op: "cacerts" });
+    }) === "est/bad-content-type");
+
   // 56d. A duplicated smime-type is not a value the whitelist can be applied to:
   // one of the two may be on it while the other is not, and matching the first
   // would pass a header that also declares something else (RFC 2045 sec. 5.1).

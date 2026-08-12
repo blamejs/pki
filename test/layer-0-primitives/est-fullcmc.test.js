@@ -351,6 +351,19 @@ async function run() {
         tls: TLS, allowUnverifiedResponse: true });
     })) === "est/no-issued-cert");
 
+  // G1u6 -- the same ambiguity at the HEADER FIELD level, driven through the verb.
+  // The two spellings are one field carrying two values, and the arm-selection stage
+  // and the classifier read the map differently, so this is where they could disagree.
+  check("G1u6. a response carrying content-type under two spellings is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200,
+          headers: { "content-type": "application/pkcs7-mime; smime-type=CMC-response",
+            "Content-Type": "application/pkcs7-mime; smime-type=certs-only" },
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/bad-content-type");
+
   // G1u4 -- a Content-Type declaring BOTH arms selects neither. RFC 2045 sec. 5.1
   // gives a parameter at most one value, and taking the first would let the order
   // of two labels decide which shape the body is read as, on the very header whose

@@ -545,6 +545,26 @@ async function run() {
   // one a control references; a bodyPartID written on a control is never honoured
   // at all; and a misspelled `identity` drops the Identification control that
   // tells the server to derive the Identity Proof key from secret AND identity.
+  // F19f -- a status control reports a SERVER's verdict on a request, so it has no
+  // meaning written into the request itself (RFC 5272 sec. 6.1). The builder refuses
+  // to emit one; the decoder still reads them wherever they appear, because the spec
+  // states a placement MUST for id-cmc-responseBody alone and refusing the rest on
+  // the wire would reject a message the ASN.1 permits.
+  check("F19f1. a CMC Status Info control in a REQUEST is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "id-cmc-statusInfo", value: b.sequence([b.integer(0n), b.sequence([b.integer(1n)])]) }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/control-misplaced");
+
+  check("F19f2. and the Extended one likewise",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "id-cmc-statusInfoV2",
+          value: b.sequence([b.integer(0n), b.sequence([b.sequence([b.integer(1n)])])]) }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/control-misplaced");
+
   // F19e -- a hand-encoded binding control must carry the type the toolkit READS.
   // The CMC parser keeps control values raw, so nothing downstream objects; but
   // these three are compared against the response and read back out of the request
