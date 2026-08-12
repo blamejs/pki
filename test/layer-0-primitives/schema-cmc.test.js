@@ -504,6 +504,25 @@ async function run() {
           b.contextConstructed(0, Buffer.concat([b.integer(1n), b.integer(2n)]))])])], [])));
     }) === "cmc/bad-cms-sequence");
 
+  // C9f/C9g -- the contentType is READ, not looked at. An OBJECT IDENTIFIER TLV
+  // can carry content no OID reader accepts: empty, or a subidentifier padded to
+  // a non-minimal encoding. A tag check waves both through while
+  // pki.schema.cms.parse refuses them, so the builder's readback would pass a
+  // message its own CMS reader will not.
+  check("C9f. a contentType OBJECT IDENTIFIER with EMPTY content is not a ContentInfo",
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+        [b.sequence([b.integer(1n), b.sequence([b.raw(Buffer.from([0x06, 0x00]))])])], [])));
+    }) === "cmc/bad-cms-sequence");
+
+  check("C9g. nor one whose contentType is non-minimally encoded",
+    // 2.5 encoded as 0x80 0x55: a leading 0x80 continuation byte pads the first
+    // subidentifier, which DER forbids.
+    code(function () {
+      return cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
+        [b.sequence([b.integer(1n), b.sequence([b.raw(Buffer.from([0x06, 0x02, 0x80, 0x55]))])])], [])));
+    }) === "cmc/bad-cms-sequence");
+
   check("C9c. a bare contentType with no content is accepted (the field is OPTIONAL)",
     cmc.parse(signedData(ID_CCT_PKI_DATA, pkiData([], [],
       [b.sequence([b.integer(1n), b.sequence([b.oid("1.2.840.113549.1.7.1")])])], []))).cmsSequence.length === 1);

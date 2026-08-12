@@ -525,6 +525,36 @@ async function run() {
       return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionID: 1 }, { cert: s.cert, key: s.key });
     })) === "cmc/bad-input");
 
+  // F19c -- the SAME door on every descriptor nested in a spec, not only on the
+  // spec itself. Each of these silently changes what gets signed: a misspelled
+  // bodyPartID leaves the request auto-allocated a different identifier from the
+  // one a control references; a bodyPartID written on a control is never honoured
+  // at all; and a misspelled `identity` drops the Identification control that
+  // tells the server to derive the Identity Proof key from secret AND identity.
+  check("F19c1. an unknown field on a REQUEST is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartId: 7 }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19c2. an unknown field on a CONTROL is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "id-cmc-senderNonce", value: b.octetString(bindNonce), bodyPartID: 9 }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19c3. an unknown field on identityProof is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], identityProof: { secret: "s3cret", identtiy: "alice" } },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19c4. an unknown field on popLink is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], popLink: { secret: "s3cret", random: 8 } },
+        { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
   check("F19d. a key the table lists but nothing reads would defeat the guard, so there is none",
     // `identification` is attached through identityProof.identity. Listing it as a
     // spec field of its own would put it back through the door and leave it out of

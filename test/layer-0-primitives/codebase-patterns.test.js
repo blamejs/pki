@@ -1752,6 +1752,24 @@ function testNoDuplicateCodeBlocks() {
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
     },
     {
+      // The unknown-key door on an authoring spec: every producing module closes it
+      // the same way -- `guard.identifier.assertKnownKeys(obj, TABLE, E, "<domain>/bad-input",
+      // fn)` followed by a `Object.keys(...).forEach` that consumes the now-known
+      // fields. The CHECK itself already lives once in guard-identifier; what repeats
+      // is the call plus the message closure naming that spec's own fields, and each
+      // binds a DIFFERENT table, error class and wording. Extracting the call would
+      // just relocate the same three lines while hiding which table guards which
+      // descriptor. family-subset so a new producer's door matches the cluster
+      // instead of re-tripping it.
+      files: [
+        "lib/attrcert-sign.js:add", "lib/attrcert-sign.js:<top>",
+        "lib/cmc-build.js:fixedRequestId", "lib/cmc-build.js:_build",
+        "lib/pki-build.js:requestedExtensions", "lib/pki-build.js:<top>",
+      ],
+      mode: "family-subset",
+      reason: "assertKnownKeys call-site glue: the check lives once in guard-identifier; each site binds a different key table, error class and message, so only the call and its closure repeat.",
+    },
+    {
       // Format-module schema-declaration / build glue: each module declares its
       // sub-schemas with the same combinator idiom (`var X = schema.seq([field(...),
       // optional(...)], { assert, arity, code, what, build })`) and shapes its output
