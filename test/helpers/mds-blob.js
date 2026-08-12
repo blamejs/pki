@@ -196,7 +196,7 @@ async function mintU2fAttestation() {
 // the whole statement. Both elements are minted here and signed over the SAME authenticatorData --
 // which is what sec. 8.9 requires -- carrying a NON-zero AAGUID, so the packed element has a real
 // model identity to be looked up by while the u2f element's copy of that field is unsigned.
-async function mintMixedCompound(aaguidHex) {
+async function mintMixedCompound(aaguidHex, splitRoots) {
   var nodeCrypto = require("node:crypto");
   var fs = require("fs"), path = require("path");
   var KAT = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "webauthn", "py-webauthn-kat.json"), "utf8"));
@@ -228,14 +228,28 @@ async function mintMixedCompound(aaguidHex) {
     notBefore: NB, notAfter: NA,
     extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
   }, { key: root.kp.privateKey, name: [{ commonName: "Test Mixed Root CA" }], publicKey: root.spki });
-  async function leafFor(k, cn, serial) {
+  // A SECOND, unrelated root. The default keeps both elements under one root, which is what
+  // most vectors want; `splitRoots` issues the u2f element under this one instead, so a
+  // compound can hold two elements whose chains reach DIFFERENT roots. That separation is
+  // what lets a test tell "each element anchored by its own route" apart from "both happened
+  // to share a root", which a single-root fixture cannot distinguish.
+  var root2 = await pair();
+  var root2Der = await pki.x509.sign({
+    subject: [{ commonName: "Test Mixed Root CA 2" }], subjectPublicKey: root2.spki, serialNumber: Buffer.from([9]),
+    notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+  }, { key: root2.kp.privateKey, name: [{ commonName: "Test Mixed Root CA 2" }], publicKey: root2.spki });
+  async function leafUnder(issuer, issuerCn, k, cn, serial) {
     return pki.x509.sign({
       subject: [{ countryName: "US" }, { organizationName: "Test" }, { organizationalUnitName: "Authenticator Attestation" }, { commonName: cn }],
       subjectPublicKey: k.spki, serialNumber: Buffer.from([serial]), notBefore: NB, notAfter: NA,
       extensions: { basicConstraints: { critical: true, cA: false } },
-    }, { key: root.kp.privateKey, name: [{ commonName: "Test Mixed Root CA" }], publicKey: root.spki });
+    }, { key: issuer.kp.privateKey, name: [{ commonName: issuerCn }], publicKey: issuer.spki });
   }
-  var u2fCertDer = await leafFor(u2fKey, "Test U2F Attestation", 2);
+  function leafFor(k, cn, serial) { return leafUnder(root, "Test Mixed Root CA", k, cn, serial); }
+  var u2fCertDer = splitRoots
+    ? await leafUnder(root2, "Test Mixed Root CA 2", u2fKey, "Test U2F Attestation", 2)
+    : await leafFor(u2fKey, "Test U2F Attestation", 2);
   var packedCertDer = await leafFor(packedKey, "Test Packed Attestation", 3);
 
   // fido-u2f (sec. 8.6): 0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F.
@@ -265,7 +279,7 @@ async function mintMixedCompound(aaguidHex) {
     [b.textString("authData"), b.byteString(authDataBytes)],
   ]);
   return { attestationObject: attestationObject, clientDataHash: clientDataHash, rootDer: rootDer,
-    packedCertDer: packedCertDer, u2fCertDer: u2fCertDer };
+    root2Der: root2Der, packedCertDer: packedCertDer, u2fCertDer: u2fCertDer };
 }
 
 module.exports = { mint: mint, b64u: b64u, mintU2fAttestation: mintU2fAttestation, mintMixedCompound: mintMixedCompound };

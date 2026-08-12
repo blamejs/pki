@@ -1218,6 +1218,27 @@ async function testCompoundAttestation() {
         Object.assign({ metadata: wrongAnchorMd }, pinnedFallback));
     })) !== "NO-THROW");
 
+  // The documented combined configuration -- MDS-listed authenticators AND a model the
+  // catalogue does not cover -- must WORK for a compound, not merely fail closed. Here the
+  // u2f element is listed and chains to the root its own entry registers, while the packed
+  // element is unlisted and is covered by the caller's pin. Falling the WHOLE statement back
+  // onto the pin would re-judge the listed element against roots that have nothing to do with
+  // it and refuse a conforming compound; the fallback applies only to what actually missed.
+  // The two elements must chain to DIFFERENT roots, or the assertion cannot discriminate: with
+  // one shared root the caller's pin also satisfies the listed element and a whole-statement
+  // fallback passes for the wrong reason. Here the u2f element chains to root2 (which its
+  // metadata entry registers) and the packed element to root1 (the caller's pin).
+  var split = await mdsHelper.mintMixedCompound(MIXED_AAGUID, true);
+  var splitU2fKid = require("../../lib/webauthn-mds.js").certKeyIdentifier(pki.schema.x509.parse(split.u2fCertDer));
+  var listedU2fOnly = await mdsHelper.mint({ aaguid: null, keyIdentifiers: [splitU2fKid],
+    anchors: [split.root2Der.toString("base64")] });
+  var listedU2fMd = await pki.webauthn.verifyMetadataBlob(listedU2fOnly.blob,
+    { rootCertificates: [listedU2fOnly.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var combined = await pki.webauthn.verify(split.attestationObject, split.clientDataHash,
+    { metadata: listedU2fMd, rootCertificates: [split.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: a listed element and an unlisted one can be anchored by their own routes",
+    combined.attestationVerified === true);
+
   // And a compound where EVERY element misses still reports the miss, so the documented
   // pinned-roots fallback for models the catalogue does not cover keeps working.
   var listsNeither = await mdsHelper.mint({ entries: [
