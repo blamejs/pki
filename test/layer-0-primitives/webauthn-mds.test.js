@@ -366,7 +366,7 @@ async function run() {
   var mdU2fReal = await pki.webauthn.verifyMetadataBlob(u2fMeta.blob, { rootCertificates: [u2fMeta.rootDer], time: T });
   var bound = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdU2fReal, time: T });
   check("mds: a u2f attestation binds to the entry keyed by its attestation certificate",
-    bound.verified === true && bound.metadata.anchors === 1 && bound.metadata.aaguid === null);
+    bound.attestationVerified === true && bound.metadata.anchors === 1 && bound.metadata.aaguid === null);
 
   // The anchor check must VALIDATE the path, not merely recognise a name: an entry registering a
   // different root must not match, even though that root is a perfectly good certificate.
@@ -437,7 +437,7 @@ async function run() {
   // entry while res.aaguid reported a model identity nothing vouched for.
   var forged = u2f.withAaguid("99999999-9999-9999-9999-999999999999");
   check("mds: the forged attestation still verifies on its own (the signature does not cover the aaguid)",
-    (await pki.webauthn.verify(forged, u2f.clientDataHash, {})).verified === true);
+    (await pki.webauthn.verify(forged, u2f.clientDataHash, {})).attestationVerified === true);
   // The forged field is IGNORED for this format rather than trusted, so the attestation still binds
   // to its own entry through the certificate -- the forgery buys nothing instead of redirecting the
   // lookup.
@@ -691,7 +691,7 @@ async function run() {
   var mdShort = await pki.webauthn.verifyMetadataBlob(shortLived.blob, { rootCertificates: [shortLived.rootDer], time: T });
   check("mds: the catalogue verifies while it is current", mdShort.stale === false);
   check("mds: and it still governs at a time within its validity",
-    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdShort, time: T })).verified === true);
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdShort, time: T })).attestationVerified === true);
   check("mds: but a catalogue reused after its nextUpdate is refused",
     (await codeOf(function () {
       return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { metadata: mdShort, time: new Date("2026-07-01T00:00:00Z") });
@@ -702,7 +702,7 @@ async function run() {
     { rootCertificates: [shortLived.rootDer], time: T, allowStale: true });
   check("mds: a catalogue verified with allowStale keeps governing past its nextUpdate",
     (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
-      { metadata: staleAccepted, time: new Date("2026-07-01T00:00:00Z") })).verified === true);
+      { metadata: staleAccepted, time: new Date("2026-07-01T00:00:00Z") })).attestationVerified === true);
 
   // ---- each path answers to its OWN entry ----
   // The status gate must consult the entry that governs the path being checked. Resolving one entry

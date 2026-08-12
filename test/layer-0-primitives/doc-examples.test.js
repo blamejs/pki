@@ -133,6 +133,15 @@ var webauthnKat = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixture
 function _b64u(s) { var x = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (x.length % 4) x += "="; return Buffer.from(x, "base64"); }
 var webauthnAttObj = _b64u(webauthnKat.formats.packed.attestationObject);
 var webauthnClientHash = require("node:crypto").createHash("sha256").update(_b64u(webauthnKat.formats.packed.clientDataJSON)).digest();
+// The same KAT read the other way: the raw clientDataJSON, the challenge it declares
+// (decoded from its own base64url, so the example compares the value that is really
+// in there), the bare authenticatorData an assertion would carry, and the credential
+// public key the attestation registered.
+var webauthnClientDataJson = _b64u(webauthnKat.formats.packed.clientDataJSON);
+var webauthnParsedAtt = pki.webauthn.parseAttestationObject(webauthnAttObj);
+var webauthnAuthData = webauthnParsedAtt.authDataBytes;
+var webauthnCredKey = webauthnParsedAtt.authData.credentialPublicKey;
+var webauthnChallenge = pki.webauthn.parseClientData(webauthnClientDataJson).challenge;
 
 // pki.cms fixtures: a REAL detached SignedData + its external content, so verify's
 // example runs the actual RFC 5652 sec. 5.4 preimage + signature verification.
@@ -209,6 +218,16 @@ function fixturesFor(tag) {
     // pki.webauthn: a real packed attestation + its clientDataHash so the parse
     // and verify examples run the actual decode + attestation-statement verify.
     attestationObject: webauthnAttObj, clientDataHash: webauthnClientHash,
+    // ... and the assertion side: the KAT's own clientDataJSON with the challenge it
+    // actually carries, plus a bare authenticatorData and the credential key the
+    // attestation registered -- so parseClientData / parseAuthenticatorData run on
+    // real bytes, and verifyAssertion runs the real signature path (its signature is
+    // not the KAT's, so it fails closed with a typed webauthn/* verdict, which is
+    // what the example contract accepts).
+    clientDataJSON: webauthnClientDataJson, issuedChallenge: webauthnChallenge,
+    authenticatorData: webauthnAuthData, storedKey: webauthnCredKey,
+    assertion: { authenticatorData: webauthnAuthData, clientDataJSON: webauthnClientDataJson,
+      signature: Buffer.alloc(64) },
     // pki.webauthn metadata: a minted signed BLOB + its root, and the verified result and one
     // entry, so the lookup and anchor examples run against a real verified catalogue.
     mdsBlobBytes: mdsBlobBytes, fidoRootDer: fidoRootDer, mdsMetadata: mdsMetadata,

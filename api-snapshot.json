@@ -3276,9 +3276,21 @@
           "kind": "function",
           "arity": 1
         },
+        "parseAuthenticatorData": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseClientData": {
+          "kind": "function",
+          "arity": 2
+        },
         "verify": {
           "kind": "function",
           "arity": 3
+        },
+        "verifyAssertion": {
+          "kind": "function",
+          "arity": 1
         },
         "verifyMetadataBlob": {
           "kind": "function",
@@ -3540,6 +3552,9 @@
     "pki.webauthn.verifyMetadataBlob": "0.4.11",
     "pki.webauthn.metadataFor": "0.4.11",
     "pki.webauthn.metadataAnchors": "0.4.11",
+    "pki.webauthn.parseClientData": "0.5.0",
+    "pki.webauthn.parseAuthenticatorData": "0.5.0",
+    "pki.webauthn.verifyAssertion": "0.5.0",
     "pki.webcrypto.CryptoKey": "0.1.0",
     "pki.webcrypto.subtle": "0.1.0",
     "pki.webcrypto": "0.1.0",

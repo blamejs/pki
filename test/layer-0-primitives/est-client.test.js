@@ -204,11 +204,15 @@ async function testAuthRetry() {
   // field lines, which are the same field. Every challenge must reach the scheme
   // scan: seeing only one of them would answer with a scheme the server may not
   // accept, or refuse an offer it did make.
+  // The USABLE challenge is written FIRST, so a fold that keeps the last value
+  // would lose it and the exchange would be refused for offering nothing this
+  // client speaks. Putting it last would let the test pass on either behaviour,
+  // which is no test at all.
   var tMulti = fakeTransport([
-    { status: 401, headers: { "WWW-Authenticate": "Newfangled realm=\"est\"", "www-authenticate": "Basic realm=\"est\"" }, body: "" },
+    { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"", "WWW-Authenticate": "Newfangled realm=\"est\"" }, body: "" },
     enrollOK([S.cert])]);
   var rMulti = await pki.est.simpleenroll(BASE, CSR, { transport: tMulti, username: "u", password: "p" });
-  check("#15b challenges spread across two spellings of the field are all seen",
+  check("#15b a usable challenge is found even when another spelling of the field follows it",
     rMulti.certificate.equals(S.cert) && /^Basic /.test(tMulti.calls[1].headers.authorization));
 
   var t2 = fakeTransport([{ status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" }, enrollOK([S.cert])]);

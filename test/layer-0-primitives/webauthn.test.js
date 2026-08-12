@@ -68,6 +68,38 @@ function attObjOf(fmt, attStmtPairs, authData) {
   return cMap([[cText("fmt"), cText(fmt)], [cText("attStmt"), cMap(attStmtPairs)], [cText("authData"), cBytes(authData)]]);
 }
 
+// ---- fixtures for the ceremony / assertion vectors --------------------------------------------
+var nodeCrypto = require("crypto");
+function _sha256(b) { return nodeCrypto.createHash("sha256").update(b).digest(); }
+function _u16(n) { var b = Buffer.alloc(2); b.writeUInt16BE(n); return b; }
+function _u32(n) { var b = Buffer.alloc(4); b.writeUInt32BE(n); return b; }
+function _b64url(b) { return Buffer.from(b).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_"); }
+// One real P-256 keypair, and the COSE_Key that names its public half -- so an assertion vector
+// signs with the key the credential declares rather than asserting over a fixture nobody can check.
+var _EC_KP = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+var _EC_JWK = _EC_KP.publicKey.export({ format: "jwk" });
+var _EC_COSE = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)),
+  cKV(-2, cBytes(Buffer.from(_EC_JWK.x, "base64url"))), cKV(-3, cBytes(Buffer.from(_EC_JWK.y, "base64url")))]);
+// A bare authenticatorData, the shape an ASSERTION returns: no attestedCredentialData, so the AT
+// flag is clear and the buffer is exactly the 37-byte header.
+function _assertAuthData(o) {
+  o = o || {};
+  var flags = (o.up === false ? 0 : 0x01) | (o.uv ? 0x04 : 0) | (o.ed ? 0x80 : 0);
+  return Buffer.concat([_sha256(Buffer.from(o.rpId || "example.com", "utf8")),
+    Buffer.from([flags]), _u32(o.signCount === undefined ? 9 : o.signCount)]);
+}
+function _clientDataJson(o) {
+  o = o || {};
+  var doc = { type: o.type || "webauthn.get", challenge: _b64url(o.challenge || Buffer.alloc(16, 4)),
+    origin: o.origin || "https://example.com" };
+  if (o.crossOrigin !== undefined) doc.crossOrigin = o.crossOrigin;
+  return Buffer.from(JSON.stringify(doc), "utf8");
+}
+function _assertSig(authData, clientDataJSON) {
+  return nodeCrypto.sign("sha256", Buffer.concat([authData, _sha256(clientDataJSON)]),
+    { key: _EC_KP.privateKey, dsaEncoding: "der" });
+}
+
 async function run() {
   // --- parseAttestationObject: the structural entry over strict pki.cbor ---
   var p = pki.webauthn.parseAttestationObject(attObj("packed"));
@@ -94,7 +126,7 @@ async function run() {
 
   // --- verify: the packed x5c attestation signature verifies over the KAT ---
   var v = await pki.webauthn.verify(attObj("packed"), clientHash("packed"), {});
-  check("verify: packed KAT verifies (verified true)", v.verified === true);
+  check("verify: packed KAT verifies (verified true)", v.attestationVerified === true);
   check("verify: packed reports fmt + attestation type + trust path", v.fmt === "packed" && typeof v.attestationType === "string" && Array.isArray(v.trustPath));
   check("verify: packed surfaces the aaguid + credentialPublicKey", Buffer.isBuffer(v.aaguid) && v.credentialPublicKey);
 
@@ -103,7 +135,7 @@ async function run() {
   // credentialPublicKey checks all hold against captured authenticator output.
   for (var fmt of ["tpm", "apple", "fido_u2f", "android_key"]) {
     var res = await pki.webauthn.verify(attObj(fmt), clientHash(fmt), {});
-    check("verify: " + fmt + " KAT verifies (verified true)", res.verified === true);
+    check("verify: " + fmt + " KAT verifies (verified true)", res.attestationVerified === true);
     check("verify: " + fmt + " reports its attestation type", typeof res.attestationType === "string" && res.attestationType.length > 0);
     check("verify: " + fmt + " surfaces a non-empty trust path", Array.isArray(res.trustPath) && res.trustPath.length >= 1);
   }
@@ -143,7 +175,7 @@ async function run() {
     var cdh = crypto.createHash("sha256").update(Buffer.from(sv.clientDataJSON, "hex")).digest();
     var sr = await pki.webauthn.verify(Buffer.from(sv.attestationObject, "hex"), cdh, {});
     check("spec KAT: " + sv.name + " verifies (" + sv.expect.fmt + "/" + sv.expect.attestationType + "/alg " + sv.expect.alg + ")",
-      sr.verified === true && sr.fmt === sv.expect.fmt && sr.attestationType === sv.expect.attestationType &&
+      sr.attestationVerified === true && sr.fmt === sv.expect.fmt && sr.attestationType === sv.expect.attestationType &&
       sr.credentialPublicKey.alg === sv.expect.alg);
   }
   // The spec's android-key vector carries EMPTY authorization lists, so it does not
@@ -385,7 +417,7 @@ async function run() {
   // §8.7 -- the none format verifies with no statement (attestationType "None").
   var noneRes = await pki.webauthn.verify(attObjOf("none", [], realAuthData), packedHash);
   check("verify: none attestation verifies (attestationType None, empty trust path)",
-    noneRes.verified === true && noneRes.attestationType === "None" && noneRes.trustPath.length === 0);
+    noneRes.attestationVerified === true && noneRes.attestationType === "None" && noneRes.trustPath.length === 0);
   // §8.7 -- a non-empty none attStmt is rejected.
   check("verify: none attestation with a non-empty attStmt -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("none", [[cText("x"), cInt(1)]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
@@ -551,7 +583,7 @@ async function run() {
   var rsaMatchCert = appleCert(_B.raw(_rsa1.publicKey.export({ format: "der", type: "spki" })), rsaNonceExt);
   var rsaMatchRes = await pki.webauthn.verify(appleAtt(rsaMatchCert, rsaAuthData), packedHash);
   check("verify: apple leaf RSA key equal to an RSA credential key verifies (AnonCA)",
-    rsaMatchRes.verified === true && rsaMatchRes.fmt === "apple" && rsaMatchRes.attestationType === "AnonCA");
+    rsaMatchRes.attestationVerified === true && rsaMatchRes.fmt === "apple" && rsaMatchRes.attestationType === "AnonCA");
   var _rsa2Spki = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" });
   check("verify: apple leaf RSA key different from the RSA credential key -> webauthn/key-mismatch",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_B.raw(_rsa2Spki), rsaNonceExt), rsaAuthData), packedHash); })) === "webauthn/key-mismatch");
@@ -565,7 +597,7 @@ async function run() {
   var _edAtt = attObjOf("packed", [[cText("alg"), cInt(-8)], [cText("sig"), cBytes(crypto.sign(null, Buffer.concat([_edAuthData, packedHash]), _ed.privateKey))]], _edAuthData);
   var edRes = await pki.webauthn.verify(_edAtt, packedHash);
   check("verify: a valid Ed25519 self-attestation verifies (Self)",
-    edRes.verified === true && edRes.fmt === "packed" && edRes.attestationType === "Self");
+    edRes.attestationVerified === true && edRes.fmt === "packed" && edRes.attestationType === "Self");
   // A valid Ed448 self-attestation (fully-specified alg -53) verifies the same way.
   var _ed4 = crypto.generateKeyPairSync("ed448");
   var _ed4X = Buffer.from(_ed4.publicKey.export({ format: "jwk" }).x, "base64url");
@@ -573,7 +605,7 @@ async function run() {
   var _ed4Att = attObjOf("packed", [[cText("alg"), cInt(-53)], [cText("sig"), cBytes(crypto.sign(null, Buffer.concat([_ed4AuthData, packedHash]), _ed4.privateKey))]], _ed4AuthData);
   var ed4Res = await pki.webauthn.verify(_ed4Att, packedHash);
   check("verify: a valid Ed448 self-attestation verifies (Self)",
-    ed4Res.verified === true && ed4Res.fmt === "packed" && ed4Res.attestationType === "Self");
+    ed4Res.attestationVerified === true && ed4Res.fmt === "packed" && ed4Res.attestationType === "Self");
 
   // ---- authenticatorData bounded reader: the sub-37-byte + ED-happy paths -----------
   // sec. 6.1 -- a well-formed attestation object whose authData byte string is under the
@@ -614,7 +646,7 @@ async function run() {
   var _okpNonce = nonceExtFor(_okpAuth, packedHash);
   var _okpMatch = await pki.webauthn.verify(appleAtt(appleCert(_B.raw(_okpKp.publicKey.export({ format: "der", type: "spki" })), _okpNonce), _okpAuth), packedHash);
   check("verify: apple leaf OKP key equal to the OKP credential key verifies (AnonCA)",
-    _okpMatch.verified === true && _okpMatch.fmt === "apple" && _okpMatch.attestationType === "AnonCA");
+    _okpMatch.attestationVerified === true && _okpMatch.fmt === "apple" && _okpMatch.attestationType === "AnonCA");
   var _okpOtherSpki = crypto.generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" });
   check("verify: apple leaf OKP key different from the OKP credential key -> webauthn/key-mismatch",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_B.raw(_okpOtherSpki), _okpNonce), _okpAuth), packedHash); })) === "webauthn/key-mismatch");
@@ -652,6 +684,114 @@ async function run() {
   await testAndroidSafetyNet();
   await testCompoundAttestation();
   await testTpmObjectAttributePolicy();
+  await testCeremonyBinding();
+  await testClientData();
+  await testAssertion();
+  await testCallerAnchors();
+}
+
+// ---- caller-supplied attestation anchors (WebAuthn sec. 7.1 step 22-23) -----------------------
+// The metadata route resolves an authenticator's roots from the catalogue that registered it, which
+// is the stronger source -- but it reaches only the models the catalogue lists. Apple does not
+// publish its authenticators to the FIDO Metadata Service and the Google hardware-attestation roots
+// come from Google, so for those formats the catalogue resolves nothing and a trust path would come
+// back unchecked with no parameter to pin it.
+async function testCallerAnchors() {
+  var u2f = await require("../helpers/mds-blob").mintU2fAttestation();
+  var other = await require("../helpers/mds-blob").mintU2fAttestation();
+  var T = new Date("2026-06-01T00:00:00Z");
+
+  var unanchored = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { time: T });
+  check("anchors: with neither route asked for, the verdict SAYS the path was not anchored",
+    unanchored.attestationVerified === true && unanchored.anchoredTo === null);
+
+  var pinned = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: [u2f.rootDer], time: T });
+  check("anchors: a trust path that validates to a caller-supplied root is anchored, and says so",
+    pinned.attestationVerified === true && pinned.anchoredTo === "rootCertificates");
+
+  check("anchors: a root the path does not chain to is refused, not ignored",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { rootCertificates: [other.rootDer], time: T });
+    })) !== "NO-THROW");
+
+  // `none` and self-attestation carry no certificates. A caller who asked for anchoring is told it
+  // could not be applied rather than handed a pass that reads as though it had been.
+  // The KAT's own authenticatorData, so the `none` attestation is otherwise valid and
+  // the verdict under test is the anchoring one rather than a key-decode failure.
+  var realAuth = pki.webauthn.parseAttestationObject(attObj("packed")).authDataBytes;
+  check("anchors: an attestation with no trust path reports that anchoring could not be applied",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("none", [], realAuth), clientHash("packed"),
+        { rootCertificates: [u2f.rootDer] });
+    })) === "webauthn/anchor-not-applicable");
+
+  // Both routes together is the ordinary configuration for a relying party that accepts MDS-listed
+  // authenticators AND Apple. The precedence is stated: metadata governs when it is present.
+  var meta = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [u2f.rootDer.toString("base64")],
+    keyIdentifiers: [require("../../lib/webauthn-mds").certKeyIdentifier(unanchored.trustPath[unanchored.trustPath.length - 1])] });
+  var verifiedMeta = await pki.webauthn.verifyMetadataBlob(meta.blob, { rootCertificates: [meta.rootDer], time: T });
+  var both = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { metadata: verifiedMeta, rootCertificates: [other.rootDer], time: T });
+  check("anchors: metadata governs when both routes are supplied, and the verdict names which ran",
+    both.anchoredTo === "metadata" && !!both.metadata);
+}
+
+// ---- the ceremony boundary (WebAuthn sec. 7.1) ------------------------------------------------
+// An attestation statement being SOUND is not the same claim as a registration being ACCEPTABLE:
+// the statement says nothing about which relying party asked for it, or whether a user was there.
+// The verdict has to make that distinguishable, or a caller reading one boolean ships a passkey
+// verifier with no phishing resistance at all.
+async function testCeremonyBinding() {
+  // The reported case: an attestation naming ANOTHER relying party, with User Present and User
+  // Verified both clear. The statement is sound and the field says exactly that -- and no more.
+  var otherRp = _sha256(Buffer.from("attacker.example", "utf8"));
+  var hostile = Buffer.concat([otherRp, Buffer.from([0x40]), Buffer.alloc(4),
+    Buffer.alloc(16, 2), _u16(16), Buffer.alloc(16, 3), _EC_COSE]);
+  var hostileObj = attObjOf("none", [], hostile);
+  var unbound = await pki.webauthn.verify(hostileObj, clientHash("packed"), {});
+  check("binding: the verdict field is attestationVerified, never a bare `verified`",
+    unbound.attestationVerified === true && unbound.verified === undefined);
+  check("binding: with nothing asked for, every binding reports NOT checked",
+    unbound.bindingChecked.rpId === false && unbound.bindingChecked.userPresence === false &&
+    unbound.bindingChecked.userVerification === false && unbound.bindingChecked.algorithm === false);
+
+  check("binding: expectedRpId refuses an attestation made for another relying party",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { expectedRpId: "example.com" });
+    })) === "webauthn/rp-id-mismatch");
+  check("binding: requireUserPresence refuses a UP-clear response",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { requireUserPresence: true });
+    })) === "webauthn/user-presence-required");
+  check("binding: requireUserVerification refuses a UV-clear response",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { requireUserVerification: true });
+    })) === "webauthn/user-verification-required");
+  // COSE alg -65535 is RSASSA-PKCS1-v1_5 with SHA-1. Which algorithms are acceptable is the relying
+  // party's own pubKeyCredParams policy, and nothing in the response says what was offered -- so it
+  // is checked when the caller states the list, and reported when it was.
+  check("binding: allowedAlgorithms refuses a credential key outside the list",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { allowedAlgorithms: [-8] });
+    })) === "webauthn/algorithm-not-allowed");
+
+  // The matching relying party, with the flags the caller demanded actually set.
+  var good = Buffer.concat([_sha256(Buffer.from("example.com", "utf8")), Buffer.from([0x01 | 0x04 | 0x40]),
+    Buffer.from([0, 0, 0, 5]), Buffer.alloc(16, 2), _u16(16), Buffer.alloc(16, 3), _EC_COSE]);
+  var okRes = await pki.webauthn.verify(attObjOf("none", [], good), clientHash("packed"),
+    { expectedRpId: "example.com", requireUserPresence: true, requireUserVerification: true, allowedAlgorithms: [-7] });
+  check("binding: the bindings that ran are the ones reported",
+    okRes.bindingChecked.rpId === true && okRes.bindingChecked.userPresence === true &&
+    okRes.bindingChecked.userVerification === true && okRes.bindingChecked.algorithm === true);
+  // Everything a relying party must STORE to run a later login comes back from the call that
+  // verified the registration -- without them a login cannot be checked at all, and the caller
+  // would have to parse the attestation object a second time for values already decoded here.
+  check("binding: the verdict carries the credentialId, key and signCount a login needs",
+    Buffer.isBuffer(okRes.credentialId) && okRes.credentialId.length === 16 &&
+    okRes.signCount === 5 && okRes.flags.up === true && !!okRes.credentialPublicKey);
 }
 
 // ---- TPM object-attribute policy (TPM 2.0 Part 2 sec. 8.3, NOT WebAuthn sec. 8.3) ------------
@@ -667,7 +807,7 @@ async function testTpmObjectAttributePolicy() {
 
   // Default off: with no tpmPolicy the verdict is what it was before this existed.
   var plain = await pki.webauthn.verify(ATT, CDH, {});
-  check("tpm policy: absent, the attestation verifies exactly as before", plain.verified === true && plain.attestationType === "AttCA");
+  check("tpm policy: absent, the attestation verifies exactly as before", plain.attestationVerified === true && plain.attestationType === "AttCA");
   // Surfacing is the load-bearing half -- an RP cannot apply policy to a field it never sees.
   check("tpm policy: the object attributes are surfaced as named booleans",
     plain.tpm.attributes.fixedTPM === true && plain.tpm.attributes.sign === true && plain.tpm.attributes.restricted === false);
@@ -676,7 +816,7 @@ async function testTpmObjectAttributePolicy() {
 
   // The one defined preset holds on real hardware -- that is why those six bits are the preset.
   check("tpm policy: the hardware-bound profile accepts a genuine attestation",
-    (await withPolicy({ profile: "hardware-bound" })).verified === true);
+    (await withPolicy({ profile: "hardware-bound" })).attestationVerified === true);
   // A demanded bit the key does not have is refused, in both directions.
   check("tpm policy: a required-SET attribute the key lacks is refused",
     (await codeFor({ objectAttributes: { restricted: true } })) === "webauthn/tpm-policy");
@@ -711,19 +851,19 @@ async function testTpmObjectAttributePolicy() {
 
   // Structural opt-ins, both satisfied by genuine hardware.
   check("tpm policy: the reserved-bit check passes on a genuine attestation",
-    (await withPolicy({ reservedBitsClear: true })).verified === true);
+    (await withPolicy({ reservedBitsClear: true })).attestationVerified === true);
   check("tpm policy: the consistency check passes on a genuine attestation",
-    (await withPolicy({ consistency: true })).verified === true);
+    (await withPolicy({ consistency: true })).attestationVerified === true);
 
   // authPolicy: this statement carries a real 32-octet digest.
   check("tpm policy: requiring a non-Empty authPolicy passes when one is present",
-    (await withPolicy({ authPolicy: { present: true } })).verified === true);
+    (await withPolicy({ authPolicy: { present: true } })).attestationVerified === true);
   check("tpm policy: an authPolicy allow-list containing the key's digest passes",
-    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy] } })).verified === true);
+    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy] } })).attestationVerified === true);
   check("tpm policy: an allow-list the digest is absent from is refused",
     (await codeFor({ authPolicy: { allow: [Buffer.alloc(32, 7)] } })) === "webauthn/tpm-policy");
   check("tpm policy: an allow-list entry may be a hex string",
-    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex")] } })).verified === true);
+    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex")] } })).attestationVerified === true);
   check("tpm policy: a non-array allow-list is a config-time fault",
     (await codeFor({ authPolicy: { allow: "deadbeef" } })) === "webauthn/bad-input");
   // A misspelled NESTED key would leave the allow-list unset and the policy silently doing
@@ -771,12 +911,12 @@ async function testTpmObjectAttributePolicy() {
   })) !== "webauthn/tpm-policy") bypassRefused = false;
   // ... and that same `none` attestation still verifies when no TPM policy was asked for.
   check("tpm policy: a none attestation still verifies when no policy is requested",
-    (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), {})).verified === true);
+    (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), {})).attestationVerified === true);
   check("tpm policy: a non-TPM attestation cannot silently ignore a requested TPM policy", bypassRefused);
   // ... and the same policy on a genuine TPM attestation still verifies, so the dispatch gate
   // refuses the formats that cannot satisfy it without blocking the one that can.
   check("tpm policy: the gate does not block the format that can satisfy it",
-    (await withPolicy({ profile: "hardware-bound" })).verified === true);
+    (await withPolicy({ profile: "hardware-bound" })).attestationVerified === true);
   // Node's hex decoder stops at the first non-hex character and yields an empty buffer for a
   // non-string, so an unvalidated entry could decode into a digest the policy meant to exclude --
   // including the Empty Policy. Each entry is type- and shape-checked before it is decoded.
@@ -821,7 +961,7 @@ async function testCompoundAttestation() {
   // sec. 8.9 bullet 2: a compound whose elements all verify returns a combined result.
   var okRes = await pki.webauthn.verify(compoundOf([PACKED, NONE]), clientHash("packed"), {});
   check("compound: a statement whose elements all verify returns a combined result",
-    okRes.verified === true && okRes.fmt === "compound" && okRes.attestationType === "Compound");
+    okRes.attestationVerified === true && okRes.fmt === "compound" && okRes.attestationType === "Compound");
   check("compound: each element's own verdict is surfaced in order",
     okRes.compound.length === 2 && okRes.compound[0].fmt === "packed" &&
     okRes.compound[0].attestationType === "Basic" && okRes.compound[1].fmt === "none");
@@ -859,7 +999,7 @@ async function testCompoundAttestation() {
   var mixed = await mdsHelper.mintMixedCompound(MIXED_AAGUID);
   var mixedVerified = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash, {});
   check("compound: the mixed fixture verifies, with a path on each element",
-    mixedVerified.verified === true && mixedVerified.compound.length === 2 &&
+    mixedVerified.attestationVerified === true && mixedVerified.compound.length === 2 &&
     mixedVerified.compound[0].trustPath.length > 0 && mixedVerified.compound[1].trustPath.length > 0);
   // The catalogue lists the packed element's model by AAGUID and the u2f element's certificate by
   // key identifier -- each element under the identifier its own format actually signs. Both must
@@ -876,7 +1016,7 @@ async function testCompoundAttestation() {
   var mixedBound = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
     { metadata: mixedMd, time: new Date("2026-06-01T00:00:00Z") });
   check("compound: each element is looked up by the identifier its own format signs",
-    mixedBound.verified === true && mixedBound.metadata.entries.length === 2 &&
+    mixedBound.attestationVerified === true && mixedBound.metadata.entries.length === 2 &&
     mixedBound.metadata.entries[0].aaguid === MIXED_AAGUID &&
     mixedBound.metadata.entries[1].keyIdentifiers.indexOf(u2fKeyId) !== -1);
 
@@ -1024,7 +1164,7 @@ async function testAndroidSafetyNet() {
   // sec. 8.5 bullet 5: a statement that satisfies every bind returns Basic with the x5c trust path.
   var okRes = await codeFor({});
   check("safetynet: a well-formed statement verifies as Basic with the x5c trust path",
-    okRes && okRes.verified === true && okRes.fmt === "android-safetynet" &&
+    okRes && okRes.attestationVerified === true && okRes.fmt === "android-safetynet" &&
     okRes.attestationType === "Basic" && okRes.trustPath.length === 2);
 
   // A stored response's service chain has usually expired by the time the registration is examined,
@@ -1052,7 +1192,7 @@ async function testAndroidSafetyNet() {
   // from signed data rather than to "now" -- against which this chain expired years ago.
   check("safetynet: metadata binds a stored response at the instant its own format judged it",
     (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
-      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).verified === true);
+      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).attestationVerified === true);
 
   // Each bind, broken one at a time.
   check("safetynet: a nonce not bound to this registration is refused (bullet 3)",
@@ -1125,7 +1265,7 @@ async function testAndroidSafetyNet() {
   var histRes = await pki.webauthn.verify(past.attObj, past.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [past.rootDer] });
   check("safetynet: a stored attestation whose chain has since expired still verifies at its signed time",
-    histRes.verified === true);
+    histRes.attestationVerified === true);
   check("safetynet: an explicit opts.time overrides the signed timestamp and refuses out of window",
     (await codeOfAsync(function () {
       return pki.webauthn.verify(past.attObj, past.cdh,
@@ -1138,7 +1278,7 @@ async function testAndroidSafetyNet() {
   // they are surfaced, and a caller that asks for enforcement gets it.
   var failedCts = await codeFor({ payloadExtra: { ctsProfileMatch: false, basicIntegrity: false } });
   check("safetynet: a device that failed the compatibility suite still verifies per sec. 8.5",
-    failedCts && failedCts.verified === true);
+    failedCts && failedCts.attestationVerified === true);
   check("safetynet: ... and the failing signals are surfaced for relying-party policy",
     failedCts.safetyNet.ctsProfileMatch === false && failedCts.safetyNet.basicIntegrity === false);
   check("safetynet: a passing device surfaces its signals too",
@@ -1148,7 +1288,7 @@ async function testAndroidSafetyNet() {
   check("safetynet: opts.requireCtsProfileMatch refuses a response that omits the signal",
     (await codeFor({ payloadOmit: ["ctsProfileMatch"] }, { requireCtsProfileMatch: true })) === "webauthn/safetynet-cts-profile");
   check("safetynet: opts.requireCtsProfileMatch accepts a device that passed",
-    (await codeFor({}, { requireCtsProfileMatch: true })).verified === true);
+    (await codeFor({}, { requireCtsProfileMatch: true })).attestationVerified === true);
   check("safetynet: a non-boolean requireCtsProfileMatch is a config-time fault",
     (await codeFor({}, { requireCtsProfileMatch: "yes" })) === "webauthn/bad-input");
 
@@ -1177,12 +1317,12 @@ async function testAndroidSafetyNet() {
   // host ONLY in its SAN must verify, and one naming it only in a commonName it contradicts must not.
   var sanOnly = await codeFor({ cn: "wrong.example" });
   check("safetynet: a leaf naming the host in its SAN verifies even when the commonName differs",
-    sanOnly && sanOnly.verified === true);
+    sanOnly && sanOnly.attestationVerified === true);
   check("safetynet: a SAN that names another host is refused even when the commonName is right",
     (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
   var noSanOk = await codeFor({ noSan: true });
   check("safetynet: a leaf naming the host only in its commonName verifies",
-    noSanOk && noSanOk.verified === true && noSanOk.attestationType === "Basic");
+    noSanOk && noSanOk.attestationVerified === true && noSanOk.attestationType === "Basic");
   check("safetynet: a leaf whose commonName is another host is refused",
     (await codeFor({ noSan: true, hostname: "other.example" })) === "webauthn/safetynet-bad-hostname");
   // opts.time is optional; omitted, the chain is checked against now rather than the check being
@@ -1191,12 +1331,12 @@ async function testAndroidSafetyNet() {
   var noTime = await mint({});
   var noTimeRes = await pki.webauthn.verify(noTime.attObj, noTime.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [noTime.rootDer] });
-  check("safetynet: with no opts.time a currently-valid chain verifies", noTimeRes.verified === true);
+  check("safetynet: with no opts.time a currently-valid chain verifies", noTimeRes.attestationVerified === true);
   // A root may be handed over already parsed, not only as DER.
   var parsedRoot = await mint({});
   var parsedRes = await pki.webauthn.verify(parsedRoot.attObj, parsedRoot.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [pki.schema.x509.parse(parsedRoot.rootDer)], time: SN_TIME });
-  check("safetynet: a root supplied as a parsed certificate is accepted", parsedRes.verified === true);
+  check("safetynet: a root supplied as a parsed certificate is accepted", parsedRes.attestationVerified === true);
   check("safetynet: a root that is neither DER nor a certificate is a config-time fault",
     (await codeFor({}, { safetyNetRoots: [{}] })) === "webauthn/bad-input");
   // Several anchors are tried in turn, so a caller holding a rotation set is not forced to guess
@@ -1205,10 +1345,166 @@ async function testAndroidSafetyNet() {
   var spare = await mint({});
   var firstOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [multi.rootDer, spare.rootDer], time: SN_TIME });
-  check("safetynet: the first matching root of several ends the search", firstOk.verified === true);
+  check("safetynet: the first matching root of several ends the search", firstOk.attestationVerified === true);
   var secondOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [spare.rootDer, multi.rootDer], time: SN_TIME });
-  check("safetynet: a later root in the list still anchors the chain", secondOk.verified === true);
+  check("safetynet: a later root in the list still anchors the chain", secondOk.attestationVerified === true);
+}
+
+// ---- clientDataJSON (WebAuthn sec. 5.8.1 / 7.1 / 7.2) -----------------------------------------
+// The half of a response the signature covers by DIGEST and no signature check ever looks inside.
+// These are attacker-chosen bytes, so the parse is fail-closed; the comparisons are the relying
+// party's own state, so they run when the caller supplies it and say so when they did.
+async function testClientData() {
+  var cd = _clientDataJson({});
+  var parsed = pki.webauthn.parseClientData(cd);
+  check("clientData: type / origin / crossOrigin come back as they were",
+    parsed.type === "webauthn.get" && parsed.origin === "https://example.com" && parsed.crossOrigin === false);
+  check("clientData: the challenge comes back DECODED, so a caller compares bytes not spellings",
+    Buffer.isBuffer(parsed.challenge) && parsed.challenge.equals(Buffer.alloc(16, 4)));
+  check("clientData: with nothing to compare against, no comparison claims to have run",
+    parsed.checked.type === false && parsed.checked.challenge === false && parsed.checked.origin === false);
+
+  var bound = pki.webauthn.parseClientData(cd, { expectedType: "webauthn.get",
+    expectedChallenge: Buffer.alloc(16, 4), expectedOrigin: "https://example.com" });
+  check("clientData: the comparisons that ran are the ones reported",
+    bound.checked.type === true && bound.checked.challenge === true && bound.checked.origin === true);
+  check("clientData: an array of acceptable origins is accepted",
+    pki.webauthn.parseClientData(cd, { expectedOrigin: ["https://other.example", "https://example.com"] })
+      .checked.origin === true);
+
+  // A registration response replayed into a login. Which ceremony a response belongs to is fixed by
+  // the spec, not negotiated, so this is a refusal rather than a policy knob.
+  check("clientData: a webauthn.create response is refused where a login was expected",
+    codeOf(function () { return pki.webauthn.parseClientData(_clientDataJson({ type: "webauthn.create" }), { expectedType: "webauthn.get" }); })
+      === "webauthn/client-data-mismatch");
+  check("clientData: a challenge that is not the one issued is refused",
+    codeOf(function () { return pki.webauthn.parseClientData(cd, { expectedChallenge: Buffer.alloc(16, 5) }); })
+      === "webauthn/client-data-mismatch");
+  // The origin is compared WHOLE. A prefix or suffix test is how a look-alike host passes.
+  check("clientData: a look-alike origin does not match by prefix",
+    codeOf(function () { return pki.webauthn.parseClientData(_clientDataJson({ origin: "https://example.com.attacker.tld" }), { expectedOrigin: "https://example.com" }); })
+      === "webauthn/client-data-mismatch");
+  check("clientData: an unknown ceremony type is refused outright",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.sign", challenge: "AQID", origin: "https://example.com" }), "utf8")); })
+      === "webauthn/bad-client-data");
+  check("clientData: a challenge that is not base64url is refused",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: "not base64!", origin: "https://example.com" }), "utf8")); })
+      === "webauthn/bad-client-data");
+  check("clientData: malformed JSON is refused, not guessed at",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from("{\"type\":", "utf8")); }) === "webauthn/bad-client-data");
+  // A present-but-malformed member must not arrive looking like an absent one: a
+  // caller making a cross-origin policy decision on topOrigin would read "the sender
+  // wrote something that is not an origin" as "the sender said nothing".
+  check("clientData: a topOrigin that is not a string is refused, not reported as absent",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: "AQID", origin: "https://example.com", topOrigin: 7 }), "utf8")); })
+      === "webauthn/bad-client-data");
+  check("clientData: a real topOrigin comes back",
+    pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: "AQID", origin: "https://inner.example", topOrigin: "https://example.com" }), "utf8")).topOrigin === "https://example.com");
+
+  check("clientData: a parsed object is refused -- the RAW bytes are what the digest covers",
+    codeOf(function () { return pki.webauthn.parseClientData({ type: "webauthn.get" }); }) === "webauthn/bad-input");
+}
+
+// ---- assertion verification (WebAuthn sec. 7.2) -----------------------------------------------
+// The half of WebAuthn every login runs. The authenticator signs authenticatorData ||
+// SHA-256(clientDataJSON) as RAW bytes -- no COSE_Sign1 wrapper -- with an ES256 signature in
+// ASN.1 DER, so a COSE message verifier is the wrong tool and fails on structure first.
+async function testAssertion() {
+  var ad = _assertAuthData({ uv: true });
+  var cd = _clientDataJson({});
+  var sig = _assertSig(ad, cd);
+  var stored = pki.webauthn.parseAuthenticatorData(
+    Buffer.concat([_sha256(Buffer.from("example.com", "utf8")), Buffer.from([0x41]), _u32(5),
+      Buffer.alloc(16, 2), _u16(16), Buffer.alloc(16, 3), _EC_COSE])).credentialPublicKey;
+
+  check("assertion: a bare authenticatorData parses without an attestation-object wrapper",
+    pki.webauthn.parseAuthenticatorData(ad).signCount === 9 &&
+    pki.webauthn.parseAuthenticatorData(ad).flags.at === false);
+
+  var res = await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+    signature: sig, credentialPublicKey: stored });
+  check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
+    res.signatureVerified === true && res.signCount === 9);
+  check("assertion: the field is signatureVerified, never a bare `verified`", res.verified === undefined);
+  check("assertion: the ceremony type is checked whenever the JSON is supplied",
+    res.clientData.checked.type === true && res.clientData.type === "webauthn.get");
+  check("assertion: a counter not compared says so rather than implying it passed",
+    res.signCountChecked === false);
+
+  check("assertion: a signature over other bytes does not verify",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: _assertAuthData({ signCount: 10 }),
+        clientDataJSON: cd, signature: sig, credentialPublicKey: stored });
+    })) === "webauthn/bad-signature");
+
+  // sec. 7.2 step 21: a counter that fails to advance is the signal of a cloned authenticator.
+  check("assertion: previousSignCount refuses a counter that does not advance",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
+        credentialPublicKey: stored, previousSignCount: 9 });
+    })) === "webauthn/sign-count-not-advanced");
+  // ... and only from an AUTHENTIC assertion. A counter that fails to advance means
+  // two authenticators hold one credential -- an alarm a relying party acts on. If it
+  // were judged before the signature, anyone could raise that alarm with arbitrary
+  // bytes and have a credential revoked.
+  check("assertion: a bad signature is reported as such, never as a cloned authenticator",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+        signature: Buffer.alloc(sig.length, 0x41), credentialPublicKey: stored, previousSignCount: 99 });
+    })) === "webauthn/bad-signature");
+
+  check("assertion: a counter that advances is accepted and reported as checked",
+    (await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
+      credentialPublicKey: stored, previousSignCount: 8 })).signCountChecked === true);
+  // An authenticator that implements no counter reports 0 forever, which the spec permits.
+  var zeroAd = _assertAuthData({ signCount: 0 });
+  var zeroCd = _clientDataJson({});
+  check("assertion: the 0/0 case an authenticator without a counter reports is accepted",
+    (await pki.webauthn.verifyAssertion({ authenticatorData: zeroAd, clientDataJSON: zeroCd,
+      signature: _assertSig(zeroAd, zeroCd), credentialPublicKey: stored, previousSignCount: 0 })).signCount === 0);
+
+  check("assertion: expectedRpId refuses a response produced for another relying party",
+    (await codeOfAsync(function () {
+      var other = _assertAuthData({ rpId: "attacker.example" });
+      return pki.webauthn.verifyAssertion({ authenticatorData: other, clientDataJSON: cd,
+        signature: _assertSig(other, cd), credentialPublicKey: stored, expectedRpId: "example.com" });
+    })) === "webauthn/rp-id-mismatch");
+  check("assertion: requireUserVerification refuses a UV-clear response",
+    (await codeOfAsync(function () {
+      var noUv = _assertAuthData({});
+      return pki.webauthn.verifyAssertion({ authenticatorData: noUv, clientDataJSON: cd,
+        signature: _assertSig(noUv, cd), credentialPublicKey: stored, requireUserVerification: true });
+    })) === "webauthn/user-verification-required");
+
+  // A registration response replayed as a login, driven through the shipped verb.
+  check("assertion: a webauthn.create clientData is refused as a login response",
+    (await codeOfAsync(function () {
+      var regCd = _clientDataJson({ type: "webauthn.create" });
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: regCd,
+        signature: _assertSig(ad, regCd), credentialPublicKey: stored });
+    })) === "webauthn/client-data-mismatch");
+
+  // The digest form stays available for a caller that computed it -- but the checks that read the
+  // JSON cannot be claimed over bytes this call never saw.
+  check("assertion: the clientDataHash form still verifies",
+    (await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataHash: _sha256(cd),
+      signature: sig, credentialPublicKey: stored })).signatureVerified === true);
+  check("assertion: expectedChallenge without the JSON is refused rather than silently skipped",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataHash: _sha256(cd),
+        signature: sig, credentialPublicKey: stored, expectedChallenge: Buffer.alloc(16, 4) });
+    })) === "webauthn/bad-input");
+  check("assertion: supplying BOTH clientDataJSON and clientDataHash is refused as ambiguous",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+        clientDataHash: _sha256(cd), signature: sig, credentialPublicKey: stored });
+    })) === "webauthn/bad-input");
+  check("assertion: an unknown input key is refused rather than silently ignored",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
+        credentialPublicKey: stored, requireUserPrescence: true });
+    })) === "webauthn/bad-input");
 }
 
 module.exports = { run: run };

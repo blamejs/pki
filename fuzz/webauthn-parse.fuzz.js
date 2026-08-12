@@ -2,7 +2,8 @@
 // Copyright (c) blamejs contributors
 "use strict";
 /**
- * Fuzz target: pki.webauthn.parseAttestationObject + pki.webauthn.verify
+ * Fuzz target: pki.webauthn.parseAttestationObject + verify + parseAuthenticatorData
+ *              + parseClientData + verifyAssertion
  *
  * Runs under libFuzzer via jazzer.js. The contract for the WebAuthn attestation
  * verifier: feeding attacker-controlled bytes -- as a raw attestation object, or
@@ -29,6 +30,10 @@ var KAT = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "test", "fixture
 function b64u(s) { var b = String(s).replace(/-/g, "+").replace(/_/g, "/"); while (b.length % 4) b += "="; return Buffer.from(b, "base64"); }
 var FORMS = Object.keys(KAT.formats).map(function (k) { return b64u(KAT.formats[k].attestationObject); });
 var FIXED_HASH = Buffer.alloc(32, 0x5a);
+// A real credential public key, taken from the packed attestation the corpus
+// already carries, so the assertion target reaches the signature check rather than
+// stopping at a malformed key.
+var ASSERT_KEY = pki.webauthn.parseAttestationObject(FORMS[0]).authData.credentialPublicKey;
 
 function isPki(e) { return e instanceof pki.errors.PkiError; }
 
@@ -52,4 +57,26 @@ module.exports.fuzz = async function (data) {
   // of the reject paths at the pipeline entry).
   try { await pki.webauthn.verify(data, FIXED_HASH, {}); }
   catch (e) { if (!isPki(e)) throw e; }
+
+  // Target C -- the AUTHENTICATION half. A bare authenticatorData has no CBOR
+  // wrapper to frame it, so raw mutations reach the bounded big-endian reader,
+  // the flag rules and the COSE_Key decode directly, which the attestation entry
+  // only ever reaches through a well-formed outer map.
+  try { pki.webauthn.parseAuthenticatorData(data); } catch (e) { if (!isPki(e)) throw e; }
+
+  // Target D -- clientDataJSON. These are attacker-chosen bytes that no signature
+  // check looks inside: the JSON guard's bounds and fatal-UTF-8 handling, the
+  // base64url challenge decode, and the ceremony-type and origin comparisons.
+  try { pki.webauthn.parseClientData(data, { expectedType: "webauthn.get", expectedOrigin: "https://example.com" }); }
+  catch (e) { if (!isPki(e)) throw e; }
+
+  // Target E -- the assertion verifier end to end, with the fuzzer choosing the
+  // authenticatorData, the clientDataJSON and the signature against a real
+  // credential key. Drives the DER ECDSA reshape on hostile signature bytes.
+  try {
+    await pki.webauthn.verifyAssertion({
+      authenticatorData: data, clientDataJSON: data, signature: data,
+      credentialPublicKey: ASSERT_KEY,
+    });
+  } catch (e) { if (!isPki(e)) throw e; }
 };

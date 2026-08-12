@@ -744,6 +744,26 @@ security-only patches after the next major releases.
   `webauthn/*` error — a signature that does not verify is a verdict, never a silent
   pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that emit it, never
   for signing.
+- **A verified signature read as a verified ceremony (WebAuthn).** The most dangerous
+  thing a WebAuthn verifier can do is answer the wrong question convincingly. The
+  attestation and assertion procedures establish that a SIGNATURE is sound; what makes
+  a response acceptable is the ceremony binding, and most of it depends on state only
+  the relying party holds — the challenge it issued, the origin the browser reported,
+  the RP ID it operates under, the user-presence policy it requires. An attestation
+  naming another origin's RP ID, with user presence clear, is a perfectly sound
+  statement about a credential that must not be registered. So the verdict fields are
+  `attestationVerified` and `signatureVerified`, never a bare `verified`: a caller
+  writing `if (res.verified)` gets `undefined`, rather than a pass for a question it
+  did not ask. The bindings this layer can check are offered by name — `expectedRpId`,
+  `requireUserPresence`, `requireUserVerification`, `allowedAlgorithms`, and for
+  `clientDataJSON` the ceremony type, challenge and origin — and every verdict reports
+  in `bindingChecked` which of them ran, so a check that passed is distinguishable from
+  one that never happened. `pki.webauthn.verifyAssertion` checks the ceremony type
+  unconditionally whenever it is given the JSON, because which ceremony a response
+  belongs to is fixed by the specification rather than chosen by the caller, and a
+  registration response replayed as a login is exactly what that stops. Where a stored
+  `previousSignCount` is supplied, a counter that fails to advance is refused as the
+  cloned authenticator it signals.
 - **Metadata-catalogue forgery and rollback (FIDO MDS).** A metadata BLOB decides which
   roots an authenticator model is allowed to chain to and whether that model is still
   trusted, so a reader that parses before it verifies hands an attacker the trust
