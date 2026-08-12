@@ -3,9 +3,9 @@
 `@blamejs/pki` is a security-first PKI toolkit. Its defaults are fail-closed: the
 DER decoder rejects every non-canonical shape, every verify path throws on
 failure, and post-quantum algorithms are first-class registry entries rather than
-bolt-ons. This document describes how to report a vulnerability, which versions
-are supported, how an operator hardens a deployment that embeds the toolkit, and
-how to verify that a release is authentic.
+bolt-ons. This document covers how to report a vulnerability, which versions are
+supported, how an operator hardens a deployment that embeds the toolkit, and how
+to verify that a release is authentic.
 
 ---
 
@@ -21,14 +21,14 @@ Please include:
 
 - Affected version (`v0.X.Y` tag, or the `main` `<sha>` you tested)
 - A description of the issue and the impact you observed
-- A minimal reproducer — the smallest certificate, DER blob, message, or code
+- A minimal reproducer: the smallest certificate, DER blob, message, or code
   snippet that triggers the behavior
 - Whether you have discussed this with anyone else, and any coordinated-
   disclosure timeline you are working to
 
-Because the toolkit's dominant attack surface is **parsing untrusted bytes**,
-reproducers that are raw DER / PEM / message blobs are especially valuable —
-attach them (base64 or hex is fine) rather than describing them in prose.
+The toolkit's dominant attack surface is parsing untrusted bytes, so a reproducer
+that is a raw DER, PEM, or message blob is the most useful thing you can send.
+Attach it, base64 or hex, rather than describing it in prose.
 
 ### Response targets
 
@@ -39,17 +39,17 @@ attach them (base64 or hex is fine) rather than describing them in prose.
 | Medium (unbounded work / DoS on adversarial input, information leak in an error) | within 14 d | within 30 d | next patch |
 | Low (defense-in-depth gaps) | within 30 d | as scheduled | next minor |
 
-We coordinate disclosure with the reporter — a typical embargo is 14 days after a
-fix is released, to give operators time to upgrade. Reporter credit appears in the
-release notes unless anonymity is requested.
+We coordinate disclosure with the reporter. A typical embargo is 14 days after a
+fix is released, to give operators time to upgrade. Reporter credit appears in
+the release notes unless anonymity is requested.
 
 ---
 
 ## Supported versions
 
 Pre-1.0, the supported version is the most-recent published patch on the
-most-recent minor. Older minors do not receive security backports unless the issue
-is critical and the operator base on the older minor is non-trivial.
+most-recent minor. Older minors do not receive security backports unless the
+issue is critical and the operator base on the older minor is non-trivial.
 
 Once 1.0 ships, an LTS calendar takes effect: each major gets 24 months of
 security-only patches after the next major releases.
@@ -63,505 +63,706 @@ security-only patches after the next major releases.
 
 ## What the toolkit defends, by design
 
-- **Adversarial DER / PEM crashing the parser.** The decoder enforces size and
-  depth caps before it walks a structure, and rejects every non-canonical shape —
-  indefinite length, non-minimal length or tag encodings, constructed strings
-  where DER forbids them, and trailing bytes after the top-level value — with a
-  typed `Asn1Error`. Malformed input is bounded work with a permanent verdict, not
-  a stack overflow or a half-parsed object.
+### Parsing untrusted bytes
+
+- **Adversarial DER or PEM crashing the parser.** The decoder enforces size and
+  depth caps before it walks a structure, and rejects every non-canonical shape
+  with a typed `Asn1Error`: indefinite length, non-minimal length or tag
+  encodings, constructed strings where DER forbids them, and trailing bytes after
+  the top-level value. Malformed input costs bounded work and gets a permanent
+  verdict, rather than producing a stack overflow or a half-parsed object.
 - **Adversarial CBOR crashing the parser.** The `pki.cbor` decoder applies the
   same posture to RFC 8949 core-deterministic CBOR: size, depth, and per-bignum
-  byte caps before the walk, and a typed `CborError` on every non-canonical shape
-  — an indefinite length, a non-minimal (preferred) argument, out-of-order or
-  duplicate map keys, a non-shortest or non-canonical-NaN float, ill-formed UTF-8,
-  or trailing bytes. There is no lenient mode.
+  byte caps before the walk, and a typed `CborError` on every non-canonical
+  shape — an indefinite length, a non-minimal (preferred) argument, out-of-order
+  or duplicate map keys, a non-shortest or non-canonical-NaN float, ill-formed
+  UTF-8, or trailing bytes. There is no lenient mode.
 - **Single-input string-allocation amplification.** Every boundary that decodes
-  untrusted bytes to a string — PEM armor, a JOSE / ACME JSON document, an EST
+  untrusted bytes to a string — PEM armor, a JOSE or ACME JSON document, an EST
   transfer or multipart body — enforces its size cap on the raw byte length
-  BEFORE materializing the string, so an oversized input is rejected before it
-  allocates a full-size string (and a body above Node's maximum string length
-  fails typed rather than escaping as an untyped `ERR_STRING_TOO_LONG`). A
-  detached-backed input (a transferred / structuredClone'd view whose bytes are
-  gone, so it reads as zero-length) fails closed with a typed error at the byte
-  boundary instead of being processed as empty.
-- **One signature covering several encodings.** A type-3 C509 certificate is a
-  re-encoding of an X.509 certificate, and the X.509 signature covers the bytes it
-  rebuilds -- not the C509 bytes themselves. Where the specification fixes which
-  spelling a value takes, this decoder accepts only that spelling, so a certificate
-  has one C509 encoding rather than several that rebuild it identically. Without
-  that, code identifying, caching or deduplicating a certificate by its C509 bytes
-  would see distinct byte strings for one certificate, each carrying a signature
-  that verifies. The encoder walks the same rules, so what it emits is what it
-  accepts. One redundancy the specification itself permits remains -- a registered
-  algorithm may ride as its registry integer or as its object identifier -- so
-  identify a certificate by the X.509 bytes it reconstructs, never by its C509 bytes.
-- **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
-  created by a different WebCrypto implementation is indistinguishable from one of
-  this engine's by type, algorithm and usages while holding its material somewhere
-  this engine cannot read. Every entry point that takes a key decides which of the
-  two it has before using it: the `pki.*` verbs export a foreign key through whichever
-  implementation holds its material -- the platform's WebCrypto, or a separately-installed
-  copy of this toolkit, whose handle this process can read -- and re-import it; a key whose
-  implementation keeps its material beyond reach is refused rather than guessed at. An
-  `extractable: false` key is refused on every one of those paths, including the one that
-  could read its handle directly, because that flag is a promise the key carries with it.
-  `pki.webcrypto.subtle` -- where
-  the specification leaves cross-implementation use undefined -- refuses it with a
-  typed fault naming where it came from. Neither lets a bare type error naming an
-  internal property escape from inside the crypto library, and neither ever
-  substitutes a different key: a key created non-extractable is reachable by no
-  other implementation, and is refused with that as the reason.
-- **Decompression bombs (CWE-409).** Every decompression in the toolkit runs through
-  one bounded primitive, so the defence cannot be picked up by one caller and missed
-  by the next. The output is capped AT the decompressor (Node's `maxOutputLength`),
-  which stops at the bound BEFORE the output is materialized, so a tiny stream that
-  would expand to gigabytes is refused rather than allocated. `pki.cms.decompress`
-  (RFC 3274 CompressedData, RFC 1950 ZLIB) caps at `C.LIMITS.COMPRESS_MAX_BYTES`
-  (16 MiB, tightened downward via `opts.maxOutputBytes`) and throws
-  `cms/decompress-too-large`. `pki.tls.decompressCertificate` (RFC 8879) caps at the message's OWN declared `uncompressed_length` — so an
-  attacker's declaration is its own ceiling — bounded in turn by the RFC 8446 §4
-  handshake framing limit `C.LIMITS.TLS_CERT_MSG_MAX_BYTES` (2^24-1) and by any
-  tighter caller cap, and throws `tls/too-large`. Every other malformed / truncated /
-  corrupt stream collapses to a uniform per-domain code (no per-errno telemetry).
-- **Compressed-stream malleability (CWE-20).** A decompressor stops at the end of the
-  first complete frame and silently ignores anything after it, so appended bytes — or
-  a whole second frame — would recover identical content and give one content
-  unboundedly many encodings, breaking any digest taken over the compressed object.
-  The shared primitive requires the whole input to be exactly one frame: the consumed
-  input length must equal the input length, or the stream is refused
-  (`cms/decompress-failed` / `tls/decompress-failed`). This is the same rule the DER
-  layer applies when it rejects trailing bytes.
-- **Silent frame truncation (CWE-354).** A decompressor must fault on a frame it could not
-  finish. Some runtimes instead return a SHORT result and report the whole input as
-  consumed, so neither the output nor a consumed-length check can see that the frame was
-  cut — a peer strips a frame's tail and the receiver processes a prefix as though it were
-  the whole message. The shared primitive probes each algorithm once at startup and drops
-  any whose decompressor behaves that way, so it is neither advertised nor accepted rather
-  than offered with a truncation that cannot be detected. On the current LTS Node this
-  drops zstd from `pki.tls`, leaving zlib and brotli; it returns on a runtime that faults.
-- **Unbounded certificate-entry allocation (CWE-770).** A TLS Certificate message's byte
-  ceiling does not bound how many `CertificateEntry` elements it declares: the smallest legal
-  entry is 6 bytes, so a message well inside the framing limit can declare hundreds of
-  thousands, each costing far more heap than wire. `pki.tls.parseCertificateMessage` caps the
-  count at `C.LIMITS.TLS_CERT_MAX_ENTRIES` (100, matching `PATH_MAX_CERTS` — a chain longer
-  than the path validator accepts has nothing to offer), and at exactly one under a negotiated
-  RawPublicKey type, which RFC 8446 §4.4.2 requires.
-- **Compressed certificate length agreement (RFC 8879 §5).** `pki.tls.decompressCertificate`
-  enforces the bound on both sides: the cap above catches output larger than declared,
-  and an explicit comparison catches output SMALLER than declared (`tls/length-mismatch`)
-  — the direction no cap can see. An algorithm outside the RFC 8879 registry, one the
-  runtime cannot decompress, or one the receiver never advertised is refused before any
-  decompressor is handed the bytes.
-- CMS CompressedData carries no integrity, confidentiality, or authentication
-  (RFC 8551 §2.4.5) — the decompress verdict has no `authenticated` / `valid` field,
-  so a caller cannot mistake size-reduction for protection; sign or encrypt the result
-  if you need it. The same holds for a decompressed certificate message: it is
-  structure, not trust — path-validate the certificates it carries.
-- **PBES2 private-key decryption is not a padding oracle (CWE-208).** `pki.key.decrypt`
-  (RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2) reads the attacker-controlled
-  PBKDF2 salt and iteration count, and validates the parameter structure and IV length,
-  BEFORE any key derivation — an over-cap salt/iteration (`opts.maxIterations` lowers the
-  cap, never raises it), a malformed parameter set, or a wrong-length IV is a distinct
-  typed reject with no derivation work performed. Because a MAC-less PBES2-CBC decrypt has
-  no integrity tag, every secret-dependent failure — a wrong password and a valid PKCS#7
-  pad whose plaintext is not a `PrivateKeyInfo` — collapses to the single uniform
-  `key/decrypt-failed` (RFC 8018 §8), so an attacker cannot distinguish the two. PBES1,
-  PBMAC1, and scrypt are refused, not silently accepted.
-- **PKCS#12 MAC integrity (CWE-347/CWE-208).** `pki.pkcs12.verifyMac` recomputes a store's classic Appendix B
-  HMAC or RFC 9579 PBMAC1 over the exact AuthenticatedSafe byte range (`macedBytes`, excluding the OCTET
-  STRING header — the canonical off-by-the-header MAC trap) and compares it in constant time
-  (`guard.crypto.constantTimeEqual`), so a wrong password leaks no timing or length signal, and it throws a
-  typed error on a MAC-less or public-key-integrity store rather than returning a falsy verdict. `pki.pkcs12.build`
-  encodes every password the PKCS#12 way (BMPString+NULL for the Appendix B KDF, UTF-8 for the PBES2 bags and
-  PBMAC1) so the output is not silently unopenable elsewhere, refuses a <=160-bit PBMAC1 digest (RFC 9579), and
-  never emits a non-canonical DEFAULT-1 MacData iterations. `pki.pkcs12.open` verifies that MAC BEFORE it
-  decrypts any bag (RFC 7292 sec. 5.1): a store whose password MAC fails returns nothing — the wrong-password
-  verdict is the MAC gate (`pkcs12/mac-mismatch`), never a per-bag decrypt error that could leak which bag or
-  which byte differed. It refuses a MAC-less store unless the caller explicitly opts in (`allowUnauthenticated`,
-  surfaced as `macVerified: false`), and — because a PBES2 bag decrypt
-  after a valid MAC is still MAC-less at the cipher layer — collapses every post-integrity decrypt failure into
-  the uniform `pkcs12/decrypt-failed`. The bag KDF iteration/salt work factors are bounded before derivation
-  (`opts.maxIterations` lowers the cap). For a **public-key-integrity store** (an `id-signedData` authSafe, RFC
-  7292 sec. 4) `open` verifies the CMS SignedData signature over the AuthenticatedSafe FIRST and returns
-  nothing on a failure (`pkcs12/signature-invalid`), exactly as the MAC gate does for password mode. The signer
-  is surfaced as a per-signer verdict (`signers`) but NOT chained to a trust anchor — a valid signature
-  authenticates the store's INTEGRITY, not the signer's identity; anchoring `signers[i].cert` is the caller's
-  `pki.path.validate` step (the out-of-path signer contract shared with CMS / TSP / OCSP-delegate verification).
-  For **public-key privacy** (an `id-envelopedData` safe encrypting the SafeContents to a recipient public key,
-  RFC 7292 sec. 3.1) `open` decrypts only AFTER the integrity gate — the MAC or SignedData covers the whole
-  AuthenticatedSafe, including the enveloped element, so a tamper is caught by integrity FIRST and the recipient
-  decrypt is never reached — and collapses every recipient-side fault (a wrong `recipientKey`, a tampered
-  envelope, a CBC unpad failure, a decrypt that yields non-SafeContents bytes) into the uniform
-  `pkcs12/decrypt-failed`, exposing no padding / recipient / structure oracle. The recipient private key is a
-  PRIVACY credential only — never a MAC key, a signature-verification input, or a PBES2 password — and the
-  recipient certificate is not trust-chained.
-- **Encoding malleability.** Every textual encoding an operator hands the
-  toolkit — base64url (JOSE / JWK key material), base64 (PEM bodies, EST
-  transfer), hex, a JSON document, a dotted-decimal OID string — is decoded
-  strictly against its one canonical form: a padded or non-canonical base64url
-  `k`, a JSON document with a duplicate member at any depth, or an OID string
-  with a leading-zero arc (which encodes a DIFFERENT OID than the string names)
-  fails typed instead of aliasing a second spelling of the same value past a
-  verifier. JSON parsing is bounded in size and nesting and assigns `__proto__`
-  as an own property, never a prototype mutation.
+  before materializing the string. An oversized input is rejected before it
+  allocates a full-size string, and a body above Node's maximum string length
+  fails typed rather than escaping as an untyped `ERR_STRING_TOO_LONG`. A
+  detached-backed input, such as a transferred or structuredClone'd view whose
+  bytes are gone and which therefore reads as zero-length, fails closed with a
+  typed error at the byte boundary instead of being processed as empty.
 - **Decode-fanout and verify-fanout amplification.** A decoded input's element
   count is capped independently of its byte size (`asn1/too-many-items`,
   `cbor/*`, per-list PKCS#12 caps), and an OCSP response is capped in embedded
-  certificates before any pre-authentication signature work, so a small hostile
+  certificates before any pre-authentication signature work. A small hostile
   input cannot fan out into unbounded allocations or unbounded asymmetric-verify
   work.
+- **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
+  through one bounded primitive, so the defence cannot be picked up by one caller
+  and missed by the next. The output is capped at the decompressor itself (Node's
+  `maxOutputLength`), which stops at the bound before the output is materialized,
+  so a tiny stream that would expand to gigabytes is refused rather than
+  allocated. `pki.cms.decompress` (RFC 3274 CompressedData, RFC 1950 ZLIB) caps
+  at `C.LIMITS.COMPRESS_MAX_BYTES` (16 MiB, tightened downward via
+  `opts.maxOutputBytes`) and throws `cms/decompress-too-large`.
+  `pki.tls.decompressCertificate` (RFC 8879) caps at the message's own declared
+  `uncompressed_length`, so an attacker's declaration is its own ceiling, bounded
+  in turn by the RFC 8446 §4 handshake framing limit
+  `C.LIMITS.TLS_CERT_MSG_MAX_BYTES` (2^24-1) and by any tighter caller cap, and
+  throws `tls/too-large`. Every other malformed, truncated, or corrupt stream
+  collapses to a uniform per-domain code, with no per-errno telemetry.
+- **Compressed-stream malleability (CWE-20).** A decompressor stops at the end of
+  the first complete frame and silently ignores anything after it. Appended
+  bytes, or a whole second frame, would recover identical content and give one
+  content unboundedly many encodings, breaking any digest taken over the
+  compressed object. The shared primitive requires the whole input to be exactly
+  one frame: the consumed input length must equal the input length, or the stream
+  is refused (`cms/decompress-failed`, `tls/decompress-failed`). This is the same
+  rule the DER layer applies when it rejects trailing bytes.
+- **Silent frame truncation (CWE-354).** A decompressor must fault on a frame it
+  could not finish. Some runtimes instead return a short result and report the
+  whole input as consumed, so neither the output nor a consumed-length check can
+  see that the frame was cut: a peer strips a frame's tail and the receiver
+  processes a prefix as though it were the whole message. The shared primitive
+  probes each algorithm once at startup and drops any whose decompressor behaves
+  that way, so it is neither advertised nor accepted. On the current LTS Node
+  this drops zstd from `pki.tls`, leaving zlib and brotli; it returns on a runtime
+  that faults.
+- **Unbounded certificate-entry allocation (CWE-770).** A TLS Certificate
+  message's byte ceiling does not bound how many `CertificateEntry` elements it
+  declares. The smallest legal entry is 6 bytes, so a message well inside the
+  framing limit can declare hundreds of thousands, each costing far more heap
+  than wire. `pki.tls.parseCertificateMessage` caps the count at
+  `C.LIMITS.TLS_CERT_MAX_ENTRIES` (100, matching `PATH_MAX_CERTS`, since a chain
+  longer than the path validator accepts has nothing to offer), and at exactly
+  one under a negotiated RawPublicKey type, which RFC 8446 §4.4.2 requires.
+- **Compressed certificate length agreement (RFC 8879 §5).**
+  `pki.tls.decompressCertificate` enforces the bound on both sides: the cap above
+  catches output larger than declared, and an explicit comparison catches output
+  smaller than declared (`tls/length-mismatch`), which is the direction no cap can
+  see. An algorithm outside the RFC 8879 registry, one the runtime cannot
+  decompress, or one the receiver never advertised is refused before any
+  decompressor is handed the bytes.
+- **Compression is not protection.** CMS CompressedData carries no integrity,
+  confidentiality, or authentication (RFC 8551 §2.4.5). The decompress verdict
+  has no `authenticated` or `valid` field, so a caller cannot mistake size
+  reduction for protection; sign or encrypt the result if you need it. The same
+  holds for a decompressed certificate message: it is structure, not trust, so
+  path-validate the certificates it carries.
+- **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
+  blobs inside octet strings, where every re-decode would restart the depth cap
+  from zero. The PKCS#12 parser carries one cross-decode budget over all of them
+  and caps element counts at each list, so a crafted store fails typed
+  (`pkcs12/too-deep`, `pkcs12/too-many-elements`) instead of exhausting the stack
+  or memory. Its BER acceptance is scoped to exactly the two shapes RFC 7292 §4.1
+  requires, indefinite lengths and constructed octet strings, and only for that
+  format. Every other format and every other DER strictness verdict is unchanged.
+- **Encoding malleability.** Every textual encoding an operator hands the toolkit
+  is decoded strictly against its one canonical form: base64url (JOSE and JWK key
+  material), base64 (PEM bodies, EST transfer), hex, a JSON document, and a
+  dotted-decimal OID string. A padded or non-canonical base64url `k`, a JSON
+  document with a duplicate member at any depth, or an OID string with a
+  leading-zero arc (which encodes a different OID than the string names) fails
+  typed instead of aliasing a second spelling of the same value past a verifier.
+  JSON parsing is bounded in size and nesting and assigns `__proto__` as an own
+  property, never a prototype mutation.
+- **One signature covering several encodings.** A type-3 C509 certificate is a
+  re-encoding of an X.509 certificate, and the X.509 signature covers the bytes
+  it rebuilds rather than the C509 bytes themselves. Where the specification
+  fixes which spelling a value takes, this decoder accepts only that spelling, so
+  a certificate has one C509 encoding rather than several that rebuild it
+  identically. Otherwise code identifying, caching, or deduplicating a
+  certificate by its C509 bytes would see distinct byte strings for one
+  certificate, each carrying a signature that verifies. The encoder walks the
+  same rules, so what it emits is what it accepts. One redundancy the
+  specification itself permits remains, in that a registered algorithm may ride
+  as its registry integer or as its object identifier, so identify a certificate
+  by the X.509 bytes it reconstructs rather than by its C509 bytes.
+- **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
+  `tbsBytes` byte range that was signed, so a downstream verifier hashes the
+  bytes that were actually signed rather than re-encoding and hoping for
+  round-trip fidelity. The same discipline covers the CMP message-protection
+  input: `pki.schema.cmp.parse` surfaces the exact `headerBytes` and `bodyBytes`
+  wire slices so a verifier reconstructs the protected part from the bytes that
+  were actually protected, never a re-encoding. CMP `caPubs` are surfaced as raw certificates
+  conferring no trust, so a client cannot be steered into installing a trust
+  anchor from an unauthenticated response. `pki.ct.parseSctList` follows the same
+  rule for Certificate Transparency: it decodes the SCT-list structure but never
+  verifies a signature or recomputes a log id, and
+  `pki.ct.reconstructSignedData` rebuilds the exact RFC 6962 digitally-signed
+  preimage from the parsed bytes so the log-signature check runs on what was
+  actually signed. The TLS-encoded list itself is decoded with a bounded reader
+  that validates every framing length and caps the per-list byte size and SCT
+  count before iterating, so a crafted SCT extension is bounded work with a typed
+  `ct/*` verdict. The CT log-list trust surface (`pki.ct.parseLogList`) binds
+  identity to the key rather than a label: it recomputes each log's id as SHA-256
+  of its DER SubjectPublicKeyInfo and refuses a stated `log_id` that disagrees
+  (`ct/log-id-mismatch`, RFC 6962 §3.2), so a tampered list cannot swap a log's
+  key while keeping its id or point an id at an attacker key.
+  `pki.ct.verifySctWithLogList` then enforces trust before any crypto: a
+  `pending` or `rejected` log, or a `retired` log for an SCT timestamped at or
+  after its retirement, is `ct/log-untrusted`, and a certificate whose `notAfter`
+  is outside the resolved log's temporal-interval window, or unresolvable for a
+  windowed log, is `ct/temporal-interval`. Neither constraint is silently
+  skipped, and only then does it delegate the signature check to `verifySct`. The
+  log-list JSON is decoded through the bounded, duplicate-member-rejecting reader
+  with byte and depth caps and `__proto__` safety.
+  `pki.ct.verifyLogListSignature` verifies the detached `log_list.sig` over the
+  raw log-list bytes, byte for byte and never re-serialized, against a
+  caller-pinned signer key; no key is baked in. It pins the scheme to
+  RSASSA-PKCS1-v1.5/SHA-256, rejecting a PSS signature, and fails closed before
+  any verification on a forgeable key: an RSA public exponent below 3 (a PKCS#1
+  v1.5 `e = 1` "signature" is just the DigestInfo) or an even exponent, a
+  sub-2048-bit RSA key, and, on the EC arm, a non-conformant ECDSA DER Sig-Value
+  defeating the CVE-2022-21449 `r = s = 0` shape are all typed throws rather than
+  a `true`. Its verdict is cross-checked against `openssl dgst -verify`.
+  `pki.schema.smime` decodes the ESS signing-certificate attributes the same way:
+  it surfaces the certificate hash, the implied or decoded hash algorithm, and
+  the issuer and serial reference raw, so a verifier recomputes the hash and
+  matches the binding against the actual signing certificate. It never recomputes
+  a hash or trusts a certificate, and it rejects a `SigningCertificateV2` hash
+  algorithm encoded equal to its DEFAULT as non-canonical DER, closing an
+  encode ambiguity a signature check would otherwise have to tolerate.
+
+### Keys, secrets, and the crypto engine
+
+- **Untyped faults escaping the key boundary.** A `CryptoKey` is opaque, and one
+  created by a different WebCrypto implementation is indistinguishable from one
+  of this engine's by type, algorithm, and usages while holding its material
+  somewhere this engine cannot read. Every entry point that takes a key decides
+  which of the two it has before using it. The `pki.*` verbs export a foreign key
+  through whichever implementation holds its material — the platform's
+  WebCrypto, or a separately installed copy of this toolkit, whose handle this
+  process can read — and re-import it; a key whose implementation keeps its
+  material beyond reach is refused rather than guessed at. An `extractable:
+  false` key is refused on every one of those paths, including the one that could
+  read its handle directly, because that flag is a promise the key carries with
+  it. `pki.webcrypto.subtle`, where the specification leaves
+  cross-implementation use undefined, refuses such a key with a typed fault
+  naming where it came from. Neither path lets a bare type error naming an
+  internal property escape from inside the crypto library, and neither ever
+  substitutes a different key: a key created non-extractable is reachable by no
+  other implementation, and is refused with that as the reason.
+- **WebCrypto import algorithm confusion and raw cipher faults.**
+  `pki.webcrypto` derives an imported asymmetric key's type from the key material
+  rather than the caller's claim, so an RSA key imported under an Ed25519,
+  ECDSA, or RSA-PSS name is a `webcrypto/data` reject and a mislabeled
+  `CryptoKey` cannot later sign or verify under the wrong scheme. Every AES
+  cipher fault fails closed with a typed `webcrypto/operation` — a tampered
+  AES-GCM authentication tag, bad AES-CBC padding, a non-conforming AES-KW wrap
+  length — rather than leaking a raw Node exception across the API boundary. A
+  raw or JWK AES key of an invalid length (not 128, 192, or 256 bits) is rejected
+  as a `webcrypto/data` DataError at import, closing the gap where the failure
+  was deferred to first use.
+- **Algorithm-parameter confusion.** For the algorithms whose `parameters` field
+  must be absent — ML-DSA, SLH-DSA, the RFC 8410 Edwards and Montgomery curves,
+  ML-KEM (RFC 9936), and the HKDF identifiers (RFC 8619) — the single shared
+  AlgorithmIdentifier decoder rejects a present parameters field, whether an
+  explicit NULL or arbitrary bytes, with a `<format>/bad-algorithm-parameters`
+  code (RFC 9909 §3, RFC 9814 §4, RFC 9881 §2, RFC 8410 §3). The check lives in
+  the one decoder every format composes, so a certificate, CMS message, OCSP
+  response, timestamp, CRL, CSR, or key cannot smuggle unauthenticated bytes past
+  a parser through that field, and no format can drift out of the rule.
+- **ML-KEM key misuse (RFC 9935 / FIPS 203).** An ML-KEM public key establishes
+  keys; it cannot sign or agree. `pki.path.validate` enforces the RFC 9935 §5
+  rule that an ML-KEM certificate's keyUsage, if present, asserts
+  `keyEncipherment` and nothing else. A leaf presented for signing
+  (`digitalSignature`), an ML-KEM "CA" (`keyCertSign`), a `keyAgreement` or
+  `dataEncipherment` misuse, and an extra reserved bit alongside
+  `keyEncipherment` all fail closed with `path/kem-key-usage`. `pki.lint` mirrors
+  the rule and adds an encapsulation-key-size check keyed to the algorithm OID,
+  which is the sole authority for the parameter set rather than the length. On
+  import, `pki.webcrypto.subtle.importKey("pkcs8", …)` validates the RFC 9935 §6
+  `seed` / `expandedKey` / `both` private-key CHOICE by its DER tag before the
+  engine sees it, so the OpenSSL-legacy bare-seed layout the engine would
+  otherwise accept is rejected, and an internally inconsistent seed or expanded
+  key (FIPS 203 §7.3) is a typed `webcrypto/data` verdict rather than a raw
+  engine error.
+- **Key-establishment secret lifetime (CWE-226 / CWE-244).** Every secret the
+  toolkit allocates during key establishment is wiped as soon as it stops being
+  needed (NIST SP 800-227 RS5 / §4.2, RFC 9629 §7): a KEM shared secret and the
+  key-encryption key derived from it, the raw ECDH / X25519 / X448 agreement
+  secret, the copy a KDF makes of its input keying material, the password-derived
+  key-encryption key, and the AES content-encryption key exported on every
+  encrypt and decrypt. The wipe runs in a `finally`, so a failing decryption
+  clears the same buffers a succeeding one does. A wrong key or a tampered
+  ciphertext is the case an attacker can force, so a success-only wipe would
+  preserve the secret exactly when it matters. A message's content key is shared
+  by all its recipients, so it is cleared once the message is complete rather
+  than per recipient. Only buffers the toolkit allocated are cleared; a caller's
+  key, password, KEK, or supplied content key, and the returned plaintext, are
+  never written to. This is best effort: the runtime copies a shared secret where
+  no JS can reach it and may relocate a backing store, so the window in which a
+  secret is readable is shortened rather than eliminated. Separately, the FIPS
+  203 §7.3 ciphertext-length check runs at the crypto engine so a direct
+  `decapsulateBits` caller inherits it. It checks length only, because a
+  correct-length tampered ciphertext must still implicit-reject to a pseudo-random
+  secret rather than throw: a throw there would be a decryption oracle, and the
+  CMS uniform verdict depends on it not being one.
+- **PBES2 private-key decryption is not a padding oracle (CWE-208).**
+  `pki.key.decrypt` (RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2) reads
+  the attacker-controlled PBKDF2 salt and iteration count, and validates the
+  parameter structure and IV length, before any key derivation. An over-cap salt
+  or iteration count (`opts.maxIterations` lowers the cap and never raises it), a
+  malformed parameter set, or a wrong-length IV is a distinct typed reject with
+  no derivation work performed. Because a MAC-less PBES2-CBC decrypt has no
+  integrity tag, every secret-dependent failure — a wrong password, and a valid
+  PKCS#7 pad whose plaintext is not a `PrivateKeyInfo` — collapses to the single
+  uniform `key/decrypt-failed` (RFC 8018 §8), so an attacker cannot distinguish
+  the two. PBES1, PBMAC1, and scrypt are refused rather than silently accepted.
+- **PKCS#12 MAC integrity (CWE-347 / CWE-208).** `pki.pkcs12.verifyMac`
+  recomputes a store's classic Appendix B HMAC or RFC 9579 PBMAC1 over the exact
+  AuthenticatedSafe byte range (`macedBytes`, excluding the OCTET STRING header,
+  which is the canonical off-by-the-header MAC trap) and compares it in constant
+  time through `guard.crypto.constantTimeEqual`, so a wrong password leaks no
+  timing or length signal. It throws a typed error on a MAC-less or
+  public-key-integrity store rather than returning a falsy verdict.
+  `pki.pkcs12.build` encodes every password the PKCS#12 way (BMPString+NULL for
+  the Appendix B KDF, UTF-8 for the PBES2 bags and PBMAC1) so the output is not
+  silently unopenable elsewhere, refuses a ≤160-bit PBMAC1 digest (RFC 9579), and
+  never emits a non-canonical DEFAULT-1 MacData iterations. `pki.pkcs12.open`
+  verifies that MAC before it decrypts any bag (RFC 7292 §5.1): a store whose
+  password MAC fails returns nothing, and the wrong-password verdict is the MAC
+  gate (`pkcs12/mac-mismatch`) rather than a per-bag decrypt error that could
+  leak which bag or which byte differed. It refuses a MAC-less store unless the
+  caller explicitly opts in (`allowUnauthenticated`, surfaced as `macVerified:
+  false`), and because a PBES2 bag decrypt after a valid MAC is still MAC-less at
+  the cipher layer, it collapses every post-integrity decrypt failure into the
+  uniform `pkcs12/decrypt-failed`. The bag KDF iteration and salt work factors
+  are bounded before derivation (`opts.maxIterations` lowers the cap). For a
+  public-key-integrity store (an `id-signedData` authSafe, RFC 7292 §4) `open`
+  verifies the CMS SignedData signature over the AuthenticatedSafe first and
+  returns nothing on a failure (`pkcs12/signature-invalid`), exactly as the MAC
+  gate does for password mode. The signer is surfaced as a per-signer verdict in
+  `signers` but is not chained to a trust anchor: a valid signature authenticates
+  the store's integrity, not the signer's identity, and anchoring
+  `signers[i].cert` is the caller's `pki.path.validate` step, the out-of-path
+  signer contract shared with CMS, TSP, and OCSP-delegate verification. For
+  public-key privacy (an `id-envelopedData` safe encrypting the SafeContents to a
+  recipient public key, RFC 7292 §3.1) `open` decrypts only after the integrity
+  gate. The MAC or SignedData covers the whole AuthenticatedSafe, including the
+  enveloped element, so a tamper is caught by integrity first and the recipient
+  decrypt is never reached. Every recipient-side fault — a wrong `recipientKey`,
+  a tampered envelope, a CBC unpad failure, a decrypt that yields non-SafeContents
+  bytes — collapses into the uniform `pkcs12/decrypt-failed`, exposing no
+  padding, recipient, or structure oracle. The recipient private key is a privacy
+  credential only, never a MAC key, a signature-verification input, or a PBES2
+  password, and the recipient certificate is not trust-chained.
+- **CMS decryption oracles (Bleichenbacher / EFAIL / password-guessing).**
+  `pki.cms.decrypt` is oracle-free by construction. Recipient selection fails
+  with a distinct typed code, but every secret-dependent failure past that point
+  collapses to the single uniform `cms/decrypt-failed` verdict — same code, same
+  message, no cause chaining — so an attacker measuring the error has no
+  distinguishable signal (RFC 3218, EFAIL). That covers a PKCS#1 v1.5 or
+  RSAES-OAEP unwrap fault, an AES-KW integrity-check (A6A6…) mismatch, an RFC
+  3211 PWRI check-byte mismatch, a CBC padding fault, an AES-GCM tag mismatch,
+  and a content-key length mismatch. The PKCS#1 v1.5 arm is decrypt-only and
+  applies the RFC 3218 §2.3.2 implicit-rejection countermeasure: on any v1.5
+  fault it substitutes a fresh random content-encryption key and proceeds, so the
+  failure surfaces later and uniformly, exactly like every other bad key. v1.5 is
+  never emitted. Integrity is verified before any plaintext is released, and a
+  CBC EnvelopedData (unauthenticated content) surfaces `authenticated: false` in
+  the verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt
+  default. The declared content cipher's mode is bound to the container carrying
+  it before any key is used: an EnvelopedData must name a CBC cipher and an
+  AuthEnvelopedData an AEAD one (RFC 5083 §2.1, RFC 5084 §3). A message whose
+  algorithm identifier has been switched to the same-key-length cipher of the
+  other mode is refused rather than opened in the mode it was not encrypted under
+  and reported under the algorithm it falsely declared. The mode is resolved from
+  the identifier rather than from the display name that identifier resolves to,
+  so a caller-registered name cannot widen what is admitted. A password
+  recipient's PBKDF2 iteration count is capped (`cms/iteration-limit`, a
+  caller-lowerable bound) so an attacker-inflated count cannot force unbounded
+  work. `pki.smime.decrypt` (RFC 8551) inherits every one of these properties
+  unchanged: it only propagates the uniform `cms/decrypt-failed` verdict, adds no
+  secret-dependent branch of its own, and derives the `smime-type` from the CMS
+  body rather than the attacker-controlled MIME header, so a mislabeled header
+  cannot misrepresent what was encrypted. An enveloped-only (CBC) message has no
+  integrity (RFC 8551 §3.3), so its recovered plaintext is returned marked
+  `authenticated: false`. The caller gets an explicit unauthenticated verdict
+  alongside the content, rather than a bare result that looks trustworthy, and
+  can reject it. Callers that require integrity should check `authenticated`, or
+  send AES-GCM AuthEnvelopedData, the encrypt default.
+- **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM or
+  AES-CCM content-encryption algorithm must carry its RFC 5084 parameters: the
+  nonce is bounds-checked (CCM 7..13 octets), the ICV length must come from the
+  RFC's allowed set and equal the length of the `mac` field, and an ICV length
+  encoded equal to its DEFAULT is rejected as non-canonical DER (X.690 §11.5). A
+  message therefore cannot shrink its own integrity tag, or desynchronize the tag
+  length a verifier checks from the one the structure claims.
 - **Stateful-signature key reuse and downgrade.** `pki.shbs` verifies HSS/LMS
-  signatures (RFC 8554) but deliberately NEVER signs: stateful hash-based signing
+  signatures (RFC 8554) and deliberately never signs. Stateful hash-based signing
   requires a one-time-key index whose state must advance atomically across every
   signature and every restart, and a single reuse can leak enough material to
   forge, so SP 800-208 confines signing to hardware. Verification is pure
-  public-input hashing (no secret, no side-channel), the public key is the sole
-  authority for every parameter set (a signature whose typecode disagrees with
-  the key cannot verify against it -- a downgrade defense), an HSS hierarchy
-  accepts only if EVERY level verifies, and every field length is bounds-checked
-  before it is read; an unapproved or unknown typecode, a truncated blob, or a
-  hostile level count fails closed with a typed error rather than an unbounded
-  loop or an out-of-bounds read.
+  public-input hashing, with no secret and no side channel; the public key is the
+  sole authority for every parameter set, so a signature whose typecode disagrees
+  with the key cannot verify against it, which is the downgrade defense. An HSS
+  hierarchy accepts only if every level verifies, and every field length is
+  bounds-checked before it is read. An unapproved or unknown typecode, a
+  truncated blob, or a hostile level count fails closed with a typed error rather
+  than an unbounded loop or an out-of-bounds read.
 - **Composite (hybrid) signature downgrade.** `pki.path.validate` (certificates,
   CRLs, OCSP responses) and `pki.cms.verify` (CMS `SignerInfo`,
   draft-ietf-lamps-cms-composite-sigs) verify composite ML-DSA signatures
-  (draft-ietf-lamps-pq-composite-sigs) — a post-quantum ML-DSA paired with a
-  traditional RSA / ECDSA / EdDSA — by reconstructing the domain-separated message
-  representative and verifying the two components independently, accepting ONLY when
-  **both** pass. A single-component accept would be the exact downgrade the
+  (draft-ietf-lamps-pq-composite-sigs), a post-quantum ML-DSA paired with a
+  traditional RSA, ECDSA, or EdDSA key, by reconstructing the domain-separated
+  message representative and verifying the two components independently. Both
+  must pass. A single-component accept would be the exact downgrade the
   construction exists to prevent: it would let an adversary who breaks either the
   post-quantum or the classical primitive forge a signature the other component
   should still reject. The public-key algorithm OID is bound to the signature OID
-  (algorithm-confusion defense), the AlgorithmIdentifier parameters MUST be absent,
-  and an arm whose curve or pre-hash the crypto engine cannot reach fails closed to
-  a typed reason code rather than silently skipping its check. In CMS the SignerInfo
-  `digestAlgorithm` MUST equal the arm's pre-hash (draft §3.4); a mismatch fails
-  closed (the §5 SHOULD-reject taken), so the message-digest attribute cannot be
-  computed under a different digest than the one the composite signature covers.
-  `pki.cms.sign` produces a composite `SignerInfo` from the two component keys
-  (`{ mldsa, trad }`); it never emits a single-component signature.
-- **ML-KEM key misuse (RFC 9935 / FIPS 203).** An ML-KEM public key is a
-  key-establishment-only key — it cannot sign or agree. `pki.path.validate` enforces
-  the RFC 9935 §5 rule that an ML-KEM certificate's keyUsage, if present, asserts
-  `keyEncipherment` as the ONLY bit: a leaf presented for signing (`digitalSignature`),
-  an ML-KEM "CA" (`keyCertSign`), a `keyAgreement`/`dataEncipherment` misuse, or an
-  extra reserved bit alongside `keyEncipherment` all fail closed with
-  `path/kem-key-usage`, and `pki.lint` mirrors the rule plus an encapsulation-key-size
-  check keyed to the algorithm OID (the OID is the sole authority for the parameter
-  set, never the length). On import, `pki.webcrypto.subtle.importKey("pkcs8", …)`
-  validates the RFC 9935 §6 `seed`/`expandedKey`/`both` private-key CHOICE by its DER
-  tag before the engine sees it — the OpenSSL-legacy bare-seed layout the engine would
-  otherwise accept is rejected — and an internally inconsistent seed/expanded key
-  (FIPS 203 §7.3) is a typed `webcrypto/data` verdict, never a raw engine error.
-- **CMS decryption oracles (Bleichenbacher / EFAIL / password-guessing).**
-  `pki.cms.decrypt` is oracle-free by construction. Recipient selection fails with a
-  distinct typed code, but EVERY secret-dependent failure past that point — a
-  PKCS#1 v1.5 or RSAES-OAEP unwrap fault, an AES-KW integrity-check (A6A6…) mismatch,
-  an RFC 3211 PWRI check-byte mismatch, a CBC padding fault, an AES-GCM tag mismatch,
-  a content-key length mismatch — collapses to the SINGLE uniform `cms/decrypt-failed`
-  verdict (same code, same message, no cause chaining), so an attacker measuring the
-  error has no distinguishable signal (RFC 3218 / EFAIL). The PKCS#1 v1.5 arm is
-  decrypt-only and applies the RFC 3218 §2.3.2 implicit-rejection countermeasure — on
-  any v1.5 fault it substitutes a fresh random content-encryption key and proceeds, so
-  the failure surfaces later, uniformly, exactly like every other bad key; v1.5 is
-  never emitted. Integrity is verified before any plaintext is released, and a CBC
-  EnvelopedData (unauthenticated content) surfaces `authenticated: false` in the
-  verdict rather than silently, with AES-GCM AuthEnvelopedData the encrypt default.
-  The declared content cipher's MODE is bound to the container carrying it before any
-  key is used — an EnvelopedData must name a CBC cipher and an AuthEnvelopedData an
-  AEAD one (RFC 5083 §2.1 / RFC 5084 §3) — so a message whose algorithm identifier has
-  been switched to the same-key-length cipher of the other mode is refused rather than
-  opened in the mode it was not encrypted under and reported under the algorithm it
-  falsely declared. The mode is resolved from the identifier, not from the display name
-  that identifier resolves to, so a caller-registered name cannot widen what is admitted. A
-  password recipient's PBKDF2 iteration count is capped (`cms/iteration-limit`, a
-  caller-lowerable bound) so an attacker-inflated count cannot force unbounded work.
-  `pki.smime.decrypt` (RFC 8551) inherits every one of these properties unchanged: it
-  only propagates the uniform `cms/decrypt-failed` verdict, adds no secret-dependent
-  branch of its own, and derives the `smime-type` from the CMS body rather than the
-  attacker-controlled MIME header (a mislabeled header cannot misrepresent what was
-  encrypted). An enveloped-only (CBC) message has no integrity (RFC 8551 §3.3): its
-  recovered plaintext is returned marked `authenticated: false`, so the caller gets an
-  explicit unauthenticated verdict alongside the content — not a bare, trustworthy-looking
-  result — and can reject it. Callers that require integrity should check `authenticated`
-  (or send AES-GCM AuthEnvelopedData, the encrypt default).
-- **Key-establishment secret lifetime (CWE-226 / CWE-244).** Every secret the toolkit ALLOCATES
-  during key establishment is wiped as soon as it stops being needed (NIST SP 800-227 RS5 / sec. 4.2,
-  RFC 9629 sec. 7): a KEM shared secret and the key-encryption key derived from it, the raw
-  ECDH / X25519 / X448 agreement secret, the copy a KDF makes of its input keying material, the
-  password-derived key-encryption key, and the AES content-encryption key exported on every
-  encrypt and decrypt. The wipe runs in a `finally` so a FAILING decryption clears the same buffers
-  a succeeding one does -- a wrong key or a tampered ciphertext is the case an attacker can force,
-  so a success-only wipe would preserve the secret exactly when it matters. A message's content key
-  is shared by all its recipients, so it is cleared once the message is complete rather than per
-  recipient. Only buffers the toolkit allocated are cleared; a caller's key, password, KEK or
-  supplied content key, and the returned plaintext, are never written to. This is
-  BEST EFFORT: the runtime copies a shared secret where no JS can reach it and may relocate a
-  backing store, so the window in which a secret is readable is shortened, not eliminated.
-  Separately, the FIPS 203 sec. 7.3 ciphertext-length check runs at the crypto engine so a direct
-  `decapsulateBits` caller inherits it; it checks LENGTH only, because a correct-length tampered
-  ciphertext must still implicit-reject to a pseudo-random secret rather than throw -- a throw
-  there would be a decryption oracle, and the CMS uniform verdict depends on it not being one.
-- **S/MIME header protection: injection + downgrade + outer-header trust
-  (CWE-93 / CWE-345).** `pki.smime` header protection (RFC 9788) inlines the
-  protected headers on the Cryptographic Payload so the CMS signature/encryption
-  covers them. Every header field a composer emits routes through one fail-closed
-  guard: a CR / LF / NUL in a field value, or a field name outside RFC 5322 ftext,
-  is rejected (`smime/bad-header`) — so a caller-supplied Subject cannot inject a
-  Bcc, split the message, or forge a multipart boundary. On receive, the AUTHENTICATED
-  inner headers are surfaced distinctly (`protectedHeaders`) from the untrusted outer
-  display headers and never silently merged, so a transport that rewrites an outer
-  header cannot change the verified set (an outer From that disagrees is flagged
-  `fromMismatch`). A payload whose declared `hp` marker is malformed, invalid, or
-  contradicts the cryptographic envelope (a signed message claiming `hp="cipher"`)
-  fails closed with `smime/bad-header-protection` rather than being treated as
-  unprotected — there is no silent downgrade path. For an encrypted message the
-  Header Confidentiality Policy keeps the real header values (Subject, Comments,
-  Keywords) only inside the ciphertext, never in the outer section, and the
-  authenticated `HP-Outer` records (RFC 9788 §2.2) inside the ciphertext document
-  which fields were left visible — so `decrypt` derives the end-to-end-confidential
-  set (`headerProtection.confidential`) from signed/encrypted data alone, letting a
-  caller reply or forward without leaking a confidential header (§6.1). Inbound
-  detection of the *legacy* RFC 8551 `message/rfc822` wrap (RFC 9788 §4.10) is
-  opt-in (`opts.legacyHeaderProtection`) and safe-by-default. A legacy RFC8551HP
-  message is structurally **indistinguishable** from an ordinary forwarded
-  `message/rfc822` (RFC 9788 §4.10.2 states the inference is "not based on any
-  strong end-to-end guarantees"), so the toolkit never conflates the two: a legacy
-  inference is surfaced ONLY under `headerProtection.legacy` (its own
-  `{ headers, mode, fromMismatch, confidential }` object), NEVER in
-  `protectedHeaders`, and NEVER sets `present: true`. A consumer that keys trust off
-  `present` / `protectedHeaders` — the authenticated, cryptographically-declared
-  (`hp=`) set — therefore cannot be tricked into treating a forwarded attachment's
-  From/Subject as this message's own headers; consuming the inferred set is an
-  explicit choice (read `headerProtection.legacy.headers`) and comes with
-  `legacy.fromMismatch`, which flags a forwarded message whose inner sender differs
-  from the outer one. Detection applies only after the signature/AEAD verdict
-  succeeds and requires all four §4.10.1 conditions; a nested crypto layer, an
-  `hp=` on the inner message, a non-`message/rfc822` payload, or a duplicate
-  Content-Type on either part reports `legacy: null`.
-- **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
-  and consistency proofs fail-closed: the leaf (`0x00`) and node (`0x01`)
-  domain-separation prefixes stop the second-preimage swap, a proof whose node
-  count does not match the tree geometry is a typed reject (never a best-effort
-  fold), consistency reconstructs BOTH roots so a rewritten history is caught on
-  the old-root leg, and the root comparison is constant-time. The only Boolean
-  `false` is an honest root non-match; every malformed input throws.
-- **WebAuthn credential-key confusion.** `pki.webauthn` binds a credential COSE
-  key to its declared algorithm and curve (an EdDSA key claiming ES256, or the
-  legacy `-8` identifier carrying Ed448 rather than Ed25519, is rejected), and
-  validates the public-key point on its curve so an off-curve or identity point
-  fails closed at decode instead of reaching a verify step where an invalid-curve
-  attack could apply. The EC point must be uncompressed, the COSE key exactly its
-  canonical CTAP2 parameter set, and an ECDSA attestation signature a
-  minimally-encoded DER `ECDSA-Sig-Value` — a non-minimal, negative, zero, or
-  over-size `r`/`s` is a typed reject, never normalized-and-accepted.
-- **WebCrypto import algorithm confusion + raw cipher faults.** `pki.webcrypto`
-  derives an imported asymmetric key's type from the key material, not the
-  caller's claim: an RSA key imported under an Ed25519 / ECDSA / RSA-PSS name is a
-  `webcrypto/data` reject, so a mislabeled `CryptoKey` cannot later sign or verify
-  under the wrong scheme. Every AES cipher fault fails closed with a typed
-  `webcrypto/operation` — a tampered AES-GCM authentication tag, bad AES-CBC
-  padding, a non-conforming AES-KW wrap length — rather than leaking a raw Node
-  exception across the API boundary. A raw or JWK AES key of an invalid length
-  (not 128, 192, or 256 bits) is rejected as a `webcrypto/data` DataError at
-  import, closing the gap where the failure was deferred to first use.
-- **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
-  carries the root program's own constraints and `pki.path.validate` enforces
-  them: a leaf issued after the root's per-purpose distrust date, or a purpose
-  the root was never a trusted delegator for, fails closed. Trust metadata pairs
-  to its certificate by byte-exact issuer + serial and is cross-checked against
-  the parsed DER, so a crafted store cannot attach one root's permissions to
-  another. A partitioned CRL establishes non-revocation ONLY for the shard whose
-  issuing-distribution-point name corresponds byte-identically to the
-  certificate's own distribution point with no reason restriction — a
-  non-corresponding, reason-scoped, non-critical-IDP, or delta shard stays
-  revocation-only, and a listed serial reports revoked regardless.
-- **Enrollment-response replay and unauthenticated verdicts (CMC).**
-  `pki.cmc.verify` binds a Full PKI Response to the request that provoked it
-  before it reports anything: the Transaction Identifier, the Sender/Recipient
-  Nonce echo and the Data Return echo each apply once the client sent that half,
-  and an absent or differing echo is then a refusal rather than a missing
-  optional field — so a response captured from one exchange cannot be replayed
-  into another. The nonce is compared in constant time and by full value, so a
-  truncated echo cannot match on a prefix. Where several status controls are
-  present the WORST governs, so a rejection cannot hide behind an earlier
-  success. The carrier's own signature is not assumed: RFC 5272 §3.2.1.3.4
-  requires it. A conforming response carries its own signer certificate and is
-  checked against it with nothing asked of the caller; where the signer is found
-  nowhere, verification is fail-closed with a NAMED opt-out (`allowUnverified`,
-  which reports `signatureVerified: false`) rather than a silent default, so no
-  caller receives a verdict believing a check ran that did not. That opt-out
-  covers only "could not check" -- a signature that is present and wrong is
-  always a refusal -- and a carrier bearing no signer at all is refused. Nothing in the response is
-  trusted: the certificate bag and any Publish Trust Anchors control are
-  surfaced as data for `pki.path.validate`, never added to a store.
-- **Container nesting and amplification (PKCS#12).** A PFX chains fresh encoded
-  blobs inside octet strings, where every re-decode would restart the depth cap
-  from zero; the PKCS#12 parser carries one cross-decode budget over all of them
-  and caps element counts at each list, so a crafted store fails typed
-  (`pkcs12/too-deep`, `pkcs12/too-many-elements`) instead of exhausting the
-  stack or memory. Its BER acceptance is scoped to exactly the two shapes
-  RFC 7292 §4.1 requires (indefinite lengths, constructed octet strings) and
-  only for that format — every other format and every other DER strictness
-  verdict is unchanged.
-- **Algorithm-substitution.** Every algorithm, attribute, and extension is named
+  as an algorithm-confusion defense, the AlgorithmIdentifier parameters must be
+  absent, and an arm whose curve or pre-hash the crypto engine cannot reach fails
+  closed to a typed reason code rather than silently skipping its check. In CMS
+  the SignerInfo `digestAlgorithm` must equal the arm's pre-hash (draft §3.4), and
+  a mismatch fails closed, taking the §5 SHOULD-reject, so the message-digest
+  attribute cannot be computed under a different digest than the one the
+  composite signature covers. `pki.cms.sign` produces a composite `SignerInfo`
+  from the two component keys (`{ mldsa, trad }`) and never emits a
+  single-component signature.
+- **Algorithm substitution.** Every algorithm, attribute, and extension is named
   in an OID registry (`pki.oid`), so a structure's algorithm identifiers resolve
-  to a known name rather than being trusted blindly. OID-driven sign/verify
+  to a known name rather than being trusted blindly. OID-driven sign and verify
   resolution — deriving the verification algorithm from the trusted key and the
-  expected `AlgorithmIdentifier` so a structure cannot smuggle in a weaker or
+  expected `AlgorithmIdentifier`, so a structure cannot smuggle in a weaker or
   unexpected algorithm by naming a different OID — rides this registry and lands
   with the signing surface.
 - **Silent verification failure.** Every verify and parse path throws on failure.
-  No path returns zero, a default, or partial output in place of a real result, so
-  a caller cannot mistake an error for a pass.
-- **Certification-path validation bypass.** `pki.path.validate` enforces the
-  RFC 5280 §6 algorithm fail-closed: the basic-constraints CA check is the single
-  authoritative gate that no later check can overwrite (CVE-2021-3450); the
+  No path returns zero, a default, or partial output in place of a real result,
+  so a caller cannot mistake an error for a pass.
+
+### Path validation, revocation, and signed messages
+
+- **Certification-path validation bypass.** `pki.path.validate` enforces the RFC
+  5280 §6 algorithm fail-closed. The basic-constraints CA check is the single
+  authoritative gate that no later check can overwrite (CVE-2021-3450). The
   signature algorithm is derived from the certificate and the issuer key, never a
-  message-selected field (CVE-2015-9235); ECDSA signatures with a component
-  outside `[1, n−1]` — including the all-zero forgery — are rejected
-  (CVE-2022-21449); an EdDSA (Ed25519/Ed448) issuer or revocation-responder key is
-  validated on-curve and full-order before verification, so a low-order key — for
-  example the identity point, which the platform imports without complaint and which
-  verifies a forged signature for every message — cannot certify a forged chain or
-  forge a CRL / OCSP response; the certificate-policy tree carries a hard node cap and fails
-  closed at it (CVE-2023-0464), and an invalid policy OID is surfaced, never
-  silently dropped (CVE-2023-0465); name comparison rejects embedded NUL and
-  control bytes so a truncated name cannot compare equal (CVE-2009-2408); and an
-  unknown critical extension or an undetermined revocation status terminates the
-  path with a typed reason code rather than passing. Post-quantum SLH-DSA
-  signatures (all twelve FIPS 205 parameter sets) verify on this path over the
-  exact signed bytes, alongside ML-DSA and the classical set.
+  message-selected field (CVE-2015-9235). ECDSA signatures with a component
+  outside `[1, n−1]`, including the all-zero forgery, are rejected
+  (CVE-2022-21449). An EdDSA (Ed25519/Ed448) issuer or revocation-responder key
+  is validated on-curve and full-order before verification, so a low-order key —
+  for example the identity point, which the platform imports without complaint
+  and which verifies a forged signature for every message — cannot certify a
+  forged chain or forge a CRL or OCSP response. The certificate-policy tree
+  carries a hard node cap and fails closed at it (CVE-2023-0464), and an invalid
+  policy OID is surfaced rather than silently dropped (CVE-2023-0465). Name
+  comparison rejects embedded NUL and control bytes so a truncated name cannot
+  compare equal (CVE-2009-2408). An unknown critical extension, or an undetermined
+  revocation status, terminates the path with a typed reason code rather than
+  passing — the latter unless the caller sets `softFail`, which is exactly the
+  option that converts "revocation could not be determined" into a pass, and
+  which is off unless asked for. Revocation is also only checked when a
+  `revocationChecker` is supplied: a path validated without one is a path whose
+  revocation status was never asked about, which is a different claim from
+  `revoked: false`. Post-quantum SLH-DSA signatures (all twelve FIPS 205
+  parameter sets) verify on this path over the exact signed bytes, alongside
+  ML-DSA and the classical set.
+- **Trust-anchor misuse and revocation-scope confusion.** A `pki.trust` anchor
+  carries the root program's own constraints, and `pki.path.validate` enforces
+  them when the caller names the purpose being validated for. Pass `checkPurpose:
+  "serverAuth"`, or whichever purpose you are actually validating for, and a leaf
+  issued after that root's per-purpose distrust date, or a purpose the root was
+  never a trusted delegator for, fails closed. Both constraints are per-purpose,
+  so without that option there is no purpose to judge them against and neither is
+  applied: a root distrusted for TLS still validates a TLS leaf. An anchor set
+  parsed from a root program carries these constraints because the program means
+  them to bind, so supplying `checkPurpose` is a requirement rather than optional
+  hardening. Trust metadata pairs to its certificate by byte-exact issuer and
+  serial and is cross-checked against the parsed DER, so a crafted store cannot
+  attach one root's permissions to another. A partitioned CRL establishes
+  non-revocation only for the shard whose issuing-distribution-point name
+  corresponds byte-identically to the certificate's own distribution point with
+  no reason restriction. A non-corresponding, reason-scoped, non-critical-IDP, or
+  delta shard stays revocation-only, and a listed serial reports revoked
+  regardless.
 - **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
-  authoritative only when it is signed by an authorized responder — the issuing
-  CA directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in
-  its extendedKeyUsage (RFC 6960 §4.2.2.2). An ordinary leaf the CA issued, an
+  authoritative only when it is signed by an authorized responder: the issuing CA
+  directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in its
+  extendedKeyUsage (RFC 6960 §4.2.2.2). An ordinary leaf the CA issued, an
   `anyExtendedKeyUsage` certificate, a certificate from a different CA, an expired
-  responder, or one whose keyUsage forbids digitalSignature cannot sign a status.
-  A delegated responder must also carry id-pkix-ocsp-nocheck (RFC 6960 §4.2.2.2.1)
-  — the CA's statement that it vouches for the responder for its certificate
-  lifetime — and any critical extension on the responder certificate must be
-  recognized and well-formed; otherwise the checker cannot confirm the responder
-  itself is unrevoked and fails closed, so a revoked responder cannot keep signing. The response must also bind to the
-  certificate under test through the full CertID triple, with `issuerNameHash`
-  and `issuerKeyHash` recomputed under the CertID's own hash algorithm, so a
-  `good` for one issuer's serial cannot be replayed to answer for another
-  issuer's same serial. A missing or passed `nextUpdate`, an unauthorized
-  responder, or any signature-verification failure yields an undetermined status
-  that fails the path closed. `pki.ocsp.verify` (the standalone relying-party
-  entry) and `pki.path.verifyOcspResponse` (its lower-level primitive) run this
-  exact responder-authorization, signature, CertID, and currency core — there is
-  no weaker second OCSP verify path — and additionally bind the RFC 9654 request
-  nonce under a constant-time comparison, failing closed to `unknown` when the
-  response omits or does not echo a nonce the client sent. Because the
-  standalone entry does not assume the caller pre-chained the certificate, it
-  first binds the supplied issuer certificate to the target — the target's
-  issuer DN must equal the issuer's subject DN **and** the target's signature
-  must verify under the issuer's key — so a rogue certificate sharing the
-  issuer's subject DN but a different key cannot recompute a matching CertID and
-  authorize a `good` response for a certificate that CA never issued. The producing side,
-  `pki.ocsp.sign`, embeds the responder certificate verbatim from caller-supplied
-  DER rather than re-encoding a parsed certificate, so the bytes a relying party
-  verifies are the exact bytes the CA issued.
+  responder, and one whose keyUsage forbids digitalSignature all cannot sign a
+  status. A delegated responder must also carry id-pkix-ocsp-nocheck (RFC 6960
+  §4.2.2.2.1), the CA's statement that it vouches for the responder for its
+  certificate lifetime, and any critical extension on the responder certificate
+  must be recognized and well-formed. Otherwise the checker cannot confirm the
+  responder itself is unrevoked and fails closed, so a revoked responder cannot
+  keep signing. The response must also bind to the certificate under test through
+  the full CertID triple, with `issuerNameHash` and `issuerKeyHash` recomputed
+  under the CertID's own hash algorithm, so a `good` for one issuer's serial
+  cannot be replayed to answer for another issuer's same serial. A missing or
+  passed `nextUpdate`, an unauthorized responder, or any signature-verification
+  failure yields an undetermined status that fails the path closed.
+  `pki.ocsp.verify`, the standalone relying-party entry, and
+  `pki.path.verifyOcspResponse`, its lower-level primitive, run this exact
+  responder-authorization, signature, CertID, and currency core; there is no
+  weaker second OCSP verify path. Request-nonce binding is not part of that
+  shared core: it lives in `pki.ocsp.verify` alone, which compares the RFC 9654
+  nonce in constant time and downgrades a `good` to `unknown` when the response
+  omits or does not echo a nonce the client sent. `pki.path.verifyOcspResponse`
+  takes no request nonce, so a caller reaching for the lower-level primitive
+  gets no replay binding and must compare the nonce itself. A `revoked`
+  verdict is reported as `revoked` either way, with `nonceMatched: false` saying
+  the response was not bound to this request: revocation does not go stale the way
+  non-revocation does, so discarding a signed, current, authorized `revoked`
+  because it was replayed would hand a soft-failing caller the very certificate
+  the responder refused. Because the standalone entry does not assume the caller
+  pre-chained the certificate, it first binds the supplied issuer certificate to
+  the target: the target's issuer DN must equal the issuer's subject DN, and the
+  target's signature must verify under the issuer's key. A rogue certificate
+  sharing the issuer's subject DN but a different key therefore cannot recompute
+  a matching CertID and authorize a `good` response for a certificate that CA
+  never issued. On the producing side, `pki.ocsp.sign` embeds the responder
+  certificate verbatim from caller-supplied DER rather than re-encoding a parsed
+  certificate, so the bytes a relying party verifies are the exact bytes the CA
+  issued.
 - **Timestamp-token forgery (TSA impersonation).** `pki.tsp.verify` trusts a
-  timestamp token only when its signer is demonstrably a time-stamping
-  authority. The TSA signing certificate — an out-of-path signer: it signs the
-  token but sits on no certification path the caller has already validated —
-  receives full certification-path validation to the caller's trust anchor at
-  the token's own `genTime` (issuer signatures, the validity window at signing
-  time, critical-extension handling, optional revocation), and RFC 3161 §2.3
-  is enforced on top: the certificate's extendedKeyUsage extension must be
-  present, be critical, and contain exactly id-kp-timeStamping — so a
+  timestamp token only when its signer is demonstrably a time-stamping authority.
+  The TSA signing certificate is an out-of-path signer: it signs the token but
+  sits on no certification path the caller has already validated. It receives
+  full certification-path validation to the caller's trust anchor at the token's
+  own `genTime` — issuer signatures, the validity window at signing time,
+  critical-extension handling, optional revocation — when the caller supplies
+  `opts.trustAnchor`. With no anchor there is nothing to chain to, and a `valid:
+  true` verdict then means the token's signature and its bindings hold under a
+  certificate whose issuer was never established; any certificate carrying the
+  EKU below would do. Supply the anchor for any verdict you intend to act on. RFC
+  3161 §2.3 is enforced on top: the certificate's extendedKeyUsage extension must
+  be present, be critical, and contain exactly id-kp-timeStamping, so a
   general-purpose certificate the same CA issued (a TLS leaf, an
-  `anyExtendedKeyUsage` holder) cannot mint a token that verifies. The token
-  is bound to that exact certificate through its ESSCertID(V2)
-  signing-certificate attribute (RFC 5816) — the certificate hash is
-  recomputed and compared, so a valid signature cannot be re-paired with a
-  substituted certificate. The message imprint is recomputed from the
-  presented data, the encapsulated content must be a TSTInfo, and a request
-  nonce must be echoed by the token. Every checked field is read from the
-  verified encapsulated content, never a caller-supplied parsed object, and a
-  well-formed token failing any check is a fail-closed `{ valid: false }`
-  verdict with a typed reason code, never a silent pass.
-- **Algorithm-parameter confusion.** For the algorithms whose `parameters` field
-  MUST be absent — ML-DSA, SLH-DSA, the RFC 8410 Edwards/Montgomery curves,
-  ML-KEM (RFC 9936), and the HKDF identifiers (RFC 8619) — the single shared
-  AlgorithmIdentifier decoder rejects a present parameters field (an explicit
-  NULL or arbitrary bytes) fail-closed with a
-  `<format>/bad-algorithm-parameters` code (RFC 9909 §3, RFC 9814 §4, RFC 9881
-  §2, RFC 8410 §3). The check lives in the one decoder every format composes, so
-  a certificate, CMS message, OCSP response, timestamp, CRL, CSR, or key cannot
-  smuggle unauthenticated bytes past a parser through that field, and no format
-  can drift out of the rule.
+  `anyExtendedKeyUsage` holder) cannot mint a token that verifies. The token is
+  bound to that exact certificate through its ESSCertID(V2) signing-certificate
+  attribute (RFC 5816): the certificate hash is recomputed and compared, so a
+  valid signature cannot be re-paired with a substituted certificate. The message
+  imprint is recomputed from the presented data, the encapsulated content must be
+  a TSTInfo, and a request nonce must be echoed by the token. Every checked field
+  is read from the verified encapsulated content rather than a caller-supplied
+  parsed object, and a well-formed token failing any check is a fail-closed
+  `{ valid: false }` verdict with a typed reason code, never a silent pass.
+- **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
+  and consistency proofs fail-closed. The leaf (`0x00`) and node (`0x01`)
+  domain-separation prefixes stop the second-preimage swap, a proof whose node
+  count does not match the tree geometry is a typed reject rather than a
+  best-effort fold, consistency reconstructs both roots so a rewritten history is
+  caught on the old-root leg, and the root comparison is constant-time. The only
+  Boolean `false` is an honest root non-match; every malformed input throws.
+- **CMS SignedData preimage substitution.** `pki.cms.verify` checks a SignedData
+  signature over the exact bytes RFC 5652 §5.4 defines, never a re-derived copy.
+  When signed attributes are present, the message-digest attribute must equal the
+  digest of the content, and the signature is verified over the DER re-encoding
+  of the SignedAttributes, with the on-wire `[0]` implicit tag replaced by the
+  universal SET OF the standard requires. An attacker can therefore neither swap
+  the content out from under a set of signed attributes, nor strip the attributes
+  and present a signature made over them as one made over the content. Each
+  parameter comes from the structure that owns it — the content digest from the
+  digestAlgorithm, the signature scheme from the signer's own key algorithm — so
+  a signer cannot claim one algorithm while the key implies another. Those signed
+  attributes are decoded from the exact bytes the signature covers rather than
+  from a parsed representation a caller could mutate independently, so a supplied
+  parsed object cannot desynchronize the checked attributes from the verified
+  preimage. An EdDSA signer key is validated on-curve and full-order before
+  verification, so a low-order Ed25519 or Ed448 point, which `node:crypto`
+  imports without complaint and which can verify a forged signature, is rejected.
+  A false verdict or an unresolved parameter is a fail-closed `cms/*` outcome,
+  never a silent pass.
+  The signer certificate is located but deliberately not chained to a trust
+  anchor, which remains the caller's explicit `pki.path.validate` step. The
+  producing side (`pki.cms.sign`, and `pki.tsp.sign` over it) emits exactly the
+  shapes the verifier checks: canonical DER signed attributes, the same
+  algorithm-parameter forms (NULL for RSA, absent for ECDSA and EdDSA, the
+  RSASSA-PSS params), and ECDSA signatures re-encoded to canonical DER through
+  the shared `validator.sig` gate. A token this toolkit signs therefore cannot
+  desynchronize from what it, or OpenSSL, verifies, and the signer's private key
+  is only ever handed to the WebCrypto sign call, never logged or embedded.
+  Post-quantum ML-DSA (ML-DSA-44/65/87, RFC 9882) signs and verifies over the
+  same preimage in pure mode with the empty context. The message-digest algorithm
+  is held to each parameter set's security strength on both sign and verify, so a
+  below-strength digest — the weaker link that would cap the signature's
+  collision resistance — is refused, and the signer certificate's public-key
+  parameter set must agree with the SignerInfo signatureAlgorithm. SLH-DSA (the
+  twelve FIPS 205 pure sets, RFC 9814) signs and verifies the same way, with the
+  message digest pinned per set.
+
+### WebAuthn and passkeys
+
+- **WebAuthn credential-key confusion.** `pki.webauthn` binds a credential COSE
+  key to its declared algorithm and curve, so an EdDSA key claiming ES256, or the
+  legacy `-8` identifier carrying Ed448 rather than Ed25519, is rejected. It
+  validates the public-key point on its curve, so an off-curve or identity point
+  fails closed at decode instead of reaching a verify step where an invalid-curve
+  attack could apply. The EC point must be uncompressed, the COSE key exactly its
+  canonical CTAP2 parameter set, and an ECDSA attestation signature a minimally
+  encoded DER `ECDSA-Sig-Value`; a non-minimal, negative, zero, or over-size `r`
+  or `s` is a typed reject rather than being normalized and accepted.
+- **Attestation-key substitution.** `pki.webauthn.verify` binds every attestation
+  to the credential being registered, by the mechanism each format defines. For
+  packed and fido-u2f the attestation signature covers the `authenticatorData`,
+  and fido-u2f's signed `verificationData` embeds the credential key explicitly,
+  so a signature that verifies is a signature over that exact credential key. For
+  android-key, apple, and tpm the attestation certificate's public key — or, for
+  tpm, the `pubArea`'s — is additionally required to equal the credential public
+  key: an unsigned-integer comparison for EC and RSA coordinates, so a
+  leading-zero re-encoding cannot desynchronize it, and a byte-exact comparison
+  for a fixed-width Ed25519 key, with the tpm `pubArea` key also bound to the
+  `certInfo` TPM Name it certifies. The apple nonce must equal the SHA-256 over
+  `authenticatorData || clientDataHash`, and the android attestation-challenge
+  must equal the `clientDataHash`, so an attacker cannot pair a valid attestation
+  over one key with a different credential. The attestation object and COSE keys
+  are decoded by the strict `pki.cbor` codec and the TPM structures by a
+  bounds-before-slice reader, and every failed check throws a typed `webauthn/*`
+  error: a signature that does not verify is a thrown verdict, never a silent
+  pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that
+  emit it, never for signing.
+- **A verified signature read as a verified ceremony.** The attestation and
+  assertion procedures establish that a signature is sound. What makes a response
+  acceptable is the ceremony binding, and most of that depends on state only the
+  relying party holds: the challenge it issued, the origin the browser reported,
+  the RP ID it operates under, and the user-presence policy it requires. An
+  attestation naming another origin's RP ID, with user presence clear, is a
+  perfectly sound statement about a credential that must not be registered. The
+  verdict fields are therefore `attestationVerified` and `signatureVerified`
+  rather than a bare `verified`: a caller writing `if (res.verified)` gets
+  `undefined` instead of a pass for a question it did not ask. The bindings this
+  layer can check are offered by name — `expectedRpId`, `requireUserPresence`,
+  `requireUserVerification`, `allowedAlgorithms`, and for `clientDataJSON` the
+  ceremony type, challenge, and origin — and every verdict reports in
+  `bindingChecked` which of them ran, so a check that passed is distinguishable
+  from one that never happened. `pki.webauthn.verifyAssertion` checks the
+  ceremony type unconditionally whenever it is given the JSON, because which
+  ceremony a response belongs to is fixed by the specification rather than chosen
+  by the caller, and a registration response replayed as a login is exactly what
+  that stops. Where a stored `previousSignCount` is supplied, a counter that
+  fails to advance is refused as the cloned authenticator it signals.
+- **Metadata-catalogue forgery and rollback (FIDO MDS).** A metadata BLOB decides
+  which roots an authenticator model is allowed to chain to and whether that
+  model is still trusted, so a reader that parses before it verifies hands an
+  attacker the trust decision. `pki.webauthn.verifyMetadataBlob` establishes the
+  JWS signature and chains the BLOB's own signing certificate to an
+  operator-supplied FIDO root before a single byte of the payload is read: a BLOB
+  that does not verify never reaches the JSON reader, the entry walk, or any
+  per-entry certificate decode. No FIDO root is bundled and there is no
+  trust-on-first-use, because which metadata authority to trust is the operator's
+  decision, exactly as a root store is for path validation. A replayed older
+  catalogue, one whose sequence number does not exceed the number the caller
+  already holds, is refused as a rollback, and one past its `nextUpdate` is
+  refused as stale; both are fail-closed and both are opt-outable only by the
+  caller. Byte, entry-count, and per-entry anchor-count ceilings bound the decode
+  and the per-entry certificate parsing, since a byte ceiling alone does not
+  bound how many items are declared inside it. When a verified catalogue is
+  supplied to `verify`, the attestation trust path must fully validate to a root
+  that authenticator's own model registered — the same path validation any chain
+  gets, rather than a name comparison against the top of the path, which is a
+  value an attacker controls — and a model carrying a disqualifying status report
+  is refused, so a revoked authenticator cannot present an otherwise well-formed
+  attestation and be reported as verified. An authenticator that declares no
+  model identity is looked up by the key identifiers of its attestation
+  certificates rather than being silently exempt from any of this. Which
+  identifier is allowed to select the entry depends on what the attestation
+  signature actually covers: the fido-u2f signature is computed over named fields
+  (`0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F`) and does
+  not include the AAGUID, so for that format those bytes are attacker-editable
+  and never select the entry; the attestation certificate does. Without that
+  rule, setting the AAGUID to a listed model that shares the vendor's registered
+  root would resolve to that model's entry and skip the real one's status
+  reports, letting a revoked authenticator present itself as its healthy sibling.
+  A note for relying parties: `res.aaguid` is reported as the authenticator
+  presented it, and for a fido-u2f attestation it is not signature-bound. Use
+  `res.metadata.aaguid`, which names the entry that was actually matched.
+
+### Enrollment and messaging protocols
+
+- **Enrollment-response replay and unauthenticated verdicts (CMC).**
+  `pki.cmc.verify` binds a Full PKI Response to the request that provoked it
+  before it reports anything. The Transaction Identifier, the Sender and
+  Recipient Nonce echo, and the Data Return echo each apply once the client sent
+  that half, and an absent or differing echo is then a refusal rather than a
+  missing optional field, so a response captured from one exchange cannot be
+  replayed into another. The conditional is literal: a request that carried none
+  of those controls has nothing for the response to echo, so a client that sends
+  no binding gets no replay defence, and `pki.cmc.verify` cannot enforce one the
+  request never asked for. `pki.cmc.build` emits all three from named spec fields
+  for that reason, and `pki.est.fullcmc` reads them back out of the request bytes
+  rather than taking the caller's word for what was sent. The nonce is compared
+  in constant time and by full value, so a truncated echo cannot match on a
+  prefix. Where several status controls are present the worst governs, so a
+  rejection cannot hide behind an earlier success. The carrier's own signature is
+  not assumed: RFC 5272 §3.2.1.3.4 requires it. A conforming response carries its
+  own signer certificate and is checked against it with nothing asked of the
+  caller. Where the signer is found nowhere, verification is fail-closed with a
+  named opt-out (`allowUnverified`, which reports `signatureVerified: false`)
+  rather than a silent default, so no caller receives a verdict believing a check
+  ran that did not. That opt-out covers only "could not check": a signature that
+  is present and wrong is always a refusal, and a carrier bearing no signer at
+  all is refused. Nothing in the response is trusted, so the certificate bag and
+  any Publish Trust Anchors control are surfaced as data for
+  `pki.path.validate` rather than added to a store.
 - **EST enrollment-response confusion.** The `pki.est` client codecs are
-  fail-closed over hostile server output: the RFC 8951 base64 transfer decode is
+  fail-closed over hostile server output. The RFC 8951 base64 transfer decode is
   bounded before and after decoding and never reads a Content-Transfer-Encoding
-  header (the class of errata 5904/5107); the `multipart/mixed` splitter requires
-  the terminal boundary and rejects nested/extra parts; the certs-only validator
-  rejects any response that is not an empty-signerInfos, no-eContent SignedData
-  of plain X.509 certificates, and the serverkeygen validator enforces the
-  request-to-response recipient-arm coherence. The issued certificate is picked
-  by a public-key match (`findIssuedCert`), never a positional guess (RFC 5272
-  forbids assuming an order).
+  header, which is the class of errata 5904 and 5107. The `multipart/mixed`
+  splitter requires the terminal boundary and rejects nested or extra parts. The
+  certs-only validator rejects any response that is not an empty-signerInfos,
+  no-eContent SignedData of plain X.509 certificates, and the serverkeygen
+  validator enforces the request-to-response recipient-arm coherence. The issued
+  certificate is picked by a public-key match (`findIssuedCert`) rather than a
+  positional guess, which RFC 5272 forbids assuming.
 - **EST transport is fail-closed on the wire (CWE-295 / CWE-319 / CWE-770 /
   CWE-522).** The `pki.est` network verbs run over `pki.transport`, the toolkit's
   single socket choke point, and there is no code path that disables TLS server
   authentication: `rejectUnauthorized` is always on, an explicit trust anchor (or
-  a deliberate system-store opt-in) is required — a request with neither fails
-  closed rather than trusting an unpinned server — and TLS is floored at 1.2. A
-  request URL, and every redirect target, must be `https`: a scheme downgrade is
-  refused, a cross-origin redirect on an enroll POST needs an explicit opt-in, and
-  the redirect chain is bounded. The origin-specific identity is dropped on a
-  cross-origin redirect and never carried to another origin: HTTP Basic credentials
-  (answered only after the server is authenticated), the mTLS client certificate and
-  key, and the pinned `servername` (SNI, which selects the enrollment host's
-  certificate) — dropped even when no client certificate is set. A caller's
-  `checkServerIdentity` pin is RETAINED and re-evaluated against the redirected host,
-  so a certificate / SPKI pin keeps applying rather than being silently bypassed. The
-  response body is bounded while it streams
-  (aborted the instant it crosses the cap, before it reaches a decoder), a stalled
-  socket times out, and a 202 Retry-After is surfaced to the caller, never slept on.
+  a deliberate system-store opt-in) is required, so a request with neither fails
+  closed rather than trusting an unpinned server, and TLS is floored at 1.2. A
+  request URL, and every redirect target, must be `https`. A scheme downgrade is
+  refused, a cross-origin redirect on an enroll POST needs an explicit opt-in,
+  and the redirect chain is bounded. The origin-specific identity is dropped on a
+  cross-origin redirect and never carried to another origin: HTTP Basic
+  credentials (answered only after the server is authenticated), the mTLS client
+  certificate and key, and the pinned `servername` (SNI, which selects the
+  enrollment host's certificate), dropped even when no client certificate is set.
+  A caller's `checkServerIdentity` pin is retained and re-evaluated against the
+  redirected host, so a certificate or SPKI pin keeps applying rather than being
+  silently bypassed. The response body is bounded while it streams, aborted the
+  instant it crosses the cap and before it reaches a decoder, a stalled socket
+  times out, and a 202 Retry-After is surfaced to the caller rather than slept
+  on.
 - **EST HTTP Digest is security-on-by-default (CWE-327 / CWE-757).** HTTP Digest
-  access authentication (RFC 7616), the alternative to HTTP Basic on every EST verb,
-  answers only SHA-256 and SHA-512-256 challenges: MD5 (and MD5-sess) and the legacy
-  no-qop RFC 2069 mode are refused unless the caller explicitly opts in, an unsupported
-  or unusable challenge fails closed rather than downgrading, the most secure offered
-  algorithm is chosen, a server `stale` re-challenge is bounded, and there is no
-  `scheme: "auto"` — a Digest challenge is never silently answered with Basic. The
-  untrusted `WWW-Authenticate` challenge is parsed with a quoted-string-honoring
-  tokenizer bounded before the copy, so a comma or scheme name inside a quoted value
-  is never mistaken for a delimiter. The credential, like Basic, is answered only on
-  the authenticated origin and never sent to a redirected server.
-- **EST server-generated key confidentiality (CWE-311 / CWE-319).** `pki.est.serverkeygen`
-  binds the delivered key's encryption to the request: whether the key part must be a
-  CMS `EnvelopedData` (and to which recipient) is derived from the CSR's own
-  DecryptKeyIdentifier / AsymmetricDecryptKeyIdentifier attribute, so a cleartext key
-  cannot silently substitute for the encrypted key the request asked for, and the
-  channel is asserted to negotiate a confidentiality-bearing cipher (a NULL, anonymous,
-  or EXPORT suite is refused) before the key is surfaced. The verb never decrypts the
-  key part, so it is not a decryption oracle.
+  access authentication (RFC 7616), the alternative to HTTP Basic on every EST
+  verb, answers only SHA-256 and SHA-512-256 challenges. MD5 (and MD5-sess) and
+  the legacy no-qop RFC 2069 mode are refused unless the caller explicitly opts
+  in, an unsupported or unusable challenge fails closed rather than downgrading,
+  the most secure offered algorithm is chosen, a server `stale` re-challenge is
+  bounded, and there is no `scheme: "auto"`, so a Digest challenge is never
+  silently answered with Basic. The untrusted `WWW-Authenticate` challenge is
+  parsed with a quoted-string-honoring tokenizer bounded before the copy, so a
+  comma or scheme name inside a quoted value is never mistaken for a delimiter.
+  The credential, like Basic, is answered only on the authenticated origin and
+  never sent to a redirected server.
+- **EST server-generated key confidentiality (CWE-311 / CWE-319).**
+  `pki.est.serverkeygen` binds the delivered key's encryption to the request:
+  whether the key part must be a CMS `EnvelopedData`, and to which recipient, is
+  derived from the CSR's own DecryptKeyIdentifier or
+  AsymmetricDecryptKeyIdentifier attribute, so a cleartext key cannot silently
+  substitute for the encrypted key the request asked for. The channel is asserted
+  to negotiate a confidentiality-bearing cipher — a NULL, anonymous, or EXPORT
+  suite is refused — before the key is surfaced. The verb never decrypts the key
+  part, so it is not a decryption oracle.
 - **CMP enrollment verify-before-read (CWE-345 / CWE-294 / CWE-770).** The
   `pki.cmp.session` enrollment orchestrator confers protection trust the transfer
-  layer does not: a response is protection-verified (a signature chained to the
-  supplied anchors, or a PBMAC1 MAC under the shared secret) AND bound to this
+  layer does not: a response is protection-verified — a signature chained to the
+  supplied anchors, or a PBMAC1 MAC under the shared secret — and bound to this
   exchange before any field of its body is read. Cryptographic validity alone is
-  not accepted — the signer must be TRUSTED (chain to a supplied trust anchor with
-  the RFC 9483 keyUsage gate, or the shared secret must match); a valid-but-untrusted
-  response, whose signer an attacker on the transport can supply via the message's
-  own unsigned extraCerts, is a hard stop, and the signature flavor therefore
-  requires a trust anchor at construction rather than silently trusting an unpinned
-  signer. A meddler who flips the HTTP response cannot forge a granted status or a
-  poisoned poll delay, because the session throws on a failed or untrusted verify
-  rather than reading a certificate off it.
-  Each request carries a fresh `senderNonce` and echoes the peer's last
+  not accepted; the signer must also be trusted, chaining to a supplied trust
+  anchor with the RFC 9483 keyUsage gate, or matching the shared secret. A
+  valid-but-untrusted response, whose signer an attacker on the transport can
+  supply via the message's own unsigned extraCerts, is a hard stop, and the
+  signature flavor therefore requires a trust anchor at construction rather than
+  silently trusting an unpinned signer. A meddler who flips the HTTP response
+  cannot forge a granted status or a poisoned poll delay, because the session
+  throws on a failed or untrusted verify rather than reading a certificate off
+  it. Each request carries a fresh `senderNonce` and echoes the peer's last
   `senderNonce` as `recipNonce` under one stable `transactionID`, so a response
   cannot be replayed or interleaved from another exchange (RFC 9810 §5.1.1). A
-  `waiting` status is polled under a loop bounded by BOTH a poll count and a
+  `waiting` status is polled under a loop bounded by both a poll count and a
   total-wait budget with an injectable sleeper, so a CA cannot hold the client
-  open indefinitely. A verified rejection or error, or an exhausted poll budget,
-  is a terminal typed verdict (`outcome: rejected` / `poll-timeout`); a tampered,
-  unverifiable, or nonce-desynchronized response is a hard-stop `CmpError`, never a
-  value the caller can misread as an issued certificate.
+  open indefinitely. A verified rejection or error, and an exhausted poll budget,
+  are terminal typed verdicts (`outcome: rejected`, `poll-timeout`); a tampered,
+  unverifiable, or nonce-desynchronized response is a hard-stop `CmpError` rather
+  than a value the caller can misread as an issued certificate.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms
@@ -569,316 +770,213 @@ security-only patches after the next major releases.
   confusion cannot resolve (CVE-2016-10555), signature lengths are pinned before
   any crypto call, and an all-zero ECDSA signature is refused (CVE-2022-21449).
   An OKP (Ed25519/Ed448) verification key is validated on-curve and full-order
-  before use — a low-order key, which the platform imports without complaint and
-  which verifies a forged signature, cannot verify a forged JWS.
-  The base64url codec rejects padding, non-alphabet bytes, and non-canonical
-  trailing bits (RFC 8555 §6.1), and the JSON reader rejects a duplicate member
-  at any nesting depth (the parser-differential smuggling class, CVE-2017-12635)
-  under hard size and depth caps. `pki.acme` carries the protocol MUSTs
-  fail-closed: a finalize CSR whose public key is the account key is rejected
-  (RFC 8555 §11.1), a `mailto` contact with header fields or multiple addresses
-  is refused rather than guessed, a tls-alpn-01 validation certificate must carry
-  a critical `id-pe-acmeIdentifier` with a 32-octet Authorization and a
-  single-entry SubjectAltName (RFC 8737), a wildcard is one leading label on a
-  `dns` identifier only, and the ARI certID preserves the serial's DER
-  sign-padding byte so it matches what the CA computes (RFC 9773).
+  before use, so a low-order key, which the platform imports without complaint
+  and which verifies a forged signature, cannot verify a forged JWS. The
+  base64url codec rejects padding, non-alphabet bytes, and non-canonical trailing
+  bits (RFC 8555 §6.1), and the JSON reader rejects a duplicate member at any
+  nesting depth, the parser-differential smuggling class (CVE-2017-12635), under
+  hard size and depth caps. `pki.acme` carries the protocol MUSTs fail-closed: a
+  finalize CSR whose public key is the account key is rejected (RFC 8555 §11.1),
+  a `mailto` contact with header fields or multiple addresses is refused rather
+  than guessed, a tls-alpn-01 validation certificate must carry a critical
+  `id-pe-acmeIdentifier` with a 32-octet Authorization and a single-entry
+  SubjectAltName (RFC 8737), a wildcard is one leading label on a `dns`
+  identifier only, and the ARI certID preserves the serial's DER sign-padding
+  byte so it matches what the CA computes (RFC 9773).
 - **ACME client transport is fail-closed on the wire (CWE-295 / CWE-319 /
   CWE-770 / CWE-294).** `pki.acme.client` drives a live directory over the same
   `pki.transport` socket choke point, with no path that disables TLS server
   authentication: `rejectUnauthorized` is always on, an explicit trust anchor (or
-  a system-store opt-in) is required, and TLS is floored at 1.2. The directory URL
-  and every server-returned URL — account, order, authorization, challenge,
-  finalize, certificate, and the ARI path — must be `https`; an `http` URL from a
-  compromised or downgraded directory is refused rather than fetched. Every such URL
-  must also be canonical: a spelling the WHATWG URL parser would silently rewrite — a
-  path or query the transport would normalize, a fragment, or a host in an IPv4-address
-  form (hex/octal/decimal/shorthand) the parser coerces to a different, often loopback
-  or internal, address — is refused, so the account-key-signed JWS `url` (RFC 8555 §6.4)
-  always names the exact authority the request is directed to and cannot be steered to
-  an unintended host. Every
-  authenticated request carries a fresh single-use anti-replay nonce bound to that
-  URL, harvested only from a validated `Replay-Nonce`, with a bounded `badNonce`
-  retry so a nonce-replay error cannot loop. Reads are POST-as-GET, the poll loop
-  is bounded by a poll count and a total-wait budget and sleeps on a `Retry-After`
-  through an injectable sleeper (so the delay is bounded, not attacker-unbounded),
-  and every response body is size-capped before it reaches a JSON or PEM decoder.
-  When `downloadCertificate` selects among alternate issuance chains, the `Link`
-  response header is parsed strictly (RFC 8288: `rel="alternate"` matched as a whole
-  token, a malformed header or a non-`https` target refused). Because an alternate is
-  fetched with the account-key-signed POST-as-GET, an alternate target is confined to
-  the certificate download's own origin — an untrusted, TLS-delivered but unsigned
-  `Link` header cannot steer that authenticated request to another host (SSRF). The
-  extra signed fetches are bounded by `maxAlternates` (default 8) so a header
-  advertising many alternates cannot amplify into unbounded requests, resolved URLs
-  are de-duplicated, and an alternate whose end-entity certificate differs from the
-  primary's is rejected rather than substituted (RFC 8555 §7.4.2). `renewalWindow` refuses before any
-  request for a certificate already past its `notAfter` or one the caller marks
-  replaced, spreads the renewal instant with a uniform random draw inside the CA's
-  suggested window, and clamps the ARI `Retry-After` to [60 s, 24 h] so a hostile or
-  absent value can neither hammer the CA nor defer the next check indefinitely
-  (RFC 9773 §4.2/4.3).
+  a system-store opt-in) is required, and TLS is floored at 1.2. The directory
+  URL and every server-returned URL — account, order, authorization, challenge,
+  finalize, certificate, and the ARI path — must be `https`, so an `http` URL
+  from a compromised or downgraded directory is refused rather than fetched.
+  Every such URL must also be canonical. A spelling the WHATWG URL parser would
+  silently rewrite is refused: a path or query the transport would normalize, a
+  fragment, or a host in an IPv4-address form (hex, octal, decimal, shorthand)
+  the parser coerces to a different and often loopback or internal address. The
+  account-key-signed JWS `url` (RFC 8555 §6.4) therefore always names the exact
+  authority the request is directed to and cannot be steered to an unintended
+  host. Every authenticated request carries a fresh single-use anti-replay nonce
+  bound to that URL, harvested only from a validated `Replay-Nonce`, with a
+  bounded `badNonce` retry so a nonce-replay error cannot loop. Reads are
+  POST-as-GET, the poll loop is bounded by a poll count and a total-wait budget
+  and sleeps on a `Retry-After` through an injectable sleeper, so the delay is
+  bounded rather than attacker-unbounded, and every response body is size-capped
+  before it reaches a JSON or PEM decoder. When `downloadCertificate` selects
+  among alternate issuance chains, the `Link` response header is parsed strictly
+  (RFC 8288: `rel="alternate"` matched as a whole token, a malformed header or a
+  non-`https` target refused). Because an alternate is fetched with the
+  account-key-signed POST-as-GET, an alternate target is confined to the
+  certificate download's own origin, so an untrusted, TLS-delivered but unsigned
+  `Link` header cannot steer that authenticated request to another host (SSRF).
+  The extra signed fetches are bounded by `maxAlternates` (default 8) so a header
+  advertising many alternates cannot amplify into unbounded requests, resolved
+  URLs are de-duplicated, and an alternate whose end-entity certificate differs
+  from the primary's is rejected rather than substituted (RFC 8555 §7.4.2).
+  `renewalWindow` refuses before any request for a certificate already past its
+  `notAfter` or one the caller marks replaced, spreads the renewal instant with a
+  uniform random draw inside the CA's suggested window, and clamps the ARI
+  `Retry-After` to [60 s, 24 h] so a hostile or absent value can neither hammer
+  the CA nor defer the next check indefinitely (RFC 9773 §4.2/4.3).
+- **S/MIME header protection: injection, downgrade, and outer-header trust
+  (CWE-93 / CWE-345).** `pki.smime` header protection (RFC 9788) inlines the
+  protected headers on the Cryptographic Payload so the CMS signature or
+  encryption covers them. Every header field a composer emits routes through one
+  fail-closed guard: a CR, LF, or NUL in a field value, or a field name outside
+  RFC 5322 ftext, is rejected (`smime/bad-header`), so a caller-supplied Subject
+  cannot inject a Bcc, split the message, or forge a multipart boundary. On
+  receive, the authenticated inner headers are surfaced distinctly in
+  `protectedHeaders` from the untrusted outer display headers and never silently
+  merged, so a transport that rewrites an outer header cannot change the verified
+  set, and an outer From that disagrees is flagged `fromMismatch`. A payload
+  whose declared `hp` marker is malformed, invalid, or contradicts the
+  cryptographic envelope — a signed message claiming `hp="cipher"` — fails closed
+  with `smime/bad-header-protection` rather than being treated as unprotected;
+  there is no silent downgrade path. For an encrypted message the Header
+  Confidentiality Policy keeps the real header values (Subject, Comments,
+  Keywords) only inside the ciphertext, never in the outer section, and the
+  authenticated `HP-Outer` records (RFC 9788 §2.2) inside the ciphertext document
+  which fields were left visible. `decrypt` therefore derives the
+  end-to-end-confidential set (`headerProtection.confidential`) from signed or
+  encrypted data alone, letting a caller reply or forward without leaking a
+  confidential header (§6.1). Inbound detection of the legacy RFC 8551
+  `message/rfc822` wrap (RFC 9788 §4.10) is opt-in
+  (`opts.legacyHeaderProtection`) and safe by default. A legacy RFC8551HP message
+  is structurally indistinguishable from an ordinary forwarded `message/rfc822`,
+  and RFC 9788 §4.10.2 states the inference is "not based on any strong
+  end-to-end guarantees", so the toolkit never conflates the two: a legacy
+  inference is surfaced only under `headerProtection.legacy`, in its own
+  `{ headers, mode, fromMismatch, confidential }` object, never in
+  `protectedHeaders`, and never setting `present: true`. A consumer that keys
+  trust off `present` or `protectedHeaders`, the authenticated and
+  cryptographically declared (`hp=`) set, therefore cannot be tricked into
+  treating a forwarded attachment's From or Subject as this message's own
+  headers. Consuming the inferred set is an explicit choice — read
+  `headerProtection.legacy.headers` — and comes with `legacy.fromMismatch`, which
+  flags a forwarded message whose inner sender differs from the outer one.
+  Detection applies only after the signature or AEAD verdict succeeds and
+  requires all four §4.10.1 conditions; a nested crypto layer, an `hp=` on the
+  inner message, a non-`message/rfc822` payload, or a duplicate Content-Type on
+  either part reports `legacy: null`.
+
+### Network fetches that could widen trust
+
 - **CT log-list fetch verifies before it parses (CWE-345 / CWE-347 / CWE-295 /
   CWE-770).** `pki.ct.fetchLogList` fetches the `log_list.json` and its detached
   `log_list.sig` over the same fail-closed `pki.transport` (`rejectUnauthorized`
   always on, an explicit anchor or system-store opt-in required, TLS floored at
-  1.2), then verifies the detached signature over the RAW fetched bytes against a
-  caller-PINNED distributor key before it parses: `pki.ct.parseLogList` runs only
-  on a valid signature, over the SAME buffer that was verified, so an unverified —
-  or tampered — document is never parsed, read, cached, or surfaced (a one-byte
-  change to a validly-structured list fails closed as `ct/log-list-untrusted`, a
-  verdict distinct from every parse-domain code). The signer key is pinned
+  1.2), then verifies the detached signature over the raw fetched bytes against a
+  caller-pinned distributor key before it parses. `pki.ct.parseLogList` runs only
+  on a valid signature, over the same buffer that was verified, so an unverified
+  or tampered document is never parsed, read, cached, or surfaced; a one-byte
+  change to a validly structured list fails closed as `ct/log-list-untrusted`, a
+  verdict distinct from every parse-domain code. The signer key is pinned
   out-of-band, never trust-on-first-use and never fetched from the list's own
-  origin; there is no baked-in vendor URL or key. The fetch is https-only even
+  origin, and no vendor URL or key is baked in. The fetch is https-only even
   across an injected transport, and the detached signature must share the
   log-list origin, so the log-list endpoint's origin-bound credentials (an
-  `Authorization` / `Cookie` header, the mTLS client certificate) can never
-  reach a different signature host. Each response is size-capped before the
-  trust chain, and the surfaced `timestamp` lets a caller police freshness
-  without a hidden clock.
+  `Authorization` or `Cookie` header, the mTLS client certificate) can never
+  reach a different signature host. Each response is size-capped before the trust
+  chain, and the surfaced `timestamp` lets a caller police freshness without a
+  hidden clock.
 - **AIA caIssuers fetching is SSRF-bounded and trust-preserving (CWE-918 /
-    CWE-770 / CWE-295).** `pki.path.build` fetches a missing intermediate from a
+  CWE-770 / CWE-295).** `pki.path.build` fetches a missing intermediate from a
   certificate's Authority Information Access `caIssuers` URL only when the caller
-  opts in (`opts.fetchAia: true`; the default build is fully offline), and only as
-  a lazy fallback after the local candidate pool is exhausted (RFC 4158 §7.2
-  local-before-remote — a build the static pool can complete never touches the
-  network). Because the fetch URL comes from an UNTRUSTED certificate, the
-  surface is bounded against server-side request forgery and amplification: only an
-  `https:` `uniformResourceIdentifier` accessLocation is fetched (an `http` /
-  `ldap` / `ftp` / `file` / `mailto` URL, or a non-URI GeneralName, is skipped
-  before any socket), NEVER a non-globally-routable destination — one that is
-  such an address LITERAL, or a hostname that RESOLVES to one, is refused (the
-  resolved address pinned for the connection, closing the rebinding window). The
-  classifier blocks the complete IANA special-purpose set: for IPv4 the private /
-  loopback / CGNAT / link-local (`169.254.0.0/16` cloud-metadata) / benchmarking /
-  TEST-NET / 6to4-relay / multicast / reserved ranges (RFC 6890); for IPv6
-  everything outside global unicast `2000::/3`, plus the special-use carve-outs
-  within it — `2001::/23` (IETF protocol) / `2002::/16` (6to4) / `2001:db8::/32`
-  and `3fff::/20` (documentation) / IPv4-mapped. So an untrusted certificate
-  cannot drive an authenticated GET to an internal service by IP literal or by
-  hostname — only the `id-ad-caIssuers` access method (never
-  `id-ad-ocsp`), a build-wide total fetch budget enforced as a SILENT cap (on
-  reaching it the builder stops fetching — never a throw, so a fetch bound can
-  never deny a path the static pool could build), a per-certificate URL cap, a
-  build-wide URL dedupe on the normalized URL (a mesh pointing many certs at one
-  URL fetches once), a streaming response-size cap plus a per-response
-  certificate-count cap (so a bundle cannot force tens of thousands of parses),
-  and NO redirect following (only a `200` with an in-cap body is a certificate
-  source). Every fetch fault — a transport error, a non-200, an oversize or
-  non-certificate body — is a silent SKIP: the search continues over the pool,
-  never a spurious build failure. The
-  fetch runs over the same fail-closed `pki.transport` (`rejectUnauthorized` always
-  on; an explicit anchor or system-store opt-in required), and its TLS trust
-  (`opts.tls`) is DISTINCT from `opts.trustAnchors` — the web-PKI trust for the
-  HTTPS connection is never conflated with the PKI trust store the built path
-  validates against. Most important: a fetched certificate is UNTRUSTED pool
-  material — it is scored, deduped, and accepted through the exact same
-  `pki.path.validate` §6.1 gate as any candidate, and is NEVER added to the trust
-  anchors, so a fetched self-signed or anchor-looking certificate can never
-  complete a chain by itself (RFC 4158 §6.6).
-- **AEAD-parameter tampering (CMS AuthEnvelopedData).** A recognized AES-GCM/CCM
-  content-encryption algorithm must carry its RFC 5084 parameters: the nonce is
-  bounds-checked (CCM 7..13 octets), the ICV length must come from the RFC's
-  allowed set and equal the length of the `mac` field, and an ICV length encoded
-  equal to its DEFAULT is rejected as non-canonical DER (X.690 §11.5) — so a
-  message cannot shrink its own integrity tag or desynchronize the tag length a
-  verifier checks from the one the structure claims.
-- **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
-  `tbsBytes` byte range that was signed, so a downstream verifier hashes the bytes
-  that were actually signed rather than re-encoding and hoping for round-trip
-  fidelity. The same discipline covers the CMP message-protection input:
-  `pki.schema.cmp.parse` surfaces the exact `headerBytes` and `bodyBytes` wire
-  slices so a verifier reconstructs the protected part from the bytes that were
-  actually protected, never a re-encoding; and CMP `caPubs` are surfaced as raw
-  certificates conferring no trust, so a client cannot be steered into installing
-  a trust anchor from an unauthenticated response. `pki.ct.parseSctList` follows
-  the same rule for Certificate Transparency: it decodes the SCT-list structure
-  but never verifies a signature or recomputes a log id, and
-  `pki.ct.reconstructSignedData` rebuilds the exact RFC 6962 digitally-signed
-  preimage from the parsed bytes so the log-signature check runs on what was
-  actually signed. The TLS-encoded list itself is decoded with a bounded reader
-  that validates every framing length and caps the per-list byte size and SCT
-  count before iterating, so a crafted SCT extension is bounded work with a typed
-  `ct/*` verdict rather than unbounded work inside a certificate extension. The CT
-  log-list trust surface (`pki.ct.parseLogList`) binds identity to the key, not a
-  label: it recomputes each log's id as SHA-256 of its DER SubjectPublicKeyInfo and
-  refuses a stated `log_id` that disagrees (`ct/log-id-mismatch`, RFC 6962 §3.2), so
-  a tampered list cannot swap a log's key while keeping its id or point an id at an
-  attacker key. `pki.ct.verifySctWithLogList` then enforces trust *before* any crypto —
-  a `pending`/`rejected` log, or a `retired` log for an SCT timestamped at or after its
-  retirement, is `ct/log-untrusted`; a certificate whose `notAfter` is outside the
-  resolved log's temporal-interval window (or unresolvable for a windowed log) is
-  `ct/temporal-interval`, never a silently skipped constraint — before delegating the
-  signature check to `verifySct`. The log-list JSON is decoded through the bounded,
-  duplicate-member-rejecting reader (byte and depth caps, `__proto__`-safe).
-  `pki.ct.verifyLogListSignature` verifies the detached `log_list.sig` over the raw
-  log-list bytes (byte-for-byte, never re-serialized) against a caller-PINNED signer
-  key — no baked-in key. It pins the scheme to RSASSA-PKCS1-v1.5/SHA-256 (rejecting a
-  PSS signature) and fails closed BEFORE any verification on a forgeable key: an RSA
-  public exponent below 3 (a PKCS#1 v1.5 `e = 1` "signature" is just the DigestInfo)
-  or an even exponent, a sub-2048-bit RSA key, and — on the EC arm — a non-conformant
-  ECDSA DER Sig-Value (defeating the CVE-2022-21449 `r = s = 0` shape) are all typed
-  throws, not a `true`. Its verdict is cross-checked against `openssl dgst -verify`.
-  `pki.schema.smime` decodes the ESS signing-certificate attributes the same way:
-  it surfaces the certificate hash, the (implied or decoded) hash algorithm, and
-  the issuer/serial reference raw so a verifier recomputes the hash and matches
-  the binding against the actual signing certificate — it never recomputes a hash
-  or trusts a certificate — and it rejects a `SigningCertificateV2` hash algorithm
-  encoded equal to its DEFAULT as non-canonical DER, closing an
-  encode-ambiguity a signature check would otherwise have to tolerate.
-- **Attestation-key substitution (WebAuthn).** `pki.webauthn.verify` binds every
-  attestation to the credential being registered, by the mechanism each format
-  defines. For **packed** and **fido-u2f** the attestation signature covers the
-  `authenticatorData` (fido-u2f's signed `verificationData` embeds the credential
-  key explicitly), so a signature that verifies is a signature over that exact
-  credential key. For **android-key**, **apple**, and **tpm** the attestation
-  certificate — or, for tpm, the `pubArea` — public key is additionally required to
-  equal the credential public key: an unsigned-integer comparison for EC and RSA
-  coordinates (so a leading-zero re-encoding cannot desynchronize it) and a
-  byte-exact comparison for a fixed-width Ed25519 key, with the tpm `pubArea` key
-  also bound to the `certInfo` TPM Name it certifies. The apple nonce must equal the
-  SHA-256 over `authenticatorData || clientDataHash`, and the android
-  attestation-challenge must equal the `clientDataHash` — so an attacker cannot pair
-  a valid attestation over one key with a different credential. The attestation
-  object and COSE keys are decoded by the strict `pki.cbor` codec and the TPM
-  structures by a bounds-before-slice reader, and every failed check throws a typed
-  `webauthn/*` error — a signature that does not verify is a verdict, never a silent
-  pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that emit it, never
-  for signing.
-- **A verified signature read as a verified ceremony (WebAuthn).** The most dangerous
-  thing a WebAuthn verifier can do is answer the wrong question convincingly. The
-  attestation and assertion procedures establish that a SIGNATURE is sound; what makes
-  a response acceptable is the ceremony binding, and most of it depends on state only
-  the relying party holds — the challenge it issued, the origin the browser reported,
-  the RP ID it operates under, the user-presence policy it requires. An attestation
-  naming another origin's RP ID, with user presence clear, is a perfectly sound
-  statement about a credential that must not be registered. So the verdict fields are
-  `attestationVerified` and `signatureVerified`, never a bare `verified`: a caller
-  writing `if (res.verified)` gets `undefined`, rather than a pass for a question it
-  did not ask. The bindings this layer can check are offered by name — `expectedRpId`,
-  `requireUserPresence`, `requireUserVerification`, `allowedAlgorithms`, and for
-  `clientDataJSON` the ceremony type, challenge and origin — and every verdict reports
-  in `bindingChecked` which of them ran, so a check that passed is distinguishable from
-  one that never happened. `pki.webauthn.verifyAssertion` checks the ceremony type
-  unconditionally whenever it is given the JSON, because which ceremony a response
-  belongs to is fixed by the specification rather than chosen by the caller, and a
-  registration response replayed as a login is exactly what that stops. Where a stored
-  `previousSignCount` is supplied, a counter that fails to advance is refused as the
-  cloned authenticator it signals.
-- **Metadata-catalogue forgery and rollback (FIDO MDS).** A metadata BLOB decides which
-  roots an authenticator model is allowed to chain to and whether that model is still
-  trusted, so a reader that parses before it verifies hands an attacker the trust
-  decision. `pki.webauthn.verifyMetadataBlob` establishes the JWS signature and chains
-  the BLOB's own signing certificate to an operator-supplied FIDO root **before** a
-  single byte of the payload is read: a BLOB that does not verify never reaches the JSON
-  reader, the entry walk, or any per-entry certificate decode. No FIDO root is bundled
-  and there is no trust-on-first-use — which metadata authority to trust is the
-  operator's decision, exactly as a root store is for path validation. A replayed older
-  catalogue (one whose sequence number does not exceed the number the caller already
-  holds) is refused as a rollback, and one past its `nextUpdate` is refused as stale,
-  both fail-closed and both opt-outable only by the caller. Byte, entry-count, and
-  per-entry anchor-count ceilings bound the decode and the per-entry certificate parsing,
-  since a byte ceiling alone does not bound how many items are declared inside it. When a
-  verified catalogue is supplied to `verify`, the attestation trust path must fully VALIDATE
-  to a root that authenticator's own model registered — the same path validation any chain
-  gets, not a name comparison against the top of the path, which is a value an attacker
-  controls — and a model carrying a disqualifying status report is refused, so a revoked
-  authenticator cannot present an otherwise well-formed attestation and be reported as
-  verified. An authenticator that declares no model identity is looked up by the key
-  identifiers of its attestation certificates rather than being silently exempt from any of
-  this. Which identifier is allowed to select the entry depends on what the attestation
-  signature actually covers: the **fido-u2f** signature is computed over named fields
-  (`0x00 || rpIdHash || clientDataHash || credentialId || publicKeyU2F`) and does **not**
-  include the AAGUID, so for that format those bytes are attacker-editable and never select
-  the entry — the attestation certificate does. Without that rule, setting the AAGUID to a
-  listed model that shares the vendor's registered root would resolve to *that* model's entry
-  and skip the real one's status reports, letting a revoked authenticator present itself as
-  its healthy sibling. Note for relying parties: `res.aaguid` is reported as the authenticator
-  presented it, and for a fido-u2f attestation it is not signature-bound — use
-  `res.metadata.aaguid`, which names the entry that was actually matched.
-- **CMS SignedData preimage substitution.** `pki.cms.verify` checks a SignedData
-  signature over the exact bytes RFC 5652 §5.4 defines, never a re-derived copy. When
-  signed attributes are present, the message-digest attribute must equal the digest of
-  the content *and* the signature is verified over the DER re-encoding of the
-  SignedAttributes (the on-wire `[0]` implicit tag replaced by the universal SET OF the
-  standard requires) — so an attacker can neither swap the content out from under a set
-  of signed attributes nor strip the attributes and present a signature made over them
-  as one made over the content. Each parameter comes from the structure that owns it —
-  the content digest from the digestAlgorithm, the signature scheme from the signer's
-  own key algorithm — so a signer cannot claim one algorithm while the key implies
-  another. Those signed attributes are decoded from the exact bytes the signature covers,
-  not from a parsed representation a caller could mutate independently, so a supplied
-  parsed object cannot desynchronize the checked attributes from the verified preimage.
-  An EdDSA signer key is validated on-curve and full-order before verification — a
-  low-order Ed25519/Ed448 point, which `node:crypto` imports without complaint and which
-  can verify a forged signature, is rejected. A false verdict or an unresolved parameter
-  is a fail-closed `cms/*` outcome, never a silent pass; the signer certificate is located
-  but deliberately not chained to a trust anchor, which remains the caller's explicit
-  `pki.path.validate` step. The producing side (`pki.cms.sign`, and `pki.tsp.sign` over it)
-  emits exactly the shapes the verifier checks — canonical DER signed attributes, the same
-  algorithm-parameter forms (NULL for RSA, absent for ECDSA/EdDSA, the RSASSA-PSS params), and
-  ECDSA signatures re-encoded to canonical DER through the shared `validator.sig` gate — so a
-  token this toolkit signs cannot desynchronize from what it (or OpenSSL) verifies, and the
-  signer's private key is only ever handed to the WebCrypto sign call, never logged or embedded.
-  Post-quantum ML-DSA (ML-DSA-44/65/87, RFC 9882) signs and verifies over the same preimage in
-  pure mode with the empty context; the message-digest algorithm is held to each parameter set's
-  security strength on both sign and verify (a below-strength digest — the weaker link that would
-  cap the signature's collision resistance — is refused), and the signer certificate's public-key
-  parameter set must agree with the SignerInfo signatureAlgorithm. SLH-DSA (the twelve FIPS 205
-  pure sets, RFC 9814) signs and verifies the same way, with the message digest pinned per set.
-- **Supply-chain compromise via transitive deps.** There are zero npm runtime
-  dependencies and nothing is vendored — the cryptography runs on Node's built-in
+  opts in (`opts.fetchAia: true`; the default build is fully offline), and only
+  as a lazy fallback after the local candidate pool is exhausted (RFC 4158 §7.2
+  local-before-remote, so a build the static pool can complete never touches the
+  network). The fetch URL comes from an untrusted certificate, so the surface is
+  bounded against server-side request forgery and amplification. Only an `https:`
+  `uniformResourceIdentifier` accessLocation is fetched: an `http`, `ldap`,
+  `ftp`, `file`, or `mailto` URL, or a non-URI GeneralName, is skipped before any
+  socket. A non-globally-routable destination is refused, whether it is such an
+  address literal or a hostname that resolves to one, with the resolved address
+  pinned for the connection to close the rebinding window. The classifier blocks
+  the complete IANA special-purpose set: for IPv4 the private, loopback, CGNAT,
+  link-local (`169.254.0.0/16` cloud-metadata), benchmarking, TEST-NET,
+  6to4-relay, multicast, and reserved ranges (RFC 6890); for IPv6 everything
+  outside global unicast `2000::/3`, plus the special-use carve-outs within it —
+  `2001::/23` (IETF protocol), `2002::/16` (6to4), `2001:db8::/32` and
+  `3fff::/20` (documentation), and IPv4-mapped. An untrusted certificate
+  therefore cannot drive an authenticated GET to an internal service by IP
+  literal or by hostname. Only the `id-ad-caIssuers` access method is used, never
+  `id-ad-ocsp`. A build-wide total fetch budget is enforced as a silent cap: on
+  reaching it the builder stops fetching rather than throwing, so a fetch bound
+  can never deny a path the static pool could build. There is also a
+  per-certificate URL cap, a build-wide URL dedupe on the normalized URL so a
+  mesh pointing many certs at one URL fetches once, a streaming response-size cap
+  plus a per-response certificate-count cap so a bundle cannot force tens of
+  thousands of parses, and no redirect following, so only a `200` with an in-cap
+  body is a certificate source. Every fetch fault — a transport error, a non-200,
+  an oversize or non-certificate body — is a silent skip, and the search
+  continues over the pool rather than failing the build. The fetch runs over the
+  same fail-closed `pki.transport` (`rejectUnauthorized` always on; an explicit
+  anchor or system-store opt-in required), and its TLS trust (`opts.tls`) is
+  distinct from `opts.trustAnchors`, so the web-PKI trust for the HTTPS
+  connection is never conflated with the PKI trust store the built path validates
+  against. Most important, a fetched certificate is untrusted pool material: it
+  is scored, deduped, and accepted through the exact same `pki.path.validate`
+  §6.1 gate as any candidate, and is never added to the trust anchors, so a
+  fetched self-signed or anchor-looking certificate can never complete a chain by
+  itself (RFC 4158 §6.6).
+
+### Supply chain
+
+- **Compromise through transitive dependencies.** There are zero npm runtime
+  dependencies and nothing is vendored. The cryptography runs on Node's built-in
   `node:crypto`, so there is no third-party runtime code, transitive or bundled,
-  to compromise. If a library is ever vendored under `lib/vendor/` (only when a
-  required operation is confirmed missing from the Node floor), it is pinned by
-  SHA-256 in `MANIFEST.json` and a tampered artifact is detectable by
+  to compromise. If a library is ever vendored under `lib/vendor/`, which happens
+  only when a required operation is confirmed missing from the Node floor, it is
+  pinned by SHA-256 in `MANIFEST.json` and a tampered artifact is detectable by
   re-verifying the manifest. The acquisition path is verified too: repository
-  tooling (the fuzz build, the vendoring flow) installs npm packages only
-  through integrity-pinned lockfiles (`npm ci`, install scripts disabled), so
-  a registry-served substitute fails the integrity check before a byte of it
-  runs.
+  tooling (the fuzz build, the vendoring flow) installs npm packages only through
+  integrity-pinned lockfiles (`npm ci`, install scripts disabled), so a
+  registry-served substitute fails the integrity check before a byte of it runs.
 
 ## Operator hardening checklist
 
-The toolkit fails closed by default; the items below are what an operator embedding
-it is responsible for.
+The toolkit fails closed by default. The items below are what an operator
+embedding it is responsible for.
 
 - [ ] **Treat every input as untrusted.** Parse certificates, messages, and keys
-      that arrive from the network or from users through the shipped `pki.*` parse
-      entry points — never by hand-walking a node tree past the codec's checks.
+      that arrive from the network or from users through the shipped `pki.*`
+      parse entry points, never by hand-walking a node tree past the codec's
+      checks.
 - [ ] **Keep the size and depth caps sane for your context.** The defaults
-      (`C.LIMITS.DER_MAX_BYTES`, `C.LIMITS.DER_MAX_DEPTH`) bound adversarial input.
-      If you raise them for a legitimately large structure, raise them only for the
-      call that needs it — do not lift the ceiling globally.
+      (`C.LIMITS.DER_MAX_BYTES`, `C.LIMITS.DER_MAX_DEPTH`) bound adversarial
+      input. If you raise them for a legitimately large structure, raise them
+      only for the call that needs it rather than lifting the ceiling globally.
 - [ ] **Enforce the validity window.** When you evaluate a certificate, check
-      `validity.notBefore` / `validity.notAfter` against your check time. A parsed
-      certificate is not a valid one.
+      `validity.notBefore` and `validity.notAfter` against your check time. A
+      parsed certificate is not a valid one.
 - [ ] **Pin your trust anchors explicitly.** Validate chains only against a trust
       anchor set you control. Never treat a certificate's own asserted issuer,
       self-signature, or embedded chain as trust.
 - [ ] **Compare the signed bytes, not a re-derived copy.** When verifying a
-      signature, hash the `tbsBytes` the parser returns — do not re-encode the
-      parsed fields and sign/verify over the re-encoding.
+      signature, hash the `tbsBytes` the parser returns. Do not re-encode the
+      parsed fields and sign or verify over the re-encoding.
 - [ ] **Fail closed on unknown critical extensions.** When you build certificate
       handling on top of the parser, refuse a certificate whose `extensions` list
       carries a `critical: true` extension you do not understand.
 - [ ] **Prefer the post-quantum or hybrid option** where your peers support it.
       Post-quantum ML-DSA and SLH-DSA signatures are available today alongside
-      the classical set (with ML-KEM key generation shipped and KEM
-      encapsulation on the roadmap); choose them rather than defaulting to
-      classical-only.
+      the classical set, with ML-KEM key generation shipped and KEM encapsulation
+      on the roadmap. Choose them rather than defaulting to classical-only.
 - [ ] **Verify release authenticity before deploying** (below), and re-verify the
       vendored `MANIFEST.json` if you fork or re-package the toolkit.
 
 ## What the toolkit does not defend against (operator responsibility)
 
-- **Trust-policy decisions.** Which roots you trust, which key usages you require,
-  which name constraints you enforce, and how you handle revocation are policy the
-  toolkit gives you the primitives for — it does not choose them for you.
+- **Trust-policy decisions.** Which roots you trust, which key usages you
+  require, which name constraints you enforce, and how you handle revocation are
+  policy. The toolkit gives you the primitives; it does not choose them for you.
 - **Private-key storage.** Protecting private-key material at rest and in memory
-  (HSM, OS keystore, sealed storage) is out of scope. The toolkit reads and writes
-  key structures; it does not custody your keys.
-- **Clock integrity.** Validity-window and timestamp checks are only as trustworthy
-  as the clock you pass in. Sourcing a trusted time is the operator's job.
+  (HSM, OS keystore, sealed storage) is out of scope. The toolkit reads and
+  writes key structures; it does not custody your keys.
+- **Clock integrity.** Validity-window and timestamp checks are only as
+  trustworthy as the clock you pass in. Sourcing a trusted time is the operator's
+  job.
 - **Randomness quality for key generation.** Key and nonce generation draw on the
   host's CSPRNG; a compromised host RNG is out of scope.
 - **Application-layer misuse.** Calling a parse entry point and then ignoring the
@@ -889,8 +987,8 @@ it is responsible for.
 
 ## Verifying release authenticity
 
-Release tags are annotated and SSH-signed, and published tarballs carry provenance
-and an SBOM. Verify before deploying.
+Release tags are annotated and SSH-signed, and published tarballs carry
+provenance and an SBOM. Verify before deploying.
 
 ### Signed tags
 
@@ -932,21 +1030,35 @@ Provenance binds the tarball bytes to a build; it does not by itself prove the
 source is clean. Pair it with the signed-tag check above so both the source side
 and the build side are covered.
 
-The same provenance bundle can be verified offline with the toolkit itself —
+The same provenance bundle can be verified offline with the toolkit itself.
 `pki.sigstore.verifyBundle` checks the DSSE signature, the Fulcio chain as of the
 Rekor log time, the RFC 9162 inclusion proof against a Rekor-signed root, and the
-in-toto SLSA subject digest, against trust material you pin (the Fulcio CA roots
-and Rekor log keys), with no dependency tree of its own. An Ed25519/Ed448 Fulcio
-leaf key is validated on-curve and full-order at the raw signature-verification
-sink, not only at key parsing, so a low-order key that would verify a forged EdDSA
-signature is refused — the same gate every EdDSA verification path in the toolkit
-routes through. Confirm a returned `subjects[].digest` matches the tarball you install.
+in-toto SLSA subject digest, against trust material you pin: the Fulcio CA roots
+and Rekor log keys. It has no dependency tree of its own. An Ed25519 or Ed448
+Fulcio leaf key is validated on-curve and full-order at the raw
+signature-verification sink rather than only at key parsing, so a low-order key
+that would verify a forged EdDSA signature is refused. That is the same gate
+every EdDSA verification path in the toolkit routes through.
+
+Two things that verification does **not** establish on its own, and both matter:
+
+- **Who signed it.** Those legs prove the bundle is internally consistent and
+  anchored to the Fulcio and Rekor material you pinned. They do not say the
+  signer was this project: anyone who can obtain a Fulcio certificate can produce
+  a bundle that passes all of them for an artifact of their own. Pass `identity`
+  and the certificate's SAN, OIDC issuer, and source-repository URI are compared
+  to what you expect; omit it, or pass an object naming none of those three, and
+  no identity check runs. There is no default identity, because which repository
+  is allowed to sign is the relying party's to state.
+- **Which artifact it covers.** Confirm a returned `subjects[].digest` matches
+  the tarball you install. The signer chooses that digest, so it binds the bundle
+  to an artifact only once you have compared it to the bytes in your hand.
 
 ### SBOM
 
 Each release ships a CycloneDX SBOM (`sbom.cdx.json`). Because the toolkit
-vendors nothing today, the component set is empty by design; match it against the
-shipped `lib/vendor/MANIFEST.json` (an empty `packages` map) to confirm the
+vendors nothing today, the component set is empty by design. Match it against the
+shipped `lib/vendor/MANIFEST.json`, an empty `packages` map, to confirm the
 release adds no third-party runtime code. If a library is ever vendored, it
 appears in both.
 

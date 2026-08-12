@@ -97,6 +97,19 @@ async function run() {
   check("nonce echo + match -> nonceMatched true, good", (function (r) { return r.nonceMatched === true && r.status === "good"; })(await verify(w, goodN, { requestNonce: Buffer.alloc(32, 7) })));
   check("nonce mismatch -> fail closed to unknown", (await verify(w, goodN, { requestNonce: Buffer.alloc(32, 9) })).status === "unknown");
   check("a client that sent NO nonce ignores the response nonce (still good)", (await verify(w, goodN)).status === "good");
+  // The downgrade is for `good` ONLY. A revoked verdict does not expire the way a
+  // non-revocation does, so discarding a signed, current, authorized `revoked`
+  // because it was replayed would hand a soft-fail caller the very certificate the
+  // responder refused -- the anti-replay defence becoming the thing that accepts it.
+  var revokedN = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer,
+    issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: "keyCompromise" },
+    thisUpdate: TU, nextUpdate: NU }] },
+  { cert: w.responderCertDer, key: w.responderKeyPkcs8 }, { nonce: Buffer.alloc(32, 7) });
+  check("nonce mismatch does NOT downgrade a revoked verdict; it reports the mismatch",
+    (function (r) { return r.status === "revoked" && r.nonceMatched === false && r.revocationReason === "keyCompromise"; })(
+      await verify(w, revokedN, { requestNonce: Buffer.alloc(32, 9) })));
+  check("...and a matching nonce on the same revoked response still reports revoked",
+    (await verify(w, revokedN, { requestNonce: Buffer.alloc(32, 7) })).status === "revoked");
 
   // ---- buildErrorResponse ----
   var err = pki.ocsp.buildErrorResponse("tryLater");
@@ -253,6 +266,19 @@ async function run() {
   check("a raw pre-built CertID Buffer round-trips + verifies good", (await pki.ocsp.verify(rawResp, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
   var rawRespU8 = await pki.ocsp.sign({ responderID: "byName", responses: [{ certID: new Uint8Array(rawCertId), status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("a raw pre-built CertID Uint8Array round-trips + verifies good", (await pki.ocsp.verify(rawRespU8, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
+  // A pre-encoded CertID is spliced in RAW, so a non-byte value must be refused rather
+  // than coerced: Buffer.from(20) allocates twenty zero octets, which would put a
+  // structurally broken CertID inside a response this responder then signs.
+  check("a numeric certID is refused, never coerced to zero octets",
+    (await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: 20, status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+        { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+    })) === "ocsp/bad-input");
+  check("a string certID is refused, never read as its ASCII",
+    (await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: "3081", status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+        { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+    })) === "ocsp/bad-input");
   // revoked with a NUMERIC reason code.
   var revNum = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: 1 }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("revoked with a numeric revocationReason surfaces it", (await verify(w, revNum)).revocationReason === "keyCompromise");

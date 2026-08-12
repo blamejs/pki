@@ -608,6 +608,32 @@ async function testKeyOnlySigner() {
       catch (e) { return e.code; }
     })()) === "cms/bad-input");
 
+  // A key identifier is BYTES. Anything Buffer.from() merely ACCEPTS is not a key
+  // identifier: Buffer.from(20) allocates twenty zero octets, and Buffer.from("a1b2")
+  // takes the ASCII of the text rather than the two octets a reader means by it. Either
+  // one emits a structurally valid SignerIdentifier carrying an identifier the caller
+  // never asked for, which no verifier can match to the certification request -- so the
+  // type is refused rather than coerced.
+  var badKeyIds = [[20, "a number"], ["a1b2", "a hex-looking string"], [[1, 2, 3], "a plain array"], [{ length: 4 }, "an array-like object"]];
+  for (var bi = 0; bi < badKeyIds.length; bi++) {
+    check("a key-only signer's keyIdentifier as " + badKeyIds[bi][1] + " is refused, never coerced",
+      (await (async function (v) {
+        try {
+          await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki, keyIdentifier: v }, { eContentType: "id-cct-PKIData" });
+          return "NO-THROW";
+        } catch (e) { return e.code; }
+      })(badKeyIds[bi][0])) === "cms/bad-input");
+  }
+
+  check("a key-only signer's keyIdentifier as a Uint8Array is accepted (bytes are bytes)",
+    (await (async function () {
+      try {
+        var d = await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki, keyIdentifier: new Uint8Array([1, 2, 3, 4]) },
+          { eContentType: "id-cct-PKIData" });
+        return Buffer.isBuffer(d) && d.length > 0;
+      } catch (e) { return "THREW:" + e.code; }
+    })()) === true);
+
   check("a signer with neither cert nor spki is still refused",
     (await (async function () {
       try { await pki.cms.sign(CONTENT, { key: keyPkcs8 }); return "NO-THROW"; }
