@@ -336,6 +336,37 @@ async function run() {
   check("...and the response it signed still verifies",
     (await pki.ocsp.verify(wipeSigned, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
 
+  // The buffer the toolkit ALLOCATES is the one that has to be cleared, and it exists from the
+  // entry point onward -- taken before the response list, responder ID, SingleResponses, dates,
+  // nonce and signature scheme are validated, every one of which can fail. Watching the caller's
+  // own key stay untouched says nothing about that copy, so the clear is observed where the
+  // toolkit performs it: each buffer must hold key material when handed over and be all-zero
+  // afterwards. The failure chosen here is reached long before any signing, which is the window
+  // a cleanup attached to the signing call alone would miss.
+  var guardAll = require("../../lib/guard-all");
+  var realZeroizeAll = guardAll.secret.zeroizeAll;
+  var wiped = [];
+  guardAll.secret.zeroizeAll = function (list) {
+    var seen = (list || []).filter(Boolean).map(function (bufr) {
+      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
+    });
+    var out = realZeroizeAll.apply(this, arguments);
+    wiped.push.apply(wiped, seen);
+    return out;
+  };
+  var earlyFailCode;
+  try {
+    earlyFailCode = await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [] },
+        { cert: w.responderCertDer, key: Buffer.from(w.responderKeyPkcs8) });
+    });
+  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
+  check("a response with no SingleResponse is refused", earlyFailCode === "ocsp/bad-input");
+  check("the responder key copy is wiped when the failure comes before signing",
+    wiped.length > 0 && wiped.every(function (e) {
+      return e.hadContent && e.buf.every(function (x) { return x === 0; });
+    }));
+
   check("a string certID is refused, never read as its ASCII",
     (await codeOfAsync(function () {
       return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: "3081", status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },

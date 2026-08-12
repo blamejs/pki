@@ -78,6 +78,34 @@ async function run() {
     parsed.cms.encapContentInfo.eContentType === ID_CCT_PKI_DATA);
   check("F1b. the signature verifies through the shipped consumer path",
     (await pki.cms.verify(basic)).valid === true);
+
+  // Copying the signer key to close the swap window makes a SECOND copy of a secret, so that
+  // copy is cleared once signing settles rather than left for the collector. The caller's own
+  // key staying untouched does not show this -- the allocated copy is what must be observed --
+  // so the clear is watched where the toolkit performs it: each buffer must hold key material
+  // when handed over and be all-zero afterwards. The caller's key is checked to be intact too,
+  // since wiping the wrong buffer would destroy it.
+  var guardAll = require("../../lib/guard-all");
+  var realZeroizeAll = guardAll.secret.zeroizeAll;
+  var wiped = [];
+  guardAll.secret.zeroizeAll = function (list) {
+    var seen = (list || []).filter(Boolean).map(function (bufr) {
+      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
+    });
+    var out = realZeroizeAll.apply(this, arguments);
+    wiped.push.apply(wiped, seen);
+    return out;
+  };
+  var callerKey = Buffer.from(s.key);
+  var keyBefore = Buffer.from(callerKey);
+  try {
+    await pki.cmc.build({ requests: [{ tcr: csrDer }] }, { cert: s.cert, key: callerKey });
+  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
+  check("F1d. the signer key copy is wiped once signing settles",
+    wiped.length > 0 && wiped.every(function (e) {
+      return e.hadContent && e.buf.every(function (x) { return x === 0; });
+    }));
+  check("F1e. ...and the caller's own key is left intact", callerKey.equals(keyBefore));
   check("F1c. the tcr arm round-trips to the CSR that went in",
     parsed.requests.length === 1 && parsed.requests[0].arm === "tcr" &&
     Buffer.compare(parsed.requests[0].certificationRequestBytes, csrDer) === 0);
