@@ -274,6 +274,21 @@ async function run() {
       return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: 20, status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
         { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
     })) === "ocsp/bad-input");
+  // The responder key is read several promise turns after sign() returns, so PKCS#8 bytes
+  // stay caller-owned across that gap. Capturing only the reference stops responder.key =
+  // other but not a rewrite of the bytes themselves, which yields a response carrying this
+  // responder's ID and certificate over a signature made by different key material -- one
+  // no relying party can verify. Overwrite the buffer the way a pooled or zeroized key
+  // would and the response must still verify.
+  var mutableKey = Buffer.from(w.responderKeyPkcs8);
+  var racedSignP = pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer,
+    status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+  { cert: w.responderCertDer, key: mutableKey });
+  mutableKey.fill(0);
+  var racedSigned = await racedSignP;
+  check("a responder key overwritten after the call still produces a verifiable response (TOCTOU)",
+    (await pki.ocsp.verify(racedSigned, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
+
   check("a string certID is refused, never read as its ASCII",
     (await codeOfAsync(function () {
       return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: "3081", status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },

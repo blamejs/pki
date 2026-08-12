@@ -1107,6 +1107,45 @@ async function testCompoundAttestation() {
     mixedBound.metadata.entries[0].aaguid === MIXED_AAGUID &&
     mixedBound.metadata.entries[1].keyIdentifiers.indexOf(u2fKeyId) !== -1);
 
+  // An UNLISTED element must not launder a REVOKED sibling. The two governance failures are not
+  // equal: `metadata-not-found` is the one a caller may fall back to pinned roots on, and that
+  // fallback covers the whole statement. So if governance stopped at the first failing element, an
+  // element the catalogue does not list could raise the fallback error before a listed-but-revoked
+  // sibling is ever consulted -- and a compound's element order is not signed, so an attacker picks
+  // it. The denial must win from EITHER position, and it must win even when pinned roots that would
+  // otherwise accept the statement are supplied.
+  var pinnedFallback = { rootCertificates: [mixed.rootDer], time: new Date("2026-06-01T00:00:00Z") };
+  var revokedU2fOnly = await mdsHelper.mint({ entries: [
+    // the packed element's AAGUID is absent -> that element MISSES the catalogue
+    { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "REVOKED", effectiveDate: "2026-02-01" }],
+      metadataStatement: { attestationRootCertificates: [mixed.rootDer.toString("base64")] } },
+  ] });
+  var revokedMd = await pki.webauthn.verifyMetadataBlob(revokedU2fOnly.blob,
+    { rootCertificates: [revokedU2fOnly.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: an unlisted element cannot launder a revoked sibling into a pinned-root pass",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+        Object.assign({ metadata: revokedMd }, pinnedFallback));
+    })) === "webauthn/metadata-status");
+  // The same catalogue without the pinned-root fallback: still the denial, never the miss.
+  check("compound: the denial outranks the miss with no fallback offered either",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+        { metadata: revokedMd, time: new Date("2026-06-01T00:00:00Z") });
+    })) === "webauthn/metadata-status");
+  // And a compound where EVERY element misses still reports the miss, so the documented
+  // pinned-roots fallback for models the catalogue does not cover keeps working.
+  var listsNeither = await mdsHelper.mint({ entries: [
+    { aaguid: "99999999-9999-9999-9999-999999999999", statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [] } },
+  ] });
+  var neitherMd = await pki.webauthn.verifyMetadataBlob(listsNeither.blob,
+    { rootCertificates: [listsNeither.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var allMissed = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+    Object.assign({ metadata: neitherMd }, pinnedFallback));
+  check("compound: when no element is listed at all, the pinned-roots fallback still applies",
+    allMissed.attestationVerified === true && allMissed.anchoredTo === "rootCertificates");
+
   // A compound whose elements carry no certificate at all genuinely has nothing to anchor, and
   // that IS the not-applicable case -- so the distinction is drawn on the elements, not on the
   // (always empty) top-level path.
