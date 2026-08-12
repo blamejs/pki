@@ -19,6 +19,7 @@ var signing = require("../helpers/signing");
 var pki = helpers.pki;
 var check = helpers.check;
 var makeSigner = signing.makeSigner;
+var makeCompositeSigner = signing.makeCompositeSigner;
 
 var CONTENT = Buffer.from("the content to be signed by pki.cms.sign");
 
@@ -438,6 +439,23 @@ async function testKeyOnlySigner() {
   // enrollment key held in an HSM is a non-extractable CryptoKey: its public half
   // cannot be derived, which is the point of it, so the comparison simply does not
   // apply there and signing proceeds.
+  // A COMPOSITE key-only signer: { mldsa, trad } is two component private keys, a
+  // form no single public key can be derived from -- but the correspondence is
+  // still provable, from the signature it just produced against the declared spki.
+  // Refusing it instead would have broken a signing arm the engine supports.
+  var comp = makeCompositeSigner("id-MLDSA65-Ed25519-SHA512");
+  var compId = Buffer.from(await subtle.digest("SHA-1", comp.spki));
+  check("key-only signer: a COMPOSITE key signs, its correspondence proven from the signature",
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT,
+      { key: comp.key, spki: comp.spki, keyIdentifier: compId },
+      { eContentType: "id-cct-PKIData" })).signerInfos.length === 1);
+
+  await rejects("key-only signer: a composite key that is not the declared spki", function () {
+    return pki.cms.sign(CONTENT,
+      { key: makeCompositeSigner("id-MLDSA65-Ed25519-SHA512").key, spki: comp.spki, keyIdentifier: compId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
   // The skip for an unexportable key is for an opaque HANDLE, and nothing else.
   // A composite key is a plain object the derivation also declines, and treating
   // that as "cannot check" would skip the comparison for a key whose halves are

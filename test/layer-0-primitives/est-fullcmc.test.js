@@ -572,6 +572,17 @@ async function run() {
   check("G13j. and that request never left either",
     noSend13i.calls.length === 0);
 
+  check("G13k. an error body labelled something other than CMC-response is not read as a verdict",
+    // The success path refuses a label that disagrees with the bytes; accepting any
+    // pkcs7-mime here would make that agreement decorative and read a CMC verdict
+    // out of a body the server said was something else. The HTTP fault stands.
+    (await acaught(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 400, headers: ct("certs-only"),
+          body: pki.est.transferEncode(failedMine) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })).code === "est/http-error");
+
   check("G13f. a value that AGREES with the request is accepted",
     // The option is not forbidden -- it must simply match what is in the message.
     (await acaught(function () {
