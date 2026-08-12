@@ -473,6 +473,23 @@ async function run() {
       { bodyPartIDs: [1], allowUnverified: true });
     })) === "cmc/body-part-unknown");
 
+  // PD14k -- a Transaction Identifier is an unbounded INTEGER on the wire, so a
+  // `number` above Number.MAX_SAFE_INTEGER has already been rounded before this
+  // layer sees it. `MAX_SAFE_INTEGER + 2` is written here as arithmetic because the
+  // literal it evaluates to cannot be written exactly: it lands on the NEIGHBOURING
+  // identifier, which a response echoing that value would then match. Refused with
+  // the shape to use instead, through the same authoring guard pki.cmc.build applies.
+  var rounded = Number.MAX_SAFE_INTEGER + 2;      // 9007199254740992, not ...993
+  check("PD14k. a transactionId too large to be an exact number is refused, not rounded",
+    (await acode(function () {
+      return pki.cmc.verify(response([attr(1, ID_CMC_TRANSACTION_ID, [b.integer(BigInt(rounded))])]),
+        { transactionId: rounded, allowUnverified: true });
+    })) === "cmc/bad-input");
+
+  check("PD14k2. and the bigint form binds exactly",
+    (await pki.cmc.verify(response([attr(1, ID_CMC_TRANSACTION_ID, [b.integer(9007199254740993n)])]),
+      { transactionId: 9007199254740993n, allowUnverified: true })).outcome === "issued");
+
   check("PD14j4. and with no retained set the check does not apply",
     // The same asymmetry as every other half of the binding: checked only when the
     // client kept it.
