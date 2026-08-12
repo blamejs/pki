@@ -770,6 +770,58 @@ async function testCallerAnchors() {
   check("anchors: a parsed root mutated after the call still anchors to what was passed (TOCTOU)",
     parsedRaced.attestationVerified === true && parsedRaced.anchoredTo === "rootCertificates");
 
+  // The ROUTING is captured with the roots, not read live. Snapshotting the material while
+  // still branching on `opts.rootCertificates` would leave the choice of trust policy aliased:
+  // deleting the property after the call would take the "nobody asked to anchor" branch and
+  // report anchoredTo null for a caller that DID pin roots -- an unanchored path described as
+  // an intentional one. Which policy runs is fixed at the same instant as what it runs on.
+  var routeOpts = { rootCertificates: [u2f.rootDer], time: T };
+  var routePromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, routeOpts);
+  delete routeOpts.rootCertificates;
+  var routed = await routePromise;
+  check("anchors: deleting rootCertificates after the call cannot downgrade the verdict to unanchored",
+    routed.attestationVerified === true && routed.anchoredTo === "rootCertificates");
+
+  // And the inverse: adding the option after the call must not select a pinned-roots policy
+  // that had nothing captured to anchor against.
+  var lateOpts = { time: T };
+  var latePromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, lateOpts);
+  lateOpts.rootCertificates = [other.rootDer];
+  var lateRouted = await latePromise;
+  check("anchors: adding rootCertificates after the call cannot select a policy that was never asked for",
+    lateRouted.attestationVerified === true && lateRouted.anchoredTo === null);
+
+  // The same capture covers the OTHER routing test and the validation instant, neither of
+  // which had been reported: deleting opts.metadata after the call must not divert a
+  // metadata-governed verification onto the pinned-roots branch, and moving opts.time must
+  // not change the instant the trust path is judged at. Every field the deferred path reads
+  // is captured together, so none of these is a separate repair.
+  // The catalogue must genuinely GOVERN this authenticator, or the assertion cannot tell a
+  // routing swap from the documented miss-fallback: both would land on rootCertificates. A
+  // U2F authenticator declares no model identity, so it is listed by its attestation
+  // certificate's key identifier, and its entry registers the root its path actually reaches.
+  var u2fKid = require("../../lib/webauthn-mds.js").certKeyIdentifier(pki.schema.x509.parse(u2f.attCertDer));
+  var govFixture = await require("../helpers/mds-blob").mint({ aaguid: null, keyIdentifiers: [u2fKid],
+    anchors: [u2f.rootDer.toString("base64")] });
+  var govVerified = await pki.webauthn.verifyMetadataBlob(govFixture.blob,
+    { rootCertificates: [govFixture.rootDer], time: T });
+  check("anchors: the catalogue governs this authenticator (so the next check can discriminate)",
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+      { metadata: govVerified, time: T })).anchoredTo === "metadata");
+  var swapOpts = { metadata: govVerified, rootCertificates: [u2f.rootDer], time: T };
+  var swapPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, swapOpts);
+  delete swapOpts.metadata;                       // try to divert onto the pinned-roots branch
+  var swapped = await swapPromise;
+  check("anchors: deleting metadata after the call cannot divert off the catalogue branch",
+    swapped.anchoredTo === "metadata");
+
+  var timeOpts = { rootCertificates: [u2f.rootDer], time: new Date(T.getTime()) };
+  var timePromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, timeOpts);
+  timeOpts.time = new Date("1990-01-01T00:00:00Z");   // an instant the chain is not valid at
+  var timeRouted = await timePromise;
+  check("anchors: moving opts.time after the call cannot change the instant the path is judged at",
+    timeRouted.attestationVerified === true && timeRouted.anchoredTo === "rootCertificates");
+
   // The reverse direction: a pin that should NOT chain cannot be rescued by swapping in a
   // good root after the call, either.
   var swapToGood = [Buffer.from(other.rootDer)];
