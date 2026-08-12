@@ -27,7 +27,15 @@ var FIXTURES = require("./interop-fixtures");
 
 var LIB_DIR = path.join(__dirname, "..", "..", "lib");
 
-// Format namespaces whose parse surface has no interop fixture yet. The
+// Format namespaces whose parse surface has no interop fixture yet.
+//
+// A row here means "no fixture registered in interop-fixtures.js for this
+// namespace's parse primitives" — NOT "nothing cross-checks this format". Several
+// of these formats have a dedicated `*-openssl-interop.test.js` that cross-checks
+// the ISSUING direction against openssl's independent DER decoder; the reason text
+// on each row says what does and does not exist, so read it rather than the
+// row's presence.
+// The
 // structural check below fails any discovered `pki.schema.<fmt>.parse*`
 // namespace that is in NEITHER interop-fixtures.js NOR this ledger, so a new
 // format cannot ship silently uncovered — it must either register fixtures
@@ -43,10 +51,11 @@ var NO_FIXTURE_YET = {
   "pki.schema.tsp":      "oracle available (`openssl ts`); register a fixtures row keyed pki.schema.tsp.parse to cover it and drop this skip",
   "pki.schema.smime":    "oracle available (`openssl cms` emits the ESS signing-certificate attribute); register a fixtures row keyed to a pki.schema.smime.parse* primitive to cover it and drop this skip",
   "pki.schema.crmf":     "openssl has no offline CRMF generator (`openssl cmp` needs a live server); add a fixtures row when an oracle path exists",
-  "pki.schema.cmp":      "openssl's `cmp` subcommand is client-only (needs a live server as the oracle peer); add a fixtures row when an oracle path exists",
-  "pki.schema.attrcert": "openssl cannot emit RFC 5755 attribute certificates; add a fixtures row when an independent oracle exists",
+  "pki.schema.cmp":      "cmp-build-openssl-interop.test.js cross-checks the issuing direction. A fuller oracle IS available and unused: the shipped `openssl cmp` has an internal mock server (`-use_mock_srv`, plus `-reqin`/`-rspout`) that runs a whole transaction offline with no second package, which would exercise the response direction this row's absence of a fixtures entry currently stands for",
+  "pki.schema.cmc":      "no toolchain PROCESSES CMC (no `openssl cmc` verb; `cmp` is a different protocol, and NSS ships no PKIData/PKIResponse generator), but openssl's DER decoder and OID table DO read it: cmc-build-openssl-interop.test.js cross-checks the emitted messages, descending into the encapsulated content with `asn1parse -strparse` so the PKIData itself and its named controls are read by an independent implementation. A fixtures row keyed pki.schema.cmc.parse would add the parse direction to that",
+  "pki.schema.attrcert": "openssl cannot EMIT an RFC 5755 attribute certificate, and no mainstream tool verifies an AC signature, so attrcert-sign-openssl-interop.test.js cross-checks structure through openssl's decoder. It reads them better than that test currently asks: `asn1parse -item X509_ACERT` drives openssl's own compiled AC template rather than a generic dump, which would check the field layout instead of just the shape",
   "pki.schema.csrattrs": "openssl/NSS have no generator for the EST CSR Attributes wire format (RFC 8951 / 9908 CsrAttrs); add a fixtures row when an independent oracle exists",
-  "pki.schema.c509":     "openssl/NSS have no C509 (draft-ietf-cose-cbor-encoded-cert) codec; the type-3 reconstruction emits standard DER that is byte-exact to the Appendix A known-answer certificates and is cross-checked by the x509 interop, so there is no independent C509 oracle to add until a C509 toolchain exists",
+  "pki.schema.c509":     "openssl/NSS have no C509 (draft-ietf-cose-cbor-encoded-cert) codec. Two things are true and must not be conflated: the draft's Appendix A known-answer vectors ARE independent evidence, and the x509 interop leg proves only that a type-3 reconstruction is valid X.509 -- it says nothing about whether the CBOR encoding is C509-conformant, which is what this row stands for. The CBOR layer is also independently checkable (a canonical re-encode by a third-party RFC 8949 encoder) and is not checked today",
 };
 
 // Discover every primitive name from the lib/ @primitive comment blocks.

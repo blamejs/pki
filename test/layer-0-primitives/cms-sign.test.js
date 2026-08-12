@@ -19,6 +19,7 @@ var signing = require("../helpers/signing");
 var pki = helpers.pki;
 var check = helpers.check;
 var makeSigner = signing.makeSigner;
+var makeCompositeSigner = signing.makeCompositeSigner;
 
 var CONTENT = Buffer.from("the content to be signed by pki.cms.sign");
 
@@ -338,12 +339,18 @@ async function testPssSpkiParams() {
     b.sequence([]),                                                           // a SEQUENCE with no [0] hashAlgorithm
     b.sequence([b.explicit(0, b.sequence([b.nullValue()]))]),                 // [0] hashAlgorithm inner is not an OID
   ];
-  // The reader finds no pinned hash and the signer falls back to the SHA-256 default, so signing
-  // succeeds and emits a SignedData (the crafted SPKI is deliberately malformed, so it is not
-  // re-importable for a round-trip -- the graceful sign-side fallback is what these vectors drive).
+  // The reader finds no pinned hash and the signer falls back to the SHA-256 default
+  // -- these three shapes drive that fall-through, which runs during scheme
+  // resolution, before anything is signed. What they no longer do is EMIT: the
+  // crafted SPKI is deliberately malformed and not re-importable, so the post-sign
+  // check that the signature verifies under the key the SignerInfo declares cannot
+  // pass. That is the honest outcome for a signer whose own declared key nothing can
+  // import -- the SignedData it used to produce was one no recipient could verify.
   for (var i = 0; i < shapes.length; i++) {
-    var out = await pki.cms.sign(CONTENT, pssSignerWithParams(shapes[i]));
-    check("PSS SPKI params shape " + i + " -> sha256 fallback signs", Buffer.isBuffer(out) && out.length > 0);
+    await rejects("PSS SPKI params shape " + i + " -> resolves the sha256 fallback, then refuses to emit an unverifiable SignerInfo",
+      (function (shape) {
+        return function () { return pki.cms.sign(CONTENT, pssSignerWithParams(shape)); };
+      })(shapes[i]), "cms/bad-input");
   }
   // a [0] hashAlgorithm pinning a hash this toolkit does not map (SHA-1) fails closed at sign time,
   // rather than silently signing under a digest the key forbids.
@@ -395,9 +402,249 @@ async function testSlhDsa() {
   check("SLH-DSA sha2-256f + mismatched sha256 digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(wrongMd)));
 }
 
+// A KEY-ONLY signer: `{ key, spki, keyIdentifier }` with no certificate. RFC 5272
+// sec. 3.2 needs exactly this to sign a Full PKI Request with the key of a
+// certification request it carries -- there is no certificate yet.
+//
+// Such a SignedData CANNOT be checked by pki.cms.verify (no certificate matches
+// the sid) nor by `openssl cms -verify` (it needs a signer certificate), so the
+// signature is proven by RECONSTRUCTING the signed-attributes SET-OF preimage and
+// verifying it against the request's own SPKI. Saying so here rather than
+// pretending cms.verify closes it.
+async function testKeyOnlySigner() {
+  var subtle = pki.webcrypto.subtle;
+  var pair = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var keyPkcs8 = await pki.key.export(pair.privateKey);
+  var spki = await pki.key.export(pair.publicKey);
+  var keyId = Buffer.from(await subtle.digest("SHA-1", spki));   // the SKI the request would declare
+
+  var der = await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki, keyIdentifier: keyId },
+    { eContentType: "id-cct-PKIData" });
+  var m = pki.schema.cms.parse(der);
+
+  check("key-only signer: the SignerInfo is version 3", m.signerInfos[0].version === 3);
+  check("key-only signer: the sid is the subjectKeyIdentifier form carrying the request's key id",
+    m.signerInfos[0].sid.subjectKeyIdentifier != null &&
+    Buffer.compare(m.signerInfos[0].sid.subjectKeyIdentifier, keyId) === 0);
+  check("key-only signer: NO certificates field is emitted (there is no certificate)",
+    !m.certificates || m.certificates.length === 0);
+
+  // A key-only signer names a public key it does not otherwise prove it holds:
+  // the identifier and the signature scheme come from `spki`, the signature from
+  // `key`. Two different keys produce a well-formed SignerInfo nobody can verify,
+  // because the recipient resolves the identifier to the declared key and checks
+  // a signature made by another. There is no certificate here to catch it.
+  var strangerPair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var strangerKey = await pki.key.export(strangerPair.privateKey);
+  await rejects("key-only signer: a `key` that is not the declared `spki`", function () {
+    return pki.cms.sign(CONTENT, { key: strangerKey, spki: spki, keyIdentifier: keyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  // ...and that check must not lock out the keys this signer exists to serve. An
+  // enrollment key held in an HSM is a non-extractable CryptoKey: its public half
+  // cannot be derived, which is the point of it, so the comparison simply does not
+  // apply there and signing proceeds.
+  // A COMPOSITE key-only signer: { mldsa, trad } is two component private keys, a
+  // form no single public key can be derived from -- but the correspondence is
+  // still provable, from the signature it just produced against the declared spki.
+  // Refusing it instead would have broken a signing arm the engine supports.
+  var comp = makeCompositeSigner("id-MLDSA65-Ed25519-SHA512");
+  var compId = Buffer.from(await subtle.digest("SHA-1", comp.spki));
+  check("key-only signer: a COMPOSITE key signs, its correspondence proven from the signature",
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT,
+      { key: comp.key, spki: comp.spki, keyIdentifier: compId },
+      { eContentType: "id-cct-PKIData" })).signerInfos.length === 1);
+
+  await rejects("key-only signer: a composite key that is not the declared spki", function () {
+    return pki.cms.sign(CONTENT,
+      { key: makeCompositeSigner("id-MLDSA65-Ed25519-SHA512").key, spki: comp.spki, keyIdentifier: compId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  // The signer descriptor is the CALLER's object, and sign() defers: the
+  // SignerIdentifier is built from `keyIdentifier` on the way in, the signature
+  // is made a turn later. A descriptor whose `key` and `spki` are both swapped
+  // for another matching pair in that gap would satisfy the key/spki match --
+  // both halves moved together -- while the SignerInfo still names the first
+  // key, and nothing could verify the result.
+  // The same proof for a CERTIFICATE-backed signer. The SignerInfo names the
+  // embedded certificate's key, so signing with a different one of the same
+  // algorithm emits a structure the CA it is sent to cannot verify -- and nothing
+  // else in the message contradicts it.
+  var certA = makeSigner("ec-p256"), certB = makeSigner("ec-p256");
+  check("a certificate-backed signer whose key matches its certificate signs",
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT, certA)).signerInfos.length === 1);
+  await rejects("a certificate-backed signer whose key is NOT its certificate's is refused", function () {
+    return pki.cms.sign(CONTENT, { cert: certA.cert, key: certB.key });
+  }, "cms/bad-input");
+
+  // Ed25519, so the CMS signature IS the raw signature and the check below needs
+  // no re-encoding between what was emitted and what is verified.
+  var pinned = makeSigner("ed25519");
+  var swapped = makeSigner("ed25519");
+  var pinnedKeyId = Buffer.from(await subtle.digest("SHA-1", pinned.spki));
+  var live = { key: pinned.key, spki: pinned.spki, keyIdentifier: pinnedKeyId };
+  var livePromise = pki.cms.sign(CONTENT, live, { eContentType: "id-cct-PKIData" });
+  live.key = swapped.key;                     // rewritten on the very next line
+  live.spki = swapped.spki;
+  var liveSi = pki.schema.cms.parse(await livePromise).signerInfos[0];
+  // The signature covers the signedAttrs as a SET OF, not as the [0] IMPLICIT
+  // form they ride on the wire (RFC 5652 sec. 5.4), so the tag is put back.
+  var liveSigned = Buffer.from(liveSi.signedAttrsBytes);
+  liveSigned[0] = 0x31;
+  check("key-only signer: a descriptor rewritten after the call still signs under the key it named",
+    // Verified under the ORIGINAL public key -- the one the SignerIdentifier
+    // names -- not under the replacement the descriptor was rewritten to hold.
+    (await subtle.verify({ name: "Ed25519" },
+      await subtle.importKey("spki", pinned.spki, { name: "Ed25519" }, false, ["verify"]),
+      liveSi.signature, liveSigned)) === true);
+
+  // The declared spki is validated as a WHOLE SubjectPublicKeyInfo, not just far
+  // enough to find the algorithm. For an opaque key handle the correspondence check
+  // is deliberately skipped, so this is the only thing between the caller's bytes
+  // and a SignerInfo declaring them: an algorithm with no key, a key that is not a
+  // BIT STRING, or an extra field would all be emitted as the signer's public key
+  // and resolve to nothing for anyone verifying.
+  var algOnly = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("Ed25519"))])]);
+  await rejects("key-only signer: an spki carrying an algorithm but NO subjectPublicKey", function () {
+    return pki.cms.sign(CONTENT, { key: pinned.key, spki: algOnly, keyIdentifier: pinnedKeyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  var keyNotBitString = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("Ed25519"))]),
+    pki.asn1.build.octetString(Buffer.alloc(32))]);
+  await rejects("key-only signer: an spki whose subjectPublicKey is not a BIT STRING", function () {
+    return pki.cms.sign(CONTENT, { key: pinned.key, spki: keyNotBitString, keyIdentifier: pinnedKeyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  // The skip for an unexportable key is for an opaque HANDLE, and nothing else.
+  // A composite key is a plain object the derivation also declines, and treating
+  // that as "cannot check" would skip the comparison for a key whose halves are
+  // perfectly readable -- the fail-open this check exists to prevent.
+  await rejects("key-only signer: a key the check cannot read is refused, not skipped", function () {
+    return pki.cms.sign(CONTENT, { key: { mldsa: keyPkcs8, trad: keyPkcs8 }, spki: spki, keyIdentifier: keyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  // The single-SignerInfo rule is RFC 5272 sec. 3.2's, so it binds for a Full PKI
+  // Request and not for ordinary CMS. Applying it to every content type would
+  // refuse a multi-signer SignedData that nothing objects to -- CMS permits
+  // several, and a key-only signer's certificate can reach a verifier by other
+  // means.
+  var certSigner = makeSigner("ec-p256");
+  await rejects("key-only + another signer under id-cct-PKIData", function () {
+    return pki.cms.sign(CONTENT, [certSigner, { key: keyPkcs8, spki: spki, keyIdentifier: keyId }],
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+  check("the same pair over ordinary content is not this rule's business",
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT,
+      [certSigner, { key: keyPkcs8, spki: spki, keyIdentifier: keyId }])).signerInfos.length === 2);
+
+  // Generated extractable, then the private half re-imported non-extractable --
+  // the shape a key that lives in a token has, without needing one.
+  var hsmGen = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var hsmSpki = await pki.key.export(hsmGen.publicKey);
+  var hsmKey = await subtle.importKey("pkcs8", await pki.key.export(hsmGen.privateKey),
+    { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
+  var hsmDer = await pki.cms.sign(CONTENT,
+    { key: hsmKey, spki: hsmSpki, keyIdentifier: Buffer.from(await subtle.digest("SHA-1", hsmSpki)) },
+    { eContentType: "id-cct-PKIData" });
+  check("key-only signer: a NON-EXTRACTABLE private key still signs",
+    pki.schema.cms.parse(hsmDer).signerInfos.length === 1);
+
+  // ... and its declared public key is still PROVEN, not taken on the caller's
+  // word. The correspondence comes from the signature, which an opaque handle can
+  // produce as readily as an exportable key -- so there is no key kind for which
+  // this check is skipped, and signing with handle A while declaring a valid
+  // same-algorithm key B is refused rather than emitted as an unverifiable
+  // SignerInfo.
+  var otherEc = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var otherSpki = await pki.key.export(otherEc.publicKey);
+  var otherKeyId = Buffer.from(await subtle.digest("SHA-1", otherSpki));
+  await rejects("key-only signer: an opaque key with SOMEONE ELSE'S spki is refused", function () {
+    return pki.cms.sign(CONTENT, { key: hsmKey, spki: otherSpki, keyIdentifier: otherKeyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  // The signature, verified directly. The signed attributes are signed as a SET OF
+  // (RFC 5652 sec. 5.4), which is the [0] IMPLICIT node re-tagged to a universal
+  // SET -- reconstructing that is the whole point of the check.
+  var si = pki.schema.cms.parse(der).signerInfos[0];
+  var attrsDer = si.signedAttrsBytes;
+  var preimage = Buffer.concat([Buffer.from([0x31]), attrsDer.subarray(1)]);   // [0] IMPLICIT -> SET
+  var pub = await subtle.importKey("spki", spki, { name: "ECDSA", namedCurve: "P-256" }, false, ["verify"]);
+  // CMS carries an ECDSA signature as DER SEQUENCE(r, s); WebCrypto verifies the
+  // raw fixed-width r||s pair, so unwrap it here rather than reach for a private
+  // helper.
+  var sigNode = pki.asn1.decode(si.signature);
+  var fixed = function (n) {
+    var v = pki.asn1.read.integer(n);
+    var hex = v.toString(16);
+    return Buffer.from(hex.padStart(64, "0"), "hex");
+  };
+  var raw = Buffer.concat([fixed(sigNode.children[0]), fixed(sigNode.children[1])]);
+  var ok = await subtle.verify({ name: "ECDSA", hash: "SHA-256" }, pub, raw, preimage);
+  check("key-only signer: the signature verifies against the request's own SPKI", ok === true);
+
+  // PD3(c): "If the request key is used for signing, there MUST be only one
+  // SignerInfo in the SignedData."
+  var withCert = makeSigner("ec-p256");
+  check("key-only signer alongside a second signer is refused (RFC 5272 sec. 3.2)",
+    (await (async function () {
+      try {
+        await pki.cms.sign(CONTENT, [{ key: keyPkcs8, spki: spki, keyIdentifier: keyId }, withCert],
+          { eContentType: "id-cct-PKIData" });
+        return "NO-THROW";
+      } catch (e) { return e.code; }
+    })()) === "cms/bad-input");
+
+  check("a key-only signer with no keyIdentifier is refused",
+    (await (async function () {
+      try { await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki }, { eContentType: "id-cct-PKIData" }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })()) === "cms/bad-input");
+
+  // A key identifier is BYTES. Anything Buffer.from() merely ACCEPTS is not a key
+  // identifier: Buffer.from(20) allocates twenty zero octets, and Buffer.from("a1b2")
+  // takes the ASCII of the text rather than the two octets a reader means by it. Either
+  // one emits a structurally valid SignerIdentifier carrying an identifier the caller
+  // never asked for, which no verifier can match to the certification request -- so the
+  // type is refused rather than coerced.
+  var badKeyIds = [[20, "a number"], ["a1b2", "a hex-looking string"], [[1, 2, 3], "a plain array"], [{ length: 4 }, "an array-like object"]];
+  for (var bi = 0; bi < badKeyIds.length; bi++) {
+    check("a key-only signer's keyIdentifier as " + badKeyIds[bi][1] + " is refused, never coerced",
+      (await (async function (v) {
+        try {
+          await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki, keyIdentifier: v }, { eContentType: "id-cct-PKIData" });
+          return "NO-THROW";
+        } catch (e) { return e.code; }
+      })(badKeyIds[bi][0])) === "cms/bad-input");
+  }
+
+  check("a key-only signer's keyIdentifier as a Uint8Array is accepted (bytes are bytes)",
+    (await (async function () {
+      try {
+        var d = await pki.cms.sign(CONTENT, { key: keyPkcs8, spki: spki, keyIdentifier: new Uint8Array([1, 2, 3, 4]) },
+          { eContentType: "id-cct-PKIData" });
+        return Buffer.isBuffer(d) && d.length > 0;
+      } catch (e) { return "THREW:" + e.code; }
+    })()) === true);
+
+  check("a signer with neither cert nor spki is still refused",
+    (await (async function () {
+      try { await pki.cms.sign(CONTENT, { key: keyPkcs8 }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })()) === "cms/bad-input");
+}
+
 async function run() {
   await testPssSpkiParams();
   await testSlhDsa();
+  await testKeyOnlySigner();
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();

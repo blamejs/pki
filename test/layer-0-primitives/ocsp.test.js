@@ -97,6 +97,25 @@ async function run() {
   check("nonce echo + match -> nonceMatched true, good", (function (r) { return r.nonceMatched === true && r.status === "good"; })(await verify(w, goodN, { requestNonce: Buffer.alloc(32, 7) })));
   check("nonce mismatch -> fail closed to unknown", (await verify(w, goodN, { requestNonce: Buffer.alloc(32, 9) })).status === "unknown");
   check("a client that sent NO nonce ignores the response nonce (still good)", (await verify(w, goodN)).status === "good");
+  // The field is three-state and always present: true bound, false not bound, null never asked.
+  // Absent would make "not requested" indistinguishable from "this build does not report it".
+  check("a client that sent no nonce still gets nonceMatched, as null",
+    (function (r) { return "nonceMatched" in r && r.nonceMatched === null; })(await verify(w, goodN)));
+  check("a client that sent a nonce gets a boolean, not null",
+    (await verify(w, goodN, { requestNonce: Buffer.alloc(32, 7) })).nonceMatched === true);
+  // The downgrade is for `good` ONLY. A revoked verdict does not expire the way a
+  // non-revocation does, so discarding a signed, current, authorized `revoked`
+  // because it was replayed would hand a soft-fail caller the very certificate the
+  // responder refused -- the anti-replay defence becoming the thing that accepts it.
+  var revokedN = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer,
+    issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: "keyCompromise" },
+    thisUpdate: TU, nextUpdate: NU }] },
+  { cert: w.responderCertDer, key: w.responderKeyPkcs8 }, { nonce: Buffer.alloc(32, 7) });
+  check("nonce mismatch does NOT downgrade a revoked verdict; it reports the mismatch",
+    (function (r) { return r.status === "revoked" && r.nonceMatched === false && r.revocationReason === "keyCompromise"; })(
+      await verify(w, revokedN, { requestNonce: Buffer.alloc(32, 9) })));
+  check("...and a matching nonce on the same revoked response still reports revoked",
+    (await verify(w, revokedN, { requestNonce: Buffer.alloc(32, 7) })).status === "revoked");
 
   // ---- buildErrorResponse ----
   var err = pki.ocsp.buildErrorResponse("tryLater");
@@ -104,6 +123,17 @@ async function run() {
   check("buildErrorResponse('tryLater') -> status tryLater, no basicResponse (RFC 6960 sec. 2.3)",
     pe.responseStatus.name === "tryLater" && pe.basicResponse === null);
   check("buildErrorResponse rejects an unknown status", codeOf(function () { pki.ocsp.buildErrorResponse("bogus"); }) === "ocsp/bad-input");
+
+  // The responder descriptor is the CALLER's object, and sign() defers: the
+  // ResponderID and the embedded certificate are fixed from `cert` on the way
+  // in, the signature is made several promise turns later. A `key` replaced in
+  // that gap would produce a response naming one responder and signed by
+  // another key -- which nothing could verify.
+  var liveResponder = { cert: w.responderCertDer, key: w.responderKeyPkcs8 };
+  var livePromise = pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, liveResponder);
+  liveResponder.key = w.issuerKeyPkcs8;        // rewritten on the very next line
+  check("a responder descriptor rewritten after the call still signs under the key its certificate names",
+    (await verify(w, await livePromise)).status === "good");
 
   // ---- the responder-cert full-validation reject family (crown jewel) ----
   // CA-direct: the issuing CA signs its own response.
@@ -242,6 +272,106 @@ async function run() {
   check("a raw pre-built CertID Buffer round-trips + verifies good", (await pki.ocsp.verify(rawResp, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
   var rawRespU8 = await pki.ocsp.sign({ responderID: "byName", responses: [{ certID: new Uint8Array(rawCertId), status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("a raw pre-built CertID Uint8Array round-trips + verifies good", (await pki.ocsp.verify(rawRespU8, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
+  // A pre-encoded CertID is spliced in RAW, so a non-byte value must be refused rather
+  // than coerced: Buffer.from(20) allocates twenty zero octets, which would put a
+  // structurally broken CertID inside a response this responder then signs.
+  check("a numeric certID is refused, never coerced to zero octets",
+    (await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: 20, status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+        { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+    })) === "ocsp/bad-input");
+  // The responder key is read several promise turns after sign() returns, so PKCS#8 bytes
+  // stay caller-owned across that gap. Capturing only the reference stops responder.key =
+  // other but not a rewrite of the bytes themselves, which yields a response carrying this
+  // responder's ID and certificate over a signature made by different key material -- one
+  // no relying party can verify. Overwrite the buffer the way a pooled or zeroized key
+  // would and the response must still verify.
+  var mutableKey = Buffer.from(w.responderKeyPkcs8);
+  var racedSignP = pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer,
+    status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+  { cert: w.responderCertDer, key: mutableKey });
+  mutableKey.fill(0);
+  var racedSigned = await racedSignP;
+  check("a responder key overwritten after the call still produces a verifiable response (TOCTOU)",
+    (await pki.ocsp.verify(racedSigned, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
+
+  // The same window one level in, for the composite key shape. A composite whose components
+  // are both PEM strings holds nothing mutable INSIDE it, but the descriptor object is still
+  // the caller's: reassigning a component after the call reaches the deferred signing step and
+  // yields a response whose responder ID and embedded certificate describe one responder over
+  // a signature made by another key. The container is cloned regardless of component type, so
+  // a post-call reassignment must not change what signed.
+  // The discriminator is an INVALID replacement: if the descriptor leaked, the deferred sign
+  // reads the corrupted component and throws; if it was cloned, signing completes on the key
+  // that was actually passed. That distinguishes the two without needing a verify oracle for a
+  // synthetic composite responder.
+  var signing = require("../helpers/signing");
+  var compA = signing.makeCompositeSigner("id-MLDSA44-ECDSA-P256-SHA256", { subject: "Composite Responder" });
+  function toPem(der) {
+    return "-----BEGIN PRIVATE KEY-----\n" + Buffer.from(der).toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END PRIVATE KEY-----\n";
+  }
+  var pemComposite = { mldsa: toPem(compA.key.mldsa), trad: toPem(compA.key.trad) };
+  var compSignP = pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer,
+    status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+  { cert: compA.cert, key: pemComposite });
+  pemComposite.mldsa = "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n";
+  pemComposite.trad = "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n";
+  check("an all-PEM composite responder descriptor reassigned after the call still signs with what was passed",
+    (await (async function () {
+      try { var d = await compSignP; return Buffer.isBuffer(d) && d.length > 0; }
+      catch (e) { return "THREW:" + e.code; }
+    })()) === true);
+
+  // Closing the aliasing window means COPYING a private key, which is a second copy of a
+  // secret -- so the copy is cleared once signing is done rather than left for the collector.
+  // Observed through the shipped path: the caller's own key must be untouched (never written
+  // to), while a response still signs, so the copy that existed in between is gone.
+  var wipeProbeKey = Buffer.from(w.responderKeyPkcs8);
+  var beforeSign = Buffer.from(wipeProbeKey);
+  var wipeSigned = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer,
+    status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+  { cert: w.responderCertDer, key: wipeProbeKey });
+  check("the caller's own responder key is never written to",
+    wipeProbeKey.equals(beforeSign) && Buffer.isBuffer(wipeSigned));
+  check("...and the response it signed still verifies",
+    (await pki.ocsp.verify(wipeSigned, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
+
+  // The buffer the toolkit ALLOCATES is the one that has to be cleared, and it exists from the
+  // entry point onward -- taken before the response list, responder ID, SingleResponses, dates,
+  // nonce and signature scheme are validated, every one of which can fail. Watching the caller's
+  // own key stay untouched says nothing about that copy, so the clear is observed where the
+  // toolkit performs it: each buffer must hold key material when handed over and be all-zero
+  // afterwards. The failure chosen here is reached long before any signing, which is the window
+  // a cleanup attached to the signing call alone would miss.
+  var guardAll = require("../../lib/guard-all");
+  var realZeroizeAll = guardAll.secret.zeroizeAll;
+  var wiped = [];
+  guardAll.secret.zeroizeAll = function (list) {
+    var seen = (list || []).filter(Boolean).map(function (bufr) {
+      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
+    });
+    var out = realZeroizeAll.apply(this, arguments);
+    wiped.push.apply(wiped, seen);
+    return out;
+  };
+  var earlyFailCode;
+  try {
+    earlyFailCode = await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [] },
+        { cert: w.responderCertDer, key: Buffer.from(w.responderKeyPkcs8) });
+    });
+  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
+  check("a response with no SingleResponse is refused", earlyFailCode === "ocsp/bad-input");
+  check("the responder key copy is wiped when the failure comes before signing",
+    wiped.length > 0 && wiped.every(function (e) {
+      return e.hadContent && e.buf.every(function (x) { return x === 0; });
+    }));
+
+  check("a string certID is refused, never read as its ASCII",
+    (await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: "3081", status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+        { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
+    })) === "ocsp/bad-input");
   // revoked with a NUMERIC reason code.
   var revNum = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: 1 }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("revoked with a numeric revocationReason surfaces it", (await verify(w, revNum)).revocationReason === "keyCompromise");

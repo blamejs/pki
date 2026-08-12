@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.4.15",
+  "packageVersion": "0.5.0",
   "surface": {
     "C": {
       "kind": "object",
@@ -1210,6 +1210,19 @@
         }
       }
     },
+    "cmc": {
+      "kind": "object",
+      "members": {
+        "build": {
+          "kind": "function",
+          "arity": 3
+        },
+        "verify": {
+          "kind": "function",
+          "arity": 2
+        }
+      }
+    },
     "cmp": {
       "kind": "object",
       "members": {
@@ -2085,6 +2098,10 @@
           "kind": "function",
           "arity": 3
         },
+        "CmcError": {
+          "kind": "function",
+          "arity": 3
+        },
         "CmpError": {
           "kind": "function",
           "arity": 3
@@ -2249,6 +2266,10 @@
         "findIssuedCert": {
           "kind": "function",
           "arity": 2
+        },
+        "fullcmc": {
+          "kind": "function",
+          "arity": 3
         },
         "parseCertsOnly": {
           "kind": "function",
@@ -2713,6 +2734,23 @@
               "arity": 2
             },
             "parse": {
+              "kind": "function",
+              "arity": 1
+            }
+          }
+        },
+        "cmc": {
+          "kind": "object",
+          "members": {
+            "parse": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parsePkiData": {
+              "kind": "function",
+              "arity": 1
+            },
+            "parsePkiResponse": {
               "kind": "function",
               "arity": 1
             }
@@ -3238,9 +3276,21 @@
           "kind": "function",
           "arity": 1
         },
+        "parseAuthenticatorData": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseClientData": {
+          "kind": "function",
+          "arity": 2
+        },
         "verify": {
           "kind": "function",
           "arity": 3
+        },
+        "verifyAssertion": {
+          "kind": "function",
+          "arity": 1
         },
         "verifyMetadataBlob": {
           "kind": "function",
@@ -3328,6 +3378,8 @@
     "pki.cbor.read.biguint": "0.1.27",
     "pki.cbor.read.time": "0.1.27",
     "pki.cbor.read.oid": "0.1.27",
+    "pki.cmc.verify": "0.4.16",
+    "pki.cmc.build": "0.4.16",
     "pki.cmp.build": "0.3.5",
     "pki.cmp.transfer": "0.3.19",
     "pki.cmp.wellKnownUrl": "0.3.19",
@@ -3363,6 +3415,7 @@
     "pki.est.parseCertsOnly": "0.1.24",
     "pki.est.classifyResponse": "0.1.24",
     "pki.est.paths": "0.1.24",
+    "pki.est.fullcmc": "0.4.16",
     "pki.est.cacerts": "0.3.16",
     "pki.est.simpleenroll": "0.3.16",
     "pki.est.simplereenroll": "0.3.16",
@@ -3425,6 +3478,9 @@
     "pki.schema.attrcert.pemEncode": "0.1.23",
     "pki.schema.c509.parse": "0.2.30",
     "pki.schema.c509.encode": "0.3.4",
+    "pki.schema.cmc.parsePkiData": "0.4.16",
+    "pki.schema.cmc.parsePkiResponse": "0.4.16",
+    "pki.schema.cmc.parse": "0.4.16",
     "pki.schema.cmp.parse": "0.1.19",
     "pki.schema.cmp.pemDecode": "0.1.19",
     "pki.schema.cmp.pemEncode": "0.1.19",
@@ -3496,6 +3552,9 @@
     "pki.webauthn.verifyMetadataBlob": "0.4.11",
     "pki.webauthn.metadataFor": "0.4.11",
     "pki.webauthn.metadataAnchors": "0.4.11",
+    "pki.webauthn.parseClientData": "0.5.0",
+    "pki.webauthn.parseAuthenticatorData": "0.5.0",
+    "pki.webauthn.verifyAssertion": "0.5.0",
     "pki.webcrypto.CryptoKey": "0.1.0",
     "pki.webcrypto.subtle": "0.1.0",
     "pki.webcrypto": "0.1.0",

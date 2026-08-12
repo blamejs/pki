@@ -475,8 +475,15 @@ function testNoDeferralMarkers() {
   // library throws constantly and correctly). Only the ALL-CAPS
   // `NOT_SUPPORTED` sentinel/constant form signals deferred work, so it
   // is matched case-sensitively; error strings are left alone.
-  var reMarker = /\b(TODO|FIXME|XXX|HACK|NOT[ _-]?IMPLEMENTED|UNIMPLEMENTED)\b|\/\/\s*later\b/i;
-  var reCapsSentinel = /\bNOT_SUPPORTED\b/;
+  //
+  // The SAME distinction applies to `not-implemented`, and for the same reason:
+  // RFC 7030 sec. 4.3.2 defines an EST 404/501 on /fullcmc as "this service is
+  // not implemented" — a runtime verdict about the SERVER we are talking to,
+  // fully implemented on our side. A lowercase `not-implemented` status string is
+  // therefore a shipped feature, while an ALL-CAPS NOT_IMPLEMENTED sentinel is
+  // still deferred work here. Splitting them keeps the rule about OUR surface.
+  var reMarker = /\b(TODO|FIXME|XXX|HACK)\b|\/\/\s*later\b/i;
+  var reCapsSentinel = /\bNOT_SUPPORTED\b|\bNOT[ _-]?IMPLEMENTED\b|\bUNIMPLEMENTED\b/;
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
@@ -1179,7 +1186,7 @@ function testFormatModulesComposeSchema() {
   // specific field's raw bytes off a match node in a build/decode fn
   // (node.children[1]) is the legitimate escape hatch and is NOT flagged.
   var bad = [];
-  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js", "lib/schema-cmp.js", "lib/schema-smime.js", "lib/schema-csrattrs.js"]; // + future format modules as they land
+  var FORMAT_FILES = ["lib/schema-x509.js", "lib/schema-crl.js", "lib/schema-csr.js", "lib/schema-pkcs8.js", "lib/schema-cms.js", "lib/schema-ocsp.js", "lib/schema-tsp.js", "lib/schema-attrcert.js", "lib/schema-crmf.js", "lib/schema-pkcs12.js", "lib/schema-cmp.js", "lib/schema-smime.js", "lib/schema-csrattrs.js", "lib/schema-cmc.js"]; // + future format modules as they land
   for (var f = 0; f < FORMAT_FILES.length; f++) {
     var src;
     try { src = fs.readFileSync(path.join(REPO_ROOT, FORMAT_FILES[f]), "utf8"); }
@@ -1745,6 +1752,24 @@ function testNoDuplicateCodeBlocks() {
       reason: "pemDecode/pemEncode are per-module thin delegations to pkix.pemDecode/pemEncode (label + error class differ); kept separate for their per-function @primitive wiki blocks.",
     },
     {
+      // The unknown-key door on an authoring spec: every producing module closes it
+      // the same way -- `guard.identifier.assertKnownKeys(obj, TABLE, E, "<domain>/bad-input",
+      // fn)` followed by a `Object.keys(...).forEach` that consumes the now-known
+      // fields. The CHECK itself already lives once in guard-identifier; what repeats
+      // is the call plus the message closure naming that spec's own fields, and each
+      // binds a DIFFERENT table, error class and wording. Extracting the call would
+      // just relocate the same three lines while hiding which table guards which
+      // descriptor. family-subset so a new producer's door matches the cluster
+      // instead of re-tripping it.
+      files: [
+        "lib/attrcert-sign.js:add", "lib/attrcert-sign.js:<top>",
+        "lib/cmc-build.js:fixedRequestId", "lib/cmc-build.js:_build",
+        "lib/pki-build.js:requestedExtensions", "lib/pki-build.js:<top>",
+      ],
+      mode: "family-subset",
+      reason: "assertKnownKeys call-site glue: the check lives once in guard-identifier; each site binds a different key table, error class and message, so only the call and its closure repeat.",
+    },
+    {
       // Format-module schema-declaration / build glue: each module declares its
       // sub-schemas with the same combinator idiom (`var X = schema.seq([field(...),
       // optional(...)], { assert, arity, code, what, build })`) and shapes its output
@@ -1769,6 +1794,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-ocsp.js:_shapeResponderID", "lib/schema-smime.js:assertSignerIssuerIsDirectoryName",
         "lib/schema-ocsp.js:_validateOcspExtensions",
         "lib/schema-csrattrs.js:<top>", "lib/schema-smime.js:signingCertificateSchema",
+        "lib/schema-cmc.js:<top>", "lib/schema-cmc.js:rawList", "lib/schema-crmf.js:crmfName",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",
@@ -1783,7 +1809,12 @@ function testNoDuplicateCodeBlocks() {
       // without being further extractable. family-subset so any 3+ producing modules match.
       files: [
         "lib/cms-sign.js:<top>", "lib/tsp-sign.js:<top>", "lib/x509-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>", "lib/cmp-build.js:<top>", "lib/crl-sign.js:<top>",
+        "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/schema-cmc.js:<top>",
         "lib/cms-sign.js:_err", "lib/tsp-sign.js:_err", "lib/x509-sign.js:_err", "lib/csr-sign.js:_err", "lib/attrcert-sign.js:_err", "lib/crmf-sign.js:_err", "lib/cmp-build.js:_err", "lib/crl-sign.js:_err",
+        // The run continues past the factories: makeNS(domain) then makeBuilder({...})
+        // with that domain's error class and schemas. Same idiom, same reason -- the
+        // builder itself lives once in pki-build.js and each module binds its own domain.
+        "lib/cms-sign.js:_signE", "lib/tsp-sign.js:_signE", "lib/x509-sign.js:_signE", "lib/csr-sign.js:_signE", "lib/attrcert-sign.js:_signE", "lib/crmf-sign.js:_signE", "lib/cmp-build.js:_signE", "lib/crl-sign.js:_signE",
       ],
       mode: "family-subset",
       reason: "producing-module header: require(codec/oid/sign-scheme/guard/framework-error) + the two per-domain error factories (_err full-code, _signE domain-prefixed) + O()=oid.byName; the resolver/signer are shared in sign-scheme.js and each module binds a different domain -- nothing further extractable. Applies to the <top> require run and the shared _err factory shape.",
@@ -1794,7 +1825,7 @@ function testNoDuplicateCodeBlocks() {
       // _sign rejects the returned promise instead of throwing from the call site (an async boundary the
       // callers await). A trivial three-line wrapper, identical by construction across producers -- the
       // CMP transfer verb (transfer -> _transfer) shares the same async-boundary wrapper.
-      files: ["lib/attrcert-sign.js:sign", "lib/csr-sign.js:sign", "lib/x509-sign.js:sign", "lib/cms-sign.js:sign", "lib/tsp-sign.js:sign", "lib/cmp-build.js:transfer"],
+      files: ["lib/attrcert-sign.js:sign", "lib/csr-sign.js:sign", "lib/x509-sign.js:sign", "lib/cms-sign.js:sign", "lib/tsp-sign.js:sign", "lib/cmp-build.js:transfer", "lib/cmc-build.js:build"],
       mode: "family-subset",
       reason: "producing-module / network-verb public entry: sign(...) (or cmp transfer(...)) wraps its _impl in Promise.resolve().then() so a config-time throw rejects the promise rather than throwing synchronously; a three-line async-boundary wrapper with nothing to extract.",
     },
@@ -1817,6 +1848,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/ct.js:fetchLogList",
         "lib/cmp-verify.js:_verify",
         "lib/cmp-session.js:session",
+        "lib/cmc-build.js:_certReqIdOf", "lib/cmc-build.js:_claimRawElement",
+        "lib/cmc-build.js:_asBigInt",
+        "lib/cms-sign.js:_dedupe", "lib/pki-build.js:skiKeyId",
+        "lib/cmp-build.js:_classifyCmpResponse", "lib/x509-sign.js:_hasCriticalSan",
       ],
       mode: "family-subset",
       reason: "producing-module structural-encoder + orchestrator bodies -- each encodes a different ASN.1 structure with the shared `build children[], push present optionals, return b.sequence` combinator glue plus the `Promise.resolve().then(_sign/_build)` async-boundary wrapper and the shared signOverTbs + assertSignatureVerifies + emit tail; the ct fetch verb shares the same validate-opts + async-orchestrate shingle (it composes rather than encodes, but the glue tokens coincide), cmp-verify's _verify shares the opts-key-whitelist + Promise.resolve().then async-boundary + ProtectedPart b.sequence glue (the verify-side orchestrator), and cmp-session's `session` constructor shares the same opts-key-whitelist + guard.limits.cap budget glue (the transaction-orchestrator constructor). The structures differ per domain and the glue is the pki-build / sign-scheme surface, not further extractable.",
@@ -2533,6 +2568,45 @@ function testConstantTimeCompareShortCircuited() {
   _report("no constant-time compare is short-circuited by &&/|| (codebase-wide)", bad);
 }
 
+// class: asn1-reader-does-not-exist
+//
+// A call to `asn1.read.<name>` naming a reader the codec does not export. The
+// invariant: every leaf read goes through a reader that exists, so a decode path
+// fails with the toolkit's typed PkiError rather than a raw TypeError.
+//
+// This shape is worth a detector precisely because nothing else catches it. It is
+// not a syntax error, eslint sees a normal property access, and the call throws
+// only when that exact branch executes -- so an OPTIONAL field decoded by a
+// mistyped reader ships green through every gate until a peer sends the field. A
+// raw `TypeError: asn1.read.utf8 is not a function` from a parser is also a
+// fuzz-contract violation (hostile bytes may only succeed or throw a PkiError) and
+// leaves a caller unable to tell malformed input from a broken decoder.
+//
+// DERIVED, so it cannot drift: the set of valid names is read OFF pki.asn1.read at
+// run time rather than duplicated here, which means a reader added or removed
+// tomorrow needs no edit, and a NEW format module typing `read.bmpString` is caught
+// on its first commit.
+function testAsn1ReaderExists() {
+  var real = Object.keys(require("../../lib/asn1-der").read);
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = path.relative(REPO_ROOT, f);
+    var src = fs.readFileSync(f, "utf8");
+    // Comments stripped so a doc block naming a reader does not count as a call.
+    var body = src.replace(/\/\*[\s\S]*?\*\//g, " ").replace(/\/\/[^\n]*/g, " ");
+    var re = /\basn1\.read\.([A-Za-z_$][\w$]*)/g;
+    var m;
+    while ((m = re.exec(body))) {
+      if (real.indexOf(m[1]) !== -1) continue;
+      bad.push({ file: rel, line: body.slice(0, m.index).split("\n").length,
+        content: "asn1-reader-does-not-exist: asn1.read." + m[1] + " is not exported by the codec, so this " +
+          "decode throws a raw TypeError instead of a typed PkiError. Readers are: " + real.join(" ") });
+    }
+  });
+  bad = _filterMarkers(bad, "asn1-reader-does-not-exist");
+  _report("every asn1.read.<name> call names a reader the codec actually exports", bad);
+}
+
 function testEveryGuardEnforced() {
   // class: guard-without-enforcement
   // Anti-drift META-check -- the guard-family analog of the @primitive comment-
@@ -2870,6 +2944,7 @@ function run() {
   testGuardShapeReinlined();
   testRawSecretExportIsWiped();
   testConstantTimeCompareShortCircuited();
+  testAsn1ReaderExists();
   testEveryGuardEnforced();
   testGuardErrorFactoryNotClass();
   testValidatorShapeReinlined();

@@ -80,6 +80,19 @@ async function testDetached() {
   check("detached + wrong content -> message-digest-mismatch", bad.signers[0].code === "cms/message-digest-mismatch");
   check("detached + wrong content -> still names the signer cert", Buffer.isBuffer(bad.signers[0].cert));
 
+  // A detached signature's external content is the whole of what the signature speaks about, and
+  // the digest over it is computed in a later promise turn while the buffer stays caller-owned.
+  // Rewriting it in that gap must not change the verdict: otherwise a caller holding the
+  // replacement would be told the signature covered it. The certificates a caller supplies carry
+  // the same exposure one level down -- the parse surfaces the signed portion and the public key
+  // as views into those buffers, and both are read after the same yield.
+  var racedContent = Buffer.from(CONTENT);
+  var racedPromise = pki.cms.verify(fx("rsa-detached.p7s"), { content: racedContent });
+  racedContent.fill(0);
+  check("detached content rewritten after the call still verifies as passed (TOCTOU)",
+    (await racedPromise).valid === true);
+
+
   await rejects("detached + no content", function () { return pki.cms.verify(fx("rsa-detached.p7s")); }, "cms/detached-content-required");
 
   // a Uint8Array (not just a Buffer) is accepted as the detached content.
@@ -559,7 +572,41 @@ async function testMlDsaVerify() {
   check("R15 no-attrs ML-DSA ignores a present digestAlgorithm parameter", (await pki.cms.verify(m15, { content: CONTENT })).valid === true);
 }
 
+// The result must describe the bytes the signature was checked against. verify()
+// parses synchronously and verifies in a later promise turn, so a caller's buffer
+// rewritten in that gap must not be able to yield a valid result over content the
+// signature never covered -- the accidental form of this is a pooled read buffer
+// recycled across concurrent verifies, not an attacker.
+async function testParseVerifyReadSameBytes() {
+  var der = await pki.cms.sign(Buffer.from("the bytes that were actually signed"), makeSigner("ec-p256"));
+
+  var raced = Buffer.from(der);
+  var out = null, err = null;
+  var p = pki.cms.verify(raced);
+  raced.fill(0x41);                       // rewritten on the very next line
+  try { out = await p; } catch (e) { err = e; }
+
+  // Without the private copy the overwrite lands on the very bytes the signature
+  // covers, so this comes back invalid or throws. Passing means parse and verify
+  // both read memory the caller can no longer reach.
+  check("TOCTOU. a buffer rewritten between parse and verify does not affect the verdict",
+    err === null && out.valid === true && out.signers.length === 1);
+
+  // ...for EVERY byte form the parser accepts, not just the two most common. A
+  // BufferSource reaches the decoder, so an ArrayBuffer or a DataView left aliased
+  // would reopen the window for exactly the inputs that came in by the wider door.
+  var ab = new ArrayBuffer(der.length);
+  new Uint8Array(ab).set(der);
+  var viewOut = null, viewErr = null;
+  var vp = pki.cms.verify(new DataView(ab));
+  new Uint8Array(ab).fill(0x41);
+  try { viewOut = await vp; } catch (e) { viewErr = e; }
+  check("TOCTOU. a DataView's backing buffer rewritten after the call is equally ineffective",
+    viewErr === null && viewOut.valid === true);
+}
+
 async function run() {
+  await testParseVerifyReadSameBytes();
   await testAcceptKats();
   await testMultiSigner();
   await testSignerIdentifier();

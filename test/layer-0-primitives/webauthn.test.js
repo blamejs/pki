@@ -68,6 +68,38 @@ function attObjOf(fmt, attStmtPairs, authData) {
   return cMap([[cText("fmt"), cText(fmt)], [cText("attStmt"), cMap(attStmtPairs)], [cText("authData"), cBytes(authData)]]);
 }
 
+// ---- fixtures for the ceremony / assertion vectors --------------------------------------------
+var nodeCrypto = require("crypto");
+function _sha256(b) { return nodeCrypto.createHash("sha256").update(b).digest(); }
+function _u16(n) { var b = Buffer.alloc(2); b.writeUInt16BE(n); return b; }
+function _u32(n) { var b = Buffer.alloc(4); b.writeUInt32BE(n); return b; }
+function _b64url(b) { return Buffer.from(b).toString("base64").replace(/=+$/, "").replace(/\+/g, "-").replace(/\//g, "_"); }
+// One real P-256 keypair, and the COSE_Key that names its public half -- so an assertion vector
+// signs with the key the credential declares rather than asserting over a fixture nobody can check.
+var _EC_KP = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+var _EC_JWK = _EC_KP.publicKey.export({ format: "jwk" });
+var _EC_COSE = coseKey([cKV(1, cInt(2)), cKV(3, cInt(-7)), cKV(-1, cInt(1)),
+  cKV(-2, cBytes(Buffer.from(_EC_JWK.x, "base64url"))), cKV(-3, cBytes(Buffer.from(_EC_JWK.y, "base64url")))]);
+// A bare authenticatorData, the shape an ASSERTION returns: no attestedCredentialData, so the AT
+// flag is clear and the buffer is exactly the 37-byte header.
+function _assertAuthData(o) {
+  o = o || {};
+  var flags = (o.up === false ? 0 : 0x01) | (o.uv ? 0x04 : 0) | (o.ed ? 0x80 : 0);
+  return Buffer.concat([_sha256(Buffer.from(o.rpId || "example.com", "utf8")),
+    Buffer.from([flags]), _u32(o.signCount === undefined ? 9 : o.signCount)]);
+}
+function _clientDataJson(o) {
+  o = o || {};
+  var doc = { type: o.type || "webauthn.get", challenge: _b64url(o.challenge || Buffer.alloc(16, 4)),
+    origin: o.origin || "https://example.com" };
+  if (o.crossOrigin !== undefined) doc.crossOrigin = o.crossOrigin;
+  return Buffer.from(JSON.stringify(doc), "utf8");
+}
+function _assertSig(authData, clientDataJSON) {
+  return nodeCrypto.sign("sha256", Buffer.concat([authData, _sha256(clientDataJSON)]),
+    { key: _EC_KP.privateKey, dsaEncoding: "der" });
+}
+
 async function run() {
   // --- parseAttestationObject: the structural entry over strict pki.cbor ---
   var p = pki.webauthn.parseAttestationObject(attObj("packed"));
@@ -94,7 +126,7 @@ async function run() {
 
   // --- verify: the packed x5c attestation signature verifies over the KAT ---
   var v = await pki.webauthn.verify(attObj("packed"), clientHash("packed"), {});
-  check("verify: packed KAT verifies (verified true)", v.verified === true);
+  check("verify: packed KAT verifies (verified true)", v.attestationVerified === true);
   check("verify: packed reports fmt + attestation type + trust path", v.fmt === "packed" && typeof v.attestationType === "string" && Array.isArray(v.trustPath));
   check("verify: packed surfaces the aaguid + credentialPublicKey", Buffer.isBuffer(v.aaguid) && v.credentialPublicKey);
 
@@ -103,7 +135,7 @@ async function run() {
   // credentialPublicKey checks all hold against captured authenticator output.
   for (var fmt of ["tpm", "apple", "fido_u2f", "android_key"]) {
     var res = await pki.webauthn.verify(attObj(fmt), clientHash(fmt), {});
-    check("verify: " + fmt + " KAT verifies (verified true)", res.verified === true);
+    check("verify: " + fmt + " KAT verifies (verified true)", res.attestationVerified === true);
     check("verify: " + fmt + " reports its attestation type", typeof res.attestationType === "string" && res.attestationType.length > 0);
     check("verify: " + fmt + " surfaces a non-empty trust path", Array.isArray(res.trustPath) && res.trustPath.length >= 1);
   }
@@ -143,7 +175,7 @@ async function run() {
     var cdh = crypto.createHash("sha256").update(Buffer.from(sv.clientDataJSON, "hex")).digest();
     var sr = await pki.webauthn.verify(Buffer.from(sv.attestationObject, "hex"), cdh, {});
     check("spec KAT: " + sv.name + " verifies (" + sv.expect.fmt + "/" + sv.expect.attestationType + "/alg " + sv.expect.alg + ")",
-      sr.verified === true && sr.fmt === sv.expect.fmt && sr.attestationType === sv.expect.attestationType &&
+      sr.attestationVerified === true && sr.fmt === sv.expect.fmt && sr.attestationType === sv.expect.attestationType &&
       sr.credentialPublicKey.alg === sv.expect.alg);
   }
   // The spec's android-key vector carries EMPTY authorization lists, so it does not
@@ -385,7 +417,7 @@ async function run() {
   // §8.7 -- the none format verifies with no statement (attestationType "None").
   var noneRes = await pki.webauthn.verify(attObjOf("none", [], realAuthData), packedHash);
   check("verify: none attestation verifies (attestationType None, empty trust path)",
-    noneRes.verified === true && noneRes.attestationType === "None" && noneRes.trustPath.length === 0);
+    noneRes.attestationVerified === true && noneRes.attestationType === "None" && noneRes.trustPath.length === 0);
   // §8.7 -- a non-empty none attStmt is rejected.
   check("verify: none attestation with a non-empty attStmt -> webauthn/bad-att-stmt",
     (await codeOfAsync(function () { return pki.webauthn.verify(attObjOf("none", [[cText("x"), cInt(1)]], realAuthData), packedHash); })) === "webauthn/bad-att-stmt");
@@ -528,6 +560,27 @@ async function run() {
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), _B.sequence([_B.integer(1n)])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
   check("verify: apple attestation nonce that is not an OCTET STRING -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), _B.sequence([_B.explicit(1, _B.integer(1n))])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // AppleAnonymousAttestation ::= SEQUENCE { nonce [1] EXPLICIT OCTET STRING } is a
+  // one-field SEQUENCE wrapping exactly one value. Reading the first child and ignoring
+  // the rest accepts a certificate carrying a second, unchecked value beside the nonce --
+  // and the whole point of this extension is that its content is what the attestation
+  // binds to. Arity is part of the declared shape, so it is enforced rather than skipped.
+  var realNonce = crypto.createHash("sha256").update(Buffer.concat([realAuthData, packedHash])).digest();
+  check("verify: apple extension with a trailing field beside the nonce is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint),
+        _B.sequence([_B.explicit(1, _B.octetString(realNonce)), _B.integer(7n)])), realAuthData), packedHash);
+    })) === "webauthn/bad-att-cert");
+  check("verify: apple extension whose [1] wrapper holds a second value is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint),
+        _B.sequence([_B.contextConstructed(1, Buffer.concat([_B.octetString(realNonce), _B.octetString(Buffer.alloc(4))]))])), realAuthData), packedHash);
+    })) === "webauthn/bad-att-cert");
+  check("verify: apple extension whose outer value is not a universal SEQUENCE is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint),
+        _B.set([_B.explicit(1, _B.octetString(realNonce))])), realAuthData), packedHash);
+    })) === "webauthn/bad-att-cert");
   // the certificate EC key must equal the credential key: curve params present + valid,
   // the declared curve equal, the point uncompressed, and X/Y equal (WebAuthn 8.8 item 30).
   check("verify: apple leaf EC key with no named-curve parameters -> webauthn/key-mismatch",
@@ -551,7 +604,7 @@ async function run() {
   var rsaMatchCert = appleCert(_B.raw(_rsa1.publicKey.export({ format: "der", type: "spki" })), rsaNonceExt);
   var rsaMatchRes = await pki.webauthn.verify(appleAtt(rsaMatchCert, rsaAuthData), packedHash);
   check("verify: apple leaf RSA key equal to an RSA credential key verifies (AnonCA)",
-    rsaMatchRes.verified === true && rsaMatchRes.fmt === "apple" && rsaMatchRes.attestationType === "AnonCA");
+    rsaMatchRes.attestationVerified === true && rsaMatchRes.fmt === "apple" && rsaMatchRes.attestationType === "AnonCA");
   var _rsa2Spki = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).publicKey.export({ format: "der", type: "spki" });
   check("verify: apple leaf RSA key different from the RSA credential key -> webauthn/key-mismatch",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_B.raw(_rsa2Spki), rsaNonceExt), rsaAuthData), packedHash); })) === "webauthn/key-mismatch");
@@ -565,7 +618,7 @@ async function run() {
   var _edAtt = attObjOf("packed", [[cText("alg"), cInt(-8)], [cText("sig"), cBytes(crypto.sign(null, Buffer.concat([_edAuthData, packedHash]), _ed.privateKey))]], _edAuthData);
   var edRes = await pki.webauthn.verify(_edAtt, packedHash);
   check("verify: a valid Ed25519 self-attestation verifies (Self)",
-    edRes.verified === true && edRes.fmt === "packed" && edRes.attestationType === "Self");
+    edRes.attestationVerified === true && edRes.fmt === "packed" && edRes.attestationType === "Self");
   // A valid Ed448 self-attestation (fully-specified alg -53) verifies the same way.
   var _ed4 = crypto.generateKeyPairSync("ed448");
   var _ed4X = Buffer.from(_ed4.publicKey.export({ format: "jwk" }).x, "base64url");
@@ -573,7 +626,7 @@ async function run() {
   var _ed4Att = attObjOf("packed", [[cText("alg"), cInt(-53)], [cText("sig"), cBytes(crypto.sign(null, Buffer.concat([_ed4AuthData, packedHash]), _ed4.privateKey))]], _ed4AuthData);
   var ed4Res = await pki.webauthn.verify(_ed4Att, packedHash);
   check("verify: a valid Ed448 self-attestation verifies (Self)",
-    ed4Res.verified === true && ed4Res.fmt === "packed" && ed4Res.attestationType === "Self");
+    ed4Res.attestationVerified === true && ed4Res.fmt === "packed" && ed4Res.attestationType === "Self");
 
   // ---- authenticatorData bounded reader: the sub-37-byte + ED-happy paths -----------
   // sec. 6.1 -- a well-formed attestation object whose authData byte string is under the
@@ -614,7 +667,7 @@ async function run() {
   var _okpNonce = nonceExtFor(_okpAuth, packedHash);
   var _okpMatch = await pki.webauthn.verify(appleAtt(appleCert(_B.raw(_okpKp.publicKey.export({ format: "der", type: "spki" })), _okpNonce), _okpAuth), packedHash);
   check("verify: apple leaf OKP key equal to the OKP credential key verifies (AnonCA)",
-    _okpMatch.verified === true && _okpMatch.fmt === "apple" && _okpMatch.attestationType === "AnonCA");
+    _okpMatch.attestationVerified === true && _okpMatch.fmt === "apple" && _okpMatch.attestationType === "AnonCA");
   var _okpOtherSpki = crypto.generateKeyPairSync("ed25519").publicKey.export({ format: "der", type: "spki" });
   check("verify: apple leaf OKP key different from the OKP credential key -> webauthn/key-mismatch",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(_B.raw(_okpOtherSpki), _okpNonce), _okpAuth), packedHash); })) === "webauthn/key-mismatch");
@@ -652,6 +705,286 @@ async function run() {
   await testAndroidSafetyNet();
   await testCompoundAttestation();
   await testTpmObjectAttributePolicy();
+  await testCeremonyBinding();
+  await testClientData();
+  await testAssertion();
+  await testCallerAnchors();
+}
+
+// ---- caller-supplied attestation anchors (WebAuthn sec. 7.1 step 22-23) -----------------------
+// The metadata route resolves an authenticator's roots from the catalogue that registered it, which
+// is the stronger source -- but it reaches only the models the catalogue lists. Apple does not
+// publish its authenticators to the FIDO Metadata Service and the Google hardware-attestation roots
+// come from Google, so for those formats the catalogue resolves nothing and a trust path would come
+// back unchecked with no parameter to pin it.
+async function testCallerAnchors() {
+  var u2f = await require("../helpers/mds-blob").mintU2fAttestation();
+  var other = await require("../helpers/mds-blob").mintU2fAttestation();
+  var T = new Date("2026-06-01T00:00:00Z");
+
+  var unanchored = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { time: T });
+  check("anchors: with neither route asked for, the verdict SAYS the path was not anchored",
+    unanchored.attestationVerified === true && unanchored.anchoredTo === null);
+
+  var pinned = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: [u2f.rootDer], time: T });
+  check("anchors: a trust path that validates to a caller-supplied root is anchored, and says so",
+    pinned.attestationVerified === true && pinned.anchoredTo === "rootCertificates");
+
+  check("anchors: a root the path does not chain to is refused, not ignored",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { rootCertificates: [other.rootDer], time: T });
+    })) !== "NO-THROW");
+
+  // The pinned roots are read AFTER the attestation verifier resolves, so they stay
+  // caller-owned across a promise turn. Both the array and each DER buffer are copied
+  // synchronously at entry: without that, a caller recycling the array or overwriting a
+  // certificate's bytes in the gap has the attestation anchored against the REPLACEMENT
+  // roots while the verdict still reports anchoredTo: "rootCertificates". Mutate both,
+  // the way a pooled buffer would, and the verdict must still describe the pin as given.
+  var mutableRootBytes = Buffer.from(u2f.rootDer);
+  var mutableRootArray = [mutableRootBytes];
+  var racedPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: mutableRootArray, time: T });
+  mutableRootArray[0] = other.rootDer;          // swap the array slot
+  mutableRootArray.push(other.rootDer);         // and grow the array
+  mutableRootBytes.fill(0);                     // and destroy the bytes it pointed at
+  var raced = await racedPromise;
+  check("anchors: pinned roots mutated after the call still anchor to what was passed (TOCTOU)",
+    raced.attestationVerified === true && raced.anchoredTo === "rootCertificates");
+
+  // The two byte ARGUMENTS are caller-owned across the same gap. The attestation statement is not
+  // evaluated until a later turn, and the parse surfaces its fields as views, so destroying either
+  // buffer after the call must not change the verdict -- nor produce one at all if the bytes were
+  // being read live. The clientDataHash is the binding to this ceremony: a signature checked
+  // against a rewritten hash is a signature over a challenge and origin nobody agreed to.
+  var mutableAtt = Buffer.from(u2f.attestationObject);
+  var mutableCdh = Buffer.from(u2f.clientDataHash);
+  var racedArgsPromise = pki.webauthn.verify(mutableAtt, mutableCdh,
+    { rootCertificates: [u2f.rootDer], time: T });
+  mutableAtt.fill(0);
+  mutableCdh.fill(0);
+  var racedArgs = await racedArgsPromise;
+  check("anchors: an attestationObject destroyed after the call still verifies as passed (TOCTOU)",
+    racedArgs.attestationVerified === true);
+  check("anchors: a clientDataHash destroyed after the call still binds as passed (TOCTOU)",
+    racedArgs.anchoredTo === "rootCertificates" &&
+    Buffer.isBuffer(racedArgs.credentialId) && racedArgs.credentialId.length > 0);
+
+  // The documented parsed-certificate form is caller-owned too, and the anchor comparison reads its
+  // nested subject / subjectPublicKeyInfo buffers. Copying only the array would leave those aliased,
+  // so rewriting the parsed object's key bytes after the call must not change what it anchors to.
+  // Parsed from a PRIVATE copy of the root: the parser surfaces byte ranges as views into its
+  // input, so mutating them below would otherwise corrupt the shared fixture for every later check.
+  var parsedRoot = pki.schema.x509.parse(Buffer.from(u2f.rootDer));
+  var parsedPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: [parsedRoot], time: T });
+  if (parsedRoot.subjectPublicKeyInfo && Buffer.isBuffer(parsedRoot.subjectPublicKeyInfo.bytes)) {
+    parsedRoot.subjectPublicKeyInfo.bytes.fill(0);
+  }
+  if (Buffer.isBuffer(parsedRoot.tbsBytes)) parsedRoot.tbsBytes.fill(0);
+  var parsedRaced = await parsedPromise;
+  check("anchors: a parsed root mutated after the call still anchors to what was passed (TOCTOU)",
+    parsedRaced.attestationVerified === true && parsedRaced.anchoredTo === "rootCertificates");
+
+  // The ROUTING is captured with the roots, not read live. Snapshotting the material while
+  // still branching on `opts.rootCertificates` would leave the choice of trust policy aliased:
+  // deleting the property after the call would take the "nobody asked to anchor" branch and
+  // report anchoredTo null for a caller that DID pin roots -- an unanchored path described as
+  // an intentional one. Which policy runs is fixed at the same instant as what it runs on.
+  var routeOpts = { rootCertificates: [u2f.rootDer], time: T };
+  var routePromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, routeOpts);
+  delete routeOpts.rootCertificates;
+  var routed = await routePromise;
+  check("anchors: deleting rootCertificates after the call cannot downgrade the verdict to unanchored",
+    routed.attestationVerified === true && routed.anchoredTo === "rootCertificates");
+
+  // And the inverse: adding the option after the call must not select a pinned-roots policy
+  // that had nothing captured to anchor against.
+  var lateOpts = { time: T };
+  var latePromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, lateOpts);
+  lateOpts.rootCertificates = [other.rootDer];
+  var lateRouted = await latePromise;
+  check("anchors: adding rootCertificates after the call cannot select a policy that was never asked for",
+    lateRouted.attestationVerified === true && lateRouted.anchoredTo === null);
+
+  // The same capture covers the OTHER routing test and the validation instant, neither of
+  // which had been reported: deleting opts.metadata after the call must not divert a
+  // metadata-governed verification onto the pinned-roots branch, and moving opts.time must
+  // not change the instant the trust path is judged at. Every field the deferred path reads
+  // is captured together, so none of these is a separate repair.
+  // The catalogue must genuinely GOVERN this authenticator, or the assertion cannot tell a
+  // routing swap from the documented miss-fallback: both would land on rootCertificates. A
+  // U2F authenticator declares no model identity, so it is listed by its attestation
+  // certificate's key identifier, and its entry registers the root its path actually reaches.
+  var u2fKid = require("../../lib/webauthn-mds.js").certKeyIdentifier(pki.schema.x509.parse(u2f.attCertDer));
+  var govFixture = await require("../helpers/mds-blob").mint({ aaguid: null, keyIdentifiers: [u2fKid],
+    anchors: [u2f.rootDer.toString("base64")] });
+  var govVerified = await pki.webauthn.verifyMetadataBlob(govFixture.blob,
+    { rootCertificates: [govFixture.rootDer], time: T });
+  check("anchors: the catalogue governs this authenticator (so the next check can discriminate)",
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+      { metadata: govVerified, time: T })).anchoredTo === "metadata");
+  var swapOpts = { metadata: govVerified, rootCertificates: [u2f.rootDer], time: T };
+  var swapPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, swapOpts);
+  delete swapOpts.metadata;                       // try to divert onto the pinned-roots branch
+  var swapped = await swapPromise;
+  check("anchors: deleting metadata after the call cannot divert off the catalogue branch",
+    swapped.anchoredTo === "metadata");
+
+  var timeOpts = { rootCertificates: [u2f.rootDer], time: new Date(T.getTime()) };
+  var timePromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, timeOpts);
+  timeOpts.time = new Date("1990-01-01T00:00:00Z");   // an instant the chain is not valid at
+  var timeRouted = await timePromise;
+  check("anchors: moving opts.time after the call cannot change the instant the path is judged at",
+    timeRouted.attestationVerified === true && timeRouted.anchoredTo === "rootCertificates");
+
+  // The reverse direction: a pin that should NOT chain cannot be rescued by swapping in a
+  // good root after the call, either.
+  var swapToGood = [Buffer.from(other.rootDer)];
+  var badPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: swapToGood, time: T });
+  swapToGood[0] = u2f.rootDer;
+  check("anchors: swapping in a chaining root after the call does not rescue a bad pin",
+    (await (async function () { try { await badPromise; return "NO-THROW"; } catch (e) { return e.code; } })()) !== "NO-THROW");
+
+  // `none` and self-attestation carry no certificates. A caller who asked for anchoring is told it
+  // could not be applied rather than handed a pass that reads as though it had been.
+  // The KAT's own authenticatorData, so the `none` attestation is otherwise valid and
+  // the verdict under test is the anchoring one rather than a key-decode failure.
+  var realAuth = pki.webauthn.parseAttestationObject(attObj("packed")).authDataBytes;
+  check("anchors: an attestation with no trust path reports that anchoring could not be applied",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("none", [], realAuth), clientHash("packed"),
+        { rootCertificates: [u2f.rootDer] });
+    })) === "webauthn/anchor-not-applicable");
+
+  // Both routes together is the ordinary configuration for a relying party that accepts MDS-listed
+  // authenticators AND Apple. The precedence is stated: metadata governs when it is present.
+  var meta = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [u2f.rootDer.toString("base64")],
+    keyIdentifiers: [require("../../lib/webauthn-mds").certKeyIdentifier(unanchored.trustPath[unanchored.trustPath.length - 1])] });
+  var verifiedMeta = await pki.webauthn.verifyMetadataBlob(meta.blob, { rootCertificates: [meta.rootDer], time: T });
+  var both = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { metadata: verifiedMeta, rootCertificates: [other.rootDer], time: T });
+  check("anchors: metadata governs when both routes are supplied, and the verdict names which ran",
+    both.anchoredTo === "metadata" && !!both.metadata);
+
+  // A compound element carrying no certificates makes no attestation claim, so it is
+  // not a reason to refuse the statement -- but `anchoredTo` alone would then read as
+  // "the whole statement is anchored" when one element was never covered. The
+  // coverage is reported rather than left to be assumed.
+  check("anchors: a single-format attestation reports 1 of 1 elements anchored",
+    pinned.anchoredElements.total === 1 && pinned.anchoredElements.anchored === 1);
+
+  // ...and the combined configuration has to WORK for the models it was added to
+  // reach. Apple is in no catalogue, so a metadata MISS falling through to the
+  // pinned roots is the whole point of supplying both.
+  var otherMeta = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [other.rootDer.toString("base64")], keyIdentifiers: ["00".repeat(20)] });
+  var verifiedOther = await pki.webauthn.verifyMetadataBlob(otherMeta.blob,
+    { rootCertificates: [otherMeta.rootDer], time: T });
+  var missed = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { metadata: verifiedOther, rootCertificates: [u2f.rootDer], time: T });
+  check("anchors: a model the catalogue does not list falls through to the pinned roots",
+    missed.attestationVerified === true && missed.anchoredTo === "rootCertificates");
+
+  check("anchors: ...but a catalogue MISS with no pinned roots is still a refusal",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { metadata: verifiedOther, time: T });
+    })) === "webauthn/metadata-not-found");
+
+  // A catalogue DENIAL is not a miss. If the model IS listed and its entry
+  // disqualifies it, a static pin must not overrule the stronger source -- otherwise
+  // supplying roots would quietly downgrade every revoked model to trusted.
+  var revoked = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [u2f.rootDer.toString("base64")],
+    keyIdentifiers: [require("../../lib/webauthn-mds").certKeyIdentifier(unanchored.trustPath[unanchored.trustPath.length - 1])],
+    statusReports: [{ status: "REVOKED", effectiveDate: "2026-01-01" }] });
+  var verifiedRevoked = await pki.webauthn.verifyMetadataBlob(revoked.blob,
+    { rootCertificates: [revoked.rootDer], time: T });
+  check("anchors: a LISTED but disqualified model does not fall through to pinned roots",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { metadata: verifiedRevoked, rootCertificates: [u2f.rootDer], time: T });
+    })) === "webauthn/metadata-status");
+
+  // A status report is judged AT the validation instant, not merely by existing. A revocation
+  // scheduled for a date after the instant being verified has not taken effect yet, so it must
+  // not deny -- and the same entry must deny once the instant reaches it. Both directions are
+  // asserted because only the pair distinguishes a live effective-date comparison from one
+  // reading an unset instant, which would filter nothing and revoke everything immediately.
+  var scheduled = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [u2f.rootDer.toString("base64")],
+    keyIdentifiers: [require("../../lib/webauthn-mds").certKeyIdentifier(unanchored.trustPath[unanchored.trustPath.length - 1])],
+    statusReports: [{ status: "REVOKED", effectiveDate: "2027-01-01" }] });
+  var verifiedScheduled = await pki.webauthn.verifyMetadataBlob(scheduled.blob,
+    { rootCertificates: [scheduled.rootDer], time: T });
+  check("anchors: a revocation dated after the validation instant has not taken effect",
+    (await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+      { metadata: verifiedScheduled, time: T })).attestationVerified === true);
+  check("anchors: the same entry denies once the validation instant reaches its effective date",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { metadata: verifiedScheduled, time: new Date("2027-06-01T00:00:00Z") });
+    })) === "webauthn/metadata-status");
+}
+
+// ---- the ceremony boundary (WebAuthn sec. 7.1) ------------------------------------------------
+// An attestation statement being SOUND is not the same claim as a registration being ACCEPTABLE:
+// the statement says nothing about which relying party asked for it, or whether a user was there.
+// The verdict has to make that distinguishable, or a caller reading one boolean ships a passkey
+// verifier with no phishing resistance at all.
+async function testCeremonyBinding() {
+  // The reported case: an attestation naming ANOTHER relying party, with User Present and User
+  // Verified both clear. The statement is sound and the field says exactly that -- and no more.
+  var otherRp = _sha256(Buffer.from("attacker.example", "utf8"));
+  var hostile = Buffer.concat([otherRp, Buffer.from([0x40]), Buffer.alloc(4),
+    Buffer.alloc(16, 2), _u16(16), Buffer.alloc(16, 3), _EC_COSE]);
+  var hostileObj = attObjOf("none", [], hostile);
+  var unbound = await pki.webauthn.verify(hostileObj, clientHash("packed"), {});
+  check("binding: the verdict field is attestationVerified, never a bare `verified`",
+    unbound.attestationVerified === true && unbound.verified === undefined);
+  check("binding: with nothing asked for, every binding reports NOT checked",
+    unbound.bindingChecked.rpId === false && unbound.bindingChecked.userPresence === false &&
+    unbound.bindingChecked.userVerification === false && unbound.bindingChecked.algorithm === false);
+
+  check("binding: expectedRpId refuses an attestation made for another relying party",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { expectedRpId: "example.com" });
+    })) === "webauthn/rp-id-mismatch");
+  check("binding: requireUserPresence refuses a UP-clear response",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { requireUserPresence: true });
+    })) === "webauthn/user-presence-required");
+  check("binding: requireUserVerification refuses a UV-clear response",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { requireUserVerification: true });
+    })) === "webauthn/user-verification-required");
+  // COSE alg -65535 is RSASSA-PKCS1-v1_5 with SHA-1. Which algorithms are acceptable is the relying
+  // party's own pubKeyCredParams policy, and nothing in the response says what was offered -- so it
+  // is checked when the caller states the list, and reported when it was.
+  check("binding: allowedAlgorithms refuses a credential key outside the list",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(hostileObj, clientHash("packed"), { allowedAlgorithms: [-8] });
+    })) === "webauthn/algorithm-not-allowed");
+
+  // The matching relying party, with the flags the caller demanded actually set.
+  var good = Buffer.concat([_sha256(Buffer.from("example.com", "utf8")), Buffer.from([0x01 | 0x04 | 0x40]),
+    Buffer.from([0, 0, 0, 5]), Buffer.alloc(16, 2), _u16(16), Buffer.alloc(16, 3), _EC_COSE]);
+  var okRes = await pki.webauthn.verify(attObjOf("none", [], good), clientHash("packed"),
+    { expectedRpId: "example.com", requireUserPresence: true, requireUserVerification: true, allowedAlgorithms: [-7] });
+  check("binding: the bindings that ran are the ones reported",
+    okRes.bindingChecked.rpId === true && okRes.bindingChecked.userPresence === true &&
+    okRes.bindingChecked.userVerification === true && okRes.bindingChecked.algorithm === true);
+  // Everything a relying party must STORE to run a later login comes back from the call that
+  // verified the registration -- without them a login cannot be checked at all, and the caller
+  // would have to parse the attestation object a second time for values already decoded here.
+  check("binding: the verdict carries the credentialId, key and signCount a login needs",
+    Buffer.isBuffer(okRes.credentialId) && okRes.credentialId.length === 16 &&
+    okRes.signCount === 5 && okRes.flags.up === true && !!okRes.credentialPublicKey);
 }
 
 // ---- TPM object-attribute policy (TPM 2.0 Part 2 sec. 8.3, NOT WebAuthn sec. 8.3) ------------
@@ -667,7 +1000,7 @@ async function testTpmObjectAttributePolicy() {
 
   // Default off: with no tpmPolicy the verdict is what it was before this existed.
   var plain = await pki.webauthn.verify(ATT, CDH, {});
-  check("tpm policy: absent, the attestation verifies exactly as before", plain.verified === true && plain.attestationType === "AttCA");
+  check("tpm policy: absent, the attestation verifies exactly as before", plain.attestationVerified === true && plain.attestationType === "AttCA");
   // Surfacing is the load-bearing half -- an RP cannot apply policy to a field it never sees.
   check("tpm policy: the object attributes are surfaced as named booleans",
     plain.tpm.attributes.fixedTPM === true && plain.tpm.attributes.sign === true && plain.tpm.attributes.restricted === false);
@@ -676,7 +1009,7 @@ async function testTpmObjectAttributePolicy() {
 
   // The one defined preset holds on real hardware -- that is why those six bits are the preset.
   check("tpm policy: the hardware-bound profile accepts a genuine attestation",
-    (await withPolicy({ profile: "hardware-bound" })).verified === true);
+    (await withPolicy({ profile: "hardware-bound" })).attestationVerified === true);
   // A demanded bit the key does not have is refused, in both directions.
   check("tpm policy: a required-SET attribute the key lacks is refused",
     (await codeFor({ objectAttributes: { restricted: true } })) === "webauthn/tpm-policy");
@@ -711,19 +1044,19 @@ async function testTpmObjectAttributePolicy() {
 
   // Structural opt-ins, both satisfied by genuine hardware.
   check("tpm policy: the reserved-bit check passes on a genuine attestation",
-    (await withPolicy({ reservedBitsClear: true })).verified === true);
+    (await withPolicy({ reservedBitsClear: true })).attestationVerified === true);
   check("tpm policy: the consistency check passes on a genuine attestation",
-    (await withPolicy({ consistency: true })).verified === true);
+    (await withPolicy({ consistency: true })).attestationVerified === true);
 
   // authPolicy: this statement carries a real 32-octet digest.
   check("tpm policy: requiring a non-Empty authPolicy passes when one is present",
-    (await withPolicy({ authPolicy: { present: true } })).verified === true);
+    (await withPolicy({ authPolicy: { present: true } })).attestationVerified === true);
   check("tpm policy: an authPolicy allow-list containing the key's digest passes",
-    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy] } })).verified === true);
+    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy] } })).attestationVerified === true);
   check("tpm policy: an allow-list the digest is absent from is refused",
     (await codeFor({ authPolicy: { allow: [Buffer.alloc(32, 7)] } })) === "webauthn/tpm-policy");
   check("tpm policy: an allow-list entry may be a hex string",
-    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex")] } })).verified === true);
+    (await withPolicy({ authPolicy: { allow: [plain.tpm.authPolicy.toString("hex")] } })).attestationVerified === true);
   check("tpm policy: a non-array allow-list is a config-time fault",
     (await codeFor({ authPolicy: { allow: "deadbeef" } })) === "webauthn/bad-input");
   // A misspelled NESTED key would leave the allow-list unset and the policy silently doing
@@ -771,12 +1104,12 @@ async function testTpmObjectAttributePolicy() {
   })) !== "webauthn/tpm-policy") bypassRefused = false;
   // ... and that same `none` attestation still verifies when no TPM policy was asked for.
   check("tpm policy: a none attestation still verifies when no policy is requested",
-    (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), {})).verified === true);
+    (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), {})).attestationVerified === true);
   check("tpm policy: a non-TPM attestation cannot silently ignore a requested TPM policy", bypassRefused);
   // ... and the same policy on a genuine TPM attestation still verifies, so the dispatch gate
   // refuses the formats that cannot satisfy it without blocking the one that can.
   check("tpm policy: the gate does not block the format that can satisfy it",
-    (await withPolicy({ profile: "hardware-bound" })).verified === true);
+    (await withPolicy({ profile: "hardware-bound" })).attestationVerified === true);
   // Node's hex decoder stops at the first non-hex character and yields an empty buffer for a
   // non-string, so an unvalidated entry could decode into a digest the policy meant to exclude --
   // including the Empty Policy. Each entry is type- and shape-checked before it is decoded.
@@ -821,7 +1154,7 @@ async function testCompoundAttestation() {
   // sec. 8.9 bullet 2: a compound whose elements all verify returns a combined result.
   var okRes = await pki.webauthn.verify(compoundOf([PACKED, NONE]), clientHash("packed"), {});
   check("compound: a statement whose elements all verify returns a combined result",
-    okRes.verified === true && okRes.fmt === "compound" && okRes.attestationType === "Compound");
+    okRes.attestationVerified === true && okRes.fmt === "compound" && okRes.attestationType === "Compound");
   check("compound: each element's own verdict is surfaced in order",
     okRes.compound.length === 2 && okRes.compound[0].fmt === "packed" &&
     okRes.compound[0].attestationType === "Basic" && okRes.compound[1].fmt === "none");
@@ -859,7 +1192,7 @@ async function testCompoundAttestation() {
   var mixed = await mdsHelper.mintMixedCompound(MIXED_AAGUID);
   var mixedVerified = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash, {});
   check("compound: the mixed fixture verifies, with a path on each element",
-    mixedVerified.verified === true && mixedVerified.compound.length === 2 &&
+    mixedVerified.attestationVerified === true && mixedVerified.compound.length === 2 &&
     mixedVerified.compound[0].trustPath.length > 0 && mixedVerified.compound[1].trustPath.length > 0);
   // The catalogue lists the packed element's model by AAGUID and the u2f element's certificate by
   // key identifier -- each element under the identifier its own format actually signs. Both must
@@ -876,9 +1209,98 @@ async function testCompoundAttestation() {
   var mixedBound = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
     { metadata: mixedMd, time: new Date("2026-06-01T00:00:00Z") });
   check("compound: each element is looked up by the identifier its own format signs",
-    mixedBound.verified === true && mixedBound.metadata.entries.length === 2 &&
+    mixedBound.attestationVerified === true && mixedBound.metadata.entries.length === 2 &&
     mixedBound.metadata.entries[0].aaguid === MIXED_AAGUID &&
     mixedBound.metadata.entries[1].keyIdentifiers.indexOf(u2fKeyId) !== -1);
+
+  // An UNLISTED element must not launder a REVOKED sibling. The two governance failures are not
+  // equal: `metadata-not-found` is the one a caller may fall back to pinned roots on, and that
+  // fallback covers the whole statement. So if governance stopped at the first failing element, an
+  // element the catalogue does not list could raise the fallback error before a listed-but-revoked
+  // sibling is ever consulted -- and a compound's element order is not signed, so an attacker picks
+  // it. The denial must win from EITHER position, and it must win even when pinned roots that would
+  // otherwise accept the statement are supplied.
+  var pinnedFallback = { rootCertificates: [mixed.rootDer], time: new Date("2026-06-01T00:00:00Z") };
+  var revokedU2fOnly = await mdsHelper.mint({ entries: [
+    // the packed element's AAGUID is absent -> that element MISSES the catalogue
+    { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "REVOKED", effectiveDate: "2026-02-01" }],
+      metadataStatement: { attestationRootCertificates: [mixed.rootDer.toString("base64")] } },
+  ] });
+  var revokedMd = await pki.webauthn.verifyMetadataBlob(revokedU2fOnly.blob,
+    { rootCertificates: [revokedU2fOnly.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: an unlisted element cannot launder a revoked sibling into a pinned-root pass",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+        Object.assign({ metadata: revokedMd }, pinnedFallback));
+    })) === "webauthn/metadata-status");
+  // The same catalogue without the pinned-root fallback: still the denial, never the miss.
+  check("compound: the denial outranks the miss with no fallback offered either",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+        { metadata: revokedMd, time: new Date("2026-06-01T00:00:00Z") });
+    })) === "webauthn/metadata-status");
+  // Resolving an entry is only half of governance; the path must also VALIDATE to the roots that
+  // entry registers. Here the u2f element IS listed and healthy, but its entry registers a root its
+  // path does not reach, while the caller's pinned roots would accept it. If the miss on the packed
+  // element were reported before that chain check ran, the listed element would ride out on the
+  // fallback without ever satisfying its own catalogue anchors -- the same bypass one phase later.
+  var wrongAnchor = await mdsHelper.mint({ entries: [
+    { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [mdsFixture.rootDer.toString("base64")] } },
+  ] });
+  var wrongAnchorMd = await pki.webauthn.verifyMetadataBlob(wrongAnchor.blob,
+    { rootCertificates: [wrongAnchor.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: a listed element must reach ITS OWN registered roots before a sibling's miss falls back",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+        Object.assign({ metadata: wrongAnchorMd }, pinnedFallback));
+    })) !== "NO-THROW");
+
+  // The documented combined configuration -- MDS-listed authenticators AND a model the
+  // catalogue does not cover -- must WORK for a compound, not merely fail closed. Here the
+  // u2f element is listed and chains to the root its own entry registers, while the packed
+  // element is unlisted and is covered by the caller's pin. Falling the WHOLE statement back
+  // onto the pin would re-judge the listed element against roots that have nothing to do with
+  // it and refuse a conforming compound; the fallback applies only to what actually missed.
+  // The two elements must chain to DIFFERENT roots, or the assertion cannot discriminate: with
+  // one shared root the caller's pin also satisfies the listed element and a whole-statement
+  // fallback passes for the wrong reason. Here the u2f element chains to root2 (which its
+  // metadata entry registers) and the packed element to root1 (the caller's pin).
+  var split = await mdsHelper.mintMixedCompound(MIXED_AAGUID, true);
+  var splitU2fKid = require("../../lib/webauthn-mds.js").certKeyIdentifier(pki.schema.x509.parse(split.u2fCertDer));
+  var listedU2fOnly = await mdsHelper.mint({ aaguid: null, keyIdentifiers: [splitU2fKid],
+    anchors: [split.root2Der.toString("base64")] });
+  var listedU2fMd = await pki.webauthn.verifyMetadataBlob(listedU2fOnly.blob,
+    { rootCertificates: [listedU2fOnly.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var combined = await pki.webauthn.verify(split.attestationObject, split.clientDataHash,
+    { metadata: listedU2fMd, rootCertificates: [split.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: a listed element and an unlisted one can be anchored by their own routes",
+    combined.attestationVerified === true);
+  // And the coverage says so. Reporting only the fallback's own count would understate a
+  // statement whose elements were both anchored by different routes, and a caller enforcing
+  // anchored === total would reject exactly the configuration this supports.
+  check("compound: mixed-route coverage reports every element as anchored, not just the fallback's",
+    combined.anchoredElements.total === 2 && combined.anchoredElements.anchored === 2);
+  // And the verdict names BOTH routes and keeps the governed entries. Reporting only
+  // "rootCertificates" would attribute the whole evaluation to the weaker half and drop the
+  // catalogue entry that governed the listed element -- the part an auditor most needs.
+  check("compound: a mixed-route verdict names both routes",
+    combined.anchoredTo === "metadata+rootCertificates");
+  check("compound: a mixed-route verdict keeps the metadata entries that governed",
+    !!combined.metadata && Array.isArray(combined.metadata.entries) && combined.metadata.entries.length === 1);
+
+  // And a compound where EVERY element misses still reports the miss, so the documented
+  // pinned-roots fallback for models the catalogue does not cover keeps working.
+  var listsNeither = await mdsHelper.mint({ entries: [
+    { aaguid: "99999999-9999-9999-9999-999999999999", statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [] } },
+  ] });
+  var neitherMd = await pki.webauthn.verifyMetadataBlob(listsNeither.blob,
+    { rootCertificates: [listsNeither.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  var allMissed = await pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+    Object.assign({ metadata: neitherMd }, pinnedFallback));
+  check("compound: when no element is listed at all, the pinned-roots fallback still applies",
+    allMissed.attestationVerified === true && allMissed.anchoredTo === "rootCertificates");
 
   // A compound whose elements carry no certificate at all genuinely has nothing to anchor, and
   // that IS the not-applicable case -- so the distinction is drawn on the elements, not on the
@@ -1024,7 +1446,7 @@ async function testAndroidSafetyNet() {
   // sec. 8.5 bullet 5: a statement that satisfies every bind returns Basic with the x5c trust path.
   var okRes = await codeFor({});
   check("safetynet: a well-formed statement verifies as Basic with the x5c trust path",
-    okRes && okRes.verified === true && okRes.fmt === "android-safetynet" &&
+    okRes && okRes.attestationVerified === true && okRes.fmt === "android-safetynet" &&
     okRes.attestationType === "Basic" && okRes.trustPath.length === 2);
 
   // A stored response's service chain has usually expired by the time the registration is examined,
@@ -1041,6 +1463,13 @@ async function testAndroidSafetyNet() {
     { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer] });
   check("safetynet: the instant the chain was judged at is surfaced",
     snRes.chainValidatedAt instanceof Date && snRes.chainValidatedAt.getTime() === Date.UTC(2020, 5, 1));
+  // This attestation's x5c chain WAS validated -- against opts.safetyNetRoots, which the format
+  // requires -- so a verdict of `anchoredTo: null` would say the path went unchecked, and a caller
+  // enforcing `anchoredTo !== null` would refuse an attestation that is in fact anchored.
+  check("safetynet: the route that anchored the path is named, not reported as unchecked",
+    snRes.anchoredTo === "safetyNetRoots");
+  check("safetynet: coverage is reported for the route that ran",
+    !!snRes.anchoredElements && snRes.anchoredElements.total === 1 && snRes.anchoredElements.anchored === 1);
   // android-safetynet binds the whole authenticatorData (the nonce is its digest), so the AAGUID is
   // signed and the entry is keyed by it.
   var snAaguid = snRes.aaguid.toString("hex").replace(/^(.{8})(.{4})(.{4})(.{4})(.{12})$/, "$1-$2-$3-$4-$5");
@@ -1052,7 +1481,12 @@ async function testAndroidSafetyNet() {
   // from signed data rather than to "now" -- against which this chain expired years ago.
   check("safetynet: metadata binds a stored response at the instant its own format judged it",
     (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
-      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).verified === true);
+      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).attestationVerified === true);
+  // A second route does not erase the first: both anchored this path, and both are named.
+  check("safetynet: metadata does not displace the format's own anchoring route",
+    (await pki.webauthn.verify(snStored.attObj, snStored.cdh,
+      { verifySafetyNetJws: true, safetyNetRoots: [snStored.rootDer], metadata: snMd })).anchoredTo
+      === "metadata+safetyNetRoots");
 
   // Each bind, broken one at a time.
   check("safetynet: a nonce not bound to this registration is refused (bullet 3)",
@@ -1125,7 +1559,7 @@ async function testAndroidSafetyNet() {
   var histRes = await pki.webauthn.verify(past.attObj, past.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [past.rootDer] });
   check("safetynet: a stored attestation whose chain has since expired still verifies at its signed time",
-    histRes.verified === true);
+    histRes.attestationVerified === true);
   check("safetynet: an explicit opts.time overrides the signed timestamp and refuses out of window",
     (await codeOfAsync(function () {
       return pki.webauthn.verify(past.attObj, past.cdh,
@@ -1138,7 +1572,7 @@ async function testAndroidSafetyNet() {
   // they are surfaced, and a caller that asks for enforcement gets it.
   var failedCts = await codeFor({ payloadExtra: { ctsProfileMatch: false, basicIntegrity: false } });
   check("safetynet: a device that failed the compatibility suite still verifies per sec. 8.5",
-    failedCts && failedCts.verified === true);
+    failedCts && failedCts.attestationVerified === true);
   check("safetynet: ... and the failing signals are surfaced for relying-party policy",
     failedCts.safetyNet.ctsProfileMatch === false && failedCts.safetyNet.basicIntegrity === false);
   check("safetynet: a passing device surfaces its signals too",
@@ -1148,7 +1582,7 @@ async function testAndroidSafetyNet() {
   check("safetynet: opts.requireCtsProfileMatch refuses a response that omits the signal",
     (await codeFor({ payloadOmit: ["ctsProfileMatch"] }, { requireCtsProfileMatch: true })) === "webauthn/safetynet-cts-profile");
   check("safetynet: opts.requireCtsProfileMatch accepts a device that passed",
-    (await codeFor({}, { requireCtsProfileMatch: true })).verified === true);
+    (await codeFor({}, { requireCtsProfileMatch: true })).attestationVerified === true);
   check("safetynet: a non-boolean requireCtsProfileMatch is a config-time fault",
     (await codeFor({}, { requireCtsProfileMatch: "yes" })) === "webauthn/bad-input");
 
@@ -1177,12 +1611,12 @@ async function testAndroidSafetyNet() {
   // host ONLY in its SAN must verify, and one naming it only in a commonName it contradicts must not.
   var sanOnly = await codeFor({ cn: "wrong.example" });
   check("safetynet: a leaf naming the host in its SAN verifies even when the commonName differs",
-    sanOnly && sanOnly.verified === true);
+    sanOnly && sanOnly.attestationVerified === true);
   check("safetynet: a SAN that names another host is refused even when the commonName is right",
     (await codeFor({ hostname: "other.example", cn: "attest.android.com" })) === "webauthn/safetynet-bad-hostname");
   var noSanOk = await codeFor({ noSan: true });
   check("safetynet: a leaf naming the host only in its commonName verifies",
-    noSanOk && noSanOk.verified === true && noSanOk.attestationType === "Basic");
+    noSanOk && noSanOk.attestationVerified === true && noSanOk.attestationType === "Basic");
   check("safetynet: a leaf whose commonName is another host is refused",
     (await codeFor({ noSan: true, hostname: "other.example" })) === "webauthn/safetynet-bad-hostname");
   // opts.time is optional; omitted, the chain is checked against now rather than the check being
@@ -1191,12 +1625,12 @@ async function testAndroidSafetyNet() {
   var noTime = await mint({});
   var noTimeRes = await pki.webauthn.verify(noTime.attObj, noTime.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [noTime.rootDer] });
-  check("safetynet: with no opts.time a currently-valid chain verifies", noTimeRes.verified === true);
+  check("safetynet: with no opts.time a currently-valid chain verifies", noTimeRes.attestationVerified === true);
   // A root may be handed over already parsed, not only as DER.
   var parsedRoot = await mint({});
   var parsedRes = await pki.webauthn.verify(parsedRoot.attObj, parsedRoot.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [pki.schema.x509.parse(parsedRoot.rootDer)], time: SN_TIME });
-  check("safetynet: a root supplied as a parsed certificate is accepted", parsedRes.verified === true);
+  check("safetynet: a root supplied as a parsed certificate is accepted", parsedRes.attestationVerified === true);
   check("safetynet: a root that is neither DER nor a certificate is a config-time fault",
     (await codeFor({}, { safetyNetRoots: [{}] })) === "webauthn/bad-input");
   // Several anchors are tried in turn, so a caller holding a rotation set is not forced to guess
@@ -1205,10 +1639,191 @@ async function testAndroidSafetyNet() {
   var spare = await mint({});
   var firstOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [multi.rootDer, spare.rootDer], time: SN_TIME });
-  check("safetynet: the first matching root of several ends the search", firstOk.verified === true);
+  check("safetynet: the first matching root of several ends the search", firstOk.attestationVerified === true);
   var secondOk = await pki.webauthn.verify(multi.attObj, multi.cdh,
     { verifySafetyNetJws: true, safetyNetRoots: [spare.rootDer, multi.rootDer], time: SN_TIME });
-  check("safetynet: a later root in the list still anchors the chain", secondOk.verified === true);
+  check("safetynet: a later root in the list still anchors the chain", secondOk.attestationVerified === true);
+}
+
+// ---- clientDataJSON (WebAuthn sec. 5.8.1 / 7.1 / 7.2) -----------------------------------------
+// The half of a response the signature covers by DIGEST and no signature check ever looks inside.
+// These are attacker-chosen bytes, so the parse is fail-closed; the comparisons are the relying
+// party's own state, so they run when the caller supplies it and say so when they did.
+async function testClientData() {
+  var cd = _clientDataJson({});
+  var parsed = pki.webauthn.parseClientData(cd);
+  check("clientData: type / origin / crossOrigin come back as they were",
+    parsed.type === "webauthn.get" && parsed.origin === "https://example.com" && parsed.crossOrigin === false);
+  check("clientData: the challenge comes back DECODED, so a caller compares bytes not spellings",
+    Buffer.isBuffer(parsed.challenge) && parsed.challenge.equals(Buffer.alloc(16, 4)));
+  check("clientData: with nothing to compare against, no comparison claims to have run",
+    parsed.checked.type === false && parsed.checked.challenge === false && parsed.checked.origin === false);
+
+  var bound = pki.webauthn.parseClientData(cd, { expectedType: "webauthn.get",
+    expectedChallenge: Buffer.alloc(16, 4), expectedOrigin: "https://example.com" });
+  check("clientData: the comparisons that ran are the ones reported",
+    bound.checked.type === true && bound.checked.challenge === true && bound.checked.origin === true);
+  check("clientData: an array of acceptable origins is accepted",
+    pki.webauthn.parseClientData(cd, { expectedOrigin: ["https://other.example", "https://example.com"] })
+      .checked.origin === true);
+
+  // A registration response replayed into a login. Which ceremony a response belongs to is fixed by
+  // the spec, not negotiated, so this is a refusal rather than a policy knob.
+  check("clientData: a webauthn.create response is refused where a login was expected",
+    codeOf(function () { return pki.webauthn.parseClientData(_clientDataJson({ type: "webauthn.create" }), { expectedType: "webauthn.get" }); })
+      === "webauthn/client-data-mismatch");
+  check("clientData: a challenge that is not the one issued is refused",
+    codeOf(function () { return pki.webauthn.parseClientData(cd, { expectedChallenge: Buffer.alloc(16, 5) }); })
+      === "webauthn/client-data-mismatch");
+  // The origin is compared WHOLE. A prefix or suffix test is how a look-alike host passes.
+  check("clientData: a look-alike origin does not match by prefix",
+    codeOf(function () { return pki.webauthn.parseClientData(_clientDataJson({ origin: "https://example.com.attacker.tld" }), { expectedOrigin: "https://example.com" }); })
+      === "webauthn/client-data-mismatch");
+  check("clientData: an unknown ceremony type is refused outright",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.sign", challenge: "AQID", origin: "https://example.com" }), "utf8")); })
+      === "webauthn/bad-client-data");
+  check("clientData: a challenge that is not base64url is refused",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: "not base64!", origin: "https://example.com" }), "utf8")); })
+      === "webauthn/bad-client-data");
+  check("clientData: malformed JSON is refused, not guessed at",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from("{\"type\":", "utf8")); }) === "webauthn/bad-client-data");
+  // A present-but-malformed member must not arrive looking like an absent one: a
+  // caller making a cross-origin policy decision on topOrigin would read "the sender
+  // wrote something that is not an origin" as "the sender said nothing".
+  check("clientData: a topOrigin that is not a string is refused, not reported as absent",
+    codeOf(function () { return pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: "AQID", origin: "https://example.com", topOrigin: 7 }), "utf8")); })
+      === "webauthn/bad-client-data");
+  check("clientData: a real topOrigin comes back",
+    pki.webauthn.parseClientData(Buffer.from(JSON.stringify({ type: "webauthn.get", challenge: "AQID", origin: "https://inner.example", topOrigin: "https://example.com" }), "utf8")).topOrigin === "https://example.com");
+
+  check("clientData: a parsed object is refused -- the RAW bytes are what the digest covers",
+    codeOf(function () { return pki.webauthn.parseClientData({ type: "webauthn.get" }); }) === "webauthn/bad-input");
+}
+
+// ---- assertion verification (WebAuthn sec. 7.2) -----------------------------------------------
+// The half of WebAuthn every login runs. The authenticator signs authenticatorData ||
+// SHA-256(clientDataJSON) as RAW bytes -- no COSE_Sign1 wrapper -- with an ES256 signature in
+// ASN.1 DER, so a COSE message verifier is the wrong tool and fails on structure first.
+async function testAssertion() {
+  var ad = _assertAuthData({ uv: true });
+  var cd = _clientDataJson({});
+  var sig = _assertSig(ad, cd);
+  var stored = pki.webauthn.parseAuthenticatorData(
+    Buffer.concat([_sha256(Buffer.from("example.com", "utf8")), Buffer.from([0x41]), _u32(5),
+      Buffer.alloc(16, 2), _u16(16), Buffer.alloc(16, 3), _EC_COSE])).credentialPublicKey;
+
+  check("assertion: a bare authenticatorData parses without an attestation-object wrapper",
+    pki.webauthn.parseAuthenticatorData(ad).signCount === 9 &&
+    pki.webauthn.parseAuthenticatorData(ad).flags.at === false);
+
+  var res = await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+    signature: sig, credentialPublicKey: stored });
+  check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
+    res.signatureVerified === true && res.signCount === 9);
+  check("assertion: the field is signatureVerified, never a bare `verified`", res.verified === undefined);
+  check("assertion: the ceremony type is checked whenever the JSON is supplied",
+    res.clientData.checked.type === true && res.clientData.type === "webauthn.get");
+  check("assertion: a counter not compared says so rather than implying it passed",
+    res.signCountChecked === false);
+
+  check("assertion: a signature over other bytes does not verify",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: _assertAuthData({ signCount: 10 }),
+        clientDataJSON: cd, signature: sig, credentialPublicKey: stored });
+    })) === "webauthn/bad-signature");
+
+  // sec. 7.2 step 21: a counter that fails to advance is the signal of a cloned authenticator.
+  check("assertion: previousSignCount refuses a counter that does not advance",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
+        credentialPublicKey: stored, previousSignCount: 9 });
+    })) === "webauthn/sign-count-not-advanced");
+  // ... and only from an AUTHENTIC assertion. A counter that fails to advance means
+  // two authenticators hold one credential -- an alarm a relying party acts on. If it
+  // were judged before the signature, anyone could raise that alarm with arbitrary
+  // bytes and have a credential revoked.
+  check("assertion: a bad signature is reported as such, never as a cloned authenticator",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+        signature: Buffer.alloc(sig.length, 0x41), credentialPublicKey: stored, previousSignCount: 99 });
+    })) === "webauthn/bad-signature");
+
+  check("assertion: a counter that advances is accepted and reported as checked",
+    (await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
+      credentialPublicKey: stored, previousSignCount: 8 })).signCountChecked === true);
+  // An authenticator that implements no counter reports 0 forever, which the spec permits.
+  var zeroAd = _assertAuthData({ signCount: 0 });
+  var zeroCd = _clientDataJson({});
+  check("assertion: the 0/0 case an authenticator without a counter reports is accepted",
+    (await pki.webauthn.verifyAssertion({ authenticatorData: zeroAd, clientDataJSON: zeroCd,
+      signature: _assertSig(zeroAd, zeroCd), credentialPublicKey: stored, previousSignCount: 0 })).signCount === 0);
+
+  check("assertion: expectedRpId refuses a response produced for another relying party",
+    (await codeOfAsync(function () {
+      var other = _assertAuthData({ rpId: "attacker.example" });
+      return pki.webauthn.verifyAssertion({ authenticatorData: other, clientDataJSON: cd,
+        signature: _assertSig(other, cd), credentialPublicKey: stored, expectedRpId: "example.com" });
+    })) === "webauthn/rp-id-mismatch");
+  check("assertion: requireUserVerification refuses a UV-clear response",
+    (await codeOfAsync(function () {
+      var noUv = _assertAuthData({});
+      return pki.webauthn.verifyAssertion({ authenticatorData: noUv, clientDataJSON: cd,
+        signature: _assertSig(noUv, cd), credentialPublicKey: stored, requireUserVerification: true });
+    })) === "webauthn/user-verification-required");
+
+  // A registration response replayed as a login, driven through the shipped verb.
+  check("assertion: a webauthn.create clientData is refused as a login response",
+    (await codeOfAsync(function () {
+      var regCd = _clientDataJson({ type: "webauthn.create" });
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: regCd,
+        signature: _assertSig(ad, regCd), credentialPublicKey: stored });
+    })) === "webauthn/client-data-mismatch");
+
+  // The digest form stays available for a caller that computed it -- but the checks that read the
+  // JSON cannot be claimed over bytes this call never saw.
+  check("assertion: the clientDataHash form still verifies",
+    (await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataHash: _sha256(cd),
+      signature: sig, credentialPublicKey: stored })).signatureVerified === true);
+  check("assertion: expectedChallenge without the JSON is refused rather than silently skipped",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataHash: _sha256(cd),
+        signature: sig, credentialPublicKey: stored, expectedChallenge: Buffer.alloc(16, 4) });
+    })) === "webauthn/bad-input");
+  check("assertion: supplying BOTH clientDataJSON and clientDataHash is refused as ambiguous",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+        clientDataHash: _sha256(cd), signature: sig, credentialPublicKey: stored });
+    })) === "webauthn/bad-input");
+  // The descriptor and its buffers are the CALLER's memory, and verification runs a
+  // microtask later. A caller that reuses or zeroizes them on the next line would
+  // otherwise have the verification read what it wrote -- so an assertion that did
+  // not verify could be swapped for one that does, after the call was made.
+  var liveAd = Buffer.from(ad), liveCd = Buffer.from(cd), liveSig = Buffer.from(sig);
+  var live = { authenticatorData: liveAd, clientDataJSON: liveCd, signature: liveSig,
+    credentialPublicKey: stored };
+  var livePromise = pki.webauthn.verifyAssertion(live);
+  liveAd.fill(0); liveCd.fill(0); liveSig.fill(0);          // zeroized on the very next line
+  live.credentialPublicKey = {};
+  var liveRes = null, liveErr = null;
+  try { liveRes = await livePromise; } catch (e) { liveErr = e; }
+  check("assertion: buffers zeroized after the call do not change what was verified",
+    liveErr === null && liveRes.signatureVerified === true && liveRes.signCount === 9);
+
+  // ...and the same in the direction that matters: a FAILING assertion cannot be
+  // rescued by writing a good one into the caller's buffers after the call.
+  var badSig = Buffer.alloc(sig.length, 0x41);
+  var swap = { authenticatorData: Buffer.from(ad), clientDataJSON: Buffer.from(cd),
+    signature: badSig, credentialPublicKey: stored };
+  var swapPromise = pki.webauthn.verifyAssertion(swap);
+  sig.copy(badSig);                                         // the good signature, too late
+  check("assertion: a good signature written in after the call does not rescue a bad one",
+    (await codeOfAsync(function () { return swapPromise; })) === "webauthn/bad-signature");
+
+  check("assertion: an unknown input key is refused rather than silently ignored",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
+        credentialPublicKey: stored, requireUserPrescence: true });
+    })) === "webauthn/bad-input");
 }
 
 module.exports = { run: run };
