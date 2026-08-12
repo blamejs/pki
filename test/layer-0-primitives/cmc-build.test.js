@@ -541,6 +541,23 @@ async function run() {
       { requests: [{ tcr: csrDer }], identityProof: { secret: "s3cret", identity: "device" } },
       { cert: s.cert, key: s.key })).controls.length === 2);
 
+  check("F19f. a named binding field and a hand-encoded control of the same type collide",
+    // Emitting both would put two of the control in one message, and two values
+    // means the response can be bound to neither -- this toolkit's own /fullcmc
+    // refuses exactly that shape on arrival.
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionId: 1,
+        controls: [{ type: "1.3.6.1.5.5.7.7.5", value: b.integer(2n) }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19g. two hand-encoded copies collide the same way",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "1.3.6.1.5.5.7.7.6", value: b.octetString(Buffer.alloc(4, 1)) },
+          { type: "1.3.6.1.5.5.7.7.6", value: b.octetString(Buffer.alloc(4, 2)) }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
   check("F19c. a transactionId that is not an integer is refused",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: csrDer }], transactionId: 1.5 }, { cert: s.cert, key: s.key });

@@ -513,10 +513,19 @@ async function run() {
   // G13i -- two of the same binding control leave no single value to bind the
   // response to. Taking the last would pick one of the two arbitrarily, and
   // pki.cmc.verify already refuses duplicates on the response side.
-  var dupBinding = await pki.cmc.build({ requests: [{ tcr: csrDer }],
-    controls: [{ type: ID_CMC_TRANSACTION_ID, value: b.integer(1n) },
-      { type: ID_CMC_TRANSACTION_ID, value: b.integer(2n) }] },
-  { cert: clientCert, key: key });
+  // Hand-assembled: pki.cmc.build now refuses to EMIT this shape, which is the
+  // right behaviour and means the fixture cannot come from it. A request from
+  // another producer can still arrive this way, and that is what is being tested.
+  var dupBinding = b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([
+    b.integer(3n), b.set([b.sequence([b.oid(SHA256), b.nullValue()])]),
+    b.sequence([b.oid(ID_CCT_PKI_DATA), b.explicit(0, b.octetString(b.sequence([
+      b.sequence([attr(1, ID_CMC_TRANSACTION_ID, [b.integer(1n)]),
+        attr(2, ID_CMC_TRANSACTION_ID, [b.integer(2n)])]),
+      b.sequence([b.contextConstructed(0, Buffer.concat([b.integer(3n), csrDer]))]),
+      b.sequence([]), b.sequence([]),
+    ])))]),
+    b.set([]),
+  ]))]);
   var noSend13i = fakeTransport({ status: 200, headers: ct("certs-only"),
     body: pki.est.transferEncode(certsOnly([certDer])) });
   check("G13i. duplicate binding controls are refused before transport",
