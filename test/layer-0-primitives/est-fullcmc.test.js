@@ -447,15 +447,20 @@ async function run() {
   // does not echo this exchange's transaction is not this request's answer, so it
   // must not be attached as one. It falls back to the plain HTTP fault.
   var ID_CMC_TRANSACTION_ID = "1.3.6.1.5.5.7.7.5";
+  // The request must genuinely CARRY the transaction it is bound to: the verb reads
+  // the binding out of the request rather than taking the caller's word, so a
+  // request without the control cannot be bound to one.
+  var boundReq = await pki.cmc.build({ requests: [{ tcr: csrDer }], transactionId: 42 },
+    { cert: clientCert, key: key });
   var failedOther = pkiResponse([
     attr(1, ID_CMC_TRANSACTION_ID, [b.integer(999n)]),
     statusV2(2, 2, b.integer(7n)),
   ]);
   var e13b = await acaught(function () {
-    return pki.est.fullcmc("https://ca.example", requestDer, {
+    return pki.est.fullcmc("https://ca.example", boundReq, {
       transport: fakeTransport({ status: 400, headers: ct("CMC-response"),
         body: pki.est.transferEncode(failedOther) }),
-      tls: TLS, allowUnverifiedResponse: true, transactionId: 42 });
+      tls: TLS, allowUnverifiedResponse: true });
   });
   check("G13b. a CMC error response for a DIFFERENT transaction is not attached to this one",
     e13b && e13b.code === "est/http-error");
@@ -467,13 +472,69 @@ async function run() {
     statusV2(2, 2, b.integer(7n)),
   ]);
   var e13c = await acaught(function () {
-    return pki.est.fullcmc("https://ca.example", requestDer, {
+    return pki.est.fullcmc("https://ca.example", boundReq, {
       transport: fakeTransport({ status: 400, headers: ct("CMC-response"),
         body: pki.est.transferEncode(failedMine) }),
-      tls: TLS, allowUnverifiedResponse: true, transactionId: 42 });
+      tls: TLS, allowUnverifiedResponse: true });
   });
   check("G13c. the matching-transaction error response IS surfaced as the CMC verdict",
     e13c && e13c.code === "est/cmc-failed" && e13c.cmc.failInfo === "badIdentity");
+
+  // G13d/G13e -- the binding is read OUT OF THE REQUEST, never taken on the
+  // caller's word. Claiming a transaction the request does not carry would have the
+  // response checked against a binding this exchange never sent, and a replayed
+  // response echoing the claimed value would satisfy it.
+  var noSend13 = fakeTransport({ status: 400, headers: ct("CMC-response"),
+    body: pki.est.transferEncode(failedMine) });
+  check("G13d. claiming a transaction the request does not carry is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer,   // built with NO transactionId
+        { transport: noSend13, tls: TLS, allowUnverifiedResponse: true, transactionId: 42 });
+    })) === "est/bad-input");
+  check("G13e. and nothing was sent under a binding that did not exist",
+    noSend13.calls.length === 0);
+
+  // G13g -- a binding control that is PRESENT but unreadable must not decay into
+  // "absent": that would send the request with no echo requirement at all, a weaker
+  // exchange than the one the message purports to carry.
+  var malformedBinding = await pki.cmc.build({ requests: [{ tcr: csrDer }],
+    controls: [{ type: ID_CMC_TRANSACTION_ID, value: b.octetString(Buffer.from([1, 2, 3])) }] },
+  { cert: clientCert, key: key });
+  var noSend13g = fakeTransport({ status: 200, headers: ct("certs-only"),
+    body: pki.est.transferEncode(certsOnly([certDer])) });
+  check("G13g. an unreadable transactionId control is refused rather than ignored",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", malformedBinding,
+        { transport: noSend13g, tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/bad-input");
+  check("G13h. and it never reached the network",
+    noSend13g.calls.length === 0);
+
+  // G13i -- two of the same binding control leave no single value to bind the
+  // response to. Taking the last would pick one of the two arbitrarily, and
+  // pki.cmc.verify already refuses duplicates on the response side.
+  var dupBinding = await pki.cmc.build({ requests: [{ tcr: csrDer }],
+    controls: [{ type: ID_CMC_TRANSACTION_ID, value: b.integer(1n) },
+      { type: ID_CMC_TRANSACTION_ID, value: b.integer(2n) }] },
+  { cert: clientCert, key: key });
+  var noSend13i = fakeTransport({ status: 200, headers: ct("certs-only"),
+    body: pki.est.transferEncode(certsOnly([certDer])) });
+  check("G13i. duplicate binding controls are refused before transport",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", dupBinding,
+        { transport: noSend13i, tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/bad-input");
+  check("G13j. and that request never left either",
+    noSend13i.calls.length === 0);
+
+  check("G13f. a value that AGREES with the request is accepted",
+    // The option is not forbidden -- it must simply match what is in the message.
+    (await acaught(function () {
+      return pki.est.fullcmc("https://ca.example", boundReq, {
+        transport: fakeTransport({ status: 400, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(failedMine) }),
+        tls: TLS, allowUnverifiedResponse: true, transactionId: 42 });
+    })).code === "est/cmc-failed");
 
   // ---- G14: an undecodable error body must not MASK the HTTP fault --------
   var e14 = await acaught(function () {
