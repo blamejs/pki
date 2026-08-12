@@ -271,6 +271,29 @@ async function run() {
   check("F6g. the altered derivation differs from the plain one",
     Buffer.compare(alteredKey, plainKey) !== 0);
 
+  // F6h -- the derivation input carries the shared secret in the clear, and with an identity
+  // present the concatenation leaves two further copies of it. Clearing the derived key alone
+  // would clear the cheapest copy and keep the rest, so the clear is observed where the toolkit
+  // performs it: every buffer handed over must have held content and read all-zero afterwards.
+  // The identity arm is used because it is the one that allocates all three.
+  var derivationWiped = [];
+  guardAll.secret.zeroizeAll = function (list) {
+    var seen = (list || []).filter(Boolean).map(function (bufr) {
+      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
+    });
+    var out = realZeroizeAll.apply(this, arguments);
+    derivationWiped.push.apply(derivationWiped, seen);
+    return out;
+  };
+  try {
+    await pki.cmc.build({ requests: [{ tcr: csrDer }],
+      identityProof: { secret: SECRET, identity: IDENTITY } }, { cert: s.cert, key: s.key });
+  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
+  check("F6h. every copy of the shared secret the derivation allocated is cleared",
+    derivationWiped.length >= 3 && derivationWiped.every(function (e) {
+      return e.hadContent && e.buf.every(function (x) { return x === 0; });
+    }));
+
   // F6d -- sec. 6.2.1's "Implementations MUST be able to support tokens at least
   // 16 characters long" is a requirement on what this code must ACCEPT, not a
   // floor every token must clear. Enforcing it as a minimum would invert the
