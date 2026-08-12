@@ -283,6 +283,29 @@ async function run() {
         tls: TLS, allowUnverifiedResponse: true });
     })) === "cmc/body-part-unknown");
 
+  // G1l4 -- a nested message this parser cannot read back contributes no path, so a status naming
+  // a part inside it is refused rather than admitted: what cannot be read cannot be confirmed.
+  // The element is a well-formed ContentInfo -- it has to be, or the request itself would not
+  // parse -- announcing SignedData over content that is not one, which is the case where reading
+  // it back FAILS rather than merely yielding some other content type.
+  var opaqueEl = b.sequence([b.integer(9n),
+    b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.integer(1n))])]);
+  var opaqueReq = await pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartID: 1 }],
+    cmsSequence: [opaqueEl] }, { cert: clientCert, key: key });
+  check("G1l4. a path into a nested message that cannot be read back is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", opaqueReq, {
+        transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2AboutPath([9, 1], 0)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "cmc/body-part-unknown");
+  // ...while the element's OWN identifier stays nameable: it is a body part of this request.
+  check("G1l5. ...but the nested element's own body part is still a reference this request sent",
+    (await pki.est.fullcmc("https://ca.example", opaqueReq, {
+      transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+        body: pki.est.transferEncode(pkiResponse([statusV2About(9, 0)], [certDer])) }),
+      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+
   // G1m -- the exchange's meaning is fixed at the call, not a turn later. A
   // caller that flips allowUnverifiedResponse on the next line must not be able
   // to reach back into a request already in flight and switch off the signature
