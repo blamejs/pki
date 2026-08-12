@@ -328,6 +328,20 @@ async function run() {
           body: pki.est.transferEncode(authRespDer) }), tls: TLS });
     })) === "cmc/unverified-response");
 
+  // G1x -- RFC 4211 sec. 4.1 lets a CRMF request omit CertTemplate.publicKey and
+  // carry the requested key in the signature POP's POPOSigningKeyInput instead.
+  // This toolkit's own CRMF parser accepts that form, so reading only the template
+  // would refuse a conforming request before it was ever sent.
+  var crmTemplateKey = await pki.crmf.build(
+    { certReqId: 9, certTemplate: { subject: "crm.example", publicKey: spki } }, { key: key });
+  var crmReq = await pki.cmc.build({ requests: [{ crm: crmTemplateKey }] },
+    { cert: clientCert, key: key });
+  check("G1x. a CRMF request's key is found for correlation",
+    (await pki.est.fullcmc("https://ca.example", crmReq, {
+      transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+        body: pki.est.transferEncode(certsOnly([certDer])) }),
+      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });

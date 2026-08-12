@@ -578,6 +578,18 @@ async function testParseVerifyReadSameBytes() {
   // both read memory the caller can no longer reach.
   check("TOCTOU. a buffer rewritten between parse and verify does not affect the verdict",
     err === null && out.valid === true && out.signers.length === 1);
+
+  // ...for EVERY byte form the parser accepts, not just the two most common. A
+  // BufferSource reaches the decoder, so an ArrayBuffer or a DataView left aliased
+  // would reopen the window for exactly the inputs that came in by the wider door.
+  var ab = new ArrayBuffer(der.length);
+  new Uint8Array(ab).set(der);
+  var viewOut = null, viewErr = null;
+  var vp = pki.cms.verify(new DataView(ab));
+  new Uint8Array(ab).fill(0x41);
+  try { viewOut = await vp; } catch (e) { viewErr = e; }
+  check("TOCTOU. a DataView's backing buffer rewritten after the call is equally ineffective",
+    viewErr === null && viewOut.valid === true);
 }
 
 async function run() {
