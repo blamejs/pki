@@ -201,6 +201,36 @@ async function run() {
   check("identity policy mismatch -> sigstore/identity-mismatch",
     await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ identity: { san: "https://evil.example/attacker" } }, TM))) === "sigstore/identity-mismatch");
 
+  // A bundle verifies its own signature and log inclusion whoever signed it -- Fulcio issues to
+  // anyone who can complete an OIDC flow. So `verified: true` says the artifact was signed and
+  // logged, NOT that it was signed by someone the caller trusts, and only an identity policy
+  // makes it the latter. The verdict has to distinguish the two, or a caller reading `verified`
+  // cannot tell a checked signer from an unchecked one.
+  check("with no identity policy the verdict reports that no signer check ran",
+    v.identityChecked !== undefined && v.identityChecked.san === false &&
+    v.identityChecked.issuer === false && v.identityChecked.sourceRepositoryURI === false);
+  check("...and a policy that matched reports WHICH fields it checked",
+    vp.identityChecked.san === true && vp.identityChecked.issuer === true &&
+    vp.identityChecked.sourceRepositoryURI === false);
+  // An empty policy object asks for nothing. Read as "an identity policy is in force" it is the
+  // most dangerous input on this surface: every guard inside is falsy, so it passes everything
+  // while looking like it constrains something. That is a caller's configuration mistake, so it
+  // is refused at the boundary rather than answered.
+  check("an identity policy that constrains nothing is refused, not silently satisfied",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ identity: {} }, TM))) === "sigstore/bad-input");
+  // cosign spells this `certificateIdentity`. Swallowed, it checks nothing under a name the
+  // operator believes is pinning the signer.
+  // A named field carrying a value that cannot be compared is the same defect wearing a policy:
+  // the field is named, so it reads as pinned, but the comparison is skipped and the signer goes
+  // unchecked. Deciding "was this asked for" and deciding "was this compared" must be one test.
+  check("an identity field named with an empty value is refused, not reported as checked",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ identity: { san: "" } }, TM))) === "sigstore/bad-input");
+  check("...and a null value likewise",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({ identity: { issuer: null } }, TM))) === "sigstore/bad-input");
+  check("an unknown identity-policy key is refused rather than ignored",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE,
+      Object.assign({ identity: { certificateIdentity: v.identity.san.value } }, TM))) === "sigstore/bad-input");
+
   // --- Unsigned-root: corrupt the checkpoint signature AND drop the SET -> the
   // reconstructed root is not attested by the Rekor key (an attacker-computed root
   // is not trust). ---

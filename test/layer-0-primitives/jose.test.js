@@ -31,6 +31,34 @@ async function testJws() {
   check("25. ES256 JWS verify + payload", v.header.alg === "ES256" && v.payload.equals(Buffer.from("{}")));
   var flipped = Object.assign({}, jws, { signature: pki.jose.base64url.encode((function () { var b = Buffer.from(pki.jose.base64url.decode(jws.signature)); b[0] ^= 1; return b; })()) });
   check("25b. flipped signature fails", (await acode(function () { return pki.jose.verify(flipped, OUTER); })) === "jose/verify-failed");
+
+  // 25c-25f. A caller who supplies opts.key is naming the key the message must be signed under.
+  // The acme-outer profile also permits an embedded jwk, and when both are present the message
+  // chose one of them -- so preferring the embedded jwk lets the sender pick which key verifies
+  // it, which is the whole question opts.key was asked to settle. The two must agree, compared as
+  // RFC 7638 thumbprints so member order and any extra members cannot make equal keys look
+  // different. The verdict names which key was used, so "checked against my key" is
+  // distinguishable from "checked against the message's own".
+  var other = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  var otherJwk = await subtle.exportKey("jwk", other.publicKey);
+  check("25c. a JWS whose embedded jwk disagrees with opts.key is refused",
+    (await acode(function () { return pki.jose.verify(jws, Object.assign({}, OUTER, { key: otherJwk })); })) === "jose/key-mismatch");
+  check("25d. ...and agreeing keys verify, naming opts.key as the one used",
+    (await pki.jose.verify(jws, Object.assign({}, OUTER, { key: ecJwk }))).keySource === "opts.key");
+  // Member order must not decide the outcome: the same key written differently still agrees.
+  var reordered = { crv: ecJwk.crv, y: ecJwk.y, x: ecJwk.x, kty: ecJwk.kty };
+  check("25e. ...compared canonically, so member order does not make an equal key disagree",
+    (await pki.jose.verify(jws, Object.assign({}, OUTER, { key: reordered }))).keySource === "opts.key");
+  check("25f. with no opts.key the embedded jwk is used and the verdict says so",
+    (await pki.jose.verify(jws, OUTER)).keySource === "embedded-jwk");
+  // 25g. A key that was SUPPLIED but cannot be used is refused, never quietly read as absent.
+  // Falling back to the embedded jwk would drop the caller's intent to pin a signer exactly when
+  // it matters -- a key that came back null from a lookup would verify against whatever the
+  // message carried, and the verdict would report it as though no key had been named.
+  check("25g. a supplied-but-unusable opts.key is refused, not treated as absent",
+    (await acode(function () { return pki.jose.verify(jws, Object.assign({}, OUTER, { key: null })); })) === "jose/bad-key");
+  check("25h. ...and a non-object key likewise",
+    (await acode(function () { return pki.jose.verify(jws, Object.assign({}, OUTER, { key: "" })); })) === "jose/bad-key");
   // 31/32. payload / header tamper fails verify (signing-input pin).
   check("31. payload tamper fails", (await acode(function () { return pki.jose.verify(Object.assign({}, jws, { payload: pki.jose.base64url.encode(Buffer.from("{ }")) }), OUTER); })) === "jose/verify-failed");
   check("32. header tamper fails", (await acode(function () { return pki.jose.verify(Object.assign({}, jws, { protected: pki.jose.base64url.encode(Buffer.from(JSON.stringify(outerHeader({ jwk: ecJwk, url: "https://ca.example/x" })))) }), OUTER); })) === "jose/verify-failed");

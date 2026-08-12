@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.1 — 2026-08-12
+
+Four verify and export paths stop answering a question other than the one they were asked: the key you supply governs, and a private key exports as one.
+
+### Changed
+
+- pki.sigstore.verifyBundle reports identityChecked alongside verified: a boolean per identity field showing which were actually compared. verified: true says the artifact was signed and logged, not that a party you trust signed it -- Fulcio issues a certificate to anyone who completes an OIDC flow, so who signed is decided only by opts.identity, and the two claims were previously indistinguishable in the verdict. An opts.identity naming none of san, issuer or sourceRepositoryURI is now refused rather than satisfied: every comparison inside it was falsy, so it accepted every signer while reading as a policy in force. An unrecognized field name is refused for the same reason -- cosign spells this certificateIdentity, and swallowed it pinned nothing under a name the operator believed constrained the signer.
+
+### Fixed
+
+- pki.webcrypto.subtle.exportKey("raw", privateKey) is refused with webcrypto/not-supported rather than answered with the public key. The W3C definition of raw covers public and secret keys; there is no raw private-key serialization for EC or OKP, and Node's own WebCrypto refuses it too. The consequence ran through wrapKey, which forwards the caller's format straight to exportKey: a private key wrapped as raw escrowed the PUBLIC key, and unwrapping it returned a handle announcing usages ["sign"] that cannot sign, with the private key gone and no error at any step. Use pkcs8 or jwk to serialize a private key; the public half still exports as raw.
+- A post-quantum private key exported to a JWK re-imports as a private key. ML-DSA, ML-KEM and SLH-DSA JWKs are kty: "AKP" and carry the private half in priv, while the import tested only for the d an EC or OKP key uses -- so every PQC private JWK read as public. The re-imported key was type public yet still announced usages ["sign"], and extractable was forced true even where the caller asked for false: a key that could not sign, said it could, and ignored the extractability it was given. Round-tripping now preserves the half that signs.
+- pki.jose.verify treats opts.key as the key the message must be signed under. Where the profile also permits an embedded header jwk -- acme-outer does -- the embedded key was preferred and the two were never compared, so the sender chose which key verified its own message and a caller supplying the account key it expected got no benefit from doing so. The two must now be the same key, compared as RFC 7638 thumbprints so member order cannot make equal keys differ, and a disagreement is refused with jose/key-mismatch. The verdict carries keySource, naming which key answered, because a signature checked against a key the caller named is a different claim from one checked against the key the message brought with it.
+
 ## v0.5.0 — 2026-08-12
 
 CMC -- Certificate Management over CMS -- ships end to end: build a Full PKI Request, carry it to a CA over EST, and read the response into one terminal outcome.

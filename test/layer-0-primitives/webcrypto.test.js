@@ -110,6 +110,33 @@ async function testPqcSign() {
     var r = await _signVerify({ name: lvl });
     check(lvl + " verifies + rejects tamper (PQC)", r.ok === true && r.tampered === false);
   }
+  // A PQC private key exports as a JWK and must come back as one. These are `kty: "AKP"` and
+  // carry the private half in `priv` (RFC 9794 / the AKP registration), not the `d` an EC or OKP
+  // JWK uses -- so a private-half test written for `d` reads every PQC private JWK as public.
+  // The re-import then yields a PUBLIC key that still announces `usages: ["sign"]`, which cannot
+  // sign, and forces `extractable` true even where the caller asked for false: a key the caller
+  // asked to be unextractable, holding no private half, that reports it can sign.
+  for (var pqcAlg of ["ML-DSA-65", "SLH-DSA-SHA2-128F"]) {
+    var pqcKp = await subtle.generateKey({ name: pqcAlg }, true, ["sign", "verify"]);
+    var privJwk = await subtle.exportKey("jwk", pqcKp.privateKey);
+    check(pqcAlg + " private JWK carries the private half in `priv` (kty AKP)",
+      privJwk.kty === "AKP" && typeof privJwk.priv === "string" && privJwk.priv.length > 0);
+    var back = await subtle.importKey("jwk", privJwk, { name: pqcAlg }, false, ["sign"]);
+    check(pqcAlg + " a private JWK re-imports AS a private key",
+      back.type === "private");
+    check(pqcAlg + " ...honouring the extractable the caller asked for",
+      back.extractable === false);
+    // The round-tripped key must actually SIGN -- the point of keeping the private half.
+    var pqcData = Buffer.from("pqc jwk round-trip");
+    var pqcSig = await subtle.sign({ name: pqcAlg }, back, pqcData);
+    check(pqcAlg + " ...and the re-imported key produces a signature the public half verifies",
+      await subtle.verify({ name: pqcAlg }, pqcKp.publicKey, pqcSig, pqcData));
+    // The PUBLIC JWK still imports as public -- this narrows the private case only.
+    var pubJwk = await subtle.exportKey("jwk", pqcKp.publicKey);
+    check(pqcAlg + " a public JWK still re-imports as a public key",
+      (await subtle.importKey("jwk", pubJwk, { name: pqcAlg }, true, ["verify"])).type === "public");
+  }
+
   // ML-KEM: key generation + SPKI export.
   var kem = await subtle.generateKey({ name: "ML-KEM-768" }, true, []);
   check("ML-KEM-768 key generation + SPKI export", (await subtle.exportKey("spki", kem.publicKey)).byteLength > 0);
@@ -175,6 +202,13 @@ async function testImportExport() {
   var pub3 = await subtle.importKey("jwk", jwk, { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]);
   check("JWK export/import round-trips (verify)", await subtle.verify({ name: "ECDSA", hash: "SHA-384" }, pub3, sig, data));
 
+  // RFC 7517 sec. 4: an unrecognized JWK member is ignored. `priv` carries private material only
+  // for an AKP key, the type that defines it -- reading it on an EC or OKP JWK would turn a valid
+  // public-key import into a failure over a member this implementation has no meaning for.
+  var extended = Object.assign({}, jwk, { priv: "not-a-member-of-this-key-type" });
+  check("a public EC JWK carrying an unrelated `priv` member still imports as public",
+    (await subtle.importKey("jwk", extended, { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"])).type === "public");
+
   var raw = await subtle.exportKey("raw", kp.publicKey);
   check("raw EC point is uncompressed", new Uint8Array(raw)[0] === 0x04);
   var pub4 = await subtle.importKey("raw", raw, { name: "ECDSA", namedCurve: "P-384" }, true, ["verify"]);
@@ -184,6 +218,26 @@ async function testImportExport() {
     var k = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, ["sign", "verify"]);
     await subtle.exportKey("pkcs8", k.privateKey);
   })) === "webcrypto/invalid-access");
+
+  // W3C WebCrypto defines "raw" for PUBLIC and secret keys only -- there is no raw private-key
+  // serialization for EC or OKP. Exporting a private key under it must be refused, not answered
+  // with the public half: an operator asking for the private key and receiving the public one
+  // gets no error to notice, and `wrapKey` forwards the caller's format straight to `exportKey`,
+  // so a private key wrapped as "raw" escrows the PUBLIC key. Unwrapping that returns a handle
+  // announcing usages ["sign"] that cannot sign, and the original private key is gone. Node's own
+  // WebCrypto refuses this with NotSupportedError; agreeing with it is the interoperable answer.
+  check("raw export of an EC PRIVATE key is refused, not answered with the public key",
+    (await code(async function () { await subtle.exportKey("raw", kp.privateKey); })) === "webcrypto/not-supported");
+  var okp = await subtle.generateKey({ name: "Ed25519" }, true, ["sign", "verify"]);
+  check("raw export of an OKP PRIVATE key is refused too",
+    (await code(async function () { await subtle.exportKey("raw", okp.privateKey); })) === "webcrypto/not-supported");
+  check("...and wrapping a private key as raw is refused rather than escrowing the public half",
+    (await code(async function () {
+      var kek = await subtle.generateKey({ name: "AES-KW", length: 256 }, true, ["wrapKey", "unwrapKey"]);
+      await subtle.wrapKey("raw", kp.privateKey, kek, { name: "AES-KW" });
+    })) === "webcrypto/not-supported");
+  // The public half still exports under raw -- this narrows the private case only.
+  check("raw export of the PUBLIC key still works", (await subtle.exportKey("raw", kp.publicKey)).byteLength > 0);
 }
 
 // W3C WebCrypto §ECDSA/ECDH "import key" — the imported EC key's curve is taken
