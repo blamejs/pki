@@ -387,6 +387,21 @@ function testClassify() {
         Buffer.alloc(0), { op: "cacerts" });
     }) === "est/bad-content-type");
 
+  // 56f. ...and the rule stops where repetition is the field working as DEFINED.
+  // WWW-Authenticate carries one challenge per element (RFC 9110 sec. 11.6.1), so a
+  // server offering Digest and Basic is not ambiguous; both reach the scheme scan,
+  // combined the way sec. 5.3 permits a recipient to combine list-field lines.
+  check("56f. repeated WWW-Authenticate challenges are combined, not refused",
+    // The classifier reports the 401 as the HTTP fault it is (the challenge is
+    // answered by the request loop, not here). What matters is the code: NOT
+    // est/bad-content-type, which is what refusing the repetition would give.
+    code(function () {
+      return pki.est.classifyResponse(401,
+        { "WWW-Authenticate": "Digest realm=\"r\", nonce=\"n\", qop=\"auth\", algorithm=SHA-256",
+          "www-authenticate": "Basic realm=\"r\"" },
+        Buffer.alloc(0), { op: "cacerts" });
+    }) === "est/http-error");
+
   // 56d. A duplicated smime-type is not a value the whitelist can be applied to:
   // one of the two may be on it while the other is not, and matching the first
   // would pass a header that also declares something else (RFC 2045 sec. 5.1).

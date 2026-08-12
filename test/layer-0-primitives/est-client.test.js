@@ -199,6 +199,18 @@ async function testAuthRetry() {
   var r = await pki.est.simpleenroll(BASE, CSR, { transport: t, username: "u", password: "p" });
   check("#15 a 401 then a credentialed retry succeeds", r.certificate.equals(S.cert) && t.calls.length === 2);
   check("#15 the retry carried Basic auth", /^Basic /.test(t.calls[1].headers.authorization));
+  // WWW-Authenticate is a LIST field (RFC 9110 sec. 11.6.1: one challenge per
+  // element), so a server may offer several -- including across separately-cased
+  // field lines, which are the same field. Every challenge must reach the scheme
+  // scan: seeing only one of them would answer with a scheme the server may not
+  // accept, or refuse an offer it did make.
+  var tMulti = fakeTransport([
+    { status: 401, headers: { "WWW-Authenticate": "Newfangled realm=\"est\"", "www-authenticate": "Basic realm=\"est\"" }, body: "" },
+    enrollOK([S.cert])]);
+  var rMulti = await pki.est.simpleenroll(BASE, CSR, { transport: tMulti, username: "u", password: "p" });
+  check("#15b challenges spread across two spellings of the field are all seen",
+    rMulti.certificate.equals(S.cert) && /^Basic /.test(tMulti.calls[1].headers.authorization));
+
   var t2 = fakeTransport([{ status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" }, enrollOK([S.cert])]);
   await pki.est.simpleenroll(BASE, CSR, { transport: t2, username: "", password: "p" });
   var decoded = Buffer.from(t2.calls[1].headers.authorization.slice(6), "base64").toString("latin1");
