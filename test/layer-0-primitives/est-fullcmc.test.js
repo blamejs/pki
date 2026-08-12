@@ -306,6 +306,28 @@ async function run() {
         tls: TLS, allowUnverifiedResponse: true });
     })) === "est/bad-content-type");
 
+  // G1v -- the AuthenticatedData carrier, reachable AUTHENTICATED from the verb an
+  // operator actually calls. A capability that exists only one layer down is not
+  // one this surface has: without responseRecipient the carrier could be reached
+  // only through the unauthenticated opt-out.
+  var authRespDer = await pki.cms.authenticate(
+    b.sequence([b.sequence([statusV2(1, 6, null)]), b.sequence([]), b.sequence([])]),
+    [{ password: "s3cret" }], { contentType: "id-cct-PKIResponse" });
+  var authTransport = fakeTransport({ status: 200, headers: ct("CMC-response"),
+    body: pki.est.transferEncode(authRespDer) });
+
+  var authVerdict = await pki.est.fullcmc("https://ca.example", requestDer,
+    { transport: authTransport, tls: TLS, responseRecipient: { password: "s3cret" } });
+  check("G1v. an AuthenticatedData response authenticates through fullcmc",
+    authVerdict.outcome === "pop-required" && authVerdict.signatureVerified === true);
+
+  check("G1w. and without the key it is still refused rather than passed unauthenticated",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer,
+        { transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(authRespDer) }), tls: TLS });
+    })) === "cmc/unverified-response");
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });

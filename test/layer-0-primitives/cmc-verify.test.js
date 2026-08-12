@@ -452,6 +452,14 @@ async function run() {
   check("PD14k. with neither a key nor the opt-out it is still refused",
     (await acode(function () { return pki.cmc.verify(authResp, {}); })) === "cmc/unverified-response");
 
+  check("PD14m. the already-parsed input form names the missing input, not a failed MAC",
+    // The MAC is over BYTES, and pki.cms.decrypt refuses a pre-parsed object by
+    // design. Reporting "did not authenticate" here would blame the message for
+    // what is a missing input.
+    (await acode(function () {
+      return pki.cmc.verify(pki.schema.cms.parse(authResp), { recipient: { password: "s3cret" } });
+    })) === "cmc/bad-input");
+
   check("PD14l. the opt-out still works and still says nothing was checked",
     (await pki.cmc.verify(authResp, { allowUnverified: true })).signatureVerified === false);
 
