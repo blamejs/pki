@@ -1047,9 +1047,13 @@ Two things that verification does **not** establish on its own, and both matter:
   signer was this project: anyone who can obtain a Fulcio certificate can produce
   a bundle that passes all of them for an artifact of their own. Pass `identity`
   and the certificate's SAN, OIDC issuer, and source-repository URI are compared
-  to what you expect; omit it, or pass an object naming none of those three, and
-  no identity check runs. There is no default identity, because which repository
-  is allowed to sign is the relying party's to state.
+  to what you expect; omit it and no identity check runs. The verdict says which
+  of the two happened: `identityChecked` carries a boolean per field, so a signer
+  that was checked is distinguishable from one that never was. An `identity`
+  naming none of those three fields is refused rather than treated as satisfied,
+  and so is a field name that is not one of them — either would accept every
+  signer while reading as a policy in force. There is no default identity,
+  because which repository is allowed to sign is the relying party's to state.
 - **Which artifact it covers.** Confirm a returned `subjects[].digest` matches
   the tarball you install. The signer chooses that digest, so it binds the bundle
   to an artifact only once you have compared it to the bytes in your hand.
