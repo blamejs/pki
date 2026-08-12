@@ -313,6 +313,30 @@ async function run() {
         tls: TLS, allowUnverifiedResponse: true });
     })) === "est/bad-content-type");
 
+  // G1u4 -- a Content-Type declaring BOTH arms selects neither. RFC 2045 sec. 5.1
+  // gives a parameter at most one value, and taking the first would let the order
+  // of two labels decide which shape the body is read as, on the very header whose
+  // job is to say which one it is.
+  check("G1u4. a 200 whose Content-Type declares two smime-types is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200,
+          headers: { "content-type": "application/pkcs7-mime; smime-type=CMC-response; smime-type=certs-only" },
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/bad-content-type");
+
+  check("G1u5. and on the ERROR path the ambiguous label reports the HTTP fault, not a CMC verdict",
+    // Returning null there rather than throwing keeps the server's real error
+    // visible: a content-type complaint would hide the thing to act on.
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 400,
+          headers: { "content-type": "application/pkcs7-mime; smime-type=CMC-response; smime-type=certs-only" },
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 2, null)], [])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/http-error");
+
   // G1u2 -- the verb retains WHICH body parts it sent, so a status about one it
   // never sent is refused. The transaction and nonce cannot catch this: a server
   // can echo both correctly and still report on a different message. The request

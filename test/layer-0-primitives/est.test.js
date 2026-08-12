@@ -231,6 +231,19 @@ function testServerKeygen() {
   var trick = "--bnd\r\nContent-Type: text/plain\r\n\r\nhello\r\n--bndX still body\r\nmore\r\n--bnd--\r\n";
   var tparts = pki.est.splitMultipartMixed(trick, 'multipart/mixed; boundary="bnd"');
   check("46d. non-delimiter --boundaryX stays body", tparts.length === 1 && /--bndX still body/.test(tparts[0].body));
+  // 46g/46h. RFC 2045 sec. 5.1 gives a parameter at most one value. Two boundaries
+  // name two different splits of the same body, and two smime-types on a part leave
+  // which part it is undecided -- neither is resolvable by taking the first, since
+  // the choice IS the answer.
+  check("46g. two boundary parameters -> ambiguous, refused",
+    code(function () { pki.est.splitMultipartMixed(trick, 'multipart/mixed; boundary="bnd"; boundary="other"'); })
+      === "est/bad-multipart");
+  check("46h. two smime-types on a part -> ambiguous, refused",
+    code(function () {
+      pki.est.parseServerKeygenResponse(
+        body43.replace("application/pkcs8",
+          "application/pkcs7-mime; smime-type=server-generated-key; smime-type=certs-only"), ct, {});
+    }) === "est/bad-multipart");
   // 47. whitespace before the semicolon is tolerated (erratum 5779 rejected).
   var r47 = pki.est.parseServerKeygenResponse(body43, 'multipart/mixed ; boundary="estBoundary"', {});
   check("47. whitespace before ; tolerated", !!r47.privateKey);
@@ -361,6 +374,15 @@ function testClassify() {
   check("56b. content-type prefix look-alike rejected", code(function () { pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mimeevil" }, Buffer.alloc(0), { op: "cacerts" }); }) === "est/bad-content-type");
   // 56c. the exact token, bare or with parameters -> ok.
   check("56c. exact content-type with params ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
+  // 56d. A duplicated smime-type is not a value the whitelist can be applied to:
+  // one of the two may be on it while the other is not, and matching the first
+  // would pass a header that also declares something else (RFC 2045 sec. 5.1).
+  check("56d. two smime-types, one of them allowed, is still refused",
+    code(function () {
+      return pki.est.classifyResponse(200,
+        { "content-type": "application/pkcs7-mime; smime-type=certs-only; smime-type=server-generated-key" },
+        Buffer.alloc(0), { op: "cacerts" });
+    }) === "est/bad-content-type");
   check("56d. exact content-type bare ok", pki.est.classifyResponse(200, { "content-type": "application/pkcs7-mime" }, Buffer.alloc(0), { op: "cacerts" }).status === "ok");
   // 56e-g. simpleenroll requires smime-type=certs-only (RFC 7030 sec. 4.2.3): a
   //        different S/MIME message type or a missing smime-type is not a success.
