@@ -754,6 +754,24 @@ async function testCallerAnchors() {
   check("anchors: pinned roots mutated after the call still anchor to what was passed (TOCTOU)",
     raced.attestationVerified === true && raced.anchoredTo === "rootCertificates");
 
+  // The two byte ARGUMENTS are caller-owned across the same gap. The attestation statement is not
+  // evaluated until a later turn, and the parse surfaces its fields as views, so destroying either
+  // buffer after the call must not change the verdict -- nor produce one at all if the bytes were
+  // being read live. The clientDataHash is the binding to this ceremony: a signature checked
+  // against a rewritten hash is a signature over a challenge and origin nobody agreed to.
+  var mutableAtt = Buffer.from(u2f.attestationObject);
+  var mutableCdh = Buffer.from(u2f.clientDataHash);
+  var racedArgsPromise = pki.webauthn.verify(mutableAtt, mutableCdh,
+    { rootCertificates: [u2f.rootDer], time: T });
+  mutableAtt.fill(0);
+  mutableCdh.fill(0);
+  var racedArgs = await racedArgsPromise;
+  check("anchors: an attestationObject destroyed after the call still verifies as passed (TOCTOU)",
+    racedArgs.attestationVerified === true);
+  check("anchors: a clientDataHash destroyed after the call still binds as passed (TOCTOU)",
+    racedArgs.anchoredTo === "rootCertificates" &&
+    Buffer.isBuffer(racedArgs.credentialId) && racedArgs.credentialId.length > 0);
+
   // The documented parsed-certificate form is caller-owned too, and the anchor comparison reads its
   // nested subject / subjectPublicKeyInfo buffers. Copying only the array would leave those aliased,
   // so rewriting the parsed object's key bytes after the call must not change what it anchors to.

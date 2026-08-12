@@ -80,6 +80,19 @@ async function testDetached() {
   check("detached + wrong content -> message-digest-mismatch", bad.signers[0].code === "cms/message-digest-mismatch");
   check("detached + wrong content -> still names the signer cert", Buffer.isBuffer(bad.signers[0].cert));
 
+  // A detached signature's external content is the whole of what the signature speaks about, and
+  // the digest over it is computed in a later promise turn while the buffer stays caller-owned.
+  // Rewriting it in that gap must not change the verdict: otherwise a caller holding the
+  // replacement would be told the signature covered it. The certificates a caller supplies carry
+  // the same exposure one level down -- the parse surfaces the signed portion and the public key
+  // as views into those buffers, and both are read after the same yield.
+  var racedContent = Buffer.from(CONTENT);
+  var racedPromise = pki.cms.verify(fx("rsa-detached.p7s"), { content: racedContent });
+  racedContent.fill(0);
+  check("detached content rewritten after the call still verifies as passed (TOCTOU)",
+    (await racedPromise).valid === true);
+
+
   await rejects("detached + no content", function () { return pki.cms.verify(fx("rsa-detached.p7s")); }, "cms/detached-content-required");
 
   // a Uint8Array (not just a Buffer) is accepted as the detached content.
