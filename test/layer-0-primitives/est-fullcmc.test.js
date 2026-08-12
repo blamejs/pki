@@ -84,6 +84,19 @@ function pkiResponse(controls, certsDer) {
   return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(fields))]);
 }
 
+// A Full PKI Request, hand-assembled. pki.cmc.build refuses to emit a binding
+// control whose value is not the type the toolkit reads, which is what makes the
+// vectors below need this: they are about what the CLIENT does when handed such a
+// request from somewhere else -- another implementation, or a stored one -- and a
+// fixture that could only come from our own builder would not exercise that.
+function pkiRequest(controls) {
+  var body = b.sequence([b.sequence(controls || []), b.sequence([]), b.sequence([]), b.sequence([])]);
+  var encap = b.sequence([b.oid(ID_CCT_PKI_DATA), b.explicit(0, b.octetString(body))]);
+  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([
+    b.integer(3n), b.set([b.sequence([b.oid(SHA256), b.nullValue()])]), encap,
+    b.set([fakeSignerInfo()])]))]);
+}
+
 // A certs-only Simple PKI Response: SignedData v1 over id-data, no eContent, empty signerInfos.
 function certsOnly(certsDer) {
   var sd = b.sequence([b.integer(1n), b.set([]), b.sequence([b.oid(ID_DATA)]),
@@ -608,9 +621,9 @@ async function run() {
   // G13g -- a binding control that is PRESENT but unreadable must not decay into
   // "absent": that would send the request with no echo requirement at all, a weaker
   // exchange than the one the message purports to carry.
-  var malformedBinding = await pki.cmc.build({ requests: [{ tcr: csrDer }],
-    controls: [{ type: ID_CMC_TRANSACTION_ID, value: b.octetString(Buffer.from([1, 2, 3])) }] },
-  { cert: clientCert, key: key });
+  // Hand-assembled: pki.cmc.build refuses to EMIT this, which is the point --
+  // the client must still refuse a request that reached it some other way.
+  var malformedBinding = pkiRequest([attr(1, ID_CMC_TRANSACTION_ID, [b.octetString(Buffer.from([1, 2, 3]))])]);
   var noSend13g = fakeTransport({ status: 200, headers: ct("certs-only"),
     body: pki.est.transferEncode(certsOnly([certDer])) });
   check("G13g. an unreadable transactionId control is refused rather than ignored",

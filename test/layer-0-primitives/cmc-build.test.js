@@ -545,6 +545,30 @@ async function run() {
   // one a control references; a bodyPartID written on a control is never honoured
   // at all; and a misspelled `identity` drops the Identification control that
   // tells the server to derive the Identity Proof key from secret AND identity.
+  // F19e -- a hand-encoded binding control must carry the type the toolkit READS.
+  // The CMC parser keeps control values raw, so nothing downstream objects; but
+  // these three are compared against the response and read back out of the request
+  // before it is sent, so the wrong type signs a request this client will refuse to
+  // send. Refused at authoring time instead.
+  check("F19e1. a hand-encoded transactionId that is not an INTEGER is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "id-cmc-transactionId", value: b.octetString(Buffer.from([1, 2])) }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19e2. nor a senderNonce that is not an OCTET STRING",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrDer }],
+        controls: [{ type: "id-cmc-senderNonce", value: b.integer(7n) }] },
+      { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
+  check("F19e3. and a correctly typed hand-encoded binding control still builds",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: csrDer }],
+      controls: [{ type: "id-cmc-senderNonce", value: b.octetString(bindNonce) }] },
+    { cert: s.cert, key: s.key })).controls.length === 1);
+
   check("F19c1. an unknown field on a REQUEST is refused",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartId: 7 }] }, { cert: s.cert, key: s.key });
