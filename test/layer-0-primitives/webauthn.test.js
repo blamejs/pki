@@ -560,6 +560,27 @@ async function run() {
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), _B.sequence([_B.integer(1n)])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
   check("verify: apple attestation nonce that is not an OCTET STRING -> webauthn/bad-att-cert",
     (await codeOfAsync(function () { return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint), _B.sequence([_B.explicit(1, _B.integer(1n))])), realAuthData), packedHash); })) === "webauthn/bad-att-cert");
+  // AppleAnonymousAttestation ::= SEQUENCE { nonce [1] EXPLICIT OCTET STRING } is a
+  // one-field SEQUENCE wrapping exactly one value. Reading the first child and ignoring
+  // the rest accepts a certificate carrying a second, unchecked value beside the nonce --
+  // and the whole point of this extension is that its content is what the attestation
+  // binds to. Arity is part of the declared shape, so it is enforced rather than skipped.
+  var realNonce = crypto.createHash("sha256").update(Buffer.concat([realAuthData, packedHash])).digest();
+  check("verify: apple extension with a trailing field beside the nonce is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint),
+        _B.sequence([_B.explicit(1, _B.octetString(realNonce)), _B.integer(7n)])), realAuthData), packedHash);
+    })) === "webauthn/bad-att-cert");
+  check("verify: apple extension whose [1] wrapper holds a second value is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint),
+        _B.sequence([_B.contextConstructed(1, Buffer.concat([_B.octetString(realNonce), _B.octetString(Buffer.alloc(4))]))])), realAuthData), packedHash);
+    })) === "webauthn/bad-att-cert");
+  check("verify: apple extension whose outer value is not a universal SEQUENCE is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(appleAtt(appleCert(ecP256Spki(goodEcPoint),
+        _B.set([_B.explicit(1, _B.octetString(realNonce))])), realAuthData), packedHash);
+    })) === "webauthn/bad-att-cert");
   // the certificate EC key must equal the credential key: curve params present + valid,
   // the declared curve equal, the point uncompressed, and X/Y equal (WebAuthn 8.8 item 30).
   check("verify: apple leaf EC key with no named-curve parameters -> webauthn/key-mismatch",
@@ -715,6 +736,32 @@ async function testCallerAnchors() {
       return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
         { rootCertificates: [other.rootDer], time: T });
     })) !== "NO-THROW");
+
+  // The pinned roots are read AFTER the attestation verifier resolves, so they stay
+  // caller-owned across a promise turn. Both the array and each DER buffer are copied
+  // synchronously at entry: without that, a caller recycling the array or overwriting a
+  // certificate's bytes in the gap has the attestation anchored against the REPLACEMENT
+  // roots while the verdict still reports anchoredTo: "rootCertificates". Mutate both,
+  // the way a pooled buffer would, and the verdict must still describe the pin as given.
+  var mutableRootBytes = Buffer.from(u2f.rootDer);
+  var mutableRootArray = [mutableRootBytes];
+  var racedPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: mutableRootArray, time: T });
+  mutableRootArray[0] = other.rootDer;          // swap the array slot
+  mutableRootArray.push(other.rootDer);         // and grow the array
+  mutableRootBytes.fill(0);                     // and destroy the bytes it pointed at
+  var raced = await racedPromise;
+  check("anchors: pinned roots mutated after the call still anchor to what was passed (TOCTOU)",
+    raced.attestationVerified === true && raced.anchoredTo === "rootCertificates");
+
+  // The reverse direction: a pin that should NOT chain cannot be rescued by swapping in a
+  // good root after the call, either.
+  var swapToGood = [Buffer.from(other.rootDer)];
+  var badPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: swapToGood, time: T });
+  swapToGood[0] = u2f.rootDer;
+  check("anchors: swapping in a chaining root after the call does not rescue a bad pin",
+    (await (async function () { try { await badPromise; return "NO-THROW"; } catch (e) { return e.code; } })()) !== "NO-THROW");
 
   // `none` and self-attestation carry no certificates. A caller who asked for anchoring is told it
   // could not be applied rather than handed a pass that reads as though it had been.
