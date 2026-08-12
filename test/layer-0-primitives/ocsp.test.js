@@ -105,6 +105,17 @@ async function run() {
     pe.responseStatus.name === "tryLater" && pe.basicResponse === null);
   check("buildErrorResponse rejects an unknown status", codeOf(function () { pki.ocsp.buildErrorResponse("bogus"); }) === "ocsp/bad-input");
 
+  // The responder descriptor is the CALLER's object, and sign() defers: the
+  // ResponderID and the embedded certificate are fixed from `cert` on the way
+  // in, the signature is made several promise turns later. A `key` replaced in
+  // that gap would produce a response naming one responder and signed by
+  // another key -- which nothing could verify.
+  var liveResponder = { cert: w.responderCertDer, key: w.responderKeyPkcs8 };
+  var livePromise = pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, liveResponder);
+  liveResponder.key = w.issuerKeyPkcs8;        // rewritten on the very next line
+  check("a responder descriptor rewritten after the call still signs under the key its certificate names",
+    (await verify(w, await livePromise)).status === "good");
+
   // ---- the responder-cert full-validation reject family (crown jewel) ----
   // CA-direct: the issuing CA signs its own response.
   var direct = await pki.ocsp.sign({ responderID: "byKey", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, { embedCert: false });

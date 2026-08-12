@@ -456,6 +456,33 @@ async function testKeyOnlySigner() {
       { eContentType: "id-cct-PKIData" });
   }, "cms/bad-input");
 
+  // The signer descriptor is the CALLER's object, and sign() defers: the
+  // SignerIdentifier is built from `keyIdentifier` on the way in, the signature
+  // is made a turn later. A descriptor whose `key` and `spki` are both swapped
+  // for another matching pair in that gap would satisfy the key/spki match --
+  // both halves moved together -- while the SignerInfo still names the first
+  // key, and nothing could verify the result.
+  // Ed25519, so the CMS signature IS the raw signature and the check below needs
+  // no re-encoding between what was emitted and what is verified.
+  var pinned = makeSigner("ed25519");
+  var swapped = makeSigner("ed25519");
+  var pinnedKeyId = Buffer.from(await subtle.digest("SHA-1", pinned.spki));
+  var live = { key: pinned.key, spki: pinned.spki, keyIdentifier: pinnedKeyId };
+  var livePromise = pki.cms.sign(CONTENT, live, { eContentType: "id-cct-PKIData" });
+  live.key = swapped.key;                     // rewritten on the very next line
+  live.spki = swapped.spki;
+  var liveSi = pki.schema.cms.parse(await livePromise).signerInfos[0];
+  // The signature covers the signedAttrs as a SET OF, not as the [0] IMPLICIT
+  // form they ride on the wire (RFC 5652 sec. 5.4), so the tag is put back.
+  var liveSigned = Buffer.from(liveSi.signedAttrsBytes);
+  liveSigned[0] = 0x31;
+  check("key-only signer: a descriptor rewritten after the call still signs under the key it named",
+    // Verified under the ORIGINAL public key -- the one the SignerIdentifier
+    // names -- not under the replacement the descriptor was rewritten to hold.
+    (await subtle.verify({ name: "Ed25519" },
+      await subtle.importKey("spki", pinned.spki, { name: "Ed25519" }, false, ["verify"]),
+      liveSi.signature, liveSigned)) === true);
+
   // The skip for an unexportable key is for an opaque HANDLE, and nothing else.
   // A composite key is a plain object the derivation also declines, and treating
   // that as "cannot check" would skip the comparison for a key whose halves are
