@@ -462,15 +462,37 @@ async function run() {
     (await pki.cmc.verify(response([statusV2b(0, 0)]), { bodyPartIDs: [1], allowUnverified: true }))
       .outcome === "issued");
 
-  check("PD14j5. a status reporting on a body part NESTED in another message is refused",
-    // The head of a bodyPartPath names a part in THIS request, which the retained
-    // set can speak to; everything after it names one inside a message this client
-    // never composed. Checking the head and waving the tail through would accept a
-    // status about anything at all, wearing a reference that passes.
+  check("PD14j5. a status reporting on a body part NESTED in a message never sent is refused",
+    // A path is matched WHOLE against the paths the request composed. Checking only the
+    // head and waving the tail through would accept a status about anything at all,
+    // wearing a reference that passes -- so an unretained tail is a refusal.
     (await acode(function () {
       return pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
         b.integer(0n), b.sequence([b.sequence([b.integer(1n), b.integer(999n)])])])])]),
       { bodyPartIDs: [1], allowUnverified: true });
+    })) === "cmc/body-part-unknown");
+
+  // A request MAY carry a nested message (cmsSequence), and a response then identifies a part
+  // inside it by the path [outer, inner]. Refusing every multi-element path would refuse the
+  // conforming answer to a request this toolkit can compose, so a path the request actually
+  // holds is accepted -- and only that one. The pair is asserted together: accepting the
+  // retained path proves the refusal above is about the reference, not about depth.
+  var nestedSent = { bodyPartIDs: [1, 7], bodyPartPaths: [[1], [7], [7, 42]], allowUnverified: true };
+  check("PD14j6. a status on a body part inside a message the request DID send is accepted",
+    (await pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+      b.integer(0n), b.sequence([b.sequence([b.integer(7n), b.integer(42n)])])])])]),
+    nestedSent)).outcome === "issued");
+  check("PD14j7. ...and a sibling inside that same nested message is still refused",
+    (await acode(function () {
+      return pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+        b.integer(0n), b.sequence([b.sequence([b.integer(7n), b.integer(43n)])])])])]),
+      nestedSent);
+    })) === "cmc/body-part-unknown");
+  check("PD14j8. ...and a path deeper than the one retained is refused, not prefix-matched",
+    (await acode(function () {
+      return pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+        b.integer(0n), b.sequence([b.sequence([b.integer(7n), b.integer(42n), b.integer(5n)])])])])]),
+      nestedSent);
     })) === "cmc/body-part-unknown");
 
   // PD14k -- a Transaction Identifier is an unbounded INTEGER on the wire, so a

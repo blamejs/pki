@@ -58,6 +58,14 @@ function statusV2About(bodyPart, status) {
     b.integer(BigInt(status)), b.sequence([b.sequence([b.integer(BigInt(bodyPart))])])])]);
 }
 
+// A status whose bodyList names a body part by a PATH -- [outer, inner...] -- which is how a
+// response identifies a part inside a nested message (RFC 5272 sec. 6.1.1).
+function statusV2AboutPath(segments, status) {
+  return attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+    b.integer(BigInt(status)),
+    b.sequence([b.sequence(segments.map(function (s) { return b.integer(BigInt(s)); }))])])]);
+}
+
 // A Full PKI Response in a SignedData, certificates in the CMS bag (RFC 5272 sec. 4.2).
 // A structurally present SignerInfo: RFC 5272 sec. 3.2.1.3.4 makes verifying the
 // carrier's signature mandatory, so a Full PKI Response with no signer is refused
@@ -249,6 +257,31 @@ async function run() {
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", certDer, { transport: noCall, tls: TLS });
     })) === "est/bad-input");
+
+  // G1l2 -- a request MAY carry a nested CMC message, and a conforming response then reports on
+  // a body part inside it by the path [outer, inner]. The client composed that nested message, so
+  // it holds the identifiers to confirm such a path -- read back out of the message it sent. Both
+  // directions are asserted: the path the nested message actually contains is accepted, and a
+  // sibling identifier inside the same nested message, which was never composed, is refused.
+  // Without the second, a check that simply stopped refusing paths would pass.
+  var innerReq = await pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartID: 42 }] },
+    { cert: clientCert, key: key });
+  // A cmsSequence element is the raw TaggedContentInfo TLV: SEQUENCE { bodyPartID, ContentInfo }.
+  var nestedEl = b.sequence([b.integer(7n), b.raw(innerReq)]);
+  var nestedReq = await pki.cmc.build({ requests: [{ tcr: csrDer, bodyPartID: 1 }],
+    cmsSequence: [nestedEl] }, { cert: clientCert, key: key });
+  check("G1l2. a status on a body part inside the nested message the request sent is accepted",
+    (await pki.est.fullcmc("https://ca.example", nestedReq, {
+      transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+        body: pki.est.transferEncode(pkiResponse([statusV2AboutPath([7, 42], 0)], [certDer])) }),
+      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+  check("G1l3. ...and a body part the nested message does not contain is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", nestedReq, {
+        transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2AboutPath([7, 999], 0)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "cmc/body-part-unknown");
 
   // G1m -- the exchange's meaning is fixed at the call, not a turn later. A
   // caller that flips allowUnverifiedResponse on the next line must not be able
