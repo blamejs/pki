@@ -339,12 +339,18 @@ async function testPssSpkiParams() {
     b.sequence([]),                                                           // a SEQUENCE with no [0] hashAlgorithm
     b.sequence([b.explicit(0, b.sequence([b.nullValue()]))]),                 // [0] hashAlgorithm inner is not an OID
   ];
-  // The reader finds no pinned hash and the signer falls back to the SHA-256 default, so signing
-  // succeeds and emits a SignedData (the crafted SPKI is deliberately malformed, so it is not
-  // re-importable for a round-trip -- the graceful sign-side fallback is what these vectors drive).
+  // The reader finds no pinned hash and the signer falls back to the SHA-256 default
+  // -- these three shapes drive that fall-through, which runs during scheme
+  // resolution, before anything is signed. What they no longer do is EMIT: the
+  // crafted SPKI is deliberately malformed and not re-importable, so the post-sign
+  // check that the signature verifies under the key the SignerInfo declares cannot
+  // pass. That is the honest outcome for a signer whose own declared key nothing can
+  // import -- the SignedData it used to produce was one no recipient could verify.
   for (var i = 0; i < shapes.length; i++) {
-    var out = await pki.cms.sign(CONTENT, pssSignerWithParams(shapes[i]));
-    check("PSS SPKI params shape " + i + " -> sha256 fallback signs", Buffer.isBuffer(out) && out.length > 0);
+    await rejects("PSS SPKI params shape " + i + " -> resolves the sha256 fallback, then refuses to emit an unverifiable SignerInfo",
+      (function (shape) {
+        return function () { return pki.cms.sign(CONTENT, pssSignerWithParams(shape)); };
+      })(shapes[i]), "cms/bad-input");
   }
   // a [0] hashAlgorithm pinning a hash this toolkit does not map (SHA-1) fails closed at sign time,
   // rather than silently signing under a digest the key forbids.
@@ -462,6 +468,17 @@ async function testKeyOnlySigner() {
   // for another matching pair in that gap would satisfy the key/spki match --
   // both halves moved together -- while the SignerInfo still names the first
   // key, and nothing could verify the result.
+  // The same proof for a CERTIFICATE-backed signer. The SignerInfo names the
+  // embedded certificate's key, so signing with a different one of the same
+  // algorithm emits a structure the CA it is sent to cannot verify -- and nothing
+  // else in the message contradicts it.
+  var certA = makeSigner("ec-p256"), certB = makeSigner("ec-p256");
+  check("a certificate-backed signer whose key matches its certificate signs",
+    pki.schema.cms.parse(await pki.cms.sign(CONTENT, certA)).signerInfos.length === 1);
+  await rejects("a certificate-backed signer whose key is NOT its certificate's is refused", function () {
+    return pki.cms.sign(CONTENT, { cert: certA.cert, key: certB.key });
+  }, "cms/bad-input");
+
   // Ed25519, so the CMS signature IS the raw signature and the check below needs
   // no re-encoding between what was emitted and what is verified.
   var pinned = makeSigner("ed25519");

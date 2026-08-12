@@ -343,6 +343,11 @@ async function run() {
     ormVerdict.outcome === "issued" && ormVerdict.certificate === undefined &&
     ormVerdict.issuedCertificates.length === 0);
 
+  check("G1w1b. and the response's own sequences come back, since that is where its result rides",
+    // Accepting the exchange while dropping the only place its answer can be would
+    // leave the caller re-parsing the encapsulated bytes this verb already decoded.
+    Array.isArray(ormVerdict.cmsSequence) && Array.isArray(ormVerdict.otherMsgs));
+
   check("G1w2. but a CERTS-ONLY answer to it is still refused -- that body claims an issuance",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", ormRequest, {

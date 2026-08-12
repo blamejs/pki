@@ -462,6 +462,17 @@ async function run() {
     (await pki.cmc.verify(response([statusV2b(0, 0)]), { bodyPartIDs: [1], allowUnverified: true }))
       .outcome === "issued");
 
+  check("PD14j5. a status reporting on a body part NESTED in another message is refused",
+    // The head of a bodyPartPath names a part in THIS request, which the retained
+    // set can speak to; everything after it names one inside a message this client
+    // never composed. Checking the head and waving the tail through would accept a
+    // status about anything at all, wearing a reference that passes.
+    (await acode(function () {
+      return pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
+        b.integer(0n), b.sequence([b.sequence([b.integer(1n), b.integer(999n)])])])])]),
+      { bodyPartIDs: [1], allowUnverified: true });
+    })) === "cmc/body-part-unknown");
+
   check("PD14j4. and with no retained set the check does not apply",
     // The same asymmetry as every other half of the binding: checked only when the
     // client kept it.
