@@ -313,6 +313,31 @@ async function run() {
         tls: TLS, allowUnverifiedResponse: true });
     })) === "est/bad-content-type");
 
+  // G1w -- an orm-only request asks for NO certificate, so a successful response to
+  // it is not an issuance and there is nothing to correlate. RFC 5272 lets the
+  // server return its result in the cmsSequence or otherMsgSequence instead;
+  // demanding a matching certificate would make this verb unable to carry the
+  // exchange at all. The certs-only arm keeps the opposite rule, because that body
+  // is nothing but a claim of issuance.
+  var ormRequest = await pki.cmc.build(
+    { requests: [{ orm: { type: "1.3.6.1.4.1.99999.7", value: b.octetString(Buffer.from([1, 2, 3])) } }] },
+    { cert: clientCert, key: key });
+  var ormVerdict = await pki.est.fullcmc("https://ca.example", ormRequest, {
+    transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+      body: pki.est.transferEncode(pkiResponse([statusV2About(1, 0)], [])) }),
+    tls: TLS, allowUnverifiedResponse: true });
+  check("G1w. an orm-only request gets a successful verdict with no certificate correlated",
+    ormVerdict.outcome === "issued" && ormVerdict.certificate === undefined &&
+    ormVerdict.issuedCertificates.length === 0);
+
+  check("G1w2. but a CERTS-ONLY answer to it is still refused -- that body claims an issuance",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", ormRequest, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/no-issued-cert");
+
   // G1u4 -- a Content-Type declaring BOTH arms selects neither. RFC 2045 sec. 5.1
   // gives a parameter at most one value, and taking the first would let the order
   // of two labels decide which shape the body is read as, on the very header whose

@@ -483,6 +483,27 @@ async function testKeyOnlySigner() {
       await subtle.importKey("spki", pinned.spki, { name: "Ed25519" }, false, ["verify"]),
       liveSi.signature, liveSigned)) === true);
 
+  // The declared spki is validated as a WHOLE SubjectPublicKeyInfo, not just far
+  // enough to find the algorithm. For an opaque key handle the correspondence check
+  // is deliberately skipped, so this is the only thing between the caller's bytes
+  // and a SignerInfo declaring them: an algorithm with no key, a key that is not a
+  // BIT STRING, or an extra field would all be emitted as the signer's public key
+  // and resolve to nothing for anyone verifying.
+  var algOnly = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("Ed25519"))])]);
+  await rejects("key-only signer: an spki carrying an algorithm but NO subjectPublicKey", function () {
+    return pki.cms.sign(CONTENT, { key: pinned.key, spki: algOnly, keyIdentifier: pinnedKeyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
+  var keyNotBitString = pki.asn1.build.sequence([
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("Ed25519"))]),
+    pki.asn1.build.octetString(Buffer.alloc(32))]);
+  await rejects("key-only signer: an spki whose subjectPublicKey is not a BIT STRING", function () {
+    return pki.cms.sign(CONTENT, { key: pinned.key, spki: keyNotBitString, keyIdentifier: pinnedKeyId },
+      { eContentType: "id-cct-PKIData" });
+  }, "cms/bad-input");
+
   // The skip for an unexportable key is for an opaque HANDLE, and nothing else.
   // A composite key is a plain object the derivation also declines, and treating
   // that as "cannot check" would skip the comparison for a key whose halves are
