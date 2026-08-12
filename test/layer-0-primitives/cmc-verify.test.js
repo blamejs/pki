@@ -415,6 +415,27 @@ async function run() {
     // copy, so the overwrite cannot reach either half.
     racedError === null && racedOutcome.statuses.length === 1);
 
+  // PD14f2 -- the same race through the OTHER input door. An already-parsed
+  // message is an object the caller keeps owning, so the buffer snapshot has
+  // nothing to copy: the verdict is read from it in one turn and the signature
+  // would be checked in the next, and a caller that swaps in a valid response's
+  // encapsulated content, signers and certificate bag between the two would get
+  // the first message's verdict beside the second message's verified signature.
+  var parsedA = pki.schema.cms.parse(signedResp);
+  var parsedError = null, parsedOutcome = null;
+  var parsedPromise = pki.cmc.verify(parsedA, { certs: [certDer] });
+  parsedA.encapContentInfo = pki.schema.cms.parse(signedResp).encapContentInfo;
+  parsedA.signerInfos = pki.schema.cms.parse(signedResp).signerInfos;
+  try { parsedOutcome = await parsedPromise; } catch (e) { parsedError = e; }
+  check("PD14f2. an already-parsed response cannot yield a signature-verified verdict",
+    parsedOutcome === null && parsedError !== null && parsedError.code === "cmc/bad-input");
+
+  check("PD14f3. and the opt-out still interprets it, reporting that nothing was authenticated",
+    // Refusing the parsed form outright would take away a decode the caller may
+    // legitimately want; what is refused is the CLAIM that a signature was checked.
+    (await pki.cmc.verify(pki.schema.cms.parse(signedResp), { allowUnverified: true }))
+      .signatureVerified === false);
+
   // PD14h -- both sides of the comparison are frozen, not just the response.
   // The binding checks run after the signature check's await, so a `sent` the
   // caller keeps mutating would be read post-mutation: the nonce would be
