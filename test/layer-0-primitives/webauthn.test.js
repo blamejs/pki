@@ -737,6 +737,46 @@ async function testCallerAnchors() {
     { metadata: verifiedMeta, rootCertificates: [other.rootDer], time: T });
   check("anchors: metadata governs when both routes are supplied, and the verdict names which ran",
     both.anchoredTo === "metadata" && !!both.metadata);
+
+  // A compound element carrying no certificates makes no attestation claim, so it is
+  // not a reason to refuse the statement -- but `anchoredTo` alone would then read as
+  // "the whole statement is anchored" when one element was never covered. The
+  // coverage is reported rather than left to be assumed.
+  check("anchors: a single-format attestation reports 1 of 1 elements anchored",
+    pinned.anchoredElements.total === 1 && pinned.anchoredElements.anchored === 1);
+
+  // ...and the combined configuration has to WORK for the models it was added to
+  // reach. Apple is in no catalogue, so a metadata MISS falling through to the
+  // pinned roots is the whole point of supplying both.
+  var otherMeta = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [other.rootDer.toString("base64")], keyIdentifiers: ["00".repeat(20)] });
+  var verifiedOther = await pki.webauthn.verifyMetadataBlob(otherMeta.blob,
+    { rootCertificates: [otherMeta.rootDer], time: T });
+  var missed = await pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { metadata: verifiedOther, rootCertificates: [u2f.rootDer], time: T });
+  check("anchors: a model the catalogue does not list falls through to the pinned roots",
+    missed.attestationVerified === true && missed.anchoredTo === "rootCertificates");
+
+  check("anchors: ...but a catalogue MISS with no pinned roots is still a refusal",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { metadata: verifiedOther, time: T });
+    })) === "webauthn/metadata-not-found");
+
+  // A catalogue DENIAL is not a miss. If the model IS listed and its entry
+  // disqualifies it, a static pin must not overrule the stronger source -- otherwise
+  // supplying roots would quietly downgrade every revoked model to trusted.
+  var revoked = await require("../helpers/mds-blob").mint({ aaguid: null,
+    anchors: [u2f.rootDer.toString("base64")],
+    keyIdentifiers: [require("../../lib/webauthn-mds").certKeyIdentifier(unanchored.trustPath[unanchored.trustPath.length - 1])],
+    statusReports: [{ status: "REVOKED", effectiveDate: "2026-01-01" }] });
+  var verifiedRevoked = await pki.webauthn.verifyMetadataBlob(revoked.blob,
+    { rootCertificates: [revoked.rootDer], time: T });
+  check("anchors: a LISTED but disqualified model does not fall through to pinned roots",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+        { metadata: verifiedRevoked, rootCertificates: [u2f.rootDer], time: T });
+    })) === "webauthn/metadata-status");
 }
 
 // ---- the ceremony boundary (WebAuthn sec. 7.1) ------------------------------------------------
@@ -1500,6 +1540,31 @@ async function testAssertion() {
       return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
         clientDataHash: _sha256(cd), signature: sig, credentialPublicKey: stored });
     })) === "webauthn/bad-input");
+  // The descriptor and its buffers are the CALLER's memory, and verification runs a
+  // microtask later. A caller that reuses or zeroizes them on the next line would
+  // otherwise have the verification read what it wrote -- so an assertion that did
+  // not verify could be swapped for one that does, after the call was made.
+  var liveAd = Buffer.from(ad), liveCd = Buffer.from(cd), liveSig = Buffer.from(sig);
+  var live = { authenticatorData: liveAd, clientDataJSON: liveCd, signature: liveSig,
+    credentialPublicKey: stored };
+  var livePromise = pki.webauthn.verifyAssertion(live);
+  liveAd.fill(0); liveCd.fill(0); liveSig.fill(0);          // zeroized on the very next line
+  live.credentialPublicKey = {};
+  var liveRes = null, liveErr = null;
+  try { liveRes = await livePromise; } catch (e) { liveErr = e; }
+  check("assertion: buffers zeroized after the call do not change what was verified",
+    liveErr === null && liveRes.signatureVerified === true && liveRes.signCount === 9);
+
+  // ...and the same in the direction that matters: a FAILING assertion cannot be
+  // rescued by writing a good one into the caller's buffers after the call.
+  var badSig = Buffer.alloc(sig.length, 0x41);
+  var swap = { authenticatorData: Buffer.from(ad), clientDataJSON: Buffer.from(cd),
+    signature: badSig, credentialPublicKey: stored };
+  var swapPromise = pki.webauthn.verifyAssertion(swap);
+  sig.copy(badSig);                                         // the good signature, too late
+  check("assertion: a good signature written in after the call does not rescue a bad one",
+    (await codeOfAsync(function () { return swapPromise; })) === "webauthn/bad-signature");
+
   check("assertion: an unknown input key is refused rather than silently ignored",
     (await codeOfAsync(function () {
       return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd, signature: sig,
