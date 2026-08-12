@@ -97,6 +97,12 @@ async function run() {
   check("nonce echo + match -> nonceMatched true, good", (function (r) { return r.nonceMatched === true && r.status === "good"; })(await verify(w, goodN, { requestNonce: Buffer.alloc(32, 7) })));
   check("nonce mismatch -> fail closed to unknown", (await verify(w, goodN, { requestNonce: Buffer.alloc(32, 9) })).status === "unknown");
   check("a client that sent NO nonce ignores the response nonce (still good)", (await verify(w, goodN)).status === "good");
+  // The field is three-state and always present: true bound, false not bound, null never asked.
+  // Absent would make "not requested" indistinguishable from "this build does not report it".
+  check("a client that sent no nonce still gets nonceMatched, as null",
+    (function (r) { return "nonceMatched" in r && r.nonceMatched === null; })(await verify(w, goodN)));
+  check("a client that sent a nonce gets a boolean, not null",
+    (await verify(w, goodN, { requestNonce: Buffer.alloc(32, 7) })).nonceMatched === true);
   // The downgrade is for `good` ONLY. A revoked verdict does not expire the way a
   // non-revocation does, so discarding a signed, current, authorized `revoked`
   // because it was replayed would hand a soft-fail caller the very certificate the
@@ -288,6 +294,47 @@ async function run() {
   var racedSigned = await racedSignP;
   check("a responder key overwritten after the call still produces a verifiable response (TOCTOU)",
     (await pki.ocsp.verify(racedSigned, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
+
+  // The same window one level in, for the composite key shape. A composite whose components
+  // are both PEM strings holds nothing mutable INSIDE it, but the descriptor object is still
+  // the caller's: reassigning a component after the call reaches the deferred signing step and
+  // yields a response whose responder ID and embedded certificate describe one responder over
+  // a signature made by another key. The container is cloned regardless of component type, so
+  // a post-call reassignment must not change what signed.
+  // The discriminator is an INVALID replacement: if the descriptor leaked, the deferred sign
+  // reads the corrupted component and throws; if it was cloned, signing completes on the key
+  // that was actually passed. That distinguishes the two without needing a verify oracle for a
+  // synthetic composite responder.
+  var signing = require("../helpers/signing");
+  var compA = signing.makeCompositeSigner("id-MLDSA44-ECDSA-P256-SHA256", { subject: "Composite Responder" });
+  function toPem(der) {
+    return "-----BEGIN PRIVATE KEY-----\n" + Buffer.from(der).toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n$/, "") + "\n-----END PRIVATE KEY-----\n";
+  }
+  var pemComposite = { mldsa: toPem(compA.key.mldsa), trad: toPem(compA.key.trad) };
+  var compSignP = pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer,
+    status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+  { cert: compA.cert, key: pemComposite });
+  pemComposite.mldsa = "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n";
+  pemComposite.trad = "-----BEGIN PRIVATE KEY-----\nnot-a-key\n-----END PRIVATE KEY-----\n";
+  check("an all-PEM composite responder descriptor reassigned after the call still signs with what was passed",
+    (await (async function () {
+      try { var d = await compSignP; return Buffer.isBuffer(d) && d.length > 0; }
+      catch (e) { return "THREW:" + e.code; }
+    })()) === true);
+
+  // Closing the aliasing window means COPYING a private key, which is a second copy of a
+  // secret -- so the copy is cleared once signing is done rather than left for the collector.
+  // Observed through the shipped path: the caller's own key must be untouched (never written
+  // to), while a response still signs, so the copy that existed in between is gone.
+  var wipeProbeKey = Buffer.from(w.responderKeyPkcs8);
+  var beforeSign = Buffer.from(wipeProbeKey);
+  var wipeSigned = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer,
+    status: "good", thisUpdate: recent, nextUpdate: new Date(Date.now() + 7 * 24 * 3600 * 1000) }] },
+  { cert: w.responderCertDer, key: wipeProbeKey });
+  check("the caller's own responder key is never written to",
+    wipeProbeKey.equals(beforeSign) && Buffer.isBuffer(wipeSigned));
+  check("...and the response it signed still verifies",
+    (await pki.ocsp.verify(wipeSigned, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: new Date() })).status === "good");
 
   check("a string certID is refused, never read as its ASCII",
     (await codeOfAsync(function () {
