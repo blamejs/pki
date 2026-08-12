@@ -1238,6 +1238,11 @@ async function testCompoundAttestation() {
     { metadata: listedU2fMd, rootCertificates: [split.rootDer], time: new Date("2026-06-01T00:00:00Z") });
   check("compound: a listed element and an unlisted one can be anchored by their own routes",
     combined.attestationVerified === true);
+  // And the coverage says so. Reporting only the fallback's own count would understate a
+  // statement whose elements were both anchored by different routes, and a caller enforcing
+  // anchored === total would reject exactly the configuration this supports.
+  check("compound: mixed-route coverage reports every element as anchored, not just the fallback's",
+    combined.anchoredElements.total === 2 && combined.anchoredElements.anchored === 2);
 
   // And a compound where EVERY element misses still reports the miss, so the documented
   // pinned-roots fallback for models the catalogue does not cover keeps working.
