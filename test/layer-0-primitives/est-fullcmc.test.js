@@ -342,6 +342,28 @@ async function run() {
         body: pki.est.transferEncode(certsOnly([certDer])) }),
       tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
 
+  // G1y/G1z -- a certs-only body carries no controls, so it cannot echo a
+  // transaction or nonce. A client that sent those asked for replay binding, and
+  // the public-key correlation is not one: an OLD response for the same key still
+  // matches. Silently accepting would give none of what was asked for.
+  var askedForBinding = await pki.cmc.build(
+    { requests: [{ tcr: csrDer }], transactionId: 77, senderNonce: Buffer.alloc(16, 3) },
+    { cert: clientCert, key: key });
+  check("G1y. a certs-only answer to a request that asked for replay binding is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", askedForBinding, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/unbound-response");
+
+  check("G1z. and it is still accepted for a request that asked for none",
+    // The refusal is about the binding the caller asked for, not about the arm.
+    (await pki.est.fullcmc("https://ca.example", requestDer, {
+      transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+        body: pki.est.transferEncode(certsOnly([certDer])) }),
+      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });
