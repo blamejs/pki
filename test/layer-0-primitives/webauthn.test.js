@@ -754,6 +754,22 @@ async function testCallerAnchors() {
   check("anchors: pinned roots mutated after the call still anchor to what was passed (TOCTOU)",
     raced.attestationVerified === true && raced.anchoredTo === "rootCertificates");
 
+  // The documented parsed-certificate form is caller-owned too, and the anchor comparison reads its
+  // nested subject / subjectPublicKeyInfo buffers. Copying only the array would leave those aliased,
+  // so rewriting the parsed object's key bytes after the call must not change what it anchors to.
+  // Parsed from a PRIVATE copy of the root: the parser surfaces byte ranges as views into its
+  // input, so mutating them below would otherwise corrupt the shared fixture for every later check.
+  var parsedRoot = pki.schema.x509.parse(Buffer.from(u2f.rootDer));
+  var parsedPromise = pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash,
+    { rootCertificates: [parsedRoot], time: T });
+  if (parsedRoot.subjectPublicKeyInfo && Buffer.isBuffer(parsedRoot.subjectPublicKeyInfo.bytes)) {
+    parsedRoot.subjectPublicKeyInfo.bytes.fill(0);
+  }
+  if (Buffer.isBuffer(parsedRoot.tbsBytes)) parsedRoot.tbsBytes.fill(0);
+  var parsedRaced = await parsedPromise;
+  check("anchors: a parsed root mutated after the call still anchors to what was passed (TOCTOU)",
+    parsedRaced.attestationVerified === true && parsedRaced.anchoredTo === "rootCertificates");
+
   // The reverse direction: a pin that should NOT chain cannot be rescued by swapping in a
   // good root after the call, either.
   var swapToGood = [Buffer.from(other.rootDer)];
@@ -1133,6 +1149,23 @@ async function testCompoundAttestation() {
       return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
         { metadata: revokedMd, time: new Date("2026-06-01T00:00:00Z") });
     })) === "webauthn/metadata-status");
+  // Resolving an entry is only half of governance; the path must also VALIDATE to the roots that
+  // entry registers. Here the u2f element IS listed and healthy, but its entry registers a root its
+  // path does not reach, while the caller's pinned roots would accept it. If the miss on the packed
+  // element were reported before that chain check ran, the listed element would ride out on the
+  // fallback without ever satisfying its own catalogue anchors -- the same bypass one phase later.
+  var wrongAnchor = await mdsHelper.mint({ entries: [
+    { attestationCertificateKeyIdentifiers: [u2fKeyId], statusReports: [{ status: "FIDO_CERTIFIED_L2" }],
+      metadataStatement: { attestationRootCertificates: [mdsFixture.rootDer.toString("base64")] } },
+  ] });
+  var wrongAnchorMd = await pki.webauthn.verifyMetadataBlob(wrongAnchor.blob,
+    { rootCertificates: [wrongAnchor.rootDer], time: new Date("2026-06-01T00:00:00Z") });
+  check("compound: a listed element must reach ITS OWN registered roots before a sibling's miss falls back",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(mixed.attestationObject, mixed.clientDataHash,
+        Object.assign({ metadata: wrongAnchorMd }, pinnedFallback));
+    })) !== "NO-THROW");
+
   // And a compound where EVERY element misses still reports the miss, so the documented
   // pinned-roots fallback for models the catalogue does not cover keeps working.
   var listsNeither = await mdsHelper.mint({ entries: [
