@@ -692,6 +692,14 @@ async function testTrustSeam() {
   })();
   check("trust: unusable anchors are refused even when no signer verifies",
     faultOnBadMessage !== "NO-THROW" && /bad-input|bad-anchor/.test(String(faultOnBadMessage)));
+  // The validation instant is held to the same rule as the anchors, and for the same reason:
+  // whether a caller's configuration is usable must not depend on whether the message was good.
+  await rejects("trust: an unusable validation time is refused",
+    function () { return pki.cms.verify(signed, { trustAnchors: [ourCa.der], time: new Date("nope") }); },
+    "cms/bad-input");
+  await rejects("trust: ...and refused even when no signer verifies",
+    function () { return pki.cms.verify(tamperedSig, { trustAnchors: [ourCa.der], time: new Date("nope") }); },
+    "cms/bad-input");
   await rejects("trust: an empty anchor list is refused rather than silently anchoring nothing",
     function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [] }, AT)); }, "cms/bad-input");
 
@@ -733,6 +741,39 @@ async function testTrustSeam() {
   for (var d = 0; d < 12; d++) { cursor.nested = {}; cursor = cursor.nested; }
   await rejects("trust: an anchor nested deeper than it can be copied is refused, not part-copied",
     function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [deep] }, AT)); }, "cms/bad-input");
+
+  // A subjectKeyIdentifier names a KEY, and several certificates can hold it: a self-signed one
+  // embedded in the message beside a CA-issued one the caller supplies. Trust is decided from the
+  // certificate the SignerInfo actually selected -- the one the verdict reports as `cert` -- and
+  // never from a same-key sibling, which carries its own validity window, key usage and policy
+  // set. Letting a sibling answer would report an expired or wrong-purpose signer certificate as
+  // trusted because a different certificate for that key happened to chain.
+  var twinKp = require("crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var twinSpki = twinKp.publicKey.export({ format: "der", type: "spki" });
+  var twinKey = twinKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var twinSelfSigned = await pki.x509.sign({
+    subject: [{ commonName: "twin-selfsigned.example" }], subjectPublicKey: twinSpki,
+    serialNumber: 20, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true },
+  }, { key: twinKey });
+  var twinIssued = await pki.x509.sign({
+    subject: [{ commonName: "twin-issued.example" }], subjectPublicKey: twinSpki,
+    serialNumber: 21, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true, authorityKeyIdentifier: true },
+  }, { key: ourCa.key, cert: ourCa.der });
+  // Signed with the self-signed cert embedded and identified by SKI, so the embedded one matches first.
+  var twinSigned = await pki.cms.sign(CONTENT, { cert: twinSelfSigned, key: twinKey, sid: "subjectKeyIdentifier" });
+  var twinRes = await pki.cms.verify(twinSigned,
+    Object.assign({ trustAnchors: [ourCa.der], certs: [twinIssued] }, AT));
+  check("trust: a same-key sibling does not lend its trust to the certificate the message presented",
+    twinRes.valid === true && twinRes.trusted === false);
+  check("trust: ...and the verdict names the certificate the decision was made about",
+    Buffer.isBuffer(twinRes.signers[0].cert) && twinRes.signers[0].cert.equals(twinSelfSigned));
+  // Presenting the CA-issued certificate itself is what makes it trusted -- the decision follows
+  // the certificate, not the key.
+  var twinDirect = await pki.cms.sign(CONTENT, { cert: twinIssued, key: twinKey, sid: "subjectKeyIdentifier" });
+  check("trust: the same key IS trusted when the message presents the certificate that chains",
+    (await pki.cms.verify(twinDirect, Object.assign({ trustAnchors: [ourCa.der] }, AT))).trusted === true);
 }
 
 async function run() {
