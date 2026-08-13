@@ -700,6 +700,26 @@ async function testTrustSeam() {
   await rejects("trust: ...and refused even when no signer verifies",
     function () { return pki.cms.verify(tamperedSig, { trustAnchors: [ourCa.der], time: new Date("nope") }); },
     "cms/bad-input");
+  // The key-purpose options are held to the same rule as the anchors and the instant. Every part
+  // of the trust configuration is judged in one place, before any signer is looked at, so a
+  // caller's mistake never depends on whether the message happened to be good.
+  var badPurposeCodes = await Promise.all([
+    { requiredEku: [] }, { requiredEku: ["notARegisteredPurposeName"] }, { checkPurpose: "" },
+    { checkPurpose: "notARegisteredPurposeName" },
+  ].map(function (bad) {
+    return (async function () {
+      try { await pki.cms.verify(signed, Object.assign({ trustAnchors: [ourCa.der] }, bad, AT)); return "NO-THROW"; }
+      catch (e) { return e && e.code; }
+    })();
+  }));
+  check("trust: a malformed key-purpose option is refused",
+    badPurposeCodes.every(function (c) { return c !== "NO-THROW" && /bad-input/.test(String(c)); }));
+  var badPurposeOnBadMessage = await (async function () {
+    try { await pki.cms.verify(tamperedSig, Object.assign({ trustAnchors: [ourCa.der], requiredEku: [] }, AT)); return "NO-THROW"; }
+    catch (e) { return e && e.code; }
+  })();
+  check("trust: ...and refused even when no signer verifies",
+    badPurposeOnBadMessage !== "NO-THROW" && /bad-input/.test(String(badPurposeOnBadMessage)));
   await rejects("trust: an empty anchor list is refused rather than silently anchoring nothing",
     function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [] }, AT)); }, "cms/bad-input");
 
