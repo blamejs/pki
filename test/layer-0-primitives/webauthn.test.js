@@ -599,6 +599,27 @@ async function run() {
   var _rsa1 = crypto.generateKeyPairSync("rsa", { modulusLength: 2048 });
   var _rsa1Jwk = _rsa1.publicKey.export({ format: "jwk" });
   var rsaCose = coseKey([cKV(1, cInt(3)), cKV(3, cInt(-257)), cKV(-1, cBytes(Buffer.from(_rsa1Jwk.n, "base64url"))), cKV(-2, cBytes(Buffer.from(_rsa1Jwk.e, "base64url")))]);
+
+  // RSASSA-PSS at all three strengths. PS256 alone left PS384/PS512 refused at PARSE time on keys
+  // that are perfectly well-formed -- the same bytes accepted under -37 -- so a relying party
+  // holding credential rows written by another implementation had some it simply could not check,
+  // and the refusal blamed the key rather than the algorithm.
+  [-37, -38, -39].forEach(function (psAlg) {
+    var psCose = coseKey([cKV(1, cInt(3)), cKV(3, cInt(psAlg)),
+      cKV(-1, cBytes(Buffer.from(_rsa1Jwk.n, "base64url"))), cKV(-2, cBytes(Buffer.from(_rsa1Jwk.e, "base64url")))]);
+    var parsedPs = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: psCose })));
+    check("parse: RSASSA-PSS alg " + psAlg + " is accepted, not refused as a malformed key",
+      parsedPs.authData.credentialPublicKey.alg === psAlg && parsedPs.authData.credentialPublicKey.kty === 3);
+  });
+  // An algorithm this verifier does not implement is not a malformed key: the key below is a
+  // well-formed RSA COSE key and only its alg is unrecognized. Reporting bad-cose-key sends a
+  // relying party looking for corruption in bytes that are correct, and withholds the one fact
+  // that would tell them re-registering the credential cannot help.
+  var unknownAlgCose = coseKey([cKV(1, cInt(3)), cKV(3, cInt(-1000)),
+    cKV(-1, cBytes(Buffer.from(_rsa1Jwk.n, "base64url"))), cKV(-2, cBytes(Buffer.from(_rsa1Jwk.e, "base64url")))]);
+  check("parse: an unimplemented algorithm on a well-formed key says so, rather than blaming the key",
+    codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: unknownAlgCose }))); })
+      === "webauthn/unsupported-algorithm");
   var rsaAuthData = buildAuthData({ coseKey: rsaCose });
   var rsaNonceExt = nonceExtFor(rsaAuthData, packedHash);
   var rsaMatchCert = appleCert(_B.raw(_rsa1.publicKey.export({ format: "der", type: "spki" })), rsaNonceExt);
@@ -1720,6 +1741,27 @@ async function testAssertion() {
     signature: sig, credentialPublicKey: stored });
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
+
+  // The registration -> store -> login round trip. `verify` hands back a credential key, the relying
+  // party persists it, and a login months later needs it again. Bytes are the durable form: the
+  // returned object holds Buffers, so a JSON round trip through any datastore returns
+  // {"type":"Buffer","data":[...]} rather than the object that went in. So the bare COSE key has to
+  // be reachable both ways -- as a parser in its own right, and as an accepted input -- or a caller
+  // has to fabricate an authenticatorData that never existed just to reach their own key.
+  var reparsed = pki.webauthn.parseCoseKey(_EC_COSE);
+  check("assertion: a stored COSE key parses on its own, with no authenticatorData wrapper",
+    reparsed && reparsed.kty === stored.kty && reparsed.alg === stored.alg &&
+    Buffer.isBuffer(reparsed.x) && reparsed.x.equals(stored.x));
+  var fromBytes = await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+    signature: sig, credentialPublicKey: _EC_COSE });
+  check("assertion: the stored COSE key BYTES are accepted directly, not only the parsed object",
+    fromBytes.signatureVerified === true);
+  // Bytes that are not a COSE key are still refused, and as a typed verdict rather than a raw fault.
+  check("assertion: bytes that are not a COSE key are refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+        signature: sig, credentialPublicKey: Buffer.from([1, 2, 3]) });
+    })) === "webauthn/bad-cose-key");
   check("assertion: the field is signatureVerified, never a bare `verified`", res.verified === undefined);
   check("assertion: the ceremony type is checked whenever the JSON is supplied",
     res.clientData.checked.type === true && res.clientData.type === "webauthn.get");
