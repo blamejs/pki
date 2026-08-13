@@ -720,6 +720,19 @@ async function testTrustSeam() {
   })();
   check("trust: ...and refused even when no signer verifies",
     badPurposeOnBadMessage !== "NO-THROW" && /bad-input/.test(String(badPurposeOnBadMessage)));
+  // The anchor's CONSTRAINT metadata is preflighted too, not just its name/key/algorithm. An
+  // Invalid Date here is the NaN-Date fail-open: `notBefore > it` is NaN-false, silently dropping
+  // the distrust restriction, so it must be refused rather than reaching a comparison.
+  var badMetaAnchor = Object.assign(caAnchor({ serverAuth: true, emailProtection: true, codeSigning: false }),
+    { distrustAfter: { emailProtection: new Date("not-a-date") } });
+  var badMetaCodes = await Promise.all([signed, tamperedSig].map(function (msg) {
+    return (async function () {
+      try { await pki.cms.verify(msg, Object.assign({ trustAnchors: [badMetaAnchor], checkPurpose: "emailProtection" }, AT)); return "NO-THROW"; }
+      catch (e) { return e && e.code; }
+    })();
+  }));
+  check("trust: an anchor's malformed constraint metadata is refused, message good or not",
+    badMetaCodes.every(function (c) { return c !== "NO-THROW" && /bad-input/.test(String(c)); }));
   await rejects("trust: an empty anchor list is refused rather than silently anchoring nothing",
     function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [] }, AT)); }, "cms/bad-input");
 
