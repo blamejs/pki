@@ -769,6 +769,41 @@ async function testTrustSeam() {
     twinRes.valid === true && twinRes.trusted === false);
   check("trust: ...and the verdict names the certificate the decision was made about",
     Buffer.isBuffer(twinRes.signers[0].cert) && twinRes.signers[0].cert.equals(twinSelfSigned));
+  // The ANCHOR's own trust metadata is a separate question from the leaf's EKU, and pki.path reads
+  // it only when a purpose is named. A root distributed with NSS trust bits can be marked
+  // untrusted for email while remaining a good TLS root, so requiring the leaf's EKU without
+  // naming the purpose checks one end of the chain and not the other -- and a root explicitly
+  // distrusted for the purpose being asked about would still answer "trusted".
+  function caAnchor(purposes) {
+    var c = pki.schema.x509.parse(ourCa.der);
+    return { name: c.subject, algorithm: c.subjectPublicKeyInfo.algorithm.oid,
+      parameters: c.subjectPublicKeyInfo.algorithm.parameters, subjectDer: c.subject.bytes,
+      publicKey: Buffer.from(c.subjectPublicKeyInfo.bytes), purposes: purposes };
+  }
+  var distrustedForEmail = caAnchor({ serverAuth: true, emailProtection: false, codeSigning: false });
+  check("trust: an anchor distrusted for the named purpose does not confer trust",
+    (await pki.cms.verify(signed, Object.assign({ trustAnchors: [distrustedForEmail],
+      checkPurpose: "emailProtection" }, AT))).trusted === false);
+  check("trust: ...and the same anchor trusted for that purpose does",
+    (await pki.cms.verify(signed, Object.assign({ trustAnchors: [caAnchor({ serverAuth: true, emailProtection: true, codeSigning: false })],
+      checkPurpose: "emailProtection" }, AT))).trusted === true);
+  // distrustAfter carries DATES, and the snapshot must not flatten them. A Date has no enumerable
+  // own properties, so a field-by-field copy yields `{}` -- the policy would survive as an empty
+  // object and be rejected as an invalid date, disabling the constraint it encodes. Both sides are
+  // asserted: a leaf issued before the cut-off stays trusted, one issued after does not.
+  var emailOk = { serverAuth: true, emailProtection: true, codeSigning: false };
+  var cutoff = new Date("2026-03-01T00:00:00Z");
+  var withCutoff = Object.assign(caAnchor(emailOk), { distrustAfter: { emailProtection: cutoff } });
+  check("trust: an anchor's distrustAfter dates survive the snapshot (leaf before the cut-off)",
+    (await pki.cms.verify(signed, Object.assign({ trustAnchors: [withCutoff],
+      checkPurpose: "emailProtection" }, AT))).trusted === true);
+  var lateLeaf = await mintLeafUnder(ourCa, "late-signer.example", 40);
+  var lateSigned = await pki.cms.sign(CONTENT, { cert: lateLeaf.cert, key: lateLeaf.key });
+  var earlyCutoff = Object.assign(caAnchor(emailOk), { distrustAfter: { emailProtection: new Date("2025-01-01T00:00:00Z") } });
+  check("trust: ...and a leaf issued after the cut-off is not trusted through that anchor",
+    (await pki.cms.verify(lateSigned, Object.assign({ trustAnchors: [earlyCutoff],
+      checkPurpose: "emailProtection" }, AT))).trusted === false);
+
   // A certificate that chains is not automatically a certificate permitted to have signed. When
   // keyUsage is present it says what the key may do, and RFC 5280 sec. 4.2.1.3 makes that binding:
   // a leaf asserting keyEncipherment alone must not verify a signature, however well it chains.
