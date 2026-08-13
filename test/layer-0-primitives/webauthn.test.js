@@ -650,6 +650,16 @@ async function run() {
   check("parse: an even RSA exponent is refused", rsaCode(N2048, Buffer.from([0x04])) === "webauthn/bad-cose-key");
   check("parse: a non-minimally-encoded modulus (leading zero) is refused",
     rsaCode(Buffer.concat([Buffer.from([0x00]), N2048]), E65537) === "webauthn/bad-cose-key");
+  // Minimal encoding is what makes every length-based judgement above a judgement about a
+  // MAGNITUDE. Padded, `00 01` reads as a two-byte exponent, sails past the one-byte value check,
+  // and delivers the identity exponent the check exists to refuse; padding likewise inflates a
+  // short modulus over the floor. Both are the same defect, so both are pinned.
+  check("parse: a non-minimally-encoded exponent (leading zero) is refused",
+    rsaCode(N2048, Buffer.from([0x00, 0x01])) === "webauthn/bad-cose-key");
+  check("parse: ...so e = 1 cannot be smuggled past the value check by padding it",
+    rsaCode(N2048, Buffer.from([0x00, 0x00, 0x00, 0x01])) === "webauthn/bad-cose-key");
+  check("parse: ...nor a short modulus over the floor by padding it",
+    rsaCode(Buffer.concat([Buffer.alloc(250, 0x00), Buffer.from([0xc0]), Buffer.alloc(5, 0xff)]), E65537) === "webauthn/bad-cose-key");
   // ...and a conformant 2048-bit key with e=65537 still parses, so the floor did not close the door.
   var okRsa = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: rsaCoseKey(N2048, E65537) })));
   check("parse: a conformant 2048-bit RSA credential key is still accepted",
@@ -1175,6 +1185,36 @@ async function testTpmObjectAttributePolicy() {
   // refuses the formats that cannot satisfy it without blocking the one that can.
   check("tpm policy: the gate does not block the format that can satisfy it",
     (await withPolicy({ profile: "hardware-bound" })).attestationVerified === true);
+
+  // The SAME rule for the one other option that DEMANDS rather than supplies. ctsProfileMatch is an
+  // android-safetynet device-integrity signal, so no other format's statement carries one to test,
+  // and a caller who demanded a CTS-matching device would otherwise get a pass from an attestation
+  // that was never asked the question. (That the gate does not block a genuine android-safetynet
+  // attestation is pinned with the rest of that format's vectors, where a real one is minted.)
+  var ctsBypassRefused = true;
+  for (var ci = 0; ci < otherFormats.length; ci++) {
+    var ctsGot = await codeOfAsync((function (fmt) {
+      return function () { return pki.webauthn.verify(attObj(fmt), clientHash(fmt), { requireCtsProfileMatch: true }); };
+    })(otherFormats[ci]));
+    if (ctsGot !== "webauthn/safetynet-cts-profile") ctsBypassRefused = false;
+  }
+  if ((await codeOfAsync(function () {
+    return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: true });
+  })) !== "webauthn/safetynet-cts-profile") ctsBypassRefused = false;
+  check("cts policy: a non-safetynet attestation cannot silently ignore a requested CTS profile match", ctsBypassRefused);
+  // `false` demands nothing, so it is not a reason to refuse anything.
+  check("cts policy: requireCtsProfileMatch false demands nothing and blocks no format",
+    (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: false })).attestationVerified === true);
+  // A recognised key with an unusable value is the same caller mistake as an unrecognised key, and
+  // is caught at the same boundary -- not inside the one arm that would have read it.
+  check("cts policy: a mistyped requireCtsProfileMatch is a config fault on a non-safetynet format",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: "true" });
+    })) === "webauthn/bad-input");
+  check("cts policy: ...and so is a mistyped verifySafetyNetJws",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { verifySafetyNetJws: "yes" });
+    })) === "webauthn/bad-input");
   // Node's hex decoder stops at the first non-hex character and yields an empty buffer for a
   // non-string, so an unvalidated entry could decode into a digest the policy meant to exclude --
   // including the Empty Policy. Each entry is type- and shape-checked before it is decoded.
@@ -1471,6 +1511,19 @@ async function testAndroidSafetyNet() {
       extensions: leafExts,
     }, { key: rootKp.privateKey, name: rootName, publicKey: rootSpki });
 
+    // crossSign terminates the x5c in a CROSS-SIGNED form of this fixture's own root: the root's
+    // subject and public key, issued by an unrelated CA, so it carries the anchor's identity while
+    // not being self-issued. It is the shape a self-issued test cannot recognise as the anchor.
+    var crossDer = null;
+    if (o.crossSign) {
+      var xKp = await pki.webcrypto.subtle.generateKey(rsa, true, ["sign", "verify"]);
+      var xSpki = Buffer.from(await pki.webcrypto.subtle.exportKey("spki", xKp.publicKey));
+      crossDer = await pki.x509.sign({
+        subject: rootName, subjectPublicKey: rootSpki, serialNumber: Buffer.from([44]), notBefore: NB, notAfter: NA,
+        extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
+      }, { key: xKp.privateKey, name: [{ commonName: "Cross Signing CA" }], publicKey: xSpki });
+    }
+
     var authData = (function () {
       var m = pki.cbor.read.map(pki.cbor.decode(attObj("packed")));
       for (var i = 0; i < m.length; i++) if (pki.cbor.read.textString(m[i][0]) === "authData") return m[i][1].content;
@@ -1481,7 +1534,7 @@ async function testAndroidSafetyNet() {
     var nonce = o.nonce !== undefined ? o.nonce
       : crypto.createHash("sha256").update(Buffer.concat([authData, cdh])).digest().toString("base64");
     var header = { alg: o.alg || "RS256",
-      x5c: o.x5cRaw || (o.x5c || [leafDer, rootDer]).map(function (d) { return d.toString("base64"); }) };
+      x5c: o.x5cRaw || (o.x5c || [leafDer, crossDer || rootDer]).map(function (d) { return d.toString("base64"); }) };
     var payload = Object.assign({ nonce: nonce, timestampMs: 1767225600000, ctsProfileMatch: true, basicIntegrity: true }, o.payloadExtra || {});
     (o.payloadOmit || []).forEach(function (k) { delete payload[k]; });
     var h64 = b64uEnc(Buffer.from(JSON.stringify(header), "utf8"));
@@ -1650,6 +1703,16 @@ async function testAndroidSafetyNet() {
     (await codeFor({}, { requireCtsProfileMatch: true })).attestationVerified === true);
   check("safetynet: a non-boolean requireCtsProfileMatch is a config-time fault",
     (await codeFor({}, { requireCtsProfileMatch: "yes" })) === "webauthn/bad-input");
+  check("safetynet: the gate does not block the format that can satisfy it",
+    (await codeFor({}, { requireCtsProfileMatch: true })).attestationVerified === true);
+
+  // The service chain reaches its anchors through the namespace's ONE anchoring walk, so it gets
+  // that walk's anchor-stripping rule: a terminal certificate carrying the anchor's subject name
+  // AND public key IS the anchor, whoever signed it. A cross-signed root -- the ordinary shape
+  // during a CA rotation -- carries exactly that identity without being self-issued, and would
+  // otherwise be left in the path and then fail to verify under an anchor that never issued it.
+  check("safetynet: an x5c ending in a cross-signed form of the anchor still chains",
+    (await codeFor({ crossSign: true })).attestationVerified === true);
 
   // ---- the remaining x5c / anchor shapes ----
   // An x5c entry is standard base64 of one DER certificate; neither half may be assumed.

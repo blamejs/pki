@@ -31,6 +31,21 @@ function testDnEqual() {
   check("genuinely different not equal", name.dnEqual([rdn(CN, "Root")], [rdn(CN, "Evil")], E, "x/n", "dn") === false);
   check("different RDN count not equal", name.dnEqual([rdn(CN, "Root")], [rdn(CN, "Root"), rdn(O, "Org")], E, "x/n", "dn") === false);
   check("different attribute type not equal", name.dnEqual([rdn(CN, "Root")], [rdn(O, "Root")], E, "x/n", "dn") === false);
+
+  // A parsed Name carries its RDN sequence in `.rdns`; the Name itself has no `length`. Handed one,
+  // the length comparison is undefined-against-undefined, the loop never runs, and this returns a
+  // fabricated TRUE for two unrelated names -- an identity guard answering "equal" because it was
+  // handed the wrong shape. It refuses instead, so the mistake surfaces at the call site.
+  var parsedRoot = { rdns: [rdn(CN, "Root")], dn: "CN=Root" };
+  var parsedEvil = { rdns: [rdn(CN, "Evil")], dn: "CN=Evil" };
+  check("a parsed Name is refused, never compared as though equal",
+    codeOf(function () { name.dnEqual(parsedRoot, parsedEvil, E, "x/name", "dn"); }) === "x/name");
+  check("...in either position", codeOf(function () { name.dnEqual([rdn(CN, "Root")], parsedEvil, E, "x/name", "dn"); }) === "x/name");
+  check("...and rdnEqual refuses it too",
+    codeOf(function () { name.rdnEqual(parsedRoot, parsedEvil, E, "x/name", "dn"); }) === "x/name");
+  // The correct call on the same values still decides them apart.
+  check("the RDN sequence of those same names is not equal",
+    name.dnEqual(parsedRoot.rdns, parsedEvil.rdns, E, "x/name", "dn") === false);
 }
 
 function testRdnMultiset() {
