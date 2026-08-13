@@ -769,6 +769,26 @@ async function testTrustSeam() {
     twinRes.valid === true && twinRes.trusted === false);
   check("trust: ...and the verdict names the certificate the decision was made about",
     Buffer.isBuffer(twinRes.signers[0].cert) && twinRes.signers[0].cert.equals(twinSelfSigned));
+  // A certificate that chains is not automatically a certificate permitted to have signed. When
+  // keyUsage is present it says what the key may do, and RFC 5280 sec. 4.2.1.3 makes that binding:
+  // a leaf asserting keyEncipherment alone must not verify a signature, however well it chains.
+  // Path validation checks the CA's keyCertSign, not the target's signing usage, so the format
+  // that KNOWS a signature was made asks the question.
+  var noSignKp = require("crypto").generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var noSignKey = noSignKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var noSignCert = await pki.x509.sign({
+    subject: [{ commonName: "no-signing-usage.example" }],
+    subjectPublicKey: noSignKp.publicKey.export({ format: "der", type: "spki" }),
+    serialNumber: 30, notBefore: NB, notAfter: NA,
+    extensions: { keyUsage: ["keyEncipherment"], subjectKeyIdentifier: true, authorityKeyIdentifier: true },
+  }, { key: ourCa.key, cert: ourCa.der });
+  var noSignSigned = await pki.cms.sign(CONTENT, { cert: noSignCert, key: noSignKey });
+  var noSignRes = await pki.cms.verify(noSignSigned, Object.assign({ trustAnchors: [ourCa.der] }, AT));
+  check("trust: a signer whose keyUsage forbids signing is not trusted, however well it chains",
+    noSignRes.trusted === false);
+  check("trust: ...while the signature itself is still reported as sound, which is a different claim",
+    noSignRes.valid === true);
+
   // Presenting the CA-issued certificate itself is what makes it trusted -- the decision follows
   // the certificate, not the key.
   var twinDirect = await pki.cms.sign(CONTENT, { cert: twinIssued, key: twinKey, sid: "subjectKeyIdentifier" });

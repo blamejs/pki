@@ -16,7 +16,12 @@ pki.cms.verify gains a trust seam: name the roots you accept, and the verdict sa
 
 ### Changed
 
+- A signer certificate whose keyUsage forbids signing is not trusted, however well it chains. RFC 5280 sec. 4.2.1.3 makes the extension binding when present, so a leaf asserting keyEncipherment alone must not verify a signature -- and path validation checks the CA's keyCertSign, not the target's own usage. The verb that knows a signature was made asks the question, the same format-local gate pki.cmp.verify applies, reading the value through the one strict decoder so a malformed keyUsage fails the gate rather than a hand-rolled bit test authorizing it. contentCommitment counts alongside digitalSignature. The signature is still reported sound; what changes is whether the certificate was permitted to have made it.
 - pki.cms.verify and pki.tsp.verify refuse an unrecognized option instead of ignoring it. This is what kept the missing trust seam silent -- a caller writing trustAnchors before it existed, or trustAnchor now, got a verdict that looked anchored and was not. It matters most between these two verbs, because they spell the anchor option differently: pki.tsp.verify takes trustAnchor, singular, an anchor tuple, while pki.cms.verify and pki.cmp.verify take trustAnchors, plural, accepting certificate DER. Carrying the plural spelling to pki.tsp.verify previously meant no anchoring and no error -- an unchained TSA certificate under valid: true. The refusal names the difference.
+
+### Security
+
+- Build and analysis pins move up: github/codeql-action to v4.37.6 across all six references, ossf/scorecard-action to v2.4.4, actions/setup-python to v7.0.0, the ClusterFuzzLite base-builder-javascript image to its current digest, and eslint to 10.8.1. Nothing here reaches the published tarball -- the package still declares no runtime dependencies -- and every action stays pinned by commit SHA with its version in a trailing comment.
 
 ## v0.5.1 — 2026-08-12
 
