@@ -185,6 +185,17 @@ async function testVerifyAccept() {
   check("policy surfaced", res.policy === "1.2.3.4.1");
   var res6 = await pki.tsp.verify(token, DATA, {});
   check("valid without anchor; TSA cert surfaced for the caller to anchor", res6.valid === true && res6.signer && Buffer.isBuffer(res6.signer.cert));
+
+  // This verb spells its anchor option SINGULAR and takes an anchor tuple; pki.cms.verify and
+  // pki.cmp.verify spell it `trustAnchors` and take certificate DER. Carrying the plural spelling
+  // here used to mean no anchoring and no error -- an unchained TSA certificate under valid: true.
+  // The refusal names the difference, which is the only place it costs nothing to learn.
+  var plural = await (async function () {
+    try { await pki.tsp.verify(token, DATA, { trustAnchors: [tsa.anchor] }); return "NO-THROW"; }
+    catch (e) { return e && e.code; }
+  })();
+  check("the plural trustAnchors spelling is refused here, not silently ignored", plural === "tsp/bad-input");
+  check("...and the singular one this verb defines still works", res.valid === true);
   var res7 = await pki.tsp.verify(token, imprint("sha256"), {});
   check("precomputed imprint matches", res7.valid === true);
 }

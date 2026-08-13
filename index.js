@@ -92,7 +92,11 @@ module.exports = {
   // certificate messages (zlib / brotli / zstd) and the RFC 8446 Certificate message
   // inside them, decoded to per-entry certificate DER. Structure only; no handshake.
   tls:       tls,
-  cms:       cms,
+  // Curated, the way pki.cmp is: cms-verify also exports `setEngine`, the seam path-validate injects
+  // its path builder through. That is plumbing between two internal modules, not an operator verb,
+  // and exporting the module wholesale would put it on the public surface.
+  cms:       { verify: cms.verify, sign: cms.sign, countersign: cms.countersign, encrypt: cms.encrypt,
+    authenticate: cms.authenticate, decrypt: cms.decrypt, compress: cms.compress, decompress: cms.decompress },
   smime:     smime,
   // `cmc` interprets an RFC 5272 Full PKI Response into one terminal verdict;
   // `pki.schema.cmc` is the decoder underneath it.

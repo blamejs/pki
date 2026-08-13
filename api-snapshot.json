@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.5.1",
+  "packageVersion": "0.5.2",
   "surface": {
     "C": {
       "kind": "object",
@@ -3284,6 +3284,10 @@
           "kind": "function",
           "arity": 2
         },
+        "parseCoseKey": {
+          "kind": "function",
+          "arity": 1
+        },
         "verify": {
           "kind": "function",
           "arity": 3
@@ -3547,6 +3551,7 @@
     "pki.tsp.response": "0.2.19",
     "pki.tsp.parseResponse": "0.2.19",
     "pki.tsp.verify": "0.2.19",
+    "pki.webauthn.parseCoseKey": "0.5.2",
     "pki.webauthn.parseAttestationObject": "0.2.5",
     "pki.webauthn.verify": "0.2.5",
     "pki.webauthn.verifyMetadataBlob": "0.4.11",

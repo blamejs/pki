@@ -560,8 +560,17 @@ security-only patches after the next major releases.
   imports without complaint and which can verify a forged signature, is rejected.
   A false verdict or an unresolved parameter is a fail-closed `cms/*` outcome,
   never a silent pass.
-  The signer certificate is located but deliberately not chained to a trust
-  anchor, which remains the caller's explicit `pki.path.validate` step. The
+  What the signature establishes and who signed remain separate questions, and
+  the verdict answers them separately. A SignedData carries its own
+  certificates, so `valid` says only that the signature is sound under one of
+  them, which anyone able to mint a certificate can arrange. `trusted` says
+  every signer chained to a root named in `opts.trustAnchors`, validated through
+  the same RFC 5280 path engine `pki.path.validate` uses rather than a second
+  one. Supply no anchors and `trusted` is `false` — there was nothing to chain
+  to, which is an answer rather than an omission. Anchors that cannot be read
+  are a configuration fault and throw, because absorbing them into `trusted:
+  false` would report a verdict about the message for a check that never ran.
+  `pki.smime.verify` carries both through unchanged. The
   producing side (`pki.cms.sign`, and `pki.tsp.sign` over it) emits exactly the
   shapes the verifier checks: canonical DER signed attributes, the same
   algorithm-parameter forms (NULL for RSA, absent for ECDSA and EdDSA, the

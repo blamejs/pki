@@ -605,7 +605,138 @@ async function testParseVerifyReadSameBytes() {
     viewErr === null && viewOut.valid === true);
 }
 
+// ---- the trust seam: `valid` is signature soundness, `trusted` is chaining to a caller anchor ----
+// A SignedData carries its own certificates, so verifying a signature against them establishes that
+// the message is internally consistent -- nothing more. Anyone can mint a certificate, sign a message
+// with it, and embed it. Without a way to name the roots a caller accepts, `valid: true` was the only
+// answer this verb could give, and it reads as the stronger claim.
+async function testTrustSeam() {
+  var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2036-01-01T00:00:00Z");
+  var crypto = require("crypto");
+
+  async function mintCa(name) {
+    var kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var key = kp.privateKey.export({ format: "der", type: "pkcs8" });
+    var der = await pki.x509.sign({
+      subject: [{ commonName: name }], subjectPublicKey: kp.publicKey.export({ format: "der", type: "spki" }),
+      serialNumber: 1, notBefore: NB, notAfter: NA,
+      extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true },
+    }, { key: key });
+    return { der: der, key: key };
+  }
+  async function mintLeafUnder(ca, name, serial) {
+    var kp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+    var der = await pki.x509.sign({
+      subject: [{ commonName: name }], subjectPublicKey: kp.publicKey.export({ format: "der", type: "spki" }),
+      serialNumber: serial, notBefore: NB, notAfter: NA,
+      extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true, authorityKeyIdentifier: true },
+    }, { key: ca.key, cert: ca.der });
+    return { cert: der, key: kp.privateKey.export({ format: "der", type: "pkcs8" }) };
+  }
+
+  var ourCa = await mintCa("cms-trust-ca.example");
+  var otherCa = await mintCa("cms-other-ca.example");
+  var leaf = await mintLeafUnder(ourCa, "cms-signer.example", 10);
+  var signed = await pki.cms.sign(CONTENT, { cert: leaf.cert, key: leaf.key });
+  var AT = { time: new Date("2026-06-01T00:00:00Z") };
+
+  // The signature is sound either way -- that claim does not depend on anchoring, and callers
+  // reading `valid` today must keep getting the same answer.
+  var noAnchors = await pki.cms.verify(signed, AT);
+  check("trust: with no anchors the signature still verifies", noAnchors.valid === true);
+  check("trust: ...and the verdict says the signer was not anchored, rather than staying silent",
+    noAnchors.trusted === false);
+
+  var anchored = await pki.cms.verify(signed, Object.assign({ trustAnchors: [ourCa.der] }, AT));
+  check("trust: a signer chaining to a supplied anchor is reported trusted",
+    anchored.valid === true && anchored.trusted === true);
+
+  // The discriminating case: the same message, same sound signature, anchors that do NOT issue it.
+  // Without this the vector would pass on a `trusted` that merely echoed `valid`.
+  var wrongAnchor = await pki.cms.verify(signed, Object.assign({ trustAnchors: [otherCa.der] }, AT));
+  check("trust: a signer that does not chain to the supplied anchors is NOT trusted",
+    wrongAnchor.trusted === false);
+  check("trust: ...while its signature is still reported sound, which is a different claim",
+    wrongAnchor.valid === true);
+
+  // A self-signed certificate the attacker minted and embedded: exactly what `valid: true` alone
+  // could not distinguish from a real signer.
+  var rogue = makeSigner("ec-p256");
+  var rogueSigned = await pki.cms.sign(CONTENT, { cert: rogue.cert, key: rogue.key });
+  var rogueV = await pki.cms.verify(rogueSigned, Object.assign({ trustAnchors: [ourCa.der] }, AT));
+  check("trust: an attacker-minted self-signed signer verifies but is not trusted",
+    rogueV.valid === true && rogueV.trusted === false);
+
+  // The option that made the gap silent: a misspelling pinned nothing and said nothing.
+  await rejects("trust: an unknown option is refused rather than swallowed",
+    function () { return pki.cms.verify(signed, { trustAnchor: [ourCa.der] }); }, "cms/bad-input");
+
+  // A caller's MISTAKE is not a verdict about the message. Anchors that cannot be read are a
+  // configuration fault and must throw, because absorbing them into `trusted: false` would report
+  // "this signer is not trusted" about a check that never ran -- the same conflation between an
+  // answer and an absent answer that this whole seam exists to remove.
+  var anchorFault = await (async function () {
+    try { await pki.cms.verify(signed, Object.assign({ trustAnchors: [Buffer.from([1, 2, 3])] }, AT)); return "NO-THROW"; }
+    catch (e) { return e && e.code; }
+  })();
+  check("trust: unusable anchors throw as a config fault rather than reading as untrusted",
+    anchorFault !== "NO-THROW" && /bad-input|bad-anchor/.test(String(anchorFault)));
+  // ...and that check does not depend on the MESSAGE being good. A SignedData whose signer cannot
+  // be verified never reaches a chain walk, so validating the anchors only there would accept a
+  // caller's mistake in silence for exactly the messages most likely to be hostile.
+  var tamperedSig = Buffer.from(signed);
+  tamperedSig[tamperedSig.length - 1] ^= 0xff;
+  var faultOnBadMessage = await (async function () {
+    try { await pki.cms.verify(tamperedSig, Object.assign({ trustAnchors: [Buffer.from([1, 2, 3])] }, AT)); return "NO-THROW"; }
+    catch (e) { return e && e.code; }
+  })();
+  check("trust: unusable anchors are refused even when no signer verifies",
+    faultOnBadMessage !== "NO-THROW" && /bad-input|bad-anchor/.test(String(faultOnBadMessage)));
+  await rejects("trust: an empty anchor list is refused rather than silently anchoring nothing",
+    function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [] }, AT)); }, "cms/bad-input");
+
+  // The chain is walked a promise turn after the call, and the anchors stay caller-owned across it.
+  // Re-pointing the array, rewriting an anchor's bytes, or moving the instant would have the chain
+  // judged against a configuration that was never asked for, while the verdict reports the one that
+  // was. Mutate all three the way a pooled buffer would and the answer must not move.
+  var raceAnchor = Buffer.from(ourCa.der);
+  var raceArray = [raceAnchor];
+  var raceTime = new Date(AT.time.getTime());
+  var racePromise = pki.cms.verify(signed, { trustAnchors: raceArray, time: raceTime });
+  raceArray[0] = otherCa.der;              // swap the slot
+  raceArray.push(otherCa.der);             // and grow the array
+  raceAnchor.fill(0);                      // and destroy the bytes it pointed at
+  raceTime.setFullYear(1990);              // and move the instant out of validity
+  check("trust: anchors mutated after the call still decide against what was passed (TOCTOU)",
+    (await racePromise).trusted === true);
+
+  // The anchor TUPLE form is caller-owned in the same way: `{ name, publicKey, algorithm }` is an
+  // ordinary object whose key bytes can be rewritten as readily as a DER buffer's. Copying only the
+  // DER spelling would close the window for one form of an anchor and leave it open for the other.
+  var caParsed = pki.schema.x509.parse(ourCa.der);
+  // The shape path-validate's own toAnchor produces from a certificate: publicKey is the whole
+  // SPKI DER, and the algorithm parameters and subject DER ride along.
+  var tuple = { name: caParsed.subject, algorithm: caParsed.subjectPublicKeyInfo.algorithm.oid,
+    parameters: caParsed.subjectPublicKeyInfo.algorithm.parameters,
+    subjectDer: caParsed.subject.bytes,
+    publicKey: Buffer.from(caParsed.subjectPublicKeyInfo.bytes) };
+  var tuplePromise = pki.cms.verify(signed, { trustAnchors: [tuple], time: AT.time });
+  tuple.publicKey.fill(0);                 // destroy the key bytes the anchor comparison reads
+  tuple.name = { rdns: [] };               // and replace the name it matches on
+  check("trust: an anchor TUPLE mutated after the call still decides against what was passed",
+    (await tuplePromise).trusted === true);
+  // ...and the guarantee is absolute rather than shallow: an anchor too deep to copy is refused,
+  // not copied down to some level and shared below it. A partial snapshot is worse than none,
+  // because the promise reads as though it held everywhere.
+  var deep = { name: { rdns: [] }, algorithm: "1.2.840.10045.2.1", publicKey: Buffer.alloc(4) };
+  var cursor = deep;
+  for (var d = 0; d < 12; d++) { cursor.nested = {}; cursor = cursor.nested; }
+  await rejects("trust: an anchor nested deeper than it can be copied is refused, not part-copied",
+    function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [deep] }, AT)); }, "cms/bad-input");
+}
+
 async function run() {
+  await testTrustSeam();
   await testParseVerifyReadSameBytes();
   await testAcceptKats();
   await testMultiSigner();

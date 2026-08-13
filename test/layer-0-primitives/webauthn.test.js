@@ -1720,6 +1720,27 @@ async function testAssertion() {
     signature: sig, credentialPublicKey: stored });
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
+
+  // The registration -> store -> login round trip. `verify` hands back a credential key, the relying
+  // party persists it, and a login months later needs it again. Bytes are the durable form: the
+  // returned object holds Buffers, so a JSON round trip through any datastore returns
+  // {"type":"Buffer","data":[...]} rather than the object that went in. So the bare COSE key has to
+  // be reachable both ways -- as a parser in its own right, and as an accepted input -- or a caller
+  // has to fabricate an authenticatorData that never existed just to reach their own key.
+  var reparsed = pki.webauthn.parseCoseKey(_EC_COSE);
+  check("assertion: a stored COSE key parses on its own, with no authenticatorData wrapper",
+    reparsed && reparsed.kty === stored.kty && reparsed.alg === stored.alg &&
+    Buffer.isBuffer(reparsed.x) && reparsed.x.equals(stored.x));
+  var fromBytes = await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+    signature: sig, credentialPublicKey: _EC_COSE });
+  check("assertion: the stored COSE key BYTES are accepted directly, not only the parsed object",
+    fromBytes.signatureVerified === true);
+  // Bytes that are not a COSE key are still refused, and as a typed verdict rather than a raw fault.
+  check("assertion: bytes that are not a COSE key are refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+        signature: sig, credentialPublicKey: Buffer.from([1, 2, 3]) });
+    })) === "webauthn/bad-cose-key");
   check("assertion: the field is signatureVerified, never a bare `verified`", res.verified === undefined);
   check("assertion: the ceremony type is checked whenever the JSON is supplied",
     res.clientData.checked.type === true && res.clientData.type === "webauthn.get");

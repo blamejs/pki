@@ -32,6 +32,21 @@ async function run() {
   check("4. multipart/signed verifies valid", v.valid === true && v.signers.length === 1 && v.signers[0].ok === true);
   check("5. the verdict form is multipart/signed + micalg surfaced", v.form === "multipart/signed" && v.micalg === "sha-256");
   check("6. the recovered content carries the signed text", v.content.indexOf(Buffer.from("Hello S/MIME")) >= 0);
+  // This verb is pki.cms.verify's verdict plus the MIME surface, so the trust seam that verb offers
+  // has to reach it: a caller naming anchors here must have them applied, and one who names none
+  // must be told the signer was not anchored rather than left to read `valid` as though it were.
+  check("6a. an unanchored signer is reported untrusted, not merely valid", v.trusted === false);
+  var smimeAnchored = await pki.smime.verify(mp, { trustAnchors: [rsa.cert] });
+  check("6b. anchors named here reach the CMS verify beneath, rather than being dropped",
+    smimeAnchored.valid === true && typeof smimeAnchored.trusted === "boolean");
+  // Trusted FOR THIS PURPOSE. A chain alone does not make a signer right for email -- a certificate
+  // restricted to serverAuth chains to its root perfectly well and is still the wrong key to have
+  // signed a message -- so this verb asks for emailProtection (RFC 8551 sec. 4.4.4). The signer here
+  // carries no emailProtection EKU, so the purpose-neutral answer and the S/MIME one differ, which
+  // is what makes this vector discriminate rather than echo the chain result.
+  var purposeBound = await pki.smime.verify(mp, { trustAnchors: [rsa.cert], requiredEku: ["serverAuth"] });
+  check("6c. a purpose the signer does not carry is not reported trusted",
+    purposeBound.trusted === false);
 
   // ---- A2: application/pkcs7-mime (opaque) round-trip ----
   var op = await pki.smime.sign(MSG, signers, { form: "pkcs7-mime" });
