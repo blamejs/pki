@@ -611,6 +611,23 @@ async function run() {
     check("parse: RSASSA-PSS alg " + psAlg + " is accepted, not refused as a malformed key",
       parsedPs.authData.credentialPublicKey.alg === psAlg && parsedPs.authData.credentialPublicKey.kty === 3);
   });
+  // The REGISTRATION verdict hands back everything the caller must keep. Extension outputs arrive
+  // at registration and nowhere else -- credProtect decides whether the credential is
+  // user-verification-required for the rest of its life, credProps.rk whether it is discoverable
+  // -- and `verifyAssertion` already returns both `extensions` and `rpIdHash`, so a registration
+  // verdict that returned less made the two halves of one lifecycle disagree, and sent the caller
+  // back to re-parse bytes this call had already decoded.
+  var extMap = cMap([[cText("credProtect"), cInt(3)]]);   // extension keys are text, not COSE labels
+  var extAuthData = Buffer.concat([buildAuthData({ ed: true, coseKey: _EC_COSE }), extMap]);
+  var extReg = await pki.webauthn.verify(attObjOf("none", [], extAuthData), Buffer.alloc(32, 9), {});
+  check("verify: the registration verdict carries the authenticator extension outputs",
+    Buffer.isBuffer(extReg.extensions) && extReg.extensions.length === extMap.length &&
+    extReg.extensions.equals(extMap));
+  check("verify: ...and the RP ID hash, which a multi-tenant caller compares itself",
+    Buffer.isBuffer(extReg.rpIdHash) && extReg.rpIdHash.length === 32);
+  check("verify: a registration with no extensions reports none rather than omitting the field",
+    (await pki.webauthn.verify(attObjOf("none", [], buildAuthData({ coseKey: _EC_COSE })), Buffer.alloc(32, 9), {})).extensions === null);
+
   // RSA credential-key MATERIAL is checked, not merely present. EC2 keys have their coordinate
   // lengths pinned to the curve and the point validated on it; OKP keys have an exact length. RSA
   // had neither, so a 1-byte modulus and an exponent of 1 were both accepted as conformant

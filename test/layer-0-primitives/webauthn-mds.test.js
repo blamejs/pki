@@ -420,6 +420,61 @@ async function run() {
   check("mds: a leaf key of a family no supported alg names is refused",
     (await codeFor({ x5cRaw: [edCert.toString("base64")] })) === "webauthn/unsupported-algorithm");
 
+  // ---- the algorithm table is the toolkit's, not a copy of it ----
+  //
+  // A BLOB really signed under RSASSA-PSS verifies. The table this reader resolves `alg` through is
+  // DERIVED from pki.jose's JWS registry, so an algorithm the toolkit verifies as a JWS signature
+  // cannot be one this reader refuses: a second table maintained beside the first is how PS256 came
+  // to be accepted in one place and rejected in the other.
+  for (var pssAlg of ["PS256", "PS384", "PS512"]) {
+    var pssFix = await mint({ signAlg: pssAlg });
+    var pssMd = await pki.webauthn.verifyMetadataBlob(pssFix.blob, { rootCertificates: [pssFix.rootDer], time: T });
+    check("mds: a BLOB signed under " + pssAlg + " verifies", pssMd.no === 42);
+  }
+  var rsFix = await mint({ signAlg: "RS256" });
+  check("mds: a BLOB signed under RS256 verifies",
+    (await pki.webauthn.verifyMetadataBlob(rsFix.blob, { rootCertificates: [rsFix.rootDer], time: T })).no === 42);
+  // Every algorithm pki.jose verifies under a key type a certificate can carry has a row here. The
+  // derivation is the guard; this asserts it is TOTAL, so a row added to the registry cannot reach
+  // one reader and not the other.
+  var joseSigAlgs = pki.jose.sigAlgs().filter(function (r) { return r.kty === "EC" || r.kty === "RSA"; });
+  var mdsAlgs = require("../../lib/webauthn-mds.js").BLOB_ALGS;
+  function schemeOf(r) { return r.kty === "EC" ? "ECDSA" : (r.saltLength ? "RSA-PSS" : "RSASSA-PKCS1-v1_5"); }
+  var schemesSeen = {};
+  joseSigAlgs.forEach(function (r) { schemesSeen[schemeOf(r)] = 1; });
+  check("mds: every certificate-carryable JWS algorithm the toolkit verifies has a BLOB row",
+    // All three schemes are represented, so the walk below cannot pass by having nothing to walk.
+    Object.keys(schemesSeen).length === 3 && joseSigAlgs.every(function (r) {
+      var row = mdsAlgs[r.alg];
+      return !!row && row.hash === r.hash && row.scheme === schemeOf(r) &&
+        (r.saltLength ? row.ver.saltLength === r.saltLength : true);
+    }));
+  // MAC and PQC algorithms are not certificate-carryable JWS signature schemes here: `HS256` is not a
+  // signature algorithm at all, and no row exists for the key types no x5c leaf can hold.
+  check("mds: no MAC algorithm has a BLOB row", mdsAlgs.HS256 === undefined && mdsAlgs.none === undefined);
+  check("mds: no row exists for a key type no x5c leaf carries",
+    mdsAlgs.EdDSA === undefined && mdsAlgs["ML-DSA-44"] === undefined);
+
+  // ---- an id-RSASSA-PSS certificate restricts its own key (RFC 4055 sec. 1.2 / 3.1) ----
+  //
+  // The restriction belongs to the CERTIFICATE, so it outranks the header: a key whose certificate
+  // says RSASSA-PSS must not verify an RS* signature, and one pinned to a single hash must not
+  // verify a signature made under another.
+  var pssKeyFix = await mint({ signAlg: "PS256", pssRestricted: true });
+  check("mds: an id-RSASSA-PSS leaf verifies a PS256 BLOB",
+    (await pki.webauthn.verifyMetadataBlob(pssKeyFix.blob, { rootCertificates: [pssKeyFix.rootDer], time: T })).no === 42);
+  check("mds: an id-RSASSA-PSS leaf refuses an RS256 header",
+    (await codeFor({ signAlg: "PS256", pssRestricted: true, alg: "RS256" })) === "webauthn/unsupported-algorithm");
+  var pinnedFix = await mint({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha256", salt: 32 } });
+  check("mds: an id-RSASSA-PSS leaf pinned to SHA-256 verifies its own PS256 BLOB",
+    (await pki.webauthn.verifyMetadataBlob(pinnedFix.blob, { rootCertificates: [pinnedFix.rootDer], time: T })).no === 42);
+  check("mds: an id-RSASSA-PSS leaf pinned to SHA-256 refuses a PS512 BLOB",
+    (await codeFor({ signAlg: "PS512", pssRestricted: true, pssPinHash: { name: "sha256", salt: 32 } })) === "webauthn/unsupported-algorithm");
+  // A pin this toolkit cannot read is a restriction it cannot honor, so it fails closed rather than
+  // being treated as no restriction at all.
+  check("mds: an id-RSASSA-PSS leaf pinned to an unimplemented hash is refused",
+    (await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha1", salt: 20 } })) === "webauthn/unsupported-algorithm");
+
   // Several roots may be held across a rotation, and the walk stops at the first that anchors the
   // chain rather than continuing to validate against the rest.
   check("mds: the first anchor that validates ends the search",
