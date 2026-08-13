@@ -611,6 +611,33 @@ async function run() {
     check("parse: RSASSA-PSS alg " + psAlg + " is accepted, not refused as a malformed key",
       parsedPs.authData.credentialPublicKey.alg === psAlg && parsedPs.authData.credentialPublicKey.kty === 3);
   });
+  // RSA credential-key MATERIAL is checked, not merely present. EC2 keys have their coordinate
+  // lengths pinned to the curve and the point validated on it; OKP keys have an exact length. RSA
+  // had neither, so a 1-byte modulus and an exponent of 1 were both accepted as conformant
+  // credential public keys -- and both reach the WebCrypto import, so they reach real signature
+  // verification. e=1 makes RSA the identity function: the "signature" is the message.
+  function rsaCoseKey(n, e) {
+    return coseKey([cKV(1, cInt(3)), cKV(3, cInt(-257)), cKV(-1, cBytes(n)), cKV(-2, cBytes(e))]);
+  }
+  function rsaCode(n, e) {
+    return codeOf(function () { pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: rsaCoseKey(n, e) }))); });
+  }
+  var E65537 = Buffer.from([0x01, 0x00, 0x01]);
+  var N2048 = Buffer.concat([Buffer.from([0xc0]), Buffer.alloc(255, 0xff)]);
+  check("parse: an RSA credential key below the 2048-bit floor is refused",
+    rsaCode(Buffer.from([0xff]), E65537) === "webauthn/bad-cose-key");
+  check("parse: ...and one a byte short of the floor likewise",
+    rsaCode(Buffer.alloc(255, 0xff), E65537) === "webauthn/bad-cose-key");
+  check("parse: an RSA exponent of 1 is refused -- it makes RSA the identity function",
+    rsaCode(N2048, Buffer.from([0x01])) === "webauthn/bad-cose-key");
+  check("parse: an even RSA exponent is refused", rsaCode(N2048, Buffer.from([0x04])) === "webauthn/bad-cose-key");
+  check("parse: a non-minimally-encoded modulus (leading zero) is refused",
+    rsaCode(Buffer.concat([Buffer.from([0x00]), N2048]), E65537) === "webauthn/bad-cose-key");
+  // ...and a conformant 2048-bit key with e=65537 still parses, so the floor did not close the door.
+  var okRsa = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: rsaCoseKey(N2048, E65537) })));
+  check("parse: a conformant 2048-bit RSA credential key is still accepted",
+    okRsa.authData.credentialPublicKey.kty === 3 && okRsa.authData.credentialPublicKey.n.length === 256);
+
   // An algorithm this verifier does not implement is not a malformed key: the key below is a
   // well-formed RSA COSE key and only its alg is unrecognized. Reporting bad-cose-key sends a
   // relying party looking for corruption in bytes that are correct, and withholds the one fact
@@ -1748,6 +1775,21 @@ async function testAssertion() {
   // {"type":"Buffer","data":[...]} rather than the object that went in. So the bare COSE key has to
   // be reachable both ways -- as a parser in its own right, and as an accepted input -- or a caller
   // has to fabricate an authenticatorData that never existed just to reach their own key.
+  // The counter rule's THREE outcomes stay distinguishable. `signCountChecked` exists to tell a
+  // relying party whether it has cloned-authenticator detection on this credential, and the 0/0
+  // case -- an authenticator that implements no counter, which WebAuthn permits -- deliberately
+  // skips the comparison. Reporting `true` there claims a detection that cannot happen, and a bare
+  // `false` would be indistinguishable from "the caller never asked".
+  var noCounter = await pki.webauthn.verifyAssertion({ authenticatorData: _assertAuthData({ signCount: 0 }),
+    clientDataJSON: cd, signature: _assertSig(_assertAuthData({ signCount: 0 }), cd),
+    credentialPublicKey: stored, previousSignCount: 0 });
+  check("assertion: the 0/0 no-counter case reports the rule as waived, not as checked",
+    noCounter.signCountChecked === "not-supported");
+  check("assertion: no previousSignCount reports the rule as not requested", res.signCountChecked === false);
+  var counted = await pki.webauthn.verifyAssertion({ authenticatorData: ad, clientDataJSON: cd,
+    signature: sig, credentialPublicKey: stored, previousSignCount: 5 });
+  check("assertion: ...and an advancing counter reports it ran", counted.signCountChecked === true);
+
   var reparsed = pki.webauthn.parseCoseKey(_EC_COSE);
   check("assertion: a stored COSE key parses on its own, with no authenticatorData wrapper",
     reparsed && reparsed.kty === stored.kty && reparsed.alg === stored.alg &&
