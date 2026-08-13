@@ -733,6 +733,19 @@ async function testTrustSeam() {
   }));
   check("trust: an anchor's malformed constraint metadata is refused, message good or not",
     badMetaCodes.every(function (c) { return c !== "NO-THROW" && /bad-input/.test(String(c)); }));
+  // The same, with the purpose given in its DOTTED form. The resolver normalizes that to the
+  // registered name, which is the key an anchor's per-purpose metadata is stored under -- so the
+  // preflight has to read the normalized value, or it inspects `distrustAfter["1.3.6..."]` while
+  // the walk reads `distrustAfter.emailProtection` and the two disagree about the same anchor.
+  var dottedEmail = pki.oid.byName("emailProtection");
+  var dottedCodes = await Promise.all([signed, tamperedSig].map(function (msg) {
+    return (async function () {
+      try { await pki.cms.verify(msg, Object.assign({ trustAnchors: [badMetaAnchor], checkPurpose: dottedEmail }, AT)); return "NO-THROW"; }
+      catch (e) { return e && e.code; }
+    })();
+  }));
+  check("trust: ...and equally when the purpose is named by its dotted OID",
+    dottedCodes.every(function (c) { return c !== "NO-THROW" && /bad-input/.test(String(c)); }));
   await rejects("trust: an empty anchor list is refused rather than silently anchoring nothing",
     function () { return pki.cms.verify(signed, Object.assign({ trustAnchors: [] }, AT)); }, "cms/bad-input");
 
