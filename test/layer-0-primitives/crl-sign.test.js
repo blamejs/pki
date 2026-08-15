@@ -427,6 +427,38 @@ async function testPemAndIsRevoked() {
   check("isRevoked refuses to answer from an indirect CRL", scopeCode(indirectDer, 0xabcdn) === "crl/indirect-not-supported");
   // A direct CRL with no scope extensions still answers, which is the case every caller has.
   check("a plain direct CRL still answers", pki.crl.isRevoked(der, 0xabcdn) !== null);
+  // certificateIssuer is meaningful only on an indirect CRL. On one that declares itself direct, the
+  // entry and the CRL disagree about whose certificate this is -- and SKIPPING the entry would be
+  // the worse of the two answers, since a matching entry silently not matching reports the
+  // certificate as NOT revoked.
+  var withCertIssuer = (function () {
+    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+    var copy = Object.assign({}, p);
+    copy.revokedCertificates = p.revokedCertificates.map(function (e) {
+      var c = Object.assign({}, e);
+      c.crlEntryExtensions = (e.crlEntryExtensions || []).concat([{
+        oid: pki.oid.byName("certificateIssuer"), critical: true,
+        // GeneralNames { [4] directoryName } -- the content is any DN; only its PRESENCE matters here.
+        value: b.sequence([b.contextConstructed(4, b.sequence([]))]),
+      }]);
+      return c;
+    });
+    return copy;
+  })();
+  check("an entry naming another issuer on a direct CRL is refused, never silently unmatched",
+    scopeCode(withCertIssuer, 0xabcdn) === "crl/indirect-not-supported");
+  // A malformed IDP means the scope cannot be established at all, which is not a scope to answer
+  // from -- the same refusal, for the same reason, rather than a guess that it is direct.
+  var badIdp = (function () {
+    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+    var copy = Object.assign({}, p);
+    copy.crlExtensions = (p.crlExtensions || []).concat([{
+      oid: pki.oid.byName("issuingDistributionPoint"), critical: true, value: b.integer(1n),
+    }]);
+    return copy;
+  })();
+  check("a CRL whose scope extension cannot be read is refused, not read as direct",
+    scopeCode(badIdp, 0xabcdn) === "crl/indirect-not-supported");
   check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
   check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
   check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");

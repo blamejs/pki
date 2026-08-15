@@ -200,6 +200,27 @@ async function testVerifyAccept() {
   })();
   check("a token whose TSA does not chain to the supplied anchor is refused, not merely untrusted",
     otherAnchorRes.threw === "tsp/untrusted-tsa" || otherAnchorRes.valid === false);
+  // An anchor carrying purpose-scoped trust metadata must be USABLE here. pki.path consults those
+  // maps only when a purpose is named, and this verb validates timestamp tokens and nothing else --
+  // so the purpose is not a caller choice, and requiring the caller to supply one through a verb
+  // that has no such option would make the metadata unreachable rather than enforced.
+  var taMeta = Object.assign({}, tsa.anchor, { purposes: { timeStamping: true } });
+  check("an anchor whose trust metadata delegates timestamping verifies",
+    (await pki.tsp.verify(token, DATA, { trustAnchor: taMeta })).trusted === true);
+  // ...and the metadata now REACHES: an anchor not trusted for timestamping is refused, which is
+  // the whole point of consulting it.
+  var taNotTs = Object.assign({}, tsa.anchor, { purposes: { timeStamping: false } });
+  var notTs = await pki.tsp.verify(token, DATA, { trustAnchor: taNotTs });
+  check("an anchor NOT delegated for timestamping is refused", notTs.valid === false && notTs.trusted === false);
+  // A distrustAfter for this purpose likewise applies rather than sitting inert. The fixture TSA's
+  // notBefore is 2020-01-01, and the comparison is STRICTLY greater -- a certificate issued ON the
+  // distrust date stays trusted -- so the date has to sit before it to distrust anything.
+  var taDistrust = Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2019-01-01T00:00:00Z") } });
+  check("a timestamping distrust date older than the TSA certificate is refused",
+    (await pki.tsp.verify(token, DATA, { trustAnchor: taDistrust })).valid === false);
+  check("...and one on the TSA certificate's own notBefore keeps it trusted (the boundary day)",
+    (await pki.tsp.verify(token, DATA, { trustAnchor: Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2020-01-01T00:00:00Z") } }) })).trusted === true);
+
   // Every refusal answers the same question too. An `undefined` on the failure branch is the same
   // "cannot tell what was checked" the field exists to remove.
   var badImprint = await pki.tsp.verify(token, Buffer.alloc(32, 0xee), { trustAnchor: tsa.anchor });
