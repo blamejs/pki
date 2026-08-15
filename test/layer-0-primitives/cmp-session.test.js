@@ -668,6 +668,19 @@ async function run() {
     (await mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: pinnedEdited }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
   // ...and a REBUILT pin carries no record to derive from, so it is refused at construction rather
   // than pinning something the caller cannot have meant.
+  // The pool takes the same derivation as every other certificate door, so a rebuilt entry is
+  // refused rather than deduped against the genuine certificate it copies -- and the refusal names
+  // the entry at construction rather than letting it spend, or evict, a candidate slot.
+  var poolRebuilt = Object.assign({}, pki.schema.x509.parse(H.caCert));
+  check("102g3. a rebuilt pool certificate is refused, never merged onto the genuine one it copies",
+    await codeOf(Promise.resolve().then(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+        intermediates: [H.caCert, poolRebuilt] });
+    })) === "cmp/bad-input");
+  // ...while the parser's own output is a perfectly good pool entry.
+  check("102g4. the parser's own certificate is accepted in the pool",
+    (await mk([H.ip(0, 0, certDer), H.pkiconf()], { intermediates: [pki.schema.x509.parse(H.caCert)] })
+      .session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
   check("102g2. a rebuilt expectedSender is refused at construction",
     await codeOf(Promise.resolve().then(function () {
       return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],

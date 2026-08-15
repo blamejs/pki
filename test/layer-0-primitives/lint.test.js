@@ -293,6 +293,22 @@ function run() {
   var derBytes = makeCert({ serial: b.integer(-1n) });
   var parsed = pki.schema.x509.parse(derBytes);
   check("bytes-path and parsed-object-path agree", JSON.stringify(ids(pki.lint.certificate(derBytes))) === JSON.stringify(ids(pki.lint.certificate(parsed))));
+  // A lint report is a decision an operator acts on, so it describes the certificate the BYTES
+  // describe. Every rule reads a sibling field off the object and none re-derives it, so an
+  // assembled object would otherwise produce a report -- possibly a clean one -- about fields that
+  // were never in any certificate. The report is taken from the parser's record instead, so editing
+  // the object changes nothing about what is reported.
+  var lintEdited = pki.schema.x509.parse(derBytes);
+  lintEdited.serialNumber = 1n;                       // the negative serial the bytes carry is the finding
+  check("editing a parsed certificate does not change what lint reports",
+    JSON.stringify(ids(pki.lint.certificate(lintEdited))) === JSON.stringify(ids(pki.lint.certificate(derBytes))));
+  // ...and an object the parser never produced is not linted as though it were a certificate. It is
+  // a wrong-TYPE argument -- not one of the accepted forms -- so it takes this verb's config-misuse
+  // throw rather than yielding a findings list about fields a caller wrote. Telling the caller their
+  // input was not a certificate is the useful answer; a clean report over it would not be.
+  var lintRebuilt = Object.assign({}, pki.schema.x509.parse(derBytes));
+  check("a rebuilt certificate object is refused as a wrong-type input, not linted",
+    throwsCode(function () { pki.lint.certificate(lintRebuilt); }) === "lint/bad-input");
 
   // ---- ingestion variants + config throws (coverage of the ingest + select paths) ----
   check("lint accepts a PEM string input", pki.lint.certificate(vectors.CERT_EC_PEM).counts.error === 0);
