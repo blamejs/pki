@@ -163,6 +163,21 @@ async function run() {
   check("mds: a BLOB that does not advance past the baseline is refused",
     (await codeFor({}, { previousNo: 42 })) === "webauthn/metadata-rollback");
 
+  // Verified provenance says the supplied catalogue is real; it does not say the ENTRY came out of
+  // it. A process holding two catalogues could otherwise pair an entry from one with the other, and
+  // the second's statusPolicy and freshness would decide about the first's status reports -- a
+  // by-date reading handing back anchors the entry's own catalogue records as revoked.
+  var otherCat = await mint({ statusReports: [{ status: "FIDO_CERTIFIED_L1", effectiveDate: "2026-01-01" }] });
+  var mdOther = await pki.webauthn.verifyMetadataBlob(otherCat.blob,
+    { rootCertificates: [otherCat.rootDer], time: T, statusPolicy: "latest-by-date" });
+  check("mds: an entry may only be judged against the catalogue it came out of", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry, { metadata: mdOther, time: T }); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+  check("mds: ...and its own catalogue still judges it",
+    pki.webauthn.metadataAnchors(pki.webauthn.metadataFor(mdOther, otherCat.aaguid),
+      { metadata: mdOther, time: T }).length === 1);
+
   check("mds: an unknown metadataAnchors option is a config-time fault", (function () {
     try { pki.webauthn.metadataAnchors(revokedEntry, { metdata: mdRevoked }); return false; }
     catch (e) { return e.code === "webauthn/bad-input"; }
