@@ -70,8 +70,10 @@ async function run() {
     var oClassicDer = fs.readFileSync(oClassic);
     var parsedClassic = pki.schema.pkcs12.parse(oClassicDer);
     check("the toolkit parses the OpenSSL classic PKCS#12", parsedClassic.integrityMode === "password" && parsedClassic.mac.kind === "hmac");
-    check("pki.pkcs12.verifyMac accepts the OpenSSL classic PKCS#12", (await pki.pkcs12.verifyMac(parsedClassic, PW)) === true);
-    check("pki.pkcs12.verifyMac rejects a wrong password on the OpenSSL store", (await pki.pkcs12.verifyMac(parsedClassic, "wrong")) === false);
+    // The MAC is verified over the store's BYTES: an integrity verb reads what it checks and what it
+    // hands back from one source, so the parsed form is refused and the file's own bytes are passed.
+    check("pki.pkcs12.verifyMac accepts the OpenSSL classic PKCS#12", (await pki.pkcs12.verifyMac(oClassicDer, PW)) === true);
+    check("pki.pkcs12.verifyMac rejects a wrong password on the OpenSSL store", (await pki.pkcs12.verifyMac(oClassicDer, "wrong")) === false);
     // ---- (d) pki.pkcs12.open reads + DECRYPTS the OpenSSL store (the UTF-8 PBES2 password pin) ----
     var openedClassic = await pki.pkcs12.open(oClassicDer, PW);
     check("pki.pkcs12.open decrypts the OpenSSL classic store (a key + a cert)", openedClassic.macVerified === true && openedClassic.keys.length >= 1 && openedClassic.certs.length >= 1);
@@ -98,9 +100,9 @@ async function run() {
     var ep = ctx.runOpenssl(["pkcs12", "-export", "-inkey", keyFile, "-in", certFile, "-passout", "pass:" + PW,
       "-pbmac1_pbkdf2", "-pbmac1_pbkdf2_md", "sha256", "-macalg", "sha256", "-keypbe", "AES-256-CBC", "-certpbe", "AES-256-CBC", "-name", "t", "-out", oPbmac1], { allowNonZero: true });
     if (ep.code === 0) {
-      var parsedPbmac1 = pki.schema.pkcs12.parse(fs.readFileSync(oPbmac1));
-      check("the toolkit parses the OpenSSL PBMAC1 PKCS#12", parsedPbmac1.mac.kind === "pbmac1");
-      check("pki.pkcs12.verifyMac accepts the OpenSSL PBMAC1 PKCS#12", (await pki.pkcs12.verifyMac(parsedPbmac1, PW)) === true);
+      var pbmac1Der = fs.readFileSync(oPbmac1);
+      check("the toolkit parses the OpenSSL PBMAC1 PKCS#12", pki.schema.pkcs12.parse(pbmac1Der).mac.kind === "pbmac1");
+      check("pki.pkcs12.verifyMac accepts the OpenSSL PBMAC1 PKCS#12", (await pki.pkcs12.verifyMac(pbmac1Der, PW)) === true);
     } else {
       ctx.skip("openssl could not export a -pbmac1_pbkdf2 store -- PBMAC1 inbound interop not cross-checked");
     }

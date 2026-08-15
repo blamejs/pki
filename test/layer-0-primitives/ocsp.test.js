@@ -63,6 +63,31 @@ async function run() {
   check("the lightweight profile permits exactly one Request", (await codeOfAsync(function () { return pki.ocsp.buildRequest([{ cert: w.targetCertDer, issuer: w.issuerCertDer }, { cert: w.targetCertDer, issuer: w.issuerCertDer }], { profile: "lightweight" }); })) === "ocsp/bad-input");
   check("a query missing issuer -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer }); })) === "ocsp/bad-input");
 
+  // A CertID is built from three fields of the two certificates the query names, and
+  // a parsed certificate may be passed instead of its bytes. An object missing one of
+  // those fields must be refused at the door with this verb's own code -- the fields
+  // are the CertID itself, so reaching the encoder with one absent produces either a
+  // foreign fault from the ASN.1 layer or, for the issuer name, a request whose
+  // issuerNameHash covers nothing.
+  var parsedTarget = pki.schema.x509.parse(w.targetCertDer);
+  var parsedIssuer = pki.schema.x509.parse(w.issuerCertDer);
+  function lacking(certObj, field) {
+    var c = Object.assign({}, certObj);
+    var dot = field.indexOf(".");
+    if (dot < 0) { delete c[field]; return c; }
+    c[field.slice(0, dot)] = Object.assign({}, certObj[field.slice(0, dot)]);
+    delete c[field.slice(0, dot)][field.slice(dot + 1)];
+    return c;
+  }
+  check("buildRequest accepts the parser's own output for both certificates",
+    pki.schema.ocsp.parseRequest(await pki.ocsp.buildRequest({ cert: parsedTarget, issuer: parsedIssuer })).requestList.length === 1);
+  check("a query certificate without serialNumber -> ocsp/bad-input, not an asn1 fault",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: lacking(parsedTarget, "serialNumber"), issuer: parsedIssuer }); })) === "ocsp/bad-input");
+  check("an issuer certificate without issuer.bytes -> ocsp/bad-input, not a request naming no issuer",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: parsedTarget, issuer: lacking(parsedIssuer, "issuer.bytes") }); })) === "ocsp/bad-input");
+  check("an issuer certificate without subject.bytes -> ocsp/bad-input",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: parsedTarget, issuer: lacking(parsedIssuer, "subject.bytes") }); })) === "ocsp/bad-input");
+
   // ---- sign -> verify per algorithm (the extracted sign-scheme's payoff) ----
   for (var alg of ["ec-p256", "rsa", "ed25519", "ml-dsa-65"]) {
     var wa = await makeOcspWorld(alg);
@@ -176,7 +201,7 @@ async function run() {
   check("a rogue issuer (matching subject DN, different key) is not accepted as the direct CA responder",
     (await pki.ocsp.verify(rogueResp, { cert: w.targetCertDer, issuer: w.rogueIssuerCertDer, time: T })).status === "unknown");
   check("pki.path.verifyOcspResponse rejects an unbound issuer (target signature does not verify under it)",
-    (function (r) { return r.status === "unknown" && r.signatureValid === false; })(await pki.path.verifyOcspResponse(pki.schema.ocsp.parseResponse(rogueResp), pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.rogueIssuerCertDer), T)));
+    (function (r) { return r.status === "unknown" && r.signatureValid === false; })(await pki.path.verifyOcspResponse(rogueResp, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.rogueIssuerCertDer), T)));
   check("an issuer whose subject DN differs from the target's issuer is rejected (name binding)",
     (await verify(w, good, { cert: w.targetCertDer, issuer: w.altCaCertDer })).status === "unknown");
 
@@ -398,19 +423,97 @@ async function run() {
   var withProduced = await pki.ocsp.sign({ responderID: "byName", producedAt: new Date("2027-05-01Z"), extendedRevoke: true, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("explicit producedAt + extendedRevoke build + verify good", (await verify(w, withProduced)).status === "good");
   check("verify with no opts -> ocsp/bad-input (cert + issuer required)", (await codeOfAsync(function () { return pki.ocsp.verify(good); })) === "ocsp/bad-input");
-  check("verify accepts an already-parsed response object", (await pki.ocsp.verify(pki.schema.ocsp.parseResponse(good), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+  check("verify accepts the parser's own response object", (await pki.ocsp.verify(pki.schema.ocsp.parseResponse(good), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+  // ...and refuses a REBUILT one. The signature, the algorithm that verifies it and the bytes it
+  // covers are three separate properties, so a copy is where they can stop belonging together --
+  // and Object.assign / spread, which copy own enumerable properties, are how such a copy is made.
+  check("verify refuses an Object.assign copy of it",
+    (await codeOfAsync(function () { return pki.ocsp.verify(Object.assign({}, pki.schema.ocsp.parseResponse(good)), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
+  // A mark that only said "this came from the parser" would survive both of these, which is why the
+  // record carries the BYTES and the verdict is re-derived from them: editing the object in place
+  // leaves any flag intact while the three parts describe something else, and Object.create
+  // inherits every symbol through the prototype chain while letting each field be shadowed.
+  var mutatedResp = pki.schema.ocsp.parseResponse(good);
+  mutatedResp.basicResponse.signature = { bytes: Buffer.alloc(64, 7), unusedBits: 0 };
+  check("editing a parsed response in place does not change the verdict: it is re-derived",
+    (await pki.ocsp.verify(mutatedResp, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+  var shadowedResp = Object.create(pki.schema.ocsp.parseResponse(good));
+  shadowedResp.basicResponse = { tbsResponseDataBytes: Buffer.alloc(4), signatureAlgorithm: { oid: "1.2" }, signature: { bytes: Buffer.alloc(4), unusedBits: 0 }, responses: [], certs: [] };
+  check("an Object.create shadow does not inherit provenance it did not earn",
+    (await codeOfAsync(function () { return pki.ocsp.verify(shadowedResp, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
+  // Any property, however hidden, is READ through the object -- and every read of an object is
+  // interceptable. A Proxy is handed whatever key a trap is asked about, so it can answer for a
+  // symbol it was never told, claim any provenance and name any bytes. The record is therefore kept
+  // off the object entirely, and the lookup is on identity: a Proxy is a different object.
+  var realResp = pki.schema.ocsp.parseResponse(good);
+  var forged = new Proxy(realResp, {
+    getOwnPropertyDescriptor: function () { return { value: { kind: "ocspResponse", source: Buffer.alloc(4) }, configurable: true, enumerable: false }; },
+    get: function (t, k) { return k === "basicResponse" ? undefined : Reflect.get(t, k); },
+  });
+  check("a Proxy cannot answer for provenance it does not have",
+    (await codeOfAsync(function () { return pki.ocsp.verify(forged, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
+  // ...including one whose target INHERITS from a real parse result, which is how an own-property
+  // rule would have been defeated: the trap is asked about the key and answers whatever it likes.
+  var inheritForged = new Proxy(Object.create(realResp), {
+    getOwnPropertyDescriptor: function (t, k) { return Reflect.getOwnPropertyDescriptor(t, k) || { value: 1, configurable: true, enumerable: false }; },
+    get: function (t, k) { return Reflect.get(t, k); },
+  });
+  check("...and one inheriting from a real parse result is refused too",
+    (await codeOfAsync(function () { return pki.ocsp.verify(inheritForged, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
+  // The snapshot is taken BEFORE the parse and the parser is given the snapshot, so a typed-array
+  // whose byteOffset/byteLength change between reads cannot show one thing to the parser and
+  // another to the record -- there is only one read.
+  var shifty = new Uint8Array(good);
+  Object.defineProperty(shifty, "byteLength", { get: (function () { var n = 0; return function () { return (n++ === 0) ? good.length : 4; }; })() });
+  var fromShifty = pki.schema.ocsp.parseResponse(shifty);
+  check("a typed array with stateful length getters cannot split the parse from the record",
+    (await pki.ocsp.verify(fromShifty, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+  // pki.ocsp.verify reads the nonce off the response it parsed and the signature is checked by the
+  // path verb. ONE snapshot has to serve both: taking a second from the caller's argument lets a
+  // shared-memory view differ between them, so the nonce compared would belong to one response and
+  // the signature verified to another. The same bytes going in twice must give one verdict.
+  var mutating = new Uint8Array(Buffer.from(good));
+  var vFirst = await pki.ocsp.verify(mutating, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T });
+  mutating.fill(0);
+  check("the verdict describes the bytes read at entry, not the buffer afterwards",
+    vFirst.status === "good" &&
+    (await pki.ocsp.verify(pki.schema.ocsp.parseResponse(Buffer.from(good)), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+  // ...and the recorded bytes are a COPY, so overwriting the caller's own Buffer after parsing
+  // cannot change what the verdict is computed over.
+  var mutableDer = Buffer.from(good);
+  var fromMutable = pki.schema.ocsp.parseResponse(mutableDer);
+  mutableDer.fill(0);
+  check("overwriting the caller's buffer after parsing does not change the verdict",
+    (await pki.ocsp.verify(fromMutable, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
   check("verify accepts already-parsed cert + issuer objects", (await pki.ocsp.verify(good, { cert: pki.schema.x509.parse(w.targetCertDer), issuer: pki.schema.x509.parse(w.issuerCertDer), time: T })).status === "good");
   check("verify defaults opts.time to now when omitted", (await pki.ocsp.verify(bareGood, { cert: w.targetCertDer, issuer: w.issuerCertDer })).status === "good");
   var unkNonce = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.altCaCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }, { nonce: Buffer.alloc(32, 5) });
   check("a nonce mismatch on an already-unknown verdict stays unknown", (await verify(w, unkNonce, { requestNonce: Buffer.alloc(32, 6) })).status === "unknown");
 
   // ---- the lower-level pki.path.verifyOcspResponse primitive pki.ocsp.verify composes ----
-  var parsedGood = pki.schema.ocsp.parseResponse(good);
-  var lowGood = await pki.path.verifyOcspResponse(parsedGood, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
-  check("pki.path.verifyOcspResponse (parsed inputs) -> good, authorized, matched", lowGood.status === "good" && lowGood.responderAuthorized === true && lowGood.matched === true);
-  var parsedNoNext = pki.schema.ocsp.parseResponse(noNext);
-  var lowStale = await pki.path.verifyOcspResponse(parsedNoNext, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
+  var lowGood = await pki.path.verifyOcspResponse(good, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
+  check("pki.path.verifyOcspResponse (response DER) -> good, authorized, matched", lowGood.status === "good" && lowGood.responderAuthorized === true && lowGood.matched === true);
+  var lowStale = await pki.path.verifyOcspResponse(noNext, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
   check("pki.path.verifyOcspResponse fail-closes an uncacheable (no nextUpdate) response to unknown", lowStale.status === "unknown");
+  // A signature check has three parts -- the signature, the algorithm that verifies it, and the
+  // bytes it covers -- and a parsed response carries all three as separate properties. Pair a real
+  // CA signature over a certificate that CA ISSUED with that certificate's own tbsBytes and
+  // algorithm, relabel the three, and every part of the check passes for a response that never
+  // existed. The verb takes bytes, so the three cannot be assembled from different sources.
+  var targetParsed = pki.schema.x509.parse(w.targetCertDer);
+  var replay = {
+    responseStatus: { code: 0 },
+    basicResponse: {
+      tbsResponseDataBytes: targetParsed.tbsBytes,
+      signatureAlgorithm: targetParsed.signatureAlgorithm,
+      signature: targetParsed.signatureValue,
+      certs: [], responderID: { byName: pki.schema.x509.parse(w.issuerCertDer).subject }, responses: [],
+    },
+  };
+  check("a parsed response is refused, so a certificate's own signature cannot be replayed as one",
+    (await codeOfAsync(function () { return pki.path.verifyOcspResponse(replay, targetParsed, pki.schema.x509.parse(w.issuerCertDer), T); })) === "path/bad-input");
+  check("pki.ocsp.verify refuses it at its own door too",
+    (await codeOfAsync(function () { return pki.ocsp.verify(replay, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
 
   // ---- dispatch + config-time ----
   check("pki.schema.parse routes a signed response to the OCSP-response parser", (function () { var r = pki.schema.parse(good); return r.responseStatus && r.responseStatus.code === 0; })());
@@ -421,7 +524,7 @@ async function run() {
   check("verify rejects an unparseable opts.time string -> ocsp/bad-input",
     (await codeOfAsync(function () { return pki.ocsp.verify(good, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: "not a date" }); })) === "ocsp/bad-input");
   check("pki.path.verifyOcspResponse rejects an invalid time -> path/bad-input",
-    (await codeOfAsync(function () { return pki.path.verifyOcspResponse(pki.schema.ocsp.parseResponse(good), pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), new Date("not a date")); })) === "path/bad-input");
+    (await codeOfAsync(function () { return pki.path.verifyOcspResponse(good, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), new Date("not a date")); })) === "path/bad-input");
   check("sign without a responder key -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: Buffer.alloc(4), status: "good" }] }, { cert: w.responderCertDer }); })) === "ocsp/bad-input");
   check("sign with no responses -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
 

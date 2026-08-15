@@ -146,6 +146,19 @@ async function testHolderForms() {
   var fc = await pki.attrcert.sign(spec({ holder: { fromCertificate: pkc } }), aaOf(aa));
   var fcHolder = pki.schema.attrcert.parse(fc).holder;
   check("fromCertificate derives a baseCertificateID", !!fcHolder.baseCertificateID);
+  // Issuer and serial TOGETHER are the identity a Holder binds to, so a certificate that names one
+  // identity while carrying another's signed bytes would bind the attribute certificate to a holder
+  // no issuer ever named. A certificate assembled from parts is refused at the door rather than
+  // having the substituted half quietly ignored -- the caller is told their input was not a
+  // certificate, instead of getting an attribute certificate about someone else.
+  var swapped = Object.assign({}, pki.schema.x509.parse(pkc), { serialNumber: 0x7777n });
+  check("a rebuilt holder certificate is refused, not partly believed",
+    await codeOf(pki.attrcert.sign(spec({ holder: { fromCertificate: swapped } }), aaOf(aa))) === "attrcert/bad-input");
+  // The parser's own result still works, and still yields the certificate's real serial.
+  var fcParsed = await pki.attrcert.sign(spec({ holder: { fromCertificate: pki.schema.x509.parse(pkc) } }), aaOf(aa));
+  var parsedId = pki.schema.attrcert.parse(fcParsed).holder.baseCertificateID;
+  check("a parsed holder certificate binds the certificate's own serial",
+    parsedId.serial === pki.schema.x509.parse(pkc).serialNumber && parsedId.serial !== 0x7777n);
 
   check("0 holder forms -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: {} }), aaOf(aa))) === "attrcert/bad-input");
   check("2 holder forms -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: { entityName: { dNSName: "a" }, objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32) } } }), aaOf(aa))) === "attrcert/bad-input");

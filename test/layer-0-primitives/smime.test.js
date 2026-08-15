@@ -19,6 +19,21 @@ var makeRecipient = signing.makeRecipient;
 
 async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 
+// The @opts names each pki.smime.<verb> documents, read out of the source comment blocks the wiki is
+// generated from. Derived rather than restated, so this cannot agree with a stale copy of itself.
+function docOptsOf(file) {
+  var src = require("fs").readFileSync(file, "utf8");
+  var out = {}, verb = null;
+  src.split(/\r?\n/).forEach(function (line) {
+    var p = /^\s*\*\s*@primitive\s+pki\.smime\.(\w+)\s*$/.exec(line);
+    if (p) { verb = p[1]; out[verb] = out[verb] || []; return; }
+    if (/^\s*\*\s*@(primitive|module)\b/.test(line)) { verb = null; return; }
+    var o = /^\s*\*\s*@opts\s+(\w+)\b/.exec(line);
+    if (o && verb) out[verb].push(o[1]);
+  });
+  return out;
+}
+
 async function run() {
   var rsa = signing.makeSigner("rsa"), signers = [{ cert: rsa.cert, key: rsa.key }];
   var MSG = Buffer.from("Hello S/MIME\nsecond line\n");
@@ -684,6 +699,61 @@ async function run() {
   var encOfSigned = await pki.smime.encrypt(signedInner, [{ cert: rcpt.cert }], { entity: true });
   var c317 = await pki.smime.decrypt(encOfSigned, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
   check("109. a signed-then-encrypted (C.3.17) wrap: decrypt yields a signed-data blob, not message/rfc822 -> deferral holds (legacy null)", c317.protectedHeaders === null && c317.headerProtection.legacy === null);
+
+  // ---- the option surface each verb accepts ----
+  // A misspelled option reads as an omission: nothing is out of range and nothing fails to parse, so
+  // the caller who asked for something stricter gets the looser default and is told nothing.
+  //
+  // The accepted set is checked against the DOCUMENTED one rather than against a list repeated here,
+  // and it is checked through the verb: every key the @opts block names is passed (with an undefined
+  // value, which is a present key to the guard and a default to the verb) and must not be refused as
+  // unknown. A name in the docs that the guard does not carry fails here, which is the drift worth
+  // catching -- an operator reading the documentation and getting an error.
+  // Read OFF the documentation blocks rather than repeated here: a list copied into the test drifts
+  // from the one an operator reads, which is the drift this is for.
+  var DOCUMENTED = docOptsOf(require("path").join(__dirname, "..", "..", "lib", "smime.js"));
+  check("110a. the documented option surface was recovered for all six verbs",
+    Object.keys(DOCUMENTED).length === 6 && Object.keys(DOCUMENTED).every(function (v) { return DOCUMENTED[v].length > 0; }));
+  var enc1 = await pki.smime.encrypt(MSG, [{ cert: rcpt.cert }]);
+  var z1 = await pki.smime.compress(MSG);
+  var drive = {
+    sign: function (o) { return pki.smime.sign(MSG, signers, o); },
+    verify: function (o) { return pki.smime.verify(mp, o); },
+    encrypt: function (o) { return pki.smime.encrypt(MSG, [{ cert: rcpt.cert }], o); },
+    decrypt: function (o) { return pki.smime.decrypt(enc1, { key: rcpt.key, cert: rcpt.cert }, o); },
+    compress: function (o) { return pki.smime.compress(MSG, o); },
+    decompress: function (o) { return pki.smime.decompress(z1, o); },
+  };
+  for (var verb of Object.keys(DOCUMENTED)) {
+    var accepted = true, rejectedName = null;
+    for (var k of DOCUMENTED[verb]) {
+      var o = {};
+      o[k] = undefined;
+      var code = await codeOf(function () { return drive[verb](o); });
+      // Some keys reach real validation with an undefined value; only the unknown-option refusal is
+      // the failure this vector is about, and its message names the key.
+      if (code === "smime/bad-input") {
+        var msg = await (async function () { try { await drive[verb](o); return ""; } catch (e) { return e.message; } })();
+        if (msg.indexOf("unknown option") === 0) { accepted = false; rejectedName = k; }
+      }
+    }
+    check("110. every documented pki.smime." + verb + " option is accepted" +
+      (rejectedName ? " (refused: " + rejectedName + ")" : ""), accepted === true);
+    var bad = {};
+    bad[DOCUMENTED[verb][0] + "Z"] = 1;
+    check("111. pki.smime." + verb + " refuses an unknown option",
+      (await codeOf(function () { return drive[verb](bad); })) === "smime/bad-input");
+  }
+  // The near-miss that motivates it: a misspelling of the option that turns a check ON is otherwise
+  // indistinguishable from not asking for the check at all.
+  check("112. a misspelled strictMicalg is refused, not silently ignored",
+    (await codeOf(function () { return pki.smime.verify(mp, { strictMicalgo: true }); })) === "smime/bad-input");
+  check("113. ...and the verb still accepts the correctly-spelled one",
+    (await codeOf(function () { return pki.smime.verify(mp, { strictMicalg: true }); })) === "NO-THROW");
+  // The tables are per verb: sign's `form` means nothing to encrypt, and a merged table would accept
+  // it there -- the same silence in a wider form.
+  check("114. an option belonging to another verb is refused",
+    (await codeOf(function () { return pki.smime.encrypt(MSG, [{ cert: rcpt.cert }], { form: "multipart" }); })) === "smime/bad-input");
 
   console.log("CHECKS " + helpers.getChecks());
 }

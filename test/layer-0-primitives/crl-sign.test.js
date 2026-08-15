@@ -182,11 +182,28 @@ async function testAkiShape() {
   var badSkiCert = signing.minimalCert(s.spki, { ski: true, badSki: true });
   check("unreadable issuer-cert SKI -> AKI re-derived from the SPKI",
     Buffer.compare(await akiKeyId({ cert: badSkiCert, key: s.key }), derived) === 0);
-  // A parsed certificate carrying no extensions array at all is still a usable issuer.
-  var noExts = pki.schema.x509.parse(s.cert);
-  delete noExts.extensions;
+  // A certificate carrying NO extensions is still a usable issuer -- the parser emits an empty
+  // array for one, so the SKI lookup misses and the key id is re-derived. Built as real bytes rather
+  // than by emptying a parsed certificate's list: an issuer certificate is re-derived from the bytes
+  // it was read from, so an edited object would be refused at the door and this would be testing the
+  // door instead of the SKI fallback.
+  var noExts = signing.minimalCert(s.spki);
   check("issuer cert with no extensions -> AKI re-derived from the SPKI",
     Buffer.compare(await akiKeyId({ cert: noExts, key: s.key }), derived) === 0);
+  // Two different things happen to an issuer certificate a caller has interfered with, and both are
+  // safe. DELETING a property from the parser's own object changes nothing: the certificate is
+  // re-derived from the bytes it was read from, so the real extensions are what the AKI comes from.
+  var mutated = pki.schema.x509.parse(s.cert);
+  delete mutated.extensions;
+  check("deleting a property from a parsed issuer cert does not change what is used",
+    Buffer.compare(await akiKeyId({ cert: mutated, key: s.key }), stored) === 0);
+  // REBUILDING it is refused outright -- a copy carries no record, so there are no bytes to derive
+  // from and nothing to check the object against. "The list is absent" and "the list is empty" is
+  // the distinction a scope guard reading `(list || [])` cannot make, and neither reading is taken.
+  var rebuilt = Object.assign({}, pki.schema.x509.parse(s.cert));
+  delete rebuilt.extensions;
+  check("a REBUILT issuer cert is refused, whatever it is missing",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: rebuilt, key: s.key })) === "crl/bad-input");
   check("authorityKeyIdentifier that is neither true nor a Buffer -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { authorityKeyIdentifier: 5 } }, issuerOf(s))) === "crl/bad-input");
 }
@@ -287,12 +304,36 @@ async function testVerifyInputShapes() {
   // is the point -- the certificate you verify a CRL against is one you were handed, not one you
   // minted, so the verifier is where the rule has to hold.
   var b = pki.asn1.build;
+  // The certificate is built as real BYTES carrying the raw keyUsage value, not by editing a parsed
+  // one: an issuer certificate is re-derived from the bytes it was read from, so an edited object
+  // would be refused at the door and these vectors would be testing the door rather than the
+  // NamedBitList rule. Bytes are also the faithful case -- the certificate you verify a CRL against
+  // is one you were handed.
+  // The REAL CA certificate with only its keyUsage extension value replaced, so the key, the SPKI
+  // and the issuer name are untouched and the only variable is the encoding under test.
   function caWithRawKu(kuValue) {
-    var copy = Object.assign({}, caParsed);
-    copy.extensions = caParsed.extensions.map(function (e) {
-      return e.oid === pki.oid.byName("keyUsage") ? Object.assign({}, e, { value: kuValue }) : e;
+    var root = pki.asn1.decode(caDer);
+    var tbs = root.children[0];
+    var kids = tbs.children.slice();
+    var wrapper = kids[kids.length - 1];
+    if (!wrapper || wrapper.tagClass !== "context" || wrapper.tagNumber !== 3) {
+      throw new Error("fixture: the CA certificate carries no extensions to replace");
+    }
+    var kuOid = pki.oid.byName("keyUsage");
+    var exts = wrapper.children[0].children.map(function (e) {
+      if (pki.asn1.read.oid(e.children[0]) !== kuOid) return e.bytes;
+      var parts = [b.oid(kuOid)];
+      if (e.children.length === 3) parts.push(e.children[1].bytes);   // the critical flag, as encoded
+      parts.push(b.octetString(kuValue));
+      return b.sequence(parts);
     });
-    return copy;
+    kids[kids.length - 1] = { bytes: b.contextConstructed(3, b.sequence(exts)) };
+    var newTbs = b.sequence(kids.map(function (c) { return c.bytes; }));
+    // The outer signature is stale: pki.crl.verify uses this certificate's KEY and keyUsage to judge
+    // the CRL, and never validates the certificate itself (that is pki.path.validate's job).
+    // Returned PARSED, because this argument is a certificate rather than bytes -- and a parsed one
+    // carries the parser's record, so it is accepted at the door and re-derived from these bytes.
+    return pki.schema.x509.parse(b.sequence([newTbs, root.children[1].bytes, root.children[2].bytes]));
   }
   // cRLSign is bit 6, so the minimal DER content is one unused bit over one octet. Padding it with a
   // redundant all-zero octet leaves cRLSign set while breaking the encoding rule.
@@ -397,20 +438,72 @@ async function testDeltaAndFreshest() {
   check("removeFromCRL(8) accepted in a delta CRL", (entryExt(rc.revokedCertificates[0], "reasonCode") || {}).value === 8);
 }
 
-// An indirect CRL, which this library deliberately refuses to EMIT (pki.path.crlChecker cannot yet
-// process one, so signing one would produce a CRL nothing here can use). A third-party CRL can
-// still carry the flag, which is the input isRevoked has to be safe against -- so the fixture
-// splices the extension onto a parsed CRL rather than asking the signer for something it declines.
+// A CRL carrying a scope extension this library deliberately refuses to EMIT -- an IDP, or a
+// certificateIssuer on an entry (pki.path.crlChecker cannot process an indirect CRL, so signing one
+// would produce a CRL nothing here can use). A third-party CRL can still carry them, and that is the
+// input the scope guards have to be safe against.
+//
+// The fixtures build BYTES rather than editing a parsed object. A parsed CRL is re-derived from the
+// bytes it was read from before any verdict is taken, so an edit made afterwards is discarded --
+// which is the point of that rule, and it means an edited object tests the door instead of the
+// guard. Splicing the DER puts the extension where a third party's CRL would have it. The outer
+// signature is left stale on purpose: these verbs answer scope and revocation, and neither verifies
+// it (pki.crl.verify is the verb that does, and it has its own vectors).
+function _spliceCrlExt(der, extDer, opts) {
+  var b = pki.asn1.build;
+  var root = pki.asn1.decode(der);
+  var tbs = root.children[0];
+  var kids = tbs.children.slice();
+  var last = kids[kids.length - 1];
+  var isExtWrapper = last && last.tagClass === "context" && last.tagNumber === 0;
+  var existing = isExtWrapper ? last.children[0].children.map(function (c) { return c.bytes; }) : [];
+  if (isExtWrapper) kids.pop();
+  var extsSeq = b.sequence(existing.concat([extDer]));
+  kids = kids.map(function (c) { return c.bytes; }).concat([b.contextConstructed(0, extsSeq)]);
+  var newTbs = b.sequence(kids);
+  return b.sequence([newTbs, root.children[1].bytes, root.children[2].bytes]);
+  // opts is unused today; kept out of the signature deliberately -- a fixture with a knob nobody
+  // sets is a fixture nobody can read.
+}
+// The same splice, one level in: an extension added to the FIRST revoked entry's
+// crlEntryExtensions. revokedCertificates is located structurally rather than by index -- it is the
+// universal SEQUENCE that follows the last Time in the tbsCertList, which distinguishes it from the
+// issuer Name (also a SEQUENCE, but before the Times) whatever the optional fields do.
+function _spliceEntryExt(der, extDer) {
+  var b = pki.asn1.build;
+  var TAGS = pki.asn1.TAGS;
+  var root = pki.asn1.decode(der);
+  var tbs = root.children[0];
+  var kids = tbs.children.slice();
+  var lastTime = -1;
+  for (var i = 0; i < kids.length; i++) {
+    if (kids[i].tagClass === "universal" && (kids[i].tagNumber === TAGS.UTC_TIME || kids[i].tagNumber === TAGS.GENERALIZED_TIME)) lastTime = i;
+  }
+  var ri = lastTime + 1;
+  if (ri >= kids.length || kids[ri].tagClass !== "universal" || kids[ri].tagNumber !== TAGS.SEQUENCE) {
+    throw new Error("fixture: this CRL has no revokedCertificates to splice an entry extension into");
+  }
+  var entries = kids[ri].children.slice();
+  var first = entries[0].children.slice();
+  var lastOfEntry = first[first.length - 1];
+  var hasEntryExts = lastOfEntry && lastOfEntry.tagClass === "universal" && lastOfEntry.tagNumber === TAGS.SEQUENCE;
+  var existing = hasEntryExts ? lastOfEntry.children.map(function (c) { return c.bytes; }) : [];
+  if (hasEntryExts) first.pop();
+  var newEntry = b.sequence(first.map(function (c) { return c.bytes; }).concat([b.sequence(existing.concat([extDer]))]));
+  entries[0] = { bytes: newEntry };
+  kids[ri] = { bytes: b.sequence(entries.map(function (e) { return e.bytes; })) };
+  var newTbs = b.sequence(kids.map(function (c) { return c.bytes; }));
+  return b.sequence([newTbs, root.children[1].bytes, root.children[2].bytes]);
+}
+
+// IssuingDistributionPoint ::= SEQUENCE { ... indirectCRL [4] BOOLEAN DEFAULT FALSE }
 function _forceIndirect(der) {
   var b = pki.asn1.build;
-  var parsed = pki.schema.crl.parse(der);
-  var copy = Object.assign({}, parsed);
-  copy.crlExtensions = (parsed.crlExtensions || []).concat([{
-    oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
-    // IssuingDistributionPoint ::= SEQUENCE { ... indirectCRL [4] BOOLEAN DEFAULT FALSE }
-    value: b.sequence([b.contextPrimitive(4, Buffer.from([0xff]))]),
-  }]);
-  return copy;
+  return _spliceCrlExt(der, b.sequence([
+    b.oid(pki.oid.byName("issuingDistributionPoint")),
+    b.boolean(true),
+    b.octetString(b.sequence([b.contextPrimitive(4, Buffer.from([0xff]))])),
+  ]));
 }
 
 // ---- PEM output + isRevoked lookup ----
@@ -456,24 +549,29 @@ async function testPemAndIsRevoked() {
   check("isRevoked refuses to answer from an indirect CRL", scopeCode(indirectDer, 0xabcdn) === "crl/indirect-not-supported");
   // A direct CRL with no scope extensions still answers, which is the case every caller has.
   check("a plain direct CRL still answers", pki.crl.isRevoked(der, 0xabcdn) !== null);
+  // A CRL's answer is a verdict over a signed byte range, but a parsed CRL presents that range and
+  // the revocation list as separate properties. Keep a correctly signed CRL's tbsBytes and signature
+  // and empty the list, and every completeness rule passes while a revoked certificate reports as
+  // not-listed. The parser's record closes it: the answer is re-derived from the recorded bytes.
+  var realCrl = pki.schema.crl.parse(der);
+  check("the parser's own CRL object still answers", pki.crl.isRevoked(realCrl, 0xabcdn) !== null);
+  check("a CRL with an emptied revocation list is refused, not answered from",
+    scopeCode(Object.assign({}, realCrl, { revokedCertificates: [] }), 0xabcdn) === "crl/bad-input");
+  check("...and one with its scope extensions emptied is refused too",
+    scopeCode(Object.assign({}, realCrl, { crlExtensions: [] }), 0xabcdn) === "crl/bad-input");
   // certificateIssuer is meaningful only on an indirect CRL. On one that declares itself direct, the
   // entry and the CRL disagree about whose certificate this is -- and SKIPPING the entry would be
   // the worse of the two answers, since a matching entry silently not matching reports the
   // certificate as NOT revoked.
-  var withCertIssuer = (function () {
-    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
-    var copy = Object.assign({}, p);
-    copy.revokedCertificates = p.revokedCertificates.map(function (e) {
-      var c = Object.assign({}, e);
-      c.crlEntryExtensions = (e.crlEntryExtensions || []).concat([{
-        oid: pki.oid.byName("certificateIssuer"), critical: true,
-        // GeneralNames { [4] directoryName } -- the content is any DN; only its PRESENCE matters here.
-        value: b.sequence([b.contextConstructed(4, b.sequence([]))]),
-      }]);
-      return c;
-    });
-    return copy;
-  })();
+  var withCertIssuer = _spliceEntryExt(der, (function () {
+    var b = pki.asn1.build;
+    return b.sequence([
+      b.oid(pki.oid.byName("certificateIssuer")),
+      b.boolean(true),
+      // GeneralNames { [4] directoryName } -- the content is any DN; only its PRESENCE matters here.
+      b.octetString(b.sequence([b.contextConstructed(4, b.sequence([]))])),
+    ]);
+  })());
   check("an entry naming another issuer on a direct CRL is refused, never silently unmatched",
     scopeCode(withCertIssuer, 0xabcdn) === "crl/indirect-not-supported");
   // The contradiction is a property of the CRL, not of the entry that happens to match. Checking it
@@ -483,14 +581,15 @@ async function testPemAndIsRevoked() {
     scopeCode(withCertIssuer, 0x9999n) === "crl/indirect-not-supported");
   // A malformed IDP means the scope cannot be established at all, which is not a scope to answer
   // from -- the same refusal, for the same reason, rather than a guess that it is direct.
-  var badIdp = (function () {
-    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
-    var copy = Object.assign({}, p);
-    copy.crlExtensions = (p.crlExtensions || []).concat([{
-      oid: pki.oid.byName("issuingDistributionPoint"), critical: true, value: b.integer(1n),
-    }]);
-    return copy;
-  })();
+  var badIdp = _spliceCrlExt(der, (function () {
+    var b = pki.asn1.build;
+    // An IDP whose extnValue is an INTEGER rather than the IssuingDistributionPoint SEQUENCE.
+    return b.sequence([
+      b.oid(pki.oid.byName("issuingDistributionPoint")),
+      b.boolean(true),
+      b.octetString(b.integer(1n)),
+    ]);
+  })());
   check("a CRL whose scope extension cannot be read is refused, not read as unscoped",
     scopeCode(badIdp, 0xabcdn) === "crl/scope-not-authoritative");
   // The indirect flag is a DER BOOLEAN: exactly one content octet, 0x00 or 0xFF (X.690 sec. 11.1).
@@ -499,13 +598,12 @@ async function testPemAndIsRevoked() {
   // to answer by serial. A DEFAULT FALSE is likewise not encoded at all (X.690 sec. 11.5), so an
   // explicit FALSE is a statement the encoding rules do not permit rather than a reassuring one.
   function idpTag(tag, contentBytes) {
-    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
-    var copy = Object.assign({}, p);
-    copy.crlExtensions = (p.crlExtensions || []).concat([{
-      oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
-      value: b.sequence([b.contextPrimitive(tag, Buffer.from(contentBytes))]),
-    }]);
-    return copy;
+    var b = pki.asn1.build;
+    return _spliceCrlExt(der, b.sequence([
+      b.oid(pki.oid.byName("issuingDistributionPoint")),
+      b.boolean(true),
+      b.octetString(b.sequence([b.contextPrimitive(tag, Buffer.from(contentBytes))])),
+    ]));
   }
   check("an empty indirectCRL BOOLEAN is refused, not read as absent",
     scopeCode(idpTag(4, []), 0xabcdn) === "crl/scope-not-authoritative");
@@ -525,19 +623,41 @@ async function testPemAndIsRevoked() {
     scopeCode(idpTag(3, [0x01, 0x80]), 0xabcdn) === "crl/scope-not-authoritative");
   check("a partitioned CRL is refused: the correspondence is against the certificate's own DP",
     scopeCode((function () {
-      var b = pki.asn1.build, p = pki.schema.crl.parse(der);
-      var copy = Object.assign({}, p);
-      copy.crlExtensions = (p.crlExtensions || []).concat([{
-        oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+      var b = pki.asn1.build;
+      return _spliceCrlExt(der, b.sequence([
+        b.oid(pki.oid.byName("issuingDistributionPoint")),
+        b.boolean(true),
         // distributionPoint [0] { fullName [0] { uniformResourceIdentifier [6] } }
-        value: b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.example/a", "ascii"))))]),
-      }]);
-      return copy;
+        b.octetString(b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.example/a", "ascii"))))])),
+      ]));
     })(), 0xabcdn) === "crl/scope-not-authoritative");
   // Indirect keeps its own name: it is not a narrower scope, it is a list whose serials belong to
   // other issuers, and that is the sharper thing to tell an operator.
   check("indirect is named as indirect, not folded into the scope refusal",
     scopeCode(idpTag(4, [0xff]), 0xabcdn) === "crl/indirect-not-supported");
+  // A CLAIMED-parsed CRL was trusted as parser output the moment it carried the three properties the
+  // door tested for, and every scope guard above reads its list as `(crlExtensions || [])` -- so
+  // OMITTING the property entirely made a scope-restricted CRL answer as an unrestricted one. A
+  // guard cannot fire on a list that is not there, which is why the door has to establish it IS.
+  var scopedParsed = pki.schema.crl.parse(await pki.crl.sign(
+    { thisUpdate: TU, nextUpdate: NU, crlNumber: 3n, revoked: [{ serialNumber: 0xabcdn, revocationDate: RD }],
+      extensions: { issuingDistributionPoint: { onlyContainsUserCerts: true } } }, issuerOf(s)));
+  check("a scoped CRL handed as parser output is still refused",
+    scopeCode(scopedParsed, 0xabcdn) === "crl/scope-not-authoritative");
+  var strippedExts = Object.assign({}, scopedParsed);
+  delete strippedExts.crlExtensions;
+  check("...and stripping the extension list is a malformed input, not an unscoped CRL",
+    scopeCode(strippedExts, 0xabcdn) === "crl/bad-input");
+  var strippedEntryExts = Object.assign({}, pki.schema.crl.parse(der));
+  strippedEntryExts.revokedCertificates = strippedEntryExts.revokedCertificates.map(function (e) {
+    var c = Object.assign({}, e); delete c.crlEntryExtensions; return c;
+  });
+  check("an entry with no crlEntryExtensions property is malformed, not an entry naming no issuer",
+    scopeCode(strippedEntryExts, 0xabcdn) === "crl/bad-input");
+  check("a bare tbsBytes-carrying object is refused rather than dereferenced",
+    scopeCode({ tbsBytes: Buffer.alloc(0), signatureValue: { bytes: Buffer.alloc(0) }, signatureAlgorithm: { oid: "1.2" } }, 0xabcdn) === "crl/bad-input");
+  // The unmodified parser output still works -- the rule is completeness, not a ban on the form.
+  check("an unmodified parsed CRL still answers", pki.crl.isRevoked(pki.schema.crl.parse(der), 0xabcdn) !== null);
   check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
   check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
   check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");
@@ -604,14 +724,23 @@ async function testIssuerCertCrlSign() {
   var kuBad = pki.asn1.build.sequence([pki.asn1.build.oid(byName("keyUsage")), pki.asn1.build.boolean(true), pki.asn1.build.octetString(Buffer.from([0xff, 0xff]))]);
   check("issuer cert with a malformed keyUsage -> crl/bad-key-usage",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: signing.minimalCert(s.spki, { exts: [kuBad] }), key: s.key })) === "crl/bad-key-usage");
-  // A fault raised while reading a caller-supplied certificate object that is NOT already a typed CRL error
-  // is normalized to one, so the primitive's contract -- every failure is a CrlError carrying a stable code
-  // -- holds even for an issuer object the parser did not produce.
-  var hostile = pki.schema.x509.parse(s.cert);
-  var trap = { oid: byName("keyUsage"), critical: true };
-  Object.defineProperty(trap, "value", { get: function () { throw new RangeError("unreadable extension value"); } });
-  hostile.extensions = [trap];
-  check("an untyped fault reading the issuer keyUsage is normalized to crl/bad-input",
+  // A hostile object cannot make this verb raise an untyped fault. Two routes, both closed, and the
+  // contract -- every failure is a CrlError carrying a stable code -- holds for each.
+  function trapExt() {
+    var trap = { oid: byName("keyUsage"), critical: true };
+    Object.defineProperty(trap, "value", { get: function () { throw new RangeError("unreadable extension value"); } });
+    return trap;
+  }
+  // Installed on the parser's OWN object, the trap is never read: the certificate is re-derived from
+  // the bytes it was parsed from, so the CRL signs from the real extensions.
+  var trapped = pki.schema.x509.parse(s.cert);
+  trapped.extensions = [trapExt()];
+  check("a throwing accessor on a parsed issuer cert is discarded with the rest of the edit",
+    Buffer.isBuffer(await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: trapped, key: s.key })));
+  // Installed on a REBUILT object, it is refused at the door -- and the refusal is typed, so the
+  // RangeError does not escape as itself even though reading the claim fields touches the object.
+  var hostile = Object.assign({}, pki.schema.x509.parse(s.cert), { extensions: [trapExt()] });
+  check("a throwing accessor on a rebuilt issuer cert is a typed fault, not a raw one",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: hostile, key: s.key })) === "crl/bad-input");
 }
 

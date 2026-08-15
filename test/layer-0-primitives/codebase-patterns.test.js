@@ -1197,12 +1197,14 @@ function testFormatModulesComposeSchema() {
         content: FORMAT_FILES[f] + " hand-rolls a positional-cursor decode (children[idx++]) — declare a schema and schema.walk it; the engine owns positional reads / field ordering / uniqueness" });
     }
     // A format parses by composing the schema engine: schema.walk(...) directly,
-    // the shared pkix.runParse(...), or pkix.makeParser({ topSchema, … }) — the
-    // parser factory that binds runParse to the format's identity (both keep the
-    // coerce -> decode -> walk path in pkix, never a hand-written decoder).
-    if (!/schema\.walk\(|pkix\.runParse\(|pkix\.makeParser\(/.test(code)) {
+    // the shared pkix.runParse(...), pkix.makeParser({ topSchema, … }) — the parser
+    // factory that binds runParse to the format's identity — or its recording
+    // sibling pkix.makeRecordingParser(...), which is that same factory plus the
+    // provenance record a verdict verb re-derives from. All four keep the
+    // coerce -> decode -> walk path in pkix, never a hand-written decoder.
+    if (!/schema\.walk\(|pkix\.runParse\(|pkix\.makeParser\(|pkix\.makeRecordingParser\(/.test(code)) {
       bad.push({ file: FORMAT_FILES[f], line: 0,
-        content: FORMAT_FILES[f] + " must parse by composing the schema engine — schema.walk(...), the shared pkix.runParse(...), or pkix.makeParser(...), not a hand-written decoder" });
+        content: FORMAT_FILES[f] + " must parse by composing the schema engine — schema.walk(...), the shared pkix.runParse(...), pkix.makeParser(...) or pkix.makeRecordingParser(...), not a hand-written decoder" });
     }
     // Guard-parity: a format must NOT re-implement input coercion / PEM handling
     // / the size cap. Those live ONCE in pkix (coerceToDer / pemDecode / runParse)

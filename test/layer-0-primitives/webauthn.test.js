@@ -747,6 +747,81 @@ async function run() {
   var N2048 = Buffer.concat([Buffer.from([0xc0]), Buffer.alloc(255, 0xff)]);
   check("parse: an RSA credential key below the 2048-bit floor is refused",
     rsaCode(Buffer.from([0xff]), E65537) === "webauthn/bad-cose-key");
+  // verifyAssertion takes the stored key as COSE BYTES or as the object pki.webauthn.verify
+  // returned. The bytes went through every check here and the object went through none, so one
+  // stored credential was refused in one form and imported for signature verification in the other
+  // -- and which form a relying party stores is a question about their datastore, not about how
+  // carefully their credential is checked. Both forms now end at the same rules about the KEY.
+  async function assertObjCode(key) {
+    try {
+      await pki.webauthn.verifyAssertion({
+        credentialPublicKey: key, authenticatorData: Buffer.alloc(37), signature: Buffer.alloc(64),
+        clientDataHash: Buffer.alloc(32),
+      });
+      return "NO-THROW";
+    } catch (e) { return e && e.code; }
+  }
+  check("assert: an RSA credential key OBJECT below the floor is refused, as its bytes are",
+    (await assertObjCode({ kty: 3, alg: -257, n: Buffer.from([0xff]), e: E65537 })) === "webauthn/bad-cose-key");
+  check("assert: an exponent of 1 in the OBJECT form is refused too",
+    (await assertObjCode({ kty: 3, alg: -257, n: N2048, e: Buffer.from([0x01]) })) === "webauthn/bad-cose-key");
+  check("assert: an EC2 object whose x/y do not match its curve is refused",
+    (await assertObjCode({ kty: 2, alg: -7, crv: 1, x: Buffer.alloc(4), y: Buffer.alloc(4) })) === "webauthn/bad-cose-key");
+  check("assert: an OKP object with a wrong-length x is refused",
+    (await assertObjCode({ kty: 1, alg: -8, crv: 6, x: Buffer.alloc(4) })) === "webauthn/bad-cose-key");
+  // kty and alg come straight off a caller-supplied object here, so their type is checked before
+  // anything converts them: a Symbol or a missing field must be this module's typed error, not the
+  // raw TypeError a conversion would throw.
+  check("assert: an object with no kty is a typed fault, not a raw TypeError",
+    (await assertObjCode({})) === "webauthn/bad-cose-key");
+  check("assert: a non-integer kty is a typed fault",
+    (await assertObjCode({ kty: Symbol("x"), alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: a non-integer alg is a typed fault",
+    (await assertObjCode({ kty: 2, alg: "ES256", crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // The VALUE, not only the type: a fractional or non-finite number is a number, and BigInt()
+  // refuses it with a raw RangeError. "It is a number" was the wrong question.
+  check("assert: a fractional kty is a typed fault, not a raw RangeError",
+    (await assertObjCode({ kty: 2.5, alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: a non-finite kty likewise", (await assertObjCode({ kty: Infinity, alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: a fractional alg likewise",
+    (await assertObjCode({ kty: 2, alg: -7.5, crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // EVERY integer label, not the two the dispatch needs first: crv indexes a lookup table, and a
+  // Symbol thrown at a property read is the same raw fault as one thrown at a conversion.
+  check("assert: a Symbol crv on an EC2 key is a typed fault",
+    (await assertObjCode({ kty: 2, alg: -7, crv: Symbol("x"), x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  check("assert: a Symbol crv on an OKP key is a typed fault",
+    (await assertObjCode({ kty: 1, alg: -8, crv: Symbol("x"), x: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  check("assert: a fractional crv is a typed fault",
+    (await assertObjCode({ kty: 2, alg: -7, crv: 1.5, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // A caller-supplied object can define an ACCESSOR on any of these. One that throws turns the
+  // validation into a raw fault; one that answers differently on successive reads makes the field
+  // that was checked and the field that is used two different values. Each is read exactly once.
+  var trapFields = ["kty", "alg", "crv", "x", "y", "n", "e"];
+  for (var tf = 0; tf < trapFields.length; tf++) {
+    var trapKey = { kty: 2, alg: -7, crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) };
+    Object.defineProperty(trapKey, trapFields[tf], { enumerable: true, get: function () { throw new RangeError("raw"); } });
+    check("assert: a throwing accessor on " + trapFields[tf] + " is a typed fault",
+      (await assertObjCode(trapKey)) === "webauthn/bad-cose-key");
+  }
+  // A label may arrive as a Number or a BigInt -- a CBOR reader hands out BigInt, a hand-built
+  // object is likelier to hold Number -- and every comparison below is against a Number-keyed
+  // table. Accepting both at the gate and comparing only one would make the verdict depend on how
+  // the caller happened to spell the value.
+  check("assert: a BigInt-labelled key is judged the same as a Number-labelled one",
+    (await assertObjCode({ kty: 3n, alg: -257n, n: Buffer.from([0xff]), e: E65537 })) === "webauthn/bad-cose-key");
+  check("assert: ...including on the profile comparison, not only the modulus rule",
+    (await assertObjCode({ kty: 2n, alg: -257n, crv: 1n, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // A BigInt is bounded too: an unbounded one IS an integer, converts to Infinity, and throws a raw
+  // RangeError at the next conversion -- the same defeat as a fractional number by another route.
+  check("assert: a BigInt label too large to carry is a typed fault",
+    (await assertObjCode({ kty: 10n ** 1000n, alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: ...and a hugely negative one likewise",
+    (await assertObjCode({ kty: 2, alg: -(10n ** 1000n), crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // A field that answers differently each time cannot be checked as one value and used as another.
+  var shiftyKey = { kty: 2, alg: -7, crv: 1, y: Buffer.alloc(32) };
+  Object.defineProperty(shiftyKey, "x", { enumerable: true, get: (function () { var n = 0; return function () { return (n++ === 0) ? Buffer.alloc(32) : Buffer.alloc(4); }; })() });
+  check("assert: a field read twice cannot answer twice",
+    ["webauthn/bad-cose-key", "webauthn/bad-signature"].indexOf(await assertObjCode(shiftyKey)) !== -1);
   check("parse: ...and one a byte short of the floor likewise",
     rsaCode(Buffer.alloc(255, 0xff), E65537) === "webauthn/bad-cose-key");
   check("parse: an RSA exponent of 1 is refused -- it makes RSA the identity function",

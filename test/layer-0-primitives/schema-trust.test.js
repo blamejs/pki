@@ -670,6 +670,105 @@ async function testRealCertdataSlice() {
     codeOf(function () { pki.trust.anchor(entryA, { purpose: "wormholes" }); }) === "trust/bad-input");
   check("T27: anchor() rejects a non-entry input",
     codeOf(function () { pki.trust.anchor(null); }) === "trust/bad-input");
+  // A trust anchor IS the pair (name, key) -- RFC 5280 sec. 6.1.1 -- so both halves are one fact
+  // about one certificate, and the store derived them from one. Reading them back off the entry let
+  // a rebuilt copy carry the store's NAME and its per-purpose trust metadata onto a key the store
+  // never vouched for, which is the whole content of a root program's statement.
+  var swappedKey = Object.assign({}, entryA);
+  swappedKey.publicKey = fx.leafBefore.subjectPublicKeyInfo.bytes;
+  check("T27: a rebuilt entry cannot carry the store's metadata onto another key",
+    codeOf(function () { pki.trust.anchor(swappedKey, { purpose: "serverAuth" }); }) === "trust/bad-input");
+  // The refusal is about the METADATA, not about the object being a copy: a caller asserting their
+  // own bare (name, key) anchor carries no store statement and is their own to make.
+  var bare = { name: entryA.name, publicKey: entryA.publicKey, algorithm: entryA.algorithm, parameters: entryA.parameters };
+  check("T27: a bare caller-built anchor tuple is still their own assertion to make",
+    Buffer.compare(pki.trust.anchor(bare).publicKey, anchorA.publicKey) === 0);
+  // ...and the store's own entry is unaffected, including through a second anchor() call.
+  check("T27: the store's entry still anchors", Buffer.compare(pki.trust.anchor(entryA, { purpose: "serverAuth" }).publicKey, anchorA.publicKey) === 0);
+  // The record holds COPIES. Sharing the entry's own Buffer would mean overwriting the entry in
+  // place -- otherSpki.copy(entry.publicKey), which needs only an equal-length key -- overwrites
+  // the record with it, and re-deriving hands back exactly the substituted key. A record that
+  // changes with the thing it pins is not one.
+  var inPlace = pki.trust.parseCertdata(slice).anchors[0];
+  var beforeKey = Buffer.from(inPlace.publicKey);
+  var otherKey = fx.leafBefore.subjectPublicKeyInfo.bytes;
+  if (otherKey.length === inPlace.publicKey.length) otherKey.copy(inPlace.publicKey);
+  else inPlace.publicKey.fill(0);
+  check("T27: overwriting the entry's key buffer in place does not reach the record",
+    Buffer.compare(pki.trust.anchor(inPlace, { purpose: "serverAuth" }).publicKey, beforeKey) === 0);
+  // Copies OUT as well as in. Handing back the record's own Buffer would let a consumer write
+  // THROUGH the returned anchor into the record -- guarding one direction and not the other leaves
+  // the same door open. Both the key and the name are fresh on every call.
+  var handedOut = pki.trust.anchor(inPlace, { purpose: "serverAuth" });
+  handedOut.publicKey.fill(0);
+  handedOut.name.rdns.length = 0;
+  var afterWrite = pki.trust.anchor(inPlace, { purpose: "serverAuth" });
+  check("T27: writing through a returned anchor does not reach the record",
+    Buffer.compare(afterWrite.publicKey, beforeKey) === 0 && afterWrite.name.rdns.length > 0);
+  // The METADATA is what the purpose gate reads, so it is copied for the same reason the key is --
+  // and it is the sharper case: flipping a purpose on a returned anchor would open a gate the store
+  // never opened. distrustAfter holds Dates, mutable in the same way.
+  var meta = pki.trust.anchor(entryA);
+  meta.purposes.emailProtection = true;
+  check("T27: flipping a purpose on a returned anchor does not open the gate",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "emailProtection" }); }) === "trust/purpose-not-trusted");
+  var beforeDate = pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime();
+  meta.distrustAfter.serverAuth.setUTCFullYear(2099);
+  check("T27: moving a distrust date on a returned anchor does not reach the entry",
+    pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === beforeDate);
+  check("T27: two anchors from one entry share nothing mutable",
+    (function (a, b) { return a.purposes !== b.purposes && a.distrustAfter !== b.distrustAfter && a.publicKey !== b.publicKey && a.name !== b.name; })(pki.trust.anchor(entryA), pki.trust.anchor(entryA)));
+  // Defensive, not lossy. The anchor's name is the structure pki.schema.x509.parse produces, and a
+  // caller walking it must see the same fields whichever way the anchor was obtained -- a copy that
+  // kept only what the path validator compares would drop each attribute's registry name.
+  function keysOf(o) { return Object.keys(o).sort().join(","); }
+  var certName = fx.rootA.subject;
+  var anchorName = pki.trust.anchor(entryA).name;
+  check("T27: an anchor's name carries the parser's fields", keysOf(anchorName) === keysOf(certName));
+  check("T27: ...down to each RDN attribute",
+    keysOf(anchorName.rdns[0][0]) === keysOf(certName.rdns[0][0]));
+  check("T27: ...with the same values", anchorName.rdns[0][0].name === certName.rdns[0][0].name &&
+    anchorName.rdns[0][0].type === certName.rdns[0][0].type &&
+    anchorName.rdns[0][0].value === certName.rdns[0][0].value);
+  var atvOnce = pki.trust.anchor(entryA).name.rdns[0][0];
+  var atvAgain = pki.trust.anchor(entryA).name.rdns[0][0];
+  check("T27: ...and still shares no attribute object with the record", atvOnce !== atvAgain);
+
+  // The metadata is read from the record, not from the entry. An entry is a plain object the caller
+  // holds, and `purposes` IS the authorization -- so writing to the entry directly must not open a
+  // gate, exactly as writing through a returned anchor must not. Pinning the key while reading the
+  // authorization off the entry pins the half that decides less.
+  check("T27: root A is not a codeSigning delegator to begin with",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "codeSigning" }); }) === "trust/purpose-not-trusted");
+  entryA.purposes.codeSigning = true;
+  check("T27: flipping a purpose ON THE ENTRY does not open the gate",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "codeSigning" }); }) === "trust/purpose-not-trusted");
+  check("T27: ...and the anchor still reports the store's bits",
+    pki.trust.anchor(entryA).purposes.codeSigning === false);
+  entryA.purposes.codeSigning = false;
+  var storeDate = pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime();
+  entryA.distrustAfter.serverAuth = new Date("2099-01-01T00:00:00Z");
+  check("T27: moving a distrust date ON THE ENTRY does not reach the anchor",
+    pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === storeDate);
+  delete entryA.distrustAfter.serverAuth;
+  check("T27: deleting a distrust date on the entry does not drop it either",
+    pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === storeDate);
+  // The independence runs both ways: an entry a caller has since emptied still anchors to what the
+  // store read, rather than failing the tuple-shape check on fields the anchor no longer consults.
+  var storeKey = pki.trust.anchor(entryA).publicKey;
+  var storeDn = pki.trust.anchor(entryA).name.dn;
+  entryA.publicKey = null;
+  entryA.algorithm = undefined;
+  entryA.name = { rdns: "not an array" };
+  var afterGutting = pki.trust.anchor(entryA, { purpose: "serverAuth" });
+  check("T27: an entry emptied by its holder still anchors to what the store read",
+    Buffer.compare(afterGutting.publicKey, storeKey) === 0 && afterGutting.name.dn === storeDn);
+  // A caller's OWN bare anchor has no record, so its shape is still what there is to check.
+  check("T27: a bare tuple missing its key is still refused",
+    codeOf(function () { pki.trust.anchor({ name: { rdns: [] }, algorithm: "1.2.840.10045.2.1" }); }) === "trust/bad-input");
+  check("T27: a bare tuple with a key and a name is still accepted",
+    Buffer.isBuffer(pki.trust.anchor({ name: { rdns: [], dn: "", bytes: Buffer.alloc(0) },
+      publicKey: Buffer.from([1, 2, 3]), algorithm: "1.2.840.10045.2.1" }).publicKey));
 }
 
 // ---------------------------------------------------------------------------
@@ -1013,8 +1112,11 @@ async function testAnchorDefensiveDefaults() {
 
   // anchor(entry) with no opts argument returns the validate hand-off shape.
   var a = pki.trust.anchor(entry);
+  // Compared by VALUE, not by object identity: the pair is re-derived from what the store read, so
+  // the anchor names the same DN and key without handing back the entry's own mutable objects.
   check("anchor(entry) with no opts returns the validate hand-off shape",
-    a.name === entry.name && a.publicKey.equals(entry.publicKey) && a.algorithm === entry.algorithm);
+    a.name.dn === entry.name.dn && a.name.bytes.equals(entry.name.bytes) &&
+    a.publicKey.equals(entry.publicKey) && a.algorithm === entry.algorithm);
 
   // A minimally-shaped entry (no parameters / distrustAfter / purposes) fills
   // the fail-closed defaults: parameters null, distrustAfter {}, purposes all false.

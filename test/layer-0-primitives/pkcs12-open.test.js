@@ -123,10 +123,17 @@ async function testNestedAndInputs() {
   var ps = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "data", secretValue: pki.asn1.build.octetString(Buffer.from("shh")) }] }] }, { password: "1234" });
   var os = await pki.pkcs12.open(ps, "1234");
   check("a secret bag is recovered by open", os.secrets.length === 1 && os.secrets[0].secretTypeName === "data" && Buffer.isBuffer(os.secrets[0].secretValue));
-  // open accepts DER, PEM, and a pre-parsed result.
+  // open accepts the store's DER or PEM -- and only those. A parsed store carries the MACed byte
+  // range and the bags as separate properties, so an object could pair one store's macedBytes with
+  // another's contents: verify this, return that. Parsing here binds what was checked to what is
+  // handed back. pki.schema.pkcs12.parse stays the route for reading a store without that decision.
   var pem = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", pem: true });
   check("open accepts a PEM string", (await pki.pkcs12.open(pem, "1234")).certs.length === 1);
-  check("open accepts a parse-result object", (await pki.pkcs12.open(pki.schema.pkcs12.parse(await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" })), "1234")).certs.length === 1);
+  var pDer = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" });
+  check("open accepts the parser's own result", (await pki.pkcs12.open(pki.schema.pkcs12.parse(pDer), "1234")).certs.length === 1);
+  check("open refuses a REBUILT one, where the two could name different stores",
+    await codeOf(pki.pkcs12.open(Object.assign({}, pki.schema.pkcs12.parse(pDer)), "1234")) === "pkcs12/bad-input");
+  check("...and the same store as bytes still opens", (await pki.pkcs12.open(pDer, "1234")).certs.length === 1);
 }
 
 // RFC 7292 App. C legacy-PBE: read an `openssl pkcs12 -legacy` store (committed KAT fixtures) via the App. B
