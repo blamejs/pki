@@ -73,12 +73,30 @@ function testRobustness() {
   // Every setup option narrows or authenticates. A misspelled `psk` leaves a psk-mode setup with no
   // pre-shared key and a misspelled `senderKey` leaves an auth-mode setup unauthenticated -- and
   // both then fail naming the field the caller believes they supplied, which is the least useful
-  // thing to be told. The sender and the recipient read the same object from opposite ends, so one
-  // table serves both and neither can drift from the other.
+  // thing to be told.
   check("an unknown seal option -> hpke/bad-input",
     codeOf(function () { pki.hpke.seal(IDS, kp.publicKey, { psks: Buffer.alloc(32) }, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/bad-input");
   check("an unknown open option -> hpke/bad-input",
     codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, { senderPubKey: kp.publicKey }, Buffer.from("aad"), o.ct); }) === "hpke/bad-input");
+  // The two ends read the same object from OPPOSITE sides, so each has its own table rather than
+  // their union. A union recognises every name at both ends and therefore accepts the one that can
+  // do nothing where it was passed -- silently, which is the failure these tables exist to remove.
+  // Handing the sender the recipient's option is usually a misdirected auth-mode setup: the caller
+  // believes they authenticated, and a union would let them believe it.
+  check("the RECIPIENT's senderPublicKey is refused at the sender end, not ignored",
+    codeOf(function () { pki.hpke.seal(IDS, kp.publicKey, { mode: S.MODE.AUTH, senderPublicKey: kp.publicKey }, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/bad-input");
+  check("the SENDER's senderKey is refused at the recipient end, not ignored",
+    codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, { senderKey: kp.privateKey }, Buffer.from("aad"), o.ct); }) === "hpke/bad-input");
+  check("...and so is the sender-only test-vector seam `eph`",
+    codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, { eph: kp }, Buffer.from("aad"), o.ct); }) === "hpke/bad-input");
+  // The message says where the option belongs, because "unknown option" about a real option name a
+  // caller read in these docs is the least useful way to say it.
+  var misdirected = (function () {
+    try { pki.hpke.seal(IDS, kp.publicKey, { senderPublicKey: kp.publicKey }, Buffer.alloc(0), Buffer.alloc(1)); return ""; }
+    catch (e) { return e.message; }
+  })();
+  check("...and the refusal says the option belongs to the other end",
+    misdirected.indexOf("other end of the exchange") > 0);
   // Wrong AAD -> hpke/open-failed.
   check("wrong aad -> hpke/open-failed", codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("other"), o.ct); }) === "hpke/open-failed");
   // PSK inconsistency (RFC 9180 sec. 5.1): psk without psk_id, and a PSK in base mode.

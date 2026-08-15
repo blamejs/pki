@@ -727,6 +727,22 @@ async function testOptionSurface() {
     csrattrs: function (o) { return pki.est.csrattrs(BASE, o); },
     fullcmc: function (o) { return pki.est.fullcmc(BASE, Buffer.alloc(0), o); },
   };
+  // The refusal is a REJECTION, not a synchronous throw. These verbs are documented as
+  // Promise-returning, so a caller writes `verb(url, opts).catch(...)` -- and a check that throws
+  // before the promise exists escapes that catch entirely, turning a misspelled option into an
+  // uncaught exception. Asserted by CALLING each verb bare and catching nothing: if it throws
+  // synchronously the surrounding try sees it, which is the failure.
+  for (var pverb of Object.keys(VERBS)) {
+    var threwSync = false;
+    var p = null;
+    try { p = VERBS[pverb]({ transport: never, tls: { useSystemStore: true }, tiemout: 5 }); }
+    catch (_e) {
+      threwSync = true;   // escaped the promise: the caller's .catch() would never see it
+    }
+    if (p && typeof p.then === "function") { try { await p; } catch (_e2) { /* the expected rejection */ } }
+    check("74a. pki.est." + pverb + " REJECTS an unknown option rather than throwing synchronously",
+      threwSync === false && !!p && typeof p.then === "function");
+  }
   for (var verb of Object.keys(VERBS)) {
     check("75. pki.est." + verb + " refuses an unknown option",
       (await refusedUnknown(function () { return VERBS[verb]({ transport: never, tls: { useSystemStore: true }, tiemout: 5 }); })) === true);
