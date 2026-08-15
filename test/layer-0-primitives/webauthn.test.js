@@ -747,6 +747,44 @@ async function run() {
   var N2048 = Buffer.concat([Buffer.from([0xc0]), Buffer.alloc(255, 0xff)]);
   check("parse: an RSA credential key below the 2048-bit floor is refused",
     rsaCode(Buffer.from([0xff]), E65537) === "webauthn/bad-cose-key");
+  // verifyAssertion takes the stored key as COSE BYTES or as the object pki.webauthn.verify
+  // returned. The bytes went through every check here and the object went through none, so one
+  // stored credential was refused in one form and imported for signature verification in the other
+  // -- and which form a relying party stores is a question about their datastore, not about how
+  // carefully their credential is checked. Both forms now end at the same rules about the KEY.
+  async function assertObjCode(key) {
+    try {
+      await pki.webauthn.verifyAssertion({
+        credentialPublicKey: key, authenticatorData: Buffer.alloc(37), signature: Buffer.alloc(64),
+        clientDataHash: Buffer.alloc(32),
+      });
+      return "NO-THROW";
+    } catch (e) { return e && e.code; }
+  }
+  check("assert: an RSA credential key OBJECT below the floor is refused, as its bytes are",
+    (await assertObjCode({ kty: 3, alg: -257, n: Buffer.from([0xff]), e: E65537 })) === "webauthn/bad-cose-key");
+  check("assert: an exponent of 1 in the OBJECT form is refused too",
+    (await assertObjCode({ kty: 3, alg: -257, n: N2048, e: Buffer.from([0x01]) })) === "webauthn/bad-cose-key");
+  check("assert: an EC2 object whose x/y do not match its curve is refused",
+    (await assertObjCode({ kty: 2, alg: -7, crv: 1, x: Buffer.alloc(4), y: Buffer.alloc(4) })) === "webauthn/bad-cose-key");
+  check("assert: an OKP object with a wrong-length x is refused",
+    (await assertObjCode({ kty: 1, alg: -8, crv: 6, x: Buffer.alloc(4) })) === "webauthn/bad-cose-key");
+  // kty and alg come straight off a caller-supplied object here, so their type is checked before
+  // anything converts them: a Symbol or a missing field must be this module's typed error, not the
+  // raw TypeError a conversion would throw.
+  check("assert: an object with no kty is a typed fault, not a raw TypeError",
+    (await assertObjCode({})) === "webauthn/bad-cose-key");
+  check("assert: a non-integer kty is a typed fault",
+    (await assertObjCode({ kty: Symbol("x"), alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: a non-integer alg is a typed fault",
+    (await assertObjCode({ kty: 2, alg: "ES256", crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // The VALUE, not only the type: a fractional or non-finite number is a number, and BigInt()
+  // refuses it with a raw RangeError. "It is a number" was the wrong question.
+  check("assert: a fractional kty is a typed fault, not a raw RangeError",
+    (await assertObjCode({ kty: 2.5, alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: a non-finite kty likewise", (await assertObjCode({ kty: Infinity, alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: a fractional alg likewise",
+    (await assertObjCode({ kty: 2, alg: -7.5, crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
   check("parse: ...and one a byte short of the floor likewise",
     rsaCode(Buffer.alloc(255, 0xff), E65537) === "webauthn/bad-cose-key");
   check("parse: an RSA exponent of 1 is refused -- it makes RSA the identity function",

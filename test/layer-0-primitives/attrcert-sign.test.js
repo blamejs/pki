@@ -146,6 +146,16 @@ async function testHolderForms() {
   var fc = await pki.attrcert.sign(spec({ holder: { fromCertificate: pkc } }), aaOf(aa));
   var fcHolder = pki.schema.attrcert.parse(fc).holder;
   check("fromCertificate derives a baseCertificateID", !!fcHolder.baseCertificateID);
+  // issuer and serial TOGETHER are the identity a Holder binds to. The issuer was derived from the
+  // certificate's signed bytes and the serial was read off the object, so the two halves could name
+  // different certificates: a genuine issuer DN paired with whatever serial the caller wrote. Both
+  // now come from tbsBytes, so a substituted field on a parsed certificate cannot reach the Holder.
+  var swapped = Object.assign({}, pki.schema.x509.parse(pkc));
+  swapped.serialNumber = 0x7777n;
+  var fcSwapped = await pki.attrcert.sign(spec({ holder: { fromCertificate: swapped } }), aaOf(aa));
+  var swappedId = pki.schema.attrcert.parse(fcSwapped).holder.baseCertificateID;
+  check("a substituted serialNumber on the holder certificate does not reach the Holder",
+    swappedId.serial === pki.schema.x509.parse(pkc).serialNumber && swappedId.serial !== 0x7777n);
 
   check("0 holder forms -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: {} }), aaOf(aa))) === "attrcert/bad-input");
   check("2 holder forms -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: { entityName: { dNSName: "a" }, objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32) } } }), aaOf(aa))) === "attrcert/bad-input");

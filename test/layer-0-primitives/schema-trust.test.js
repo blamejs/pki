@@ -670,6 +670,21 @@ async function testRealCertdataSlice() {
     codeOf(function () { pki.trust.anchor(entryA, { purpose: "wormholes" }); }) === "trust/bad-input");
   check("T27: anchor() rejects a non-entry input",
     codeOf(function () { pki.trust.anchor(null); }) === "trust/bad-input");
+  // A trust anchor IS the pair (name, key) -- RFC 5280 sec. 6.1.1 -- so both halves are one fact
+  // about one certificate, and the store derived them from one. Reading them back off the entry let
+  // a rebuilt copy carry the store's NAME and its per-purpose trust metadata onto a key the store
+  // never vouched for, which is the whole content of a root program's statement.
+  var swappedKey = Object.assign({}, entryA);
+  swappedKey.publicKey = fx.leafBefore.subjectPublicKeyInfo.bytes;
+  check("T27: a rebuilt entry cannot carry the store's metadata onto another key",
+    codeOf(function () { pki.trust.anchor(swappedKey, { purpose: "serverAuth" }); }) === "trust/bad-input");
+  // The refusal is about the METADATA, not about the object being a copy: a caller asserting their
+  // own bare (name, key) anchor carries no store statement and is their own to make.
+  var bare = { name: entryA.name, publicKey: entryA.publicKey, algorithm: entryA.algorithm, parameters: entryA.parameters };
+  check("T27: a bare caller-built anchor tuple is still their own assertion to make",
+    Buffer.compare(pki.trust.anchor(bare).publicKey, anchorA.publicKey) === 0);
+  // ...and the store's own entry is unaffected, including through a second anchor() call.
+  check("T27: the store's entry still anchors", Buffer.compare(pki.trust.anchor(entryA, { purpose: "serverAuth" }).publicKey, anchorA.publicKey) === 0);
 }
 
 // ---------------------------------------------------------------------------
