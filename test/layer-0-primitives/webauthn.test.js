@@ -803,6 +803,14 @@ async function run() {
     check("assert: a throwing accessor on " + trapFields[tf] + " is a typed fault",
       (await assertObjCode(trapKey)) === "webauthn/bad-cose-key");
   }
+  // A label may arrive as a Number or a BigInt -- a CBOR reader hands out BigInt, a hand-built
+  // object is likelier to hold Number -- and every comparison below is against a Number-keyed
+  // table. Accepting both at the gate and comparing only one would make the verdict depend on how
+  // the caller happened to spell the value.
+  check("assert: a BigInt-labelled key is judged the same as a Number-labelled one",
+    (await assertObjCode({ kty: 3n, alg: -257n, n: Buffer.from([0xff]), e: E65537 })) === "webauthn/bad-cose-key");
+  check("assert: ...including on the profile comparison, not only the modulus rule",
+    (await assertObjCode({ kty: 2n, alg: -257n, crv: 1n, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
   // A field that answers differently each time cannot be checked as one value and used as another.
   var shiftyKey = { kty: 2, alg: -7, crv: 1, y: Buffer.alloc(32) };
   Object.defineProperty(shiftyKey, "x", { enumerable: true, get: (function () { var n = 0; return function () { return (n++ === 0) ? Buffer.alloc(32) : Buffer.alloc(4); }; })() });

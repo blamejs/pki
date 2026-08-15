@@ -685,6 +685,17 @@ async function testRealCertdataSlice() {
     Buffer.compare(pki.trust.anchor(bare).publicKey, anchorA.publicKey) === 0);
   // ...and the store's own entry is unaffected, including through a second anchor() call.
   check("T27: the store's entry still anchors", Buffer.compare(pki.trust.anchor(entryA, { purpose: "serverAuth" }).publicKey, anchorA.publicKey) === 0);
+  // The record holds COPIES. Sharing the entry's own Buffer would mean overwriting the entry in
+  // place -- otherSpki.copy(entry.publicKey), which needs only an equal-length key -- overwrites
+  // the record with it, and re-deriving hands back exactly the substituted key. A record that
+  // changes with the thing it pins is not one.
+  var inPlace = pki.trust.parseCertdata(slice).anchors[0];
+  var beforeKey = Buffer.from(inPlace.publicKey);
+  var otherKey = fx.leafBefore.subjectPublicKeyInfo.bytes;
+  if (otherKey.length === inPlace.publicKey.length) otherKey.copy(inPlace.publicKey);
+  else inPlace.publicKey.fill(0);
+  check("T27: overwriting the entry's key buffer in place does not reach the record",
+    Buffer.compare(pki.trust.anchor(inPlace, { purpose: "serverAuth" }).publicKey, beforeKey) === 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -1028,8 +1039,11 @@ async function testAnchorDefensiveDefaults() {
 
   // anchor(entry) with no opts argument returns the validate hand-off shape.
   var a = pki.trust.anchor(entry);
+  // Compared by VALUE, not by object identity: the pair is re-derived from what the store read, so
+  // the anchor names the same DN and key without handing back the entry's own mutable objects.
   check("anchor(entry) with no opts returns the validate hand-off shape",
-    a.name === entry.name && a.publicKey.equals(entry.publicKey) && a.algorithm === entry.algorithm);
+    a.name.dn === entry.name.dn && a.name.bytes.equals(entry.name.bytes) &&
+    a.publicKey.equals(entry.publicKey) && a.algorithm === entry.algorithm);
 
   // A minimally-shaped entry (no parameters / distrustAfter / purposes) fills
   // the fail-closed defaults: parameters null, distrustAfter {}, purposes all false.
