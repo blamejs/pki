@@ -811,6 +811,12 @@ async function run() {
     (await assertObjCode({ kty: 3n, alg: -257n, n: Buffer.from([0xff]), e: E65537 })) === "webauthn/bad-cose-key");
   check("assert: ...including on the profile comparison, not only the modulus rule",
     (await assertObjCode({ kty: 2n, alg: -257n, crv: 1n, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // A BigInt is bounded too: an unbounded one IS an integer, converts to Infinity, and throws a raw
+  // RangeError at the next conversion -- the same defeat as a fractional number by another route.
+  check("assert: a BigInt label too large to carry is a typed fault",
+    (await assertObjCode({ kty: 10n ** 1000n, alg: -7 })) === "webauthn/bad-cose-key");
+  check("assert: ...and a hugely negative one likewise",
+    (await assertObjCode({ kty: 2, alg: -(10n ** 1000n), crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
   // A field that answers differently each time cannot be checked as one value and used as another.
   var shiftyKey = { kty: 2, alg: -7, crv: 1, y: Buffer.alloc(32) };
   Object.defineProperty(shiftyKey, "x", { enumerable: true, get: (function () { var n = 0; return function () { return (n++ === 0) ? Buffer.alloc(32) : Buffer.alloc(4); }; })() });

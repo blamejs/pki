@@ -443,6 +443,16 @@ async function run() {
   var fromShifty = pki.schema.ocsp.parseResponse(shifty);
   check("a typed array with stateful length getters cannot split the parse from the record",
     (await pki.ocsp.verify(fromShifty, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
+  // pki.ocsp.verify reads the nonce off the response it parsed and the signature is checked by the
+  // path verb. ONE snapshot has to serve both: taking a second from the caller's argument lets a
+  // shared-memory view differ between them, so the nonce compared would belong to one response and
+  // the signature verified to another. The same bytes going in twice must give one verdict.
+  var mutating = new Uint8Array(Buffer.from(good));
+  var vFirst = await pki.ocsp.verify(mutating, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T });
+  mutating.fill(0);
+  check("the verdict describes the bytes read at entry, not the buffer afterwards",
+    vFirst.status === "good" &&
+    (await pki.ocsp.verify(pki.schema.ocsp.parseResponse(Buffer.from(good)), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
   // ...and the recorded bytes are a COPY, so overwriting the caller's own Buffer after parsing
   // cannot change what the verdict is computed over.
   var mutableDer = Buffer.from(good);
