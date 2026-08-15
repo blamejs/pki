@@ -447,6 +447,11 @@ async function testPemAndIsRevoked() {
   })();
   check("an entry naming another issuer on a direct CRL is refused, never silently unmatched",
     scopeCode(withCertIssuer, 0xabcdn) === "crl/indirect-not-supported");
+  // The contradiction is a property of the CRL, not of the entry that happens to match. Checking it
+  // only on the matching entry left the NOT-LISTED answer -- the one that says "this certificate is
+  // fine" -- coming from a CRL whose own entries dispute whose certificates it lists.
+  check("...and for a serial the CRL does not list, where the answer would be not-revoked",
+    scopeCode(withCertIssuer, 0x9999n) === "crl/indirect-not-supported");
   // A malformed IDP means the scope cannot be established at all, which is not a scope to answer
   // from -- the same refusal, for the same reason, rather than a guess that it is direct.
   var badIdp = (function () {
@@ -457,8 +462,53 @@ async function testPemAndIsRevoked() {
     }]);
     return copy;
   })();
-  check("a CRL whose scope extension cannot be read is refused, not read as direct",
-    scopeCode(badIdp, 0xabcdn) === "crl/indirect-not-supported");
+  check("a CRL whose scope extension cannot be read is refused, not read as unscoped",
+    scopeCode(badIdp, 0xabcdn) === "crl/scope-not-authoritative");
+  // The indirect flag is a DER BOOLEAN: exactly one content octet, 0x00 or 0xFF (X.690 sec. 11.1).
+  // Every other encoding is a scope that cannot be established, and reading one as "absent, so
+  // direct" is the one answer that must never follow -- it turns an unreadable scope into a licence
+  // to answer by serial. A DEFAULT FALSE is likewise not encoded at all (X.690 sec. 11.5), so an
+  // explicit FALSE is a statement the encoding rules do not permit rather than a reassuring one.
+  function idpTag(tag, contentBytes) {
+    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+    var copy = Object.assign({}, p);
+    copy.crlExtensions = (p.crlExtensions || []).concat([{
+      oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+      value: b.sequence([b.contextPrimitive(tag, Buffer.from(contentBytes))]),
+    }]);
+    return copy;
+  }
+  check("an empty indirectCRL BOOLEAN is refused, not read as absent",
+    scopeCode(idpTag(4, []), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a multi-octet indirectCRL BOOLEAN is refused",
+    scopeCode(idpTag(4, [0x00, 0xff]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a non-DER indirectCRL BOOLEAN value is refused, not read by its low bit",
+    scopeCode(idpTag(4, [0x01]), 0xabcdn) === "crl/scope-not-authoritative");
+  // Every OTHER form of issuingDistributionPoint narrows which certificates the CRL speaks for, and
+  // which part applies is decided against fields of the CERTIFICATE -- which this verb never sees.
+  // So an absent serial is not an unrevoked certificate, and the whole family refuses rather than
+  // answering: stopping at delta and indirect would apply the rule to two of its members.
+  check("a CRL scoped to CA certificates is refused: a serial does not say what kind it names",
+    scopeCode(idpTag(2, [0xff]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("...and for the serial it does list, where the answer would look right",
+    scopeCode(idpTag(1, [0xff]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a reason-sharded CRL is refused: a certificate revoked for another reason is absent from it",
+    scopeCode(idpTag(3, [0x01, 0x80]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a partitioned CRL is refused: the correspondence is against the certificate's own DP",
+    scopeCode((function () {
+      var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+      var copy = Object.assign({}, p);
+      copy.crlExtensions = (p.crlExtensions || []).concat([{
+        oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+        // distributionPoint [0] { fullName [0] { uniformResourceIdentifier [6] } }
+        value: b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.example/a", "ascii"))))]),
+      }]);
+      return copy;
+    })(), 0xabcdn) === "crl/scope-not-authoritative");
+  // Indirect keeps its own name: it is not a narrower scope, it is a list whose serials belong to
+  // other issuers, and that is the sharper thing to tell an operator.
+  check("indirect is named as indirect, not folded into the scope refusal",
+    scopeCode(idpTag(4, [0xff]), 0xabcdn) === "crl/indirect-not-supported");
   check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
   check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
   check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");

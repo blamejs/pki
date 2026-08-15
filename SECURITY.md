@@ -461,18 +461,31 @@ security-only patches after the next major releases.
   "serverAuth"`, or whichever purpose you are actually validating for, and a leaf
   issued after that root's per-purpose distrust date, or a purpose the root was
   never a trusted delegator for, fails closed. Both constraints are per-purpose,
-  so without that option there is no purpose to judge them against and neither is
-  applied: a root distrusted for TLS still validates a TLS leaf. An anchor set
-  parsed from a root program carries these constraints because the program means
-  them to bind, so supplying `checkPurpose` is a requirement rather than optional
-  hardening. Trust metadata pairs to its certificate by byte-exact issuer and
+  so without that option there is no purpose to judge them against — and an
+  anchor that carries such metadata while no purpose is named is refused as a
+  configuration fault rather than validated as though it carried none. Before,
+  a root distrusted for TLS validated a TLS leaf and the verdict said nothing.
+  An anchor set parsed from a root program carries these constraints because the
+  program means them to bind, so `checkPurpose` is a requirement rather than
+  optional hardening, and the verdict's `anchorConstraints` reports which purpose
+  was judged and which of the two constraints applied. A verb with a single key
+  purpose names it: `pki.tsp.verify` judges its anchors under `timeStamping`,
+  the same key purpose it already requires of the TSA certificate.
+  Trust metadata pairs to its certificate by byte-exact issuer and
   serial and is cross-checked against the parsed DER, so a crafted store cannot
   attach one root's permissions to another. A partitioned CRL establishes
   non-revocation only for the shard whose issuing-distribution-point name
   corresponds byte-identically to the certificate's own distribution point with
   no reason restriction. A non-corresponding, reason-scoped, non-critical-IDP, or
   delta shard stays revocation-only, and a listed serial reports revoked
-  regardless.
+  regardless. The scope flags that decide this are IMPLICIT BOOLEANs, read under
+  the DER rules that define them — one content octet of `0x00` or `0xFF` — in
+  both the validator and the standalone `pki.crl` verbs, since a byte test would
+  read an empty flag as absent and an unreadable scope as a licence to answer.
+  That correspondence needs the certificate, so `pki.crl.isRevoked`, which is
+  given a serial and nothing else, refuses any scoped CRL instead of answering
+  from one: an absent serial on a CRL covering some other partition, certificate
+  kind, or revocation reason is not an unrevoked certificate.
 - **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
   authoritative only when it is signed by an authorized responder: the issuing CA
   directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in its

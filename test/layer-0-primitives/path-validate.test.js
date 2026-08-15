@@ -1084,6 +1084,24 @@ async function testRevocation() {
     res15b.revocationChecked === "waived");
   check("no checker at all reports the rule as not requested",
     (await run([leaf], { time: T2027, trustAnchor: anchor })).revocationChecked === false);
+  // The field says whether revocation was ESTABLISHED, so a run that failed BECAUSE it could not be
+  // established must not report the same word as one that established it. Deriving the answer from
+  // "a checker ran" put the two on the same value, which is the reading the field exists to prevent.
+  check("an undetermined status that fails the path reports itself undetermined, not determined",
+    res15a.revocationChecked === "undetermined");
+  var revokedChecker = { check: function () { return Promise.resolve({ status: "revoked" }); } };
+  var resRevoked = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: revokedChecker });
+  check("a revoked status is a determination, and reports as one",
+    resRevoked.valid === false && resRevoked.revocationChecked === "determined");
+  // A path long enough to mix outcomes takes the WEAKEST: one certificate nobody could answer for
+  // leaves the path's revocation unestablished however many others answered good.
+  var mixInter = await mkCert({ subject: "MixInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var mixLeaf = await mkCert({ subject: "MixLeaf", issuer: "MixInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  var seen = 0;
+  var mixed = { check: function () { seen++; return Promise.resolve({ status: seen === 1 ? "good" : "unknown" }); } };
+  var resMixed = await run([mixInter, mixLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: mixed, softFail: true });
+  check("one waived certificate outranks the determined ones on the same path",
+    seen === 2 && resMixed.valid === true && resMixed.revocationChecked === "waived");
   // Per certificate, too: the waived entry is distinguishable from the determined one, and names
   // the status that could not be turned into a determination.
   var waivedCheck = res15b.results[res15b.results.length - 1].checks.filter(function (c) { return c.name === "revocation"; })[0];
@@ -1091,15 +1109,28 @@ async function testRevocation() {
   check("the waived per-certificate entry is not byte-identical to the determined one",
     waivedCheck.ok === true && waivedCheck.waived === true && waivedCheck.status === "unknown" &&
     goodCheck.ok === true && goodCheck.waived === undefined && goodCheck.status === "good");
-  // A checker that THROWS was laundered into `{status:"unknown"}` and then, under softFail, into a
-  // pass -- so a broken checker and a working one that could not reach the responder were the same
-  // verdict. The fault is carried, so an operator can tell their own bug from a network condition.
+  // A checker that THROWS is a fault in the checker, not a revocation status it could not reach.
+  // softFail is the caller opting into an UNDETERMINED answer -- the built-in CRL and OCSP checkers
+  // return `{status:"unknown"}` for every unreachable or unverifiable condition and never throw --
+  // so waiving a throw would waive the caller's own bug, and the certificate would pass without any
+  // revocation result at all. The fault fails the path whatever softFail says, and is carried on the
+  // check so an operator can tell their bug from a network condition.
   var throwingChecker = { check: function () { throw new Error("checker exploded"); } };
   var resThrew = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: throwingChecker, softFail: true });
   var threwCheck = resThrew.results[resThrew.results.length - 1].checks.filter(function (c) { return c.name === "revocation"; })[0];
-  check("a checker that throws is reported as an error, not as an unknown status",
-    resThrew.revocationChecked === "waived" && threwCheck.waived === true &&
-    threwCheck.status === "error" && !!threwCheck.error);
+  check("a checker that throws fails the path even under softFail, and is not called a waiver",
+    resThrew.valid === false && resThrew.revocationChecked === "undetermined" &&
+    threwCheck.ok === false && threwCheck.waived === undefined &&
+    threwCheck.code === "path/revocation-checker-error");
+  check("...and carries the fault, so a broken checker is not a network condition",
+    threwCheck.status === "error" && !!threwCheck.error && /checker exploded/.test(threwCheck.error.message));
+  // A checker that REJECTS is the same fault by another route: an async checker's bug arrives as a
+  // rejected promise, and reaching the waiver through it would restore exactly what the throw lost.
+  var rejectingChecker = { check: function () { return Promise.reject(new Error("responder client bug")); } };
+  var resRej = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: rejectingChecker, softFail: true });
+  check("a checker that rejects is the same fault as one that throws",
+    resRej.valid === false && resRej.revocationChecked === "undetermined" &&
+    failCodes(resRej).indexOf("path/revocation-checker-error") !== -1);
 
   // a real CRL revoking the leaf serial, via pki.path.crlChecker.
   var crlRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: LEAF_SERIAL }] });
@@ -3612,7 +3643,9 @@ async function testCoverageEdges() {
     "1119 checkPurpose non-string": { throw: BADIN },
     "1122 checkPurpose dotted OID normalized": { valid: true },
     "1160 custom verifier throws": { code: BADSIG },
-    "1198 revocationChecker throws": { code: RUND },
+    // A checker that throws is a fault in the checker, not an undetermined status it reported: a
+    // distinct code so an operator can tell their own broken checker from an unreachable responder.
+    "1198 revocationChecker throws": { code: "path/revocation-checker-error" },
     "1179 control-byte issuer DN fails name chaining": { code: "path/name-chaining" },
     "1393 IDP distributionPoint wrapping two DPNs": { code: RUND },
     "1498 crlChecker() no-arg -> undetermined": { code: RUND },
