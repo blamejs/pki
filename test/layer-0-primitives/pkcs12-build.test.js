@@ -227,9 +227,20 @@ async function testEdges() {
   var pnoopts = await pki.pkcs12.build(spec);
   check("build with no opts uses an empty password + still MACs", pki.schema.pkcs12.parse(pnoopts).integrityMode === "password");
   check("verifyMac with the empty password accepts it", (await pki.pkcs12.verifyMac(pnoopts, "")) === true);
-  // verifyMac accepts a pre-parsed pki.schema.pkcs12.parse result (not only DER/PEM).
+  // An integrity verb reads its inputs from ONE source. A parsed store carries the MACed byte range
+  // and the bags separately, so an object could pair one store's macedBytes with another's contents
+  // -- verify this, return that. Both verbs take the bytes and parse them, binding the two.
   var p12 = await pki.pkcs12.build(spec, { password: "1234" });
-  check("verifyMac accepts a parse-result object", (await pki.pkcs12.verifyMac(pki.schema.pkcs12.parse(p12), "1234")) === true);
+  check("verifyMac refuses a parse-result object, so the verified bytes are the store's",
+    await codeOf(pki.pkcs12.verifyMac(pki.schema.pkcs12.parse(p12), "1234")) === "pkcs12/bad-input");
+  check("open refuses one for the same reason",
+    await codeOf(pki.pkcs12.open(pki.schema.pkcs12.parse(p12), "1234")) === "pkcs12/bad-input");
+  check("...and the same store as bytes still verifies and opens",
+    (await pki.pkcs12.verifyMac(p12, "1234")) === true && (await pki.pkcs12.open(p12, "1234")).macVerified === true);
+  // The refusal is on the CLAIM, so a partial object naming any of the three store fields is caught
+  // rather than being handed to the byte parser and reported as something unrelated.
+  check("an object carrying only macedBytes is refused as a store, not as bad bytes",
+    await codeOf(pki.pkcs12.verifyMac({ macedBytes: Buffer.alloc(0) }, "1234")) === "pkcs12/bad-input");
   // a safeContents element with no bags (the sc.bags || [] arm) alongside a real one.
   var pempty = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }, {}] }, { password: "1234" });
   check("an empty safeContents element is tolerated", (await pki.pkcs12.verifyMac(pempty, "1234")) === true);
