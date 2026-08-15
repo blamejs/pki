@@ -696,13 +696,88 @@ function testCoverageBranches() {
   check("74. asymmetricDecryptKeyIdentifier attr", pki.asn1.read.oid(pki.asn1.decode(adk).children[0]) === "1.2.840.113549.1.9.16.2.54");
 }
 
-function run() {
+// ---- the option surface each verb accepts ----------------------------------
+// A misspelled option reads as an omission rather than as a value: a misspelled `strict` accepts
+// the extra certificates it was set to reject, a misspelled `expectedRecipientKeyId` drops a
+// recipient pin on a server-generated private key, and a misspelled `oldCert` fails the
+// re-enrollment outright. Every one of those is silent today.
+//
+// The network verbs are driven with an injected transport that never answers, because the refusal
+// has to happen BEFORE the request: an option checked after the exchange has already told a server
+// something is not a check, it is a report.
+async function testOptionSurface() {
+  // The injected transport REFUSES rather than answering: an accepted option set has to get past the
+  // door and reach the exchange, and what happens after that is another vector's business. It must
+  // also settle -- a transport that never answers would hang the suite instead of failing it.
+  var never = function () { return Promise.reject(new Error("transport not exercised by this vector")); };
+  var BASE = "https://ca.example";
+  var csr = vectors.CSR_DER || Buffer.alloc(0);
+  // Several verbs raise est/bad-input for their OWN reasons (simplereenroll wants oldCert, an empty
+  // CSR does not parse), so "was this refused as an unknown option" is asked of the message the door
+  // writes, not of the code alone -- otherwise the vector would pass for the wrong reason.
+  async function refusedUnknown(fn) {
+    try { await fn(); return false; }
+    catch (e) { return !!e && e.code === "est/bad-input" && String(e.message).indexOf("unknown option") === 0; }
+  }
+  var VERBS = {
+    cacerts: function (o) { return pki.est.cacerts(BASE, o); },
+    simpleenroll: function (o) { return pki.est.simpleenroll(BASE, csr, o); },
+    simplereenroll: function (o) { return pki.est.simplereenroll(BASE, csr, o); },
+    serverkeygen: function (o) { return pki.est.serverkeygen(BASE, csr, o); },
+    csrattrs: function (o) { return pki.est.csrattrs(BASE, o); },
+    fullcmc: function (o) { return pki.est.fullcmc(BASE, Buffer.alloc(0), o); },
+  };
+  for (var verb of Object.keys(VERBS)) {
+    check("75. pki.est." + verb + " refuses an unknown option",
+      (await refusedUnknown(function () { return VERBS[verb]({ transport: never, tls: { useSystemStore: true }, tiemout: 5 }); })) === true);
+    // ...and the shared client surface is accepted at every one of them, since they all go through
+    // the same client: a table that listed it at only some verbs would refuse a working call.
+    check("76. pki.est." + verb + " accepts the shared client options",
+      (await refusedUnknown(function () {
+        return VERBS[verb]({ transport: never, tls: { useSystemStore: true }, label: "l", timeout: 5,
+          maxResponseBytes: 1024, maxRedirects: 0, now: 0, auth: { scheme: "basic" }, username: "u",
+          password: "p", allowCrossOriginRedirect: false });
+      })) === false);
+  }
+  // Per-verb keys stay per verb: `strict` is read only after the /cacerts branch has returned, and
+  // `oldCert` means nothing to a first enrollment -- accepting either everywhere would advertise a
+  // check that cannot run.
+  check("77. strict is not accepted on cacerts (it cannot run there)",
+    (await refusedUnknown(function () { return pki.est.cacerts(BASE, { transport: never, tls: { useSystemStore: true }, strict: true }); })) === true);
+  check("78. ...and is accepted on simpleenroll",
+    (await refusedUnknown(function () { return pki.est.simpleenroll(BASE, csr, { transport: never, tls: { useSystemStore: true }, strict: true }); })) === false);
+  check("79. oldCert is not accepted on simpleenroll",
+    (await refusedUnknown(function () { return pki.est.simpleenroll(BASE, csr, { transport: never, tls: { useSystemStore: true }, oldCert: Buffer.alloc(0) }); })) === true);
+  // The recipient pin a caller can set, versus the one derived from the CSR: expectedRecipientKind
+  // comes from the request's own advertised attribute, so offering it as an option would name a pin
+  // nothing reads.
+  check("80. serverkeygen accepts the caller's recipient pins",
+    (await refusedUnknown(function () {
+      return pki.est.serverkeygen(BASE, csr, { transport: never, tls: { useSystemStore: true },
+        expectedRecipientKeyId: Buffer.from([1]), requestedEncryption: true });
+    })) === false);
+  check("81. ...and refuses expectedRecipientKind, which is derived from the CSR",
+    (await refusedUnknown(function () {
+      return pki.est.serverkeygen(BASE, csr, { transport: never, tls: { useSystemStore: true }, expectedRecipientKind: "ktri" });
+    })) === true);
+  // The two verbs that take options without going near the network.
+  check("82. pki.est.classifyResponse refuses an unknown option",
+    code(function () { pki.est.classifyResponse(200, {}, Buffer.alloc(0), { op: "cacerts", nwo: 1 }); }) === "est/bad-input");
+  check("83. pki.est.paths refuses an unknown option",
+    code(function () { pki.est.paths(BASE, { lable: "x" }); }) === "est/bad-input");
+  check("84. ...and still accepts the documented one", pki.est.paths(BASE, { label: "x" }).cacerts.indexOf("/x/") > 0);
+  check("85. pki.est.parseServerKeygenResponse refuses an unknown option",
+    code(function () { pki.est.parseServerKeygenResponse(Buffer.alloc(0), "multipart/mixed; boundary=b", { expectedRecipientKeyid: Buffer.alloc(1) }); }) === "est/bad-input");
+}
+
+async function run() {
   testTransferCodec();
   testCertsOnly();
   testServerKeygen();
   testBuilders();
   testClassify();
   testCoverageBranches();
+  await testOptionSurface();
 }
 
 module.exports = { run: run };
