@@ -100,6 +100,93 @@ async function run() {
   check("mds: a BLOB listing a revoked authenticator still verifies (the BLOB is valid)", mdRevoked.no === 42);
   check("mds: a REVOKED report denies trust even when a later report is clean",
     require("../../lib/webauthn-mds.js").statusDenied(revokedEntry, mdRevoked) === true);
+  // The status gate is on the ROUTE, not only inside the attestation verifier. An operator who
+  // anchors an attestation themselves goes metadataFor -> metadataAnchors -> pki.path.validate, and
+  // nothing along that route consulted the status reports: a REVOKED model's registered roots were
+  // handed back and the path validated against them. A model the catalogue has disqualified
+  // registers no anchors to trust.
+  check("mds: a revoked entry hands back no anchors to chain to", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry); return false; }
+    catch (e) { return e.code === "webauthn/metadata-status"; }
+  })());
+  check("mds: ...and says so through the verified result too", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry, { metadata: mdRevoked, time: T }); return false; }
+    catch (e) { return e.code === "webauthn/metadata-status"; }
+  })());
+  // The caller's own reading governs when it is supplied, exactly as it does inside the verifier --
+  // the two must not answer differently about the same entry.
+  var byDateEarly = await pki.webauthn.verifyMetadataBlob(revoked.blob,
+    { rootCertificates: [revoked.rootDer], time: T, statusPolicy: "latest-by-date" });
+  check("mds: a caller's own status policy governs the anchors it is handed",
+    pki.webauthn.metadataAnchors(pki.webauthn.metadataFor(byDateEarly, revoked.aaguid),
+      { metadata: byDateEarly, time: T }).length === 1);
+  // A report dated after the instant being judged has not taken effect yet, so anchors judged
+  // before that date are still handed over -- and refused from the date the report names.
+  var scheduled = await mint({ statusReports: [{ status: "REVOKED", effectiveDate: "2026-09-01" }] });
+  var mdScheduled = await pki.webauthn.verifyMetadataBlob(scheduled.blob, { rootCertificates: [scheduled.rootDer], time: T });
+  var scheduledEntry = pki.webauthn.metadataFor(mdScheduled, scheduled.aaguid);
+  check("mds: a revocation dated in the future does not yet withhold the anchors",
+    pki.webauthn.metadataAnchors(scheduledEntry, { metadata: mdScheduled, time: T }).length === 1);
+  check("mds: ...and does withhold them from the date it names", (function () {
+    try { pki.webauthn.metadataAnchors(scheduledEntry, { metadata: mdScheduled, time: new Date("2026-10-01T00:00:00Z") }); return false; }
+    catch (e) { return e.code === "webauthn/metadata-status"; }
+  })());
+  // The rollback rule leaves a trace, as the freshness rule beside it does. It runs only when a
+  // caller supplies the sequence number it holds, so a result that does not say whether it ran
+  // cannot be told apart from one where it was skipped -- and showing the catalogue never went
+  // backwards is the entire point of the rule.
+  // A BLOB is retrieved over the network, and the ordinary way to hold a fetched body is an
+  // ArrayBuffer -- the one byte form this refused, in the verb most likely to be handed one.
+  function toAb(buf) { var u = new Uint8Array(buf.length); u.set(buf); return u.buffer; }
+  check("mds: a BLOB arrives as an ArrayBuffer, the form a fetched body takes",
+    (await pki.webauthn.verifyMetadataBlob(toAb(base.blob), { rootCertificates: [base.rootDer], time: T })).no === 42);
+  check("mds: ...and as a DataView",
+    (await pki.webauthn.verifyMetadataBlob(new DataView(toAb(base.blob)), { rootCertificates: [base.rootDer], time: T })).no === 42);
+  // A trust anchor is bytes too, and identical DER is the identical certificate whichever container
+  // the caller received it in. An accepted set that depends on how the file was read is not a
+  // statement about the certificate.
+  check("mds: a root certificate arrives in any byte form",
+    (await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [toAb(base.rootDer)], time: T })).no === 42 &&
+    (await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [new DataView(toAb(base.rootDer))], time: T })).no === 42);
+  check("mds: the size ceiling still bites on a byte form that is not a Buffer",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(new Uint8Array(pki.C.LIMITS.MDS_BLOB_MAX_BYTES + 1).buffer,
+        { rootCertificates: [base.rootDer], time: T });
+    })) === "webauthn/too-large");
+
+  check("mds: a result says the rollback rule was not requested", md.rollbackChecked === false && md.previousNo === null);
+  var rolled = await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [base.rootDer], time: T, previousNo: 41 });
+  check("mds: ...and says it ran, against the baseline it was given",
+    rolled.rollbackChecked === true && rolled.previousNo === 41 && rolled.no === 42);
+  check("mds: a baseline of zero is a baseline, not an absent one",
+    (await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [base.rootDer], time: T, previousNo: 0 })).rollbackChecked === true);
+  check("mds: a BLOB that does not advance past the baseline is refused",
+    (await codeFor({}, { previousNo: 42 })) === "webauthn/metadata-rollback");
+
+  // Verified provenance says the supplied catalogue is real; it does not say the ENTRY came out of
+  // it. A process holding two catalogues could otherwise pair an entry from one with the other, and
+  // the second's statusPolicy and freshness would decide about the first's status reports -- a
+  // by-date reading handing back anchors the entry's own catalogue records as revoked.
+  var otherCat = await mint({ statusReports: [{ status: "FIDO_CERTIFIED_L1", effectiveDate: "2026-01-01" }] });
+  var mdOther = await pki.webauthn.verifyMetadataBlob(otherCat.blob,
+    { rootCertificates: [otherCat.rootDer], time: T, statusPolicy: "latest-by-date" });
+  check("mds: an entry may only be judged against the catalogue it came out of", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry, { metadata: mdOther, time: T }); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+  check("mds: ...and its own catalogue still judges it",
+    pki.webauthn.metadataAnchors(pki.webauthn.metadataFor(mdOther, otherCat.aaguid),
+      { metadata: mdOther, time: T }).length === 1);
+
+  check("mds: an unknown metadataAnchors option is a config-time fault", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry, { metdata: mdRevoked }); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+  check("mds: a metadataAnchors time that is not a valid instant is a config-time fault", (function () {
+    try { pki.webauthn.metadataAnchors(scheduledEntry, { time: new Date("nope") }); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+
   // ... and the by-date reading, which a caller must ask for, takes only the newest.
   var byDate = await pki.webauthn.verifyMetadataBlob(revoked.blob,
     { rootCertificates: [revoked.rootDer], time: T, statusPolicy: "latest-by-date" });
@@ -419,6 +506,135 @@ async function run() {
   }, { key: edKp.privateKey, name: [{ commonName: "Ed25519 Signer" }], publicKey: edSpki });
   check("mds: a leaf key of a family no supported alg names is refused",
     (await codeFor({ x5cRaw: [edCert.toString("base64")] })) === "webauthn/unsupported-algorithm");
+
+  // ---- the algorithm table is the toolkit's, not a copy of it ----
+  //
+  // A BLOB really signed under RSASSA-PSS verifies. The table this reader resolves `alg` through is
+  // DERIVED from pki.jose's JWS registry, so an algorithm the toolkit verifies as a JWS signature
+  // cannot be one this reader refuses: a second table maintained beside the first is how PS256 came
+  // to be accepted in one place and rejected in the other.
+  for (var pssAlg of ["PS256", "PS384", "PS512"]) {
+    var pssFix = await mint({ signAlg: pssAlg });
+    var pssMd = await pki.webauthn.verifyMetadataBlob(pssFix.blob, { rootCertificates: [pssFix.rootDer], time: T });
+    check("mds: a BLOB signed under " + pssAlg + " verifies", pssMd.no === 42);
+  }
+  var rsFix = await mint({ signAlg: "RS256" });
+  check("mds: a BLOB signed under RS256 verifies",
+    (await pki.webauthn.verifyMetadataBlob(rsFix.blob, { rootCertificates: [rsFix.rootDer], time: T })).no === 42);
+  // An X.509 SubjectPublicKeyInfo carries an Edwards key (RFC 8410) and an ML-DSA key (RFC 9881) as
+  // readily as an EC one, so a BLOB signed under those algorithms is a conformant JWS -- not a
+  // theoretical one to be excused from the table. EdDSA is one algorithm name over two key types,
+  // and the certificate is what says which, so both are driven.
+  for (var edAlg of ["EdDSA-Ed25519", "EdDSA-Ed448"]) {
+    var edFix = await mint({ signAlg: edAlg });
+    check("mds: a BLOB signed under " + edAlg.replace("EdDSA-", "EdDSA over ") + " verifies",
+      (await pki.webauthn.verifyMetadataBlob(edFix.blob, { rootCertificates: [edFix.rootDer], time: T })).no === 42);
+  }
+  // An Edwards leaf key is validated on-curve and full-order before it is imported. The identity
+  // point verifies a trivial signature over ANY message, so a leaf carrying one authenticates
+  // whatever payload it is shown -- and chaining to the pinned root does not help, because such a
+  // certificate is malformed rather than unissued and can be perfectly well signed. Every other
+  // Edwards key in the toolkit passes this gate; a new verification route must not be the exception.
+  check("mds: an Ed25519 leaf carrying the identity point is refused before it is imported",
+    (await codeFor({ signAlg: "EdDSA-Ed25519", lowOrderPoint: 32 })) === "webauthn/bad-att-cert");
+  check("mds: ...and an Ed448 leaf likewise",
+    (await codeFor({ signAlg: "EdDSA-Ed448", lowOrderPoint: 57 })) === "webauthn/bad-att-cert");
+  for (var mlAlg of ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]) {
+    var mlFix = await mint({ signAlg: mlAlg });
+    check("mds: a BLOB signed under " + mlAlg + " verifies",
+      (await pki.webauthn.verifyMetadataBlob(mlFix.blob, { rootCertificates: [mlFix.rootDer], time: T })).no === 42);
+  }
+  // The derivation is the guard; this asserts it is TOTAL over the registry, so a row added there
+  // cannot reach one reader and not the other. An X.509 SubjectPublicKeyInfo carries a key of every
+  // type the registry names, so there is no algorithm to excuse.
+  var joseSigAlgs = pki.jose.sigAlgs();
+  var mdsAlgs = require("../../lib/webauthn-mds.js").BLOB_ALGS;
+  function schemeOf(r) {
+    if (r.kty === "EC") return "ECDSA";
+    if (r.kty === "RSA") return r.saltLength ? "RSA-PSS" : "RSASSA-PKCS1-v1_5";
+    if (r.kty === "OKP") return "EdDSA";
+    return r.alg;                                     // AKP: the algorithm fixes its own parameter set
+  }
+  var ktysSeen = {};
+  joseSigAlgs.forEach(function (r) { ktysSeen[r.kty] = 1; });
+  check("mds: every JWS algorithm the toolkit verifies has a BLOB row",
+    // All four key types are represented, so the walk cannot pass by having nothing to walk -- and
+    // the bound is on the FAMILIES rather than a row count, which a new algorithm would move.
+    Object.keys(ktysSeen).sort().join(",") === "AKP,EC,OKP,RSA" && joseSigAlgs.every(function (r) {
+      var row = mdsAlgs[r.alg];
+      return !!row && row.scheme === schemeOf(r) &&
+        (r.hash ? row.hash === r.hash : true) &&
+        (r.saltLength ? row.ver.saltLength === r.saltLength : true);
+    }));
+  // `HS256` is not a signature algorithm, and listing it beside RS256 is how the key-confusion class
+  // starts; it is absent from the registry this table derives from, so it cannot appear here either.
+  check("mds: no MAC algorithm has a BLOB row", mdsAlgs.HS256 === undefined && mdsAlgs.none === undefined);
+  // EdDSA's WebCrypto algorithm is not fixed by the algorithm name, so its row says the certificate
+  // supplies it rather than carrying parameters that would be right for only one of the two curves.
+  check("mds: the EdDSA row takes its curve from the certificate",
+    mdsAlgs.EdDSA.fromLeaf === true && mdsAlgs.EdDSA.imp === undefined);
+  check("mds: an ML-DSA row carries the parameter set its own algorithm fixes",
+    mdsAlgs["ML-DSA-65"].imp.name === "ML-DSA-65" && mdsAlgs["ML-DSA-65"].fromLeaf === undefined);
+  // The map is keyed by the name the certificate parser REPORTS for a leaf's SPKI algorithm. A key
+  // that is not that exact string is a row that never matches -- silently, since the miss reads as
+  // "this leaf cannot do this scheme". Read the names off real certificates rather than assume them.
+  var spkiNames = {};
+  for (var nameAlg of ["ES256", "RS256", "EdDSA-Ed25519", "EdDSA-Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]) {
+    var nf = await mint({ signAlg: nameAlg });
+    var nh = JSON.parse(Buffer.from(nf.blob.toString("ascii").split(".")[0].replace(/-/g, "+").replace(/_/g, "/") + "==", "base64").toString("utf8"));
+    spkiNames[nameAlg] = pki.schema.x509.parse(Buffer.from(nh.x5c[0], "base64")).subjectPublicKeyInfo.algorithm.name;
+  }
+  check("mds: the leaf-scheme map is keyed by the names the certificate parser really reports",
+    spkiNames.ES256 === "ecPublicKey" && spkiNames.RS256 === "rsaEncryption" &&
+    spkiNames["EdDSA-Ed25519"] === "Ed25519" && spkiNames["EdDSA-Ed448"] === "Ed448" &&
+    spkiNames["ML-DSA-44"] === "id-ml-dsa-44" && spkiNames["ML-DSA-65"] === "id-ml-dsa-65" &&
+    spkiNames["ML-DSA-87"] === "id-ml-dsa-87");
+  // Algorithm confusion, on the newly reachable rows: an EdDSA header over a leaf that holds no
+  // Edwards key is refused at the scheme check, before any key is imported or signature examined.
+  check("mds: an EdDSA header over an EC leaf is refused",
+    (await codeFor({ signAlg: "ES256", alg: "EdDSA" })) === "webauthn/unsupported-algorithm");
+  check("mds: an ML-DSA header over an Edwards leaf is refused",
+    (await codeFor({ signAlg: "EdDSA-Ed25519", alg: "ML-DSA-44" })) === "webauthn/unsupported-algorithm");
+  check("mds: an ML-DSA header naming a different parameter set than its leaf is refused",
+    (await codeFor({ signAlg: "ML-DSA-44", alg: "ML-DSA-87" })) === "webauthn/unsupported-algorithm");
+
+  // ---- an id-RSASSA-PSS certificate restricts its own key (RFC 4055 sec. 1.2 / 3.1) ----
+  //
+  // The restriction belongs to the CERTIFICATE, so it outranks the header: a key whose certificate
+  // says RSASSA-PSS must not verify an RS* signature, and one pinned to a single hash must not
+  // verify a signature made under another.
+  var pssKeyFix = await mint({ signAlg: "PS256", pssRestricted: true });
+  check("mds: an id-RSASSA-PSS leaf verifies a PS256 BLOB",
+    (await pki.webauthn.verifyMetadataBlob(pssKeyFix.blob, { rootCertificates: [pssKeyFix.rootDer], time: T })).no === 42);
+  check("mds: an id-RSASSA-PSS leaf refuses an RS256 header",
+    (await codeFor({ signAlg: "PS256", pssRestricted: true, alg: "RS256" })) === "webauthn/unsupported-algorithm");
+  var pinnedFix = await mint({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha256", salt: 32 } });
+  check("mds: an id-RSASSA-PSS leaf pinned to SHA-256 verifies its own PS256 BLOB",
+    (await pki.webauthn.verifyMetadataBlob(pinnedFix.blob, { rootCertificates: [pinnedFix.rootDer], time: T })).no === 42);
+  check("mds: an id-RSASSA-PSS leaf pinned to SHA-256 refuses a PS512 BLOB",
+    (await codeFor({ signAlg: "PS512", pssRestricted: true, pssPinHash: { name: "sha256", salt: 32 } })) === "webauthn/unsupported-algorithm");
+  // A pin this toolkit cannot read is a restriction it cannot honor, so it fails closed rather than
+  // being treated as no restriction at all.
+  check("mds: an id-RSASSA-PSS leaf pinned to an unimplemented hash is refused",
+    (await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha1", salt: 20 } })) === "webauthn/unsupported-algorithm");
+  // RFC 4055 sec. 3.1 draws the line at whether the parameters are THERE: absent, they restrict
+  // nothing. Present, they restrict -- and `hashAlgorithm` is `[0] ... DEFAULT sha1Identifier`, so a
+  // params SEQUENCE that omits it NAMES SHA-1 rather than declining to name anything. Reading the
+  // omission as "unrestricted" would let a key its certificate confines to SHA-1 verify a SHA-512
+  // signature.
+  check("mds: an id-RSASSA-PSS leaf with an empty params SEQUENCE is restricted to the SHA-1 default",
+    (await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: "empty-params" })) === "webauthn/unsupported-algorithm");
+  // A rejection handler attached to the IMPORT alone leaves whatever the verify itself rejects with
+  // to escape raw. RSASSA-PSS parameters demanding a longer salt than the algorithm supplies import
+  // cleanly and then fail inside OpenSSL, so this returns a platform Error rather than a typed
+  // verdict -- out of a verb whose contract is that every failure carries a webauthn/* code.
+  var saltTooLong = await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha256", salt: 64 } });
+  check("mds: a salt restriction the algorithm cannot satisfy is a typed verdict, not a platform error",
+    saltTooLong === "webauthn/verify-error");
+  // ...and absent parameters really do restrict nothing, which is the other half of the same clause.
+  var unpinned = await mint({ signAlg: "PS512", pssRestricted: true });
+  check("mds: an id-RSASSA-PSS leaf with no parameters restricts no hash",
+    (await pki.webauthn.verifyMetadataBlob(unpinned.blob, { rootCertificates: [unpinned.rootDer], time: T })).no === 42);
 
   // Several roots may be held across a rotation, and the walk stops at the first that anchors the
   // chain rather than continuing to validate against the rest.

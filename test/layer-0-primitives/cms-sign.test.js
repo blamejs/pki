@@ -331,26 +331,24 @@ function pssSignerWithParams(paramsNode) {
 // ---- coverage: the id-RSASSA-PSS SPKI pinned-hash reader across malformed / unpinned params ----
 async function testPssSpkiParams() {
   var b = pki.asn1.build;
-  // params that are not a SEQUENCE / an empty SEQUENCE / a [0] hashAlgorithm whose inner is not an
-  // OID: the reader finds no pinned hash and the signer falls back to the SHA-256 default, so the
-  // message still signs and verifies. (Drives the three structural fall-through branches.)
+  // RFC 4055 sec. 3.1 makes the PRESENCE of the parameters the line: absent, they restrict nothing;
+  // present, "the certificate user MUST perform those operations using the one-way hash function
+  // ... identified in the ... parameters". So none of these three shapes is an absent restriction.
+  // A params field that is not an RSASSA-PSS-params SEQUENCE, and one whose hashAlgorithm cannot be
+  // read, are restrictions this code cannot honor. An EMPTY SEQUENCE is the subtlest of the three
+  // and the reason the old fall-through was wrong: hashAlgorithm is `[0] ... DEFAULT
+  // sha1Identifier`, so omitting it NAMES SHA-1 -- and falling back to SHA-256 there signed under a
+  // digest the certificate forbids.
   var shapes = [
     b.nullValue(),                                                            // not a SEQUENCE
-    b.sequence([]),                                                           // a SEQUENCE with no [0] hashAlgorithm
+    b.sequence([]),                                                           // no [0] -> DEFAULT sha1
     b.sequence([b.explicit(0, b.sequence([b.nullValue()]))]),                 // [0] hashAlgorithm inner is not an OID
   ];
-  // The reader finds no pinned hash and the signer falls back to the SHA-256 default
-  // -- these three shapes drive that fall-through, which runs during scheme
-  // resolution, before anything is signed. What they no longer do is EMIT: the
-  // crafted SPKI is deliberately malformed and not re-importable, so the post-sign
-  // check that the signature verifies under the key the SignerInfo declares cannot
-  // pass. That is the honest outcome for a signer whose own declared key nothing can
-  // import -- the SignedData it used to produce was one no recipient could verify.
   for (var i = 0; i < shapes.length; i++) {
-    await rejects("PSS SPKI params shape " + i + " -> resolves the sha256 fallback, then refuses to emit an unverifiable SignerInfo",
+    await rejects("PSS SPKI params shape " + i + " -> a restriction that cannot be honored is refused, never read as absent",
       (function (shape) {
         return function () { return pki.cms.sign(CONTENT, pssSignerWithParams(shape)); };
-      })(shapes[i]), "cms/bad-input");
+      })(shapes[i]), "cms/unsupported-algorithm");
   }
   // a [0] hashAlgorithm pinning a hash this toolkit does not map (SHA-1) fails closed at sign time,
   // rather than silently signing under a digest the key forbids.

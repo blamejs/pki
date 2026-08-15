@@ -16,12 +16,55 @@ var pki = require("../../index.js");
 
 function b64u(buf) { return Buffer.from(buf).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, ""); }
 
+// The JWS algorithms a BLOB can really be signed under here, each with the key material to mint and
+// the WebCrypto parameters to sign with. `alg` on its own rewrites only the header, which is what an
+// algorithm-confusion vector wants; `signAlg` mints a leaf of the matching key type and signs for
+// real, so a vector can assert that a CONFORMANT BLOB under a different algorithm verifies -- the
+// case a table missing a row silently refuses.
+var SIGN_ALGS = {
+  ES256: { gen: { name: "ECDSA", namedCurve: "P-256" }, sign: { name: "ECDSA", hash: "SHA-256" } },
+  RS256: { gen: { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, sign: { name: "RSASSA-PKCS1-v1_5" } },
+  PS256: { gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, sign: { name: "RSA-PSS", saltLength: 32 } },
+  PS384: { gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-384" }, sign: { name: "RSA-PSS", saltLength: 48 } },
+  PS512: { gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-512" }, sign: { name: "RSA-PSS", saltLength: 64 } },
+  // EdDSA names a scheme without fixing a curve, so the KEY decides which of the two it is and one
+  // JWS algorithm needs both fixtures. ML-DSA's algorithm fixes its own parameter set.
+  "EdDSA-Ed25519": { alg: "EdDSA", gen: { name: "Ed25519" }, sign: { name: "Ed25519" } },
+  "EdDSA-Ed448": { alg: "EdDSA", gen: { name: "Ed448" }, sign: { name: "Ed448" } },
+  "ML-DSA-44": { gen: { name: "ML-DSA-44" }, sign: { name: "ML-DSA-44" } },
+  "ML-DSA-65": { gen: { name: "ML-DSA-65" }, sign: { name: "ML-DSA-65" } },
+  "ML-DSA-87": { gen: { name: "ML-DSA-87" }, sign: { name: "ML-DSA-87" } },
+};
+
+// Re-encode an RSA SPKI under id-RSASSA-PSS (RFC 4055 sec. 1.2): the same key bits, an algorithm
+// identifier that RESTRICTS the key to RSASSA-PSS, and optionally the parameters that pin it to one
+// hash. Node exports every RSA key -- PSS included -- under the generic rsaEncryption OID, so the
+// restricted form a real certificate can carry has to be built rather than generated.
+function pssRestrictedSpki(spki, pinHash) {
+  var ab = pki.asn1.build;
+  var keyBits = pki.asn1.decode(spki).children[1];
+  var algId = [ab.oid(pki.oid.byName("rsassaPss"))];
+  // An RSASSA-PSS-params SEQUENCE that omits hashAlgorithm is NOT an absent restriction: RFC 4055
+  // sec. 3.1 gives that field `DEFAULT sha1Identifier`, so the empty SEQUENCE names SHA-1.
+  if (pinHash === "empty-params") algId.push(ab.sequence([]));
+  else if (pinHash) {
+    var hashAlg = ab.sequence([ab.oid(pki.oid.byName(pinHash.name)), ab.nullValue()]);
+    algId.push(ab.sequence([
+      ab.explicit(0, hashAlg),
+      ab.explicit(1, ab.sequence([ab.oid(pki.oid.byName("mgf1")), hashAlg])),
+      ab.explicit(2, ab.integer(BigInt(pinHash.salt))),
+    ]));
+  }
+  return ab.sequence([ab.sequence(algId), Buffer.from(keyBits.bytes)]);
+}
+
 async function mint(o) {
   o = o || {};
   var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2027-01-01T00:00:00Z");
   var ec = { name: "ECDSA", namedCurve: "P-256" };
-  async function pair() {
-    var kp = await pki.webcrypto.subtle.generateKey(ec, true, ["sign", "verify"]);
+  var signRow = SIGN_ALGS[o.signAlg || "ES256"];
+  async function pair(genAlg) {
+    var kp = await pki.webcrypto.subtle.generateKey(genAlg || ec, true, ["sign", "verify"]);
     return { kp: kp, spki: Buffer.from(await pki.webcrypto.subtle.exportKey("spki", kp.publicKey)) };
   }
   async function ca(name, k) {
@@ -30,12 +73,24 @@ async function mint(o) {
       extensions: { basicConstraints: { critical: true, cA: true }, keyUsage: ["keyCertSign", "cRLSign"] },
     }, { key: k.kp.privateKey, name: [{ commonName: name }], publicKey: k.spki });
   }
-  var root = await pair(), leaf = await pair(), other = await pair(), attRoot = await pair();
+  var root = await pair(), leaf = await pair(signRow.gen), other = await pair(), attRoot = await pair();
   var rootDer = await ca("Test FIDO Metadata Root", root);
   var otherDer = await ca("Unrelated Root", other);
   var attRootDer = await ca("Test Attestation Root", attRoot);
+  // pssRestricted carries the leaf's key under id-RSASSA-PSS instead of rsaEncryption, so the
+  // CERTIFICATE restricts what the key may do -- with `pinHash`, down to a single hash.
+  var leafSpki = o.pssRestricted ? pssRestrictedSpki(leaf.spki, o.pssPinHash) : leaf.spki;
+  // lowOrderPoint replaces an Edwards leaf's key bits with the all-zero identity point, keeping the
+  // algorithm identifier. The platform imports it and it verifies a trivial signature over any
+  // message, so a certificate carrying one -- properly issued by the pinned root -- would otherwise
+  // authenticate whatever payload it was shown.
+  if (o.lowOrderPoint) {
+    var ab2 = pki.asn1.build;
+    var sp = pki.asn1.decode(leafSpki);
+    leafSpki = ab2.sequence([Buffer.from(sp.children[0].bytes), ab2.bitString(Buffer.alloc(o.lowOrderPoint))]);
+  }
   var leafDer = await pki.x509.sign({
-    subject: [{ commonName: "Test MDS Signer" }], subjectPublicKey: leaf.spki, serialNumber: Buffer.from([2]),
+    subject: [{ commonName: "Test MDS Signer" }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]),
     notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },
   }, { key: root.kp.privateKey, name: [{ commonName: "Test FIDO Metadata Root" }], publicKey: root.spki });
 
@@ -86,7 +141,9 @@ async function mint(o) {
     }, { key: xCa.kp.privateKey, name: [{ commonName: "Cross Signing CA" }], publicKey: xCa.spki });
     chain = [leafDer, crossDer];
   }
-  var header = Object.assign({ alg: o.alg || "ES256", typ: "JWT",
+  // The header alg is the JWS algorithm NAME, which for the two Edwards fixtures is one name over
+  // two key types -- so the fixture key is chosen by the row and the header still says `EdDSA`.
+  var header = Object.assign({ alg: o.alg || signRow.alg || o.signAlg || "ES256", typ: "JWT",
     x5c: o.x5cRaw || chain.map(function (d) { return d.toString("base64"); }) }, o.headerExtra || {});
 
   // headerRaw / payloadRaw substitute the serialized JSON wholesale, for a vector whose defect is
@@ -97,8 +154,12 @@ async function mint(o) {
   var h64 = b64u(Buffer.from(o.headerRaw === undefined ? JSON.stringify(header) : o.headerRaw, "utf8"));
   var p64 = o.payloadRaw64 !== undefined ? o.payloadRaw64
     : b64u(Buffer.from(o.payloadRaw === undefined ? JSON.stringify(payload) : o.payloadRaw, "utf8"));
-  var sig = Buffer.from(await pki.webcrypto.subtle.sign({ name: "ECDSA", hash: "SHA-256" },
-    ((o.signWithRoot || o.x5cSelfOnly) ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
+  // signWithRoot / x5cSelfOnly sign with the ROOT's key, which is always EC here, so those vectors
+  // keep ECDSA regardless of the leaf's algorithm.
+  var signWithRootKey = o.signWithRoot || o.x5cSelfOnly;
+  var sig = Buffer.from(await pki.webcrypto.subtle.sign(
+    signWithRootKey ? { name: "ECDSA", hash: "SHA-256" } : signRow.sign,
+    (signWithRootKey ? root.kp : leaf.kp).privateKey, Buffer.from(h64 + "." + p64, "ascii")));
   // signerKey is the leaf's private half: a consumer that mutates the payload can re-sign, so a
   // mutation arrives past the signature gate instead of being rejected ahead of the payload reader.
   return { blob: Buffer.from(h64 + "." + p64 + "." + b64u(o.badSig ? Buffer.alloc(sig.length, 9) : sig), "utf8"),
