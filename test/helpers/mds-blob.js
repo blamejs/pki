@@ -80,6 +80,15 @@ async function mint(o) {
   // pssRestricted carries the leaf's key under id-RSASSA-PSS instead of rsaEncryption, so the
   // CERTIFICATE restricts what the key may do -- with `pinHash`, down to a single hash.
   var leafSpki = o.pssRestricted ? pssRestrictedSpki(leaf.spki, o.pssPinHash) : leaf.spki;
+  // lowOrderPoint replaces an Edwards leaf's key bits with the all-zero identity point, keeping the
+  // algorithm identifier. The platform imports it and it verifies a trivial signature over any
+  // message, so a certificate carrying one -- properly issued by the pinned root -- would otherwise
+  // authenticate whatever payload it was shown.
+  if (o.lowOrderPoint) {
+    var ab2 = pki.asn1.build;
+    var sp = pki.asn1.decode(leafSpki);
+    leafSpki = ab2.sequence([Buffer.from(sp.children[0].bytes), ab2.bitString(Buffer.alloc(o.lowOrderPoint))]);
+  }
   var leafDer = await pki.x509.sign({
     subject: [{ commonName: "Test MDS Signer" }], subjectPublicKey: leafSpki, serialNumber: Buffer.from([2]),
     notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"] },

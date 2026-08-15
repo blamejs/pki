@@ -530,6 +530,15 @@ async function run() {
     check("mds: a BLOB signed under " + edAlg.replace("EdDSA-", "EdDSA over ") + " verifies",
       (await pki.webauthn.verifyMetadataBlob(edFix.blob, { rootCertificates: [edFix.rootDer], time: T })).no === 42);
   }
+  // An Edwards leaf key is validated on-curve and full-order before it is imported. The identity
+  // point verifies a trivial signature over ANY message, so a leaf carrying one authenticates
+  // whatever payload it is shown -- and chaining to the pinned root does not help, because such a
+  // certificate is malformed rather than unissued and can be perfectly well signed. Every other
+  // Edwards key in the toolkit passes this gate; a new verification route must not be the exception.
+  check("mds: an Ed25519 leaf carrying the identity point is refused before it is imported",
+    (await codeFor({ signAlg: "EdDSA-Ed25519", lowOrderPoint: 32 })) === "webauthn/bad-att-cert");
+  check("mds: ...and an Ed448 leaf likewise",
+    (await codeFor({ signAlg: "EdDSA-Ed448", lowOrderPoint: 57 })) === "webauthn/bad-att-cert");
   for (var mlAlg of ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]) {
     var mlFix = await mint({ signAlg: mlAlg });
     check("mds: a BLOB signed under " + mlAlg + " verifies",
