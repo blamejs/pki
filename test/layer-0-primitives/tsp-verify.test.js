@@ -186,6 +186,26 @@ async function testVerifyAccept() {
   var res6 = await pki.tsp.verify(token, DATA, {});
   check("valid without anchor; TSA cert surfaced for the caller to anchor", res6.valid === true && res6.signer && Buffer.isBuffer(res6.signer.cert));
 
+  // `valid` says the token's signature and its structural bindings hold. Whether the TSA is one this
+  // caller trusts is a SECOND question, and the whole out-of-path validation that answers it runs
+  // only when an anchor is supplied -- so a single boolean collapsed the two, and an archived
+  // verdict could not be re-read years later to tell whether the timestamp authority was ever
+  // trusted. `trusted` answers it definitely either way, the same shape pki.cms.verify returns.
+  check("a token anchored to its TSA's root reports trusted", res.trusted === true);
+  check("a token verified with no anchor reports trusted false -- a definite answer, not a missing one",
+    res6.trusted === false && res6.valid === true);
+  var otherAnchorRes = await (async function () {
+    try { return await pki.tsp.verify(token, DATA, { trustAnchor: makeTsa(ekuExt([TS_EKU], true)).anchor }); }
+    catch (e) { return { threw: e && e.code }; }
+  })();
+  check("a token whose TSA does not chain to the supplied anchor is refused, not merely untrusted",
+    otherAnchorRes.threw === "tsp/untrusted-tsa" || otherAnchorRes.valid === false);
+  // Every refusal answers the same question too. An `undefined` on the failure branch is the same
+  // "cannot tell what was checked" the field exists to remove.
+  var badImprint = await pki.tsp.verify(token, Buffer.alloc(32, 0xee), { trustAnchor: tsa.anchor });
+  check("a refused token still answers the trusted question rather than leaving it undefined",
+    badImprint.valid === false && badImprint.trusted === false);
+
   // This verb spells its anchor option SINGULAR and takes an anchor tuple; pki.cms.verify and
   // pki.cmp.verify spell it `trustAnchors` and take certificate DER. Carrying the plural spelling
   // here used to mean no anchoring and no error -- an unchained TSA certificate under valid: true.
