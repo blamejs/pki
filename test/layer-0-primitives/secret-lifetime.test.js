@@ -97,8 +97,12 @@ function tap() {
   // so assertions on this label name the specific buffer they mean.
   var realImport = subtle.importKey;
   var hadOwnImport = Object.prototype.hasOwnProperty.call(subtle, "importKey");
+  // A PKCS#8 import is the only view of the private-key buffer the engine decoded for a caller who
+  // passed a Uint8Array or a PEM string: that buffer is allocated inside lib/ and handed straight to
+  // importKey, so capturing the argument here IS holding the toolkit's own copy.
   subtle.importKey = function (format, keyData) {
     if (format === "raw") grab("import.raw", keyData);
+    if (format === "pkcs8") grab("import.pkcs8", keyData);
     return realImport.apply(this, arguments);
   };
   // A key-transport unwrap yields the recovered key as the RSA decryption output. When that key is
@@ -684,6 +688,135 @@ async function run() {
   var pwBufOut = await pki.cms.decrypt(pwBufEnv, { password: callerPw });
   check("a caller-supplied password Buffer is never wiped",
     Buffer.compare(callerPw, Buffer.from("hunter2-hunter2-")) === 0 && Buffer.compare(pwBufOut.content, MSG) === 0);
+
+  // ---- the PRIVATE-KEY copies the engine makes to import a key --------------------
+  // A signer or recipient key arrives as a Buffer, a Uint8Array, or a PEM string. The first is the
+  // caller's own memory and is passed through; the other two are decoded into a NEW buffer here,
+  // and that buffer is a second copy of a private key which nothing outside this process can reach.
+  // Both directions are asserted, because they fail in opposite ways: an un-wiped copy leaves the
+  // key readable, and a wrongly-wiped caller buffer destroys the key they still hold.
+  var pkSigner = signing.makeSigner("ec-p256");
+  var pkPem = pki.schema.pkcs8.pemEncode(pkSigner.key);
+  var pkU8 = new Uint8Array(Buffer.from(pkSigner.key));
+  var pkU8Snapshot = Buffer.from(pkU8);
+  check("the Uint8Array signer key is non-zero to begin with", pkU8Snapshot.some(function (x) { return x !== 0; }));
+
+  // Driving pki.x509.sign is the shipped consumer path for sign-scheme's key import. The tap holds
+  // the buffer the engine received, which for these two forms is the copy lib/ made.
+  var pkSpec = { subject: "Key Copy", subjectPublicKey: pkSigner.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z") };
+  var certFromU8, certFromPem;
+  t = tap();
+  try {
+    certFromU8 = await pki.x509.sign(pkSpec, { key: pkU8 });
+    wipedAll(t, "import.pkcs8", "a Uint8Array signer key: the copy handed to the engine");
+  } finally { t.restore(); }
+  check("a certificate still signs from a Uint8Array key", Buffer.isBuffer(certFromU8));
+  check("...and the caller's Uint8Array is untouched (it is theirs)",
+    Buffer.compare(Buffer.from(pkU8), pkU8Snapshot) === 0);
+  t = tap();
+  try {
+    certFromPem = await pki.x509.sign(pkSpec, { key: pkPem });
+    wipedAll(t, "import.pkcs8", "a PEM signer key: the decoded copy");
+  } finally { t.restore(); }
+  check("a certificate still signs from a PEM key", Buffer.isBuffer(certFromPem));
+
+  var callerKeyBuf = Buffer.from(pkSigner.key);
+  var callerKeySnapshot = Buffer.from(callerKeyBuf);
+  await pki.x509.sign(pkSpec, { key: callerKeyBuf });
+  check("a caller-supplied signer key Buffer is never wiped",
+    Buffer.compare(callerKeyBuf, callerKeySnapshot) === 0);
+
+  // The recipient side of the same rule, through pki.cms.decrypt.
+  var pkRecip = await makeRecipient("rsa");
+  var recipEnv = await pki.cms.encrypt(MSG, [{ cert: pkRecip.cert }]);
+  var recipKeyBuf = Buffer.from(pkRecip.key);
+  var recipKeySnapshot = Buffer.from(recipKeyBuf);
+  var recipOut = await pki.cms.decrypt(recipEnv, { key: recipKeyBuf, cert: pkRecip.cert });
+  check("a caller-supplied recipient key Buffer is never wiped, and still decrypts",
+    Buffer.compare(recipKeyBuf, recipKeySnapshot) === 0 && Buffer.compare(recipOut.content, MSG) === 0);
+  var recipU8 = new Uint8Array(Buffer.from(pkRecip.key));
+  var recipU8Snapshot = Buffer.from(recipU8);
+  var recipOut2;
+  t = tap();
+  try {
+    recipOut2 = await pki.cms.decrypt(recipEnv, { key: recipU8, cert: pkRecip.cert });
+    wipedAll(t, "import.pkcs8", "a Uint8Array ktri recipient key: the copy handed to the engine");
+  } finally { t.restore(); }
+  check("a Uint8Array recipient key still decrypts, and the caller's array is untouched",
+    Buffer.compare(recipOut2.content, MSG) === 0 && Buffer.compare(Buffer.from(recipU8), recipU8Snapshot) === 0);
+
+  // The rule holds per recipient KIND, not just for the one that happened to be tested: the key
+  // reaches a different unwrap on each, and each takes its own copy.
+  var kariCopyRecip = await makeRecipient("ec-p256");
+  var kariCopyEnv = await pki.cms.encrypt(MSG, [{ cert: kariCopyRecip.cert }]);
+  var kariCopyPem = pki.schema.pkcs8.pemEncode(kariCopyRecip.key);
+  var kariCopyOut;
+  t = tap();
+  try {
+    kariCopyOut = await pki.cms.decrypt(kariCopyEnv, { key: kariCopyPem, cert: kariCopyRecip.cert });
+    wipedAll(t, "import.pkcs8", "a PEM kari recipient key: the decoded copy");
+  } finally { t.restore(); }
+  check("a PEM kari recipient key still decrypts", Buffer.compare(kariCopyOut.content, MSG) === 0);
+
+  // The FAILURE path, which is the one an attacker chooses. Between taking the key copy and the
+  // unwrap sit several reads of attacker-supplied structure -- the wrap algorithm, the originator's
+  // key, the recipient match -- and each throws on malformed input. A message crafted to fail there
+  // must leave no more behind than one that decrypts, so the copy is asserted on a run that throws.
+  var badKari = Buffer.from(kariCopyEnv);
+  var kariParsed = pki.schema.cms.parse(kariCopyEnv);
+  check("the kari fixture parses (the tampering below targets a real structure)", kariParsed != null);
+  // Corrupt the ephemeral originator key so the agreement cannot be reconstructed.
+  var origIdx = badKari.indexOf(Buffer.from([0x03, 0x42, 0x00, 0x04]));
+  check("the originator public key was located for tampering", origIdx > 0);
+  badKari[origIdx + 8] ^= 0xff;
+  var tamperThrew = false;
+  t = tap();
+  try {
+    try { await pki.cms.decrypt(badKari, { key: kariCopyPem, cert: kariCopyRecip.cert }); }
+    catch (_e) { tamperThrew = true; }
+    check("a tampered kari message is refused", tamperThrew === true);
+    wipedAll(t, "import.pkcs8", "a kari failure: the key copy is still cleared");
+  } finally { t.restore(); }
+
+  // The tampered message above fails at the unwrap, which is inside the protected region either way.
+  // This one fails INSIDE THE SETUP WINDOW -- parsing the recipient certificate, between taking the
+  // key copy and reaching the agreement -- which is the window that was unprotected. The engine has
+  // already been handed the copy by then, so the tap holds it and can say whether it was cleared.
+  // On this path the key is never handed to the engine at all -- the setup throws first -- so the
+  // import tap sees nothing and cannot answer. The copy is observed where it is BORN instead, at the
+  // PEM decode the toolkit runs to produce it: that returned buffer IS the copy, and holding it is
+  // the only way to ask whether an early throw leaves it readable.
+  var pkcs8Mod = require("../../lib/schema-pkcs8");
+  var realPemDecode = pkcs8Mod.pemDecode;
+  var decoded = [];
+  pkcs8Mod.pemDecode = function () {
+    var out = realPemDecode.apply(this, arguments);
+    if (Buffer.isBuffer(out)) decoded.push({ buf: out, snap: Buffer.from(out) });
+    return out;
+  };
+  // The trigger is an unknown key-WRAP OID inside the agreement parameters. That is read one step
+  // after the key copy is taken and before any agreement happens, so the refusal comes from exactly
+  // the region that used to sit outside the protected block. (An unknown key-AGREEMENT OID looks
+  // similar but is rejected later, from inside the block, so it would not test this.)
+  var kariKea = pki.schema.cms.parse(kariCopyEnv).recipientInfos[0].keyEncryptionAlgorithm;
+  var wrapOid = pki.asn1.read.oid(pki.asn1.decode(kariKea.parameters).children[0]);
+  var wrapDer = pki.asn1.build.oid(wrapOid);
+  var wrapAt = kariCopyEnv.indexOf(wrapDer);
+  check("the kari key-wrap OID was located for tampering", wrapAt > 0);
+  var unknownWrap = Buffer.from(kariCopyEnv);
+  unknownWrap[wrapAt + wrapDer.length - 1] ^= 0x40;
+  var windowCode = null;
+  try {
+    try { await pki.cms.decrypt(unknownWrap, { key: kariCopyPem, cert: kariCopyRecip.cert }); }
+    catch (e) { windowCode = e.code; }
+  } finally { pkcs8Mod.pemDecode = realPemDecode; }
+  check("an unknown kari key-wrap is refused from inside the setup window",
+    windowCode === "cms/unsupported-algorithm");
+  check("the PEM decode produced a key copy to observe", decoded.length > 0);
+  check("...it held real key material", decoded.length > 0 && decoded.every(function (c) { return anyNonZero(c.snap); }));
+  check("...and it is cleared even though the throw came from the setup, not the unwrap",
+    decoded.length > 0 && decoded.every(function (c) { return allZero(c.buf); }));
 
   console.log("CHECKS " + helpers.getChecks());
 }
