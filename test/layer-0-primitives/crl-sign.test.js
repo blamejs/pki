@@ -249,6 +249,34 @@ async function testVerifyInputShapes() {
   check("verify accepts a parsed certificate as the issuer", (await pki.crl.verify(crlByCa, caParsed)) === true);
   // Every accepted issuer shape still resolves to a real key -- the wrong CA's cert fails closed.
   check("a parsed-certificate issuer for the wrong CA -> verify false", (await pki.crl.verify(crlByCa, pki.schema.x509.parse(s.cert))) === false);
+
+  // A CRL signature verifying says only that SOME key signed these bytes. Whether that key was
+  // ALLOWED to sign a CRL, and whether it belongs to the issuer this CRL names, are separate
+  // questions -- and only a certificate can answer them. The producing side of this same file
+  // already refuses to SIGN without cRLSign; the verifying side asked neither, so a CRL minted
+  // under an end-entity certificate of the same CA verified as that CA's CRL.
+  var ee = makeSigner("ec-p256");
+  var eeDer = await pki.x509.sign({
+    subject: "CA verify shapes", subjectPublicKey: ee.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: false }, keyUsage: ["digitalSignature"] },
+  }, { key: ee.key });
+  // Signed with the end-entity KEY and claiming the CA's name -- which is how an attacker holding
+  // such a certificate would mint it, and the one shape this file's producing-side cRLSign gate
+  // cannot refuse, since no certificate is offered to it.
+  var crlByEe = await pki.crl.sign(spec, { publicKey: ee.spki, name: "CA verify shapes", key: ee.key });
+  check("a CRL signed by a certificate whose keyUsage omits cRLSign does not verify under it",
+    (await pki.crl.verify(crlByEe, { cert: eeDer })) === false);
+  // ...and the signature itself is still sound, so the refusal is about authority, not about maths:
+  // handed only the KEY, with no certificate to carry the restriction, the same CRL verifies.
+  check("the same CRL verifies under the bare key -- a key carries no authority to restrict",
+    (await pki.crl.verify(crlByEe, ee.spki)) === true);
+  // An absent keyUsage places no restriction (sec. 4.2.1.3), so it must not read as a refusal.
+  var noKuDer = await pki.x509.sign({
+    subject: "CA verify shapes", subjectPublicKey: ca.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true } },
+  }, { key: ca.key });
+  check("an issuer certificate with no keyUsage at all still verifies its CRL",
+    (await pki.crl.verify(crlByCa, { cert: noKuDer })) === true);
 }
 
 // ---- the signing key must actually match the resolved scheme -- faults are typed, never a partial CRL ----
@@ -340,6 +368,22 @@ async function testDeltaAndFreshest() {
   check("removeFromCRL(8) accepted in a delta CRL", (entryExt(rc.revokedCertificates[0], "reasonCode") || {}).value === 8);
 }
 
+// An indirect CRL, which this library deliberately refuses to EMIT (pki.path.crlChecker cannot yet
+// process one, so signing one would produce a CRL nothing here can use). A third-party CRL can
+// still carry the flag, which is the input isRevoked has to be safe against -- so the fixture
+// splices the extension onto a parsed CRL rather than asking the signer for something it declines.
+function _forceIndirect(der) {
+  var b = pki.asn1.build;
+  var parsed = pki.schema.crl.parse(der);
+  var copy = Object.assign({}, parsed);
+  copy.crlExtensions = (parsed.crlExtensions || []).concat([{
+    oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+    // IssuingDistributionPoint ::= SEQUENCE { ... indirectCRL [4] BOOLEAN DEFAULT FALSE }
+    value: b.sequence([b.contextPrimitive(4, Buffer.from([0xff]))]),
+  }]);
+  return copy;
+}
+
 // ---- PEM output + isRevoked lookup ----
 
 async function testPemAndIsRevoked() {
@@ -362,6 +406,27 @@ async function testPemAndIsRevoked() {
   check("isRevoked accepts a magnitude Buffer serial", found(Buffer.from([0xab, 0xcd])));
   function serialCode(v) { try { pki.crl.isRevoked(der, v); return null; } catch (e) { return e && e.code; } }
   check("isRevoked non-safe-integer serial -> crl/bad-input", serialCode(Math.pow(2, 53)) === "crl/bad-input");
+
+  // SCOPE. A serial number means something only inside the set of certificates a CRL speaks for,
+  // and two shapes of CRL speak for a different set than a serial-only match assumes.
+  // pki.path.crlChecker already refuses both -- so the toolkit knew the rule and applied it in one
+  // consumer, while the standalone verb answered from any CRL it was handed.
+  function scopeCode(crl, serial) { try { pki.crl.isRevoked(crl, serial); return "NO-THROW"; } catch (e) { return e && e.code; } }
+  // A DELTA lists CHANGES: a serial in it may be there to say the certificate was RELEASED
+  // (removeFromCRL), so read alone the entry that means "no longer revoked" reads as "revoked".
+  var deltaDer = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n,
+    extensions: { deltaCRLIndicator: 1n },
+    revoked: [{ serialNumber: 0xabcdn, revocationDate: RD, reason: "removeFromCRL" }] }, issuerOf(s));
+  check("isRevoked refuses to answer from a delta CRL alone", scopeCode(deltaDer, 0xabcdn) === "crl/delta-not-authoritative");
+  // ...and the refusal is about the CRL's scope, not about that particular serial: a serial the
+  // delta does not list is equally unanswerable from it.
+  check("...for a serial the delta does not list either", scopeCode(deltaDer, 0x9999n) === "crl/delta-not-authoritative");
+  // An INDIRECT CRL carries entries for OTHER issuers, identified per entry. Serials are unique per
+  // issuer, not globally, so matching on serial alone attributes another issuer's revocation here.
+  var indirectDer = _forceIndirect(der);
+  check("isRevoked refuses to answer from an indirect CRL", scopeCode(indirectDer, 0xabcdn) === "crl/indirect-not-supported");
+  // A direct CRL with no scope extensions still answers, which is the case every caller has.
+  check("a plain direct CRL still answers", pki.crl.isRevoked(der, 0xabcdn) !== null);
   check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
   check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
   check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");
