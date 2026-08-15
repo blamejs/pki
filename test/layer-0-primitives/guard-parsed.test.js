@@ -99,6 +99,36 @@ function run() {
   check("an accessor that throws is refused as a typed fault, not propagated",
     codeOf(function () { guard.accept(trap, "certificate", parse, E, "x/bad", "arg"); }) === "x/bad");
   check("...and the predicate answers false rather than throwing", guard.isCert(trap) === false);
+  var crlTrap = crl({});
+  Object.defineProperty(crlTrap, "revokedCertificates", { get: function () { throw new RangeError("unreadable"); } });
+  check("the CRL predicate answers false rather than throwing too", guard.isCrl(crlTrap) === false);
+
+  // ---- fromTrustedSource ------------------------------------------------------
+  // An integrity verb reads two or three fields that must have come from one place, so it asks the
+  // parser for the bytes it read rather than trusting the object. An object claiming to be parser
+  // output without that record has been rebuilt, and is refused.
+  var recording = guard.recordingParser("thing", function (b) { return { parsedFrom: b, tag: "real" }; },
+    TestError, "x/bad", "a thing");
+  var real = recording(Buffer.from([1, 2, 3]));
+  function door(v) {
+    return guard.fromTrustedSource(v, "thing", ["responseStatus"], function (b) { return { reparsed: b }; },
+      E, "x/bad", "rebuilt");
+  }
+  check("bytes go to the parser", Buffer.isBuffer(door(Buffer.from([9])).reparsed));
+  check("the parser's own result is re-derived from what it recorded",
+    Buffer.compare(door(real).reparsed, Buffer.from([1, 2, 3])) === 0);
+  check("a rebuilt copy claiming to be one is refused",
+    codeOf(function () { door(Object.assign({}, real, { responseStatus: 1 })); }) === "x/bad");
+  // The claim field can itself be an accessor that throws. A guard answers; it does not relay --
+  // an object whose claim cannot even be read is certainly not the parser's own result.
+  var claimTrap = {};
+  Object.defineProperty(claimTrap, "responseStatus", { enumerable: true, get: function () { throw new RangeError("unreadable"); } });
+  check("a throwing claim accessor is a typed fault, not a raw one",
+    codeOf(function () { door(claimTrap); }) === "x/bad");
+  // The record is keyed by IDENTITY, so a Proxy answering for any key cannot claim it.
+  var proxied = new Proxy(real, { get: function (t, k) { return Reflect.get(t, k); } });
+  check("a Proxy over a real result does not inherit its record",
+    codeOf(function () { door(Object.assign(proxied, { responseStatus: 1 })); }) === "x/bad");
 
   // ---- the kind is a programming error, not an input fault --------------------
   // A misspelled kind is a bug in the composing module and must not read as a

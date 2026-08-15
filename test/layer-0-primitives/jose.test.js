@@ -31,6 +31,13 @@ async function testJws() {
   check("25. ES256 JWS verify + payload", v.header.alg === "ES256" && v.payload.equals(Buffer.from("{}")));
   var flipped = Object.assign({}, jws, { signature: pki.jose.base64url.encode((function () { var b = Buffer.from(pki.jose.base64url.decode(jws.signature)); b[0] ^= 1; return b; })()) });
   check("25b. flipped signature fails", (await acode(function () { return pki.jose.verify(flipped, OUTER); })) === "jose/verify-failed");
+  // `key` NAMES the key a message must be signed under and `profile` selects the header rules, so
+  // both NARROW what verifies. A misspelling of either silently widens it back to the default: the
+  // caller asked for something stricter and got the looser behaviour, with nothing said.
+  check("25c. an unknown verify option is refused, not swallowed",
+    (await acode(function () { return pki.jose.verify(jws, { profile: "acme-outer", keys: ecJwk }); })) === "jose/bad-input");
+  check("25d. ...and an unknown sign option likewise",
+    (await acode(function () { return pki.jose.sign({ protected: outerHeader({ jwk: ecJwk }), payload: Buffer.from("{}"), key: ec.privateKey, profiel: "acme-outer" }); })) === "jose/bad-input");
 
   // 25c-25f. A caller who supplies opts.key is naming the key the message must be signed under.
   // The acme-outer profile also permits an embedded jwk, and when both are present the message

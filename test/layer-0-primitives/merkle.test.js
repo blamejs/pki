@@ -103,6 +103,15 @@ function testRejects() {
   // fails closed with a typed merkle/* error (never a raw TypeError).
   check("rej-incl-no-opts", code(function () { m.verifyInclusion(); }) === "merkle/bad-input");
   check("rej-incl-empty-tree", code(function () { m.verifyInclusion({ leafIndex: 0, treeSize: 0, leafHash: H(L0), proof: [], rootHash: H(L0) }); }) === "merkle/empty-tree");
+  // Every field of these verbs is required, which is what makes a misspelling dangerous: the
+  // intended field reads as OMITTED, and an omission of a required field is caught -- so the caller
+  // is told about the field they did not mean to leave out and never about the one they misspelled.
+  check("rej-incl-unknown-option", code(function () {
+    m.verifyInclusion({ leafIndex: 0, treeSize: 1, leafHash: H(L0), proof: [], rootHash: H(L0), leafIdx: 3 });
+  }) === "merkle/bad-input");
+  check("rej-cons-unknown-option", code(function () {
+    m.verifyConsistency({ oldSize: 1, newSize: 1, oldRoot: H(L0), newRoot: H(L0), proof: [], oldsize: 2 });
+  }) === "merkle/bad-input");
   check("rej-incl-index-oob", code(function () { m.verifyInclusion({ leafIndex: 7, treeSize: 7, leafHash: H(L3), proof: P([L2, R2, N456]), rootHash: H(R7) }); }) === "merkle/index-out-of-range");
   check("rej-incl-bad-hashlen", code(function () { m.verifyInclusion({ leafIndex: 3, treeSize: 7, leafHash: H(L3), proof: [Buffer.alloc(31), H(R2), H(N456)], rootHash: H(R7) }); }) === "merkle/bad-hash-length");
   check("rej-incl-bad-proof-type", code(function () { m.verifyInclusion({ leafIndex: 3, treeSize: 7, leafHash: H(L3), proof: "not-an-array", rootHash: H(R7) }); }) === "merkle/bad-proof");

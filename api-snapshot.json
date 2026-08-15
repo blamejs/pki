@@ -2671,10 +2671,6 @@
             }
           }
         },
-        "_verifyOcspParsed": {
-          "kind": "function",
-          "arity": 5
-        },
         "build": {
           "kind": "function",
           "arity": 2
