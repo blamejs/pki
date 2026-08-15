@@ -130,8 +130,9 @@ async function testNestedAndInputs() {
   var pem = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", pem: true });
   check("open accepts a PEM string", (await pki.pkcs12.open(pem, "1234")).certs.length === 1);
   var pDer = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" });
-  check("open refuses a parse-result object, so the verified bytes are the ones opened",
-    await codeOf(pki.pkcs12.open(pki.schema.pkcs12.parse(pDer), "1234")) === "pkcs12/bad-input");
+  check("open accepts the parser's own result", (await pki.pkcs12.open(pki.schema.pkcs12.parse(pDer), "1234")).certs.length === 1);
+  check("open refuses a REBUILT one, where the two could name different stores",
+    await codeOf(pki.pkcs12.open(Object.assign({}, pki.schema.pkcs12.parse(pDer)), "1234")) === "pkcs12/bad-input");
   check("...and the same store as bytes still opens", (await pki.pkcs12.open(pDer, "1234")).certs.length === 1);
 }
 

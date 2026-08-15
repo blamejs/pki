@@ -227,20 +227,38 @@ async function testEdges() {
   var pnoopts = await pki.pkcs12.build(spec);
   check("build with no opts uses an empty password + still MACs", pki.schema.pkcs12.parse(pnoopts).integrityMode === "password");
   check("verifyMac with the empty password accepts it", (await pki.pkcs12.verifyMac(pnoopts, "")) === true);
-  // An integrity verb reads its inputs from ONE source. A parsed store carries the MACed byte range
-  // and the bags separately, so an object could pair one store's macedBytes with another's contents
-  // -- verify this, return that. Both verbs take the bytes and parse them, binding the two.
+  // An integrity verb reads two things that must have come from one place: the MACed byte range,
+  // and the bags handed back as verified. On a parsed store they are separate properties, so a
+  // REBUILT object can pair one store's macedBytes with another's contents -- verify this, return
+  // that. The parser marks what it returns and the door asks for the mark, so the documented parsed
+  // form keeps working and only a rebuilt one is refused.
   var p12 = await pki.pkcs12.build(spec, { password: "1234" });
-  check("verifyMac refuses a parse-result object, so the verified bytes are the store's",
-    await codeOf(pki.pkcs12.verifyMac(pki.schema.pkcs12.parse(p12), "1234")) === "pkcs12/bad-input");
-  check("open refuses one for the same reason",
-    await codeOf(pki.pkcs12.open(pki.schema.pkcs12.parse(p12), "1234")) === "pkcs12/bad-input");
-  check("...and the same store as bytes still verifies and opens",
-    (await pki.pkcs12.verifyMac(p12, "1234")) === true && (await pki.pkcs12.open(p12, "1234")).macVerified === true);
-  // The refusal is on the CLAIM, so a partial object naming any of the three store fields is caught
-  // rather than being handed to the byte parser and reported as something unrelated.
-  check("an object carrying only macedBytes is refused as a store, not as bad bytes",
+  check("the parser's own result is still accepted", (await pki.pkcs12.verifyMac(pki.schema.pkcs12.parse(p12), "1234")) === true);
+  check("...by open too", (await pki.pkcs12.open(pki.schema.pkcs12.parse(p12), "1234")).macVerified === true);
+  check("bytes and PEM are unchanged", (await pki.pkcs12.verifyMac(p12, "1234")) === true);
+  // Object.assign and spread copy own ENUMERABLE properties, which is exactly how the mixed object
+  // is built -- and exactly what the mark does not survive.
+  check("an Object.assign copy is refused: it is no longer the store the parser produced",
+    await codeOf(pki.pkcs12.verifyMac(Object.assign({}, pki.schema.pkcs12.parse(p12)), "1234")) === "pkcs12/bad-input");
+  check("...and a spread copy likewise", await codeOf(pki.pkcs12.open({ ...pki.schema.pkcs12.parse(p12) }, "1234")) === "pkcs12/bad-input");
+  check("a hand-built object naming any store field is refused, not read as bad bytes",
     await codeOf(pki.pkcs12.verifyMac({ macedBytes: Buffer.alloc(0) }, "1234")) === "pkcs12/bad-input");
+  // A mark that only said "this came from the parser" would survive both of these, which is why the
+  // record carries the BYTES and the door re-derives from them. Editing the object in place leaves
+  // any flag intact while the fields describe something else; Object.create inherits every symbol
+  // through the prototype chain while letting each field be shadowed.
+  var mutated = pki.schema.pkcs12.parse(p12);
+  mutated.macedBytes = Buffer.alloc(8, 9);
+  check("editing a parsed store in place does not change the verdict: it is re-derived",
+    (await pki.pkcs12.verifyMac(mutated, "1234")) === true);
+  var shadowed = Object.create(pki.schema.pkcs12.parse(p12));
+  shadowed.macedBytes = Buffer.alloc(8, 9);
+  check("an Object.create shadow does not inherit provenance it did not earn",
+    await codeOf(pki.pkcs12.verifyMac(shadowed, "1234")) === "pkcs12/bad-input");
+  var openedMutated = pki.schema.pkcs12.parse(p12);
+  openedMutated.safeBags = [];
+  check("open returns the bags of the store the MAC was checked over, not the edited list",
+    (await pki.pkcs12.open(openedMutated, "1234")).certs.length === 1);
   // a safeContents element with no bags (the sc.bags || [] arm) alongside a real one.
   var pempty = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }, {}] }, { password: "1234" });
   check("an empty safeContents element is tolerated", (await pki.pkcs12.verifyMac(pempty, "1234")) === true);

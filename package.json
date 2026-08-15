@@ -13,6 +13,10 @@
     "url": "https://github.com/blamejs/pki/issues"
   },
   "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./package.json": "./package.json"
+  },
   "bin": {
     "pki": "bin/pki.js"
   },
