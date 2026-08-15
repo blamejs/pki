@@ -641,6 +641,22 @@ async function testCoreRejections() {
   var unkCrit = await mkCert({ subject: "UnkC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.4.1.99999.99", true, b.octetString(Buffer.from([1])))] });
   var res18a = await run([unkCrit], { time: T2027, trustAnchor: anchor });
   check("unrecognized critical extension rejected", res18a.valid === false && failCodes(res18a).indexOf("path/unrecognized-critical-extension") !== -1);
+  // The criticality flag is what that check reads, and a parsed certificate may be
+  // passed in place of its bytes. An extension entry with no `critical` property at
+  // all is not "non-critical" -- `if (!ext.critical) continue` skips it, so the same
+  // certificate that was just rejected would validate. The door refuses the object
+  // instead, because an entry the parser produced always carries the flag.
+  var unkCritParsed = pki.schema.x509.parse(unkCrit);
+  var unkCritNoFlag = Object.assign({}, unkCritParsed, {
+    extensions: unkCritParsed.extensions.map(function (e) {
+      var copy = Object.assign({}, e);
+      if (copy.oid === "1.3.6.1.4.1.99999.99") delete copy.critical;
+      return copy;
+    }),
+  });
+  check("an extension entry stripped of its criticality flag is refused at the door",
+    (await codeOf(run([unkCritNoFlag], { time: T2027, trustAnchor: anchor }))) === "path/bad-input");
+
   var unkNon = await mkCert({ subject: "UnkN", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.4.1.99999.99", false, b.octetString(Buffer.from([1])))] });
   var res18b = await run([unkNon], { time: T2027, trustAnchor: anchor });
   check("same OID non-critical accepted", res18b.valid === true);
@@ -1553,6 +1569,29 @@ async function testRfc5280ConformanceMusts() {
   var crlCritEntry = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [critEntryExt] }] });
   var resC26 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
   check("unknown critical CRL-entry extension makes the CRL unusable", resC26.valid === false && failCodes(resC26).indexOf("path/revocation-undetermined") !== -1);
+
+  // The same rule on the CRL side of the door: crlChecker takes bytes or the CRL
+  // parser's output, and the unusable-CRL check above reads each entry extension's
+  // `critical`. An entry extension with the property removed would read as
+  // non-critical and the CRL would be used, so the shape requires it there too.
+  var crlCritParsed = pki.schema.crl.parse(crlCritEntry);
+  var crlCritNoFlag = Object.assign({}, crlCritParsed, {
+    revokedCertificates: crlCritParsed.revokedCertificates.map(function (r) {
+      return Object.assign({}, r, {
+        crlEntryExtensions: r.crlEntryExtensions.map(function (e) {
+          var copy = Object.assign({}, e);
+          if (copy.oid === "1.3.6.1.4.1.99999.43") delete copy.critical;
+          return copy;
+        }),
+      });
+    }),
+  });
+  // crlChecker screens its CRLs when it is BUILT, so the door fires before validate
+  // is entered -- the call is deferred into the promise chain to catch it either way.
+  check("a CRL-entry extension stripped of its criticality flag is refused at the door",
+    (await codeOf(Promise.resolve().then(function () {
+      return run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritNoFlag]) });
+    }))) === "path/bad-input");
 
   // RFC 5280 6.1.3(d)(1)(ii): the child-from-anyPolicy fallback is
   // UNCONDITIONAL — inhibit_anyPolicy (4.2.1.14) gates only the (d)(2)

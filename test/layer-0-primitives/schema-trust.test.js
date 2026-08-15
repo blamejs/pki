@@ -718,6 +718,57 @@ async function testRealCertdataSlice() {
     pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === beforeDate);
   check("T27: two anchors from one entry share nothing mutable",
     (function (a, b) { return a.purposes !== b.purposes && a.distrustAfter !== b.distrustAfter && a.publicKey !== b.publicKey && a.name !== b.name; })(pki.trust.anchor(entryA), pki.trust.anchor(entryA)));
+  // Defensive, not lossy. The anchor's name is the structure pki.schema.x509.parse produces, and a
+  // caller walking it must see the same fields whichever way the anchor was obtained -- a copy that
+  // kept only what the path validator compares would drop each attribute's registry name.
+  function keysOf(o) { return Object.keys(o).sort().join(","); }
+  var certName = fx.rootA.subject;
+  var anchorName = pki.trust.anchor(entryA).name;
+  check("T27: an anchor's name carries the parser's fields", keysOf(anchorName) === keysOf(certName));
+  check("T27: ...down to each RDN attribute",
+    keysOf(anchorName.rdns[0][0]) === keysOf(certName.rdns[0][0]));
+  check("T27: ...with the same values", anchorName.rdns[0][0].name === certName.rdns[0][0].name &&
+    anchorName.rdns[0][0].type === certName.rdns[0][0].type &&
+    anchorName.rdns[0][0].value === certName.rdns[0][0].value);
+  var atvOnce = pki.trust.anchor(entryA).name.rdns[0][0];
+  var atvAgain = pki.trust.anchor(entryA).name.rdns[0][0];
+  check("T27: ...and still shares no attribute object with the record", atvOnce !== atvAgain);
+
+  // The metadata is read from the record, not from the entry. An entry is a plain object the caller
+  // holds, and `purposes` IS the authorization -- so writing to the entry directly must not open a
+  // gate, exactly as writing through a returned anchor must not. Pinning the key while reading the
+  // authorization off the entry pins the half that decides less.
+  check("T27: root A is not a codeSigning delegator to begin with",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "codeSigning" }); }) === "trust/purpose-not-trusted");
+  entryA.purposes.codeSigning = true;
+  check("T27: flipping a purpose ON THE ENTRY does not open the gate",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "codeSigning" }); }) === "trust/purpose-not-trusted");
+  check("T27: ...and the anchor still reports the store's bits",
+    pki.trust.anchor(entryA).purposes.codeSigning === false);
+  entryA.purposes.codeSigning = false;
+  var storeDate = pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime();
+  entryA.distrustAfter.serverAuth = new Date("2099-01-01T00:00:00Z");
+  check("T27: moving a distrust date ON THE ENTRY does not reach the anchor",
+    pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === storeDate);
+  delete entryA.distrustAfter.serverAuth;
+  check("T27: deleting a distrust date on the entry does not drop it either",
+    pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === storeDate);
+  // The independence runs both ways: an entry a caller has since emptied still anchors to what the
+  // store read, rather than failing the tuple-shape check on fields the anchor no longer consults.
+  var storeKey = pki.trust.anchor(entryA).publicKey;
+  var storeDn = pki.trust.anchor(entryA).name.dn;
+  entryA.publicKey = null;
+  entryA.algorithm = undefined;
+  entryA.name = { rdns: "not an array" };
+  var afterGutting = pki.trust.anchor(entryA, { purpose: "serverAuth" });
+  check("T27: an entry emptied by its holder still anchors to what the store read",
+    Buffer.compare(afterGutting.publicKey, storeKey) === 0 && afterGutting.name.dn === storeDn);
+  // A caller's OWN bare anchor has no record, so its shape is still what there is to check.
+  check("T27: a bare tuple missing its key is still refused",
+    codeOf(function () { pki.trust.anchor({ name: { rdns: [] }, algorithm: "1.2.840.10045.2.1" }); }) === "trust/bad-input");
+  check("T27: a bare tuple with a key and a name is still accepted",
+    Buffer.isBuffer(pki.trust.anchor({ name: { rdns: [], dn: "", bytes: Buffer.alloc(0) },
+      publicKey: Buffer.from([1, 2, 3]), algorithm: "1.2.840.10045.2.1" }).publicKey));
 }
 
 // ---------------------------------------------------------------------------

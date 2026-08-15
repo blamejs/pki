@@ -415,7 +415,10 @@ function _forceIndirect(der) {
   var parsed = pki.schema.crl.parse(der);
   var copy = Object.assign({}, parsed);
   copy.crlExtensions = (parsed.crlExtensions || []).concat([{
-    oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+    // The entry carries every field the CRL parser assigns, `name` included: the
+    // scope guard reads a CRL through the same completeness door an operator's does,
+    // so a fixture missing a field would be testing the door and not the guard.
+    oid: pki.oid.byName("issuingDistributionPoint"), name: "issuingDistributionPoint", critical: true,
     // IssuingDistributionPoint ::= SEQUENCE { ... indirectCRL [4] BOOLEAN DEFAULT FALSE }
     value: b.sequence([b.contextPrimitive(4, Buffer.from([0xff]))]),
   }]);
@@ -475,7 +478,7 @@ async function testPemAndIsRevoked() {
     copy.revokedCertificates = p.revokedCertificates.map(function (e) {
       var c = Object.assign({}, e);
       c.crlEntryExtensions = (e.crlEntryExtensions || []).concat([{
-        oid: pki.oid.byName("certificateIssuer"), critical: true,
+        oid: pki.oid.byName("certificateIssuer"), name: "certificateIssuer", critical: true,
         // GeneralNames { [4] directoryName } -- the content is any DN; only its PRESENCE matters here.
         value: b.sequence([b.contextConstructed(4, b.sequence([]))]),
       }]);
@@ -496,7 +499,7 @@ async function testPemAndIsRevoked() {
     var b = pki.asn1.build, p = pki.schema.crl.parse(der);
     var copy = Object.assign({}, p);
     copy.crlExtensions = (p.crlExtensions || []).concat([{
-      oid: pki.oid.byName("issuingDistributionPoint"), critical: true, value: b.integer(1n),
+      oid: pki.oid.byName("issuingDistributionPoint"), name: "issuingDistributionPoint", critical: true, value: b.integer(1n),
     }]);
     return copy;
   })();
@@ -511,7 +514,7 @@ async function testPemAndIsRevoked() {
     var b = pki.asn1.build, p = pki.schema.crl.parse(der);
     var copy = Object.assign({}, p);
     copy.crlExtensions = (p.crlExtensions || []).concat([{
-      oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+      oid: pki.oid.byName("issuingDistributionPoint"), name: "issuingDistributionPoint", critical: true,
       value: b.sequence([b.contextPrimitive(tag, Buffer.from(contentBytes))]),
     }]);
     return copy;
@@ -537,7 +540,7 @@ async function testPemAndIsRevoked() {
       var b = pki.asn1.build, p = pki.schema.crl.parse(der);
       var copy = Object.assign({}, p);
       copy.crlExtensions = (p.crlExtensions || []).concat([{
-        oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+        oid: pki.oid.byName("issuingDistributionPoint"), name: "issuingDistributionPoint", critical: true,
         // distributionPoint [0] { fullName [0] { uniformResourceIdentifier [6] } }
         value: b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.example/a", "ascii"))))]),
       }]);

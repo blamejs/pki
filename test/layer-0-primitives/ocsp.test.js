@@ -63,6 +63,31 @@ async function run() {
   check("the lightweight profile permits exactly one Request", (await codeOfAsync(function () { return pki.ocsp.buildRequest([{ cert: w.targetCertDer, issuer: w.issuerCertDer }, { cert: w.targetCertDer, issuer: w.issuerCertDer }], { profile: "lightweight" }); })) === "ocsp/bad-input");
   check("a query missing issuer -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer }); })) === "ocsp/bad-input");
 
+  // A CertID is built from three fields of the two certificates the query names, and
+  // a parsed certificate may be passed instead of its bytes. An object missing one of
+  // those fields must be refused at the door with this verb's own code -- the fields
+  // are the CertID itself, so reaching the encoder with one absent produces either a
+  // foreign fault from the ASN.1 layer or, for the issuer name, a request whose
+  // issuerNameHash covers nothing.
+  var parsedTarget = pki.schema.x509.parse(w.targetCertDer);
+  var parsedIssuer = pki.schema.x509.parse(w.issuerCertDer);
+  function lacking(certObj, field) {
+    var c = Object.assign({}, certObj);
+    var dot = field.indexOf(".");
+    if (dot < 0) { delete c[field]; return c; }
+    c[field.slice(0, dot)] = Object.assign({}, certObj[field.slice(0, dot)]);
+    delete c[field.slice(0, dot)][field.slice(dot + 1)];
+    return c;
+  }
+  check("buildRequest accepts the parser's own output for both certificates",
+    pki.schema.ocsp.parseRequest(await pki.ocsp.buildRequest({ cert: parsedTarget, issuer: parsedIssuer })).requestList.length === 1);
+  check("a query certificate without serialNumber -> ocsp/bad-input, not an asn1 fault",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: lacking(parsedTarget, "serialNumber"), issuer: parsedIssuer }); })) === "ocsp/bad-input");
+  check("an issuer certificate without issuer.bytes -> ocsp/bad-input, not a request naming no issuer",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: parsedTarget, issuer: lacking(parsedIssuer, "issuer.bytes") }); })) === "ocsp/bad-input");
+  check("an issuer certificate without subject.bytes -> ocsp/bad-input",
+    (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: parsedTarget, issuer: lacking(parsedIssuer, "subject.bytes") }); })) === "ocsp/bad-input");
+
   // ---- sign -> verify per algorithm (the extracted sign-scheme's payoff) ----
   for (var alg of ["ec-p256", "rsa", "ed25519", "ml-dsa-65"]) {
     var wa = await makeOcspWorld(alg);
