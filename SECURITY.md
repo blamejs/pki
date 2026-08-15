@@ -443,7 +443,9 @@ security-only patches after the next major releases.
   carries a hard node cap and fails closed at it (CVE-2023-0464), and an invalid
   policy OID is surfaced rather than silently dropped (CVE-2023-0465). Name
   comparison rejects embedded NUL and control bytes so a truncated name cannot
-  compare equal (CVE-2009-2408). An unknown critical extension, or an undetermined
+  compare equal (CVE-2009-2408), and it refuses input it cannot compare rather
+  than answering that two names matched: the one place a distinguished-name
+  identity is decided never returns a match it did not establish. An unknown critical extension, or an undetermined
   revocation status, terminates the path with a typed reason code rather than
   passing — the latter unless the caller sets `softFail`, which is exactly the
   option that converts "revocation could not be determined" into a pass, and
@@ -631,12 +633,16 @@ security-only patches after the next major releases.
   `requireUserVerification`, `allowedAlgorithms`, and for `clientDataJSON` the
   ceremony type, challenge, and origin — and every verdict reports in
   `bindingChecked` which of them ran, so a check that passed is distinguishable
-  from one that never happened. `pki.webauthn.verifyAssertion` checks the
-  ceremony type unconditionally whenever it is given the JSON, because which
-  ceremony a response belongs to is fixed by the specification rather than chosen
-  by the caller, and a registration response replayed as a login is exactly what
-  that stops. Where a stored `previousSignCount` is supplied, a counter that
-  fails to advance is refused as the cloned authenticator it signals.
+  from one that never happened. Both `pki.webauthn.verify` and
+  `pki.webauthn.verifyAssertion` check the ceremony type unconditionally whenever
+  they are given the JSON, because which ceremony a response belongs to is fixed
+  by the specification rather than chosen by the caller, and a response from one
+  ceremony replayed into the other is exactly what that stops. In a cross-origin
+  ceremony the framed document's origin and the top-level origin that framed it
+  are separate values and both can be compared, so a framing policy is not left
+  resting on the one a nested page controls. Where a stored `previousSignCount`
+  is supplied, a counter that fails to advance is refused as the cloned
+  authenticator it signals.
 - **Metadata-catalogue forgery and rollback (FIDO MDS).** A metadata BLOB decides
   which roots an authenticator model is allowed to chain to and whether that
   model is still trusted, so a reader that parses before it verifies hands an
@@ -658,7 +664,11 @@ security-only patches after the next major releases.
   gets, rather than a name comparison against the top of the path, which is a
   value an attacker controls — and a model carrying a disqualifying status report
   is refused, so a revoked authenticator cannot present an otherwise well-formed
-  attestation and be reported as verified. An authenticator that declares no
+  attestation and be reported as verified. The status gate is on the anchors
+  themselves, not only inside that verb: `pki.webauthn.metadataAnchors` refuses to
+  hand back the attestation roots of a model the catalogue has disqualified, so a
+  caller anchoring the trust path with `pki.path.validate` reaches the same verdict
+  as one who passed the catalogue to `verify`. An authenticator that declares no
   model identity is looked up by the key identifiers of its attestation
   certificates rather than being silently exempt from any of this. Which
   identifier is allowed to select the entry depends on what the attestation

@@ -707,6 +707,31 @@ async function run() {
   check("verify: the framing expectation reaches registration too",
     (await pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedTopOrigin: null })).clientData.checked.topOrigin === true);
 
+  // The value CHECKED must be the value USED. Every option is read once, into a copy, and every
+  // gate below decides on that copy -- so a field that answers differently on a second read cannot
+  // pass a check and then be acted on as something else. An accessor is the sharp version of a
+  // problem any caller-owned object has, and the fix is the same one this verb already applied to
+  // its byte inputs: take it once.
+  function readsTwice(first, second) {
+    var n = 0;
+    var o = {};
+    Object.defineProperty(o, "requireCtsProfileMatch", { enumerable: true, get: function () { return ++n === 1 ? first : second; } });
+    o.clientDataJSON = createJson;
+    return o;
+  }
+  check("verify: a demand that reads true once cannot be withdrawn on a second read",
+    (await codeOfAsync(function () { return pki.webauthn.verify(regObj, readsTwice(true, false)); })) === "webauthn/safetynet-cts-profile");
+  var jsonTwice = {};
+  var jsonReads = 0;
+  Object.defineProperty(jsonTwice, "clientDataJSON", {
+    enumerable: true,
+    get: function () { return ++jsonReads === 1 ? createJson : getJson; },
+  });
+  var swapped = await pki.webauthn.verify(regObj, jsonTwice);
+  check("verify: the clientData that was checked is the clientData that was hashed",
+    swapped.clientData.type === "webauthn.create" &&
+    swapped.clientData.checked.type === true);
+
   // RSA credential-key MATERIAL is checked, not merely present. EC2 keys have their coordinate
   // lengths pinned to the curve and the point validated on it; OKP keys have an exact length. RSA
   // had neither, so a 1-byte modulus and an exponent of 1 were both accepted as conformant
@@ -739,6 +764,12 @@ async function run() {
     rsaCode(N2048, Buffer.from([0x00, 0x00, 0x00, 0x01])) === "webauthn/bad-cose-key");
   check("parse: ...nor a short modulus over the floor by padding it",
     rsaCode(Buffer.concat([Buffer.alloc(250, 0x00), Buffer.from([0xc0]), Buffer.alloc(5, 0xff)]), E65537) === "webauthn/bad-cose-key");
+  // The floor is 2048 BITS, and a byte count is not one: a minimally encoded 256-byte modulus whose
+  // leading byte is 0x01 is 2041 bits, seven bits under the floor while clearing a byte-count test.
+  check("parse: a 2041-bit modulus is refused by a floor stated in bits",
+    rsaCode(Buffer.concat([Buffer.from([0x01]), Buffer.alloc(255, 0xff)]), E65537) === "webauthn/bad-cose-key");
+  check("parse: ...and the smallest modulus that really is 2048 bits is accepted",
+    rsaCode(Buffer.concat([Buffer.from([0x80]), Buffer.alloc(255, 0xff)]), E65537) === "NO-THROW");
   // ...and a conformant 2048-bit key with e=65537 still parses, so the floor did not close the door.
   var okRsa = pki.webauthn.parseAttestationObject(attObjOf("none", [], buildAuthData({ coseKey: rsaCoseKey(N2048, E65537) })));
   check("parse: a conformant 2048-bit RSA credential key is still accepted",
@@ -1931,6 +1962,17 @@ async function testClientData() {
     codeOf(function () { return pki.webauthn.parseClientData(framed, { expectedTopOrigin: null }); }) === "webauthn/client-data-mismatch");
   check("clientData: a check that was not requested reports as not run",
     pki.webauthn.parseClientData(framed).checked.topOrigin === false);
+  // Whether a ceremony was framed is stated by TWO fields, and reading one without the other lets a
+  // response answer with the field it left out. A response declaring itself cross-origin while
+  // omitting the origin must not satisfy "must not be framed".
+  var framedNoOrigin = cdBytes({ type: "webauthn.get", challenge: "AQID", origin: "https://inner.example", crossOrigin: true });
+  check("clientData: a cross-origin ceremony that names no top origin is still framed",
+    codeOf(function () { return pki.webauthn.parseClientData(framedNoOrigin, { expectedTopOrigin: null }); }) === "webauthn/client-data-mismatch");
+  // And the mirror: an allow-list of framing pages is a statement about a framed ceremony, so a
+  // response that does not say it was framed has nothing for the list to accept.
+  var topWithoutCross = cdBytes({ type: "webauthn.get", challenge: "AQID", origin: "https://inner.example", topOrigin: "https://example.com" });
+  check("clientData: a topOrigin on a ceremony that does not declare itself cross-origin is refused",
+    codeOf(function () { return pki.webauthn.parseClientData(topWithoutCross, { expectedTopOrigin: "https://example.com" }); }) === "webauthn/client-data-mismatch");
   check("clientData: an unusable expectedTopOrigin is a config-time fault",
     codeOf(function () { return pki.webauthn.parseClientData(framed, { expectedTopOrigin: [] }); }) === "webauthn/bad-input");
   check("clientData: ...and so is a non-string entry",
