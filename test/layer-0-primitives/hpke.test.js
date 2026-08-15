@@ -70,6 +70,15 @@ function testRobustness() {
   // A flipped ciphertext byte -> hpke/open-failed (no plaintext).
   var bad = Buffer.from(o.ct); bad[0] ^= 1;
   check("flipped ciphertext -> hpke/open-failed", codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("aad"), bad); }) === "hpke/open-failed");
+  // Every setup option narrows or authenticates. A misspelled `psk` leaves a psk-mode setup with no
+  // pre-shared key and a misspelled `senderKey` leaves an auth-mode setup unauthenticated -- and
+  // both then fail naming the field the caller believes they supplied, which is the least useful
+  // thing to be told. The sender and the recipient read the same object from opposite ends, so one
+  // table serves both and neither can drift from the other.
+  check("an unknown seal option -> hpke/bad-input",
+    codeOf(function () { pki.hpke.seal(IDS, kp.publicKey, { psks: Buffer.alloc(32) }, Buffer.alloc(0), Buffer.alloc(1)); }) === "hpke/bad-input");
+  check("an unknown open option -> hpke/bad-input",
+    codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, { senderPubKey: kp.publicKey }, Buffer.from("aad"), o.ct); }) === "hpke/bad-input");
   // Wrong AAD -> hpke/open-failed.
   check("wrong aad -> hpke/open-failed", codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, {}, Buffer.from("other"), o.ct); }) === "hpke/open-failed");
   // PSK inconsistency (RFC 9180 sec. 5.1): psk without psk_id, and a PSK in base mode.
