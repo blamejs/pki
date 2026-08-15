@@ -1496,13 +1496,31 @@ async function testRfc5280ConformanceMusts() {
   var resC20d = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFalse]) });
   check("encoded-FALSE IDP flag makes the CRL unusable", resC20d.valid === false && failCodes(resC20d).indexOf("path/revocation-undetermined") !== -1);
 
-  // the validator's own octet-alignment guard fails a
-  // signature with a non-zero unused-bit count (defense in depth: the strict
-  // DER codec already rejects it at parse, so this drives a pre-parsed object).
-  var leafC21 = pki.schema.x509.parse(await mkCert({ subject: "Aligned", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" }));
-  leafC21.signatureValue = { unusedBits: 3, bytes: leafC21.signatureValue.bytes };
-  var resC21 = await pki.path.validate([leafC21], { time: T2027, trustAnchor: anchor });
-  check("non-octet-aligned signature rejected by the validator guard", resC21.valid === false && failCodes(resC21).indexOf("path/bad-signature") !== -1);
+  // The validator's own octet-alignment guard (a signature BIT STRING with a non-zero unused-bit
+  // count) is defence in depth behind the strict DER codec, which rejects such bytes at parse. It
+  // used to be reachable by editing a PARSED certificate -- which is exactly the route that is now
+  // closed: a certificate reaching a verdict is re-derived from the bytes its parser read, so an
+  // edit made afterwards is discarded rather than believed.
+  //
+  // That leaves the guard with no route from the public verb, so what is pinned here is the door
+  // that closed it. This is the stronger property: the old vector showed one hand-made malformation
+  // being caught, while this shows that no hand-made certificate is answered from at all -- and the
+  // substitution that matters is not a broken signature but a VALID one beside a swapped key.
+  var alignedDer = await mkCert({ subject: "Aligned", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
+  var leafC21 = pki.schema.x509.parse(alignedDer);
+  var editedC21 = Object.assign({}, leafC21, { signatureValue: { unusedBits: 3, bytes: leafC21.signatureValue.bytes } });
+  check("an edited certificate is refused rather than walked",
+    (await codeOf(run([editedC21], { time: T2027, trustAnchor: anchor }))) === "path/bad-input");
+  // The attack the re-derivation exists for: a genuine certificate's signed bytes and signature
+  // beside somebody else's public key. Every field is well-formed and the signature verifies over
+  // the original range, so no completeness or signature check can see it -- only provenance can.
+  var otherKeyCert = pki.schema.x509.parse(await mkCert({ subject: "Other", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i" }));
+  var swappedKey = Object.assign({}, leafC21, { subjectPublicKeyInfo: otherKeyCert.subjectPublicKeyInfo });
+  check("a genuine certificate with a substituted public key is refused",
+    (await codeOf(run([swappedKey], { time: T2027, trustAnchor: anchor }))) === "path/bad-input");
+  // ...while the parser's own unmodified result still validates, so the rule costs a caller nothing.
+  var resC21 = await run([leafC21], { time: T2027, trustAnchor: anchor });
+  check("the parser's own certificate object still validates", resC21.valid === true);
 
   // A fixed-parameter algorithm carrying the WRONG parameter shape — Ed25519
   // with a stray DER NULL where RFC 8410 §3 requires the parameters ABSENT — is
@@ -1848,16 +1866,21 @@ async function testRfc5280ConformanceMusts() {
   var resNulMask = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlNulIssuer, crlRealRevoke]) });
   check("a malformed-issuer CRL is skipped, not masking a valid revoking CRL", resNulMask.valid === false && failCodes(resNulMask).indexOf("path/revoked") !== -1);
 
-  // A malformed signatureAlgorithm.parameters makes resolveDescriptor throw an
-  // internal asn1/* error; the public verdict documents path/* codes, so it must
-  // surface path/unsupported-algorithm and never leak the asn1/* code.
+  // The internal resolveDescriptor fallback that turns an asn1/* fault from malformed
+  // signatureAlgorithm.parameters into path/unsupported-algorithm has no route left from the public
+  // verb: such parameters are refused by the AlgorithmIdentifier guard at PARSE, and the other route
+  // -- editing them onto a parsed certificate -- is what the re-derivation now discards. Verified
+  // unreachable rather than forced: the fallback stays as defence in depth for a future decoder that
+  // admits a shape this one does not, and what is pinned here is the door that closed the edit.
   var anchorPssParam = await mkAnchor("rsapss", "PssRoot");
   var pssParsed = pki.schema.x509.parse(await mkCert({ subject: "PssBadParam", issuer: "PssRoot", signWith: "rsapss", subjectKeys: "ed25519leaf" }));
-  pssParsed.signatureAlgorithm = { oid: pssParsed.signatureAlgorithm.oid, name: pssParsed.signatureAlgorithm.name, parameters: Buffer.from([0x30, 0x03, 0x02, 0x81, 0x01]) };
-  pssParsed.tbsSignatureAlgorithm = pssParsed.signatureAlgorithm;
-  var resBadParam = await run([pssParsed], { time: T2027, trustAnchor: anchorPssParam });
-  var badCodes = failCodes(resBadParam);
-  check("malformed descriptor params surface a path/* code, not asn1/*", resBadParam.valid === false && badCodes.indexOf("path/unsupported-algorithm") !== -1 && !badCodes.some(function (cc) { return cc.indexOf("asn1/") === 0; }));
+  var pssEdited = Object.assign({}, pssParsed, {
+    signatureAlgorithm: { oid: pssParsed.signatureAlgorithm.oid, name: pssParsed.signatureAlgorithm.name, parameters: Buffer.from([0x30, 0x03, 0x02, 0x81, 0x01]) },
+  });
+  check("a certificate with edited algorithm parameters is refused, not walked",
+    (await codeOf(run([pssEdited], { time: T2027, trustAnchor: anchorPssParam }))) === "path/bad-input");
+  var resPssOk = await run([pssParsed], { time: T2027, trustAnchor: anchorPssParam });
+  check("...while the unmodified RSASSA-PSS certificate still validates", resPssOk.valid === true);
 
   // RFC 5280 4.2.1.10: the legacy emailAddress in the subject DN is checked as an
   // rfc822Name UNLESS the SAN carries the email identity as an rfc822Name entry.
