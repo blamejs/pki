@@ -1072,6 +1072,66 @@ async function testRevocation() {
   var res15b = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: unknownChecker, softFail: true });
   check("softFail opts into UNDETERMINED-as-pass", res15b.valid === true);
 
+  // "checked, and it said good" and "could not check, and you waived it" are the SAME claim to a
+  // caller reading a bare `valid: true` -- and they were the same object in `checks` too. The
+  // verdict now says which happened, at the top level and per certificate, because a stored path
+  // verdict is re-read later to answer exactly this and cannot answer it from a boolean.
+  var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
+  var resDet = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: goodChecker });
+  check("a determined non-revocation reports itself determined",
+    resDet.valid === true && resDet.revocationChecked === "determined");
+  check("softFail waiving an undetermined status says so, rather than reading as checked",
+    res15b.revocationChecked === "waived");
+  check("no checker at all reports the rule as not requested",
+    (await run([leaf], { time: T2027, trustAnchor: anchor })).revocationChecked === false);
+  // The field says whether revocation was ESTABLISHED, so a run that failed BECAUSE it could not be
+  // established must not report the same word as one that established it. Deriving the answer from
+  // "a checker ran" put the two on the same value, which is the reading the field exists to prevent.
+  check("an undetermined status that fails the path reports itself undetermined, not determined",
+    res15a.revocationChecked === "undetermined");
+  var revokedChecker = { check: function () { return Promise.resolve({ status: "revoked" }); } };
+  var resRevoked = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: revokedChecker });
+  check("a revoked status is a determination, and reports as one",
+    resRevoked.valid === false && resRevoked.revocationChecked === "determined");
+  // A path long enough to mix outcomes takes the WEAKEST: one certificate nobody could answer for
+  // leaves the path's revocation unestablished however many others answered good.
+  var mixInter = await mkCert({ subject: "MixInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var mixLeaf = await mkCert({ subject: "MixLeaf", issuer: "MixInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  var seen = 0;
+  var mixed = { check: function () { seen++; return Promise.resolve({ status: seen === 1 ? "good" : "unknown" }); } };
+  var resMixed = await run([mixInter, mixLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: mixed, softFail: true });
+  check("one waived certificate outranks the determined ones on the same path",
+    seen === 2 && resMixed.valid === true && resMixed.revocationChecked === "waived");
+  // Per certificate, too: the waived entry is distinguishable from the determined one, and names
+  // the status that could not be turned into a determination.
+  var waivedCheck = res15b.results[res15b.results.length - 1].checks.filter(function (c) { return c.name === "revocation"; })[0];
+  var goodCheck = resDet.results[resDet.results.length - 1].checks.filter(function (c) { return c.name === "revocation"; })[0];
+  check("the waived per-certificate entry is not byte-identical to the determined one",
+    waivedCheck.ok === true && waivedCheck.waived === true && waivedCheck.status === "unknown" &&
+    goodCheck.ok === true && goodCheck.waived === undefined && goodCheck.status === "good");
+  // A checker that THROWS is a fault in the checker, not a revocation status it could not reach.
+  // softFail is the caller opting into an UNDETERMINED answer -- the built-in CRL and OCSP checkers
+  // return `{status:"unknown"}` for every unreachable or unverifiable condition and never throw --
+  // so waiving a throw would waive the caller's own bug, and the certificate would pass without any
+  // revocation result at all. The fault fails the path whatever softFail says, and is carried on the
+  // check so an operator can tell their bug from a network condition.
+  var throwingChecker = { check: function () { throw new Error("checker exploded"); } };
+  var resThrew = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: throwingChecker, softFail: true });
+  var threwCheck = resThrew.results[resThrew.results.length - 1].checks.filter(function (c) { return c.name === "revocation"; })[0];
+  check("a checker that throws fails the path even under softFail, and is not called a waiver",
+    resThrew.valid === false && resThrew.revocationChecked === "undetermined" &&
+    threwCheck.ok === false && threwCheck.waived === undefined &&
+    threwCheck.code === "path/revocation-checker-error");
+  check("...and carries the fault, so a broken checker is not a network condition",
+    threwCheck.status === "error" && !!threwCheck.error && /checker exploded/.test(threwCheck.error.message));
+  // A checker that REJECTS is the same fault by another route: an async checker's bug arrives as a
+  // rejected promise, and reaching the waiver through it would restore exactly what the throw lost.
+  var rejectingChecker = { check: function () { return Promise.reject(new Error("responder client bug")); } };
+  var resRej = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: rejectingChecker, softFail: true });
+  check("a checker that rejects is the same fault as one that throws",
+    resRej.valid === false && resRej.revocationChecked === "undetermined" &&
+    failCodes(resRej).indexOf("path/revocation-checker-error") !== -1);
+
   // a real CRL revoking the leaf serial, via pki.path.crlChecker.
   var crlRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: LEAF_SERIAL }] });
   var res14 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRevoking]) });
@@ -2887,9 +2947,26 @@ async function testTrustAnchorConstraints() {
   // T24 -- bare anchor (no metadata), no checkPurpose -> identical to today (valid, no new checks).
   var r24 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
   check("T24 bare anchor preserved -> valid", r24.valid === true && failCodes(r24).indexOf("path/distrusted-after") === -1 && failCodes(r24).indexOf("path/purpose-not-trusted") === -1);
-  // T25 -- distrustAfter present but NO checkPurpose -> not applied (gated).
-  var r25 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA });
-  check("T25 distrustAfter without checkPurpose -> not applied", r25.valid === true);
+  // T25 -- an anchor CARRYING purpose-scoped trust metadata, validated with no checkPurpose to
+  // select which purpose, is a configuration fault rather than a silent non-enforcement. The
+  // constraint is keyed BY purpose, so without one there is no way to apply it -- and the caller
+  // who attached a distrustAfter to their root has stated an intent that would otherwise be
+  // discarded without a word. A root Mozilla distrusted in 2020 validated a 2026 leaf.
+  check("T25 purpose-scoped anchor metadata without checkPurpose -> path/bad-input",
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA }))) === "path/bad-input");
+  check("T25 ...and a purposes map without checkPurpose likewise",
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: withMeta({ purposes: { serverAuth: true } }) }))) === "path/bad-input");
+  // ...and the verdict SAYS which purpose the anchor's metadata was judged under, so an archived
+  // result can be re-read to tell an anchor that was checked from one that carried nothing.
+  var r25p = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  check("T25 the verdict names the purpose the anchor was judged under",
+    r25p.anchorConstraints && r25p.anchorConstraints.checkedPurpose === "serverAuth" &&
+    r25p.anchorConstraints.distrustAfterApplied === true);
+  var r25bare = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
+  check("T25 a bare anchor says it carried no constraints, rather than saying nothing",
+    r25bare.anchorConstraints && r25bare.anchorConstraints.checkedPurpose === null &&
+    r25bare.anchorConstraints.distrustAfterApplied === false &&
+    r25bare.anchorConstraints.purposeTrustApplied === false);
   // T26 -- checkPurpose emailProtection but only serverAuth distrust present -> unaffected.
   var r26 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "emailProtection" });
   check("T26 wrong-purpose distrust key -> unaffected", r26.valid === true);
@@ -3566,7 +3643,9 @@ async function testCoverageEdges() {
     "1119 checkPurpose non-string": { throw: BADIN },
     "1122 checkPurpose dotted OID normalized": { valid: true },
     "1160 custom verifier throws": { code: BADSIG },
-    "1198 revocationChecker throws": { code: RUND },
+    // A checker that throws is a fault in the checker, not an undetermined status it reported: a
+    // distinct code so an operator can tell their own broken checker from an unreachable responder.
+    "1198 revocationChecker throws": { code: "path/revocation-checker-error" },
     "1179 control-byte issuer DN fails name chaining": { code: "path/name-chaining" },
     "1393 IDP distributionPoint wrapping two DPNs": { code: RUND },
     "1498 crlChecker() no-arg -> undetermined": { code: RUND },

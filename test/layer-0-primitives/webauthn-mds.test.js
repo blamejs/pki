@@ -20,6 +20,7 @@ async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { r
 // The BLOB fixture builder is a shared helper: the doc-example harness verifies the same minted
 // BLOB, so the documented example and these vectors cannot drift apart.
 var mint = require("../helpers/mds-blob").mint;
+var minimalCert = require("../helpers/signing").minimalCert;
 
 async function run() {
   async function codeFor(mintOpts, over) {
@@ -967,6 +968,24 @@ async function run() {
   }, { key: noSignKp.privateKey, name: [{ commonName: "No Signing Usage" }], publicKey: noSignSpki });
   check("mds: an x5c leaf whose keyUsage omits digitalSignature may not sign the BLOB",
     (await codeFor({ x5cRaw: [noSignCert.toString("base64")] })) === "webauthn/bad-att-cert");
+  // keyUsage is a NamedBitList: DER drops its trailing zero bits (X.690 sec. 11.2.2) and
+  // sec. 4.2.1.3 requires at least one bit set. Reading the signing permission straight out of the
+  // bits applies neither, so a leaf the rest of the toolkit calls malformed would be allowed to sign
+  // the catalogue every later trust decision is taken from. The certificate has to come from
+  // outside -- pki.x509.sign will not emit either encoding, which is why the reader is the gate.
+  // The certificate is built by hand because pki.x509.sign refuses to emit either encoding -- which
+  // is the point: the leaf arrives from a metadata service, and the reader is the only gate on it.
+  // The keyUsage is read off the parsed leaf before any signature is checked, so a placeholder
+  // signature does not shortcut the vector.
+  var bb = pki.asn1.build;
+  function rawKuLeaf(cn, serial, kuValue) {
+    return minimalCert(noSignSpki, { cn: cn, serial: serial,
+      exts: [bb.sequence([bb.oid(pki.oid.byName("keyUsage")), bb.boolean(true), bb.octetString(kuValue)])] });
+  }
+  check("mds: an x5c leaf whose keyUsage is a non-minimal NamedBitList may not sign the BLOB",
+    (await codeFor({ x5cRaw: [rawKuLeaf("Non-minimal KU Leaf", 8, bb.bitString(Buffer.from([0x80, 0x00]), 7)).toString("base64")] })) === "webauthn/bad-att-cert");
+  check("mds: an x5c leaf whose keyUsage asserts no bits may not sign the BLOB",
+    (await codeFor({ x5cRaw: [rawKuLeaf("Empty KU Leaf", 9, bb.bitString(Buffer.from([0x00]), 7)).toString("base64")] })) === "webauthn/bad-att-cert");
 
   // ---- a malformed status report is refused, not read as a clean bill of health ----
   // The gate treats a missing status as "nothing disqualifying", so a report that omits it would

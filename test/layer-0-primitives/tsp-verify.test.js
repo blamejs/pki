@@ -186,6 +186,47 @@ async function testVerifyAccept() {
   var res6 = await pki.tsp.verify(token, DATA, {});
   check("valid without anchor; TSA cert surfaced for the caller to anchor", res6.valid === true && res6.signer && Buffer.isBuffer(res6.signer.cert));
 
+  // `valid` says the token's signature and its structural bindings hold. Whether the TSA is one this
+  // caller trusts is a SECOND question, and the whole out-of-path validation that answers it runs
+  // only when an anchor is supplied -- so a single boolean collapsed the two, and an archived
+  // verdict could not be re-read years later to tell whether the timestamp authority was ever
+  // trusted. `trusted` answers it definitely either way, the same shape pki.cms.verify returns.
+  check("a token anchored to its TSA's root reports trusted", res.trusted === true);
+  check("a token verified with no anchor reports trusted false -- a definite answer, not a missing one",
+    res6.trusted === false && res6.valid === true);
+  var otherAnchorRes = await (async function () {
+    try { return await pki.tsp.verify(token, DATA, { trustAnchor: makeTsa(ekuExt([TS_EKU], true)).anchor }); }
+    catch (e) { return { threw: e && e.code }; }
+  })();
+  check("a token whose TSA does not chain to the supplied anchor is refused, not merely untrusted",
+    otherAnchorRes.threw === "tsp/untrusted-tsa" || otherAnchorRes.valid === false);
+  // An anchor carrying purpose-scoped trust metadata must be USABLE here. pki.path consults those
+  // maps only when a purpose is named, and this verb validates timestamp tokens and nothing else --
+  // so the purpose is not a caller choice, and requiring the caller to supply one through a verb
+  // that has no such option would make the metadata unreachable rather than enforced.
+  var taMeta = Object.assign({}, tsa.anchor, { purposes: { timeStamping: true } });
+  check("an anchor whose trust metadata delegates timestamping verifies",
+    (await pki.tsp.verify(token, DATA, { trustAnchor: taMeta })).trusted === true);
+  // ...and the metadata now REACHES: an anchor not trusted for timestamping is refused, which is
+  // the whole point of consulting it.
+  var taNotTs = Object.assign({}, tsa.anchor, { purposes: { timeStamping: false } });
+  var notTs = await pki.tsp.verify(token, DATA, { trustAnchor: taNotTs });
+  check("an anchor NOT delegated for timestamping is refused", notTs.valid === false && notTs.trusted === false);
+  // A distrustAfter for this purpose likewise applies rather than sitting inert. The fixture TSA's
+  // notBefore is 2020-01-01, and the comparison is STRICTLY greater -- a certificate issued ON the
+  // distrust date stays trusted -- so the date has to sit before it to distrust anything.
+  var taDistrust = Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2019-01-01T00:00:00Z") } });
+  check("a timestamping distrust date older than the TSA certificate is refused",
+    (await pki.tsp.verify(token, DATA, { trustAnchor: taDistrust })).valid === false);
+  check("...and one on the TSA certificate's own notBefore keeps it trusted (the boundary day)",
+    (await pki.tsp.verify(token, DATA, { trustAnchor: Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2020-01-01T00:00:00Z") } }) })).trusted === true);
+
+  // Every refusal answers the same question too. An `undefined` on the failure branch is the same
+  // "cannot tell what was checked" the field exists to remove.
+  var badImprint = await pki.tsp.verify(token, Buffer.alloc(32, 0xee), { trustAnchor: tsa.anchor });
+  check("a refused token still answers the trusted question rather than leaving it undefined",
+    badImprint.valid === false && badImprint.trusted === false);
+
   // This verb spells its anchor option SINGULAR and takes an anchor tuple; pki.cms.verify and
   // pki.cmp.verify spell it `trustAnchors` and take certificate DER. Carrying the plural spelling
   // here used to mean no anchoring and no error -- an unchained TSA certificate under valid: true.
@@ -478,6 +519,13 @@ async function testBuilderCoverage() {
   // a keyUsage value that is not a BIT STRING fails closed via the decode catch.
   var badKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.integer(5n))]);
   check("TSA malformed keyUsage value -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(badKuTsa), DATA, {})).code === "tsp/bad-key-usage");
+  // keyUsage is a NamedBitList, so DER drops its trailing zero bits (X.690 sec. 11.2.2). Reading the
+  // permission out of the bits without that rule accepts here a certificate the issuing side and
+  // pki.path.validate both call malformed -- one extension with two readings, the permissive one
+  // deciding whether a timestamp is trustworthy.
+  var nonMinKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.bitString(Buffer.from([0x80, 0x00]), 7))]);
+  check("TSA non-minimal NamedBitList keyUsage -> tsp/bad-key-usage, not read for digitalSignature",
+    (await pki.tsp.verify(await signToken(nonMinKuTsa), DATA, {})).code === "tsp/bad-key-usage");
 }
 
 // An issuer-signed EC (P-256 / ecdsa-SHA256) certificate, for a multi-level chain.

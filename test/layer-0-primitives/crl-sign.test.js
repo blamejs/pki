@@ -249,6 +249,63 @@ async function testVerifyInputShapes() {
   check("verify accepts a parsed certificate as the issuer", (await pki.crl.verify(crlByCa, caParsed)) === true);
   // Every accepted issuer shape still resolves to a real key -- the wrong CA's cert fails closed.
   check("a parsed-certificate issuer for the wrong CA -> verify false", (await pki.crl.verify(crlByCa, pki.schema.x509.parse(s.cert))) === false);
+
+  // A CRL signature verifying says only that SOME key signed these bytes. Whether that key was
+  // ALLOWED to sign a CRL, and whether it belongs to the issuer this CRL names, are separate
+  // questions -- and only a certificate can answer them. The producing side of this same file
+  // already refuses to SIGN without cRLSign; the verifying side asked neither, so a CRL minted
+  // under an end-entity certificate of the same CA verified as that CA's CRL.
+  var ee = makeSigner("ec-p256");
+  var eeDer = await pki.x509.sign({
+    subject: "CA verify shapes", subjectPublicKey: ee.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: false }, keyUsage: ["digitalSignature"] },
+  }, { key: ee.key });
+  // Signed with the end-entity KEY and claiming the CA's name -- which is how an attacker holding
+  // such a certificate would mint it, and the one shape this file's producing-side cRLSign gate
+  // cannot refuse, since no certificate is offered to it.
+  var crlByEe = await pki.crl.sign(spec, { publicKey: ee.spki, name: "CA verify shapes", key: ee.key });
+  check("a CRL signed by a certificate whose keyUsage omits cRLSign does not verify under it",
+    (await pki.crl.verify(crlByEe, { cert: eeDer })) === false);
+  // ...and the signature itself is still sound, so the refusal is about authority, not about maths:
+  // handed only the KEY, with no certificate to carry the restriction, the same CRL verifies.
+  check("the same CRL verifies under the bare key -- a key carries no authority to restrict",
+    (await pki.crl.verify(crlByEe, ee.spki)) === true);
+  // An absent keyUsage places no restriction (sec. 4.2.1.3), so it must not read as a refusal.
+  var noKuDer = await pki.x509.sign({
+    subject: "CA verify shapes", subjectPublicKey: ca.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true } },
+  }, { key: ca.key });
+  check("an issuer certificate with no keyUsage at all still verifies its CRL",
+    (await pki.crl.verify(crlByCa, { cert: noKuDer })) === true);
+  // The SAME keyUsage must read the same on every side. keyUsage is a NamedBitList, so DER drops
+  // its trailing zero bits (X.690 sec. 11.2.2) and requires at least one bit set (sec. 4.2.1.3) --
+  // rules the shared extension decoder enforces, and which the signing side and pki.path.validate
+  // therefore apply. Reading the bits here with a plain BIT STRING read accepted encodings both of
+  // those reject, so one malformed certificate was authorized to sign by the verifier and refused
+  // by everything else.
+  // The certificate has to come from OUTSIDE: pki.x509.sign refuses to emit either encoding, which
+  // is the point -- the certificate you verify a CRL against is one you were handed, not one you
+  // minted, so the verifier is where the rule has to hold.
+  var b = pki.asn1.build;
+  function caWithRawKu(kuValue) {
+    var copy = Object.assign({}, caParsed);
+    copy.extensions = caParsed.extensions.map(function (e) {
+      return e.oid === pki.oid.byName("keyUsage") ? Object.assign({}, e, { value: kuValue }) : e;
+    });
+    return copy;
+  }
+  // cRLSign is bit 6, so the minimal DER content is one unused bit over one octet. Padding it with a
+  // redundant all-zero octet leaves cRLSign set while breaking the encoding rule.
+  check("a non-minimal NamedBitList keyUsage is refused, not read for its cRLSign bit",
+    await codeOf(pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x02, 0x00]), 1)))) === "crl/bad-issuer");
+  // An all-zero keyUsage asserts nothing, which sec. 4.2.1.3 forbids outright -- a defect in the
+  // certificate, not a certificate that merely lacks cRLSign.
+  check("a keyUsage asserting no bits at all is refused as malformed",
+    await codeOf(pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x00]), 7)))) === "crl/bad-issuer");
+  // ...and the well-formed minimal encoding of the same permission still verifies, so the rule is
+  // about the encoding rather than about the bit.
+  check("the minimal encoding of the same cRLSign permission still verifies",
+    (await pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x02]), 1)))) === true);
 }
 
 // ---- the signing key must actually match the resolved scheme -- faults are typed, never a partial CRL ----
@@ -340,6 +397,22 @@ async function testDeltaAndFreshest() {
   check("removeFromCRL(8) accepted in a delta CRL", (entryExt(rc.revokedCertificates[0], "reasonCode") || {}).value === 8);
 }
 
+// An indirect CRL, which this library deliberately refuses to EMIT (pki.path.crlChecker cannot yet
+// process one, so signing one would produce a CRL nothing here can use). A third-party CRL can
+// still carry the flag, which is the input isRevoked has to be safe against -- so the fixture
+// splices the extension onto a parsed CRL rather than asking the signer for something it declines.
+function _forceIndirect(der) {
+  var b = pki.asn1.build;
+  var parsed = pki.schema.crl.parse(der);
+  var copy = Object.assign({}, parsed);
+  copy.crlExtensions = (parsed.crlExtensions || []).concat([{
+    oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+    // IssuingDistributionPoint ::= SEQUENCE { ... indirectCRL [4] BOOLEAN DEFAULT FALSE }
+    value: b.sequence([b.contextPrimitive(4, Buffer.from([0xff]))]),
+  }]);
+  return copy;
+}
+
 // ---- PEM output + isRevoked lookup ----
 
 async function testPemAndIsRevoked() {
@@ -362,6 +435,109 @@ async function testPemAndIsRevoked() {
   check("isRevoked accepts a magnitude Buffer serial", found(Buffer.from([0xab, 0xcd])));
   function serialCode(v) { try { pki.crl.isRevoked(der, v); return null; } catch (e) { return e && e.code; } }
   check("isRevoked non-safe-integer serial -> crl/bad-input", serialCode(Math.pow(2, 53)) === "crl/bad-input");
+
+  // SCOPE. A serial number means something only inside the set of certificates a CRL speaks for,
+  // and two shapes of CRL speak for a different set than a serial-only match assumes.
+  // pki.path.crlChecker already refuses both -- so the toolkit knew the rule and applied it in one
+  // consumer, while the standalone verb answered from any CRL it was handed.
+  function scopeCode(crl, serial) { try { pki.crl.isRevoked(crl, serial); return "NO-THROW"; } catch (e) { return e && e.code; } }
+  // A DELTA lists CHANGES: a serial in it may be there to say the certificate was RELEASED
+  // (removeFromCRL), so read alone the entry that means "no longer revoked" reads as "revoked".
+  var deltaDer = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 5n,
+    extensions: { deltaCRLIndicator: 1n },
+    revoked: [{ serialNumber: 0xabcdn, revocationDate: RD, reason: "removeFromCRL" }] }, issuerOf(s));
+  check("isRevoked refuses to answer from a delta CRL alone", scopeCode(deltaDer, 0xabcdn) === "crl/delta-not-authoritative");
+  // ...and the refusal is about the CRL's scope, not about that particular serial: a serial the
+  // delta does not list is equally unanswerable from it.
+  check("...for a serial the delta does not list either", scopeCode(deltaDer, 0x9999n) === "crl/delta-not-authoritative");
+  // An INDIRECT CRL carries entries for OTHER issuers, identified per entry. Serials are unique per
+  // issuer, not globally, so matching on serial alone attributes another issuer's revocation here.
+  var indirectDer = _forceIndirect(der);
+  check("isRevoked refuses to answer from an indirect CRL", scopeCode(indirectDer, 0xabcdn) === "crl/indirect-not-supported");
+  // A direct CRL with no scope extensions still answers, which is the case every caller has.
+  check("a plain direct CRL still answers", pki.crl.isRevoked(der, 0xabcdn) !== null);
+  // certificateIssuer is meaningful only on an indirect CRL. On one that declares itself direct, the
+  // entry and the CRL disagree about whose certificate this is -- and SKIPPING the entry would be
+  // the worse of the two answers, since a matching entry silently not matching reports the
+  // certificate as NOT revoked.
+  var withCertIssuer = (function () {
+    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+    var copy = Object.assign({}, p);
+    copy.revokedCertificates = p.revokedCertificates.map(function (e) {
+      var c = Object.assign({}, e);
+      c.crlEntryExtensions = (e.crlEntryExtensions || []).concat([{
+        oid: pki.oid.byName("certificateIssuer"), critical: true,
+        // GeneralNames { [4] directoryName } -- the content is any DN; only its PRESENCE matters here.
+        value: b.sequence([b.contextConstructed(4, b.sequence([]))]),
+      }]);
+      return c;
+    });
+    return copy;
+  })();
+  check("an entry naming another issuer on a direct CRL is refused, never silently unmatched",
+    scopeCode(withCertIssuer, 0xabcdn) === "crl/indirect-not-supported");
+  // The contradiction is a property of the CRL, not of the entry that happens to match. Checking it
+  // only on the matching entry left the NOT-LISTED answer -- the one that says "this certificate is
+  // fine" -- coming from a CRL whose own entries dispute whose certificates it lists.
+  check("...and for a serial the CRL does not list, where the answer would be not-revoked",
+    scopeCode(withCertIssuer, 0x9999n) === "crl/indirect-not-supported");
+  // A malformed IDP means the scope cannot be established at all, which is not a scope to answer
+  // from -- the same refusal, for the same reason, rather than a guess that it is direct.
+  var badIdp = (function () {
+    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+    var copy = Object.assign({}, p);
+    copy.crlExtensions = (p.crlExtensions || []).concat([{
+      oid: pki.oid.byName("issuingDistributionPoint"), critical: true, value: b.integer(1n),
+    }]);
+    return copy;
+  })();
+  check("a CRL whose scope extension cannot be read is refused, not read as unscoped",
+    scopeCode(badIdp, 0xabcdn) === "crl/scope-not-authoritative");
+  // The indirect flag is a DER BOOLEAN: exactly one content octet, 0x00 or 0xFF (X.690 sec. 11.1).
+  // Every other encoding is a scope that cannot be established, and reading one as "absent, so
+  // direct" is the one answer that must never follow -- it turns an unreadable scope into a licence
+  // to answer by serial. A DEFAULT FALSE is likewise not encoded at all (X.690 sec. 11.5), so an
+  // explicit FALSE is a statement the encoding rules do not permit rather than a reassuring one.
+  function idpTag(tag, contentBytes) {
+    var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+    var copy = Object.assign({}, p);
+    copy.crlExtensions = (p.crlExtensions || []).concat([{
+      oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+      value: b.sequence([b.contextPrimitive(tag, Buffer.from(contentBytes))]),
+    }]);
+    return copy;
+  }
+  check("an empty indirectCRL BOOLEAN is refused, not read as absent",
+    scopeCode(idpTag(4, []), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a multi-octet indirectCRL BOOLEAN is refused",
+    scopeCode(idpTag(4, [0x00, 0xff]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a non-DER indirectCRL BOOLEAN value is refused, not read by its low bit",
+    scopeCode(idpTag(4, [0x01]), 0xabcdn) === "crl/scope-not-authoritative");
+  // Every OTHER form of issuingDistributionPoint narrows which certificates the CRL speaks for, and
+  // which part applies is decided against fields of the CERTIFICATE -- which this verb never sees.
+  // So an absent serial is not an unrevoked certificate, and the whole family refuses rather than
+  // answering: stopping at delta and indirect would apply the rule to two of its members.
+  check("a CRL scoped to CA certificates is refused: a serial does not say what kind it names",
+    scopeCode(idpTag(2, [0xff]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("...and for the serial it does list, where the answer would look right",
+    scopeCode(idpTag(1, [0xff]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a reason-sharded CRL is refused: a certificate revoked for another reason is absent from it",
+    scopeCode(idpTag(3, [0x01, 0x80]), 0xabcdn) === "crl/scope-not-authoritative");
+  check("a partitioned CRL is refused: the correspondence is against the certificate's own DP",
+    scopeCode((function () {
+      var b = pki.asn1.build, p = pki.schema.crl.parse(der);
+      var copy = Object.assign({}, p);
+      copy.crlExtensions = (p.crlExtensions || []).concat([{
+        oid: pki.oid.byName("issuingDistributionPoint"), critical: true,
+        // distributionPoint [0] { fullName [0] { uniformResourceIdentifier [6] } }
+        value: b.sequence([b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://crl.example/a", "ascii"))))]),
+      }]);
+      return copy;
+    })(), 0xabcdn) === "crl/scope-not-authoritative");
+  // Indirect keeps its own name: it is not a narrower scope, it is a list whose serials belong to
+  // other issuers, and that is the sharper thing to tell an operator.
+  check("indirect is named as indirect, not folded into the scope refusal",
+    scopeCode(idpTag(4, [0xff]), 0xabcdn) === "crl/indirect-not-supported");
   check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
   check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
   check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");
