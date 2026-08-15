@@ -551,6 +551,28 @@ async function run() {
     mdsAlgs.EdDSA.fromLeaf === true && mdsAlgs.EdDSA.imp === undefined);
   check("mds: an ML-DSA row carries the parameter set its own algorithm fixes",
     mdsAlgs["ML-DSA-65"].imp.name === "ML-DSA-65" && mdsAlgs["ML-DSA-65"].fromLeaf === undefined);
+  // The map is keyed by the name the certificate parser REPORTS for a leaf's SPKI algorithm. A key
+  // that is not that exact string is a row that never matches -- silently, since the miss reads as
+  // "this leaf cannot do this scheme". Read the names off real certificates rather than assume them.
+  var spkiNames = {};
+  for (var nameAlg of ["ES256", "RS256", "EdDSA-Ed25519", "EdDSA-Ed448", "ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]) {
+    var nf = await mint({ signAlg: nameAlg });
+    var nh = JSON.parse(Buffer.from(nf.blob.toString("ascii").split(".")[0].replace(/-/g, "+").replace(/_/g, "/") + "==", "base64").toString("utf8"));
+    spkiNames[nameAlg] = pki.schema.x509.parse(Buffer.from(nh.x5c[0], "base64")).subjectPublicKeyInfo.algorithm.name;
+  }
+  check("mds: the leaf-scheme map is keyed by the names the certificate parser really reports",
+    spkiNames.ES256 === "ecPublicKey" && spkiNames.RS256 === "rsaEncryption" &&
+    spkiNames["EdDSA-Ed25519"] === "Ed25519" && spkiNames["EdDSA-Ed448"] === "Ed448" &&
+    spkiNames["ML-DSA-44"] === "id-ml-dsa-44" && spkiNames["ML-DSA-65"] === "id-ml-dsa-65" &&
+    spkiNames["ML-DSA-87"] === "id-ml-dsa-87");
+  // Algorithm confusion, on the newly reachable rows: an EdDSA header over a leaf that holds no
+  // Edwards key is refused at the scheme check, before any key is imported or signature examined.
+  check("mds: an EdDSA header over an EC leaf is refused",
+    (await codeFor({ signAlg: "ES256", alg: "EdDSA" })) === "webauthn/unsupported-algorithm");
+  check("mds: an ML-DSA header over an Edwards leaf is refused",
+    (await codeFor({ signAlg: "EdDSA-Ed25519", alg: "ML-DSA-44" })) === "webauthn/unsupported-algorithm");
+  check("mds: an ML-DSA header naming a different parameter set than its leaf is refused",
+    (await codeFor({ signAlg: "ML-DSA-44", alg: "ML-DSA-87" })) === "webauthn/unsupported-algorithm");
 
   // ---- an id-RSASSA-PSS certificate restricts its own key (RFC 4055 sec. 1.2 / 3.1) ----
   //
