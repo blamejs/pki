@@ -209,6 +209,30 @@ async function run() {
   // ---- accept(): the three input classes --------------------------------------
   var parseCalls = 0;
   function parse(b) { parseCalls++; return Object.assign({ parsedFrom: b }, CERT); }
+  // Every container the verbs document as "bytes" reaches the parser. A narrower test (Buffer or
+  // Uint8Array only) does not merely miss one form: the others fall through to the parsed-object
+  // branch and are refused as REBUILT structures, so a caller who happened to hold a DataView reads
+  // "your certificate was rebuilt" about bytes they never touched.
+  var derBytes = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM);
+  var derAb = derBytes.buffer.slice(derBytes.byteOffset, derBytes.byteOffset + derBytes.length);
+  var containers = {
+    Buffer: derBytes,
+    Uint8Array: new Uint8Array(derAb),
+    "a non-Uint8Array view": new Int8Array(derAb),
+    DataView: new DataView(derAb),
+    ArrayBuffer: derAb,
+    "a PEM string": vectors.CERT_EC_PEM,
+  };
+  Object.keys(containers).forEach(function (name) {
+    var got;
+    try { got = guard.acceptDerived(containers[name], "certificate", pki.schema.x509.parse, E, "x/bad", "root"); }
+    catch (_e) {
+      got = null;   // refused: the assertion below names which container was not recognised
+    }
+    check("a certificate given as " + name + " is parsed, not read as a rebuilt object",
+      !!got && got.subject.dn === realCert.subject.dn);
+  });
+
   check("a Buffer is parsed", guard.accept(Buffer.from([0x30]), "certificate", parse, E, "x/bad", "arg").parsedFrom !== undefined);
   check("a Uint8Array is parsed", guard.accept(new Uint8Array([0x30]), "certificate", parse, E, "x/bad", "arg").parsedFrom !== undefined);
   check("a PEM string is parsed", guard.accept("-----BEGIN", "certificate", parse, E, "x/bad", "arg").parsedFrom !== undefined);
