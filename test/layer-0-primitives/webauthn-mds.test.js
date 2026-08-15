@@ -624,6 +624,13 @@ async function run() {
   // signature.
   check("mds: an id-RSASSA-PSS leaf with an empty params SEQUENCE is restricted to the SHA-1 default",
     (await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: "empty-params" })) === "webauthn/unsupported-algorithm");
+  // A rejection handler attached to the IMPORT alone leaves whatever the verify itself rejects with
+  // to escape raw. RSASSA-PSS parameters demanding a longer salt than the algorithm supplies import
+  // cleanly and then fail inside OpenSSL, so this returns a platform Error rather than a typed
+  // verdict -- out of a verb whose contract is that every failure carries a webauthn/* code.
+  var saltTooLong = await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha256", salt: 64 } });
+  check("mds: a salt restriction the algorithm cannot satisfy is a typed verdict, not a platform error",
+    saltTooLong === "webauthn/verify-error");
   // ...and absent parameters really do restrict nothing, which is the other half of the same clause.
   var unpinned = await mint({ signAlg: "PS512", pssRestricted: true });
   check("mds: an id-RSASSA-PSS leaf with no parameters restricts no hash",
