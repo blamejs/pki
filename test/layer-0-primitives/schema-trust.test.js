@@ -696,6 +696,28 @@ async function testRealCertdataSlice() {
   else inPlace.publicKey.fill(0);
   check("T27: overwriting the entry's key buffer in place does not reach the record",
     Buffer.compare(pki.trust.anchor(inPlace, { purpose: "serverAuth" }).publicKey, beforeKey) === 0);
+  // Copies OUT as well as in. Handing back the record's own Buffer would let a consumer write
+  // THROUGH the returned anchor into the record -- guarding one direction and not the other leaves
+  // the same door open. Both the key and the name are fresh on every call.
+  var handedOut = pki.trust.anchor(inPlace, { purpose: "serverAuth" });
+  handedOut.publicKey.fill(0);
+  handedOut.name.rdns.length = 0;
+  var afterWrite = pki.trust.anchor(inPlace, { purpose: "serverAuth" });
+  check("T27: writing through a returned anchor does not reach the record",
+    Buffer.compare(afterWrite.publicKey, beforeKey) === 0 && afterWrite.name.rdns.length > 0);
+  // The METADATA is what the purpose gate reads, so it is copied for the same reason the key is --
+  // and it is the sharper case: flipping a purpose on a returned anchor would open a gate the store
+  // never opened. distrustAfter holds Dates, mutable in the same way.
+  var meta = pki.trust.anchor(entryA);
+  meta.purposes.emailProtection = true;
+  check("T27: flipping a purpose on a returned anchor does not open the gate",
+    codeOf(function () { pki.trust.anchor(entryA, { purpose: "emailProtection" }); }) === "trust/purpose-not-trusted");
+  var beforeDate = pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime();
+  meta.distrustAfter.serverAuth.setUTCFullYear(2099);
+  check("T27: moving a distrust date on a returned anchor does not reach the entry",
+    pki.trust.anchor(entryA).distrustAfter.serverAuth.getTime() === beforeDate);
+  check("T27: two anchors from one entry share nothing mutable",
+    (function (a, b) { return a.purposes !== b.purposes && a.distrustAfter !== b.distrustAfter && a.publicKey !== b.publicKey && a.name !== b.name; })(pki.trust.anchor(entryA), pki.trust.anchor(entryA)));
 }
 
 // ---------------------------------------------------------------------------
