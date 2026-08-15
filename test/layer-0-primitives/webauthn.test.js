@@ -785,6 +785,29 @@ async function run() {
   check("assert: a non-finite kty likewise", (await assertObjCode({ kty: Infinity, alg: -7 })) === "webauthn/bad-cose-key");
   check("assert: a fractional alg likewise",
     (await assertObjCode({ kty: 2, alg: -7.5, crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // EVERY integer label, not the two the dispatch needs first: crv indexes a lookup table, and a
+  // Symbol thrown at a property read is the same raw fault as one thrown at a conversion.
+  check("assert: a Symbol crv on an EC2 key is a typed fault",
+    (await assertObjCode({ kty: 2, alg: -7, crv: Symbol("x"), x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  check("assert: a Symbol crv on an OKP key is a typed fault",
+    (await assertObjCode({ kty: 1, alg: -8, crv: Symbol("x"), x: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  check("assert: a fractional crv is a typed fault",
+    (await assertObjCode({ kty: 2, alg: -7, crv: 1.5, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
+  // A caller-supplied object can define an ACCESSOR on any of these. One that throws turns the
+  // validation into a raw fault; one that answers differently on successive reads makes the field
+  // that was checked and the field that is used two different values. Each is read exactly once.
+  var trapFields = ["kty", "alg", "crv", "x", "y", "n", "e"];
+  for (var tf = 0; tf < trapFields.length; tf++) {
+    var trapKey = { kty: 2, alg: -7, crv: 1, x: Buffer.alloc(32), y: Buffer.alloc(32) };
+    Object.defineProperty(trapKey, trapFields[tf], { enumerable: true, get: function () { throw new RangeError("raw"); } });
+    check("assert: a throwing accessor on " + trapFields[tf] + " is a typed fault",
+      (await assertObjCode(trapKey)) === "webauthn/bad-cose-key");
+  }
+  // A field that answers differently each time cannot be checked as one value and used as another.
+  var shiftyKey = { kty: 2, alg: -7, crv: 1, y: Buffer.alloc(32) };
+  Object.defineProperty(shiftyKey, "x", { enumerable: true, get: (function () { var n = 0; return function () { return (n++ === 0) ? Buffer.alloc(32) : Buffer.alloc(4); }; })() });
+  check("assert: a field read twice cannot answer twice",
+    ["webauthn/bad-cose-key", "webauthn/bad-signature"].indexOf(await assertObjCode(shiftyKey)) !== -1);
   check("parse: ...and one a byte short of the floor likewise",
     rsaCode(Buffer.alloc(255, 0xff), E65537) === "webauthn/bad-cose-key");
   check("parse: an RSA exponent of 1 is refused -- it makes RSA the identity function",

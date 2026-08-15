@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.5.4",
+  "packageVersion": "0.5.5",
   "surface": {
     "C": {
       "kind": "object",
@@ -2670,6 +2670,10 @@
               "kind": "boolean"
             }
           }
+        },
+        "_verifyOcspParsed": {
+          "kind": "function",
+          "arity": 5
         },
         "build": {
           "kind": "function",
