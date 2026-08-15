@@ -667,8 +667,11 @@ security-only patches after the next major releases.
   attestation and be reported as verified. The status gate is on the anchors
   themselves, not only inside that verb: `pki.webauthn.metadataAnchors` refuses to
   hand back the attestation roots of a model the catalogue has disqualified, so a
-  caller anchoring the trust path with `pki.path.validate` reaches the same verdict
-  as one who passed the catalogue to `verify`. An authenticator that declares no
+  caller anchoring the trust path with `pki.path.validate` cannot reach a weaker
+  verdict than one who passed the catalogue to `verify`. It reads the reports the
+  same way given the same catalogue, instant and presented certificate, and
+  applies the strictest reading of whichever of those is not supplied. An
+  authenticator that declares no
   model identity is looked up by the key identifiers of its attestation
   certificates rather than being silently exempt from any of this. Which
   identifier is allowed to select the entry depends on what the attestation

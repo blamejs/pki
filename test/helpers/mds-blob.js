@@ -27,6 +27,13 @@ var SIGN_ALGS = {
   PS256: { gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, sign: { name: "RSA-PSS", saltLength: 32 } },
   PS384: { gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-384" }, sign: { name: "RSA-PSS", saltLength: 48 } },
   PS512: { gen: { name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-512" }, sign: { name: "RSA-PSS", saltLength: 64 } },
+  // EdDSA names a scheme without fixing a curve, so the KEY decides which of the two it is and one
+  // JWS algorithm needs both fixtures. ML-DSA's algorithm fixes its own parameter set.
+  "EdDSA-Ed25519": { alg: "EdDSA", gen: { name: "Ed25519" }, sign: { name: "Ed25519" } },
+  "EdDSA-Ed448": { alg: "EdDSA", gen: { name: "Ed448" }, sign: { name: "Ed448" } },
+  "ML-DSA-44": { gen: { name: "ML-DSA-44" }, sign: { name: "ML-DSA-44" } },
+  "ML-DSA-65": { gen: { name: "ML-DSA-65" }, sign: { name: "ML-DSA-65" } },
+  "ML-DSA-87": { gen: { name: "ML-DSA-87" }, sign: { name: "ML-DSA-87" } },
 };
 
 // Re-encode an RSA SPKI under id-RSASSA-PSS (RFC 4055 sec. 1.2): the same key bits, an algorithm
@@ -122,7 +129,9 @@ async function mint(o) {
     }, { key: xCa.kp.privateKey, name: [{ commonName: "Cross Signing CA" }], publicKey: xCa.spki });
     chain = [leafDer, crossDer];
   }
-  var header = Object.assign({ alg: o.alg || o.signAlg || "ES256", typ: "JWT",
+  // The header alg is the JWS algorithm NAME, which for the two Edwards fixtures is one name over
+  // two key types -- so the fixture key is chosen by the row and the header still says `EdDSA`.
+  var header = Object.assign({ alg: o.alg || signRow.alg || o.signAlg || "ES256", typ: "JWT",
     x5c: o.x5cRaw || chain.map(function (d) { return d.toString("base64"); }) }, o.headerExtra || {});
 
   // headerRaw / payloadRaw substitute the serialized JSON wholesale, for a vector whose defect is

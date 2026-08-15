@@ -135,6 +135,25 @@ async function run() {
   // caller supplies the sequence number it holds, so a result that does not say whether it ran
   // cannot be told apart from one where it was skipped -- and showing the catalogue never went
   // backwards is the entire point of the rule.
+  // A BLOB is retrieved over the network, and the ordinary way to hold a fetched body is an
+  // ArrayBuffer -- the one byte form this refused, in the verb most likely to be handed one.
+  function toAb(buf) { var u = new Uint8Array(buf.length); u.set(buf); return u.buffer; }
+  check("mds: a BLOB arrives as an ArrayBuffer, the form a fetched body takes",
+    (await pki.webauthn.verifyMetadataBlob(toAb(base.blob), { rootCertificates: [base.rootDer], time: T })).no === 42);
+  check("mds: ...and as a DataView",
+    (await pki.webauthn.verifyMetadataBlob(new DataView(toAb(base.blob)), { rootCertificates: [base.rootDer], time: T })).no === 42);
+  // A trust anchor is bytes too, and identical DER is the identical certificate whichever container
+  // the caller received it in. An accepted set that depends on how the file was read is not a
+  // statement about the certificate.
+  check("mds: a root certificate arrives in any byte form",
+    (await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [toAb(base.rootDer)], time: T })).no === 42 &&
+    (await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [new DataView(toAb(base.rootDer))], time: T })).no === 42);
+  check("mds: the size ceiling still bites on a byte form that is not a Buffer",
+    (await codeOf(function () {
+      return pki.webauthn.verifyMetadataBlob(new Uint8Array(pki.C.LIMITS.MDS_BLOB_MAX_BYTES + 1).buffer,
+        { rootCertificates: [base.rootDer], time: T });
+    })) === "webauthn/too-large");
+
   check("mds: a result says the rollback rule was not requested", md.rollbackChecked === false && md.previousNo === null);
   var rolled = await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [base.rootDer], time: T, previousNo: 41 });
   check("mds: ...and says it ran, against the baseline it was given",
@@ -487,26 +506,51 @@ async function run() {
   var rsFix = await mint({ signAlg: "RS256" });
   check("mds: a BLOB signed under RS256 verifies",
     (await pki.webauthn.verifyMetadataBlob(rsFix.blob, { rootCertificates: [rsFix.rootDer], time: T })).no === 42);
-  // Every algorithm pki.jose verifies under a key type a certificate can carry has a row here. The
-  // derivation is the guard; this asserts it is TOTAL, so a row added to the registry cannot reach
-  // one reader and not the other.
-  var joseSigAlgs = pki.jose.sigAlgs().filter(function (r) { return r.kty === "EC" || r.kty === "RSA"; });
+  // An X.509 SubjectPublicKeyInfo carries an Edwards key (RFC 8410) and an ML-DSA key (RFC 9881) as
+  // readily as an EC one, so a BLOB signed under those algorithms is a conformant JWS -- not a
+  // theoretical one to be excused from the table. EdDSA is one algorithm name over two key types,
+  // and the certificate is what says which, so both are driven.
+  for (var edAlg of ["EdDSA-Ed25519", "EdDSA-Ed448"]) {
+    var edFix = await mint({ signAlg: edAlg });
+    check("mds: a BLOB signed under " + edAlg.replace("EdDSA-", "EdDSA over ") + " verifies",
+      (await pki.webauthn.verifyMetadataBlob(edFix.blob, { rootCertificates: [edFix.rootDer], time: T })).no === 42);
+  }
+  for (var mlAlg of ["ML-DSA-44", "ML-DSA-65", "ML-DSA-87"]) {
+    var mlFix = await mint({ signAlg: mlAlg });
+    check("mds: a BLOB signed under " + mlAlg + " verifies",
+      (await pki.webauthn.verifyMetadataBlob(mlFix.blob, { rootCertificates: [mlFix.rootDer], time: T })).no === 42);
+  }
+  // The derivation is the guard; this asserts it is TOTAL over the registry, so a row added there
+  // cannot reach one reader and not the other. An X.509 SubjectPublicKeyInfo carries a key of every
+  // type the registry names, so there is no algorithm to excuse.
+  var joseSigAlgs = pki.jose.sigAlgs();
   var mdsAlgs = require("../../lib/webauthn-mds.js").BLOB_ALGS;
-  function schemeOf(r) { return r.kty === "EC" ? "ECDSA" : (r.saltLength ? "RSA-PSS" : "RSASSA-PKCS1-v1_5"); }
-  var schemesSeen = {};
-  joseSigAlgs.forEach(function (r) { schemesSeen[schemeOf(r)] = 1; });
-  check("mds: every certificate-carryable JWS algorithm the toolkit verifies has a BLOB row",
-    // All three schemes are represented, so the walk below cannot pass by having nothing to walk.
-    Object.keys(schemesSeen).length === 3 && joseSigAlgs.every(function (r) {
+  function schemeOf(r) {
+    if (r.kty === "EC") return "ECDSA";
+    if (r.kty === "RSA") return r.saltLength ? "RSA-PSS" : "RSASSA-PKCS1-v1_5";
+    if (r.kty === "OKP") return "EdDSA";
+    return r.alg;                                     // AKP: the algorithm fixes its own parameter set
+  }
+  var ktysSeen = {};
+  joseSigAlgs.forEach(function (r) { ktysSeen[r.kty] = 1; });
+  check("mds: every JWS algorithm the toolkit verifies has a BLOB row",
+    // All four key types are represented, so the walk cannot pass by having nothing to walk -- and
+    // the bound is on the FAMILIES rather than a row count, which a new algorithm would move.
+    Object.keys(ktysSeen).sort().join(",") === "AKP,EC,OKP,RSA" && joseSigAlgs.every(function (r) {
       var row = mdsAlgs[r.alg];
-      return !!row && row.hash === r.hash && row.scheme === schemeOf(r) &&
+      return !!row && row.scheme === schemeOf(r) &&
+        (r.hash ? row.hash === r.hash : true) &&
         (r.saltLength ? row.ver.saltLength === r.saltLength : true);
     }));
-  // MAC and PQC algorithms are not certificate-carryable JWS signature schemes here: `HS256` is not a
-  // signature algorithm at all, and no row exists for the key types no x5c leaf can hold.
+  // `HS256` is not a signature algorithm, and listing it beside RS256 is how the key-confusion class
+  // starts; it is absent from the registry this table derives from, so it cannot appear here either.
   check("mds: no MAC algorithm has a BLOB row", mdsAlgs.HS256 === undefined && mdsAlgs.none === undefined);
-  check("mds: no row exists for a key type no x5c leaf carries",
-    mdsAlgs.EdDSA === undefined && mdsAlgs["ML-DSA-44"] === undefined);
+  // EdDSA's WebCrypto algorithm is not fixed by the algorithm name, so its row says the certificate
+  // supplies it rather than carrying parameters that would be right for only one of the two curves.
+  check("mds: the EdDSA row takes its curve from the certificate",
+    mdsAlgs.EdDSA.fromLeaf === true && mdsAlgs.EdDSA.imp === undefined);
+  check("mds: an ML-DSA row carries the parameter set its own algorithm fixes",
+    mdsAlgs["ML-DSA-65"].imp.name === "ML-DSA-65" && mdsAlgs["ML-DSA-65"].fromLeaf === undefined);
 
   // ---- an id-RSASSA-PSS certificate restricts its own key (RFC 4055 sec. 1.2 / 3.1) ----
   //
