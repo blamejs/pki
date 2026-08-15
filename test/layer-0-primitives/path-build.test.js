@@ -335,6 +335,18 @@ async function run() {
     await codeOf(pki.path.build(leaf, { candidates: [bad({ subject: null })], trustAnchors: [anchorCert], time: T })) === "path/bad-input");
   check("a malformed certificate-form anchor -> path/bad-input",
     await codeOf(pki.path.build(leaf, { candidates: [interA], trustAnchors: [bad({ subject: null })], time: T })) === "path/bad-input");
+  // The SAME shape at the SAME module's other door. `build` refused a partial claimed-parsed
+  // certificate while `validate` -- which build hands its result to -- tested only for a truthy
+  // tbsBytes and passed the object straight into the sec. 6.1 walk. One rule, two doors, and the
+  // permissive one is the one an operator calls directly.
+  check("validate refuses a partial claimed-parsed certificate, as build already did",
+    await codeOf(pki.path.validate([bad({ subject: null })], { trustAnchor: anchorTuple, time: T })) === "path/bad-input");
+  check("...for every field, not just the one build happened to be handed",
+    await codeOf(pki.path.validate([bad({ extensions: [{ oid: "1.2" }] })], { trustAnchor: anchorTuple, time: T })) === "path/bad-input");
+  // An object with NO tbsBytes at all is not claiming to be parsed, so it goes to the byte parser
+  // and fails there -- still typed, and still not a raw TypeError from a missing field.
+  check("an object that claims nothing is refused by the byte parser, not dereferenced",
+    await codeOf(pki.path.validate([{ nope: 1 }], { trustAnchor: anchorTuple, time: T })) === "path/bad-input");
 
   // A ready anchor TUPLE is a caller option: a malformed tuple (bad name.rdns / publicKey / algorithm
   // types) fails closed at entry as path/bad-input, not a downstream no-path or soft valid:false.

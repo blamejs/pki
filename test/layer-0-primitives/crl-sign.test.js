@@ -182,11 +182,20 @@ async function testAkiShape() {
   var badSkiCert = signing.minimalCert(s.spki, { ski: true, badSki: true });
   check("unreadable issuer-cert SKI -> AKI re-derived from the SPKI",
     Buffer.compare(await akiKeyId({ cert: badSkiCert, key: s.key }), derived) === 0);
-  // A parsed certificate carrying no extensions array at all is still a usable issuer.
+  // A certificate carrying NO extensions is still a usable issuer -- the parser emits an empty
+  // array for one, so the SKI lookup misses and the key id is re-derived.
   var noExts = pki.schema.x509.parse(s.cert);
-  delete noExts.extensions;
+  noExts.extensions = [];
   check("issuer cert with no extensions -> AKI re-derived from the SPKI",
     Buffer.compare(await akiKeyId({ cert: noExts, key: s.key }), derived) === 0);
+  // DELETING the property is a different thing and must not read as the same answer. The parser
+  // never produces an object without it, so one that lacks it did not come from the parser, and
+  // "the list is absent" and "the list is empty" are the distinction a scope guard reading
+  // `(list || [])` cannot make -- which is how a scope-restricted CRL came to answer as unrestricted.
+  var missingExts = pki.schema.x509.parse(s.cert);
+  delete missingExts.extensions;
+  check("an issuer cert MISSING the extensions property is malformed, not extension-free",
+    await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, { cert: missingExts, key: s.key })) === "crl/bad-input");
   check("authorityKeyIdentifier that is neither true nor a Buffer -> crl/bad-input",
     await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, extensions: { authorityKeyIdentifier: 5 } }, issuerOf(s))) === "crl/bad-input");
 }
@@ -538,6 +547,29 @@ async function testPemAndIsRevoked() {
   // other issuers, and that is the sharper thing to tell an operator.
   check("indirect is named as indirect, not folded into the scope refusal",
     scopeCode(idpTag(4, [0xff]), 0xabcdn) === "crl/indirect-not-supported");
+  // A CLAIMED-parsed CRL was trusted as parser output the moment it carried the three properties the
+  // door tested for, and every scope guard above reads its list as `(crlExtensions || [])` -- so
+  // OMITTING the property entirely made a scope-restricted CRL answer as an unrestricted one. A
+  // guard cannot fire on a list that is not there, which is why the door has to establish it IS.
+  var scopedParsed = pki.schema.crl.parse(await pki.crl.sign(
+    { thisUpdate: TU, nextUpdate: NU, crlNumber: 3n, revoked: [{ serialNumber: 0xabcdn, revocationDate: RD }],
+      extensions: { issuingDistributionPoint: { onlyContainsUserCerts: true } } }, issuerOf(s)));
+  check("a scoped CRL handed as parser output is still refused",
+    scopeCode(scopedParsed, 0xabcdn) === "crl/scope-not-authoritative");
+  var strippedExts = Object.assign({}, scopedParsed);
+  delete strippedExts.crlExtensions;
+  check("...and stripping the extension list is a malformed input, not an unscoped CRL",
+    scopeCode(strippedExts, 0xabcdn) === "crl/bad-input");
+  var strippedEntryExts = Object.assign({}, pki.schema.crl.parse(der));
+  strippedEntryExts.revokedCertificates = strippedEntryExts.revokedCertificates.map(function (e) {
+    var c = Object.assign({}, e); delete c.crlEntryExtensions; return c;
+  });
+  check("an entry with no crlEntryExtensions property is malformed, not an entry naming no issuer",
+    scopeCode(strippedEntryExts, 0xabcdn) === "crl/bad-input");
+  check("a bare tbsBytes-carrying object is refused rather than dereferenced",
+    scopeCode({ tbsBytes: Buffer.alloc(0), signatureValue: { bytes: Buffer.alloc(0) }, signatureAlgorithm: { oid: "1.2" } }, 0xabcdn) === "crl/bad-input");
+  // The unmodified parser output still works -- the rule is completeness, not a ban on the form.
+  check("an unmodified parsed CRL still answers", pki.crl.isRevoked(pki.schema.crl.parse(der), 0xabcdn) !== null);
   check("isRevoked unparseable string serial -> crl/bad-input", serialCode("zz") === "crl/bad-input");
   check("isRevoked non-numeric serial -> crl/bad-input", serialCode({}) === "crl/bad-input");
   check("isRevoked zero serial -> crl/bad-input (serials are positive)", serialCode(0n) === "crl/bad-input");
