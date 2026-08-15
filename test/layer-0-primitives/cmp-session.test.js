@@ -658,6 +658,21 @@ async function run() {
   check("102f. opts.expectedSender that is not a certificate (a bare DN string) -> cmp/bad-input at construction (before the one-shot transaction engages the transport)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], expectedSender: "CN=cmp-ca.example" }); })) === "cmp/bad-input");
   // opts.expectedSender accepts the documented ALREADY-PARSED form, not only DER/PEM.
   check("102g. opts.expectedSender as an already-parsed certificate (pki.schema.x509.parse) -> the transaction proceeds -> issued (the parsed form is honored, not reparsed)", (await mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: pki.schema.x509.parse(H.signerCert) }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  // The pin is what the certificate SAYS, not what the object says. This pin is compared against
+  // each response signer's subject and SAN, so an edited subject would pin a different signer than
+  // the caller chose -- the certificate is re-derived from the bytes it was parsed from, and it is
+  // that value which is stored, so the edit never reaches the comparison.
+  var pinnedEdited = pki.schema.x509.parse(H.signerCert);
+  pinnedEdited.subject = pki.schema.x509.parse(H.caCert).subject;
+  check("102g1. an edited subject on a pinned parsed certificate does not change who is pinned",
+    (await mk([H.ip(0, 0, certDer), H.pkiconf()], { expectedSender: pinnedEdited }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
+  // ...and a REBUILT pin carries no record to derive from, so it is refused at construction rather
+  // than pinning something the caller cannot have meant.
+  check("102g2. a rebuilt expectedSender is refused at construction",
+    await codeOf(Promise.resolve().then(function () {
+      return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert],
+        expectedSender: Object.assign({}, pki.schema.x509.parse(H.signerCert)) });
+    })) === "cmp/bad-input");
   // A first response that OMITS its extraCerts (the CA assumes the client holds its cert) resolves via the prebound expectedSender.
   check("102h. a first response omitting extraCerts + a prebound expectedSender (bytes) -> the CA cert resolves the signer -> issued (without it the signer cannot resolve)", (await mk([{ body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()], { expectedSender: H.signerCert }).session.enroll(H.irRequest(CLIENT.spki))).outcome === "issued");
   check("102i. a first response omitting extraCerts WITHOUT a prebound signer cert -> cmp/signer-cert-not-found (the signer cannot resolve from an empty extraCerts)", await codeOf(mk([{ body: H.ip(0, 0, certDer), noExtraCerts: true }, H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/signer-cert-not-found");
