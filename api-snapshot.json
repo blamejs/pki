@@ -3274,7 +3274,7 @@
       "members": {
         "metadataAnchors": {
           "kind": "function",
-          "arity": 1
+          "arity": 2
         },
         "metadataFor": {
           "kind": "function",

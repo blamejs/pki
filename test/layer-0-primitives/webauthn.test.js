@@ -664,6 +664,49 @@ async function run() {
   check("verify: an attestation object that is not bytes is refused by name",
     (await codeOfAsync(function () { return pki.webauthn.verify("not bytes", Buffer.alloc(32, 9), {}); })) === "webauthn/bad-input");
 
+  // Registration can be handed the clientDataJSON, not only its digest. The ceremony-type rule is
+  // the one this module calls non-negotiable -- which ceremony a response belongs to is fixed by
+  // the specification, not chosen by a caller -- and without this door registration had no way to
+  // apply it: the digest is opaque, so a login response replayed into a registration was a
+  // comparison the caller was left to make against a value the attestation never bound.
+  function cdJson(o) { return Buffer.from(JSON.stringify(o), "utf8"); }
+  var regChallenge = Buffer.from([1, 2, 3, 4]);
+  var createJson = cdJson({ type: "webauthn.create", challenge: "AQIDBA", origin: "https://example.com" });
+  var getJson = cdJson({ type: "webauthn.get", challenge: "AQIDBA", origin: "https://example.com" });
+  var regObj = attObjOf("none", [], buildAuthData({ coseKey: _EC_COSE }));
+  function hashOf(b) { return crypto.createHash("sha256").update(b).digest(); }
+  var reg = await pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedChallenge: regChallenge, expectedOrigin: "https://example.com" });
+  check("verify: a registration takes the clientDataJSON and reports what it checked",
+    reg.attestationVerified === true && reg.clientData.checked.type === true &&
+    reg.clientData.checked.challenge === true && reg.clientData.checked.origin === true);
+  check("verify: the ceremony type is checked whenever the JSON is supplied, unasked",
+    (await codeOfAsync(function () { return pki.webauthn.verify(regObj, { clientDataJSON: getJson }); })) === "webauthn/client-data-mismatch");
+  check("verify: a challenge the ceremony did not issue is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedChallenge: Buffer.from([9, 9, 9, 9]) });
+    })) === "webauthn/client-data-mismatch");
+  check("verify: an origin this relying party does not accept is refused",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedOrigin: "https://example.com.attacker.tld" });
+    })) === "webauthn/client-data-mismatch");
+  // The digest computed from the JSON is the one the attestation is bound to, so the two doors
+  // agree on the same ceremony.
+  check("verify: the digest form of the same clientData reaches the same verdict",
+    (await pki.webauthn.verify(regObj, hashOf(createJson), {})).attestationVerified === true);
+  check("verify: a verdict from the digest form says nothing was read, rather than implying it passed",
+    (await pki.webauthn.verify(regObj, hashOf(createJson), {})).clientData === null);
+  // Exactly one of the two, neither inferred from the other's absence.
+  check("verify: supplying both the JSON and the digest is a config-time fault",
+    (await codeOfAsync(function () { return pki.webauthn.verify(regObj, hashOf(createJson), { clientDataJSON: createJson }); })) === "webauthn/bad-input");
+  check("verify: supplying neither is a config-time fault",
+    (await codeOfAsync(function () { return pki.webauthn.verify(regObj, {}); })) === "webauthn/bad-input");
+  check("verify: an expectation with only the digest is refused rather than left uncompared",
+    (await codeOfAsync(function () {
+      return pki.webauthn.verify(regObj, hashOf(createJson), { expectedOrigin: "https://example.com" });
+    })) === "webauthn/bad-input");
+  check("verify: the framing expectation reaches registration too",
+    (await pki.webauthn.verify(regObj, { clientDataJSON: createJson, expectedTopOrigin: null })).clientData.checked.topOrigin === true);
+
   // RSA credential-key MATERIAL is checked, not merely present. EC2 keys have their coordinate
   // lengths pinned to the curve and the point validated on it; OKP keys have an exact length. RSA
   // had neither, so a 1-byte modulus and an exponent of 1 were both accepted as conformant

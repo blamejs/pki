@@ -100,6 +100,59 @@ async function run() {
   check("mds: a BLOB listing a revoked authenticator still verifies (the BLOB is valid)", mdRevoked.no === 42);
   check("mds: a REVOKED report denies trust even when a later report is clean",
     require("../../lib/webauthn-mds.js").statusDenied(revokedEntry, mdRevoked) === true);
+  // The status gate is on the ROUTE, not only inside the attestation verifier. An operator who
+  // anchors an attestation themselves goes metadataFor -> metadataAnchors -> pki.path.validate, and
+  // nothing along that route consulted the status reports: a REVOKED model's registered roots were
+  // handed back and the path validated against them. A model the catalogue has disqualified
+  // registers no anchors to trust.
+  check("mds: a revoked entry hands back no anchors to chain to", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry); return false; }
+    catch (e) { return e.code === "webauthn/metadata-status"; }
+  })());
+  check("mds: ...and says so through the verified result too", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry, { metadata: mdRevoked, time: T }); return false; }
+    catch (e) { return e.code === "webauthn/metadata-status"; }
+  })());
+  // The caller's own reading governs when it is supplied, exactly as it does inside the verifier --
+  // the two must not answer differently about the same entry.
+  var byDateEarly = await pki.webauthn.verifyMetadataBlob(revoked.blob,
+    { rootCertificates: [revoked.rootDer], time: T, statusPolicy: "latest-by-date" });
+  check("mds: a caller's own status policy governs the anchors it is handed",
+    pki.webauthn.metadataAnchors(pki.webauthn.metadataFor(byDateEarly, revoked.aaguid),
+      { metadata: byDateEarly, time: T }).length === 1);
+  // A report dated after the instant being judged has not taken effect yet, so anchors judged
+  // before that date are still handed over -- and refused from the date the report names.
+  var scheduled = await mint({ statusReports: [{ status: "REVOKED", effectiveDate: "2026-09-01" }] });
+  var mdScheduled = await pki.webauthn.verifyMetadataBlob(scheduled.blob, { rootCertificates: [scheduled.rootDer], time: T });
+  var scheduledEntry = pki.webauthn.metadataFor(mdScheduled, scheduled.aaguid);
+  check("mds: a revocation dated in the future does not yet withhold the anchors",
+    pki.webauthn.metadataAnchors(scheduledEntry, { metadata: mdScheduled, time: T }).length === 1);
+  check("mds: ...and does withhold them from the date it names", (function () {
+    try { pki.webauthn.metadataAnchors(scheduledEntry, { metadata: mdScheduled, time: new Date("2026-10-01T00:00:00Z") }); return false; }
+    catch (e) { return e.code === "webauthn/metadata-status"; }
+  })());
+  // The rollback rule leaves a trace, as the freshness rule beside it does. It runs only when a
+  // caller supplies the sequence number it holds, so a result that does not say whether it ran
+  // cannot be told apart from one where it was skipped -- and showing the catalogue never went
+  // backwards is the entire point of the rule.
+  check("mds: a result says the rollback rule was not requested", md.rollbackChecked === false && md.previousNo === null);
+  var rolled = await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [base.rootDer], time: T, previousNo: 41 });
+  check("mds: ...and says it ran, against the baseline it was given",
+    rolled.rollbackChecked === true && rolled.previousNo === 41 && rolled.no === 42);
+  check("mds: a baseline of zero is a baseline, not an absent one",
+    (await pki.webauthn.verifyMetadataBlob(base.blob, { rootCertificates: [base.rootDer], time: T, previousNo: 0 })).rollbackChecked === true);
+  check("mds: a BLOB that does not advance past the baseline is refused",
+    (await codeFor({}, { previousNo: 42 })) === "webauthn/metadata-rollback");
+
+  check("mds: an unknown metadataAnchors option is a config-time fault", (function () {
+    try { pki.webauthn.metadataAnchors(revokedEntry, { metdata: mdRevoked }); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+  check("mds: a metadataAnchors time that is not a valid instant is a config-time fault", (function () {
+    try { pki.webauthn.metadataAnchors(scheduledEntry, { time: new Date("nope") }); return false; }
+    catch (e) { return e.code === "webauthn/bad-input"; }
+  })());
+
   // ... and the by-date reading, which a caller must ask for, takes only the newest.
   var byDate = await pki.webauthn.verifyMetadataBlob(revoked.blob,
     { rootCertificates: [revoked.rootDer], time: T, statusPolicy: "latest-by-date" });
