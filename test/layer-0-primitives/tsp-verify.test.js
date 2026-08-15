@@ -519,6 +519,13 @@ async function testBuilderCoverage() {
   // a keyUsage value that is not a BIT STRING fails closed via the decode catch.
   var badKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.integer(5n))]);
   check("TSA malformed keyUsage value -> tsp/bad-key-usage", (await pki.tsp.verify(await signToken(badKuTsa), DATA, {})).code === "tsp/bad-key-usage");
+  // keyUsage is a NamedBitList, so DER drops its trailing zero bits (X.690 sec. 11.2.2). Reading the
+  // permission out of the bits without that rule accepts here a certificate the issuing side and
+  // pki.path.validate both call malformed -- one extension with two readings, the permissive one
+  // deciding whether a timestamp is trustworthy.
+  var nonMinKuTsa = makeTsa([ekuExt([TS_EKU], true), extDer(pki.oid.byName("keyUsage"), true, b.bitString(Buffer.from([0x80, 0x00]), 7))]);
+  check("TSA non-minimal NamedBitList keyUsage -> tsp/bad-key-usage, not read for digitalSignature",
+    (await pki.tsp.verify(await signToken(nonMinKuTsa), DATA, {})).code === "tsp/bad-key-usage");
 }
 
 // An issuer-signed EC (P-256 / ecdsa-SHA256) certificate, for a multi-level chain.

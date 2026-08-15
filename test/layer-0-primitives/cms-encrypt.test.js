@@ -82,6 +82,19 @@ async function run() {
   check("ktri recipient keyUsage without keyEncipherment -> cms/bad-key-usage", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsaWrongKu.cert }]); })) === "cms/bad-key-usage");
   var ecWrongKu = makeRecipient("ec-p256", { keyUsage: "digitalSignature" });
   check("kari recipient keyUsage without keyAgreement -> cms/bad-key-usage", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: ecWrongKu.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-key-usage");
+  // keyUsage is a NamedBitList, so DER drops its trailing zero bits (X.690 sec. 11.2.2) and
+  // sec. 4.2.1.3 requires at least one bit set. Reading the permission straight out of the bits
+  // applies neither, so a certificate the issuing side calls malformed would be accepted here as a
+  // recipient -- and a content-encryption key would be wrapped to it.
+  function rawKuRecipient(kind, kuValue) {
+    return makeRecipient(kind, { keyUsage: false, exts: [b.sequence([b.oid(pki.oid.byName("keyUsage")), b.boolean(true), b.octetString(kuValue)])] });
+  }
+  var rsaNonMinKu = rawKuRecipient("rsa", b.bitString(Buffer.from([0x20, 0x00]), 5));   // keyEncipherment, padded
+  check("a non-minimal NamedBitList keyUsage is refused, not read for keyEncipherment",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsaNonMinKu.cert }]); })) === "cms/bad-input");
+  var rsaEmptyKu = rawKuRecipient("rsa", b.bitString(Buffer.from([0x00]), 7));
+  check("a recipient keyUsage asserting no bits at all is refused as malformed",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsaEmptyKu.cert }]); })) === "cms/bad-input");
   // a recipient cert with NO keyUsage extension is accepted (the profile only binds a present KU).
   var rsaNoKu = makeRecipient("rsa", { keyUsage: false });
   check("a recipient cert without a keyUsage extension is accepted", Buffer.compare((await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ cert: rsaNoKu.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }), { key: rsaNoKu.key, cert: rsaNoKu.cert })).content, MSG) === 0);

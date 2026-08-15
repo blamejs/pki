@@ -277,6 +277,35 @@ async function testVerifyInputShapes() {
   }, { key: ca.key });
   check("an issuer certificate with no keyUsage at all still verifies its CRL",
     (await pki.crl.verify(crlByCa, { cert: noKuDer })) === true);
+  // The SAME keyUsage must read the same on every side. keyUsage is a NamedBitList, so DER drops
+  // its trailing zero bits (X.690 sec. 11.2.2) and requires at least one bit set (sec. 4.2.1.3) --
+  // rules the shared extension decoder enforces, and which the signing side and pki.path.validate
+  // therefore apply. Reading the bits here with a plain BIT STRING read accepted encodings both of
+  // those reject, so one malformed certificate was authorized to sign by the verifier and refused
+  // by everything else.
+  // The certificate has to come from OUTSIDE: pki.x509.sign refuses to emit either encoding, which
+  // is the point -- the certificate you verify a CRL against is one you were handed, not one you
+  // minted, so the verifier is where the rule has to hold.
+  var b = pki.asn1.build;
+  function caWithRawKu(kuValue) {
+    var copy = Object.assign({}, caParsed);
+    copy.extensions = caParsed.extensions.map(function (e) {
+      return e.oid === pki.oid.byName("keyUsage") ? Object.assign({}, e, { value: kuValue }) : e;
+    });
+    return copy;
+  }
+  // cRLSign is bit 6, so the minimal DER content is one unused bit over one octet. Padding it with a
+  // redundant all-zero octet leaves cRLSign set while breaking the encoding rule.
+  check("a non-minimal NamedBitList keyUsage is refused, not read for its cRLSign bit",
+    await codeOf(pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x02, 0x00]), 1)))) === "crl/bad-issuer");
+  // An all-zero keyUsage asserts nothing, which sec. 4.2.1.3 forbids outright -- a defect in the
+  // certificate, not a certificate that merely lacks cRLSign.
+  check("a keyUsage asserting no bits at all is refused as malformed",
+    await codeOf(pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x00]), 7)))) === "crl/bad-issuer");
+  // ...and the well-formed minimal encoding of the same permission still verifies, so the rule is
+  // about the encoding rather than about the bit.
+  check("the minimal encoding of the same cRLSign permission still verifies",
+    (await pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x02]), 1)))) === true);
 }
 
 // ---- the signing key must actually match the resolved scheme -- faults are typed, never a partial CRL ----
