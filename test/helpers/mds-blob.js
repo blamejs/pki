@@ -44,7 +44,10 @@ function pssRestrictedSpki(spki, pinHash) {
   var ab = pki.asn1.build;
   var keyBits = pki.asn1.decode(spki).children[1];
   var algId = [ab.oid(pki.oid.byName("rsassaPss"))];
-  if (pinHash) {
+  // An RSASSA-PSS-params SEQUENCE that omits hashAlgorithm is NOT an absent restriction: RFC 4055
+  // sec. 3.1 gives that field `DEFAULT sha1Identifier`, so the empty SEQUENCE names SHA-1.
+  if (pinHash === "empty-params") algId.push(ab.sequence([]));
+  else if (pinHash) {
     var hashAlg = ab.sequence([ab.oid(pki.oid.byName(pinHash.name)), ab.nullValue()]);
     algId.push(ab.sequence([
       ab.explicit(0, hashAlg),

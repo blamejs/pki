@@ -608,6 +608,17 @@ async function run() {
   // being treated as no restriction at all.
   check("mds: an id-RSASSA-PSS leaf pinned to an unimplemented hash is refused",
     (await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: { name: "sha1", salt: 20 } })) === "webauthn/unsupported-algorithm");
+  // RFC 4055 sec. 3.1 draws the line at whether the parameters are THERE: absent, they restrict
+  // nothing. Present, they restrict -- and `hashAlgorithm` is `[0] ... DEFAULT sha1Identifier`, so a
+  // params SEQUENCE that omits it NAMES SHA-1 rather than declining to name anything. Reading the
+  // omission as "unrestricted" would let a key its certificate confines to SHA-1 verify a SHA-512
+  // signature.
+  check("mds: an id-RSASSA-PSS leaf with an empty params SEQUENCE is restricted to the SHA-1 default",
+    (await codeFor({ signAlg: "PS256", pssRestricted: true, pssPinHash: "empty-params" })) === "webauthn/unsupported-algorithm");
+  // ...and absent parameters really do restrict nothing, which is the other half of the same clause.
+  var unpinned = await mint({ signAlg: "PS512", pssRestricted: true });
+  check("mds: an id-RSASSA-PSS leaf with no parameters restricts no hash",
+    (await pki.webauthn.verifyMetadataBlob(unpinned.blob, { rootCertificates: [unpinned.rootDer], time: T })).no === 42);
 
   // Several roots may be held across a rotation, and the walk stops at the first that anchors the
   // chain rather than continuing to validate against the rest.
