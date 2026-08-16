@@ -196,6 +196,23 @@ async function testDeepSnapshotContract() {
   check("a throwing accessor becomes the boundary's typed fault",
     codeOf(function () { guardBytes.snapshotDeep(trap, TestError, "t/bad", "spec"); }) === "t/bad");
 
+  // isCryptoKeyLike is structural by design, so it can recognize another implementation's key --
+  // and structural means an options bag can wear the shape. A key is a key AND nothing else; a bag
+  // carrying its own fields alongside is data, and passing it through would leave those fields the
+  // caller's to rewrite.
+  var keyShapedBag = { signedAttributes: true, type: "private", extractable: true,
+    algorithm: { name: "bogus" }, usages: [] };
+  var bagOut = guardBytes.snapshotDeep({ o: keyShapedBag }, TestError, "t/bad", "spec").o;
+  check("a CryptoKey-shaped options bag is copied, not passed through", bagOut !== keyShapedBag);
+  check("and keeps its values", bagOut.signedAttributes === true && bagOut.type === "private");
+
+  // An array can carry named properties, and `opts.pem` reads the same whatever the type is.
+  var arrOpts = [1, 2];
+  arrOpts.pem = true;
+  var arrCopy = guardBytes.snapshotDeep(arrOpts, TestError, "t/bad", "spec");
+  check("an array copies its elements", Array.isArray(arrCopy) && arrCopy.length === 2 && arrCopy[1] === 2);
+  check("an array copies its named properties too", arrCopy.pem === true);
+
   // A key handle is passed through: its meaning is not in its own properties, and a copy of one
   // cannot sign. This engine's own CryptoKey carries its key handle as an own property, so a rule
   // like "no own keys means a handle" would have copied it into a shell -- the toolkit's own
