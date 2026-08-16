@@ -20,9 +20,10 @@ var os   = require("node:os");
 var path = require("node:path");
 var pki  = require("../../index.js");
 
-var _check   = require("./check");
-var _wait    = require("./wait");
-var _vectors = require("./vectors");
+var _check    = require("./check");
+var _wait     = require("./wait");
+var _vectors  = require("./vectors");
+var _detached = require("./detached-bytes");
 
 module.exports = {
   // Toolkit binding + Node stdlib re-exports for ergonomics.
@@ -47,4 +48,9 @@ module.exports = {
 
   // Shared test vectors / fixtures (real certificates, known-answer OIDs).
   vectors: _vectors,
+
+  // Byte inputs whose backing store has been transferred away -- they read as
+  // zero-length, so a boundary that does not re-view them operates on nothing.
+  detachedBuffer: _detached.detachedBuffer,
+  detachedUint8:  _detached.detachedUint8,
 };

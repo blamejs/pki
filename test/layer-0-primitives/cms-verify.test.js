@@ -708,6 +708,25 @@ async function testSignedAttrsStripping() {
   check("...but the same content signed WITH attributes is fine (it is unambiguous)",
     (await pki.cms.verify(await pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }))).valid === true);
 
+  // The refusal is decided on a SNAPSHOT, so a caller who still owns the options object cannot
+  // arrange for the check and the signing to see different values. Flipping signedAttributes from
+  // true to false the instant the call returns would otherwise skip the guard while the signer went
+  // on to sign the attribute-shaped content directly -- minting exactly the signature the stripping
+  // attack needs. Same for the content buffer: the bytes inspected must be the bytes signed.
+  var racedOpts = { signedAttributes: true };
+  var raced = pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, racedOpts);
+  racedOpts.signedAttributes = false;                    // after the call, before it resolves
+  var racedOut = await raced;
+  check("flipping signedAttributes after the call cannot skip the refusal",
+    pki.schema.cms.parse(racedOut).signerInfos[0].signedAttrsBytes != null);
+
+  var mutableContent = Buffer.from(CONTENT);
+  var racedContent = pki.cms.sign(mutableContent, { cert: s.cert, key: s.key }, { signedAttributes: false });
+  mutableContent.fill(0x41);                             // rewrite the caller's buffer mid-flight
+  var contentOut = await racedContent;
+  check("the bytes signed are the bytes checked, not the caller's buffer as it later became",
+    (await pki.cms.verify(contentOut, { content: CONTENT })).valid === true);
+
   // The verdict has to let an operator apply a stricter policy of their own, which needs both the
   // content type and whether attributes were present -- neither was reachable without a second parse.
   var vGen = await pki.cms.verify(genuine);

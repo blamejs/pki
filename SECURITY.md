@@ -650,7 +650,28 @@ security-only patches after the next major releases.
   desynchronize from what it, or OpenSSL, verifies, and the signer's private key
   is only ever handed to the WebCrypto sign call, never logged or embedded.
   Post-quantum ML-DSA (ML-DSA-44/65/87, RFC 9882) signs and verifies over the
-  same preimage in pure mode with the empty context. The message-digest algorithm
+  same preimage in pure mode with the empty context. What a signing verb signs is
+  also fixed at the moment it is called. Every byte argument is re-viewed on entry,
+  so an input whose backing store has been transferred away — a `structuredClone`
+  with `transfer`, a worker hand-off, a stream that adopted the buffer — is refused
+  with the calling module's own `bad-input` code instead of reading as zero-length
+  and yielding a sound signature over nothing. Every argument is also copied whole
+  at entry, at every depth, and each copy is cleared when the call settles — so a
+  caller that keeps a reference and edits it while the signature is in flight
+  cannot change what gets signed after the checks that govern it have run, and a
+  password or key the copy duplicated does not outlive the call. The same holds for
+  the other producing verbs — `pki.x509.sign`, `pki.csr.sign`, `pki.crl.sign`,
+  `pki.attrcert.sign`, `pki.crmf.build`, `pki.cmc.build`, `pki.cmp.build`,
+  `pki.ocsp.buildRequest`, `pki.ocsp.sign`, `pki.tsp.sign`, and `pki.pkcs12.build`
+  — each of which runs that copy at the call rather than a promise turn later.
+  Every part of that is load-bearing. An empty read would have produced a key
+  identifier over no bytes or a PKCS#12 file keyed to a password the caller never
+  held; a late read would have encoded an extension the checks never saw; a copy
+  that stopped at the first level would have left a MAC secret nested inside an
+  options object still rewritable across the turn. A parsed structure passed inside
+  a spec is left alone rather than copied, because the provenance a verb requires
+  is keyed to that object's identity, and a `CryptoKey` is used rather than cloned.
+  The message-digest algorithm
   is held to each parameter set's security strength on both sign and verify, so a
   below-strength digest — the weaker link that would cap the signature's
   collision resistance — is refused, and the signer certificate's public-key
