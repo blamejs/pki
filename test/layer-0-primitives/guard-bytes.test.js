@@ -179,6 +179,23 @@ async function testDeepSnapshotContract() {
   base.signedAttributes = false;
   check("the copy does not follow a later write to the prototype", inheritedCopy.signedAttributes === true);
 
+  // And a NON-ENUMERABLE one. `opts.signedAttributes` resolves the same either way, so the set that
+  // has to be copied is the set a name lookup can reach -- not the set `for...in` reports. Each
+  // narrower rule in turn left the caller's object reachable behind a copy that looked complete.
+  var hiddenProto = Object.defineProperty({}, "signedAttributes", { value: true, writable: true });
+  var hiddenCopy = guardBytes.snapshotDeep(Object.create(hiddenProto), TestError, "t/bad", "spec");
+  hiddenProto.signedAttributes = false;
+  check("a non-enumerable inherited field is copied too", hiddenCopy.signedAttributes === true);
+  check("and copying it does not make it enumerable",
+    Object.keys(hiddenCopy).indexOf("signedAttributes") === -1);
+
+  // Reading a caller's property runs a caller's accessor. One that throws is a bad input like any
+  // other, and comes out with this boundary's code rather than as itself.
+  var trap = {};
+  Object.defineProperty(trap, "boom", { enumerable: true, get: function () { throw new RangeError("no"); } });
+  check("a throwing accessor becomes the boundary's typed fault",
+    codeOf(function () { guardBytes.snapshotDeep(trap, TestError, "t/bad", "spec"); }) === "t/bad");
+
   // A key handle is passed through: its meaning is not in its own properties, and a copy of one
   // cannot sign. This engine's own CryptoKey carries its key handle as an own property, so a rule
   // like "no own keys means a handle" would have copied it into a shell -- the toolkit's own
