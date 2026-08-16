@@ -584,7 +584,8 @@ security-only patches after the next major releases.
   of the SignedAttributes, with the on-wire `[0]` implicit tag replaced by the
   universal SET OF the standard requires. An attacker can therefore neither swap
   the content out from under a set of signed attributes, nor strip the attributes
-  and present a signature made over them as one made over the content. Each
+  and present a signature made over them as one made over the content — see the
+  next entry, which is what makes the second half of that true. Each
   parameter comes from the structure that owns it — the content digest from the
   digestAlgorithm, the signature scheme from the signer's own key algorithm — so
   a signer cannot claim one algorithm while the key implies another. Those signed
@@ -593,17 +594,43 @@ security-only patches after the next major releases.
   parsed object cannot desynchronize the checked attributes from the verified
   preimage. A parsed SignedData is re-derived from the bytes its parser recorded
   before any of this runs, and one that carries no such record — an object
-  assembled or rebuilt rather than parsed — is refused. Without that step the
-  strip-and-present move above was still reachable through the parsed-object
-  input: keeping a genuine signer's signature, clearing the signed-attribute
-  byte range, and presenting the signature's own preimage as the encapsulated
-  content left every remaining check passing, because with no signed attributes
-  there is no message-digest or content-type attribute left to check.
+  assembled or rebuilt rather than parsed — is refused, so a caller cannot hand
+  this verb a structure whose parts describe different messages.
   An EdDSA signer key is validated on-curve and full-order before
   verification, so a low-order Ed25519 or Ed448 point, which `node:crypto`
   imports without complaint and which can verify a forged signature, is rejected.
   A false verdict or an unresolved parameter is a fail-closed `cms/*` outcome,
   never a silent pass.
+- **CMS signed-attribute stripping (the SignedData EUF-CMA gap).** A CMS
+  signature does not commit to *whether* signed attributes were present, so a
+  signature made over a SignedAttributes block can be re-presented as one made
+  over content: take a message the signer really signed with attributes, drop the
+  `signedAttrs` field, and set the encapsulated content to the DER of those same
+  attributes. RFC 5652 §5.4 then says the signature is over the content itself,
+  which is exactly what it covers, and with no attributes there is no
+  message-digest or content-type attribute left to disagree. This is Attack Type
+  1 of `draft-vangeest-lamps-cms-euf-cma-signeddata`, it needs no access to the
+  signer, and it is expressible entirely in DER — `openssl cms -verify` accepts
+  such a message and writes the attribute block out as verified content. The
+  standards fixes are protocol changes (signing under a context string naming the
+  mode) that no verifier can apply on its own.
+  `pki.cms.verify` refuses the shape instead. Every message the attack produces
+  has, as its content, the encoded SignedAttributes of a real message — which
+  §5.3 requires to carry both a content-type and a message-digest attribute — so
+  a `SignerInfo` with no signed attributes whose content parses as exactly that
+  is `cms/ambiguous-content`, fail-closed, rather than a signature the verifier
+  pretends to understand. The condition is necessary to the attack rather than a
+  guess: ordinary content does not have that shape, and a set of attributes
+  missing either mandatory member is not refused. `pki.cms.sign` closes the other
+  direction (Attack Type 2) by refusing to sign attribute-shaped content with
+  `signedAttributes: false`, since that signature could afterwards be promoted
+  into an attributes-present message. The cost is that content which genuinely is
+  an encoded SignedAttributes block must be signed WITH signed attributes, which
+  makes it unambiguous again.
+  The verdict also carries `eContentType` and a per-signer
+  `signedAttributesPresent`, so a caller whose profile requires attributes — RFC
+  8551 S/MIME does — or a particular content type can enforce it from the verdict
+  rather than parsing the message a second time.
   What the signature establishes and who signed remain separate questions, and
   the verdict answers them separately. A SignedData carries its own
   certificates, so `valid` says only that the signature is sound under one of
@@ -623,7 +650,28 @@ security-only patches after the next major releases.
   desynchronize from what it, or OpenSSL, verifies, and the signer's private key
   is only ever handed to the WebCrypto sign call, never logged or embedded.
   Post-quantum ML-DSA (ML-DSA-44/65/87, RFC 9882) signs and verifies over the
-  same preimage in pure mode with the empty context. The message-digest algorithm
+  same preimage in pure mode with the empty context. What a signing verb signs is
+  also fixed at the moment it is called. Every byte argument is re-viewed on entry,
+  so an input whose backing store has been transferred away — a `structuredClone`
+  with `transfer`, a worker hand-off, a stream that adopted the buffer — is refused
+  with the calling module's own `bad-input` code instead of reading as zero-length
+  and yielding a sound signature over nothing. Every argument is also copied whole
+  at entry, at every depth, and each copy is cleared when the call settles — so a
+  caller that keeps a reference and edits it while the signature is in flight
+  cannot change what gets signed after the checks that govern it have run, and a
+  password or key the copy duplicated does not outlive the call. The same holds for
+  the other producing verbs — `pki.x509.sign`, `pki.csr.sign`, `pki.crl.sign`,
+  `pki.attrcert.sign`, `pki.crmf.build`, `pki.cmc.build`, `pki.cmp.build`,
+  `pki.ocsp.buildRequest`, `pki.ocsp.sign`, `pki.tsp.sign`, and `pki.pkcs12.build`
+  — each of which runs that copy at the call rather than a promise turn later.
+  Every part of that is load-bearing. An empty read would have produced a key
+  identifier over no bytes or a PKCS#12 file keyed to a password the caller never
+  held; a late read would have encoded an extension the checks never saw; a copy
+  that stopped at the first level would have left a MAC secret nested inside an
+  options object still rewritable across the turn. A parsed structure passed inside
+  a spec is left alone rather than copied, because the provenance a verb requires
+  is keyed to that object's identity, and a `CryptoKey` is used rather than cloned.
+  The message-digest algorithm
   is held to each parameter set's security strength on both sign and verify, so a
   below-strength digest — the weaker link that would cap the signature's
   collision resistance — is refused, and the signer certificate's public-key

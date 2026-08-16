@@ -556,6 +556,212 @@ async function testSignedAttrsBinding() {
     function () { return pki.cms.verify({ signerInfos: [{}], encapContentInfo: { eContent: Buffer.alloc(0) } }); }, "cms/bad-input");
 }
 
+// ---- the signed-attribute stripping forgery, built as BYTES ------------------
+//
+// A CMS signature does not commit to WHETHER signed attributes were present, so a signature made
+// over a SignedAttributes block can be re-presented as one made over content: drop the signedAttrs
+// field and set the encapsulated content to the DER of those same attributes. RFC 5652 sec. 5.4
+// then says the signature is over the content itself, which is exactly what it covers -- and with
+// no attributes there is no message-digest or content-type attribute left to disagree. This is
+// draft-vangeest-lamps-cms-euf-cma-signeddata Attack Type 1, and it needs no object manipulation:
+// the whole thing is expressible in DER, which is what an attacker actually controls.
+//
+// The re-derivation vectors above stop a caller-ASSEMBLED object. They do not touch this, and the
+// standards fix is a protocol change (signing with a context string) no verifier can apply alone.
+// What a verifier CAN do is refuse the shape: the content of every such forgery is the encoded
+// SignedAttributes of a real message, which sec. 5.3 requires to carry both a content-type and a
+// message-digest attribute. That is a necessary condition of the attack and a shape ordinary
+// content does not have.
+function _asSignedAttrsSetOf(signedAttrsBytes) {
+  var preimage = Buffer.from(signedAttrsBytes);
+  preimage[0] = 0x31;   // the on-wire [0] IMPLICIT -> the universal SET OF the signature covers
+  return preimage;
+}
+// Rebuild a SignedData in DER carrying `si` with NO signedAttrs over `content`, signature verbatim.
+// A null `content` builds the DETACHED form (no eContent), for a caller supplying it via opts.content.
+function _stripAttrsForgery(parsed, content, eContentType) {
+  var si = parsed.signerInfos[0];
+  function algId(a) { return a.parameters ? b.sequence([b.oid(a.oid), b.raw(a.parameters)]) : b.sequence([b.oid(a.oid)]); }
+  var forgedSi = b.sequence([
+    b.integer(BigInt(si.version)),
+    b.sequence([b.raw(si.sid.issuer.bytes), b.integer(BigInt("0x" + si.sid.serialNumberHex))]),
+    algId(si.digestAlgorithm), algId(si.signatureAlgorithm),
+    b.octetString(Buffer.from(si.signature)),
+  ]);
+  var signedData = b.sequence([
+    b.integer(1n),
+    b.set([algId(si.digestAlgorithm)]),
+    content == null ? b.sequence([b.oid(eContentType)]) : b.sequence([b.oid(eContentType), b.explicit(0, b.octetString(content))]),
+    b.contextConstructed(0, Buffer.concat(parsed.certificates.map(function (c) { return Buffer.from(c.bytes); }))),
+    b.set([b.raw(forgedSi)]),
+  ]);
+  return b.sequence([b.oid("1.2.840.113549.1.7.2"), b.explicit(0, b.raw(signedData))]);
+}
+
+async function testSignedAttrsStripping() {
+  var s = makeSigner("ec-p256");
+  var genuine = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key });
+  var p = pki.schema.cms.parse(genuine);
+  var signerCert = Buffer.from(p.certificates[0].bytes);
+  check("the genuine message verifies", (await pki.cms.verify(genuine)).valid === true);
+
+  var forged = _stripAttrsForgery(p, _asSignedAttrsSetOf(p.signerInfos[0].signedAttrsBytes), "1.2.840.113549.1.7.1");
+  var r = await pki.cms.verify(forged, { certs: [signerCert] });
+  check("a stripped-attributes forgery does not read as valid", r.valid === false);
+  check("...and says why, rather than failing as a bad signature it is not",
+    r.signers[0].code === "cms/ambiguous-content");
+
+  // The signature really is genuine over those bytes -- the refusal is the SHAPE, not a crypto
+  // failure, which is what makes this worth a distinct code an operator can act on.
+  check("the reused signature is genuinely valid over the substituted content",
+    r.signers[0].ok === false && r.signers[0].code !== "cms/bad-signature");
+
+  // The rule must not cost a legitimate no-attributes message, which is the whole risk of the fix.
+  var noAttrs = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key }, { signedAttributes: false });
+  check("a legitimate no-signed-attributes message still verifies",
+    (await pki.cms.verify(noAttrs)).valid === true);
+  check("...and the OpenSSL-produced no-attrs fixture still verifies",
+    (await pki.cms.verify(fx("rsa-noattr.p7s"))).valid === true);
+
+  // Content that is merely attribute-SHAPED but lacks the two attributes sec. 5.3 makes mandatory
+  // is not the forgery and must not be refused -- the detector is a necessary condition, not a
+  // guess at anything SET-OF-shaped.
+  var nearMiss = b.set([b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])])]);
+  var nm = await pki.cms.sign(nearMiss, { cert: s.cert, key: s.key }, { signedAttributes: false });
+  check("a SET OF attributes WITHOUT a message-digest is not the forgery shape",
+    (await pki.cms.verify(nm)).valid === true);
+
+  // The detector reads the two mandatory attributes down to their VALUES. RFC 5652 sec. 11.1 makes
+  // content-type a single OBJECT IDENTIFIER and sec. 11.2 makes message-digest a single OCTET
+  // STRING, so a set carrying those OIDs over an empty or wrongly-typed value cannot be the
+  // preimage of any real signature -- refusing it would cost a caller whose content merely
+  // resembles the shape. The condition has to stay NECESSARY to the attack.
+  var wrongValues = [
+    ["empty value sets", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([])]),
+    ])],
+    ["a content-type value that is not an OID", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.integer(5n)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+    ])],
+    ["a message-digest value that is not an OCTET STRING", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.integer(5n)])]),
+    ])],
+    ["two content-type values", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID), b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+    ])],
+    // Right tag, unreadable body: an OBJECT IDENTIFIER with no content cannot be the preimage of
+    // anything, because the real SignedAttributes parser reads that value and would have refused
+    // it. Cardinality and tag alone are not the condition -- the value has to READ.
+    ["an empty content-type OID body", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([Buffer.from([0x06, 0x00])])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+    ])],
+    // RFC 5652 sec. 5.3 forbids repeating an attribute type, so a set that does could never have
+    // been signed as a SignedAttributes -- the real parser refuses it.
+    ["a repeated attribute type", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+    ])],
+    // Every attribute is bounded 1..ATTRIBUTE_MAX_VALUES by the shared Attribute schema, not just
+    // the two mandatory ones -- so an unrelated attribute with an empty value set also puts the set
+    // outside what could ever have been signed.
+    ["an unrelated attribute with an empty value set", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+      b.sequence([b.oid("1.2.3.4.5.6"), b.set([])]),
+    ])],
+    // sec. 11 also says WHERE each attribute may appear, and id-countersignature is forbidden in
+    // signedAttrs (sec. 11.4). The real parser refuses that set as signedAttrs, so it cannot be the
+    // preimage any signature covered -- and matching it would refuse ordinary content that merely
+    // carried the attribute encoding. The placement rows are part of the condition, not a separate
+    // concern from the value rules beside them.
+    ["a countersignature attribute, forbidden in signedAttrs", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+      b.sequence([b.oid(pki.oid.byName("countersignature")), b.set([b.sequence([b.integer(1n)])])]),
+    ])],
+    // sec. 11.3 constrains signing-time the same way when it is present.
+    ["an unreadable signing-time", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+      b.sequence([b.oid(pki.oid.byName("signingTime")), b.set([b.integer(5n)])]),
+    ])],
+  ];
+  for (var wv of wrongValues) {
+    var signedWv = await pki.cms.sign(wv[1], { cert: s.cert, key: s.key }, { signedAttributes: false });
+    check("attribute-shaped content with " + wv[0] + " is not refused",
+      (await pki.cms.verify(signedWv)).valid === true);
+  }
+
+  // The condition is what a CONFORMING SignedAttributes can be, not what this decoder accepts. Its
+  // per-attribute value cap is a resource limit this implementation chose; RFC 5652 gives an
+  // AttributeValue set SIZE (1..MAX). A signer elsewhere can produce a block above that cap, and
+  // the stripped message presents those bytes as opaque content where no cap applies -- so reading
+  // the local limit as part of the shape would miss exactly the preimage the attack reuses.
+  var manyValues = [];
+  for (var mv = 0; mv < pki.C.LIMITS.ATTRIBUTE_MAX_VALUES + 44; mv++) manyValues.push(b.integer(BigInt(mv)));
+  var bigAttrBlock = b.set([
+    b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+    b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+    b.sequence([b.oid("1.2.3.4.5.6"), b.set(manyValues)]),
+  ].sort(Buffer.compare));
+  await rejects("a conforming attribute set larger than this decoder's own cap",
+    function () { return pki.cms.sign(bigAttrBlock, { cert: s.cert, key: s.key }, { signedAttributes: false }); },
+    "cms/ambiguous-content");
+
+  // The preimage is also refused when it arrives DETACHED, via opts.content rather than eContent --
+  // the check has to sit wherever the no-attributes preimage is chosen, not only on the attached
+  // path. (Applied per SignerInfo by placement: it is inside the per-signer preimage computation,
+  // so a message mixing an attributes-present signer with a stripped one is judged signer by
+  // signer. testMultiSigner covers that ordinary multi-signer messages are unaffected.)
+  var detachedForged = _stripAttrsForgery(p, null, DATA_OID);
+  var rd = await pki.cms.verify(detachedForged, { certs: [signerCert], content: _asSignedAttrsSetOf(p.signerInfos[0].signedAttrsBytes) });
+  check("the forgery is refused when the preimage arrives as detached content too",
+    rd.valid === false && rd.signers[0].code === "cms/ambiguous-content");
+
+  // The other direction (Attack Type 2): a signer must not be induced to sign attribute-shaped
+  // content WITHOUT attributes, because that signature can then be promoted into an
+  // attributes-present message. The refusal belongs at the signer too, not only at the verifier.
+  var attrShaped = _asSignedAttrsSetOf(p.signerInfos[0].signedAttrsBytes);
+  await rejects("signing attribute-shaped content with signedAttributes:false",
+    function () { return pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, { signedAttributes: false }); },
+    "cms/ambiguous-content");
+  check("...but the same content signed WITH attributes is fine (it is unambiguous)",
+    (await pki.cms.verify(await pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }))).valid === true);
+
+  // The refusal is decided on a SNAPSHOT, so a caller who still owns the options object cannot
+  // arrange for the check and the signing to see different values. Flipping signedAttributes from
+  // true to false the instant the call returns would otherwise skip the guard while the signer went
+  // on to sign the attribute-shaped content directly -- minting exactly the signature the stripping
+  // attack needs. Same for the content buffer: the bytes inspected must be the bytes signed.
+  var racedOpts = { signedAttributes: true };
+  var raced = pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, racedOpts);
+  racedOpts.signedAttributes = false;                    // after the call, before it resolves
+  var racedOut = await raced;
+  check("flipping signedAttributes after the call cannot skip the refusal",
+    pki.schema.cms.parse(racedOut).signerInfos[0].signedAttrsBytes != null);
+
+  var mutableContent = Buffer.from(CONTENT);
+  var racedContent = pki.cms.sign(mutableContent, { cert: s.cert, key: s.key }, { signedAttributes: false });
+  mutableContent.fill(0x41);                             // rewrite the caller's buffer mid-flight
+  var contentOut = await racedContent;
+  check("the bytes signed are the bytes checked, not the caller's buffer as it later became",
+    (await pki.cms.verify(contentOut, { content: CONTENT })).valid === true);
+
+  // The verdict has to let an operator apply a stricter policy of their own, which needs both the
+  // content type and whether attributes were present -- neither was reachable without a second parse.
+  var vGen = await pki.cms.verify(genuine);
+  var vNo = await pki.cms.verify(noAttrs);
+  check("the verdict names the content type", vGen.eContentType === DATA_OID);
+  check("the verdict says whether each signer's attributes were present",
+    vGen.signers[0].signedAttributesPresent === true && vNo.signers[0].signedAttributesPresent === false);
+}
+
 // ---- EdDSA signer keys must be validated on-curve and full-order before verify ----
 // Zero the `len` bytes that follow `pattern` in `der` -- an SPKI public-key point, replaced in
 // place with the all-zeroes low-order point. Fixed width, so the encoding stays well-formed.
@@ -1017,6 +1223,7 @@ async function run() {
   await testBadSignedAttrs();
   await testContentType();
   await testSignedAttrsBinding();
+  await testSignedAttrsStripping();
   await testEdPointValidation();
   await testMlDsaVerify();
   await testBadInput();

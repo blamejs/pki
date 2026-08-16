@@ -14,6 +14,28 @@ The toolkit has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
+### v0.5.7 — `content that is an encoded SignedAttributes block`
+
+Signing or verifying such content WITHOUT signed attributes is refused as cms/ambiguous-content.
+
+A CMS signature does not commit to whether signed attributes were present, so a signature made
+over a SignedAttributes block can be re-presented as one made over content. The shape is now
+refused at both ends.
+
+This only affects you if your CMS content genuinely IS a DER SET OF Attribute carrying both a
+content-type and a message-digest attribute -- the shape RFC 5652 sec. 5.3 gives a
+SignedAttributes -- AND you sign it with `signedAttributes: false`. Ordinary content is
+unaffected, and so is a set of attributes missing either of those two.
+
+```js
+await pki.cms.sign(attrShapedContent, signer, { signedAttributes: false });  // cms/ambiguous-content
+await pki.cms.sign(attrShapedContent, signer);                              // signed attributes: fine
+```
+
+Signing it WITH signed attributes makes the message unambiguous and it verifies normally.
+Existing messages of this shape already in your archive will not verify; re-sign them with
+signed attributes.
+
 ### v0.5.6 — `try { pki.<verb>(...) } catch`
 
 A verb documented `-> Promise` rejects on a bad input instead of throwing before the promise exists.

@@ -1884,15 +1884,81 @@ function testNoDuplicateCodeBlocks() {
       reason: "attribute dedup+assembly idiom (reject a repeated AttributeType, push SEQUENCE{type, SET OF value}); attrcert `add` / csr `addAttr` share it with different domain codes, pki-build assertValidExtension shares only a coincidental decode+throw shingle -- domain-local, nothing cleanly extractable.",
     },
     {
-      // The trivial Buffer-coercion helper: accept a Buffer as-is, widen a Uint8Array with Buffer.from,
-      // else throw the caller's domain "must be a Buffer" error. cms-sign / cms-verify keep an identical
-      // `_toBuf` (cms/bad-input); pki-build's `reqDer` is the same three lines under a different domain
-      // code. A 3-line coercion with a per-domain error string is not worth threading through a shared
-      // callback -- guard.bytes.view already owns the SECURITY-relevant detached-view case, this is only
-      // the Uint8Array-widen ergonomic.
-      files: ["lib/cms-sign.js:_toBuf", "lib/cms-verify.js:_toBuf", "lib/pki-build.js:reqDer"],
+      // The Promise-returning entry wrapper. Every verb documented `-> Promise<...>` opens the same
+      // way: `return guard.async.deferred(function () { return _verb(args); })`, so a fault leaves as
+      // a rejection rather than a throw past the caller's .catch, while the body still runs at entry
+      // (which is what fixes the caller's arguments before they can change). The rule lives once in
+      // guard-async and is enforced behaviourally by promise-contract.test.js; only the wrapper
+      // repeats, and it cannot be extracted -- each one names its own inner function and arguments.
+      files: [
+        "lib/attrcert-sign.js:sign", "lib/cmp-build.js:transfer", "lib/cms-sign.js:sign",
+        "lib/cms-sign.js:countersign", "lib/csr-sign.js:sign", "lib/ocsp.js:sign",
+        "lib/tsp-sign.js:sign", "lib/x509-sign.js:sign", "lib/crl-sign.js:sign",
+        "lib/crl-sign.js:verify", "lib/crmf-sign.js:build", "lib/cmp-build.js:build",
+        "lib/cmp-verify.js:verify", "lib/cmc-verify.js:verify", "lib/webauthn-mds.js:verifyMetadataBlob",
+        "lib/cms-verify.js:verify", "lib/cmc-build.js:build", "lib/attrcert-sign.js:<top>",
+        "lib/cmp-build.js:<top>", "lib/cms-sign.js:<top>", "lib/crl-sign.js:<top>",
+        "lib/crmf-sign.js:<top>", "lib/csr-sign.js:<top>", "lib/x509-sign.js:<top>",
+        "lib/ocsp.js:<top>", "lib/tsp-sign.js:<top>", "lib/cmc-build.js:<top>",
+        "lib/cmc-verify.js:<top>", "lib/cmp-verify.js:<top>", "lib/cms-verify.js:<top>",
+        "lib/cms-compress.js:<top>", "lib/cms-decrypt.js:<top>", "lib/cmp-session.js:<top>",
+        // The shingle starts a few tokens before the wrapper, so the enclosing-function attribution
+        // lands on whatever function precedes it in each module. These are those neighbours.
+        "lib/attrcert-sign.js:_buildExtensions", "lib/cmp-build.js:_classifyCmpResponse",
+        "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
+        "lib/csr-sign.js:_challengePassword", "lib/ocsp.js:_normCertDer",
+        "lib/tsp-sign.js:_signingCertV2", "lib/cmp-build.js:_transfer",
+        "lib/x509-sign.js:_buildExtensions", "lib/crl-sign.js:_buildCrlExtensions",
+        "lib/crmf-sign.js:_buildCertReqMsg", "lib/cmc-verify.js:_verify",
+        "lib/cms-verify.js:_verify", "lib/webauthn-mds.js:_verifyMetadataBlob",
+        // The producing verbs now open with the SAME two statements -- fixArguments over every
+        // argument, then guard.async.deferred over the body, released in a .finally. That is the
+        // whole point: one rule, written identically everywhere, with only the error class, the
+        // domain code and the argument labels differing. There is nothing further to extract --
+        // the copy lives in guard-bytes and the rejection contract in guard-async.
+        "lib/pkcs12-build.js:build", "lib/ocsp.js:buildRequest",
+        "lib/crmf-sign.js:_buildProofOfPossession", "lib/x509-sign.js:_hasCriticalSan",
+        "lib/crl-sign.js:_sign", "lib/x509-sign.js:_sign", "lib/csr-sign.js:_sign",
+        "lib/attrcert-sign.js:_sign", "lib/crmf-sign.js:_build", "lib/cmc-build.js:_build",
+        "lib/cmp-build.js:_build", "lib/ocsp.js:_sign", "lib/tsp-sign.js:_sign",
+        "lib/cms-sign.js:_sign", "lib/cms-sign.js:_countersign",
+      ],
       mode: "family-subset",
-      reason: "trivial Buffer-coercion helper (Buffer as-is, Uint8Array -> Buffer.from, else a domain 'must be a Buffer' throw); cms-sign/cms-verify `_toBuf` and pki-build `reqDer` are the same three lines under different domain codes -- domain-local, nothing cleanly extractable beyond guard.bytes.view (which owns the detached-view security case).",
+      reason: "guard.async.deferred entry wrapper: the rule lives once in guard-async and is enforced by promise-contract.test.js; each wrapper names its own inner function and arguments, so only the shape repeats.",
+    },
+    {
+      // The entry SNAPSHOT on a producing verb: `spec = guard.bytes.snapshotDeep(spec, <Domain>Error,
+      // "<domain>/bad-input", "<what>")` as the first statement, so the object the checks below read
+      // is one the caller can no longer reach. The copy itself lives once in guard-bytes; what
+      // repeats is the call plus the domain error class, code and wording -- different at every site.
+      files: [
+        "lib/x509-sign.js:_sign", "lib/crl-sign.js:_sign", "lib/csr-sign.js:_sign",
+        "lib/attrcert-sign.js:_sign", "lib/crmf-sign.js:_build", "lib/cmc-build.js:_build",
+        "lib/cmp-build.js:_build", "lib/ocsp.js:buildRequest", "lib/ocsp.js:_sign",
+        "lib/pkcs12-build.js:build", "lib/attrcert-sign.js:_err", "lib/cmp-build.js:_err",
+        "lib/cms-sign.js:_err", "lib/crl-sign.js:_err", "lib/crmf-sign.js:_err",
+        "lib/csr-sign.js:_err", "lib/x509-sign.js:_err", "lib/attrcert-sign.js:_signE",
+        "lib/cmp-build.js:_signE", "lib/crmf-sign.js:_signE", "lib/csr-sign.js:_signE",
+        "lib/tsp-sign.js:_sign", "lib/cms-sign.js:_sign",
+      ],
+      mode: "family-subset",
+      reason: "entry-snapshot glue on a producing verb: the deep copy lives once in guard-bytes; each call binds a different error class, code and message, so only the call and the module's own error factory beside it repeat.",
+    },
+    {
+      // The byte-input door on an authoring boundary: route a Buffer / Uint8Array through
+      // guard.bytes.view (which owns the detached-backing-store reject) and throw the module's own
+      // typed error for anything else. The CHECK itself lives once in guard-bytes; what repeats is
+      // the call plus the domain error class, code and wording, and each site binds a DIFFERENT
+      // three. Extracting the call would relocate one line while hiding which domain guards which
+      // input. family-subset so a new module's door matches the cluster instead of re-tripping it.
+      files: [
+        "lib/cmc-build.js:_der", "lib/cms-sign.js:_toBuf", "lib/cms-verify.js:_toBuf",
+        "lib/pki-build.js:reqDer", "lib/cms-compress.js:_toDer", "lib/cms-decrypt.js:_toDer",
+        "lib/cms-encrypt.js:_normCertDer", "lib/cms-decrypt.js:_normCertDer",
+        "lib/ocsp.js:_toDer", "lib/ocsp.js:_normCertDer", "lib/sign-scheme.js:_normPkcs8",
+      ],
+      mode: "family-subset",
+      reason: "guard.bytes.view call-site glue: the detached-view check lives once in guard-bytes; each door binds a different error class, code and message, so only the call and its throw repeat.",
     },
     {
       // The pre-encoded-Extension-array handling idiom (decode -> assertValidExtension -> dedup extnID ->
