@@ -221,6 +221,30 @@ function _build() {
 //   migration:  multi-line markdown migration recipe
 var OUT_OF_BAND_BREAKS = [
   {
+    release: "v0.5.7",
+    surface: "content that is an encoded SignedAttributes block",
+    summary: "Signing or verifying such content WITHOUT signed attributes is refused as cms/ambiguous-content.",
+    migration: [
+      "A CMS signature does not commit to whether signed attributes were present, so a signature made",
+      "over a SignedAttributes block can be re-presented as one made over content. The shape is now",
+      "refused at both ends.",
+      "",
+      "This only affects you if your CMS content genuinely IS a DER SET OF Attribute carrying both a",
+      "content-type and a message-digest attribute -- the shape RFC 5652 sec. 5.3 gives a",
+      "SignedAttributes -- AND you sign it with `signedAttributes: false`. Ordinary content is",
+      "unaffected, and so is a set of attributes missing either of those two.",
+      "",
+      "```js",
+      "await pki.cms.sign(attrShapedContent, signer, { signedAttributes: false });  // cms/ambiguous-content",
+      "await pki.cms.sign(attrShapedContent, signer);                              // signed attributes: fine",
+      "```",
+      "",
+      "Signing it WITH signed attributes makes the message unambiguous and it verifies normally.",
+      "Existing messages of this shape already in your archive will not verify; re-sign them with",
+      "signed attributes.",
+    ].join("\n"),
+  },
+  {
     release: "v0.5.6",
     surface: "try { pki.<verb>(...) } catch",
     summary: "A verb documented `-> Promise` rejects on a bad input instead of throwing before the promise exists.",

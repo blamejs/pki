@@ -4,7 +4,24 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.6 — 2026-08-16
+## v0.5.7 — 2026-08-16
+
+A CMS signature made over signed attributes can no longer be re-presented as one made over content.
+
+### Added
+
+- The pki.cms.verify verdict carries eContentType, and each signers[i] carries signedAttributesPresent. Signing with attributes and signing the content directly are different claims -- attributes bind a content type and a signing time alongside the digest, content-only binds nothing but the bytes -- and one message may carry a signer of each. A caller whose profile is stricter than RFC 5652's, such as RFC 8551 S/MIME which requires signed attributes, can now enforce that from the verdict instead of parsing the message a second time. A check that needs a second parse is a check most callers will not write.
+
+### Changed
+
+- SECURITY.md previously said an attacker could "neither swap the content out from under a set of signed attributes, nor strip the attributes and present a signature made over them as one made over the content". The first half was true; the second was not, and had not been since the claim was written. The entry now describes what is actually defended and how, and names the case it costs: content which genuinely is an encoded SignedAttributes block must be signed WITH signed attributes. The v0.5.6 notes described the parsed-object re-derivation as closing this forgery; it closed the half reachable through a caller-assembled object, and this release closes the half reachable from bytes.
+
+### Fixed
+
+- pki.cms.verify refuses a SignerInfo with no signed attributes whose content is itself an encoded SignedAttributes block, as cms/ambiguous-content. This is Attack Type 1 of draft-vangeest-lamps-cms-euf-cma-signeddata: take a message signed with attributes present, drop the signedAttrs field, set the encapsulated content to the DER of those attributes, keep the signature. The signature genuinely verifies over those bytes -- the refusal is the shape, not a failed signature check, which is why it has its own code rather than reading as cms/bad-signature. The condition is necessary to the attack rather than a guess at anything SET OF shaped: RFC 5652 section 5.3 requires signed attributes to carry both a content-type and a message-digest attribute, so every message the attack produces has content carrying both, and content that is a set of attributes missing either one is not refused. Ordinary content -- a certificate, a JSON payload, arbitrary bytes -- does not have the shape at all. Verified against the shipped verb before and after, and the standards fixes for this are protocol changes (signing under a context string that names the mode) which no verifier can apply on its own.
+- pki.cms.sign refuses to sign content that is itself an encoded SignedAttributes block when signedAttributes is false. That is the other direction of the same problem (Attack Type 2): such a signature can afterwards be promoted into an attributes-present message, because the signature does not commit to which mode was used -- the attacker attaches the signed bytes AS the SignedAttributes and swaps in whatever content their message-digest attribute names. Refusing to mint the ambiguous signature is the only point at which that direction can be stopped. Sign the same content WITH signed attributes and it is unambiguous again.
+
+## v0.5.6 — 2026-08-15
 
 A CMS SignedData is verified over the bytes it was parsed from, an omitted PKCS#12 password is refused rather than encoded as the empty one, and a verb documented as returning a Promise rejects instead of throwing past your .catch.
 
