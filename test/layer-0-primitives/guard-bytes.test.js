@@ -183,6 +183,26 @@ function testDeepSnapshotContract() {
   fixed.release();
   check("release clears the copy it made", seenSecret.every(function (byte) { return byte === 0; }));
   check("release leaves the caller's own buffer alone", Buffer.compare(pw, Buffer.alloc(7, 0x41)) === 0);
+
+  // The copying can fail PARTWAY -- a detached leaf in a later argument, a getter that throws --
+  // and by then earlier arguments have already been copied. `fixArguments` clears those before it
+  // rethrows, because it returns no handle on that path and nothing else could reach them.
+  //
+  // What is checkable from outside is the shape of that path: the fault comes out typed and
+  // unchanged, and the caller's own buffers are left alone. The copies themselves are internal and
+  // unreachable by construction, which is the point -- the same `release` closure the success path
+  // uses is what runs, and the vector above pins that release clears what `collect` holds. A
+  // vector claiming to observe the wipe here would be asserting on something it cannot see.
+  var earlySecret = Buffer.from("first-secret");
+  var threw = null;
+  try {
+    guardBytes.fixArguments(TestError, "t/bad", [
+      [{ pw: earlySecret }, "first"], [{ bad: detachedBuffer(4) }, "second"],
+    ]);
+  } catch (e) { threw = e; }
+  check("a fault partway through copying comes out typed", threw !== null && threw.code === "t/bad");
+  check("the caller's own buffer is untouched by that path",
+    Buffer.compare(earlySecret, Buffer.from("first-secret")) === 0);
 }
 
 // The guard family threads a caller's typed error under two conventions -- a CLASS

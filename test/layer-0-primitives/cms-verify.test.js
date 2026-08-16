@@ -675,6 +675,16 @@ async function testSignedAttrsStripping() {
       b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
       b.sequence([b.oid("1.2.3.4.5.6"), b.set([])]),
     ])],
+    // sec. 11 also says WHERE each attribute may appear, and id-countersignature is forbidden in
+    // signedAttrs (sec. 11.4). The real parser refuses that set as signedAttrs, so it cannot be the
+    // preimage any signature covered -- and matching it would refuse ordinary content that merely
+    // carried the attribute encoding. The placement rows are part of the condition, not a separate
+    // concern from the value rules beside them.
+    ["a countersignature attribute, forbidden in signedAttrs", b.set([
+      b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+      b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+      b.sequence([b.oid(pki.oid.byName("countersignature")), b.set([b.sequence([b.integer(1n)])])]),
+    ])],
     // sec. 11.3 constrains signing-time the same way when it is present.
     ["an unreadable signing-time", b.set([
       b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
