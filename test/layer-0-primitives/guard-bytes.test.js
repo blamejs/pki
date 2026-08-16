@@ -221,11 +221,33 @@ async function testDeepSnapshotContract() {
     "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
   check("a CryptoKey passes through by reference",
     guardBytes.snapshotDeep({ k: ck }, TestError, "t/bad", "spec").k === ck);
-  // The same for the things whose state is not in their properties either.
+  // A Map or a Set holds data the caller can still change, so it is copied like anything else --
+  // entries and any named properties alongside them. A RegExp or an Error carries no caller data
+  // that a verb reads, so there is nothing to fix and it stays as it is.
   var live = { m: new Map([["a", 1]]), s: new Set([1]), re: /x/, err: new Error("e") };
+  live.m.pem = true;
   var liveCopy = guardBytes.snapshotDeep(live, TestError, "t/bad", "spec");
-  check("a Map / Set / RegExp / Error passes through by reference",
-    liveCopy.m === live.m && liveCopy.s === live.s && liveCopy.re === live.re && liveCopy.err === live.err);
+  check("a Map is copied, entries and all",
+    liveCopy.m !== live.m && liveCopy.m.get("a") === 1 && liveCopy.m.pem === true);
+  check("a Set is copied", liveCopy.s !== live.s && liveCopy.s.has(1));
+  live.m.set("a", 99);
+  live.m.pem = false;
+  check("the Map copy does not follow later writes",
+    liveCopy.m.get("a") === 1 && liveCopy.m.pem === true);
+  check("a RegExp / Error stays as it is", liveCopy.re === live.re && liveCopy.err === live.err);
+
+  // A kind whose state cannot be read has no safe handling once it also carries the caller's own
+  // fields: it cannot be copied, and passing it through would leave those fields changeable after
+  // they were checked. That is refused rather than half-handled, which is what stops this from
+  // being one more shape to discover later. Carrying nothing of its own, it still passes through.
+  var bareWeak = new WeakMap();
+  check("an empty WeakMap passes through",
+    guardBytes.snapshotDeep({ w: bareWeak }, TestError, "t/bad", "spec").w === bareWeak);
+  var loadedWeak = new WeakMap();
+  loadedWeak.signedAttributes = true;
+  check("a WeakMap carrying caller fields is refused", codeOf(function () {
+    guardBytes.snapshotDeep({ w: loadedWeak }, TestError, "t/bad", "spec");
+  }) === "t/bad");
 
   check("snapshotDeep refuses a detached leaf", codeOf(function () {
     guardBytes.snapshotDeep({ b: detachedBuffer(4) }, TestError, "t/bad", "spec");
