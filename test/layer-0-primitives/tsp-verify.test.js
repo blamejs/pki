@@ -207,13 +207,33 @@ async function testVerifyAccept() {
   var revRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: goodChecker });
   check("a revocationChecker that establishes the TSA reports revocationChecked determined",
     revRes.valid === true && revRes.trusted === true && revRes.revocationChecked === "determined");
+  // A REFUSAL reports what the path established too. The case that matters is a TSA the checker
+  // answered `revoked` for: that path DID check revocation and rejected on the answer, so a verdict
+  // claiming nothing was checked would misdescribe the very reason the token was refused -- and it
+  // is the archived-verdict question the field exists to answer.
+  var revokedChecker = { check: function () { return Promise.resolve({ status: "revoked" }); } };
+  var revokedRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: revokedChecker });
+  check("a TSA established REVOKED is untrusted", revokedRes.trusted === false && revokedRes.code === "tsp/untrusted-tsa");
+  check("...and the refusal still reports that revocation WAS checked, not that it was not",
+    revokedRes.revocationChecked === "determined");
+
+  // Backtracking tries several chains for the same TSA certificate. A checker that answers for the
+  // first candidate and then refuses to answer must not let the later, less-established attempt
+  // erase the earlier one: what the verdict reports is the most any candidate established, not
+  // whichever ran last. Driven through a checker whose answer changes between calls.
+  var callN = 0;
+  var fadingChecker = { check: function () { callN++; return Promise.resolve(callN === 1 ? { status: "revoked" } : { status: "unknown" }); } };
+  var fadeRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: fadingChecker });
+  check("a later candidate that establishes less does not erase what an earlier one established",
+    fadeRes.trusted === false && fadeRes.revocationChecked === "determined");
+
   // An UNDETERMINED status fails the path rather than passing quietly, and there is no option to
   // waive it: this verb does not forward softFail, so "the responder could not be reached" cannot
   // become a trusted timestamp.
   var unknownChecker = { check: function () { return Promise.resolve({ status: "unknown" }); } };
   var unknownRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker });
   check("an undetermined revocation status leaves the TSA untrusted, not trusted-unchecked",
-    unknownRes.trusted === false && unknownRes.revocationChecked === false);
+    unknownRes.trusted === false && unknownRes.revocationChecked === "undetermined");
   var softFailCode = await (async function () {
     try { await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker, softFail: true }); return null; }
     catch (e) { return e && e.code; }
