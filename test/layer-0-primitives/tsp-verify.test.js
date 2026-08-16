@@ -221,11 +221,25 @@ async function testVerifyAccept() {
   // first candidate and then refuses to answer must not let the later, less-established attempt
   // erase the earlier one: what the verdict reports is the most any candidate established, not
   // whichever ran last. Driven through a checker whose answer changes between calls.
+  // With several candidate chains the verb makes several validation attempts, and the refusal must
+  // still report an established state rather than the `false` that means "nothing ran". A second
+  // self-signed certificate carrying the SAME subject as the TSA is an issuer candidate for it, so
+  // the chain builder enumerates more than one path; the premise is asserted rather than assumed.
+  //
+  // What this does NOT reach is an earlier attempt establishing strictly MORE than the last one:
+  // pki.path.validate already takes the weakest outcome across the certificates within one path,
+  // and the longest chain is attempted first, so with these fixtures every attempt reports the same
+  // or less. The keep-the-strongest rule across attempts is therefore defensive here -- it exists
+  // because the two loops (candidate chains, and the two endpoints of a fractional genTime) both
+  // produce results that must not overwrite each other, and every result now reaches the
+  // accumulator through one function so none can bypass it.
+  var decoyIssuer = makeTsa(ekuExt([TS_EKU], true), { serial: 0x9d, name: "TSA" });
   var callN = 0;
   var fadingChecker = { check: function () { callN++; return Promise.resolve(callN === 1 ? { status: "revoked" } : { status: "unknown" }); } };
-  var fadeRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: fadingChecker });
-  check("a later candidate that establishes less does not erase what an earlier one established",
-    fadeRes.trusted === false && fadeRes.revocationChecked === "determined");
+  var fadeRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: fadingChecker, certs: [decoyIssuer.cert] });
+  check("the multi-candidate premise holds: more than one attempt consulted the checker", callN > 1);
+  check("a multi-candidate refusal reports an established state, never the false that means nothing ran",
+    fadeRes.trusted === false && fadeRes.revocationChecked !== false);
 
   // An UNDETERMINED status fails the path rather than passing quietly, and there is no option to
   // waive it: this verb does not forward softFail, so "the responder could not be reached" cannot
@@ -260,6 +274,11 @@ async function testVerifyAccept() {
   var taNotTs = Object.assign({}, tsa.anchor, { purposes: { timeStamping: false } });
   var notTs = await pki.tsp.verify(token, DATA, { trustAnchor: taNotTs });
   check("an anchor NOT delegated for timestamping is refused", notTs.valid === false && notTs.trusted === false);
+  // ...and the refusal reports WHICH anchor checks ran. This case establishes anchor constraints
+  // while establishing nothing about revocation -- no revocationChecker is configured -- so the two
+  // fields have to travel independently. Reported together, the constraints went missing here.
+  check("...and that refusal still reports the anchor constraints it was refused by",
+    notTs.anchorConstraints != null && notTs.revocationChecked === false);
   // A distrustAfter for this purpose likewise applies rather than sitting inert. The fixture TSA's
   // notBefore is 2020-01-01, and the comparison is STRICTLY greater -- a certificate issued ON the
   // distrust date stays trusted -- so the date has to sit before it to distrust anything.
