@@ -249,6 +249,26 @@ async function testDeepSnapshotContract() {
     guardBytes.snapshotDeep({ w: loadedWeak }, TestError, "t/bad", "spec");
   }) === "t/bad");
 
+  // The same for every other kind whose state cannot be read. Each of these was reachable as an
+  // options bag with a field glued on, which is why the rule is the kind's own surface and nothing
+  // more rather than a list of kinds to trust.
+  var kindsCarryingFields = [
+    ["an Error", function () { var e = new Error("o"); e.signedAttributes = true; return e; }],
+    ["a RegExp", function () { var r = /x/; r.signedAttributes = true; return r; }],
+    ["a promise", function () { var p = Promise.resolve(1); p.signedAttributes = true; return p; }],
+  ];
+  function refusesKind(make) {
+    return codeOf(function () {
+      guardBytes.snapshotDeep({ v: make() }, TestError, "t/bad", "spec");
+    });
+  }
+  kindsCarryingFields.forEach(function (kind) {
+    check(kind[0] + " carrying caller fields is refused", refusesKind(kind[1]) === "t/bad");
+  });
+  var cleanErr = new Error("boom");
+  check("an Error carrying only its own kind's fields passes through",
+    guardBytes.snapshotDeep({ e: cleanErr }, TestError, "t/bad", "spec").e === cleanErr);
+
   check("snapshotDeep refuses a detached leaf", codeOf(function () {
     guardBytes.snapshotDeep({ b: detachedBuffer(4) }, TestError, "t/bad", "spec");
   }) === "t/bad");
