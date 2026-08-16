@@ -659,6 +659,7 @@ function testClientConfig() {
     code(function () { pki.acme.client("https://user@acme.test/directory", OK); }) === "acme/bad-url");
   check("client: an unparseable directory URL is refused",
     code(function () { pki.acme.client("not a url", OK); }) === "acme/bad-url");
+
 }
 
 function testAri() {

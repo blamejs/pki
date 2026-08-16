@@ -388,5 +388,23 @@
     "reason": "Path building itself is settled, but its opt-in AIA caIssuers fetching composes the still-experimental shared pki.transport, and that is the part of its contract still absorbing hardening. The default offline build is unchanged and every path it returns is decided by the now-stable pki.path.validate. Graduate alongside pki.transport.https.",
     "reviewedAt": "0.5.0",
     "reviewBy": "0.6.0"
+  },
+  "pki.webauthn.verifyAssertion": {
+    "decision": "keep-experimental",
+    "reason": "The ceremony this verifies is settled in WebAuthn Level 3, but its own verdict shape is not: the fields a relying party reads to decide what was checked have changed in three of the last four releases, most recently when the two accepted forms of a stored credential key were brought under one set of rules. An operator gating on the verdict would have seen each of those as a behaviour change. Graduate once a release passes without the verdict shape moving.",
+    "reviewedAt": "0.5.6",
+    "reviewBy": "0.7.0"
+  },
+  "pki.webauthn.parseAuthenticatorData": {
+    "decision": "keep-experimental",
+    "reason": "Held to the same decision as pki.webauthn.verifyAssertion, which consumes it: the parsed shape gained surfaced fields as the verifier's verdict grew, so it moved for the same reasons. Graduate alongside pki.webauthn.verifyAssertion.",
+    "reviewedAt": "0.5.6",
+    "reviewBy": "0.7.0"
+  },
+  "pki.webauthn.parseClientData": {
+    "decision": "keep-experimental",
+    "reason": "Held to the same decision as pki.webauthn.verifyAssertion, which consumes it. Graduate alongside pki.webauthn.verifyAssertion.",
+    "reviewedAt": "0.5.6",
+    "reviewBy": "0.7.0"
   }
 }

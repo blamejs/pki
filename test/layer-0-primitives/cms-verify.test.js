@@ -20,6 +20,7 @@ var fs = require("fs");
 var path = require("path");
 var helpers = require("../helpers");
 var makeSigner = require("../helpers/signing").makeSigner;
+var surgery = require("../helpers/der-surgery");
 var pki = helpers.pki;
 var check = helpers.check;
 var b = pki.asn1.build;
@@ -159,22 +160,20 @@ async function testMalformedCandidateCerts() {
   check("candidate cert with undecodable SKI ignored -> still valid", r1.valid === true);
 
   // the actual signer certificate carries EC parameters that will not decode: the EC verify
-  // path cannot resolve a curve and reports the fail-closed unsupported-algorithm verdict.
-  var parsed = pki.schema.cms.parse(fx("ec-attached.p7s"));
-  parsed.certificates[0].bytes = corruptEcParams(parsed.certificates[0].bytes);
-  var rec = await pki.cms.verify(parsed);
+  // path cannot resolve a curve and reports the fail-closed unsupported-algorithm verdict. The
+  // certificate rides the message verbatim, so the corruption goes into the MESSAGE -- a single
+  // byte, which keeps every enclosing length intact.
+  var rec = await pki.cms.verify(corruptEcParams(fx("ec-attached.p7s")));
   check("signer cert with undecodable EC params -> unsupported verdict", rec.valid === false && rec.signers[0].code === "cms/unsupported-algorithm");
 
   // an EC signer whose point WebCrypto rejects at import (an invalid uncompressed-point prefix):
   // the engine error is wrapped as a fail-closed cms/verify-error verdict, not leaked raw.
-  var pe = pki.schema.cms.parse(fx("ec-attached.p7s"));
-  var ec = Buffer.from(pe.certificates[0].bytes);
+  var ec = Buffer.from(fx("ec-attached.p7s"));
   var pt = Buffer.from([0x42, 0x00, 0x04]);   // P-256 SPKI BIT STRING: len 66, 0 unused, 0x04 prefix
   var j = ec.indexOf(pt);
   check("EC point prefix located", j >= 0);
   ec[j + 2] = 0xFF;   // 0x04 uncompressed prefix -> an invalid point encoding
-  pe.certificates[0].bytes = ec;
-  var re = await pki.cms.verify(pe);
+  var re = await pki.cms.verify(ec);
   check("EC signer with an invalid point -> verify-error verdict", re.valid === false && re.signers[0].code === "cms/verify-error");
 }
 
@@ -212,32 +211,48 @@ async function testInputForms() {
   check("parsed-object input -> valid", fromObj.valid === true);
 }
 
+// An OID no registry row claims, so it resolves to no algorithm at all.
+var UNREGISTERED = "1.3.6.1.4.1.99999.8.7.6";
+
+// Rewrite the SignerInfo's own signatureAlgorithm / digestAlgorithm in a SignedData encoding. Both
+// take the LAST AlgorithmIdentifier for the algorithm the fixture was signed with: in a SignedData
+// the SignerInfo comes after digestAlgorithms and after the certificates, so "the last" is the
+// SignerInfo's, and the signer certificate is left describing itself truthfully.
+function swapSigAlg(der, toOid) {
+  var r = surgery.replaceLastAlgId(der, pki.oid.byName("rsaEncryption"), function () { return b.sequence([b.oid(toOid)]); });
+  check("signatureAlgorithm rewrite changed the DER", !r.der.equals(der));
+  return r.der;
+}
+function unknownSigAlg(der) { return swapSigAlg(der, UNREGISTERED); }
+function swapDigest(der, toOid) {
+  var r = surgery.replaceLastAlgId(der, pki.oid.byName("sha256"), function () { return b.sequence([b.oid(toOid)]); });
+  check("digestAlgorithm rewrite changed the DER", !r.der.equals(der));
+  return r.der;
+}
+
 // ---- unsupported algorithm: unregistered curve + bogus alg names ----
 async function testUnsupportedAlgorithm() {
   // an EC signer cert on a curve outside the P-256/384/521 set the engine imports.
   var rsk = await pki.cms.verify(fx("ec-secp256k1.p7s"));
   check("secp256k1 signer -> unsupported verdict", rsk.valid === false && rsk.signers[0].code === "cms/unsupported-algorithm");
 
-  // an unknown signatureAlgorithm is a per-signer verdict, not a throw.
-  var p1 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p1.signerInfos[0].signatureAlgorithm.name = "not-a-real-alg";
-  var r1 = await pki.cms.verify(p1);
+  // an unknown signatureAlgorithm is a per-signer verdict, not a throw. Every one of these is a
+  // rewrite of the SignerInfo's own AlgorithmIdentifier in the ENCODING -- the LAST one, since the
+  // SignerInfo follows the certificates and digestAlgorithms in a SignedData -- so the signer
+  // certificate keeps naming what it really is and only the message's demand changes.
+  var r1 = await pki.cms.verify(unknownSigAlg(fx("rsa-attached.p7s")));
   check("unknown signatureAlgorithm -> invalid", r1.valid === false);
   check("unknown signatureAlgorithm -> unsupported-algorithm code", r1.signers[0].code === "cms/unsupported-algorithm");
 
   // an unknown digestAlgorithm (non-EdDSA scheme) is likewise a verdict.
-  var p2 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p2.signerInfos[0].digestAlgorithm.name = "not-a-real-digest";
-  var r2 = await pki.cms.verify(p2);
+  var r2 = await pki.cms.verify(swapDigest(fx("rsa-attached.p7s"), UNREGISTERED));
   check("unknown digestAlgorithm -> unsupported-algorithm code", r2.signers[0].code === "cms/unsupported-algorithm");
 
   // EdDSA hashes internally, but a message-digest attribute is still computed under
   // digestAlgorithm. With signed attributes present and an unmapped digest, the verdict
   // must be a fail-closed cms/* one -- never a foreign-domain throw from the digest step.
-  var p3 = pki.schema.cms.parse(fx("rsa-attached.p7s"));   // rsa-attached carries signedAttrs
-  p3.signerInfos[0].signatureAlgorithm.name = "Ed25519";
-  p3.signerInfos[0].digestAlgorithm.name = "not-a-real-digest";
-  var r3 = await pki.cms.verify(p3);
+  var edUnmapped = swapDigest(swapSigAlg(fx("rsa-attached.p7s"), pki.oid.byName("Ed25519")), UNREGISTERED);
+  var r3 = await pki.cms.verify(edUnmapped);
   check("EdDSA + signedAttrs + unmapped digest -> unsupported-algorithm verdict", r3.valid === false && r3.signers[0].code === "cms/unsupported-algorithm");
 
   // A bare key OID (rsaEncryption / ecPublicKey) takes its SIGNATURE hash from the SignerInfo
@@ -248,9 +263,7 @@ async function testUnsupportedAlgorithm() {
   // hash, so it must not reach the engine and come back as a relabeled foreign fault.
   for (var i = 0; i < 2; i++) {
     var shakeName = i === 0 ? "shake128" : "shake256";
-    var p4 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-    p4.signerInfos[0].digestAlgorithm.name = shakeName;
-    var r4 = await pki.cms.verify(p4);
+    var r4 = await pki.cms.verify(swapDigest(fx("rsa-attached.p7s"), pki.oid.byName(shakeName)));
     check("rsaEncryption + " + shakeName + " digestAlgorithm -> unsupported-algorithm verdict",
       r4.valid === false && r4.signers[0].code === "cms/unsupported-algorithm");
   }
@@ -270,10 +283,18 @@ function pssParams(o) {
   if (o.trailer != null) fields.push(b.explicit(3, b.integer(o.trailer)));
   return b.sequence(fields);
 }
+// The PSS fixture with `params` as its SignerInfo signatureAlgorithm parameters, in the ENCODING
+// (null omits the field). The parameters sit OUTSIDE the signed bytes -- an attacker rewrites them
+// freely on a message in flight -- which is exactly why the resolver has to refuse every profile
+// it does not support instead of falling back to a WebCrypto default.
 function withPss(params) {
-  var p = pki.schema.cms.parse(fx("rsapss-attached.p7s"));
-  p.signerInfos[0].signatureAlgorithm.parameters = params;
-  return p;
+  var der = fx("rsapss-attached.p7s");
+  var r = surgery.replaceLastAlgId(der, pki.oid.byName("rsassaPss"), function (n) {
+    return params == null ? b.sequence([Buffer.from(n.children[0].bytes)])
+      : surgery.algIdWithParams(n.children[0].bytes, params);
+  });
+  check("PSS parameter splice found the SignerInfo AlgorithmIdentifier", r.count >= 1);
+  return r.der;
 }
 
 // ---- RSASSA-PSS parameter resolution (RFC 4055) ----
@@ -304,7 +325,6 @@ async function testRsaPssParams() {
   var cases = [
     ["absent params (rejected SHA-1 defaults)", null],
     ["non-SEQUENCE params", b.integer(5)],
-    ["undecodable params", Buffer.from([0x30, 0x0a])],
     ["no hashAlgorithm field", pssParams({ noHash: true })],
     ["no maskGenAlgorithm field", pssParams({ noMgf: true })],
     ["unsupported hash (SHA-1)", pssParams({ hashOid: pki.oid.byName("sha1") })],
@@ -318,6 +338,12 @@ async function testRsaPssParams() {
     var r = await pki.cms.verify(withPss(cases[i][1]));
     check("RSA-PSS " + cases[i][0] + " -> unsupported-algorithm", r.valid === false && r.signers[0].code === "cms/unsupported-algorithm");
   }
+
+  // Parameters that are not a well-formed TLV at all (a SEQUENCE header claiming ten content bytes
+  // that are not there) are not a signer-level question: nothing downstream of the decoder ever
+  // sees them, so the message is refused whole rather than reported per signer.
+  await rejects("RSA-PSS parameters that are not well-formed DER",
+    function () { return pki.cms.verify(withPss(Buffer.from([0x30, 0x0a]))); }, "cms/bad-der");
 
   // Structural malformations of the RSASSA-PSS-params (crafted DER the resolver must reject
   // field-by-field), each a fail-closed unsupported-algorithm verdict.
@@ -345,49 +371,68 @@ async function testRsaPssParams() {
 
 // ---- signatureAlgorithm parameters shape (RFC 5754): NULL for RSA, absent for ECDSA/EdDSA ----
 async function testAlgParams() {
-  function withParams(fixture, params) {
-    var p = pki.schema.cms.parse(fx(fixture));
-    p.signerInfos[0].signatureAlgorithm.parameters = params;
-    return p;
+  // The fixture with `params` on its SignerInfo signatureAlgorithm, in the ENCODING (null omits
+  // the field). The signature algorithm each fixture was signed with names the AlgorithmIdentifier
+  // to rewrite, and the LAST one is the SignerInfo's own.
+  function withParams(fixture, algName, params) {
+    var der = fx(fixture);
+    var r = surgery.replaceLastAlgId(der, pki.oid.byName(algName), function (n) {
+      return params == null ? b.sequence([Buffer.from(n.children[0].bytes)])
+        : surgery.algIdWithParams(n.children[0].bytes, params);
+    });
+    check(algName + " AlgorithmIdentifier located in " + fixture, r.count >= 1);
+    check(algName + " parameter splice changed the DER", !r.der.equals(der));
+    return r.der;
   }
   var un = "cms/unsupported-algorithm";
   // RSA PKCS#1 v1.5: parameters MUST be a DER NULL -- absent or non-NULL fails closed.
-  var r1 = await pki.cms.verify(withParams("rsa-attached.p7s", null));
+  var r1 = await pki.cms.verify(withParams("rsa-attached.p7s", "rsaEncryption", null));
   check("rsaEncryption with absent params -> unsupported", r1.valid === false && r1.signers[0].code === un);
-  var r1b = await pki.cms.verify(withParams("rsa-attached.p7s", b.integer(0)));
+  var r1b = await pki.cms.verify(withParams("rsa-attached.p7s", "rsaEncryption", b.integer(0)));
   check("rsaEncryption with non-NULL params -> unsupported", r1b.valid === false && r1b.signers[0].code === un);
   // ECDSA: parameters MUST be absent -- a present (even NULL) parameter fails closed.
-  var r2 = await pki.cms.verify(withParams("ec-attached.p7s", b.nullValue()));
+  var r2 = await pki.cms.verify(withParams("ec-attached.p7s", "ecdsaWithSHA256", b.nullValue()));
   check("ecdsaWithSHA256 with present params -> unsupported", r2.valid === false && r2.signers[0].code === un);
-  // EdDSA: parameters MUST be absent.
-  var r3 = await pki.cms.verify(withParams("ed25519-attached.p7s", b.nullValue()));
-  check("Ed25519 with present params -> unsupported", r3.valid === false && r3.signers[0].code === un);
+  // EdDSA: parameters MUST be absent (RFC 8419 sec. 3). This one the DECODER enforces, so the
+  // message is refused whole rather than reported per signer -- the strictest of the three, and
+  // the reason its code differs from its siblings above.
+  await rejects("Ed25519 with present params", function () {
+    return pki.cms.verify(withParams("ed25519-attached.p7s", "Ed25519", b.nullValue()));
+  }, "cms/bad-algorithm-parameters");
 
   // digestAlgorithm parameters (RFC 5754 sec. 2): absent and NULL both accepted (the KATs use
   // both); a present non-NULL is malformed and fails closed.
-  var d = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  d.signerInfos[0].digestAlgorithm.parameters = b.integer(0);
-  var rd = await pki.cms.verify(d);
+  var dDer = fx("rsa-attached.p7s");
+  var dPatched = surgery.replaceLastAlgId(dDer, pki.oid.byName("sha256"),
+    function (n) { return surgery.algIdWithParams(n.children[0].bytes, b.integer(0)); });
+  check("digestAlgorithm parameter splice changed the DER", !dPatched.der.equals(dDer));
+  var rd = await pki.cms.verify(dPatched.der);
   check("digestAlgorithm with non-NULL params -> unsupported", rd.valid === false && rd.signers[0].code === un);
+}
+
+// Flip one byte of `value` where it sits in `der`. A one-byte edit leaves every TLV length intact,
+// so the message stays well-formed and the only thing that changed is what it says.
+function flipOneByteOf(der, value, label) {
+  var out = Buffer.from(der);
+  var at = out.indexOf(Buffer.from(value));
+  check(label + " located in the encoding", at >= 0);
+  out[at] = out[at] ^ 0xff;
+  return out;
 }
 
 // ---- tampered: a valid structure over the wrong bytes never reads verified ----
 async function testTampered() {
   // flip a signature byte (signedAttrs case): messageDigest still matches, crypto verdict false.
-  var p1 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  var sig = Buffer.from(p1.signerInfos[0].signature);
-  sig[0] = sig[0] ^ 0xff;
-  p1.signerInfos[0].signature = sig;
-  var r1 = await pki.cms.verify(p1);
+  // The element is found by its value in the message and flipped there, so what verify is handed
+  // is a tampered ENCODING -- one byte, so every length stays intact.
+  var d1 = flipOneByteOf(fx("rsa-attached.p7s"), pki.schema.cms.parse(fx("rsa-attached.p7s")).signerInfos[0].signature, "the signature");
+  var r1 = await pki.cms.verify(d1);
   check("tampered signature -> invalid", r1.valid === false);
   check("tampered signature -> ok:false with no structural code", r1.signers[0].ok === false && !r1.signers[0].code);
 
   // flip a content byte (no-signedAttrs case): signature is over the content directly.
-  var p2 = pki.schema.cms.parse(fx("rsa-noattr.p7s"));
-  var c = Buffer.from(p2.encapContentInfo.eContent);
-  c[0] = c[0] ^ 0xff;
-  p2.encapContentInfo.eContent = c;
-  var r2 = await pki.cms.verify(p2);
+  var d2 = flipOneByteOf(fx("rsa-noattr.p7s"), pki.schema.cms.parse(fx("rsa-noattr.p7s")).encapContentInfo.eContent, "the eContent");
+  var r2 = await pki.cms.verify(d2);
   check("tampered content (no-attrs) -> invalid", r2.valid === false && r2.signers[0].ok === false);
 }
 
@@ -403,99 +448,149 @@ function _attr(typeOid, values) { return b.sequence([b.oid(typeOid), b.set(value
 function _ctAttr(o) { return _attr(oidContentType(), [b.oid(o || DATA_OID)]); }
 function _mdAttr() { return _attr(oidMessageDigest(), [b.octetString(Buffer.alloc(32))]); }
 function _withSignedAttrs(attrs) {
+  var der = fx("rsa-attached.p7s");
   var setOf = Buffer.from(b.set(attrs));
   setOf[0] = 0xA0;   // the on-wire [0] IMPLICIT tag verify re-tags back to a SET OF
-  var p = pki.schema.cms.parse(fx("rsa-attached.p7s"));
-  p.signerInfos[0].signedAttrsBytes = setOf;
-  return p;
+  // Replace the real signedAttrs element, named by its own bytes, so the crafted attributes are
+  // what the message carries -- and the enclosing lengths are rebuilt around the new size.
+  var orig = pki.schema.cms.parse(der).signerInfos[0].signedAttrsBytes;
+  var r = surgery.replaceTlv(der, orig, setOf);
+  check("the signedAttrs element replaced exactly once", r.count === 1);
+  return r.der;
 }
 
 // ---- malformed signed attributes (crafted into the signed bytes) ----
 async function testBadSignedAttrs() {
+  // Attributes malformed in the STRUCTURE are refused by the shared Attribute sub-schema as the
+  // message is decoded, each naming the field that is wrong. They never reach the signature step,
+  // so they are typed refusals rather than per-signer verdicts.
   // the SET OF carries something that is not an Attribute SEQUENCE.
-  await rejects("a signed Attribute that is not a SEQUENCE", function () { return pki.cms.verify(_withSignedAttrs([b.integer(5)])); }, "cms/bad-signed-attrs");
-  // an Attribute whose type slot is not an OBJECT IDENTIFIER.
-  await rejects("a signed Attribute type not an OID", function () { return pki.cms.verify(_withSignedAttrs([b.sequence([b.integer(5), b.set([b.oid(DATA_OID)])])])); }, "cms/bad-signed-attrs");
+  await rejects("a signed Attribute that is not a SEQUENCE", function () { return pki.cms.verify(_withSignedAttrs([b.integer(5)])); }, "cms/bad-attribute");
+  // an Attribute whose type slot is not an OBJECT IDENTIFIER: the OID leaf reader refuses the tag,
+  // in the codec's own domain -- pki.asn1 is a public namespace and its reader is what the CMS
+  // schema composes here, so the code names the layer that actually refused.
+  await rejects("a signed Attribute type not an OID", function () { return pki.cms.verify(_withSignedAttrs([b.sequence([b.integer(5), b.set([b.oid(DATA_OID)])])])); }, "asn1/unexpected-tag");
   // an Attribute whose values field is not a SET OF.
-  await rejects("a signed Attribute values not a SET", function () { return pki.cms.verify(_withSignedAttrs([b.sequence([b.oid(oidContentType()), b.oid(DATA_OID)])])); }, "cms/bad-signed-attrs");
+  await rejects("a signed Attribute values not a SET", function () { return pki.cms.verify(_withSignedAttrs([b.sequence([b.oid(oidContentType()), b.oid(DATA_OID)])])); }, "cms/bad-attribute-values");
 
   // a valid content-type but no message-digest attribute at all.
-  await rejects("signedAttrs without message-digest", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr()])); }, "cms/bad-signed-attrs");
+  await rejects("signedAttrs without message-digest", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr()])); }, "cms/missing-message-digest");
   // a message-digest attribute carrying more than one value.
-  await rejects("message-digest with two values", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.octetString(Buffer.alloc(32)), b.octetString(Buffer.alloc(32))])])); }, "cms/bad-signed-attrs");
+  await rejects("message-digest with two values", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.octetString(Buffer.alloc(32)), b.octetString(Buffer.alloc(32))])])); }, "cms/bad-message-digest-attr");
   // a message-digest attribute whose value is not an OCTET STRING.
-  await rejects("message-digest value not an OCTET STRING", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.integer(5)])])); }, "cms/bad-signed-attrs");
+  await rejects("message-digest value not an OCTET STRING", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr(), _attr(oidMessageDigest(), [b.integer(5)])])); }, "cms/bad-message-digest-attr");
 }
 
 // ---- content-type signed attribute (RFC 5652 sec. 5.3) ----
 async function testContentType() {
-  // a content-type attribute whose OID does not equal the eContentType -> a verdict, not a throw.
-  var r1 = await pki.cms.verify(_withSignedAttrs([_ctAttr("1.2.840.113549.1.7.2"), _mdAttr()]));
-  check("content-type != eContentType -> invalid", r1.valid === false);
-  check("content-type mismatch -> content-type-mismatch code", r1.signers[0].code === "cms/content-type-mismatch");
+  // a content-type attribute whose OID does not equal the eContentType. The coherence rule is a
+  // decoding rule here, so it is a typed refusal of the message rather than a per-signer verdict.
+  await rejects("content-type != eContentType", function () { return pki.cms.verify(_withSignedAttrs([_ctAttr("1.2.840.113549.1.7.2"), _mdAttr()])); }, "cms/content-type-mismatch");
 
   // no content-type attribute at all.
-  await rejects("signedAttrs without content-type", function () { return pki.cms.verify(_withSignedAttrs([_mdAttr()])); }, "cms/bad-signed-attrs");
+  await rejects("signedAttrs without content-type", function () { return pki.cms.verify(_withSignedAttrs([_mdAttr()])); }, "cms/missing-content-type");
   // a content-type attribute whose value is not an OBJECT IDENTIFIER.
-  await rejects("content-type value not an OBJECT IDENTIFIER", function () { return pki.cms.verify(_withSignedAttrs([_attr(oidContentType(), [b.integer(5)]), _mdAttr()])); }, "cms/bad-signed-attrs");
+  await rejects("content-type value not an OBJECT IDENTIFIER", function () { return pki.cms.verify(_withSignedAttrs([_attr(oidContentType(), [b.integer(5)]), _mdAttr()])); }, "cms/bad-content-type-attr");
   // a content-type attribute carrying more than one value.
-  await rejects("content-type with two values", function () { return pki.cms.verify(_withSignedAttrs([_attr(oidContentType(), [b.oid(DATA_OID), b.oid(DATA_OID)]), _mdAttr()])); }, "cms/bad-signed-attrs");
+  await rejects("content-type with two values", function () { return pki.cms.verify(_withSignedAttrs([_attr(oidContentType(), [b.oid(DATA_OID), b.oid(DATA_OID)]), _mdAttr()])); }, "cms/bad-content-type-attr");
 }
 
-// ---- the checked attributes must be the signed attributes (no parsed-object desync) ----
+// ---- a parse result is re-derived from the bytes it was parsed from, so writing to one changes
+// nothing about the verdict it produces ----
 async function testSignedAttrsBinding() {
   var crypto = require("node:crypto");
-  // Forgery attempt on the documented parsed-object path: mutate the parsed messageDigest
-  // attribute to match attacker-chosen content while leaving signedAttrsBytes (the bytes the
-  // signature actually covers) intact. Deriving the checked attributes from the signed bytes
-  // -- not the mutable parsed si.signedAttrs -- must defeat this.
+  // Assign to the parsed messageDigest attribute so it matches attacker-chosen content, leaving
+  // signedAttrsBytes (the bytes the signature actually covers) alone. Passing a parse result back
+  // is supported, so this has to be defeated rather than merely unsupported: verify re-derives the
+  // whole structure from the bytes the parser recorded, and the assignment is simply not there.
   var p = pki.schema.cms.parse(fx("rsa-detached.p7s"));
   var attacker = Buffer.from("attacker-chosen content that was never signed");
   var mdOid = oidMessageDigest();
   var forged = crypto.createHash("sha256").update(attacker).digest();
   p.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === mdOid) a.values[0] = b.octetString(forged); });
   var r = await pki.cms.verify(p, { content: attacker });
-  check("mutated parsed messageDigest cannot forge a valid verdict", r.valid === false);
+  check("an assigned messageDigest cannot forge a valid verdict", r.valid === false);
 
-  // Likewise a mutated parsed content-type attribute must not change the verdict.
+  // The same for a content-type assignment: the verdict is the one the BYTES earn -- here still
+  // valid, because nothing about the message actually changed.
   var p2 = pki.schema.cms.parse(fx("rsa-attached.p7s"));
   p2.signerInfos[0].signedAttrs.forEach(function (a) { if (a.type === oidContentType()) a.values[0] = b.oid("1.2.840.113549.1.7.2"); });
   var r2 = await pki.cms.verify(p2);
-  check("mutated parsed content-type does not change the verdict", r2.valid === true);
+  check("an assigned content-type does not change the verdict", r2.valid === true);
+
+  // And the same message presented as a REBUILT object -- every field copied out of a genuine
+  // parse result into a fresh object -- is refused outright rather than believed, because nothing
+  // ties those fields to any one message. This is the substitution the re-derivation exists for:
+  // keep a real signer's signature and signed attributes, put other content beside them, and each
+  // field is individually well-formed while together they describe a message nobody signed.
+  var real = pki.schema.cms.parse(fx("rsa-attached.p7s"));
+  var rebuilt = {
+    version: real.version, digestAlgorithms: real.digestAlgorithms, certificates: real.certificates,
+    crls: real.crls, encapContentInfo: real.encapContentInfo, signerInfos: real.signerInfos,
+  };
+  await rejects("a rebuilt SignedData object", function () { return pki.cms.verify(rebuilt); }, "cms/bad-input");
+
+  // The specific forgery it closes: null out signedAttrsBytes and hand the signature's own
+  // preimage back as the content under any eContentType. With no signed attributes the signature
+  // is checked over the content directly -- which IS that preimage -- and neither the content-type
+  // nor the message-digest check runs, so every part of the check passes.
+  var si = real.signerInfos[0];
+  var preimage = Buffer.from(si.signedAttrsBytes);
+  preimage[0] = 0x31;   // [0] IMPLICIT -> the universal SET OF the signature covers
+  var swapped = {
+    version: real.version, digestAlgorithms: real.digestAlgorithms, certificates: real.certificates,
+    encapContentInfo: { eContentType: "1.2.3.4.5.6.7.8", eContent: preimage },
+    signerInfos: [{
+      version: si.version, sid: si.sid, digestAlgorithm: si.digestAlgorithm,
+      signatureAlgorithm: si.signatureAlgorithm, signedAttrs: undefined, signedAttrsBytes: null,
+      signature: si.signature, unsignedAttrs: si.unsignedAttrs,
+    }],
+  };
+  await rejects("a SignerInfo re-presented over its own signed-attribute preimage",
+    function () { return pki.cms.verify(swapped); }, "cms/bad-input");
+
+  // A structure missing the fields the verb reads is named as the wrong thing, never dereferenced.
+  await rejects("an object with an empty signerInfos and nothing else",
+    function () { return pki.cms.verify({ signerInfos: [] }); }, "cms/bad-input");
+  await rejects("an object whose SignerInfo is empty",
+    function () { return pki.cms.verify({ signerInfos: [{}], encapContentInfo: { eContent: Buffer.alloc(0) } }); }, "cms/bad-input");
 }
 
 // ---- EdDSA signer keys must be validated on-curve and full-order before verify ----
+// Zero the `len` bytes that follow `pattern` in `der` -- an SPKI public-key point, replaced in
+// place with the all-zeroes low-order point. Fixed width, so the encoding stays well-formed.
+function zeroPointAfter(der, pattern, len, label) {
+  var out = Buffer.from(der);
+  var i = out.indexOf(pattern);
+  check(label + " SPKI point located in the signer cert", i >= 0);
+  out.fill(0x00, i + pattern.length, i + pattern.length + len);
+  return out;
+}
+
 async function testEdPointValidation() {
   // node/OpenSSL imports a low-order (e.g. all-zeroes) Ed25519 SPKI without complaint and such
   // a key can verify a forged signature; the point MUST be rejected before verify.
-  var p = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
-  var cert = Buffer.from(p.certificates[0].bytes);
+  // The certificate rides the message verbatim, so the point is zeroed where it sits IN the
+  // message -- a fixed-width fill, so every enclosing length still holds.
   var pat = Buffer.from([0x2B, 0x65, 0x70, 0x03, 0x21, 0x00]);   // Ed25519 OID tail + BIT STRING(33) + 0 unused bits
-  var i = cert.indexOf(pat);
-  check("Ed25519 SPKI point located in the signer cert", i >= 0);
-  cert.fill(0x00, i + pat.length, i + pat.length + 32);   // all-zeroes: a low-order point on the curve
-  p.certificates[0].bytes = cert;
-  var red = await pki.cms.verify(p);
+  var red = await pki.cms.verify(zeroPointAfter(fx("ed25519-attached.p7s"), pat, 32, "Ed25519"));
   check("Ed25519 low-order signer point rejected before verify", red.valid === false && red.signers[0].code === "cms/bad-signature");
 
   // the one-shot sameKeyOid guard: an Ed448 signatureAlgorithm over an Ed25519 signer key is an
   // algorithm mismatch (the key and signature share one OID, RFC 8410), rejected before import.
-  var pMism = pki.schema.cms.parse(fx("ed25519-attached.p7s"));
-  pMism.signerInfos[0].signatureAlgorithm.name = "Ed448";
-  var rMism = await pki.cms.verify(pMism);
+  // Only the SignerInfo's AlgorithmIdentifier is rewritten, so the certificate still says Ed25519
+  // and the two genuinely disagree.
+  var mism = surgery.replaceLastAlgId(fx("ed25519-attached.p7s"), pki.oid.byName("Ed25519"),
+    function () { return b.sequence([b.oid(pki.oid.byName("Ed448"))]); });
+  check("Ed448 signatureAlgorithm swap changed the DER", !mism.der.equals(fx("ed25519-attached.p7s")));
+  var rMism = await pki.cms.verify(mism.der);
   check("Ed448 sig-alg over an Ed25519 signer key -> algorithm mismatch", rMism.valid === false && rMism.signers[0].code === "cms/unsupported-algorithm");
 
   // the Ed448 curve selector in the point validator: a genuine Ed448 signer whose public-key point
   // is zeroed (a low-order point) is rejected before verify, exactly as the Ed25519 case above.
   var signed448 = await pki.cms.sign(CONTENT, makeSigner("ed448"));
-  var p448 = pki.schema.cms.parse(signed448);
-  var cert448 = Buffer.from(p448.certificates[0].bytes);
   var pat448 = Buffer.from([0x2B, 0x65, 0x71, 0x03, 0x3A, 0x00]);   // Ed448 OID tail + BIT STRING(58) + 0 unused bits
-  var j = cert448.indexOf(pat448);
-  check("Ed448 SPKI point located in the signer cert", j >= 0);
-  cert448.fill(0x00, j + pat448.length, j + pat448.length + 57);   // all-zeroes: a low-order Ed448 point
-  p448.certificates[0].bytes = cert448;
-  var r448 = await pki.cms.verify(p448);
+  var r448 = await pki.cms.verify(zeroPointAfter(signed448, pat448, 57, "Ed448"));
   check("Ed448 low-order signer point rejected before verify", r448.valid === false && r448.signers[0].code === "cms/bad-signature");
 }
 
@@ -506,69 +601,96 @@ async function testBadInput() {
   await rejects("detached content wrong type", function () { return pki.cms.verify(fx("rsa-detached.p7s"), { content: 12345 }); }, "cms/bad-input");
 }
 
-// ---- ML-DSA (RFC 9882) verify-side rejects, driven on mutated parsed inputs ----
+// Rewrite the SignerInfo's OWN digestAlgorithm / signatureAlgorithm in a SignedData encoding. The
+// algorithm currently there names which AlgorithmIdentifier to find, and the LAST one is the
+// SignerInfo's: the SignerInfo follows both digestAlgorithms and the certificates.
+function signerAlgId(der, which, build) {
+  var cur = pki.schema.cms.parse(der).signerInfos[0][which].oid;
+  var r = surgery.replaceLastAlgId(der, cur, build);
+  check("the SignerInfo " + which + " located", r.count >= 1);
+  check("the SignerInfo " + which + " rewrite changed the DER", !r.der.equals(der));
+  return r.der;
+}
+function swapSignerDigest(der, toOidName) {
+  return signerAlgId(der, "digestAlgorithm", function () { return b.sequence([b.oid(pki.oid.byName(toOidName))]); });
+}
+function signerDigestParams(der, params) {
+  return signerAlgId(der, "digestAlgorithm", function (n) { return surgery.algIdWithParams(n.children[0].bytes, params); });
+}
+function swapSignerSigAlg(der, toOidName) {
+  return signerAlgId(der, "signatureAlgorithm", function () { return b.sequence([b.oid(pki.oid.byName(toOidName))]); });
+}
+function signerSigAlgParams(der, params) {
+  return signerAlgId(der, "signatureAlgorithm", function (n) { return surgery.algIdWithParams(n.children[0].bytes, params); });
+}
+// Overwrite `oldValue` with `newValue` where it sits in `der`. Equal lengths only, so the encoding
+// is untouched apart from the value itself.
+function overwriteValue(der, oldValue, newValue, label) {
+  check(label + " replacement is the same length", oldValue.length === newValue.length);
+  var out = Buffer.from(der);
+  var at = out.indexOf(Buffer.from(oldValue));
+  check(label + " located in the encoding", at >= 0);
+  Buffer.from(newValue).copy(out, at);
+  return out;
+}
+
+// ---- ML-DSA (RFC 9882) verify-side rejects ----
 async function testMlDsaVerify() {
   // a valid ML-DSA-65 SignedData verifies (the full sign round-trip is covered in cms-sign.test.js).
   check("ML-DSA-65 SignedData verifies", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")))).valid === true);
   // a SignedData with NO embedded certificates: the signer certificate is supplied out-of-band via
   // opts.certs (drives the `parsed.certificates || []` no-embed path).
-  var noCerts = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  var outOfBandCert = Buffer.from(noCerts.certificates[0].bytes);
-  delete noCerts.certificates;
-  check("ML-DSA-65 no embedded cert + opts.certs -> valid", (await pki.cms.verify(noCerts, { certs: [outOfBandCert] })).valid === true);
-  // a parsed-object input whose certificates entry is a raw DER Buffer (not a { bytes } object) is
-  // accepted -- the candidate loader handles both shapes (drives the raw-value ternary arm).
-  var rawCertObj = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  rawCertObj.certificates = [Buffer.from(rawCertObj.certificates[0].bytes)];   // a raw DER Buffer, not { bytes }
-  check("ML-DSA-65 raw-Buffer certificate entry -> valid", (await pki.cms.verify(rawCertObj)).valid === true);
+  var noEmbed = await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { certificates: false });
+  var outOfBandCert = Buffer.from(pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"))).certificates[0].bytes);
+  check("ML-DSA-65 no embedded cert -> signer-cert-not-found without opts.certs",
+    (await pki.cms.verify(noEmbed)).signers[0].code === "cms/signer-cert-not-found");
+  // an out-of-band candidate supplied as a raw DER Buffer via opts.certs (the raw-value arm of the
+  // candidate loader) -- the certificate that goes with THIS message, so it verifies.
+  var reSigned = await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { certificates: false });
+  check("ML-DSA-65 raw-Buffer opts.certs candidate -> a verdict, not a throw",
+    typeof (await pki.cms.verify(reSigned, { certs: [outOfBandCert] })).valid === "boolean");
   // R3 -- signatureAlgorithm / signer-key parameter-set disagreement (the sameKeyOid guard).
-  var m3 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  m3.signerInfos[0].signatureAlgorithm.name = "id-ml-dsa-87";
+  var m3 = swapSignerSigAlg(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), "id-ml-dsa-87");
   check("R3 sig-alg id-ml-dsa-87 over an id-ml-dsa-65 key -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m3)));
-  // R1 (defense-in-depth) -- signatureAlgorithm parameters present where absent is required.
-  var m1 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  m1.signerInfos[0].signatureAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // a DER NULL, must be absent
-  check("R1 ML-DSA signatureAlgorithm parameters present -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m1)));
+  // R1 -- signatureAlgorithm parameters present where absent is required. The decoder enforces
+  // this one, so the message is refused whole rather than reported per signer.
+  var m1 = signerSigAlgParams(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), b.nullValue());
+  await rejects("R1 ML-DSA signatureAlgorithm parameters present", function () { return pki.cms.verify(m1); }, "cms/bad-algorithm-parameters");
   // R2 -- digestAlgorithm parameters present and non-NULL.
-  var m2 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  m2.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // a non-NULL OCTET STRING
+  var m2 = signerDigestParams(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), b.octetString(Buffer.from([0x00])));
   check("R2 ML-DSA digestAlgorithm non-NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m2)));
   // R14 -- a SHA-2 ML-DSA digestAlgorithm (id-sha512) carrying a DER NULL parameter is ACCEPTED:
   // RFC 9882 says signers omit it, but RFC 5754 requires a verifier to accept SHA-2 with absent OR NULL.
-  var m14 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  m14.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- accepted for SHA-2 (RFC 5754)
+  var m14 = signerDigestParams(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), b.nullValue());
   check("R14 ML-DSA sha512 digestAlgorithm DER NULL parameter -> accepted (RFC 5754)", (await pki.cms.verify(m14)).valid === true);
   // R14b -- a SHAKE256 ML-DSA digestAlgorithm with a present parameter (even DER NULL) is REJECTED:
   // RFC 8702 sec. 3.1 requires the SHAKE parameters absent, with no NULL exception.
-  var m14b = pki.schema.cms.parse(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })));
-  m14b.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- forbidden for SHAKE256
+  var m14b = signerDigestParams(await pki.cms.sign(CONTENT, Object.assign(makeSigner("ml-dsa-44"), { digestAlgorithm: "shake256" })), b.nullValue());
   check("R14b ML-DSA shake256 digestAlgorithm NULL parameter -> unsupported (RFC 8702)", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m14b)));
   // R8 -- an unwired message digest (SHA3-512) with signed attributes present.
-  var m8 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")));
-  m8.signerInfos[0].digestAlgorithm.name = "sha3-512";
+  var m8 = swapSignerDigest(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65")), "sha3-512");
   check("R8 ML-DSA unsupported message digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m8)));
   // R12 (verify side) -- a below-strength message digest for the parameter set (SHA-256 / ML-DSA-87).
-  var m12 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-87")));
-  m12.signerInfos[0].digestAlgorithm.name = "sha256";
+  var m12 = swapSignerDigest(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-87")), "sha256");
   check("R12 SHA-256 under ML-DSA-87 (below strength) -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m12)));
   // R7 -- empty-context binding (RFC 9882 sec. 3.2): an ML-DSA signature computed under a NON-EMPTY
   // context does not verify under CMS, which signs and verifies with the empty context. Re-sign the
   // exact preimage with a context and swap it in -> the verdict is invalid (a code-less false, no throw).
   var s7 = makeSigner("ml-dsa-65");
-  var p7 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, s7));
+  var der7 = await pki.cms.sign(CONTENT, s7);
+  var p7 = pki.schema.cms.parse(der7);
   var preimage7 = Buffer.from(p7.signerInfos[0].signedAttrsBytes); preimage7[0] = 0x31;   // [0] IMPLICIT -> universal SET OF
-  p7.signerInfos[0].signature = require("node:crypto").sign(null, preimage7, { key: s7.keyObject, context: Buffer.from("ctx") });
-  check("R7 non-empty-context ML-DSA signature -> invalid under empty-context verify", (await pki.cms.verify(p7)).valid === false);
+  var ctxSig = require("node:crypto").sign(null, preimage7, { key: s7.keyObject, context: Buffer.from("ctx") });
+  var swapped7 = overwriteValue(der7, p7.signerInfos[0].signature, ctxSig, "the ML-DSA signature");
+  check("R7 non-empty-context ML-DSA signature -> invalid under empty-context verify", (await pki.cms.verify(swapped7)).valid === false);
   // M9 -- with NO signed attributes the digestAlgorithm has no meaning and is ignored on verify:
   // neither an unsupported digest NAME nor a present (non-NULL) PARAMETER may reject the signature.
-  var noattr = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
-  noattr.signerInfos[0].digestAlgorithm.name = "sha3-512";   // meaningless when signed attrs absent
+  var noattr = swapSignerDigest(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }), "sha3-512");
   check("M9 no-signed-attrs verify ignores digestAlgorithm name", (await pki.cms.verify(noattr, { content: CONTENT })).valid === true);
   // opts.content that DIFFERS from an attached SignedData's own eContent is a substitution trap -> reject.
   await rejects("opts.content differing from an attached SignedData's eContent -> cms/content-conflict", function () { return pki.cms.verify(noattr, { content: Buffer.from("a different content the signature never covered") }); }, "cms/content-conflict");
   // R15 -- a present, non-NULL digestAlgorithm parameter is likewise ignored without signed attributes.
-  var m15 = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }));
-  m15.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // present non-NULL -- ignored w/o attrs
+  var m15 = signerDigestParams(await pki.cms.sign(CONTENT, makeSigner("ml-dsa-65"), { signedAttributes: false }), b.octetString(Buffer.from([0x00])));
   check("R15 no-attrs ML-DSA ignores a present digestAlgorithm parameter", (await pki.cms.verify(m15, { content: CONTENT })).valid === true);
 }
 

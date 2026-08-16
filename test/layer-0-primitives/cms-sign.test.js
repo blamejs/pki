@@ -16,8 +16,10 @@
 var crypto = require("node:crypto");
 var helpers = require("../helpers");
 var signing = require("../helpers/signing");
+var surgery = require("../helpers/der-surgery");
 var pki = helpers.pki;
 var check = helpers.check;
+var b = pki.asn1.build;
 var makeSigner = signing.makeSigner;
 var makeCompositeSigner = signing.makeCompositeSigner;
 
@@ -101,8 +103,13 @@ async function testSignedAttributes() {
   // the default signed attributes bind the content: verify then tamper -> invalid.
   var p7 = await pki.cms.sign(CONTENT, makeSigner("ec-p256"));
   var parsed = pki.schema.cms.parse(p7);
-  var mutated = pki.schema.cms.parse(p7);
-  var c = Buffer.from(mutated.encapContentInfo.eContent); c[0] = c[0] ^ 0xff; mutated.encapContentInfo.eContent = c;
+  // Flip a content byte in the ENCODING. The content rides the message verbatim, so it is found by
+  // value, and a one-byte flip keeps every length intact -- the message stays well-formed and the
+  // only thing that changed is what the message-digest attribute promised.
+  var mutated = Buffer.from(p7);
+  var at = mutated.indexOf(CONTENT);
+  check("the eContent octets located in the encoding", at >= 0);
+  mutated[at] = mutated[at] ^ 0xff;
   var tampered = await pki.cms.verify(mutated);
   check("signed attributes bind the content (tamper -> invalid)", tampered.valid === false);
   check("default output carries three signed attributes", parsed.signerInfos[0].signedAttrs.length === 3);
@@ -382,22 +389,31 @@ async function testSlhDsa() {
   // sid=subjectKeyIdentifier.
   check("SLH-DSA sid=ski -> valid", (await pki.cms.verify(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f", { ski: true }), { sid: "ski" }))).valid === true);
   // signatureAlgorithm / signer-key parameter-set disagreement is a fail-closed mismatch (sameKeyOid).
-  var m = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f")));
-  m.signerInfos[0].signatureAlgorithm.name = "id-slh-dsa-sha2-256f";
-  check("SLH-DSA sig-alg / key set mismatch -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m)));
+  // Rewritten in the ENCODING, on the SignerInfo's own AlgorithmIdentifier (the last one), so the
+  // signer certificate keeps naming sha2-128f and what disagrees is the parameter set the message
+  // asks to be verified under.
+  var p128 = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-128f"));
+  var m = surgery.replaceLastAlgId(p128, pki.oid.byName("id-slh-dsa-sha2-128f"),
+    function () { return b.sequence([b.oid(pki.oid.byName("id-slh-dsa-sha2-256f"))]); });
+  check("SLH-DSA parameter-set swap changed the DER", !m.der.equals(p128));
+  check("SLH-DSA sig-alg / key set mismatch -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(m.der)));
   // a caller digestAlgorithm that contradicts the parameter set's RFC 9814 sec. 4 pinned digest
   // (sha2-128f pins SHA-256) is rejected at config time rather than emitting a non-conformant digest.
   await rejects("SLH-DSA + contradicting digestAlgorithm -> reject", function () { return pki.cms.sign(CONTENT, Object.assign(makeSigner("slh-dsa-sha2-128f"), { digestAlgorithm: "sha512" })); }, "cms/bad-input");
   // a SHAKE-digest SLH-DSA SignerInfo (shake-128f pins SHAKE128) whose digestAlgorithm carries a
   // present parameter (even DER NULL) is rejected -- RFC 8702 sec. 3.1 requires SHAKE params absent.
-  var shk = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f")));
-  shk.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- forbidden for SHAKE
-  check("SLH-DSA shake128 digestAlgorithm NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(shk)));
+  var pShk = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-shake-128f"));
+  var shk = surgery.replaceLastAlgId(pShk, pki.oid.byName("shake128"),
+    function (n) { return surgery.algIdWithParams(n.children[0].bytes, b.nullValue()); });
+  check("SLH-DSA shake128 digest-params splice changed the DER", !shk.der.equals(pShk));
+  check("SLH-DSA shake128 digestAlgorithm NULL parameters -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(shk.der)));
   // RFC 9814 sec. 4: a message-digest that is not the parameter set's paired hash is rejected on
   // verify -- SHA-256 on sha2-256f (which pairs SHA-512, twice the 256-bit tree hash) fails closed.
-  var wrongMd = pki.schema.cms.parse(await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-256f")));
-  wrongMd.signerInfos[0].digestAlgorithm.name = "sha256";
-  check("SLH-DSA sha2-256f + mismatched sha256 digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(wrongMd)));
+  var p256f = await pki.cms.sign(CONTENT, makeSigner("slh-dsa-sha2-256f"));
+  var wrongMd = surgery.replaceLastAlgId(p256f, pki.oid.byName("sha512"),
+    function () { return b.sequence([b.oid(pki.oid.byName("sha256"))]); });
+  check("SLH-DSA digest swap changed the DER", !wrongMd.der.equals(p256f));
+  check("SLH-DSA sha2-256f + mismatched sha256 digest -> unsupported", (function (r) { return r.valid === false && r.signers[0].code === "cms/unsupported-algorithm"; })(await pki.cms.verify(wrongMd.der)));
 }
 
 // A KEY-ONLY signer: `{ key, spki, keyIdentifier }` with no certificate. RFC 5272

@@ -194,6 +194,68 @@ async function testVerifyAccept() {
   check("a token anchored to its TSA's root reports trusted", res.trusted === true);
   check("a token verified with no anchor reports trusted false -- a definite answer, not a missing one",
     res6.trusted === false && res6.valid === true);
+
+  // `revocationChecked` is the THIRD question, for the same reason. The path validator runs its
+  // revocation step only when a revocationChecker is supplied, so `trusted:true` alone reads the
+  // same whether the TSA was established un-revoked or revocation was never consulted -- and the
+  // latter is the default. It carries pki.path.validate's own four states rather than a boolean,
+  // so "checked, good" stays distinguishable from "could not check, and you waived it".
+  check("trusted with no revocationChecker reports revocationChecked false",
+    res.trusted === true && res.revocationChecked === false);
+  check("no anchor at all reports revocationChecked false", res6.revocationChecked === false);
+  var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
+  var revRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: goodChecker });
+  check("a revocationChecker that establishes the TSA reports revocationChecked determined",
+    revRes.valid === true && revRes.trusted === true && revRes.revocationChecked === "determined");
+  // A REFUSAL reports what the path established too. The case that matters is a TSA the checker
+  // answered `revoked` for: that path DID check revocation and rejected on the answer, so a verdict
+  // claiming nothing was checked would misdescribe the very reason the token was refused -- and it
+  // is the archived-verdict question the field exists to answer.
+  var revokedChecker = { check: function () { return Promise.resolve({ status: "revoked" }); } };
+  var revokedRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: revokedChecker });
+  check("a TSA established REVOKED is untrusted", revokedRes.trusted === false && revokedRes.code === "tsp/untrusted-tsa");
+  check("...and the refusal still reports that revocation WAS checked, not that it was not",
+    revokedRes.revocationChecked === "determined");
+
+  // Backtracking tries several chains for the same TSA certificate. A checker that answers for the
+  // first candidate and then refuses to answer must not let the later, less-established attempt
+  // erase the earlier one: what the verdict reports is the most any candidate established, not
+  // whichever ran last. Driven through a checker whose answer changes between calls.
+  // With several candidate chains the verb makes several validation attempts, and the refusal must
+  // still report an established state rather than the `false` that means "nothing ran". A second
+  // self-signed certificate carrying the SAME subject as the TSA is an issuer candidate for it, so
+  // the chain builder enumerates more than one path; the premise is asserted rather than assumed.
+  //
+  // What this does NOT reach is an earlier attempt establishing strictly MORE than the last one:
+  // pki.path.validate already takes the weakest outcome across the certificates within one path,
+  // and the longest chain is attempted first, so with these fixtures every attempt reports the same
+  // or less. The keep-the-strongest rule across attempts is therefore defensive here -- it exists
+  // because the two loops (candidate chains, and the two endpoints of a fractional genTime) both
+  // produce results that must not overwrite each other, and every result now reaches the
+  // accumulator through one function so none can bypass it.
+  var decoyIssuer = makeTsa(ekuExt([TS_EKU], true), { serial: 0x9d, name: "TSA" });
+  var callN = 0;
+  var fadingChecker = { check: function () { callN++; return Promise.resolve(callN === 1 ? { status: "revoked" } : { status: "unknown" }); } };
+  var fadeRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: fadingChecker, certs: [decoyIssuer.cert] });
+  check("the multi-candidate premise holds: more than one attempt consulted the checker", callN > 1);
+  check("a multi-candidate refusal reports an established state, never the false that means nothing ran",
+    fadeRes.trusted === false && fadeRes.revocationChecked !== false);
+
+  // An UNDETERMINED status fails the path rather than passing quietly, and there is no option to
+  // waive it: this verb does not forward softFail, so "the responder could not be reached" cannot
+  // become a trusted timestamp.
+  var unknownChecker = { check: function () { return Promise.resolve({ status: "unknown" }); } };
+  var unknownRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker });
+  check("an undetermined revocation status leaves the TSA untrusted, not trusted-unchecked",
+    unknownRes.trusted === false && unknownRes.revocationChecked === "undetermined");
+  var softFailCode = await (async function () {
+    try { await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker, softFail: true }); return null; }
+    catch (e) { return e && e.code; }
+  })();
+  check("softFail is not an option here -- an undetermined status cannot be waived into trust",
+    softFailCode === "tsp/bad-input");
+  // The anchor's own constraints travel with the verdict rather than being computed and discarded.
+  check("anchorConstraints is carried from the path result", "anchorConstraints" in res);
   var otherAnchorRes = await (async function () {
     try { return await pki.tsp.verify(token, DATA, { trustAnchor: makeTsa(ekuExt([TS_EKU], true)).anchor }); }
     catch (e) { return { threw: e && e.code }; }
@@ -212,6 +274,11 @@ async function testVerifyAccept() {
   var taNotTs = Object.assign({}, tsa.anchor, { purposes: { timeStamping: false } });
   var notTs = await pki.tsp.verify(token, DATA, { trustAnchor: taNotTs });
   check("an anchor NOT delegated for timestamping is refused", notTs.valid === false && notTs.trusted === false);
+  // ...and the refusal reports WHICH anchor checks ran. This case establishes anchor constraints
+  // while establishing nothing about revocation -- no revocationChecker is configured -- so the two
+  // fields have to travel independently. Reported together, the constraints went missing here.
+  check("...and that refusal still reports the anchor constraints it was refused by",
+    notTs.anchorConstraints != null && notTs.revocationChecked === false);
   // A distrustAfter for this purpose likewise applies rather than sitting inert. The fixture TSA's
   // notBefore is 2020-01-01, and the comparison is STRICTLY greater -- a certificate issued ON the
   // distrust date stays trusted -- so the date has to sit before it to distrust anything.

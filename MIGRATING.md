@@ -14,6 +14,47 @@ The toolkit has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
+### v0.5.6 — `try { pki.<verb>(...) } catch`
+
+A verb documented `-> Promise` rejects on a bad input instead of throwing before the promise exists.
+
+If you awaited the call, or attached `.catch`, nothing changes and there is nothing to do.
+
+What changes is the undocumented shape: a synchronous `try`/`catch` that never consumed the
+returned promise.
+
+```js
+try {
+  pki.cms.verify(bytes);            // no await, no .catch
+} catch (e) { /* used to fire on a malformed input */ }
+```
+
+That `catch` no longer runs, and the rejection surfaces as an unhandled one. It worked by
+accident on exactly the verbs where a check happened to run before the promise existed --
+`pki.cms.verify`, `pki.cms.sign`, `pki.cms.countersign`, `pki.ocsp.sign`, `pki.tsp.sign`, six
+`pki.acme` verbs, and nine verbs on the client `pki.acme.client(...)` returns. Which verbs
+those were was not visible from the call, which is why they are now uniform.
+
+```js
+await pki.cms.verify(bytes);        // or pki.cms.verify(bytes).catch(handleIt)
+```
+
+### v0.5.6 — `pki.pkcs12.build(spec)`
+
+An omitted password is refused rather than encoded as the empty one.
+
+A store whose password option was missing or misspelled no longer builds silently under `""`.
+
+```js
+await pki.pkcs12.build(spec);                    // now pkcs12/bad-input
+await pki.pkcs12.build(spec, { password: "" });  // the empty password, asked for
+```
+
+If you were relying on the default, the second form restores the previous output byte for
+byte. `opts.integrity.mode` is validated the same way: a spelling other than `"public-key"`
+is now `pkcs12/bad-integrity-mode` instead of silently selecting password integrity and
+dropping the signer.
+
 ### v0.5.5 — `require("@blamejs/pki/lib/...")`
 
 The package resolves one entry point; a path into the package no longer resolves.

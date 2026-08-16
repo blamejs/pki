@@ -125,6 +125,34 @@ async function testBadInput() {
   await rejects("a null messageImprint", function () { return pki.tsp.sign(null, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("an invalid genTime Date", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: new Date("not a date") }); }, "tsp/bad-input");
   await rejects("a non-Date genTime", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: "2026-01-01" }); }, "tsp/bad-input");
+  // A caller-authored INTEGER goes through the shared coercion, so a value that is not one is a
+  // typed tsp/bad-input rather than a raw SyntaxError or RangeError from BigInt() -- an untyped
+  // fault out of a public verb, which a caller handling tsp/* codes cannot catch.
+  await rejects("a serialNumber that is not an integer", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: "not-a-number" }); }, "tsp/bad-input");
+  await rejects("a fractional serialNumber", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1.5 }); }, "tsp/bad-input");
+  await rejects("a nonce that is not an integer", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, nonce: {} }); }, "tsp/bad-input");
+  await rejects("a request nonce that is not an integer", function () { return Promise.resolve().then(function () { return pki.tsp.request(imprint("sha256"), { nonce: "nope" }); }); }, "tsp/bad-input");
+}
+
+// ---- a pre-encoded request extension is validated, not spliced in raw ----
+async function testRequestExtensions() {
+  var b = pki.asn1.build;
+  var san = b.sequence([b.oid(pki.oid.byName("subjectAltName")), b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from("example.com", "utf8"))]))]);
+
+  // A well-formed extension still rides through, and the request its own parser reads back carries it.
+  var ok = pki.tsp.request(imprint("sha256"), { extensions: [san] });
+  check("a valid request extension is carried", (pki.tsp.parseRequest(ok).extensions || []).length === 1);
+
+  // Every shape the encoder used to emit and its own parseRequest then refused. A caller relaying a
+  // blob it did not author put fully chosen bytes inside [0]; the request builder now applies the
+  // same pre-encoded-Extension gate every other request builder applies.
+  await rejects("a request extension that is not an Extension SEQUENCE",
+    function () { return Promise.resolve().then(function () { return pki.tsp.request(imprint("sha256"), { extensions: [Buffer.from("hello world")] }); }); }, "tsp/bad-input");
+  await rejects("a duplicate request extension extnID",
+    function () { return Promise.resolve().then(function () { return pki.tsp.request(imprint("sha256"), { extensions: [san, san] }); }); }, "tsp/bad-input");
+  var critFalse = b.sequence([b.oid(pki.oid.byName("subjectAltName")), b.boolean(false), b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from("example.com", "utf8"))]))]);
+  await rejects("a request extension with a non-canonical explicit critical=FALSE",
+    function () { return Promise.resolve().then(function () { return pki.tsp.request(imprint("sha256"), { extensions: [critFalse] }); }); }, "tsp/bad-input");
 }
 
 async function run() {
@@ -132,6 +160,7 @@ async function run() {
   await testAlgorithms();
   await testPassthrough();
   await testBadInput();
+  await testRequestExtensions();
 }
 
 module.exports = { run: run };

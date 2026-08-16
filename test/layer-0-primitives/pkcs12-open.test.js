@@ -204,6 +204,24 @@ async function testLegacyPbe() {
   var hiSafe = Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(hiBag)])))]);
   var hiStore = Bld.sequence([Bld.integer(3), Bld.raw(Bld.sequence([Bld.oid(pki.oid.byName("data")), Bld.explicit(0, Bld.octetString(Bld.sequence([Bld.raw(hiSafe)])))]))]);
   check("#L14 legacy KDF work over the aggregate budget -> pkcs12/iteration-limit (not the per-bag cap)", (await codeOf(pki.pkcs12.open(hiStore, "test123", { allowUnauthenticated: true }))) === "pkcs12/iteration-limit");
+  // The SAME budget binds the PBES2 path, which is the one every current producer emits. Charging
+  // only the legacy arm left the modern arm free to reset its per-bag cap on every bag: ten bags at
+  // 1e6 PBKDF2 iterations ran 1e7 aggregate rounds of blocking pbkdf2Sync with no refusal, and the
+  // parser's element limit is 1024. Ten bags, each under the per-bag cap, must now exceed the
+  // aggregate one -- and be refused BEFORE any of the derivations run.
+  var pbSigner = signer();
+  var manyBags = [];
+  for (var mb = 0; mb < 10; mb++) {
+    manyBags.push({ type: "cert", cert: pbSigner.cert, encrypt: { password: "hi", iterations: 200000 } });
+  }
+  var manySafes = manyBags.map(function (bag) { return { encrypt: { password: "hi", iterations: 200000 }, bags: [{ type: "cert", cert: bag.cert }] }; });
+  var manyStore = await pki.pkcs12.build({ safeContents: manySafes }, { password: "hi" });
+  check("#L15 PBES2 KDF work over the aggregate budget -> pkcs12/iteration-limit (the modern arm is budgeted too)",
+    (await codeOf(pki.pkcs12.open(manyStore, "hi"))) === "pkcs12/iteration-limit");
+  // A conforming store is unaffected: its handful of safes at the default iteration count stays far
+  // inside the same budget.
+  var okStore = await pki.pkcs12.build({ key: pbSigner.key, cert: pbSigner.cert }, { password: "hi" });
+  check("#L16 a conforming PBES2 store still opens under the aggregate budget", (await pki.pkcs12.open(okStore, "hi")).macVerified === true);
   // No CBC padding oracle: an RC2 bag whose decrypt fails on an invalid pad must give the SAME opaque error
   // MESSAGE (not just code) as a valid-pad-wrong-content failure, so the message cannot distinguish pad validity.
   var rc2Params = Bld.sequence([Bld.octetString(Buffer.from("0011223344556677", "hex")), Bld.integer(2048)]);

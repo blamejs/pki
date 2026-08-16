@@ -16,6 +16,7 @@
 
 var helpers = require("../helpers");
 var signing = require("../helpers/signing");
+var surgery = require("../helpers/der-surgery");
 var pki = helpers.pki;
 var check = helpers.check;
 var makeSigner = signing.makeSigner;
@@ -167,14 +168,21 @@ async function testValidRegardless() {
   check("#6 missing countersigner cert -> ok:false + signer-cert-not-found, primary valid",
     res2.valid === true && res2.signers[0].countersignatures[0].ok === false && res2.signers[0].countersignatures[0].code === "cms/signer-cert-not-found");
 
-  // a MALFORMED countersignature value (an INTEGER, not a SignerInfo) in a hand-supplied parse result
-  // -> the value fails to walk, surfaced ok:false with a typed code; the primary stays valid.
+  // A MALFORMED countersignature value (an INTEGER, not a SignerInfo) is refused by the DECODER,
+  // which validates every id-countersignature value by content rather than accepting it on the
+  // attribute type alone (schema-cms.js, RFC 5652 sec. 11.4). So this one does not reach a
+  // per-countersignature verdict at all: the whole message is a typed refusal, and the sibling
+  // vectors above pin what DOES reach one -- a countersignature whose signature is broken, and one
+  // whose certificate is absent, both ok:false with the primary still valid.
   var good = await pki.cms.countersign(base.cms, { cert: cs.cert, key: cs.key }, {});
-  var parsed = parse(good);
-  parsed.signerInfos[0].unsignedAttrs.filter(function (a) { return a.type === O("countersignature"); })[0].values[0] = b.integer(5n);
-  var res3 = await pki.cms.verify(parsed);
-  check("#6 a malformed countersignature value -> ok:false + typed code, primary valid",
-    res3.valid === true && res3.signers[0].countersignatures[0].ok === false && typeof res3.signers[0].countersignatures[0].code === "string");
+  var csOid = O("countersignature");
+  var broken = surgery.patch(good, function (n) {
+    if (!surgery.isAlgId(n, csOid)) return undefined;          // the countersignature Attribute
+    return b.sequence([b.oid(csOid), b.set([b.integer(5n)])]);
+  });
+  check("#6 countersignature value replaced in the DER", !broken.equals(good));
+  await rejects("#6 a malformed countersignature value", function () { return pki.cms.verify(broken); },
+    "cms/bad-signer-info");
 }
 
 // ---- 8 NO-SIGNED-ATTRS COUNTERSIGNATURE ------------------------------------

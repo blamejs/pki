@@ -230,6 +230,22 @@ async function run() {
   check("an unknown identity-policy key is refused rather than ignored",
     await codeOf(pki.sigstore.verifyBundle(BUNDLE,
       Object.assign({ identity: { certificateIdentity: v.identity.san.value } }, TM))) === "sigstore/bad-input");
+  // The same door at the TOP level, where the same slip loses the same pin. Closing it one level
+  // down only caught a caller who already knew to write `identity`; a caller reaching for cosign's
+  // flag name writes it here, and got `verified: true` with the signer entirely unpinned.
+  check("cosign's certificateIdentity spelling at the top level is refused, not ignored",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE,
+      Object.assign({ certificateIdentity: v.identity.san.value }, TM))) === "sigstore/bad-input");
+  check("a misspelled certificateOidcIssuer is refused, not ignored",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE,
+      Object.assign({ certificateOidcIssuer: "https://token.actions.githubusercontent.com" }, TM))) === "sigstore/bad-input");
+  // predicateType has no identityChecked-style field, so a swallowed spelling left NOTHING in the
+  // verdict to reveal that the SLSA-predicate pin never ran.
+  check("a misspelled predicateType is refused, not silently unpinned",
+    await codeOf(pki.sigstore.verifyBundle(BUNDLE,
+      Object.assign({ predicate_type: "https://slsa.dev/provenance/v1" }, TM))) === "sigstore/bad-input");
+  check("the documented options are all still accepted",
+    (await pki.sigstore.verifyBundle(BUNDLE, Object.assign({ identity: goodPolicy, predicateType: v.predicateType }, TM))).verified === true);
 
   // --- Unsigned-root: corrupt the checkpoint signature AND drop the SET -> the
   // reconstructed root is not attested by the Rekor key (an attacker-computed root

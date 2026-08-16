@@ -315,7 +315,13 @@ security-only patches after the next major releases.
   `pki.pkcs12.build` encodes every password the PKCS#12 way (BMPString+NULL for
   the Appendix B KDF, UTF-8 for the PBES2 bags and PBMAC1) so the output is not
   silently unopenable elsewhere, refuses a ≤160-bit PBMAC1 digest (RFC 9579), and
-  never emits a non-canonical DEFAULT-1 MacData iterations. `pki.pkcs12.open`
+  never emits a non-canonical DEFAULT-1 MacData iterations. An omitted password
+  is refused rather than encoded as the empty one, and `opts.integrity.mode` is
+  validated against the one value it selects: a misspelled option is the input
+  that reads as an omission rather than as a value, so before this a store could
+  be built under the empty password, or MACed when the caller asked for a
+  signature, with nothing said either way. The empty password is still available
+  as an explicit `""`. `pki.pkcs12.open`
   verifies that MAC before it decrypts any bag (RFC 7292 §5.1): a store whose
   password MAC fails returns nothing, and the wrong-password verdict is the MAC
   gate (`pkcs12/mac-mismatch`) rather than a per-bag decrypt error that could
@@ -324,7 +330,11 @@ security-only patches after the next major releases.
   false`), and because a PBES2 bag decrypt after a valid MAC is still MAC-less at
   the cipher layer, it collapses every post-integrity decrypt failure into the
   uniform `pkcs12/decrypt-failed`. The bag KDF iteration and salt work factors
-  are bounded before derivation (`opts.maxIterations` lowers the cap). For a
+  are bounded before derivation (`opts.maxIterations` lowers the cap), and one
+  aggregate budget spans the whole call for both the Appendix C and the PBES2
+  schemes — a per-bag cap resets on every bag, so without it a store repeating a
+  costly bag up to the element limit multiplies the cap by that limit in blocking
+  key-derivation work. For a
   public-key-integrity store (an `id-signedData` authSafe, RFC 7292 §4) `open`
   verifies the CMS SignedData signature over the AuthenticatedSafe first and
   returns nothing on a failure (`pkcs12/signature-invalid`), exactly as the MAC
@@ -549,6 +559,17 @@ security-only patches after the next major releases.
   is read from the verified encapsulated content rather than a caller-supplied
   parsed object, and a well-formed token failing any check is a fail-closed
   `{ valid: false }` verdict with a typed reason code, never a silent pass.
+  What the verdict establishes is reported in the same three parts the rest of
+  the toolkit uses: `valid` for the signature and the structural bindings,
+  `trusted` for chaining to an anchor the caller named, and `revocationChecked`
+  for whether the authority's revocation status was ever established. Revocation
+  runs only when a `revocationChecker` is supplied, so without that third field a
+  timestamp whose authority was never checked against a CRL or an OCSP responder
+  read exactly like one established un-revoked — and a timestamp is archived
+  precisely to be re-read years later, when nobody remembers which it was. An
+  undetermined status leaves the authority untrusted rather than trusted-
+  unchecked; this verb has no `softFail`, so "the responder could not be reached"
+  cannot become a trusted timestamp.
 - **Merkle proof forgery.** `pki.merkle` verifies RFC 6962 / RFC 9162 inclusion
   and consistency proofs fail-closed. The leaf (`0x00`) and node (`0x01`)
   domain-separation prefixes stop the second-preimage swap, a proof whose node
@@ -570,7 +591,15 @@ security-only patches after the next major releases.
   attributes are decoded from the exact bytes the signature covers rather than
   from a parsed representation a caller could mutate independently, so a supplied
   parsed object cannot desynchronize the checked attributes from the verified
-  preimage. An EdDSA signer key is validated on-curve and full-order before
+  preimage. A parsed SignedData is re-derived from the bytes its parser recorded
+  before any of this runs, and one that carries no such record — an object
+  assembled or rebuilt rather than parsed — is refused. Without that step the
+  strip-and-present move above was still reachable through the parsed-object
+  input: keeping a genuine signer's signature, clearing the signed-attribute
+  byte range, and presenting the signature's own preimage as the encapsulated
+  content left every remaining check passing, because with no signed attributes
+  there is no message-digest or content-type attribute left to check.
+  An EdDSA signer key is validated on-curve and full-order before
   verification, so a low-order Ed25519 or Ed448 point, which `node:crypto`
   imports without complaint and which can verify a forged signature, is rejected.
   A false verdict or an unresolved parameter is a fail-closed `cms/*` outcome,

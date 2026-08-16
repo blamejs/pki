@@ -223,10 +223,23 @@ async function testEdges() {
   var pex = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", iterations: 3000, keyLength: 32 } });
   check("PBMAC1 with explicit iterations + keyLength round-trips", (await pki.pkcs12.verifyMac(pex, "1234")) === true);
   check("PBMAC1 with keyLength < 20 -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", keyLength: 10 } }))) === "pkcs12/bad-input");
-  // build with NO opts (an empty password, MAC present) + verifyMac with the empty password.
-  var pnoopts = await pki.pkcs12.build(spec);
-  check("build with no opts uses an empty password + still MACs", pki.schema.pkcs12.parse(pnoopts).integrityMode === "password");
-  check("verifyMac with the empty password accepts it", (await pki.pkcs12.verifyMac(pnoopts, "")) === true);
+  // An OMITTED password is refused rather than silently encoded as the empty one. Without this a
+  // caller who misspells the option -- or threads it through a layer that drops it -- gets a store
+  // whose contents are protected by nothing, and nothing anywhere says so.
+  check("build with no opts -> pkcs12/bad-input, not an empty-password store",
+    (await codeOf(pki.pkcs12.build(spec))) === "pkcs12/bad-input");
+  check("build with a misspelled password option -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { passwrod: "s3cr3t" }))) === "pkcs12/bad-input");
+  // The empty password remains available -- it just has to be asked for.
+  var pEmptyPw = await pki.pkcs12.build(spec, { password: "" });
+  check("an explicit empty password still builds a MACed store", pki.schema.pkcs12.parse(pEmptyPw).integrityMode === "password");
+  check("verifyMac with the empty password accepts it", (await pki.pkcs12.verifyMac(pEmptyPw, "")) === true);
+  // The integrity mode is validated against the permitted value, not compared to one literal: any
+  // other spelling silently selected password integrity and dropped the signer with it.
+  check("integrity.mode 'publicKey' -> pkcs12/bad-integrity-mode, not a silent password MAC",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", integrity: { mode: "publicKey", signer: { cert: s.cert, key: s.key } } }))) === "pkcs12/bad-integrity-mode");
+  check("an unknown opts.integrity option -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", integrity: { mode: "public-key", signers: [{ cert: s.cert, key: s.key }], signerz: 1 } }))) === "pkcs12/bad-input");
   // An integrity verb reads two things that must have come from one place: the MACed byte range,
   // and the bags handed back as verified. On a parsed store they are separate properties, so a
   // REBUILT object can pair one store's macedBytes with another's contents -- verify this, return
