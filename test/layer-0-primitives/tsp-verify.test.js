@@ -194,6 +194,34 @@ async function testVerifyAccept() {
   check("a token anchored to its TSA's root reports trusted", res.trusted === true);
   check("a token verified with no anchor reports trusted false -- a definite answer, not a missing one",
     res6.trusted === false && res6.valid === true);
+
+  // `revocationChecked` is the THIRD question, for the same reason. The path validator runs its
+  // revocation step only when a revocationChecker is supplied, so `trusted:true` alone reads the
+  // same whether the TSA was established un-revoked or revocation was never consulted -- and the
+  // latter is the default. It carries pki.path.validate's own four states rather than a boolean,
+  // so "checked, good" stays distinguishable from "could not check, and you waived it".
+  check("trusted with no revocationChecker reports revocationChecked false",
+    res.trusted === true && res.revocationChecked === false);
+  check("no anchor at all reports revocationChecked false", res6.revocationChecked === false);
+  var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
+  var revRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: goodChecker });
+  check("a revocationChecker that establishes the TSA reports revocationChecked determined",
+    revRes.valid === true && revRes.trusted === true && revRes.revocationChecked === "determined");
+  // An UNDETERMINED status fails the path rather than passing quietly, and there is no option to
+  // waive it: this verb does not forward softFail, so "the responder could not be reached" cannot
+  // become a trusted timestamp.
+  var unknownChecker = { check: function () { return Promise.resolve({ status: "unknown" }); } };
+  var unknownRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker });
+  check("an undetermined revocation status leaves the TSA untrusted, not trusted-unchecked",
+    unknownRes.trusted === false && unknownRes.revocationChecked === false);
+  var softFailCode = await (async function () {
+    try { await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker, softFail: true }); return null; }
+    catch (e) { return e && e.code; }
+  })();
+  check("softFail is not an option here -- an undetermined status cannot be waived into trust",
+    softFailCode === "tsp/bad-input");
+  // The anchor's own constraints travel with the verdict rather than being computed and discarded.
+  check("anchorConstraints is carried from the path result", "anchorConstraints" in res);
   var otherAnchorRes = await (async function () {
     try { return await pki.tsp.verify(token, DATA, { trustAnchor: makeTsa(ekuExt([TS_EKU], true)).anchor }); }
     catch (e) { return { threw: e && e.code }; }

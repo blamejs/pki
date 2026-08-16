@@ -1961,6 +1961,34 @@ function testNoDuplicateCodeBlocks() {
       mode: "family-subset",
       reason: "transport/verify-orchestrator header run: a `var X = require(\"./Y\")` block binding the shared core (oid/guard/constants/webcrypto/framework-error/schema-cms|cmp/http-retry-after); the requires and the bound modules live once each, the run repeats in shape while binding a different module set per domain -- not further extractable. family-subset so any 3+ match.",
     },
+    {
+      // The deferring wrapper on a verb documented `-> Promise`: a one-line body forwarding the
+      // verb's own arguments through guard.async.deferred to the implementation beside it. The
+      // RULE lives once, in guard-async; what repeats is only the forwarding, and it cannot be
+      // hoisted because each wrapper has to name its own implementation and pass its own
+      // parameters -- a generic forwarder would erase the arity the documented signature states.
+      // family-subset so any 3+ of the Promise-returning verbs match.
+      files: [
+        "lib/cms-sign.js:sign", "lib/cms-sign.js:countersign", "lib/cms-verify.js:verify",
+        "lib/ocsp.js:sign", "lib/tsp-sign.js:sign",
+      ],
+      mode: "family-subset",
+      reason: "the guard.async.deferred wrapper on a Promise-documented verb: a one-line forward of the verb's own arguments to the implementation beside it. The rule lives once in guard-async; only the forwarding repeats, and each wrapper must name its own implementation and parameters, so it is not further extractable.",
+    },
+    {
+      // The per-format-module parser footer: `pkix.makeRecordingParser({ pemLabel, PemError,
+      // ErrorClass, prefix, what, topSchema, ns }, kind)`. The parse logic and the provenance
+      // record both live once, in schema-pkix and guard-parsed; each module supplies a different
+      // label, error class, domain prefix, top-level schema and provenance kind, so the call
+      // repeats in shape without being further extractable. family-subset so any 3+ match.
+      files: [
+        "lib/schema-cms.js:_expectedAuthDataVersion", "lib/schema-crl.js:decodeExt",
+        "lib/schema-ocsp.js:_shapeResponderID", "lib/schema-x509.js:<top>",
+        "lib/schema-pkcs12.js:<top>",
+      ],
+      mode: "family-subset",
+      reason: "the per-format pkix.makeRecordingParser({ pemLabel, PemError, ErrorClass, prefix, what, topSchema, ns }, kind) footer: the parse logic lives once in schema-pkix and the provenance record once in guard-parsed, while each module supplies its own label, error class, domain prefix, top schema and provenance kind. Attribution names the nearest enclosing function because the call is module-level.",
+    },
   ];
 
   var MIGRATE_MODE = !!process.env.HS_CLUSTER_MIGRATE;

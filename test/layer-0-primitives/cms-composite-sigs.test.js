@@ -18,6 +18,7 @@
 
 var helpers = require("../helpers");
 var signing = require("../helpers/signing");
+var surgery = require("../helpers/der-surgery");
 var compositeSig = require("../../lib/composite-sig");
 var pki = helpers.pki;
 var check = helpers.check;
@@ -175,11 +176,21 @@ async function testDigestCoherence() {
 async function testParamsPresent() {
   var s = makeCompositeSigner("id-MLDSA65-ECDSA-P256-SHA512");
   var p7 = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key });
-  var parsed = pki.schema.cms.parse(p7);
-  parsed.signerInfos[0].signatureAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // a DER NULL
-  var res = await pki.cms.verify(parsed, { certs: [s.cert] });
-  check("composite sigAlg params present -> valid:false", res.valid === false);
-  check("composite sigAlg params present -> cms/unsupported-algorithm", res.signers[0].code === "cms/unsupported-algorithm");
+  // Give the composite AlgorithmIdentifier a DER NULL parameters field, in the ENCODING -- the
+  // absent-parameters rule is about what an attacker can put on the wire, and every enclosing
+  // length is rebuilt around the two extra bytes.
+  var compositeOid = pki.oid.byName("id-MLDSA65-ECDSA-P256-SHA512");
+  var withParams = surgery.patch(p7, function (node) {
+    if (!surgery.isAlgId(node, compositeOid)) return undefined;
+    if (node.children.length !== 1) return undefined;   // already carries parameters
+    return surgery.algIdWithParams(node.children[0].bytes, b.nullValue());
+  });
+  check("composite sigAlg params splice changed the DER", !withParams.equals(p7));
+  // On the wire the rule is enforced by the decoder, before any signature is considered: the
+  // structure never becomes a SignedData to hold a per-signer verdict.
+  await rejects("composite sigAlg params present", function () {
+    return pki.cms.verify(withParams, { certs: [s.cert] });
+  }, "cms/bad-algorithm-parameters");
 }
 
 // ---- reject: signer cert SPKI composite OID != SignerInfo signatureAlgorithm OID (M6) ----
@@ -214,14 +225,22 @@ async function testUnsupportedArm() {
   }, "cms/unsupported-algorithm");
 }
 
-// ---- reject: an unsupported arm fails closed on VERIFY too (a CMS carrying one cannot be signed,
-// so drive it through the parsed-object input path with an unsupported composite OID) ----
+// ---- reject: an unsupported arm fails closed on VERIFY too. This toolkit cannot SIGN one, so the
+// message is assembled by rewriting the signatureAlgorithm OID in the DER -- the composite OID
+// appears twice, in the signer certificate's SPKI and in the SignerInfo, and only the LAST (the
+// SignerInfo, which follows the certificates in SignedData) is rewritten, so the certificate keeps
+// naming the supported arm and what fails is the arm the message asks to be verified under. ----
 async function testUnsupportedArmVerify() {
   var s = makeCompositeSigner("id-MLDSA65-ECDSA-P256-SHA512");
   var p7 = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key });
-  var parsed = pki.schema.cms.parse(p7);
-  parsed.signerInfos[0].signatureAlgorithm.oid = pki.oid.byName("id-MLDSA65-ECDSA-brainpoolP256r1-SHA512");
-  var res = await pki.cms.verify(parsed, { certs: [s.cert] });
+  var signed = pki.oid.byName("id-MLDSA65-ECDSA-P256-SHA512");
+  var unsupported = pki.oid.byName("id-MLDSA65-ECDSA-brainpoolP256r1-SHA512");
+
+  var swap = surgery.replaceLastAlgId(p7, signed, function () { return b.sequence([b.oid(unsupported)]); });
+  check("the composite AlgorithmIdentifier appears in the cert and the SignerInfo", swap.count === 2);
+  check("unsupported-arm OID swap changed the DER", !swap.der.equals(p7));
+
+  var res = await pki.cms.verify(swap.der, { certs: [s.cert] });
   check("verify unsupported arm -> valid:false", res.valid === false);
   check("verify unsupported arm -> cms/unsupported-algorithm", res.signers[0].code === "cms/unsupported-algorithm");
 }
@@ -230,17 +249,23 @@ async function testUnsupportedArmVerify() {
 async function testDigestParamsPresent() {
   var s = makeCompositeSigner("id-MLDSA65-ECDSA-P256-SHA512");
   var p7 = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key });
-  var parsed = pki.schema.cms.parse(p7);
-  parsed.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x04, 0x01, 0x00]);   // an OCTET STRING, not NULL
-  var res = await pki.cms.verify(parsed, { certs: [s.cert] });
+  // The SignerInfo's digestAlgorithm is the last SHA-512 AlgorithmIdentifier in the encoding; the
+  // digestAlgorithms set carries the other one and keeps its conformant, parameter-less form.
+  var sha512 = pki.oid.byName("sha512");
+  var octet = surgery.replaceLastAlgId(p7, sha512, function (n) {
+    return surgery.algIdWithParams(n.children[0].bytes, b.octetString(Buffer.from([0x00])));
+  });
+  check("digest-params splice changed the DER", !octet.der.equals(p7));
+  var res = await pki.cms.verify(octet.der, { certs: [s.cert] });
   check("present non-NULL digest params -> valid:false", res.valid === false);
   check("present non-NULL digest params -> cms/unsupported-algorithm", res.signers[0].code === "cms/unsupported-algorithm");
   // draft sec. 3.4: the composite digestAlgorithm parameters MUST be OMITTED -- a present DER NULL
   // (which the generic RFC 5754 rule accepts for a SHA-2 digest, and which the classical/ML-DSA
   // paths accept) is non-conformant for a composite SignerInfo and is likewise rejected.
-  var pNull = pki.schema.cms.parse(p7);
-  pNull.signerInfos[0].digestAlgorithm.parameters = Buffer.from([0x05, 0x00]);   // DER NULL -- must be omitted for composite
-  var resNull = await pki.cms.verify(pNull, { certs: [s.cert] });
+  var nulls = surgery.replaceLastAlgId(p7, sha512, function (n) {
+    return surgery.algIdWithParams(n.children[0].bytes, b.nullValue());
+  });
+  var resNull = await pki.cms.verify(nulls.der, { certs: [s.cert] });
   check("present DER NULL digest params -> valid:false", resNull.valid === false);
   check("present DER NULL digest params -> cms/unsupported-algorithm", resNull.signers[0].code === "cms/unsupported-algorithm");
 }

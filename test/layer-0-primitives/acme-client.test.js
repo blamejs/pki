@@ -209,7 +209,9 @@ async function testRenewalInfo() {
   var tocCalls = 0;
   var acmeToc = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({}), { clock: function () { return tocCalls++ === 0 ? Date.parse("2039-06-01T00:00:00Z") : Date.parse("2041-01-01T00:00:00Z"); } }));
   check("#9 renewalInfo re-checks expiry after the directory fetch (TOCTOU)", (await codeOf(Promise.resolve().then(function () { return acmeToc.renewalInfo(certDer); }))) === "acme/certificate-expired");
-  check("#9 renewalInfo requires a DER Buffer", (function () { try { acme.renewalInfo("not-a-buffer"); return "NO-THROW"; } catch (e) { return e && e.code; } })() === "acme/bad-input");
+  // A bad argument leaves as a REJECTION, like every other verb on this client -- so a caller who
+  // wrote the documented `.catch(...)` sees it instead of an uncaught exception.
+  check("#9 renewalInfo requires a DER Buffer", (await codeOf(acme.renewalInfo("not-a-buffer"))) === "acme/bad-input");
 }
 
 // ---- 10 oversized response rejected before decode ---------------------------
@@ -1281,7 +1283,47 @@ async function main() {
   await testProblemSurfaced();
   await testFailClosedGates();
   await testPolling();
+  await testUniformRejection();
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- every client verb REJECTS on bad input; none throws synchronously ------
+//
+// The rule was already written in this module three times and applied to four of its thirteen
+// verbs. The shape it guards is not only a caller typo: the message layer deliberately accepts
+// http as well as https, so a CA can return an order whose `authorizations` array carries an http
+// URL, that order validates, and the very next step -- getAuthorization(order.authorizations[0])
+// -- threw out of the middle of an async ACME loop instead of rejecting into the handler the
+// caller already had around it.
+async function testUniformRejection() {
+  var s = A.acmeServer({ orderStates: ["pending"] });
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s));
+  var HTTP = "http://acme.test/authz/1";                       // passes _isUrl, refused by _clientUrl
+  var verbs = [
+    ["getOrder", function () { return acme.getOrder(HTTP); }],
+    ["getAuthorization", function () { return acme.getAuthorization(HTTP); }],
+    ["getChallenge", function () { return acme.getChallenge(HTTP); }],
+    ["respondToChallenge", function () { return acme.respondToChallenge(HTTP); }],
+    ["deactivateAuthorization", function () { return acme.deactivateAuthorization(HTTP); }],
+    ["finalize", function () { return acme.finalize({}); }],
+    ["keyChange", function () { return acme.keyChange({}); }],
+    ["renewalInfo", function () { return acme.renewalInfo("not-a-buffer"); }],
+    ["pollOrder", function () { return acme.pollOrder(HTTP); }],
+    ["downloadCertificate", function () { return acme.downloadCertificate(HTTP); }],
+    ["revokeCert", function () { return acme.revokeCert({}); }],
+    ["newAuthz", function () { return acme.newAuthz({ type: "dns", value: "*.example.org" }); }],
+  ];
+  var sync = [];
+  for (var i = 0; i < verbs.length; i++) {
+    var ret;
+    try { ret = verbs[i][1](); }
+    catch (_e) { sync.push(verbs[i][0]); continue; }
+    if (ret && typeof ret.then === "function") {
+      try { await ret; } catch (_e2) { /* a rejection is the correct shape; each verb's code is its own */ }
+    }
+  }
+  check("every client verb rejects rather than throwing synchronously" +
+    (sync.length ? " -- " + sync.length + " throw: " + sync.join(", ") : ""), sync.length === 0);
 }
 
 main().then(function () { process.exit(0); }, function (e) { console.error(e && e.stack || e); process.exit(1); });
