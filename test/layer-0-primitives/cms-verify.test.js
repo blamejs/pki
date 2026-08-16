@@ -698,6 +698,22 @@ async function testSignedAttrsStripping() {
       (await pki.cms.verify(signedWv)).valid === true);
   }
 
+  // The condition is what a CONFORMING SignedAttributes can be, not what this decoder accepts. Its
+  // per-attribute value cap is a resource limit this implementation chose; RFC 5652 gives an
+  // AttributeValue set SIZE (1..MAX). A signer elsewhere can produce a block above that cap, and
+  // the stripped message presents those bytes as opaque content where no cap applies -- so reading
+  // the local limit as part of the shape would miss exactly the preimage the attack reuses.
+  var manyValues = [];
+  for (var mv = 0; mv < pki.C.LIMITS.ATTRIBUTE_MAX_VALUES + 44; mv++) manyValues.push(b.integer(BigInt(mv)));
+  var bigAttrBlock = b.set([
+    b.sequence([b.oid(oidContentType()), b.set([b.oid(DATA_OID)])]),
+    b.sequence([b.oid(oidMessageDigest()), b.set([b.octetString(Buffer.alloc(32))])]),
+    b.sequence([b.oid("1.2.3.4.5.6"), b.set(manyValues)]),
+  ].sort(Buffer.compare));
+  await rejects("a conforming attribute set larger than this decoder's own cap",
+    function () { return pki.cms.sign(bigAttrBlock, { cert: s.cert, key: s.key }, { signedAttributes: false }); },
+    "cms/ambiguous-content");
+
   // The preimage is also refused when it arrives DETACHED, via opts.content rather than eContent --
   // the check has to sit wherever the no-attributes preimage is chosen, not only on the attached
   // path. (Applied per SignerInfo by placement: it is inside the per-signer preimage computation,
