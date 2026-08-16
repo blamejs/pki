@@ -106,7 +106,7 @@ function testViewContract() {
 // second plaintext credential, and a module whose rule is "a caller's Buffer is borrowed, leave it
 // alone" will not clear it. `collect` is how the copies stay accountable: the caller of the guard
 // gets every buffer it made and clears them itself.
-function testDeepSnapshotContract() {
+async function testDeepSnapshotContract() {
   var src = { pw: Buffer.from("secret"), nested: { der: Buffer.from([1, 2, 3]) }, n: 7n, s: "x" };
   var made = [];
   var copy = guardBytes.snapshotDeep(src, TestError, "t/bad", "spec", { collect: made });
@@ -154,11 +154,44 @@ function testDeepSnapshotContract() {
     Object.getPrototypeOf(protoCopy) === Object.prototype);
   check("the clone's own keys match the source's", Object.keys(protoCopy).sort().join(",") === "__proto__,real");
 
-  // A handle is passed through, not cloned: a CryptoKey or any class instance would stop working.
-  function Handle() { this.v = 1; }
-  var h = new Handle();
-  check("snapshotDeep passes a class instance through by reference",
-    guardBytes.snapshotDeep({ h: h }, TestError, "t/bad", "spec").h === h);
+  // What separates a HANDLE from a data bag is not the prototype. A caller's own class used as an
+  // options object is data, and passing it through on the strength of its prototype left the whole
+  // window open for it: pki.cms.sign takes any non-Buffer object as options, so an instance whose
+  // signedAttributes flipped after the call still reached the signing turn. It is copied, with its
+  // prototype kept so its methods still resolve.
+  function Bag() { this.v = 1; }
+  Bag.prototype.describe = function () { return "bag " + this.v; };
+  var bag = new Bag();
+  var bagCopy = guardBytes.snapshotDeep({ h: bag }, TestError, "t/bad", "spec").h;
+  check("a class instance carrying data is copied, not aliased", bagCopy !== bag);
+  check("the copy keeps its prototype and its methods", bagCopy instanceof Bag && bagCopy.describe() === "bag 1");
+  bag.v = 99;
+  check("the copy does not follow a later write to the instance", bagCopy.v === 1);
+
+  // An INHERITED field is data the verb reads too -- `opts.signedAttributes` resolves through the
+  // prototype chain. Copying own keys and keeping the caller's prototype would leave it live, so
+  // the inherited value is copied as an own property, shadowing it.
+  var base = { signedAttributes: true };
+  var inheriting = Object.create(base);
+  var inheritedCopy = guardBytes.snapshotDeep(inheriting, TestError, "t/bad", "spec");
+  check("an inherited field is copied as an own property",
+    Object.prototype.hasOwnProperty.call(inheritedCopy, "signedAttributes"));
+  base.signedAttributes = false;
+  check("the copy does not follow a later write to the prototype", inheritedCopy.signedAttributes === true);
+
+  // A key handle is passed through: its meaning is not in its own properties, and a copy of one
+  // cannot sign. This engine's own CryptoKey carries its key handle as an own property, so a rule
+  // like "no own keys means a handle" would have copied it into a shell -- the toolkit's own
+  // isCryptoKeyLike is what answers this, the same predicate key.js and jose.js ask.
+  var ck = await require("node:crypto").webcrypto.subtle.importKey(
+    "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+  check("a CryptoKey passes through by reference",
+    guardBytes.snapshotDeep({ k: ck }, TestError, "t/bad", "spec").k === ck);
+  // The same for the things whose state is not in their properties either.
+  var live = { m: new Map([["a", 1]]), s: new Set([1]), re: /x/, err: new Error("e") };
+  var liveCopy = guardBytes.snapshotDeep(live, TestError, "t/bad", "spec");
+  check("a Map / Set / RegExp / Error passes through by reference",
+    liveCopy.m === live.m && liveCopy.s === live.s && liveCopy.re === live.re && liveCopy.err === live.err);
 
   check("snapshotDeep refuses a detached leaf", codeOf(function () {
     guardBytes.snapshotDeep({ b: detachedBuffer(4) }, TestError, "t/bad", "spec");
@@ -377,6 +410,37 @@ async function testOcspAndPkcs12Doors() {
     header: { sender: { directoryName: [{ commonName: "c" }] }, recipient: { directoryName: [{ commonName: "srv" }] } },
     body: { p10cr: csrDer },
   };
+  // An options object with a prototype of its own is still a caller's data. pki.cms.sign accepts
+  // any non-Buffer object there, so leaving that shape aliased reopened the whole window for it:
+  // signedAttributes flipped from true to false after the call would skip the attribute-shaped-
+  // content refusal and sign the content directly.
+  var attrShaped = pki.asn1.build.set([
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("contentType")),
+      pki.asn1.build.set([pki.asn1.build.oid("1.2.840.113549.1.7.1")])]),
+    pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("messageDigest")),
+      pki.asn1.build.set([pki.asn1.build.octetString(Buffer.alloc(32))])]),
+  ].sort(Buffer.compare));
+  function SignOpts() { this.signedAttributes = true; }
+  var protoOpts = new SignOpts();
+  var signingWithProtoOpts = pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, protoOpts);
+  protoOpts.signedAttributes = false;
+  var protoSigned = pki.schema.cms.parse(await signingWithProtoOpts);
+  check("cms.sign honours a custom-prototype options object as it was at entry",
+    !!protoSigned.signerInfos[0].signedAttrsBytes);
+  await rejectsWith("cms.sign over attribute-shaped content with signedAttributes false",
+    function () { return pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, { signedAttributes: false }); },
+    "cms/ambiguous-content");
+
+  // The same through an INHERITED option. `opts.signedAttributes` resolves up the prototype chain,
+  // so a copy that kept the caller's prototype would still be reading the caller's object.
+  var optsProto = { signedAttributes: true };
+  var inheritedOpts = Object.create(optsProto);
+  var signingWithInherited = pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, inheritedOpts);
+  optsProto.signedAttributes = false;
+  var inheritedSigned = pki.schema.cms.parse(await signingWithInherited);
+  check("cms.sign honours an inherited option as it was at entry",
+    !!inheritedSigned.signerInfos[0].signedAttrsBytes);
+
   var macOpts = { mac: { secret: Buffer.from("hunter2"), salt: Buffer.alloc(16, 9), iterationCount: 2048 } };
   check("the PBMAC1 premise holds without any mutation",
     (await pki.cmp.verify(await pki.cmp.build(message, macOpts), { sharedSecret: Buffer.from("hunter2") })).valid === true);
@@ -473,7 +537,7 @@ async function testCallerCannotRewriteAfterEntry() {
 
 async function run() {
   testViewContract();
-  testDeepSnapshotContract();
+  await testDeepSnapshotContract();
   testEitherErrorConvention();
   await testCmsDoors();
   await testIssuanceDoors();
