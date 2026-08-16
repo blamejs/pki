@@ -195,6 +195,13 @@ async function testDeepSnapshotContract() {
   Object.defineProperty(trap, "boom", { enumerable: true, get: function () { throw new RangeError("no"); } });
   check("a throwing accessor becomes the boundary's typed fault",
     codeOf(function () { guardBytes.snapshotDeep(trap, TestError, "t/bad", "spec"); }) === "t/bad");
+  // Including the read this module makes on its own behalf, when it asks whether the value is a
+  // pending result. That question is still a property read of the caller's object.
+  function Trapped() {}
+  Object.defineProperty(Trapped.prototype, "then", { get: function () { throw new RangeError("no"); } });
+  check("a throwing `then` accessor is typed too", codeOf(function () {
+    guardBytes.snapshotDeep({ t: new Trapped() }, TestError, "t/bad", "spec");
+  }) === "t/bad");
 
   // isCryptoKeyLike is structural by design, so it can recognize another implementation's key --
   // and structural means an options bag can wear the shape. A key is a key AND nothing else; a bag
@@ -268,6 +275,33 @@ async function testDeepSnapshotContract() {
   var cleanErr = new Error("boom");
   check("an Error carrying only its own kind's fields passes through",
     guardBytes.snapshotDeep({ e: cleanErr }, TestError, "t/bad", "spec").e === cleanErr);
+  var callableField = new Error("boom");
+  callableField.signedAttributes = function () {};
+  check("a callable extra field is no exemption", codeOf(function () {
+    guardBytes.snapshotDeep({ e: callableField }, TestError, "t/bad", "spec");
+  }) === "t/bad");
+
+  // A parse result keeps its identity, because the doors that decide integrity re-derive it from
+  // the bytes the record names and ignore what the object says. That covers it as a PARSE RESULT.
+  // A caller who adds an option to one has added a field no door re-derives, so it stops being
+  // only a parse result and is copied like the data it now also is. Deleting a field is a
+  // different case and changes nothing: re-derivation does not consult the object for it.
+  var certBytes = signing.makeSigner("ec-p256").cert;
+  var parsedCert = pki.schema.x509.parse(certBytes);
+  check("a parse result keeps its identity",
+    guardBytes.snapshotDeep({ c: parsedCert }, TestError, "t/bad", "spec").c === parsedCert);
+  var pruned = pki.schema.x509.parse(certBytes);
+  delete pruned.extensions;
+  check("a pruned parse result still keeps its identity",
+    guardBytes.snapshotDeep({ c: pruned }, TestError, "t/bad", "spec").c === pruned);
+  var withOption = pki.schema.x509.parse(certBytes);
+  withOption.signedAttributes = true;
+  check("a parse result with an option added to it is copied",
+    guardBytes.snapshotDeep({ c: withOption }, TestError, "t/bad", "spec").c !== withOption);
+  var hiddenOption = pki.schema.x509.parse(certBytes);
+  Object.defineProperty(hiddenOption, "pem", { value: true, writable: true, enumerable: false });
+  check("including one added where Object.keys cannot see it",
+    guardBytes.snapshotDeep({ c: hiddenOption }, TestError, "t/bad", "spec").c !== hiddenOption);
 
   check("snapshotDeep refuses a detached leaf", codeOf(function () {
     guardBytes.snapshotDeep({ b: detachedBuffer(4) }, TestError, "t/bad", "spec");
