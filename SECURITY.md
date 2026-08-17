@@ -17,7 +17,7 @@ Report privately through GitHub's **["Report a vulnerability"](https://github.co
 private advisory form on the repository's Security tab. This opens a private
 channel with the maintainers.
 
-Please include:
+Include:
 
 - Affected version (`v0.X.Y` tag, or the `main` `<sha>` you tested)
 - A description of the issue and the impact you observed
@@ -76,7 +76,7 @@ security-only patches after the next major releases.
   byte caps before the walk, and a typed `CborError` on every non-canonical
   shape — an indefinite length, a non-minimal (preferred) argument, out-of-order
   or duplicate map keys, a non-shortest or non-canonical-NaN float, ill-formed
-  UTF-8, or trailing bytes. There is no lenient mode.
+  UTF-8, or trailing bytes. No lenient mode exists.
 - **Single-input string-allocation amplification.** Every boundary that decodes
   untrusted bytes to a string — PEM armor, a JOSE or ACME JSON document, an EST
   transfer or multipart body — enforces its size cap on the raw byte length
@@ -267,7 +267,7 @@ security-only patches after the next major releases.
   `keyEncipherment` all fail closed with `path/kem-key-usage`. `pki.lint` mirrors
   the rule and adds an encapsulation-key-size check keyed to the algorithm OID,
   which is the sole authority for the parameter set rather than the length. On
-  import, `pki.webcrypto.subtle.importKey("pkcs8", …)` validates the RFC 9935 §6
+  import, `pki.webcrypto.subtle.importKey("pkcs8", ...)` validates the RFC 9935 §6
   `seed` / `expandedKey` / `both` private-key CHOICE by its DER tag before the
   engine sees it, so the OpenSSL-legacy bare-seed layout the engine would
   otherwise accept is rejected, and an internally inconsistent seed or expanded
@@ -497,7 +497,7 @@ security-only patches after the next major releases.
   from one: an absent serial on a CRL covering some other partition, certificate
   kind, or revocation reason is not an unrevoked certificate.
 - **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
-  authoritative only when it is signed by an authorized responder: the issuing CA
+  authoritative only when an authorized responder signed it: the issuing CA
   directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in its
   extendedKeyUsage (RFC 6960 §4.2.2.2). An ordinary leaf the CA issued, an
   `anyExtendedKeyUsage` certificate, a certificate from a different CA, an expired
@@ -555,7 +555,7 @@ security-only patches after the next major releases.
   attribute (RFC 5816): the certificate hash is recomputed and compared, so a
   valid signature cannot be re-paired with a substituted certificate. The message
   imprint is recomputed from the presented data, the encapsulated content must be
-  a TSTInfo, and a request nonce must be echoed by the token. Every checked field
+  a TSTInfo, and the token must echo a request nonce. Every checked field
   is read from the verified encapsulated content rather than a caller-supplied
   parsed object, and a well-formed token failing any check is a fail-closed
   `{ valid: false }` verdict with a typed reason code, never a silent pass.
@@ -703,9 +703,9 @@ security-only patches after the next major releases.
   `certInfo` TPM Name it certifies. The apple nonce must equal the SHA-256 over
   `authenticatorData || clientDataHash`, and the android attestation-challenge
   must equal the `clientDataHash`, so an attacker cannot pair a valid attestation
-  over one key with a different credential. The attestation object and COSE keys
-  are decoded by the strict `pki.cbor` codec and the TPM structures by a
-  bounds-before-slice reader, and every failed check throws a typed `webauthn/*`
+  over one key with a different credential. The strict `pki.cbor` codec decodes
+  the attestation object and COSE keys, a bounds-before-slice reader decodes the
+  TPM structures, and every failed check throws a typed `webauthn/*`
   error: a signature that does not verify is a thrown verdict, never a silent
   pass. RS1 (SHA-1) is accepted for verifying the legacy TPM authenticators that
   emit it, never for signing.
@@ -811,7 +811,7 @@ security-only patches after the next major releases.
   certs-only validator rejects any response that is not an empty-signerInfos,
   no-eContent SignedData of plain X.509 certificates, and the serverkeygen
   validator enforces the request-to-response recipient-arm coherence. The issued
-  certificate is picked by a public-key match (`findIssuedCert`) rather than a
+  certificate comes from a public-key match (`findIssuedCert`) rather than a
   positional guess, which RFC 5272 forbids assuming.
 - **EST transport is fail-closed on the wire (CWE-295 / CWE-319 / CWE-770 /
   CWE-522).** The `pki.est` network verbs run over `pki.transport`, the toolkit's
@@ -912,8 +912,8 @@ security-only patches after the next major releases.
   host. Every authenticated request carries a fresh single-use anti-replay nonce
   bound to that URL, harvested only from a validated `Replay-Nonce`, with a
   bounded `badNonce` retry so a nonce-replay error cannot loop. Reads are
-  POST-as-GET, the poll loop is bounded by a poll count and a total-wait budget
-  and sleeps on a `Retry-After` through an injectable sleeper, so the delay is
+  POST-as-GET, a poll count and a total-wait budget bound the poll loop, which
+  sleeps on a `Retry-After` through an injectable sleeper, so the delay is
   bounded rather than attacker-unbounded, and every response body is size-capped
   before it reaches a JSON or PEM decoder. When `downloadCertificate` selects
   among alternate issuance chains, the `Link` response header is parsed strictly
@@ -985,7 +985,7 @@ security-only patches after the next major releases.
   change to a validly structured list fails closed as `ct/log-list-untrusted`, a
   verdict distinct from every parse-domain code. The signer key is pinned
   out-of-band, never trust-on-first-use and never fetched from the list's own
-  origin, and no vendor URL or key is baked in. The fetch is https-only even
+  origin, and no vendor URL or key is baked in. The fetch is HTTPS-only even
   across an injected transport, and the detached signature must share the
   log-list origin, so the log-list endpoint's origin-bound credentials (an
   `Authorization` or `Cookie` header, the mTLS client certificate) can never
@@ -1015,8 +1015,8 @@ security-only patches after the next major releases.
   literal or by hostname. Only the `id-ad-caIssuers` access method is used, never
   `id-ad-ocsp`. A build-wide total fetch budget is enforced as a silent cap: on
   reaching it the builder stops fetching rather than throwing, so a fetch bound
-  can never deny a path the static pool could build. There is also a
-  per-certificate URL cap, a build-wide URL dedupe on the normalized URL so a
+  can never deny a path the static pool could build. A per-certificate URL cap
+  also applies, alongside a build-wide URL dedupe on the normalized URL so a
   mesh pointing many certs at one URL fetches once, a streaming response-size cap
   plus a per-response certificate-count cap so a bundle cannot force tens of
   thousands of parses, and no redirect following, so only a `200` with an in-cap
@@ -1164,7 +1164,7 @@ Two things that verification does **not** establish on its own, and both matter:
   that was checked is distinguishable from one that never was. An `identity`
   naming none of those three fields is refused rather than treated as satisfied,
   and so is a field name that is not one of them — either would accept every
-  signer while reading as a policy in force. There is no default identity,
+  signer while reading as a policy in force. No default identity exists,
   because which repository is allowed to sign is the relying party's to state.
 - **Which artifact it covers.** Confirm a returned `subjects[].digest` matches
   the tarball you install. The signer chooses that digest, so it binds the bundle

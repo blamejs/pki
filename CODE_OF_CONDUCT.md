@@ -32,7 +32,7 @@ This Code of Conduct applies in all project spaces, including:
 
 - The GitHub repository (issues, pull requests, discussions, comments, commit messages)
 - Any official communication channel the project operates
-- Public spaces when an individual is representing the project (e.g., presenting at a conference, posting on social media as a maintainer)
+- Public spaces when an individual is representing the project, such as presenting at a conference or posting on social media as a maintainer
 
 It also applies to contributor behavior outside project spaces when that behavior has a direct impact on community members' ability to participate in the project safely.
 

@@ -755,6 +755,84 @@ async function run() {
   check("114. an option belonging to another verb is refused",
     (await codeOf(function () { return pki.smime.encrypt(MSG, [{ cert: rcpt.cert }], { form: "multipart" }); })) === "smime/bad-input");
 
+  // ---- the signer is bound to a sender identity, and the verdict says whether anyone asked ----
+  // A signature proves a key signed; it does not prove the message came from the mailbox the
+  // reader sees. Without this the relying party's only sender signal was fromMismatch, which
+  // was hard-false on every message without header protection -- i.e. essentially all mail --
+  // so `valid && !fromMismatch` read as a verified sender over an unverified one.
+  var idPair = await pki.key.generate("Ed25519");
+  var idKey = await pki.key.export(idPair.privateKey);
+  var idCert = await pki.x509.sign({
+    subject: "Alice", subjectPublicKey: await pki.key.export(idPair.publicKey),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { subjectAltName: [{ rfc822Name: "alice@corp.example" }] },
+  }, { key: idKey });
+  var idMsg = await pki.smime.sign(MSG, [{ cert: idCert, key: idKey }]);
+  async function senderOf(o) { return (await pki.smime.verify(idMsg, o)).sender; }
+
+  var sMatch = await senderOf({ expectedSender: "alice@corp.example" });
+  check("115. expectedSender matching the certificate's rfc822Name binds the signer",
+    sMatch.match === true && sMatch.checked === true && sMatch.source === "expectedSender");
+  check("116. the identities the certificate asserts are surfaced",
+    sMatch.identities.length === 1 && sMatch.identities[0] === "alice@corp.example");
+  check("117. a different mailbox does not bind",
+    (await senderOf({ expectedSender: "bob@victim.example" })).match === false);
+  // RFC 5280 sec. 7.5: host-part case-insensitive, local-part exact. Folding the local-part
+  // too would let one mailbox answer for another at the same domain.
+  check("118. the host-part compares case-insensitively",
+    (await senderOf({ expectedSender: "alice@CORP.EXAMPLE" })).match === true);
+  check("119. the local-part compares case-sensitively",
+    (await senderOf({ expectedSender: "Alice@corp.example" })).match === false);
+  // The field that distinguishes "checked and agreed" from "nobody asked".
+  var sNone = await senderOf({});
+  check("120. with no expectedSender and no outer From, the binding is unchecked, never false",
+    sNone.checked === false && sNone.match === null);
+  // A signer whose certificate asserts no email identity cannot answer the question either --
+  // and that must not read as a clean no-match.
+  var plainMsg = await pki.smime.sign(MSG, signers);
+  var sNoId = (await pki.smime.verify(plainMsg, { expectedSender: "alice@corp.example" })).sender;
+  check("121. a certificate asserting no email identity reports undecidable, not no-match",
+    sNoId.checked === true && sNoId.match === null && sNoId.identities.length === 0);
+
+  // The advisory branch. pki.smime.sign emits only the MIME framing -- a real MUA prepends the
+  // RFC 5322 envelope -- so the outer From is prepended here the way a mail agent would.
+  function withOuter(msgBytes, hdrs) {
+    return Buffer.concat([Buffer.from(hdrs.join("\r\n") + "\r\n", "latin1"), msgBytes]);
+  }
+  var fromOk = (await pki.smime.verify(withOuter(idMsg, ["From: alice@corp.example"]))).sender;
+  check("123. a single outer From is used when no expectedSender is given, and reports itself advisory",
+    fromOk.checked === true && fromOk.source === "from" && fromOk.match === true);
+  var fromSpoof = (await pki.smime.verify(withOuter(idMsg, ["From: bob@victim.example"]))).sender;
+  check("124. an outer From the signer's certificate does not assert does not bind",
+    fromSpoof.match === false && fromSpoof.source === "from");
+  // A display-name form is the common real-world shape; the addr-spec inside is what compares.
+  var fromDisplay = (await pki.smime.verify(withOuter(idMsg, ["From: Alice <alice@corp.example>"]))).sender;
+  check("125. a display-name From compares on the addr-spec inside the angle brackets",
+    fromDisplay.match === true);
+  // Two From headers give no unambiguous sender, so the question stays unanswered.
+  var fromTwo = (await pki.smime.verify(withOuter(idMsg, ["From: alice@corp.example", "From: bob@victim.example"]))).sender;
+  check("126. an ambiguous (repeated) From is not compared at all",
+    fromTwo.checked === false && fromTwo.match === null);
+  // expectedSender is authoritative: a hostile outer From must not override it.
+  var bothGiven = (await pki.smime.verify(withOuter(idMsg, ["From: bob@victim.example"]),
+    { expectedSender: "alice@corp.example" })).sender;
+  check("127. expectedSender wins over the outer From",
+    bothGiven.source === "expectedSender" && bothGiven.match === true);
+
+  // A mistyped expectedSender is a caller bug, refused at the door. Coercing it with
+  // String() would accept any object carrying a toString, so a value that is not the
+  // address the caller thinks it is could still drive sender.match to true.
+  check("128. a non-string expectedSender is refused, never coerced",
+    (await codeOf(function () {
+      return pki.smime.verify(idMsg, { expectedSender: { toString: function () { return "alice@corp.example"; } } });
+    })) === "smime/bad-input");
+  check("129. a numeric expectedSender is refused",
+    (await codeOf(function () { return pki.smime.verify(idMsg, { expectedSender: 42 }); })) === "smime/bad-input");
+
+  // fromMismatch is tri-state: null when no protected From existed to compare against.
+  check("122. an unprotected message reports fromMismatch null, never a passed comparison",
+    v.headerProtection.present === false && v.headerProtection.fromMismatch === null);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

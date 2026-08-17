@@ -807,6 +807,41 @@ async function testBadInput() {
   await rejects("detached content wrong type", function () { return pki.cms.verify(fx("rsa-detached.p7s"), { content: 12345 }); }, "cms/bad-input");
 }
 
+// An id-countersignature value that is not a well-formed SignerInfo refuses the WHOLE message
+// rather than being surfaced as one failed countersignature among the verdicts.
+//
+// That is the choice, and it is the fail-closed one: the decoder validates every countersignature
+// value by CONTENT rather than trusting the attribute type, so a message carrying one is malformed
+// and there is no sound reading of the rest of it to report. Surfacing it per-countersignature
+// would mean handing back a verdict assembled from a structure the decoder had already found to be
+// wrong. The rule is pinned here through the shipped verbs because it is a property of the message,
+// not of the countersignature walk: schema-cms.test.js covers the BER-envelope path separately.
+async function testMalformedCountersignatureValue() {
+  var s = makeSigner("ec-p256");
+  // The baseline first: a real countersignature verifies and is reported, so a refusal below is the
+  // malformed VALUE being caught rather than the countersignature path failing generally.
+  var signed = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key });
+  var countersigned = await pki.cms.countersign(signed, { cert: s.cert, key: s.key });
+  var baseline = await pki.cms.verify(countersigned, { certs: [s.cert] });
+  check("a real countersignature verifies and is reported",
+    baseline.valid === true && (baseline.signers[0].countersignatures || []).length === 1 &&
+    baseline.signers[0].countersignatures[0].ok === true);
+
+  var notSignerInfos = [
+    ["an INTEGER", b.integer(5n)],
+    ["an empty SEQUENCE", b.sequence([])],
+    ["a SEQUENCE whose version is not a CMS one", b.sequence([b.integer(99n)])],
+    ["an OCTET STRING of noise", b.octetString(Buffer.from([1, 2, 3, 4]))],
+  ];
+  function verifying(message) { return function () { return pki.cms.verify(message, { certs: [s.cert] }); }; }
+  for (var i = 0; i < notSignerInfos.length; i++) {
+    var msg = await pki.cms.sign(CONTENT, { cert: s.cert, key: s.key },
+      { unsignedAttributes: [{ type: "countersignature", values: [notSignerInfos[i][1]] }] });
+    await rejects("a countersignature value that is " + notSignerInfos[i][0] + " refuses the message",
+      verifying(msg), i === 2 ? "cms/bad-version" : "cms/bad-signer-info");
+  }
+}
+
 // Rewrite the SignerInfo's OWN digestAlgorithm / signatureAlgorithm in a SignedData encoding. The
 // algorithm currently there names which AlgorithmIdentifier to find, and the LAST one is the
 // SignerInfo's: the SignerInfo follows both digestAlgorithms and the certificates.
@@ -1227,6 +1262,7 @@ async function run() {
   await testEdPointValidation();
   await testMlDsaVerify();
   await testBadInput();
+  await testMalformedCountersignatureValue();
 }
 
 module.exports = { run: run };

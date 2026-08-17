@@ -16,7 +16,7 @@ whatever you need.
 
 ## Before you open an issue
 
-A tight report gets a fast answer. Please include:
+A tight report gets a fast answer. Include:
 
 - The version you are on: a `v0.X.Y` tag, or the `main` `<sha>` you tested.
 - Your Node.js version (`node -v`). The toolkit targets Node 24.19+ and runs on
