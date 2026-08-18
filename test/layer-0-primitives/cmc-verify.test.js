@@ -632,6 +632,24 @@ async function run() {
     boundData.boundToRequest === true && boundData.bound.dataReturn === true &&
     boundData.bound.bodyPartIDs === true && boundData.bound.transactionId === false);
 
+  // A zero-length value binds nothing. An empty nonce echoes equal in every exchange that
+  // also used one, so counting its presence would report boundToRequest true for a response
+  // captured from any of them -- the replay this gate exists to refuse, passing because the
+  // comparison it ran was vacuous.
+  // This response echoes neither control, so each still refuses at its own echo check --
+  // the empty value never reaches the roll-up as a satisfied binding.
+  check("RP9. an empty senderNonce still demands the echo, and is refused without one",
+    (await acode(function () {
+      return pki.cmc.verify(replay, { senderNonce: Buffer.alloc(0), allowUnverified: true });
+    })) === "cmc/nonce-mismatch");
+  check("RP10. an empty dataReturn still demands the echo",
+    (await acode(function () {
+      return pki.cmc.verify(replay, { dataReturn: Buffer.alloc(0), allowUnverified: true });
+    })) === "cmc/data-return-missing");
+  // The roll-up itself -- that an empty value contributes nothing to boundToRequest -- needs
+  // a response that actually echoes an empty Recipient Nonce, which this fixture does not
+  // build. The lib change is in _assertBound's `_carries`; the vector for it is outstanding.
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
