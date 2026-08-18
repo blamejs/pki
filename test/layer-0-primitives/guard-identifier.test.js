@@ -167,6 +167,27 @@ function testKnownKeys() {
   check("the unknown key on a cyclic chain is still refused", errOf(function () {
     identifier.assertKnownKeys(cyclic, KNOWN, E, "x/bad", "unknown ");
   }).code === "x/bad");
+
+  // A Proxy answers `ownKeys` and `get` from two independent traps, so no walk can be complete:
+  // one reporting no keys while its get returns a value presents an object every enumeration
+  // calls empty and every read calls populated. The object is refused rather than enumerated
+  // harder, because a more thorough walk still reads only what a trap chooses to say.
+  var liar = new Proxy({}, {
+    ownKeys: function () { return []; },
+    get: function (_, k) { return k === "gamma" ? 3 : undefined; },
+  });
+  check("the fixture reports no keys while answering a read",
+        Object.getOwnPropertyNames(liar).length === 0 && liar.gamma === 3);
+  var liarErr = errOf(function () { identifier.assertKnownKeys(liar, KNOWN, E, "x/bad", "unknown "); });
+  check("a Proxy options bag is refused by assertKnownKeys", liarErr.code === "x/bad");
+  check("and the refusal names the shape", /Proxy/.test(liarErr.message));
+  check("optionsObject refuses it at the entry point too",
+        errOf(function () { identifier.optionsObject(liar, E, "x/bad", "opts"); }).code === "x/bad");
+  // A Proxy is refused by identity, never by probing its traps for a contradiction: a trap can
+  // answer consistently for as long as the check looks and differ afterwards.
+  var honest = new Proxy({ alpha: 1 }, {});
+  check("a Proxy whose traps are all default is refused on the same rule",
+        errOf(function () { identifier.assertKnownKeys(honest, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
 }
 
 // Every config-time boundary that composes assertKnownKeys must still raise its OWN typed error.

@@ -502,6 +502,17 @@ async function testUnknownOptionsRefused() {
         !("password" in Object.prototype));
   check("a clean empty bag is still accepted once the pollution is gone",
         (await pki.key.export(pair.publicKey, {})).equals(await pki.key.export(pair.publicKey)));
+  // A Proxy reports its keys from one trap and answers reads from another, so an options bag
+  // that enumerates as empty can still answer `password`. Export would then serialize the key
+  // in the clear on a call that named a password, which is the case the refusal exists for.
+  var opaque = new Proxy({}, {
+    ownKeys: function () { return []; },
+    get: function (_, k) { return k === "password" ? "pw" : undefined; },
+  });
+  check("the fixture enumerates as empty while answering password",
+        Object.getOwnPropertyNames(opaque).length === 0 && opaque.password === "pw");
+  check("export refuses an options bag whose reported keys need not be what it answers",
+        await codeOf(pki.key.export(pair.privateKey, opaque)) === "key/bad-input");
 }
 
 async function main() {

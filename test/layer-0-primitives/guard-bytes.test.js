@@ -325,6 +325,26 @@ async function testDeepSnapshotContract() {
         protoCycErr.code === "t/bad" && protoCycErr instanceof TestError);
   check("and the refusal names the shape rather than the stack",
         /prototype chain is a cycle/.test(protoCycErr.message));
+  // A Proxy takes its copied names from `ownKeys` and answers reads from `get`, and the two need
+  // not agree. Copying one whose ownKeys is empty yields an object holding nothing while the
+  // original still answers `password`, so the field the caller supplied is gone with no fault
+  // raised. Copying it is not copying it, so it is refused.
+  var liar = new Proxy({}, {
+    ownKeys: function () { return []; },
+    get: function (_, k) { return k === "password" ? "pw" : undefined; },
+  });
+  check("the fixture reports no keys while answering a read",
+        Object.getOwnPropertyNames(liar).length === 0 && liar.password === "pw");
+  var liarErr;
+  try { guardBytes.snapshotDeep(liar, TestError, "t/bad", "spec"); liarErr = new Error("NO-THROW"); }
+  catch (e) { liarErr = e; }
+  check("snapshotDeep refuses a Proxy with the caller's typed code",
+        liarErr.code === "t/bad" && liarErr instanceof TestError);
+  check("and the refusal names the shape", /Proxy/.test(liarErr.message));
+  var nestedErr;
+  try { guardBytes.snapshotDeep({ inner: liar }, TestError, "t/bad", "spec"); nestedErr = { code: "NO-THROW" }; }
+  catch (e) { nestedErr = e; }
+  check("a Proxy nested inside a spec is refused on the same rule", nestedErr.code === "t/bad");
 
   // fixArguments is the whole rule in one call: copy every argument, hand back the copies, and
   // give the caller a release that clears everything it copied. Both halves matter -- the copy
