@@ -72,7 +72,12 @@ jobs:
         run: node scripts/check-swallow-coverage.js
 
   static-gates:
-    name: Static gates (eslint + patterns + comment blocks + api snapshot + spelling)
+    # This string is a REQUIRED STATUS CHECK CONTEXT in the main-protection
+    # ruleset, not a caption. Renaming it leaves the ruleset waiting on a check
+    # that no longer reports and every pull request blocked with all checks
+    # green, so it does not track the step list. Change it only together with
+    # the ruleset's required_status_checks entry.
+    name: Static gates (eslint + patterns + comment blocks + api snapshot)
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
