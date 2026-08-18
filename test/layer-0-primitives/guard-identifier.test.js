@@ -17,6 +17,7 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var spawnSync = require("child_process").spawnSync;
 var path = require("path");
+var vm = require("vm");
 var INDEX = path.resolve(__dirname, "../../index.js");
 
 var TestError = errors.defineClass("TestError");
@@ -213,6 +214,45 @@ function testKnownKeys() {
   var realIndices = [1, 2, 3];
   check("while real elements are not reported as options",
         identifier.readableNames(realIndices, E, "x/bad", "o").length === 0);
+
+  // A value from another realm carries that realm's root prototype, so a rule keyed on identity
+  // with the local `Object.prototype` misses it and reads the foreign `__proto__` accessor as a
+  // name the caller supplied. The root is the last level before null in every realm.
+  var foreignBag = vm.runInNewContext("({ alpha: 1 })");
+  check("the fixture's root is not this realm's Object.prototype",
+        Object.getPrototypeOf(Object.getPrototypeOf(foreignBag)) === null &&
+        Object.getPrototypeOf(foreignBag) !== Object.prototype);
+  check("a plain options bag from another realm reports only what it holds",
+        identifier.readableNames(foreignBag, E, "x/bad", "o").join(",") === "alpha");
+  check("and is accepted where its names are known",
+        identifier.assertKnownKeys(foreignBag, { alpha: 1 }, E, "x/bad", "unknown ") === undefined);
+  // A collection built in another realm inherits from that realm's prototypes, which are not the
+  // objects the kind set below holds, so its levels are read and the members the language put
+  // there look like names its caller chose. Every one of these is a bag a verb accepted before,
+  // and reporting `size` or `Symbol.unscopables` off it turns that into a refusal.
+  var foreignKinds = {
+    array: "[]", Map: "new Map()", Set: "new Set()",
+    Uint8Array: "new Uint8Array(2)", ArrayBuffer: "new ArrayBuffer(2)",
+    DataView: "new DataView(new ArrayBuffer(2))",
+  };
+  Object.keys(foreignKinds).forEach(function (kind) {
+    var bag = vm.runInNewContext(foreignKinds[kind]);
+    bag.pem = true;
+    check("a " + kind + " options bag from another realm reports only what its caller set",
+      identifier.readableNames(bag, E, "x/bad", "o").map(String).join(",") === "pem");
+  });
+  // The member names are passed over above the value and never on it. An own one shadows the
+  // intrinsic, so `opts.detached` answers with the caller's value, and pki.cms.sign reads an
+  // option under that name.
+  var ownDetached = new ArrayBuffer(2);
+  Object.defineProperty(ownDetached, "detached", { value: true, enumerable: true, configurable: true });
+  check("an own member name on a buffer is still the caller's option",
+        identifier.readableNames(ownDetached, E, "x/bad", "o").join(",") === "detached");
+  // A caller's own null-prototype bag has no prototype either, and its OWN names are theirs.
+  var nullProto = Object.create(null);
+  nullProto.alpha = 1;
+  check("a null-prototype bag still reports the names its caller set",
+        identifier.readableNames(nullProto, E, "x/bad", "o").join(",") === "alpha");
 
   // The chain of a collection-kind bag is READ; only the levels that describe a KIND are skipped.
   // Declining to read it at all left a hole with nothing intrinsic anywhere in the chain:

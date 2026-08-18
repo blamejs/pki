@@ -154,7 +154,7 @@ var SUPPRESS_RE = /spelling-ok:\s*([A-Za-z]+)\s*--\s*(\S.*?)\s*$/;
 // and review on every future change to the gate.
 var NUL = String.fromCharCode(0);
 
-// Every file this gate should read: the ones git tracks, PLUS the ones it does not track yet.
+// Every file this gate should read, which is the ones git tracks and the ones it does not yet.
 //
 // `git ls-files` alone answers for the committed tree, and a file written in this working session
 // is not in it. So a brand-new file is invisible to the gate locally, is committed, and is read
@@ -327,6 +327,7 @@ function canary() {
     // reason rather than failing.
     var probeName = "check-spelling-canary-" + process.pid + ".js";
     var untracked = path.resolve(__dirname, "..", probeName);
+    var probeLeft = null;
     if (fs.existsSync(untracked)) {
       throw new Error("canary: " + probeName + " already exists; this gate will not overwrite a " +
                       "file it did not create, so remove it and run again");
@@ -342,7 +343,21 @@ function canary() {
         throw new Error("canary: a gitignored path must stay out of the set");
       }
     } finally {
-      try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* this run's own probe */ }
+      // Removal is retried, and a failure that outlasts the retries is recorded for the throw
+      // below. A single attempt whose failure is swallowed leaves the probe in the tree while the
+      // gate reports success, and the next `git add -A` commits it. A sync-and-scan client or an
+      // indexer can hold a brief lock on a file this new, which is what the retries are for.
+      //
+      // Recorded rather than thrown from here, because a throw inside a finally replaces whatever
+      // the block was already failing with, and the canary's own verdict is the more useful one.
+      for (var attempt = 0; attempt < 50 && fs.existsSync(untracked); attempt++) {
+        try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* retried by the loop */ }
+      }
+      if (fs.existsSync(untracked)) probeLeft = probeName;
+    }
+    if (probeLeft) {
+      throw new Error("canary: could not remove its own probe " + probeLeft + "; delete it " +
+                      "before committing, since a gate must leave the tree as it found it");
     }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* scratch dir */ }

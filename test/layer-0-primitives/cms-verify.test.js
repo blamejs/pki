@@ -1063,6 +1063,12 @@ async function testTrustSeam() {
   await rejects("trust: ...and refused even when no signer verifies",
     function () { return pki.cms.verify(tamperedSig, { trustAnchors: [ourCa.der], time: new Date("nope") }); },
     "cms/bad-input");
+  // A value that inherits from Date.prototype and holds no instant answers `instanceof Date`, so
+  // a check keyed on that admits it and the `getTime()` behind it throws a raw TypeError out of
+  // a verb whose refusals are all its own typed code.
+  await rejects("trust: a validation time that inherits from Date and holds no instant",
+    function () { return pki.cms.verify(signed, { trustAnchors: [ourCa.der], time: Object.create(Date.prototype) }); },
+    "cms/bad-input");
   // The key-purpose options are held to the same rule as the anchors and the instant. Every part
   // of the trust configuration is judged in one place, before any signer is looked at, so a
   // caller's mistake never depends on whether the message happened to be good.

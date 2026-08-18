@@ -29,6 +29,8 @@
  */
 
 var guardBytes = require("../../lib/guard-bytes");
+var identifier = require("../../lib/guard-identifier");
+var vm = require("vm");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
 var signing = require("../helpers/signing");
@@ -79,6 +81,55 @@ function testViewContract() {
   check("view refuses a non-byte input", codeOf(function () {
     guardBytes.view("0011", TestError, "t/bad", "input");
   }) === "t/bad");
+  // A value built over Uint8Array.prototype inherits the whole interface and holds no bytes. The
+  // refusal held before the door read the slot, because the read it would have reached is wrapped
+  // and comes back as this code; pinning it keeps that true however the door is written.
+  check("view refuses a value that inherits from Uint8Array and holds no bytes", codeOf(function () {
+    guardBytes.view(Object.create(Uint8Array.prototype), TestError, "t/bad", "input");
+  }) === "t/bad");
+  // The same question read the other way round is where a prototype test gives a wrong answer a
+  // wrapped read cannot rescue: a real Uint8Array built in another realm holds bytes and inherits
+  // from that realm, and the caller was told the bytes they passed were not bytes.
+  var foreignBytes = vm.runInNewContext("new Uint8Array([1, 2, 3])");
+  check("view accepts a Uint8Array from another realm and reads its bytes",
+    guardBytes.view(foreignBytes, TestError, "t/bad", "input").equals(Buffer.from([1, 2, 3])));
+  // The four forms the toolkit calls bytes, and nothing else. Every door that has to decide
+  // whether an argument is bytes asks this, so no door can answer a narrower list than the one
+  // that finally reads them.
+  check("isByteSource accepts each of the four byte forms",
+    guardBytes.isByteSource(Buffer.alloc(1)) && guardBytes.isByteSource(new Uint8Array(1)) &&
+    guardBytes.isByteSource(new DataView(new ArrayBuffer(1))) && guardBytes.isByteSource(new ArrayBuffer(1)));
+  check("and a real ArrayBuffer from another realm",
+    guardBytes.isByteSource(vm.runInNewContext("new ArrayBuffer(4)")) === true);
+  check("while a value that only inherits from ArrayBuffer is not one",
+    guardBytes.isByteSource(Object.create(ArrayBuffer.prototype)) === false);
+  check("and neither is a plain object or a nullish value",
+    guardBytes.isByteSource({}) === false && guardBytes.isByteSource(null) === false &&
+    guardBytes.isByteSource(undefined) === false);
+  // Shared memory holds bytes and cannot hold this module's promise about them, since another
+  // thread can rewrite it after the checks have read it. Copying it into a private ArrayBuffer
+  // would keep the bytes and change the kind, so it is refused at every door instead, including
+  // a view whose backing store is shared while the view itself is an ordinary Uint8Array.
+  var shared = new SharedArrayBuffer(4);
+  var sharedView = new Uint8Array(shared);
+  check("shared memory is not a byte source", guardBytes.isByteSource(shared) === false);
+  check("view refuses shared memory", codeOf(function () {
+    guardBytes.view(shared, TestError, "t/bad", "input");
+  }) === "t/bad");
+  check("and a view whose backing store is shared", codeOf(function () {
+    guardBytes.view(sharedView, TestError, "t/bad", "input");
+  }) === "t/bad");
+  check("source refuses shared memory", codeOf(function () {
+    guardBytes.source(shared, TestError, "t/bad", "input");
+  }) === "t/bad");
+  check("snapshotDeep refuses it nested in a spec", codeOf(function () {
+    guardBytes.snapshotDeep({ b: shared }, TestError, "t/bad", "spec");
+  }) === "t/bad");
+  check("and nested as a view over it", codeOf(function () {
+    guardBytes.snapshotDeep({ b: sharedView }, TestError, "t/bad", "spec");
+  }) === "t/bad");
+  check("while an ordinary ArrayBuffer still copies to its own kind",
+    guardBytes.snapshotDeep(new ArrayBuffer(4), TestError, "t/bad", "spec") instanceof ArrayBuffer);
 
   // snapshot is the same door plus a private copy -- the parse-then-verify TOCTOU defense.
   var src = Buffer.from([7, 7, 7]);
@@ -241,9 +292,9 @@ async function testDeepSnapshotContract() {
   check("while real indices stay elements rather than named properties",
     Array.isArray(guardBytes.snapshotDeep(realIdx, TestError, "t/bad", "spec")) &&
     guardBytes.snapshotDeep(realIdx, TestError, "t/bad", "spec")[1] === 8);
-  // A sparse array costs what it HOLDS, not what it measures. `[].length = 4e9` is one statement,
-  // and a copy that counted from zero to `length` would do four billion iterations for an array
-  // holding one element, inside a guard whose job includes bounding a caller's argument.
+  // A sparse array costs what it holds. `[].length = 4e9` is one statement, and a copy that
+  // counted from zero to `length` would do four billion iterations for an array holding one
+  // element, inside a guard whose job includes bounding a caller's argument.
   var sparse = [];
   sparse[5] = "x";
   sparse.length = 4000000000;
@@ -267,7 +318,7 @@ async function testDeepSnapshotContract() {
     "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
   check("a CryptoKey passes through by reference",
     guardBytes.snapshotDeep({ k: ck }, TestError, "t/bad", "spec").k === ck);
-  // The walk reports SYMBOL keys, so both directions of that need pinning on a real key.
+  // The walk reports Symbol keys, so both directions of that need pinning on a real key.
   //
   // First direction: a platform key carries no enumerable own symbol, so it still passes through.
   // If a runtime ever caches its algorithm or usages under one, this fails at the upgrade rather
@@ -388,6 +439,37 @@ async function testDeepSnapshotContract() {
   Object.defineProperty(hiddenOption, "pem", { value: true, writable: true, enumerable: false });
   check("including one added where Object.keys cannot see it",
     guardBytes.snapshotDeep({ c: hiddenOption }, TestError, "t/bad", "spec").c !== hiddenOption);
+
+  // Copying and checking are one rule read from two sides, so a copy that loses what the check
+  // reads splits them. A subclass of a collection carries its additions on a prototype the copy
+  // has to keep. Drop it and the methods the class defines land on the copy as own names, where
+  // the check that refuses an unknown option refuses the caller's own bag.
+  function ArrayBag() {}
+  ArrayBag.prototype = Object.create(Array.prototype);
+  ArrayBag.prototype.constructor = ArrayBag;
+  ArrayBag.prototype.describe = function () { return "bag"; };
+  var arrayBag = Object.setPrototypeOf([], ArrayBag.prototype);
+  arrayBag.pem = true;
+  var arrayCopy = guardBytes.snapshotDeep({ o: arrayBag }, TestError, "t/bad", "spec").o;
+  check("a collection subclass keeps its prototype through the copy",
+    Object.getPrototypeOf(arrayCopy) === ArrayBag.prototype &&
+    typeof arrayCopy.describe === "function");
+  check("so the copy reports the same option names as the original",
+    identifier.readableNames(arrayCopy, TestError, "t/bad", "o").join(",") ===
+    identifier.readableNames(arrayBag, TestError, "t/bad", "o").join(",") &&
+    identifier.readableNames(arrayCopy, TestError, "t/bad", "o").join(",") === "pem");
+  function MapBag() {}
+  MapBag.prototype = Object.create(Map.prototype);
+  MapBag.prototype.constructor = MapBag;
+  MapBag.prototype.describe = function () { return "bag"; };
+  var mapBag = Object.setPrototypeOf(new Map(), MapBag.prototype);
+  mapBag.set("k", 1);
+  mapBag.pem = true;
+  var mapCopy = guardBytes.snapshotDeep({ o: mapBag }, TestError, "t/bad", "spec").o;
+  check("a Map subclass keeps its prototype and its entries",
+    Object.getPrototypeOf(mapCopy) === MapBag.prototype && mapCopy.get("k") === 1);
+  check("and reports the same option names as the original",
+    identifier.readableNames(mapCopy, TestError, "t/bad", "o").join(",") === "pem");
 
   check("snapshotDeep refuses a detached leaf", codeOf(function () {
     guardBytes.snapshotDeep({ b: detachedBuffer(4) }, TestError, "t/bad", "spec");
