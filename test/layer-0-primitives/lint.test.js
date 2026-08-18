@@ -567,6 +567,16 @@ function run() {
   check("a long cPSuri raises no DisplayText finding",
     !has(pki.lint.certificate(policyCert([b.sequence([b.oid(oid.byName("cps")), b.ia5("http://x.test/" + "p".repeat(300))])])), "lint/rfc5280/explicit-text-too-long"));
 
+  // An option this verb does not read is refused. A misspelled `profile` would otherwise lint
+  // against the default rule set while the call site reads as though it had named one, so the
+  // findings would answer a question nobody asked.
+  check("lint.certificate refuses a misspelled profile", (function () {
+    try { pki.lint.certificate(REAL, { profil: "cabf" }); return false; }
+    catch (e) { return e.code === "lint/bad-input"; }
+  })());
+  check("lint.certificate still accepts the options it reads",
+        pki.lint.certificate(REAL, { severity: "error" }).findings !== undefined);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

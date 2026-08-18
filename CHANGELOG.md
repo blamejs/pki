@@ -4,6 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.11 — 2026-08-18
+
+An option a verb never reads is now refused, so a misspelled `password` on key export can no longer leave a private key unprotected.
+
+### Changed
+
+- `pki.key` (encrypt, decrypt, export, import, generate, publicFromPrivate), `pki.path.validate`, `pki.path.build`, `pki.lint.certificate` and `pki.ocsp` (buildRequest, sign, verify) throw `<domain>/bad-input` on an option they do not read, instead of ignoring it. A call passing an option that did nothing before will now fail; the message names the unknown key, so the fix is to correct or drop it.
+- Where two verbs spell the same idea differently, the refusal says so. `pki.path.validate` takes `trustAnchor` and `pki.path.build` takes `trustAnchors`, and each names the other, because carrying the wrong spelling between them previously bought no anchoring and no error. `pki.key.encrypt` chooses `iterations` while `pki.key.decrypt` caps `maxIterations`; `pki.ocsp` spells the nonce three ways across buildRequest, sign and verify because it means three different things.
+- `pki.path.build` accepts every `pki.path.validate` option, since it forwards them to each internal validation. That union is derived from validate's own list rather than restated, so the two cannot drift apart.
+
+### Fixed
+
+- `pki.key.export(key, { password })` no longer writes an unprotected private key. Export serializes; it has never encrypted. The option was ignored, so the file on disk was a plaintext PKCS#8 while the call site named a password. It now throws `key/bad-input` naming `pki.key.encrypt(key, password)`, whose result is what to export.
+- An options argument of `false`, `0`, `""` or `NaN` is refused rather than read as no options at all. The check that an options argument is an object ran after the argument had already been replaced by an empty object, and that replacement treated any falsy value as absent, so those four reached the body as `{}`. `pki.cms.sign`, `pki.cms.countersign` and `pki.cms.verify` carried this before this release; the verbs gaining option checks here would have inherited it. `null` and `undefined` still mean no options, and a Buffer in the options position is now named as the argument-order mistake it is.
+
 ## v0.5.10 — 2026-08-18
 
 The documentation and the package's own source comments settle on one spelling of the words they use in both, and a gate keeps them there.

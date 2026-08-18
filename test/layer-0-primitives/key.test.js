@@ -394,6 +394,59 @@ async function testSecondEngineCopy() {
   })());
 }
 
+// An option this module does not read is refused, not ignored. The case that matters most is
+// `pki.key.export(privateKey, { password })`: export does not encrypt, so ignoring it wrote the
+// private key in the clear from a call site that reads as though it were protected.
+async function testUnknownOptionsRefused() {
+  var pair = await pki.key.generate("Ed25519");
+  var pkcs8 = await pki.key.export(pair.privateKey);
+  var spki = await pki.key.export(pair.publicKey);
+  var epki = await pki.key.encrypt(pair.privateKey, "pw");
+
+  check("export refuses opts.password rather than writing a plaintext key",
+        await codeOf(pki.key.export(pair.privateKey, { password: "pw" })) === "key/bad-input");
+  check("export's refusal names the verb that does encrypt", await (async function () {
+    try { await pki.key.export(pair.privateKey, { password: "pw" }); return false; }
+    catch (e) { return /pki\.key\.encrypt/.test(e.message); }
+  })());
+  check("export still accepts the options it reads",
+        typeof (await pki.key.export(pair.publicKey, { format: "pem", label: "PUBLIC KEY" })) === "string");
+
+  // The two PBKDF2 knobs are named per direction; each verb refuses the other's spelling.
+  check("encrypt refuses the decrypt-side maxIterations",
+        await codeOf(pki.key.encrypt(pair.privateKey, "pw", { maxIterations: 1000 })) === "key/bad-input");
+  check("decrypt refuses the encrypt-side iterations",
+        await codeOf(pki.key.decrypt(epki, "pw", { iterations: 1000 })) === "key/bad-input");
+  check("encrypt still accepts its own iterations",
+        Buffer.isBuffer(await pki.key.encrypt(pair.privateKey, "pw", { iterations: 2048 })));
+  check("decrypt still accepts its own maxIterations",
+        Buffer.isBuffer(await pki.key.decrypt(epki, "pw", { maxIterations: 1000000 })));
+
+  check("generate refuses a misspelled extractable",
+        await codeOf(pki.key.generate("Ed25519", { extractible: false })) === "key/bad-input");
+  check("import refuses a misspelled option",
+        await codeOf(pki.key.import(spki, { typ: "spki" })) === "key/bad-input");
+  check("import still accepts the options it reads",
+        (await pki.key.import(pkcs8, { extractable: true })).extractable === true);
+  check("publicFromPrivate refuses a misspelled option",
+        await codeOf(pki.key.publicFromPrivate(pair.privateKey, { pemm: true })) === "key/bad-input");
+  check("publicFromPrivate still accepts pem",
+        typeof (await pki.key.publicFromPrivate(pair.privateKey, { pem: true })) === "string");
+
+  // `opts = opts || {}` treated false / 0 / "" / NaN as "no options given" and rewrote them to
+  // {} BEFORE the shape check could see them, so four non-objects were accepted as valid. Only
+  // null and undefined mean absent; everything else non-object is a caller error.
+  var falsy = [false, 0, "", NaN];
+  for (var i = 0; i < falsy.length; i++) {
+    check("export refuses the falsy non-object " + String(falsy[i]) + " rather than defaulting it",
+          await codeOf(pki.key.export(pair.publicKey, falsy[i])) === "key/bad-input");
+  }
+  check("export still treats null as no options", Buffer.isBuffer(await pki.key.export(pair.publicKey, null)));
+  check("export still treats undefined as no options", Buffer.isBuffer(await pki.key.export(pair.publicKey, undefined)));
+  check("export refuses a Buffer handed in the options position",
+        await codeOf(pki.key.export(pair.publicKey, Buffer.alloc(4))) === "key/bad-input");
+}
+
 async function main() {
   await testExportRoundTrip();
   await testPbes2RoundTrip();
@@ -406,6 +459,7 @@ async function main() {
   await testEncryptCorners();
   await testForeignCryptoKeys();
   await testSecondEngineCopy();
+  await testUnknownOptionsRefused();
   console.log("CHECKS " + helpers.getChecks());
 }
 
