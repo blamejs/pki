@@ -508,11 +508,11 @@ function testKnownKeys() {
   check("and settling changes none of the names",
         identifier.readableNames(settledOverDefaults, E, "x/bad", "o").join(",") ===
         "trustAnchors,fetchAia");
-  // An object sitting over an array inherits that array's elements and its `length`, which are the
-  // array's structure wherever they are reached from. Reading the kind off that object alone calls
-  // them names its caller chose, and refuses an indexed bag for the field "0".
-  check("an object over an array reports neither its elements nor its length",
-        identifier.readableNames(Object.create([1, 2]), E, "x/bad", "o").length === 0);
+  // Structure is the value's own, never a kind it merely sits over. A plain object whose
+  // prototype happens to be an array is a plain object, and what it reaches through that array is
+  // something its caller arranged, so it is reported rather than passed over as an array's.
+  check("an object over an array reports what that array puts within its reach",
+        identifier.readableNames(Object.create([1, 2]), E, "x/bad", "o").join(",") === "0,1,length");
   check("an indexed bag with elements carries nothing to refuse",
         identifier.readableNames(identifier.optionsObject([1, 2], E, "x/bad", "opts"),
                                  E, "x/bad", "o").length === 0);
