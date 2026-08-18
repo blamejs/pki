@@ -415,8 +415,10 @@ function cmdPrepare(opts) {
   _runScriptIfPresent("test/layer-0-primitives/codebase-patterns.test.js");
   _runScriptIfPresent("scripts/validate-source-comment-blocks.js");
   _runScriptIfPresent("scripts/check-status-lifecycle.js");
+  _runScriptIfPresent("scripts/check-spelling-consistency.js");
   _run("node", ["scripts/pin-all.js", "--check"]);
-  _ok("eslint + codebase-patterns + source-comment-blocks + status-lifecycle + lockfile pin currency clean");
+  _ok("eslint + codebase-patterns + source-comment-blocks + status-lifecycle + spelling + " +
+      "lockfile pin currency clean");
 
   _section("supply-chain currency");
   // A stale vendored bundle becomes a release blocker HERE instead of an
