@@ -121,6 +121,17 @@ var SKIP_EXT = /\.(png|jpe?g|gif|ico|pem|der|p12|pfx|crt|cer|key|woff2?|ttf|eot|
 // nobody can keep green.
 var SELF = "scripts/check-spelling-consistency.js";
 
+// A line may opt out, but only by SAYING WHY: `spelling-ok: <reason>`. The
+// case this exists for is a machine-readable value -- a discriminator a caller
+// compares, a key a format pins -- where the word is an interface rather than
+// prose, and rewriting it for consistency breaks something that reads it.
+//
+// The reason is mandatory and the suppressions are counted and printed on every
+// run, because an opt-out nobody sees is where the defect this gate hunts would
+// end up. Prefer hoisting the value to one named constant with one marker over
+// scattering markers down a file.
+var SUPPRESS_RE = /spelling-ok:\s*(\S.*?)\s*$/;
+
 // Built at runtime rather than written as a literal. A raw control byte in the
 // source makes git classify this file as binary, which costs line diffs, blame
 // and review on every future change to the gate.
@@ -139,7 +150,7 @@ var BY_LOWER = Object.create(null);
 FORMS.forEach(function (p) { BY_LOWER[p[0]] = p[1]; });
 var WORD_RE = /[A-Za-z]+/g;
 
-function scanFile(file) {
+function scanFile(file, suppressed) {
   var src;
   try { src = fs.readFileSync(file, "utf8"); } catch (_e) { return []; }
   if (src.indexOf(NUL) !== -1) return [];      // binary that slipped the extension list
@@ -147,6 +158,11 @@ function scanFile(file) {
   var lines = src.split("\n");
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
+    var opt = SUPPRESS_RE.exec(line);
+    if (opt) {
+      if (suppressed) suppressed.push({ file: file, line: i + 1, reason: opt[1] });
+      continue;
+    }
     var allowed = allowedOffsets(line);
     var m;
     WORD_RE.lastIndex = 0;
@@ -154,6 +170,14 @@ function scanFile(file) {
       var lower = m[0].toLowerCase();
       var want = BY_LOWER[lower];
       if (want === undefined) continue;
+      // A run of letters touching `_` or a digit is one part of an identifier,
+      // not a word in a sentence -- `KIND_CATALOG`, `catalog_entry`, `sha1`.
+      // Renaming an identifier for spelling changes what code refers to, which
+      // is never what this gate is for. camelCase needs no rule: it is already
+      // a single run, so `catalogEntry` never matches in the first place.
+      var before = m.index > 0 ? line.charAt(m.index - 1) : "";
+      var after = line.charAt(m.index + m[0].length);
+      if (/[_0-9]/.test(before) || /[_0-9]/.test(after)) continue;
       if (allowed.indexOf(m.index) !== -1) continue;
       findings.push({ file: file, line: i + 1, found: m[0], want: want });
     }
@@ -204,6 +228,28 @@ function canary() {
     if (scanFile(probe).length !== 0) {
       throw new Error("canary: a file containing a control byte should be skipped");
     }
+    // An identifier is not prose. Both halves of a snake_case name touch an
+    // underscore, so neither is a word this gate may rewrite.
+    fs.writeFileSync(probe, "KIND_CATALOG and catalog_entry and MAX_BEHAVIOUR_2 stay.\n");
+    if (scanFile(probe).length !== 0) {
+      throw new Error("canary: a word inside an identifier must not be flagged");
+    }
+    // ...but the same word standing alone in the same file still is.
+    fs.writeFileSync(probe, "KIND_CATALOG holds the catalog value.\n");
+    if (scanFile(probe).length !== 1) {
+      throw new Error("canary: the identifier rule must not silence the bare word");
+    }
+    // The opt-out must require a reason. A bare marker suppressing the line
+    // would be a free skip, and free skips are where the defect ends up.
+    fs.writeFileSync(probe, "var KIND = \"catalog\";   // spelling-ok:\n");
+    if (scanFile(probe).length !== 1) {
+      throw new Error("canary: `spelling-ok:` with no reason must not suppress");
+    }
+    fs.writeFileSync(probe, "var KIND = \"catalog\";   // spelling-ok: machine value\n");
+    var kept = [];
+    if (scanFile(probe, kept).length !== 0 || kept.length !== 1 || kept[0].reason !== "machine value") {
+      throw new Error("canary: a reasoned `spelling-ok:` must suppress AND be recorded");
+    }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* scratch dir */ }
   }
@@ -216,9 +262,18 @@ function main() {
               "the title itself, and skips binary");
 
   var findings = [];
+  var suppressed = [];
   trackedFiles().forEach(function (f) {
-    findings = findings.concat(scanFile(f));
+    findings = findings.concat(scanFile(f, suppressed));
   });
+
+  // Printed on every run, pass or fail. An opt-out that nobody sees accumulates.
+  if (suppressed.length) {
+    console.log("[check-spelling-consistency] " + suppressed.length + " line(s) opted out:");
+    suppressed.forEach(function (s) {
+      console.log("  " + s.file + ":" + s.line + "  -- " + s.reason);
+    });
+  }
 
   if (findings.length === 0) {
     console.log("[check-spelling-consistency] OK - one spelling per word across every tracked file.");
