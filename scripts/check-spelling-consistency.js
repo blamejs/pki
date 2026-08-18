@@ -51,8 +51,11 @@ var FORMS = [
   ["favour", "favor"], ["favours", "favors"],
   ["favoured", "favored"], ["favouring", "favoring"],
   ["favourable", "favorable"],
-  ["analyse", "analyze"], ["analyses", "analyzes"],
-  ["analysed", "analyzed"], ["analysing", "analyzing"],
+  // `analyses` is deliberately absent: it is the plural of the noun `analysis`
+  // in both dialects as well as the British verb form, and nothing here can
+  // tell those apart. Flagging it would push an author into an error, so the
+  // ambiguous member is left unchecked while its unambiguous siblings are not.
+  ["analyse", "analyze"], ["analysed", "analyzed"], ["analysing", "analyzing"],
   ["normalise", "normalize"], ["normalises", "normalizes"],
   ["normalised", "normalized"], ["normalising", "normalizing"],
   ["normalisation", "normalization"],
@@ -188,6 +191,13 @@ function canary() {
     if (sameLine.length !== 1 || sameLine[0].found !== "enrolment") {
       throw new Error("canary: an occurrence beside the RFC title should still be flagged, got " +
                       sameLine.length + " finding(s)");
+    }
+    // The plural noun must survive. If a later edit adds `analyses` to the
+    // table, this fails rather than the gate quietly demanding a word that
+    // would be wrong in the sentence it appears in.
+    fs.writeFileSync(probe, "Both analyses agree, and the tool analyzes each input.\n");
+    if (scanFile(probe).length !== 0) {
+      throw new Error("canary: `analyses` is the plural of `analysis` and must not be flagged");
     }
     // A binary file must be skipped, not decoded into spurious findings.
     fs.writeFileSync(probe, "behaviour" + NUL + "binary\n");
