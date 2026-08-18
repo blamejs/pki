@@ -44,7 +44,7 @@ var ROOT_RE = /^\s*pki\./;
 // on, and it is printed verbatim by every consumer -- an interface, not prose.
 // It keeps its established spelling, and lives here once so the value has one
 // definition rather than seven literals to keep in step.
-var KIND_CATALOG = "catalog";   // spelling-ok: machine-readable finding discriminator
+var KIND_CATALOG = "catalog";   // spelling-ok: catalog -- machine-readable finding discriminator
 
 var KNOWN_STATUSES = { stable: 1, experimental: 1, deprecated: 1 };
 

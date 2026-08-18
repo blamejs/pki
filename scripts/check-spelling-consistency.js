@@ -133,16 +133,21 @@ function isDataPath(file) { return SKIP_EXT.test(file) || SKIP_PATH.test(file); 
 // nobody can keep green.
 var SELF = "scripts/check-spelling-consistency.js";
 
-// A line may opt out, but only by SAYING WHY: `spelling-ok: <reason>`. The
-// case this exists for is a machine-readable value -- a discriminator a caller
-// compares, a key a format pins -- where the word is an interface rather than
-// prose, and rewriting it for consistency breaks something that reads it.
+// A line may opt out, but only by naming the WORD and SAYING WHY:
+//   spelling-ok: <word> -- <reason>
+// The case this exists for is a machine-readable value -- a discriminator a
+// caller compares, a key a format pins -- where the word is an interface rather
+// than prose, and rewriting it for consistency breaks something that reads it.
 //
-// The reason is mandatory and the suppressions are counted and printed on every
-// run, because an opt-out nobody sees is where the defect this gate hunts would
-// end up. Prefer hoisting the value to one named constant with one marker over
-// scattering markers down a file.
-var SUPPRESS_RE = /spelling-ok:\s*(\S.*?)\s*$/;
+// It excuses that one word, not the line. A line-scoped opt-out would silently
+// cover an unrelated regression that later joined the same line, which is the
+// same defect as exempting a whole line because it quotes the RFC 8894 title.
+//
+// Both parts are mandatory: a marker missing the word or the reason does not
+// suppress anything, so a half-written opt-out fails loudly instead of quietly
+// widening. Suppressions are counted and printed on every run, pass or fail,
+// because an opt-out nobody sees is where the defect this gate hunts ends up.
+var SUPPRESS_RE = /spelling-ok:\s*([A-Za-z]+)\s*--\s*(\S.*?)\s*$/;
 
 // Built at runtime rather than written as a literal. A raw control byte in the
 // source makes git classify this file as binary, which costs line diffs, blame
@@ -171,10 +176,7 @@ function scanFile(file, suppressed) {
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
     var opt = SUPPRESS_RE.exec(line);
-    if (opt) {
-      if (suppressed) suppressed.push({ file: file, line: i + 1, reason: opt[1] });
-      continue;
-    }
+    var excused = opt ? opt[1].toLowerCase() : null;
     var allowed = allowedOffsets(line);
     var m;
     WORD_RE.lastIndex = 0;
@@ -191,6 +193,11 @@ function scanFile(file, suppressed) {
       var after = line.charAt(m.index + m[0].length);
       if (/[_0-9]/.test(before) || /[_0-9]/.test(after)) continue;
       if (allowed.indexOf(m.index) !== -1) continue;
+      // Excuses THIS word only; anything else on the line is still a finding.
+      if (excused !== null && lower === excused) {
+        if (suppressed) suppressed.push({ file: file, line: i + 1, word: m[0], reason: opt[2] });
+        continue;
+      }
       findings.push({ file: file, line: i + 1, found: m[0], want: want });
     }
   }
@@ -258,16 +265,32 @@ function canary() {
     if (scanFile(probe).length !== 1) {
       throw new Error("canary: the identifier rule must not silence the bare word");
     }
-    // The opt-out must require a reason. A bare marker suppressing the line
-    // would be a free skip, and free skips are where the defect ends up.
+    // The opt-out must name a word AND a reason. A half-written marker is a
+    // free skip, and free skips are where the defect ends up.
     fs.writeFileSync(probe, "var KIND = \"catalog\";   // spelling-ok:\n");
     if (scanFile(probe).length !== 1) {
-      throw new Error("canary: `spelling-ok:` with no reason must not suppress");
+      throw new Error("canary: `spelling-ok:` with no word or reason must not suppress");
     }
-    fs.writeFileSync(probe, "var KIND = \"catalog\";   // spelling-ok: machine value\n");
+    // No reason, so nothing is excused -- and the word appears twice on the
+    // line, in the value and in the half-written marker, so both are findings.
+    fs.writeFileSync(probe, "var KIND = \"catalog\";   // spelling-ok: catalog\n");
+    if (scanFile(probe).length !== 2) {
+      throw new Error("canary: `spelling-ok:` naming a word but no reason must not suppress");
+    }
+    fs.writeFileSync(probe, "var KIND = \"catalog\";   // spelling-ok: catalog -- machine value\n");
     var kept = [];
-    if (scanFile(probe, kept).length !== 0 || kept.length !== 1 || kept[0].reason !== "machine value") {
-      throw new Error("canary: a reasoned `spelling-ok:` must suppress AND be recorded");
+    if (scanFile(probe, kept).length !== 0 || kept.length !== 2 ||
+        kept[0].reason !== "machine value") {
+      throw new Error("canary: a complete `spelling-ok:` must suppress that word AND record it");
+    }
+    // ...and ONLY that word. An unrelated form joining the line is still a
+    // finding, or the opt-out becomes a licence to regress the rest of the line.
+    fs.writeFileSync(probe,
+      "var KIND = \"catalog\";   // spelling-ok: catalog -- machine value, behaviour aside\n");
+    var mixed = scanFile(probe);
+    if (mixed.length !== 1 || mixed[0].found !== "behaviour") {
+      throw new Error("canary: the opt-out must excuse its word only, got " +
+                      mixed.map(function (f) { return f.found; }).join(","));
     }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* scratch dir */ }
@@ -287,10 +310,23 @@ function main() {
   });
 
   // Printed on every run, pass or fail. An opt-out that nobody sees accumulates.
+  // One declaration can excuse several occurrences on its line -- the value and
+  // the marker naming it, typically. Report the declarations, not the hits, or
+  // the count reads as more opt-outs than anyone wrote.
   if (suppressed.length) {
-    console.log("[check-spelling-consistency] " + suppressed.length + " line(s) opted out:");
+    var seen = Object.create(null);
+    var declared = [];
     suppressed.forEach(function (s) {
-      console.log("  " + s.file + ":" + s.line + "  -- " + s.reason);
+      var key = s.file + ":" + s.line + ":" + s.word.toLowerCase();
+      if (seen[key]) { seen[key].hits++; return; }
+      seen[key] = { s: s, hits: 1 };
+      declared.push(key);
+    });
+    console.log("[check-spelling-consistency] " + declared.length + " opt-out(s) in force:");
+    declared.forEach(function (key) {
+      var d = seen[key];
+      console.log("  " + d.s.file + ":" + d.s.line + "  " + d.s.word +
+                  (d.hits > 1 ? " (x" + d.hits + ")" : "") + "  -- " + d.s.reason);
     });
   }
 
