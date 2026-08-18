@@ -237,6 +237,53 @@ async function testDeepSnapshotContract() {
     "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
   check("a CryptoKey passes through by reference",
     guardBytes.snapshotDeep({ k: ck }, TestError, "t/bad", "spec").k === ck);
+  // The walk reports SYMBOL keys, so both directions of that need pinning on a real key.
+  //
+  // First direction: a platform key carries no enumerable own symbol, so it still passes through.
+  // If a runtime ever caches its algorithm or usages under one, this fails at the upgrade rather
+  // than an operator finding their keys refused. Read the surface first, since a lazy cache would
+  // land exactly there.
+  void ck.type; void ck.extractable; void ck.algorithm; void ck.usages;
+  var ckSymbols = Object.getOwnPropertySymbols(ck).filter(function (s) {
+    var d = Object.getOwnPropertyDescriptor(ck, s);
+    return d && d.enumerable;
+  });
+  check("a platform CryptoKey carries no enumerable own symbol", ckSymbols.length === 0);
+  check("so it still passes through after its surface has been read",
+    guardBytes.snapshotDeep({ k: ck }, TestError, "t/bad", "spec").k === ck);
+  // Second direction: a handle is passed through by REFERENCE, so a field the caller hangs on one
+  // stays theirs to change after every check has read it. That is the window the refusal closes,
+  // and a symbol key is no way around it.
+  var marked = await require("node:crypto").webcrypto.subtle.importKey(
+    "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+  marked[Symbol("pem")] = true;
+  var markedErr;
+  try { guardBytes.snapshotDeep({ k: marked }, TestError, "t/bad", "spec"); markedErr = { code: "NO-THROW" }; }
+  catch (e) { markedErr = e; }
+  check("a CryptoKey carrying a caller-added symbol field is refused", markedErr.code === "t/bad");
+
+  // A symbol key is now treated exactly as a string one is, which is the point: the walk reports
+  // both, so neither is a way to smuggle a field past a check or to behave differently under a
+  // copy. A class that declares a method under a symbol keeps it, and an accessor that throws is
+  // the caller's typed error either way rather than a raw one from inside the copy.
+  var METHOD = Symbol("describe");
+  function SymBag() { this.pem = true; }
+  SymBag.prototype[METHOD] = function () { return 42; };
+  var symCopy = guardBytes.snapshotDeep(new SymBag(), TestError, "t/bad", "spec");
+  check("a class method declared under a symbol survives the copy and still runs",
+        symCopy.pem === true && typeof symCopy[METHOD] === "function" && symCopy[METHOD]() === 42);
+  function ThrowSym() {}
+  Object.defineProperty(ThrowSym.prototype, Symbol("boom"), {
+    get: function () { throw new Error("ran"); }, enumerable: false, configurable: true
+  });
+  function ThrowStr() {}
+  Object.defineProperty(ThrowStr.prototype, "boom", {
+    get: function () { throw new Error("ran"); }, enumerable: false, configurable: true
+  });
+  var symGet = codeOf(function () { guardBytes.snapshotDeep(new ThrowSym(), TestError, "t/bad", "spec"); });
+  var strGet = codeOf(function () { guardBytes.snapshotDeep(new ThrowStr(), TestError, "t/bad", "spec"); });
+  check("an accessor that throws is the caller's typed error under either key kind",
+        symGet === "t/bad" && strGet === "t/bad");
   // A Map or a Set holds data the caller can still change, so it is copied like anything else --
   // entries and any named properties alongside them. A RegExp or an Error carries no caller data
   // that a verb reads, so there is nothing to fix and it stays as it is.
