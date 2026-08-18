@@ -3245,8 +3245,8 @@ function reSignUnaligned(der) {
   return b.sequence([b.raw(n.children[0].bytes), b.raw(n.children[1].bytes), b.bitString(body, 1)]);
 }
 
-// The two verbs in this module spell the anchor option differently -- validate takes
-// `trustAnchor`, build takes `trustAnchors` -- so a caller moving between them carries the
+// The two verbs in this module spell the anchor option differently. validate takes
+// `trustAnchor` and build takes `trustAnchors`, so a caller moving between them carries the
 // wrong one without leaving the namespace. Each refuses the other's spelling and says which
 // is which, instead of ignoring it and reporting a missing anchor the caller believes it gave.
 async function testUnknownOptionsRefused() {
@@ -3270,10 +3270,11 @@ async function testUnknownOptionsRefused() {
           pki.path.build(Buffer.alloc(1), { time: new Date(), trustAnchor: anchor }))));
   check("validate refuses a misspelled option generally",
         await codeOf(pki.path.validate([], { time: new Date(), trustAnchor: anchor, softFale: true })) === "path/bad-input");
-  // build forwards every validate option, so a validate-only option must still be ACCEPTED by
-  // build -- the union is what stops this gate rejecting the toolkit's own internal calls.
-  // The assertion is on the MESSAGE, not the code: this fixture's leaf is not a certificate, so
-  // the call fails with path/bad-input either way and the code alone cannot tell which reason.
+  // build forwards every validate option, so a validate-only option must still be accepted by
+  // build. The union is what stops this gate rejecting the toolkit's own internal calls.
+  // The assertion is on the message rather than the code: this fixture's leaf is not a
+  // certificate, so the call fails with path/bad-input either way and the code alone cannot
+  // tell which reason.
   check("build accepts a validate-only option it forwards",
         !/unknown option/.test(await msgOf(pki.path.build(Buffer.alloc(1), {
           time: new Date(), trustAnchors: [anchor], candidates: [], requiredEku: ["serverAuth"]

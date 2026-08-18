@@ -200,6 +200,20 @@ async function testBadInput() {
       signerIndex: 0, signingTime: new Date(0), certificates: true, pem: false,
       signedAttributes: true, additionalSignedAttributes: [],
     })));
+
+  // These two verbs take their arguments through guard.bytes.fixedCall, whose snapshot copies
+  // every readable name onto a fresh object. A method the caller's class defines therefore
+  // arrives as an own property, and the check has to hold anyway: it recognizes a method by the
+  // identical function on the chain above, which reads the same before and after the copy.
+  function SignBag() { this.signedAttributes = true; }
+  SignBag.prototype.describe = function () { return "signing"; };
+  check("sign accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, s, new SignBag())));
+  function CountersignBag() { this.signerIndex = 0; }
+  CountersignBag.prototype.describe = function () { return "countersigning"; };
+  check("countersign accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.cms.countersign(countersigned, s, new CountersignBag())));
+
   await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
   // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).

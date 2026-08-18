@@ -106,6 +106,67 @@ function testKnownKeys() {
     identifier.assertKnownKeys({ gamma: 1 }, KNOWN, function (c, m) { return new TestError(c, m); }, "x/adapted", "unknown ");
   });
   check("a class adapted to a factory still throws the typed error", adapted.code === "x/adapted" && adapted instanceof TestError);
+
+  // What counts as a method, which is the one thing the property walk skips. The distinction has
+  // to hold on both sides of guard.bytes.snapshotDeep. That copy carries every readable name onto
+  // the copy and keeps the prototype, so the same method is inherited before it and own after it.
+  function Bag() { this.alpha = 1; }
+  Bag.prototype.describe = function () { return "bag"; };
+  check("an instance whose class defines a method is accepted",
+        identifier.assertKnownKeys(new Bag(), KNOWN, E, "x/bad", "unknown ") === undefined);
+  // The same instance after a snapshot: `describe` and `constructor` are now own properties.
+  var copied = Object.create(Bag.prototype);
+  copied.alpha = 1;
+  copied.describe = Bag.prototype.describe;
+  copied.constructor = Bag;
+  check("a snapshot copy carrying its methods as own properties is accepted",
+        identifier.assertKnownKeys(copied, KNOWN, E, "x/bad", "unknown ") === undefined);
+  // A function value is not a free pass. It is a method only where the chain above supplies the
+  // same function under that name. An unrelated function under an unknown name is still unknown.
+  check("an own function under an unknown name is still reported", errOf(function () {
+    identifier.assertKnownKeys({ gamma: function () {} }, KNOWN, E, "x/bad", "unknown ");
+  }).code === "x/bad");
+  // An own property shadowing a method with another function is a value the caller supplied.
+  var shadow = Object.create(Bag.prototype);
+  shadow.describe = function () { return "mine"; };
+  check("an own property shadowing a method with another function is reported",
+        errOf(function () { identifier.assertKnownKeys(shadow, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+  // An accessor is never a method. A getter exists to answer with a value, which is what an
+  // option is, including one whose value happens to be a function.
+  var accessor = {};
+  Object.defineProperty(accessor, "gamma", { get: function () { return function () {}; }, enumerable: false });
+  check("an inherited-style accessor is reported however its value reads",
+        errOf(function () { identifier.assertKnownKeys(accessor, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+
+  // A name added to Object.prototype after this module loaded reaches an empty object. `{}.gamma`
+  // answers while the object itself holds nothing. The built-ins are skipped by identity against
+  // a snapshot taken at load, so the planted name is still reported.
+  Object.defineProperty(Object.prototype, "gamma", { value: 3, writable: true, configurable: true, enumerable: false });
+  var pollutedCode, restored;
+  try {
+    pollutedCode = errOf(function () { identifier.assertKnownKeys({}, KNOWN, E, "x/bad", "unknown "); }).code;
+  } finally {
+    restored = delete Object.prototype.gamma;
+  }
+  check("a name planted on Object.prototype is reported on an empty object", pollutedCode === "x/bad");
+  check("the pollution vector leaves Object.prototype as it found it",
+        restored === true && !("gamma" in Object.prototype));
+  check("an empty object is accepted again once the pollution is gone",
+        identifier.assertKnownKeys({}, KNOWN, E, "x/bad", "unknown ") === undefined);
+
+  // A prototype chain is finite only while it is acyclic. A Proxy whose `getPrototypeOf` trap
+  // returns the proxy itself makes a cycle, which the engine permits while the target stays
+  // extensible. A walk with no cycle test never returns, and the verb hangs before it has read a
+  // single option. The names are still complete, since a second lap yields nothing new.
+  var cyclicTarget = { alpha: 1, gamma: 3 };
+  var cyclic = new Proxy(cyclicTarget, { getPrototypeOf: function () { return cyclic; } });
+  check("the fixture really is a cycle", Object.getPrototypeOf(cyclic) === cyclic);
+  var cyclicNames = identifier.readableNames(cyclic);
+  check("a cyclic prototype chain terminates and reports every own name",
+        cyclicNames.length === 2 && cyclicNames.indexOf("alpha") >= 0 && cyclicNames.indexOf("gamma") >= 0);
+  check("the unknown key on a cyclic chain is still refused", errOf(function () {
+    identifier.assertKnownKeys(cyclic, KNOWN, E, "x/bad", "unknown ");
+  }).code === "x/bad");
 }
 
 // Every config-time boundary that composes assertKnownKeys must still raise its OWN typed error.

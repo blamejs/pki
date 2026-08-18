@@ -557,6 +557,22 @@ async function run() {
       } catch (e) { return /requestNonce/.test(e.message); }
     })());
 
+  // buildRequest and sign take their arguments through guard.bytes.fixedCall, whose snapshot
+  // copies every readable name onto a fresh object. A method the caller's class defines therefore
+  // arrives as an own property, and the check has to hold anyway: it recognizes a method by the
+  // identical function on the chain above, which reads the same before and after the copy.
+  function RequestBag() { this.hashAlgorithm = "sha256"; }
+  RequestBag.prototype.describe = function () { return "request"; };
+  check("buildRequest accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
+      new RequestBag())));
+  function ResponseBag() { this.embedCert = true; }
+  ResponseBag.prototype.describe = function () { return "response"; };
+  check("sign accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.ocsp.sign(
+      { responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good" }] },
+      { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, new ResponseBag())));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

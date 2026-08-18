@@ -310,6 +310,21 @@ async function testDeepSnapshotContract() {
     var cyc = {}; cyc.self = cyc;
     guardBytes.snapshotDeep(cyc, TestError, "t/bad", "spec");
   }) === "t/bad");
+  // A cycle in the prototype chain. The vector above covers a cycle in the values. A Proxy whose
+  // `getPrototypeOf` trap returns the proxy makes one, and the engine permits it while the target
+  // stays extensible. Every question this module asks about a kind is an `instanceof`, which
+  // walks that chain, so without a test for the shape the copy exhausts the stack and a raw
+  // RangeError escapes a guard whose contract is a typed error.
+  var protoCycTarget = { a: 1 };
+  var protoCyc = new Proxy(protoCycTarget, { getPrototypeOf: function () { return protoCyc; } });
+  check("the fixture really is a prototype cycle", Object.getPrototypeOf(protoCyc) === protoCyc);
+  var protoCycErr;
+  try { guardBytes.snapshotDeep(protoCyc, TestError, "t/bad", "spec"); protoCycErr = new Error("NO-THROW"); }
+  catch (e) { protoCycErr = e; }
+  check("snapshotDeep refuses a cyclic prototype chain with the caller's typed code",
+        protoCycErr.code === "t/bad" && protoCycErr instanceof TestError);
+  check("and the refusal names the shape rather than the stack",
+        /prototype chain is a cycle/.test(protoCycErr.message));
 
   // fixArguments is the whole rule in one call: copy every argument, hand back the copies, and
   // give the caller a release that clears everything it copied. Both halves matter -- the copy

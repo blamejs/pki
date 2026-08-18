@@ -1791,8 +1791,8 @@ function testNoDuplicateCodeBlocks() {
         "lib/cms-sign.js:_sign", "lib/cms-sign.js:_countersign",
         "lib/cms-verify.js:_verify", "lib/tsp-sign.js:verify",
         // pki.key's six verbs, pki.path's two, pki.lint.certificate and pki.ocsp.verify. Each
-        // binds its own table, error class and message -- key.export names the verb that
-        // encrypts, path.validate and path.build name each other's anchor spelling -- so the
+        // binds its own table, error class and message. key.export names the verb that
+        // encrypts, and path.validate and path.build name each other's anchor spelling, so the
         // wording carries the per-verb content and only the call repeats.
         "lib/key.js:encrypt", "lib/key.js:decrypt", "lib/key.js:export_",
         "lib/key.js:import_", "lib/key.js:generate", "lib/key.js:publicFromPrivate",
@@ -1805,9 +1805,9 @@ function testNoDuplicateCodeBlocks() {
     },
     {
       // Producing-module helper glue, surfaced rather than introduced. These seven functions do
-      // unrelated jobs -- an extensions list, a POP link witness, a PEM decode, a countersignature
-      // preimage, a challengePassword attribute, a signingCertificateV2, a critical-SAN test --
-      // and share only the builder idiom every one of them is written in: read a spec field,
+      // unrelated jobs: an extensions list, a POP link witness, a PEM decode, a countersignature
+      // preimage, a challengePassword attribute, a signingCertificateV2, and a critical-SAN test.
+      // They share only the builder idiom every one of them is written in: read a spec field,
       // guard it, hand it to a b.* encoder. Nothing is extractable without inventing a helper
       // that would take a different shape per caller.
       //

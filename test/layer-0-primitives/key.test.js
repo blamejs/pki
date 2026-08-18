@@ -448,8 +448,8 @@ async function testUnknownOptionsRefused() {
 
   // `Object.keys` reports own ENUMERABLE names only, so two ordinary JavaScript objects answered
   // `opts.password` while showing the check nothing: one carries it on a prototype, the other
-  // hides it behind enumerable:false. Either one meant export accepted the bag and returned the
-  // private key in the clear -- the refusal reached by a different object shape.
+  // hides it behind enumerable:false. On either one export accepts the bag and returns the
+  // private key in the clear, which is the refusal reached by a different object shape.
   var inherited = Object.create({ password: "pw" });
   check("export refuses a password carried on the prototype",
         await codeOf(pki.key.export(pair.privateKey, inherited)) === "key/bad-input");
@@ -483,6 +483,25 @@ async function testUnknownOptionsRefused() {
   PlainBag.prototype.describe = function () { return "bag"; };
   check("an instance whose prototype carries only methods is still accepted",
         typeof (await pki.key.export(pair.publicKey, new PlainBag())) === "string");
+  // A polluted Object.prototype reaches an empty bag. `{}.password` answers "pw" while the
+  // object itself holds nothing. Stopping the walk at Object.prototype excludes the whole
+  // object and lets this through, so the built-ins are skipped by identity against a snapshot
+  // taken at load and a name added afterwards is still reported.
+  Object.defineProperty(Object.prototype, "password", {
+    value: "pw", writable: true, configurable: true, enumerable: false
+  });
+  var pollutedCode, pollutedThrew;
+  try {
+    pollutedCode = await codeOf(pki.key.export(pair.privateKey, {}));
+  } finally {
+    pollutedThrew = delete Object.prototype.password;
+  }
+  check("export refuses an option reachable only through a polluted Object.prototype",
+        pollutedCode === "key/bad-input");
+  check("the pollution vector restores Object.prototype", pollutedThrew === true &&
+        !("password" in Object.prototype));
+  check("a clean empty bag is still accepted once the pollution is gone",
+        (await pki.key.export(pair.publicKey, {})).equals(await pki.key.export(pair.publicKey)));
 }
 
 async function main() {
