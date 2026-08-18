@@ -513,6 +513,15 @@ async function testUnknownOptionsRefused() {
         Object.getOwnPropertyNames(opaque).length === 0 && opaque.password === "pw");
   check("export refuses an options bag whose reported keys need not be what it answers",
         await codeOf(pki.key.export(pair.privateKey, opaque)) === "key/bad-input");
+  // An array whose prototype has been replaced by an ordinary object. `Array.isArray` still says
+  // yes, so a rule that stops reading the chain for that kind stops here; but there is no
+  // `Array.prototype` above it and nothing structural to protect, and `opts.password` resolves.
+  var replacedProto = [];
+  Object.setPrototypeOf(replacedProto, { password: "pw" });
+  check("the fixture is an array with no kind prototype above it",
+        Array.isArray(replacedProto) && replacedProto.password === "pw");
+  check("export refuses an option on a replaced array prototype rather than writing a plain key",
+        await codeOf(pki.key.export(pair.privateKey, replacedProto)) === "key/bad-input");
 }
 
 async function main() {

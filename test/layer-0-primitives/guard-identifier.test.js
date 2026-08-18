@@ -214,6 +214,37 @@ function testKnownKeys() {
   check("while real elements are not reported as options",
         identifier.readableNames(realIndices, E, "x/bad", "o").length === 0);
 
+  // The chain of a collection-kind bag is READ; only the levels that describe a KIND are skipped.
+  // Declining to read it at all left a hole with nothing intrinsic anywhere in the chain:
+  // `Object.setPrototypeOf([], { password: "pw" })` is still an array by `Array.isArray`, has no
+  // `Array.prototype` above it, and `opts.password` resolves. The option went unreported and
+  // `pki.key.export` returned a plaintext private key.
+  var replacedProto = [];
+  Object.setPrototypeOf(replacedProto, { password: "pw" });
+  check("the fixture is an array whose chain holds no kind prototype",
+        Array.isArray(replacedProto) && Object.getPrototypeOf(replacedProto) !== Array.prototype);
+  check("an option on a replaced prototype of an array is reported",
+        identifier.readableNames(replacedProto, E, "x/bad", "o").join(",") === "password");
+  check("and refused as unknown", errOf(function () {
+    identifier.assertKnownKeys(replacedProto, KNOWN, E, "x/bad", "unknown ");
+  }).code === "x/bad");
+  // A subclass sits below the kind's prototype, so its own additions are reported too.
+  function SubArr() {}
+  SubArr.prototype = Object.create(Array.prototype);
+  Object.defineProperty(SubArr.prototype, "gamma", { value: 1, configurable: true });
+  var subBag = [];
+  Object.setPrototypeOf(subBag, SubArr.prototype);
+  check("an option on a subclass prototype of an array is reported",
+        identifier.readableNames(subBag, E, "x/bad", "o").join(",") === "gamma");
+  // ...while every kind's own surface stays silent, which is what the skip is for.
+  ["length", "buffer", "byteLength", "byteOffset", "BYTES_PER_ELEMENT", "size", "parent"]
+    .forEach(function (n) { void n; });
+  [[], new Uint8Array(2), Buffer.alloc(2), new Map(), new Set(), new ArrayBuffer(2),
+    new DataView(new ArrayBuffer(2))].forEach(function (v, i) {
+    check("kind " + i + " reports none of its own structural surface",
+          identifier.readableNames(v, E, "x/bad", "o").length === 0);
+  });
+
   var viewOpts = new Uint8Array(2); viewOpts.alpha = 1;
   check("a byte view reports the caller's name and not its own surface",
         identifier.readableNames(viewOpts, E, "x/bad", "o").join(",") === "alpha");
