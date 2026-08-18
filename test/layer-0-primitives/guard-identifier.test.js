@@ -390,34 +390,51 @@ function testKnownKeys() {
   check("and the refusal names the shape", /Proxy/.test(liarErr.message));
   check("optionsObject refuses it at the entry point too",
         errOf(function () { identifier.optionsObject(liar, E, "x/bad", "opts"); }).code === "x/bad");
-  // optionsObject hands the caller's own bag back, having read every option once to prove the
-  // names hold still. Which names a caller supplied is decided by where they sit, so returning a
-  // copy would throw that away; what it establishes instead is that reading does not change the
-  // set about to be checked.
-  var caller = { get alpha() { return 1; }, beta: 2 };
+  // optionsObject hands the caller's own bag back. Which names a caller supplied is decided by
+  // where they sit, so returning a copy would throw that away; what it establishes is that the
+  // options are values, and that reading them does not change the set about to be checked.
+  var caller = { alpha: 1, beta: 2 };
   var settled = identifier.optionsObject(caller, E, "x/bad", "opts");
   check("optionsObject returns the caller's own bag", settled === caller);
   check("with every option still resolving as it did", settled.alpha === 1 && settled.beta === 2);
   check("while a verb called with no options gets a bag inheriting nothing",
         Object.getPrototypeOf(identifier.optionsObject(undefined, E, "x/bad", "opts")) === null &&
         Object.getPrototypeOf(identifier.optionsObject(null, E, "x/bad", "opts")) === null);
-  var reread = { reads: 0 };
-  Object.defineProperty(reread, "alpha", { get: function () { this.reads++; return 1; }, enumerable: true });
-  identifier.optionsObject(reread, E, "x/bad", "opts");
-  check("each option is read once while the names are being settled", reread.reads === 1);
-  // A getter that adds a name to its own bag leaves the checked set and the read set different.
-  check("optionsObject refuses a bag that grows a name as it is read",
+  // An option supplied through an accessor is refused. A getter answers afresh on every read, so
+  // the value the check saw says nothing about the one the verb uses, and a name checked once can
+  // be joined by another the next time it runs. Each of the shapes below reached a verb.
+  check("optionsObject refuses an option supplied through a getter",
+        errOf(function () {
+          identifier.optionsObject({ get alpha() { return 1; } }, E, "x/bad", "opts");
+        }).code === "x/bad");
+  check("and names it in the refusal", /alpha/.test(errOf(function () {
+          identifier.optionsObject({ get alpha() { return 1; } }, E, "x/bad", "opts");
+        }).message));
+  check("including one a caller's class supplies",
+        errOf(function () {
+          function C() {}
+          Object.defineProperty(C.prototype, "alpha", { get: function () { return 1; }, enumerable: true });
+          identifier.optionsObject(new C(), E, "x/bad", "opts");
+        }).code === "x/bad");
+  check("one that grows the bag as it is read",
         errOf(function () {
           identifier.optionsObject({ get alpha() { this.gamma = 3; return 1; } }, E, "x/bad", "opts");
         }).code === "x/bad");
-  check("and one that drops a name as it is read",
-        errOf(function () {
-          var shrinking = { beta: 2, get alpha() { delete this.beta; return 1; } };
-          identifier.optionsObject(shrinking, E, "x/bad", "opts");
-        }).code === "x/bad");
-  check("while a getter that reads its own bag without changing it is accepted",
-        identifier.optionsObject({ beta: 2, get alpha() { return this.beta + 1; } },
-                                 E, "x/bad", "opts").alpha === 3);
+  var deferring = { reads: 0 };
+  Object.defineProperty(deferring, "alpha", {
+    get: function () { deferring.reads++; if (deferring.reads > 1) { this.gamma = 3; } return 1; },
+    enumerable: true,
+  });
+  check("and one that defers that to a later read",
+        errOf(function () { identifier.optionsObject(deferring, E, "x/bad", "opts"); }).code === "x/bad");
+  check("with the name never landing on it", !("gamma" in deferring));
+  // A method is machinery rather than an option, so a class that defines one is untouched by this.
+  check("while a class that defines methods is still an options bag",
+        (function () {
+          function M() { this.alpha = 1; }
+          M.prototype.describe = function () { return "bag"; };
+          return identifier.optionsObject(new M(), E, "x/bad", "opts").alpha === 1;
+        })());
   // The walk passes over a method so a caller's class keeps its own, and a documented option can
   // hold a function: pki.path.build takes `transport`. A defaults-style bag carries it inherited,
   // and settling must leave it exactly where a name lookup finds it. Copying the reported names
@@ -444,6 +461,15 @@ function testKnownKeys() {
   check("while a real option on one is still reported",
         identifier.readableNames(identifier.optionsObject(Object.assign([1], { pem: true }),
                                  E, "x/bad", "opts"), E, "x/bad", "o").join(",") === "pem");
+  // A RegExp is a kind too, and its members are structure the same way an array's are:
+  // `lastIndex` on the instance, the rest on its prototype. Reading the chain without naming them
+  // turned each into an option its caller never wrote, and a RegExp bag a verb used to take was
+  // refused for `lastIndex`.
+  check("a RegExp options bag reports none of its own structure",
+        identifier.readableNames(/x/g, E, "x/bad", "o").length === 0);
+  check("while an option added to one is reported",
+        identifier.readableNames(Object.assign(/x/g, { pem: true }), E, "x/bad", "o")
+          .join(",") === "pem");
   // A native accessor reached through an object with no slot behind it throws, so an options bag
   // that is itself a collection has to stay one: `pki.cms.sign` reads `opts.detached`, and an
   // `ArrayBuffer` bag behind a slot-less object raised a raw TypeError from that read.

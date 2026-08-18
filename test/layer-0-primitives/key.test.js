@@ -521,25 +521,35 @@ async function testUnknownOptionsRefused() {
         !("password" in Array.prototype));
   check("and an array bag is accepted again once the pollution is gone",
         (await pki.key.export(pair.publicKey, [])).equals(await pki.key.export(pair.publicKey)));
-  // A getter that adds a field to the bag it is read from. Checking the names once and reading
-  // them afterwards means the verb carries a name the check never saw: this bag shows `format`
-  // while it is checked, and grows `password` when the verb reads `format`, so export took it and
-  // returned the private key in the clear. The options are read once up front now, so the check
-  // and the verb both see the same settled set.
-  var mutatingGetter = { get format() { this.password = "pw"; return "der"; } };
+  // An option supplied through an accessor is refused, whatever the accessor does. A getter is
+  // asked again every time it is read, so the value the check saw says nothing about the one the
+  // verb goes on to use, and a name checked once can be joined by another on a later read. Each
+  // of these reached export and returned the private key in the clear.
   check("export refuses a bag whose getter adds an option while it is being read",
-        (await codeOf(pki.key.export(pair.privateKey, mutatingGetter))) === "key/bad-input");
-  // The refusal is aimed at the mutation, not at accessors: an option a caller exposes through a
-  // getter is a supported shape and stays accepted, on the object and on its class.
-  check("while an ordinary getter is still read as the option it supplies",
-        Buffer.isBuffer(await pki.key.export(pair.publicKey, { get format() { return "der"; } })));
+        (await codeOf(pki.key.export(pair.privateKey,
+          { get format() { this.password = "pw"; return "der"; } }))) === "key/bad-input");
+  var deferredReads = 0;
+  var deferred = {
+    get format() { deferredReads++; if (deferredReads > 1) { this.password = "pw"; } return "der"; },
+  };
+  check("and one whose getter defers that to a later read",
+        (await codeOf(pki.key.export(pair.privateKey, deferred))) === "key/bad-input");
+  check("with the option never landing on it", !("password" in deferred));
   function GetterBag() {}
   Object.defineProperty(GetterBag.prototype, "format", { get: function () { return "der"; } });
-  check("including one a caller's class defines",
-        Buffer.isBuffer(await pki.key.export(pair.publicKey, new GetterBag())));
-  // A getter that throws is a bad input like any other and gets this verb's own code.
-  check("and a getter that throws is refused with the verb's code",
-        (await codeOf(pki.key.export(pair.publicKey, { get format() { throw new Error("boom"); } }))) === "key/bad-input");
+  check("and one whose class supplies an option through a getter",
+        (await codeOf(pki.key.export(pair.publicKey, new GetterBag()))) === "key/bad-input");
+  check("and a plain getter that does nothing surprising at all",
+        (await codeOf(pki.key.export(pair.publicKey,
+          { get format() { return "der"; } }))) === "key/bad-input");
+  // What stays accepted is an object whose options are values, including one whose class carries
+  // methods: a method is machinery, not an option, and nothing about it is re-read.
+  check("while a bag of plain values is accepted",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, { format: "der" })));
+  function MethodBag() { this.format = "der"; }
+  MethodBag.prototype.describe = function () { return "bag"; };
+  check("as is one whose class defines methods",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, new MethodBag())));
   // An array is an options bag as far as `opts.format` is concerned, and its elements are its
   // structure. Settling the bag puts an object over it, and reading the kind off that object
   // alone turns the inherited elements into names its caller chose, so a bag holding one came
