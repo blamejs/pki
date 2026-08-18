@@ -172,7 +172,7 @@ async function run() {
     })) === "est/no-issued-cert");
 
   // G1h -- a request carrying TWO certification requests is only answered when
-  // BOTH are: a bag holding one of the two certificates is a partial enrolment,
+  // BOTH are: a bag holding one of the two certificates is a partial enrollment,
   // and calling it issued would report the unanswered half as done.
   var secondCsr = await pki.csr.sign(
     { subject: "second.example", subjectPublicKey: await pki.key.export(otherPair.publicKey) },

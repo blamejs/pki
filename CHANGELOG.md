@@ -6,11 +6,15 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.5.10 — 2026-08-18
 
-The documentation and the package's own source comments settle on one spelling of the words they use in both.
+The documentation and the package's own source comments settle on one spelling of the words they use in both, and a gate keeps them there.
+
+### Added
+
+- `npm run check:spelling` reports any word in the repository that has a second accepted spelling, and runs as part of `npm run gates`. The check is whole-word and case-insensitive, both to avoid a failure mode: a substring match reports `publicEncrypt` as a misspelling, and a case-sensitive one walks past the same word capitalized or upper-cased. It self-tests on planted forms before reporting, so a word list that has stopped matching cannot pass as a clean tree.
 
 ### Changed
 
-- Documentation and source comments now use the US spellings behavior, recognize, unrecognized, labeled, honored, license, defense, neighbor, authorize, initialization, signaled, modeled, favor and fulfill. 218 substitutions across 88 files: the README, the security policy, thirteen release notes and the changelog generated from them, the status-lifecycle record, the comments and error text in lib/, and the test suite and release scripts. Two spellings stay as they are: catalogue, the established form here, and Simple Certificate Enrolment Protocol, which is RFC 8894's title and is quoted as published.
+- Documentation and source comments now use the US spellings behavior, recognize, unrecognized, labeled, honored, license, defense, neighbor, authorize, initialization, enrollment, signaled, modeled, favor and fulfill. 236 substitutions across 91 files: the README, the security policy, thirteen release notes and the changelog generated from them, the status-lifecycle record, the comments and error text in lib/, and the test suite and release scripts. Two spellings stay as they are: catalogue, the established form here, and Simple Certificate Enrolment Protocol, which is RFC 8894's title and is quoted as published -- allowed only where that title appears, so the exception cannot spread to the word.
 
 ## v0.5.9 — 2026-08-17
 

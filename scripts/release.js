@@ -722,7 +722,7 @@ function _ghJson(rv, what) {
 //   (1) when it HAS findings, a formal review node whose commit is the head;
 //   (2) when it is CLEAN, an issue comment ("Reviewed commit: `<sha>` — Didn't
 //       find any major issues") with NO formal review node and NO commit.oid.
-// Recognising only (1) means every clean review times out — the gate would
+// Recognizing only (1) means every clean review times out — the gate would
 // only ever pass when Codex complains, which is backwards.
 function _codexReviewedHead(prNum) {
   var slug = _repoSlug();

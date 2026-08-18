@@ -445,7 +445,7 @@ function testSeqImplicitTag() {
   check("seq implicit reads a context [0] constructed body", walk(spec, b.contextConstructed(0, body)).result.a === 7n);
   check("seq implicit rejects a universal SEQUENCE (must be the [0] tag)", code(function () { walk(spec, b.sequence([b.integer(7n), b.integer(9n)])); }) === "t/bad-implseq");
   check("seq implicit rejects the wrong context tag [1]", code(function () { walk(spec, b.contextConstructed(1, body)); }) === "t/bad-implseq");
-  // Behaviour preservation: a default assert:"sequence" seq still requires a universal
+  // Behavior preservation: a default assert:"sequence" seq still requires a universal
   // SEQUENCE and rejects a context [0] — the plumb does not touch the default path.
   var plain = S.seq([S.field("a", S.integerLeaf())], { assert: "sequence", code: "t/bad-seq" });
   check("default seq still rejects a context [0]", code(function () { walk(plain, b.contextConstructed(0, b.integer(7n))); }) === "t/bad-seq");

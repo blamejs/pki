@@ -1183,7 +1183,7 @@ async function testMlKemImport() {
   }
 
   // Whatever RFC 9935 sec. 6 CHOICE arm the engine exports (the emitted arm is engine-version
-  // dependent -- seed-only [0], expandedKey, or both -- so this asserts BEHAVIOUR, not the exact
+  // dependent -- seed-only [0], expandedKey, or both -- so this asserts BEHAVIOR, not the exact
   // shape): the inner is a valid CHOICE arm and the emitted pkcs8 re-imports.
   var kemKp = nodeCrypto.generateKeyPairSync("ml-kem-768");
   var outP8 = kemKp.privateKey.export({ format: "der", type: "pkcs8" });

@@ -736,7 +736,7 @@ async function run() {
 
   // Sec. 3.2 names BOTH key-bearing arms -- the signing key may belong to a
   // request "included in the TaggedRequest tcr or crm fields" -- so a CRMF
-  // enrolment of a brand-new key is the same flow and must build.
+  // enrollment of a brand-new key is the same flow and must build.
   var crmWithSki = await pki.crmf.build(
     { certReqId: 7, certTemplate: { subject: "crm.example", publicKey: s.spki,
       extensions: { subjectKeyIdentifier: ski } } }, { key: s.key });

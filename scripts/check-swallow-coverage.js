@@ -43,7 +43,7 @@ function parseLcov(text) {
   });
   return byFile;
 }
-// Normalise an lcov SF path to a repo-relative lib/<file> key (paths may be absolute or
+// Normalize an lcov SF path to a repo-relative lib/<file> key (paths may be absolute or
 // backslash-separated on Windows).
 function _norm(p) {
   p = p.replace(/\\/g, "/");

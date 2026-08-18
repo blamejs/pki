@@ -40,7 +40,7 @@ var ALL = [
 // The guard advertises only what THIS RUNTIME can decompress safely: it drops an algorithm
 // whose decompressor cannot report an unfinished frame, because a truncation that yields a
 // short result instead of a fault is a silent message truncation. That set is a property of
-// the runtime, so these vectors assert BEHAVIOUR over the advertised set rather than pinning
+// the runtime, so these vectors assert BEHAVIOR over the advertised set rather than pinning
 // a fixed list -- and 6d then proves a dropped algorithm is refused outright.
 var SAFE = guard.compress.algorithms();
 var ALGS = ALL.filter(function (a) { return SAFE.indexOf(a.name) !== -1; });

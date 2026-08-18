@@ -1534,7 +1534,7 @@ async function testRfc5280ConformanceMusts() {
   check("EdDSA with a stray NULL parameter rejected at parse (RFC 8410 §3 params-absent)", wrongParamsCode === "x509/bad-algorithm-parameters");
 
   // Algorithm confusion (RFC 9814 §4 consistency): a certificate SIGNED by the
-  // issuer's Ed25519 key but LABELLING its signatureAlgorithm as a one-shot PQC
+  // issuer's Ed25519 key but LABELING its signatureAlgorithm as a one-shot PQC
   // OID must NOT validate. Node's WebCrypto imports a mismatched SPKI under the
   // requested PQC name and verifies with the real key, so the issuer-key ↔
   // signature-algorithm consistency is enforced structurally (the key algorithm

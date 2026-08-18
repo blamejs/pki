@@ -540,8 +540,9 @@ fail(1, [
     docs.length + " document(s).",
   "Read every one and fix the defect in the prose. This is a REPORT, not yet a blocking",
   "gate: the checker has no per-finding suppression, and this repository has findings that",
-  "are correct as they stand -- RFC 8894's title really is \"Simple Certificate Enrolment",
-  "Protocol\", security@pkijs.com really is the reporting address, and `rm -rf data data-e2e`",
+  "are correct as they stand -- the title of RFC 8894 really is",
+  "\"Simple Certificate Enrolment Protocol\", security@pkijs.com really is the reporting",
+  "address, and `rm -rf data data-e2e`",
   "really is the documented wiki test step. No check family reaches zero here, so wiring it",
   "into `npm run gates` would fail every build forever and teach everyone to ignore it.",
   "It goes into `gates` when the checker gains a way to record a reviewed exception."
