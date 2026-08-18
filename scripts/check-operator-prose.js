@@ -535,17 +535,23 @@ if (outcome.findings === 0) {
     "This is a failure of the TOOL, and says nothing about the prose in this repository."
   ]);
 }
-// Findings are a REPORT, and the exit status says so. A tool failure above still
-// exits non-zero -- that distinction is the whole point of classifying first --
-// but a completed run that found something a human must read is not a failed
-// command, and exiting 1 for it made the documented review step look broken
-// every time anyone ran it.
+// The two modes answer different questions, so they exit differently.
 //
-// PKI_PROSE_STRICT=1 turns findings back into a non-zero exit, for whoever wires
-// this into a pipeline once the checker can record a reviewed exception. That is
-// the switch to flip on the day it becomes a gate; until then the honest status
-// for "I read the prose and here is what I saw" is success.
-var strict = String(process.env.PKI_PROSE_STRICT || "").trim() === "1";
+// The SCOPED default runs notation, identifiers, secrets and region: a broken
+// command flag, a malformed identifier, a leaked credential, a spelling a reader
+// cannot search for. A caller reading the exit status of that run is asking
+// whether the tree is clean, and the answer must be able to be no. It stays
+// strict.
+//
+// `all` additionally runs the families that are flag-only by design -- claims,
+// sources, style, comments -- where a finding routes to a human rather than to a
+// verdict. That run is a reading list, and exiting non-zero for it made the
+// documented review step look like a failing build every time anyone ran it.
+//
+// A tool failure above still exits non-zero in BOTH modes; that classification is
+// the whole point of the branch it sits in. PKI_PROSE_STRICT=1 forces the strict
+// status even in `all` mode, for whoever wires that run into a pipeline.
+var strict = String(process.env.PKI_PROSE_STRICT || "").trim() === "1" || CHECKS !== null;
 var report = [
   "the checker completed and reported " + outcome.findings + " finding(s) across " +
     docs.length + " document(s).",
@@ -558,8 +564,10 @@ var report = [
   "into `npm run gates` would fail every build forever and teach everyone to ignore it.",
   "It goes into `gates` when the checker gains a way to record a reviewed exception.",
   "",
-  "Exit status is 0: findings are for a reader, not a verdict. Set PKI_PROSE_STRICT=1",
-  "to exit non-zero on findings instead."
+  strict
+    ? "Exit status is non-zero: these families are the enforced ones."
+    : "Exit status is 0: this run includes the flag-only families, so its findings are a " +
+      "reading list rather than a verdict. Set PKI_PROSE_STRICT=1 to fail on them instead."
 ];
 if (strict) fail(1, report);
 report.forEach(function (l) { console.error(TAG + " " + l); });
