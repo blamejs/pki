@@ -93,7 +93,7 @@ security-only patches after the next major releases.
   input cannot fan out into unbounded allocations or unbounded asymmetric-verify
   work.
 - **Decompression bombs (CWE-409).** Every decompression in the toolkit runs
-  through one bounded primitive, so the defence cannot be picked up by one caller
+  through one bounded primitive, so the defense cannot be picked up by one caller
   and missed by the next. The output is capped at the decompressor itself (Node's
   `maxOutputLength`), which stops at the bound before the output is materialized,
   so a tiny stream that would expand to gigabytes is refused rather than
@@ -491,7 +491,7 @@ security-only patches after the next major releases.
   regardless. The scope flags that decide this are IMPLICIT BOOLEANs, read under
   the DER rules that define them — one content octet of `0x00` or `0xFF` — in
   both the validator and the standalone `pki.crl` verbs, since a byte test would
-  read an empty flag as absent and an unreadable scope as a licence to answer.
+  read an empty flag as absent and an unreadable scope as a license to answer.
   That correspondence needs the certificate, so `pki.crl.isRevoked`, which is
   given a serial and nothing else, refuses any scoped CRL instead of answering
   from one: an absent serial on a CRL covering some other partition, certificate
@@ -786,7 +786,7 @@ security-only patches after the next major releases.
   missing optional field, so a response captured from one exchange cannot be
   replayed into another. The conditional is literal: a request that carried none
   of those controls has nothing for the response to echo, so a client that sends
-  no binding gets no replay defence, and `pki.cmc.verify` cannot enforce one the
+  no binding gets no replay defense, and `pki.cmc.verify` cannot enforce one the
   request never asked for. `pki.cmc.build` emits all three from named spec fields
   for that reason, and `pki.est.fullcmc` reads them back out of the request bytes
   rather than taking the caller's word for what was sent. The nonce is compared

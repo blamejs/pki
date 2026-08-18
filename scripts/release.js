@@ -415,8 +415,10 @@ function cmdPrepare(opts) {
   _runScriptIfPresent("test/layer-0-primitives/codebase-patterns.test.js");
   _runScriptIfPresent("scripts/validate-source-comment-blocks.js");
   _runScriptIfPresent("scripts/check-status-lifecycle.js");
+  _runScriptIfPresent("scripts/check-spelling-consistency.js");
   _run("node", ["scripts/pin-all.js", "--check"]);
-  _ok("eslint + codebase-patterns + source-comment-blocks + status-lifecycle + lockfile pin currency clean");
+  _ok("eslint + codebase-patterns + source-comment-blocks + status-lifecycle + spelling + " +
+      "lockfile pin currency clean");
 
   _section("supply-chain currency");
   // A stale vendored bundle becomes a release blocker HERE instead of an
@@ -687,7 +689,7 @@ var CODEX_LOGIN = "chatgpt-codex-connector";
 
 // GitHub renders a GitHub App / bot author's login as the bare handle in
 // GraphQL but suffixed with "[bot]" in some REST surfaces. Tolerate both so
-// the gate recognises Codex regardless of which shape the login arrives in.
+// the gate recognizes Codex regardless of which shape the login arrives in.
 function _isCodexLogin(login) {
   return String(login || "").replace(/\[bot\]$/, "") === CODEX_LOGIN;
 }
@@ -722,7 +724,7 @@ function _ghJson(rv, what) {
 //   (1) when it HAS findings, a formal review node whose commit is the head;
 //   (2) when it is CLEAN, an issue comment ("Reviewed commit: `<sha>` — Didn't
 //       find any major issues") with NO formal review node and NO commit.oid.
-// Recognising only (1) means every clean review times out — the gate would
+// Recognizing only (1) means every clean review times out — the gate would
 // only ever pass when Codex complains, which is backwards.
 function _codexReviewedHead(prNum) {
   var slug = _repoSlug();

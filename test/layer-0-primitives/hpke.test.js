@@ -79,7 +79,7 @@ function testRobustness() {
   check("an unknown open option -> hpke/bad-input",
     codeOf(function () { pki.hpke.open(IDS, o.enc, kp.privateKey, { senderPubKey: kp.publicKey }, Buffer.from("aad"), o.ct); }) === "hpke/bad-input");
   // The two ends read the same object from OPPOSITE sides, so each has its own table rather than
-  // their union. A union recognises every name at both ends and therefore accepts the one that can
+  // their union. A union recognizes every name at both ends and therefore accepts the one that can
   // do nothing where it was passed -- silently, which is the failure these tables exist to remove.
   // Handing the sender the recipient's option is usually a misdirected auth-mode setup: the caller
   // believes they authenticated, and a union would let them believe it.

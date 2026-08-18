@@ -3,7 +3,7 @@
 "use strict";
 /**
  * Layer 0 -- guard.time: fail-closed Date-instant validation before a temporal
- * comparison (the NaN-Date fail-open defence). Pins the guard's own contract: a
+ * comparison (the NaN-Date fail-open defense). Pins the guard's own contract: a
  * malformed Date is rejected via the caller's typed-error FACTORY BEFORE it can
  * reach a getTime() comparison (where its NaN would compare false and silently
  * accept), and within() throws on a malformed operand while returning a boolean

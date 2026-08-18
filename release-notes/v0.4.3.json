@@ -15,7 +15,7 @@
       "An unusable hash is now refused when a key is created, and no longer at its first use. pki.webcrypto.subtle.importKey and generateKey recorded the requested hash without resolving it, so a name this engine cannot use produced a CryptoKey that failed only at its first sign, verify or wrap, after the caller had already paid for the key generation. The name is now resolved at the entry point, through the same table the operations use, so what a key can be created with and what it can be used with cannot diverge."
     ],
     "Changed": [
-      "pki.cms.sign and pki.cms.verify compute their message digests through the crypto engine; neither holds a private digest table any more. Behaviour is unchanged; the digest algorithms a signer and a verifier accept are now defined in one place."
+      "pki.cms.sign and pki.cms.verify compute their message digests through the crypto engine; neither holds a private digest table any more. Behavior is unchanged; the digest algorithms a signer and a verifier accept are now defined in one place."
     ]
   }
 }

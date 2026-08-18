@@ -118,7 +118,7 @@ async function mint(o) {
   // -- only the certificate that carries that key is a different one. Built here, inside the mint,
   // because it has to be the SAME root the returned rootDer anchors to.
   // x5cSelfOnly signs the BLOB with the ROOT's own key and presents only the root: a chain that IS
-  // the anchor, with nothing left to chain once the anchor is recognised.
+  // the anchor, with nothing left to chain once the anchor is recognized.
   var chain = o.x5c || [leafDer, rootDer];
   var selfOnlyDer = null;
   if (o.x5cSelfOnly) {

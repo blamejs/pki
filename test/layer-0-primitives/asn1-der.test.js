@@ -643,7 +643,7 @@ function testBerScopedDecode() {
 // (0x00), application (0x40), context (0x80), private (0xc0). The context path
 // is exercised by the IMPLICIT readers; application and private classes appear
 // in ANY-typed fields the codec surfaces raw, so their class label must be
-// correct too (a mislabelled class would confuse a schema's tag dispatch).
+// correct too (a mislabeled class would confuse a schema's tag dispatch).
 function testTagClassLabels() {
   var appNode = pki.asn1.decode(pki.asn1.encode(0x40, false, 5, Buffer.from([1, 2])));
   check("application-class node labels tagClass application", appNode.tagClass === "application");

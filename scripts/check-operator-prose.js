@@ -8,9 +8,12 @@
 //
 // Why: README.md, SECURITY.md, MIGRATING.md and their siblings are the surface
 // an operator reads after `npm install`. The checker catches the mechanical
-// defects a human reviewer skims past - a code fence with no language tag, a
-// single-character ellipsis sitting inside a shell example where it breaks the
-// paste, a regional spelling mix, a product name in the wrong casing.
+// defects a human reviewer skims past. What is ENFORCED here is the set that can
+// mislead someone acting on the document: a dash inside a flag that turns a
+// copy-pasteable command into a broken one, a malformed RFC or CVE reference, a
+// credential-shaped token, a regional spelling mix. The rest of the checker's
+// families are advisory in this repository and run under `check:prose:all`; the
+// CHECKS constant below carries the evidence for each exclusion.
 //
 // The checker is a machine-local tool, NOT a dependency of this repository.
 // Hard rule #1 is zero npm runtime dependencies, and dev tooling never ships in
@@ -181,7 +184,7 @@ var checker  = fromEnv ? path.resolve(String(override).trim()) : DEFAULT_CHECKER
 console.log(TAG + " checker: " + checker);
 console.log(TAG + " source:  " + (fromEnv ? "PKI_PROSE_CHECKER" : "default location"));
 
-// Probe for the FILE. Never infer availability from the checker's behaviour: a
+// Probe for the FILE. Never infer availability from the checker's behavior: a
 // tool that has regressed into erroring on every run must fail this gate, not
 // be mistaken for a tool that was never installed.
 if (!fs.existsSync(checker)) {
@@ -215,10 +218,21 @@ if (!fs.existsSync(checker)) {
 // ---------------------------------------------------------------------------
 var MAX_REPORT = 32 * 1024 * 1024;
 
+// The scope the gate enforces. Declared here because BOTH the completion probe and the real
+// run must use it: scoping only the run would make the probe count a different population,
+// and the summary line would then report a number the gate never acted on.
+// PKI_PROSE_CHECKS=all widens this to every family the checker implements, which is what
+// `npm run check:prose:all` sets. The advisory families are then read by a human rather than
+// enforced; the narrow set below is what a machine gets to decide.
+var CHECKS = String(process.env.PKI_PROSE_CHECKS || "").trim() === "all"
+  ? null
+  : "notation,identifiers,secrets,region";
+function withChecks(argv) { return CHECKS === null ? argv : argv.concat(["--checks=" + CHECKS]); }
+
 function completionOf(fileArgs) {
   var probe = proc.spawnSync(
     process.execPath,
-    [checker].concat(fileArgs, ["--fail-on-findings", "--json"]),
+    withChecks([checker].concat(fileArgs, ["--fail-on-findings", "--json"])),
     { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_REPORT }
   );
   if (probe.error)  return { completed: false, why: "it could not be started (" + msg(probe.error) + ")" };
@@ -247,13 +261,20 @@ function completionOf(fileArgs) {
 // deliberately defective document inside the repository would put it in the
 // very tree being gated, and a throw partway would leave it there.
 // ---------------------------------------------------------------------------
+// The known-bad input must be a defect the gate ENFORCES, not merely one the checker can
+// find. An earlier canary used a bare code fence, which is a `convention` finding; once the
+// gate was scoped to notation/identifiers/secrets/region that fence stopped tripping, and
+// the control correctly reported that its own verdict had become worthless. The defect below
+// is a `notation` one -- an em dash where a command's double hyphen belongs, which turns a
+// copy-pasteable flag into a broken one -- so the control fails whenever the enforced scope
+// stops working. Change CHECKS and this must change with it.
 var CANARY_DOC = [
   "# canary",
   "",
   "A control document the prose gate writes, checks, and deletes on every run.",
   "",
-  "```",
-  "echo canary",
+  "```bash",
+  "npm run build " + "—" + "dry-run",
   "```",
   ""
 ].join("\n");
@@ -269,11 +290,14 @@ function runCanary() {
   try {
     fs.writeFileSync(doc, CANARY_DOC, "utf8");
 
-    // The same argv the real documents get, with the same --fail-on-findings
-    // flag. A control run under different flags would prove the checker works
-    // in a mode nothing else uses.
+    // The same argv the real documents get, INCLUDING the check scope. A control run
+    // under a wider scope proves the checker works in a mode nothing else uses: if
+    // `notation` regressed but any advisory family still flagged the fixture, the run
+    // would exit nonzero and the canary would report OK while the enforced set was dead.
+    // All three invocations here -- probe, control, real run -- go through withChecks
+    // for that reason.
     var run = proc.spawnSync(
-      process.execPath, [checker, doc, "--fail-on-findings"],
+      process.execPath, withChecks([checker, doc, "--fail-on-findings"]),
       { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_REPORT }
     );
     if (run.error) {
@@ -292,7 +316,9 @@ function runCanary() {
           "the checker did not flag a known-bad input.",
           "",
           "  checker: " + checker,
-          "  control: a markdown document whose code fence carries no language tag",
+          "  control: a markdown document whose fenced command writes a flag with an em dash",
+          "           where the double hyphen belongs, which is a `notation` defect and so",
+          "           sits inside the enforced set above",
           "  result:  exit 0 under --fail-on-findings, which means it found nothing",
           "",
           "A checker that reports nothing about a document written to be reported on will",
@@ -438,7 +464,32 @@ console.log("");
 // a summary written here would be this script's opinion of the findings, and
 // filtering them would be the exact defect the gate exists to prevent.
 // ---------------------------------------------------------------------------
-var args = [checker].concat(docs, ["--fail-on-findings"]);
+// The gate is SCOPED to the check families that decide something here, because a gate that
+// fires on correct prose is one an operator learns to ignore, and then it protects nothing.
+//
+//   notation     a dash inside --dry-run, a smart quote inside a command, a mangled version
+//                constraint. This is the damage the whole checker exists to prevent, and the
+//                one class where a false negative ships a broken copy-pasteable command.
+//   identifiers  a malformed RFC / CVE / CWE / GHSA / SPDX / package reference.
+//   secrets      a credential-shaped token committed into a document.
+//   region       a regional-spelling MIX, which is a real inconsistency rather than a taste.
+//
+// The families left out are advisory here, not silent. `npm run check:prose:all` runs the
+// full set for a human read. Each is excluded on evidence, verified against this repository:
+//   acronyms      92 flags on CA, TLS, SAN, CSR, DSA. The checker's own text says to leave
+//                 them where context disambiguates, and a PKI toolkit is that context.
+//                 Expanding "CA" 51 times in a changelog makes the document worse.
+//   productnames  fires inside identifiers and URLs its own rule text calls protected
+//                 (`tls.servername`, `application/json`, `https://`), and on a bare "r" the
+//                 rule says never to fire on.
+//   spelling      fires on punctuation: "::", "()", "[]" in badge and code spans.
+//   markup        duplicate "Added" / "Fixed" headings, which Keep a Changelog requires once
+//                 per release, in a file this repository generates.
+//   claims,       flag-only by design: they route to a human owner rather than to a verdict,
+//   sources,      so failing a build on them would assert a judgement the checker is
+//   style,        explicitly not making.
+//   comments
+var args = withChecks([checker].concat(docs, ["--fail-on-findings"]));
 var run  = proc.spawnSync(process.execPath, args, { cwd: ROOT, stdio: "inherit" });
 
 if (run.error) {
@@ -484,10 +535,40 @@ if (outcome.findings === 0) {
     "This is a failure of the TOOL, and says nothing about the prose in this repository."
   ]);
 }
-fail(1, [
+// The two modes answer different questions, so they exit differently.
+//
+// The SCOPED default runs notation, identifiers, secrets and region: a broken
+// command flag, a malformed identifier, a leaked credential, a spelling a reader
+// cannot search for. A caller reading the exit status of that run is asking
+// whether the tree is clean, and the answer must be able to be no. It stays
+// strict.
+//
+// `all` additionally runs the families that are flag-only by design -- claims,
+// sources, style, comments -- where a finding routes to a human rather than to a
+// verdict. That run is a reading list, and exiting non-zero for it made the
+// documented review step look like a failing build every time anyone ran it.
+//
+// A tool failure above still exits non-zero in BOTH modes; that classification is
+// the whole point of the branch it sits in. PKI_PROSE_STRICT=1 forces the strict
+// status even in `all` mode, for whoever wires that run into a pipeline.
+var strict = String(process.env.PKI_PROSE_STRICT || "").trim() === "1" || CHECKS !== null;
+var report = [
   "the checker completed and reported " + outcome.findings + " finding(s) across " +
     docs.length + " document(s).",
-  "They are a gate, not a suggestion. Fix the defect in the prose. The checker has no",
-  "per-finding suppression, so a genuine false positive is reported as an open item",
-  "rather than filtered here."
-]);
+  "Read every one and fix the defect in the prose. This is a REPORT, not a blocking",
+  "gate: the checker has no per-finding suppression, and this repository has findings that",
+  "are correct as they stand -- the title of RFC 8894 really is",
+  "\"Simple Certificate Enrolment Protocol\", security@pkijs.com really is the reporting",
+  "address, and `rm -rf data data-e2e`",
+  "really is the documented wiki test step. No check family reaches zero here, so wiring it",
+  "into `npm run gates` would fail every build forever and teach everyone to ignore it.",
+  "It goes into `gates` when the checker gains a way to record a reviewed exception.",
+  "",
+  strict
+    ? "Exit status is non-zero: these families are the enforced ones."
+    : "Exit status is 0: this run includes the flag-only families, so its findings are a " +
+      "reading list rather than a verdict. Set PKI_PROSE_STRICT=1 to fail on them instead."
+];
+if (strict) fail(1, report);
+report.forEach(function (l) { console.error(TAG + " " + l); });
+process.exit(0);

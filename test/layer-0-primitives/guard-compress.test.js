@@ -3,7 +3,7 @@
 "use strict";
 /**
  * Layer 0 -- guard.compress.bounded: the single home for bounded, non-malleable decompression
- * (zlib / brotli / zstd). Its two defences are applied for every algorithm at once, so a new
+ * (zlib / brotli / zstd). Its two defenses are applied for every algorithm at once, so a new
  * consumer cannot acquire one and miss the other:
  *
  *   1. the output cap is applied AT the decompressor, so a bomb is refused as its output would
@@ -13,7 +13,7 @@
  *      unboundedly many encodings.
  *
  * The guard is @internal, so this file drives it directly to pin its OWN contract; the shipped
- * consumers (pki.cms.decompress, pki.tls.decompressCertificate) carry the behavioural vectors.
+ * consumers (pki.cms.decompress, pki.tls.decompressCertificate) carry the behavioral vectors.
  * The authoring-fault cases matter here in particular: they are TypeErrors rather than typed
  * domain errors precisely because they mean the CALLER is wrong, not the input.
  */
@@ -40,7 +40,7 @@ var ALL = [
 // The guard advertises only what THIS RUNTIME can decompress safely: it drops an algorithm
 // whose decompressor cannot report an unfinished frame, because a truncation that yields a
 // short result instead of a fault is a silent message truncation. That set is a property of
-// the runtime, so these vectors assert BEHAVIOUR over the advertised set rather than pinning
+// the runtime, so these vectors assert BEHAVIOR over the advertised set rather than pinning
 // a fixed list -- and 6d then proves a dropped algorithm is refused outright.
 var SAFE = guard.compress.algorithms();
 var ALGS = ALL.filter(function (a) { return SAFE.indexOf(a.name) !== -1; });
@@ -93,7 +93,7 @@ function run() {
   })());
 
   // ==== authoring faults are TypeErrors: the caller is wrong, not the input =================
-  // A cap that is NaN / fractional / negative / zero would silently disable the bomb defence,
+  // A cap that is NaN / fractional / negative / zero would silently disable the bomb defense,
   // so it is refused at the call rather than quietly accepted.
   check("5. an unknown algorithm is an authoring fault (TypeError)",
     codeOf(function () { return guard.compress.bounded("lzma", zlib.deflateSync(PAYLOAD), 4096, E, CODES, "input"); }) === "TypeError");

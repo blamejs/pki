@@ -27,6 +27,7 @@ npx eslint@latest --max-warnings 0 .
 node test/layer-0-primitives/codebase-patterns.test.js
 node scripts/validate-source-comment-blocks.js
 node scripts/check-api-snapshot.js
+node scripts/check-spelling-consistency.js
 shellcheck $(git ls-files '*.sh')
 
 # 5. Interop integration — bring up the cross-tool fixture stack and validate
@@ -113,6 +114,7 @@ Contributions are accepted under the [Developer Certificate of Origin](https://d
    - `node test/layer-0-primitives/codebase-patterns.test.js` exits 0, so the structural-drift and discipline detectors are clean.
    - `node scripts/validate-source-comment-blocks.js` exits 0, so every `@module` and `@primitive` block is well-formed. The wiki at pkijs.com is generated from these blocks.
    - `node scripts/check-api-snapshot.js` exits 0, guarding the public API surface against accidental breaking changes. An intentional surface change regenerates the baseline with `node scripts/refresh-api-snapshot.js` and commits `api-snapshot.json` alongside the change.
+   - `node scripts/check-spelling-consistency.js` exits 0, so no word in the tree carries a second accepted spelling. A reader searching for one form would otherwise miss the passages written in the other.
    - `shellcheck $(git ls-files '*.sh')` exits 0, so every tracked shell script parses clean.
    - **Interop gate.** When the diff changes a wire format — a structure the toolkit encodes or decodes — bring up the fixture stack and run `node scripts/test-integration.js` so an independent implementation validates the bytes. This catches divergences a self-round-trip cannot.
    - `npm run fuzz` is clean. The DER decoder is the primary fuzz target, and a new parser adds a fuzz harness in the same ship.

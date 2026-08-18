@@ -7,6 +7,7 @@ gates) is required to pass before merge — local pre-flight:
   node test/layer-0-primitives/codebase-patterns.test.js
   node scripts/validate-source-comment-blocks.js
   node scripts/check-api-snapshot.js
+  node scripts/check-spelling-consistency.js
 
 Security-sensitive patches: don't open here, see SECURITY.md.
 -->

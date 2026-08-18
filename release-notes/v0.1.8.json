@@ -8,7 +8,7 @@
       "pki.asn1.read.enumerated — reads an ENUMERATED value from a decoded node (the same content rules as an INTEGER), the counterpart to the now-strict pki.asn1.read.integer."
     ],
     "Changed": [
-      "C.TIME.ms is renamed to C.TIME.milliseconds, so every C.TIME duration helper now reads as a full word (milliseconds, seconds, minutes, hours, days, weeks). The behaviour is unchanged: it still returns an integer millisecond count."
+      "C.TIME.ms is renamed to C.TIME.milliseconds, so every C.TIME duration helper now reads as a full word (milliseconds, seconds, minutes, hours, days, weeks). The behavior is unchanged: it still returns an integer millisecond count."
     ],
     "Security": [
       "pki.asn1.read.integer now rejects an ENUMERATED-tagged node. INTEGER and ENUMERATED share DER content encoding, so an INTEGER-pinned field (a certificate or certification-request version, a serial number, or a cRLNumber) mis-encoded as ENUMERATED was previously decoded as though it were the INTEGER, a type confusion that let malformed DER parse where a conformant reader rejects it. read.integer is now strict on the tag, and ENUMERATED values are read with the new pki.asn1.read.enumerated. Certificate, CRL, and certification-request parsing reject these inputs fail-closed.",

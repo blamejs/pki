@@ -221,7 +221,7 @@ function run() {
   // Every accessLocation name form the renderer handles gets its own vector: the arms are a chain of
   // independent branches, so the iPAddress case above exercises exactly one of them and says nothing
   // about the rest. A form that renders its value raw would be the interesting failure, so each
-  // assertion pins the labelled shape rather than merely that the value appears somewhere.
+  // assertion pins the labeled shape rather than merely that the value appears somewhere.
   function aiaWith(methodName, locDer) {
     return pki.inspect.certificate(injectExt(b.sequence([b.oid(pki.oid.byName("authorityInfoAccess")),
       b.octetString(b.sequence([b.sequence([b.oid(pki.oid.byName(methodName)), locDer])]))])));
@@ -323,7 +323,7 @@ function run() {
 
   // --- Adversarial / edge extension, key, and input forms: each drives an
   // otherwise-untaken best-effort render branch and asserts the fail-safe result
-  // (a hostile or opaque value renders labelled-hex, never a raw byte that could
+  // (a hostile or opaque value renders labeled-hex, never a raw byte that could
   // inject a report line; a malformed sub-structure hex-dumps, never throws). ---
 
   // Only issuerAltName can carry a fresh GeneralNames without duplicating the EC
@@ -332,11 +332,11 @@ function run() {
   // otherName [0] IMPLICIT SEQUENCE { type-id, [0] EXPLICIT value } -- an opaque
   // choice, rendered as hex so its bytes can never break the line structure.
   var otherNameGn = b.contextConstructed(0, Buffer.concat([b.oid("1.3.6.1.4.1.99999.3.1"), b.explicit(0, b.utf8("hi"))]));
-  check("inspect: issuerAltName otherName renders as labelled hex, not raw bytes",
+  check("inspect: issuerAltName otherName renders as labeled hex, not raw bytes",
     /X509v3 Issuer Alternative Name:\n\s+othername:a0:12:/.test(pki.inspect.certificate(injectExt(ianExt(otherNameGn)))));
   // ediPartyName [5] -- another opaque constructed choice -> its whole TLV as hex.
   var ediGn = b.contextConstructed(5, b.sequence([b.explicit(1, b.utf8("party"))]));
-  check("inspect: issuerAltName ediPartyName [5] renders labelled hex",
+  check("inspect: issuerAltName ediPartyName [5] renders labeled hex",
     /X509v3 Issuer Alternative Name:\n\s+EdiPartyName:a5:0b:/.test(pki.inspect.certificate(injectExt(ianExt(ediGn)))));
   // registeredID [8] -- a bare OID choice -> the dotted OID string.
   var regGn = b.contextPrimitive(8, b.oid("1.2.3.4").subarray(2));
@@ -515,7 +515,7 @@ function run() {
     /Public Key Algorithm: ecPublicKey\n\s+Public-Key: \(0 bit\)/.test(ecNullPub) && ecNullPub.indexOf("pub:") < 0);
 
   // Every GeneralName form, each through the shipped renderer. These are what an operator reads to
-  // decide what a certificate actually authorises, so a form rendered wrongly -- or silently
+  // decide what a certificate actually authorizes, so a form rendered wrongly -- or silently
   // dropped -- misrepresents the certificate's reach. Each case is a distinct arm: the othername
   // hex fallback, the two DirName shapes, the IP-address formatter, and the generic kind:value.
   function sanOf(names) {

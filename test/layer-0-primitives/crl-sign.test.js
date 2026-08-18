@@ -594,7 +594,7 @@ async function testPemAndIsRevoked() {
     scopeCode(badIdp, 0xabcdn) === "crl/scope-not-authoritative");
   // The indirect flag is a DER BOOLEAN: exactly one content octet, 0x00 or 0xFF (X.690 sec. 11.1).
   // Every other encoding is a scope that cannot be established, and reading one as "absent, so
-  // direct" is the one answer that must never follow -- it turns an unreadable scope into a licence
+  // direct" is the one answer that must never follow -- it turns an unreadable scope into a license
   // to answer by serial. A DEFAULT FALSE is likewise not encoded at all (X.690 sec. 11.5), so an
   // explicit FALSE is a statement the encoding rules do not permit rather than a reassuring one.
   function idpTag(tag, contentBytes) {

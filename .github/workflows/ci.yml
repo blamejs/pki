@@ -72,6 +72,11 @@ jobs:
         run: node scripts/check-swallow-coverage.js
 
   static-gates:
+    # This string is a REQUIRED STATUS CHECK CONTEXT in the main-protection
+    # ruleset, not a caption. Renaming it leaves the ruleset waiting on a check
+    # that no longer reports and every pull request blocked with all checks
+    # green, so it does not track the step list. Change it only together with
+    # the ruleset's required_status_checks entry.
     name: Static gates (eslint + patterns + comment blocks + api snapshot)
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -108,6 +113,13 @@ jobs:
         # Additive changes are logged but pass — the baseline is refreshed
         # at the next release commit alongside the version bump.
         run: node scripts/check-api-snapshot.js
+
+      - name: One spelling per word
+        # A word with two accepted spellings hides half its occurrences from
+        # anyone searching for the other form. Whole-word and case-insensitive;
+        # self-tests on planted forms first, so a word list that has stopped
+        # matching cannot pass as a clean tree.
+        run: node scripts/check-spelling-consistency.js
 
       - name: '@status lifecycle gate'
         # Drives experimental -> stable -> deprecated: fails when a primitive is

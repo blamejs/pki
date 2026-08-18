@@ -85,7 +85,7 @@ function tap() {
   real.pbkdf2Sync = nodeCrypto.pbkdf2Sync;
   nodeCrypto.pbkdf2Sync = function (pw) { grab("pbkdf2.pw", pw); return grab("pbkdf2.kek", real.pbkdf2Sync.apply(this, arguments)); };
   // randomBytes is how the CEK is born; IVs, nonces and salts come from it too, so captures are
-  // labelled by length and the CEK assertions select the content-key size explicitly.
+  // labeled by length and the CEK assertions select the content-key size explicitly.
   real.randomBytes = nodeCrypto.randomBytes;
   nodeCrypto.randomBytes = function (n) { return grab("random." + n, real.randomBytes.apply(this, arguments)); };
   // A KEK the CMS layer derives is Buffer.from(<the ArrayBuffer deriveBits returned>) -- a VIEW, so
@@ -267,7 +267,7 @@ async function run() {
     //
     // Scope: this does NOT detect an eager wipe on the asynchronous arm. Node copies a job's
     // inputs when it queues them, so PBKDF2 derives correctly either way -- the deferred wipe
-    // there is defence against a provider that does not, not a fix for a live fault.
+    // there is defense against a provider that does not, not a fix for a live fault.
     var zeroKey = await subtle.importKey("raw", Buffer.alloc(32), { name: kc.name }, false, ["deriveBits"]);
     var zeroOut = await subtle.deriveBits(kc.alg, zeroKey, 256);
     check(kc.name + " derived from the real key material, not from an all-zero buffer",

@@ -33,7 +33,7 @@ async function testJws() {
   check("25b. flipped signature fails", (await acode(function () { return pki.jose.verify(flipped, OUTER); })) === "jose/verify-failed");
   // `key` NAMES the key a message must be signed under and `profile` selects the header rules, so
   // both NARROW what verifies. A misspelling of either silently widens it back to the default: the
-  // caller asked for something stricter and got the looser behaviour, with nothing said.
+  // caller asked for something stricter and got the looser behavior, with nothing said.
   check("25c. an unknown verify option is refused, not swallowed",
     (await acode(function () { return pki.jose.verify(jws, { profile: "acme-outer", keys: ecJwk }); })) === "jose/bad-input");
   check("25d. ...and an unknown sign option likewise",
@@ -144,7 +144,7 @@ async function testJws() {
   var mdJws = await pki.jose.sign({ protected: outerHeader({ alg: "ML-DSA-65", jwk: mdJwk }), payload: Buffer.from("{}"), key: md.privateKey });
   check("29. ML-DSA-65 round-trip + siglen 3309", pki.jose.base64url.decode(mdJws.signature).length === 3309 && (await pki.jose.verify(mdJws, OUTER)).header.alg === "ML-DSA-65");
   // 29b. an AKP jwk whose parameter set disagrees with the alg is rejected (an
-  // ML-DSA-65 header must not embed an ML-DSA-44-labelled JWK).
+  // ML-DSA-65 header must not embed an ML-DSA-44-labeled JWK).
   check("29b. AKP param-set mismatch rejected", (await acode(function () { return pki.jose.sign({ protected: { alg: "ML-DSA-65", nonce: "aGVsbG8", url: "https://ca.example/o", jwk: Object.assign({}, mdJwk, { alg: "ML-DSA-44" }) }, payload: Buffer.from("{}"), key: md.privateKey }); })) === "jose/bad-alg");
   var rsJws = await pki.jose.sign({ protected: outerHeader({ alg: "RS256", jwk: rsaJwk }), payload: Buffer.from("{}"), key: rsa.privateKey });
   check("30. RS256 round-trip", (await pki.jose.verify(rsJws, OUTER)).header.alg === "RS256");

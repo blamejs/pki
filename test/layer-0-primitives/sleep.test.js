@@ -4,7 +4,7 @@
 //
 // Layer 0 -- lib/sleep.js, the shared bounded poll sleeper (pki.acme.client / pki.cmp.session). The network
 // clients inject a fake sleeper in their tests, so the REAL default -- the only sleeper touching a timer --
-// is exercised here directly. The load-bearing behaviour is the delay-chunking: a delay past Node's 32-bit
+// is exercised here directly. The load-bearing behavior is the delay-chunking: a delay past Node's 32-bit
 // setTimeout ceiling (2^31-1 ms) must be SPLIT into chained maximum-size chunks, because a bare
 // setTimeout(fn, > 2^31-1) is silently clamped to 1 ms and would then re-poll immediately instead of waiting.
 // setTimeout is stubbed (recording each requested delay, firing the callback on a real 0 ms timer) so the

@@ -125,7 +125,7 @@ async function run() {
   check("a non-number maxIterations -> cms/bad-input", (await codeOf(function () { return pki.cms.decrypt(hiEnv, { password: "p" }, { maxIterations: "100" }); })) === "cms/bad-input");
   check("a fractional recipientIndex -> cms/bad-input (never a raw TypeError)", (await codeOf(function () { return pki.cms.decrypt(multi, { password: "pw" }, { recipientIndex: 1.5 }); })) === "cms/bad-input");
 
-  // multiple unlabelled recipients of the same kind: the caller's secret may match any of them, so
+  // multiple unlabeled recipients of the same kind: the caller's secret may match any of them, so
   // each is tried until one opens the content (not just the first after DER SET-OF ordering).
   var twoPw = await pki.cms.encrypt(MSG, [{ password: "alpha" }, { password: "bravo" }], { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("a message with two pwri decrypts with the first password", Buffer.compare((await pki.cms.decrypt(twoPw, { password: "alpha" })).content, MSG) === 0);

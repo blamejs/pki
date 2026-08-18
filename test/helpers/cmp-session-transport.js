@@ -283,7 +283,7 @@ function _unprotect(pki, der) {
 }
 
 // Drop the extraCerts [1] envelope child -- the message stays protection-valid (protection covers only
-// { header, body }), modelling a conforming CA that omits its signer cert on a later leg (RFC 9483 sec. 3.3).
+// { header, body }), modeling a conforming CA that omits its signer cert on a later leg (RFC 9483 sec. 3.3).
 function _stripExtraCerts(pki, der) {
   var b = pki.asn1.build;
   var kids = pki.asn1.decode(der).children;   // [header, body, protection[0]?, extraCerts[1]?]
@@ -389,7 +389,7 @@ function _deepDecoyExtra(pki, der) {
 }
 // PREPEND a same-subject decoy certificate (signer2 shares signer1's subject but has a different key) to the
 // unsigned extraCerts, so the verifier's RFC 9483 sec. 3.3 "extraCerts[0] is the protection cert" rule selects
-// the decoy first and protection fails under a key that never signed -- modelling a network meddler.
+// the decoy first and protection fails under a key that never signed -- modeling a network meddler.
 function _prependExtraCert(pki, der, decoyCert) {
   var b = pki.asn1.build;
   var lead = decoyCert || _signer2CertDer;

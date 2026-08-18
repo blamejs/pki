@@ -807,7 +807,7 @@ async function run() {
   // object is likelier to hold Number -- and every comparison below is against a Number-keyed
   // table. Accepting both at the gate and comparing only one would make the verdict depend on how
   // the caller happened to spell the value.
-  check("assert: a BigInt-labelled key is judged the same as a Number-labelled one",
+  check("assert: a BigInt-labeled key is judged the same as a Number-labeled one",
     (await assertObjCode({ kty: 3n, alg: -257n, n: Buffer.from([0xff]), e: E65537 })) === "webauthn/bad-cose-key");
   check("assert: ...including on the profile comparison, not only the modulus rule",
     (await assertObjCode({ kty: 2n, alg: -257n, crv: 1n, x: Buffer.alloc(32), y: Buffer.alloc(32) })) === "webauthn/bad-cose-key");
@@ -1390,7 +1390,7 @@ async function testTpmObjectAttributePolicy() {
   // `false` demands nothing, so it is not a reason to refuse anything.
   check("cts policy: requireCtsProfileMatch false demands nothing and blocks no format",
     (await pki.webauthn.verify(attObjOf("none", [], noneAuth), clientHash("packed"), { requireCtsProfileMatch: false })).attestationVerified === true);
-  // A recognised key with an unusable value is the same caller mistake as an unrecognised key, and
+  // A recognized key with an unusable value is the same caller mistake as an unrecognized key, and
   // is caught at the same boundary -- not inside the one arm that would have read it.
   check("cts policy: a mistyped requireCtsProfileMatch is a config fault on a non-safetynet format",
     (await codeOfAsync(function () {
@@ -1698,7 +1698,7 @@ async function testAndroidSafetyNet() {
 
     // crossSign terminates the x5c in a CROSS-SIGNED form of this fixture's own root: the root's
     // subject and public key, issued by an unrelated CA, so it carries the anchor's identity while
-    // not being self-issued. It is the shape a self-issued test cannot recognise as the anchor.
+    // not being self-issued. It is the shape a self-issued test cannot recognize as the anchor.
     var crossDer = null;
     if (o.crossSign) {
       var xKp = await pki.webcrypto.subtle.generateKey(rsa, true, ["sign", "verify"]);

@@ -258,7 +258,7 @@ The toolkit targets the standards surface below. Status is given for post-quantu
 
 ### Vulnerability classes & CVEs to defend against
 
-CVSS is quoted from NVD with the scoring version noted; where the maintainer's own advisory rates lower or higher, the split is flagged. CISA-KEV status was checked against the live catalog: **none of the CVEs below are KEV-listed** (all are DoS-class, side-channel, or research findings without confirmed mass in-the-wild exploitation).
+CVSS is quoted from NVD with the scoring version noted; where the maintainer's own advisory rates lower or higher, the split is flagged. CISA-KEV status was checked against the live catalogue: **none of the CVEs below are KEV-listed** (all are DoS-class, side-channel, or research findings without confirmed mass in-the-wild exploitation).
 
 **1. ASN.1 / DER parser DoS & memory-safety**
 

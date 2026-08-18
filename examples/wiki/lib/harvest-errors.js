@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright (c) blamejs contributors
 "use strict";
-// harvest-errors — the /reference-errors catalog, generated from the
+// harvest-errors — the /reference-errors catalogue, generated from the
 // toolkit source at boot.
 //
 // Two harvests, both line-based over lib/ (vendor/ and node_modules

@@ -499,7 +499,7 @@ async function run() {
   // PD14k -- a Transaction Identifier is an unbounded INTEGER on the wire, so a
   // `number` above Number.MAX_SAFE_INTEGER has already been rounded before this
   // layer sees it. `MAX_SAFE_INTEGER + 2` is written here as arithmetic because the
-  // literal it evaluates to cannot be written exactly: it lands on the NEIGHBOURING
+  // literal it evaluates to cannot be written exactly: it lands on the NEIGHBORING
   // identifier, which a response echoing that value would then match. Refused with
   // the shape to use instead, through the same authoring guard pki.cmc.build applies.
   var rounded = Number.MAX_SAFE_INTEGER + 2;      // 9007199254740992, not ...993
@@ -580,7 +580,7 @@ async function run() {
 
   // ---- RP1-RP8: the exchange binding is stated, and its absence declared ----
   // RFC 5272 sec. 6.6 names the Sender/Recipient Nonce pair as the replay
-  // defence, and every half of the binding here is conditional on the client
+  // defense, and every half of the binding here is conditional on the client
   // having sent it. A caller who retains nothing therefore gets a fully signed,
   // fully valid verdict about a response captured from ANY earlier exchange with
   // the same CA -- which is the CWE-294 this module claims to defend. So the

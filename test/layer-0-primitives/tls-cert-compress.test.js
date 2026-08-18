@@ -52,7 +52,7 @@ var CA = Buffer.alloc(700, 0x42);
 var MSG = certMessage([LEAF, CA]);
 // The RFC 8879 registry, intersected with what this runtime can decompress SAFELY. The codec
 // refuses to offer or accept an algorithm whose decompressor cannot report an unfinished frame,
-// so the usable set is a property of the runtime; these vectors assert behaviour over the set
+// so the usable set is a property of the runtime; these vectors assert behavior over the set
 // that is actually offered, and 7i proves one outside it is refused.
 var REGISTERED = [{ name: "zlib", n: 1 }, { name: "brotli", n: 2 }, { name: "zstd", n: 3 }];
 var SAFE = require("../../lib/guard-all").compress.algorithms();

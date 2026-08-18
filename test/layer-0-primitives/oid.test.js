@@ -223,7 +223,7 @@ function testKemParams() {
     check("kemParams fails closed for the inherited name " + JSON.stringify(k), pki.oid.kemParams(k) === undefined);
   });
   // No module may reintroduce a literal size table: a re-inlined copy is exactly the drift the
-  // registry removes, and it would not show up in any behavioural test until the two disagreed.
+  // registry removes, and it would not show up in any behavioral test until the two disagreed.
   var LITERALS = [/\bek:\s*800\b/, /\bdk:\s*1632\b/, /=\s*1088;/, /\[800,\s*1184,\s*1568\]/];
   var offenders = [];
   fs.readdirSync(LIB).filter(function (f) { return /\.js$/.test(f); }).forEach(function (f) {

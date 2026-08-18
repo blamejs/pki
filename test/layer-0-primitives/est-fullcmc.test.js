@@ -172,7 +172,7 @@ async function run() {
     })) === "est/no-issued-cert");
 
   // G1h -- a request carrying TWO certification requests is only answered when
-  // BOTH are: a bag holding one of the two certificates is a partial enrolment,
+  // BOTH are: a bag holding one of the two certificates is a partial enrollment,
   // and calling it issued would report the unanswered half as done.
   var secondCsr = await pki.csr.sign(
     { subject: "second.example", subjectPublicKey: await pki.key.export(otherPair.publicKey) },
@@ -240,7 +240,7 @@ async function run() {
         body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
       tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).certificate.equals(certDer));
 
-  // G1j/G1k -- the bytes are about to be labelled `smime-type=CMC-request`, so
+  // G1j/G1k -- the bytes are about to be labeled `smime-type=CMC-request`, so
   // they are confirmed to BE one before anything leaves the process. A caller
   // mistake belongs at the entry point, not POSTed to a CA under a label that
   // does not describe it.
@@ -579,7 +579,7 @@ async function run() {
     ebBound.outcome === "issued" && ebBound.boundToRequest === true &&
     ebBound.bound.senderNonce === true && ebBound.bound.transactionId === false);
 
-  // EB5 and EB6 pin behaviour that predates the refusal above and stay green
+  // EB5 and EB6 pin behavior that predates the refusal above and stay green
   // without it: EB5 establishes that EB4's nonce is genuinely load-bearing rather
   // than decorative, and EB6 pins the ORDER of the two certs-only refusals.
   check("EB5. and a response that does NOT echo that nonce is refused",
@@ -787,7 +787,7 @@ async function run() {
   // response to. Taking the last would pick one of the two arbitrarily, and
   // pki.cmc.verify already refuses duplicates on the response side.
   // Hand-assembled: pki.cmc.build now refuses to EMIT this shape, which is the
-  // right behaviour and means the fixture cannot come from it. A request from
+  // right behavior and means the fixture cannot come from it. A request from
   // another producer can still arrive this way, and that is what is being tested.
   var dupBinding = b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence([
     b.integer(3n), b.set([b.sequence([b.oid(SHA256), b.nullValue()])]),
@@ -809,7 +809,7 @@ async function run() {
   check("G13j. and that request never left either",
     noSend13i.calls.length === 0);
 
-  check("G13k. an error body labelled something other than CMC-response is not read as a verdict",
+  check("G13k. an error body labeled something other than CMC-response is not read as a verdict",
     // The success path refuses a label that disagrees with the bytes; accepting any
     // pkcs7-mime here would make that agreement decorative and read a CMC verdict
     // out of a body the server said was something else. The HTTP fault stands.

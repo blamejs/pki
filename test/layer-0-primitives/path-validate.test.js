@@ -1497,7 +1497,7 @@ async function testRfc5280ConformanceMusts() {
   check("encoded-FALSE IDP flag makes the CRL unusable", resC20d.valid === false && failCodes(resC20d).indexOf("path/revocation-undetermined") !== -1);
 
   // The validator's own octet-alignment guard (a signature BIT STRING with a non-zero unused-bit
-  // count) is defence in depth behind the strict DER codec, which rejects such bytes at parse. It
+  // count) is defense in depth behind the strict DER codec, which rejects such bytes at parse. It
   // used to be reachable by editing a PARSED certificate -- which is exactly the route that is now
   // closed: a certificate reaching a verdict is re-derived from the bytes its parser read, so an
   // edit made afterwards is discarded rather than believed.
@@ -1534,7 +1534,7 @@ async function testRfc5280ConformanceMusts() {
   check("EdDSA with a stray NULL parameter rejected at parse (RFC 8410 §3 params-absent)", wrongParamsCode === "x509/bad-algorithm-parameters");
 
   // Algorithm confusion (RFC 9814 §4 consistency): a certificate SIGNED by the
-  // issuer's Ed25519 key but LABELLING its signatureAlgorithm as a one-shot PQC
+  // issuer's Ed25519 key but LABELING its signatureAlgorithm as a one-shot PQC
   // OID must NOT validate. Node's WebCrypto imports a mismatched SPKI under the
   // requested PQC name and verifies with the real key, so the issuer-key ↔
   // signature-algorithm consistency is enforced structurally (the key algorithm
@@ -1543,12 +1543,12 @@ async function testRfc5280ConformanceMusts() {
   var slhLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.21")]);   // id-slh-dsa-sha2-128f, params absent
   var confusedSlh = await mkCert({ subject: "ConfSlh", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: slhLabel });
   var resConfSlh = await run([confusedSlh], { time: T2027, trustAnchor: edConfAnchor });
-  check("Ed25519-signed cert labelled SLH-DSA rejected (no algorithm confusion)",
+  check("Ed25519-signed cert labeled SLH-DSA rejected (no algorithm confusion)",
     resConfSlh.valid === false && failCodes(resConfSlh).indexOf("path/algorithm-mismatch") !== -1);
   var mlLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.18")]);   // id-ml-dsa-65, params absent
   var confusedMl = await mkCert({ subject: "ConfMl", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: mlLabel });
   var resConfMl = await run([confusedMl], { time: T2027, trustAnchor: edConfAnchor });
-  check("Ed25519-signed cert labelled ML-DSA rejected (no algorithm confusion)",
+  check("Ed25519-signed cert labeled ML-DSA rejected (no algorithm confusion)",
     resConfMl.valid === false && failCodes(resConfMl).indexOf("path/algorithm-mismatch") !== -1);
 
   // a SHA-1 PSS signature is rejected (SHA-1 is dropped from
@@ -1870,7 +1870,7 @@ async function testRfc5280ConformanceMusts() {
   // signatureAlgorithm.parameters into path/unsupported-algorithm has no route left from the public
   // verb: such parameters are refused by the AlgorithmIdentifier guard at PARSE, and the other route
   // -- editing them onto a parsed certificate -- is what the re-derivation now discards. Verified
-  // unreachable rather than forced: the fallback stays as defence in depth for a future decoder that
+  // unreachable rather than forced: the fallback stays as defense in depth for a future decoder that
   // admits a shape this one does not, and what is pinned here is the door that closed the edit.
   var anchorPssParam = await mkAnchor("rsapss", "PssRoot");
   var pssParsed = pki.schema.x509.parse(await mkCert({ subject: "PssBadParam", issuer: "PssRoot", signWith: "rsapss", subjectKeys: "ed25519leaf" }));
@@ -2315,7 +2315,7 @@ async function testRfc5280ConformanceMusts() {
     resSuperseded.valid === true);
 
   // sec. 5.2.4 makes deltaCRLIndicator a MUST-be-critical extension. A non-critical one is still
-  // treated as a delta and still consulted for revocation (the shipped behaviour), but it does not
+  // treated as a delta and still consulted for revocation (the shipped behavior), but it does not
   // earn the new capability of being MERGED -- merging can release a certificate, and that must
   // rest on a conforming indicator.
   var ncBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],

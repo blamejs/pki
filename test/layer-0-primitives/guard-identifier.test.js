@@ -60,7 +60,7 @@ function testBoundsWaived() {
 // assertKnownKeys -- every own key of a caller-supplied options object must be one the
 // caller recognizes. Oracle: the failure this prevents is fail-OPEN. A misspelled option
 // key is silently absent, so the default applies and a caller who asked for a stricter
-// check quietly gets the looser behaviour with no error anywhere. The consumers compose
+// check quietly gets the looser behavior with no error anywhere. The consumers compose
 // this at their config-time boundary (x509.sign extensions, csr.sign spec, crl.sign
 // issuingDistributionPoint, cmp.build opts, webauthn opts.tpmPolicy); these pin the
 // contract directly, including the two ways a hand-rolled walk gets it wrong.
@@ -110,11 +110,11 @@ function testKnownKeys() {
 
 // Every config-time boundary that composes assertKnownKeys must still raise its OWN typed error.
 //
-// This is the behavioural guard for routing those checks through one home. The failure it catches is
+// This is the behavioral guard for routing those checks through one home. The failure it catches is
 // invisible from the happy path: a caller that hands the guard an error CLASS where it expects a
 // (code, message) FACTORY raises "class constructor cannot be invoked without new" instead of the
 // verdict -- and only when the check actually fires, which is the branch a valid-input test never
-// takes. So each boundary is driven through the SHIPPED verb with an unrecognised key.
+// takes. So each boundary is driven through the SHIPPED verb with an unrecognized key.
 async function testConsumersFailClosed() {
   var pki = require("../../index.js");
   var BAD = { nope___: 1 };
