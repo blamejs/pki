@@ -4,14 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.8 — 2026-08-17
+## v0.5.8 — 2026-08-18
 
 Four verdicts that answered a question nobody had asked now say what they checked, and an email domain comparison no longer folds two registrable domains into one identity.
 
 ### Added
 
 - pki.cms.decrypt reports originAuthenticated, authenticatedBy and originatorInfo. authenticated is a claim about the content and the key that opened it; it never described who sent the message. originAuthenticated is false for every recipient type the toolkit supports: a ktri or ephemeral-static kari message is minted by anyone holding the recipient's public key, and a pwri or kekri message by any co-recipient sharing the secret. authenticatedBy names what the integrity rests on. originatorInfo is now surfaced rather than decoded and discarded, and is documented as unauthenticated: it sits outside the AEAD's authenticated data, so it is a hint the sender chose, and any certificate it carries must be validated before use. To bind a sender, verify a signature over the plaintext.
-- pki.smime.verify accepts expectedSender and reports a sender block of { checked, expected, source, identities, match }. A signature proves a key signed; it does not prove the message came from the mailbox the reader sees. match is true only when the signer certificate asserts the address as an rfc822Name (RFC 8550 section 4.4.3), compared under RFC 5280 section 7.5. It is three-valued: false when every identity was comparable and none matched, null when the question went unanswered, and null is not a pass, so a caller enforcing sender binding tests match === true. identities lists what the certificate actually asserts. With no expectedSender a single outer From is used and reported as source: "from", which is advisory, because on a message without header protection that header is attacker-controlled.
+- pki.smime.verify accepts expectedSender and reports a sender block of { checked, expected, source, identities, match }. A signature proves a key signed; it does not prove the message came from the mailbox the reader sees. match is true only when the signer certificate asserts the address, compared under RFC 5280 section 7.5: the local-part exactly, the host-part case-insensitively. The address is read from the subjectAltName rfc822Name entries (RFC 8550 section 4.4.3), and where the extension carries none, from the subject distinguished name's PKCS #9 emailAddress attribute, which RFC 8550 section 3 requires a receiving agent to recognise. Where both are present the extension is authoritative, so a stale subject value cannot satisfy expectedSender while the extension names a different mailbox. It is three-valued: false when every identity was comparable and none matched, null when the question went unanswered, and null is not a pass, so a caller enforcing sender binding tests match === true. identities lists what the certificate actually asserts. With no expectedSender a single outer From is used and reported as source: "from", which is advisory, because on a message without header protection that header is attacker-controlled.
 
 ### Changed
 
