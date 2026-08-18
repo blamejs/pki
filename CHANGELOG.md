@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.8 — 2026-08-18
+## v0.5.9 — 2026-08-18
+
+A certificate can now carry an internationalized email address, which this toolkit could read and never write.
+
+### Added
+
+- pki.x509.sign accepts an otherName entry in a subjectAltName, given as { typeId, value } where typeId is an OID string and value is a Buffer holding one complete DER element. It encodes RFC 5280 section 4.2.1.6's otherName ::= SEQUENCE { type-id OBJECT IDENTIFIER, value [0] EXPLICIT ANY }, tagged [0] IMPLICIT. The value wrapper is EXPLICIT because ANY carries no tag of its own, which is what makes the encoding unambiguous and is the shape the decoder already required. This is what an SmtpUTF8Mailbox address needs, and it is equally the carrier for any other otherName a profile defines.
+
+### Fixed
+
+- pki.smime.verify's sender binding is now exercised against certificates carrying an otherName. Two behaviours that previously had no conformance vector are pinned: a certificate whose subjectAltName carries an SmtpUTF8Mailbox does not let a legacy subject distinguished-name emailAddress speak for it, and an otherName unrelated to email, such as a Microsoft user principal name, neither erases a matching rfc822Name nor turns a definite non-match into an undecidable one.
+
+## v0.5.8 — 2026-08-17
 
 Four verdicts that answered a question nobody had asked now say what they checked, and an email domain comparison no longer folds two registrable domains into one identity.
 

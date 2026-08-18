@@ -911,6 +911,88 @@ async function run() {
         g.emailEqual("x@" + String.fromCharCode(0x43f) + ".example", "alice@corp.example") === "not-comparable";
     })());
 
+  // An SmtpUTF8Mailbox SAN (RFC 8398 sec. 3) is an authoritative email identity this
+  // comparison cannot read. It must therefore make the answer UNDECIDABLE, never let a
+  // legacy subject-DN value speak for the certificate instead -- a stale subject address
+  // would otherwise satisfy expectedSender while the SAN named a different mailbox.
+  var i18nPair = await pki.key.generate("Ed25519");
+  var i18nKey = await pki.key.export(i18nPair.privateKey);
+  var i18nCert = await pki.x509.sign({
+    subject: [{ emailAddress: "stale@old.example" }],
+    subjectPublicKey: await pki.key.export(i18nPair.publicKey),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { subjectAltName: [{ otherName: { typeId: "1.3.6.1.5.5.7.8.9", value: pki.asn1.build.utf8("i18n@corp.example") } }] },
+  }, { key: i18nKey });
+  var i18nMsg = await pki.smime.sign(MSG, [{ cert: i18nCert, key: i18nKey }]);
+  check("139. an SmtpUTF8Mailbox SAN does not let a stale subject-DN address bind the sender",
+    (await pki.smime.verify(i18nMsg, { trustAnchors: [i18nCert], expectedSender: "stale@old.example" })).sender.match === null);
+
+  // An UNRELATED otherName is routine (a Microsoft UPN). It says nothing about the email
+  // question, so it must not drag a perfectly matching rfc822Name to undecidable.
+  var upnPair = await pki.key.generate("Ed25519");
+  var upnKey = await pki.key.export(upnPair.privateKey);
+  var await0Spki = await pki.key.export(upnPair.publicKey);
+  var upnCert = await pki.x509.sign({
+    subject: "UPN Holder",
+    subjectPublicKey: await pki.key.export(upnPair.publicKey),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { subjectAltName: [
+      { rfc822Name: "carol@corp.example" },
+      { otherName: { typeId: "1.3.6.1.4.1.311.20.2.3", value: pki.asn1.build.utf8("carol@corp.local") } },
+    ] },
+  }, { key: upnKey });
+  var upnMsg = await pki.smime.sign(MSG, [{ cert: upnCert, key: upnKey }]);
+  check("140. an unrelated otherName does not erase a matching rfc822Name",
+    (await pki.smime.verify(upnMsg, { trustAnchors: [upnCert], expectedSender: "carol@corp.example" })).sender.match === true);
+  // The one that pins the TYPE-ID READ itself. With no match to fall back on, a UPN that
+  // was wrongly counted as an unreadable email identity turns a clean "no" into "unknown".
+  // Reading the type-id off the wrong level of the decoded GeneralName produces exactly
+  // that, and every other vector here survives it.
+  check("141. an unrelated otherName still yields a definite NO for a different mailbox",
+    (await pki.smime.verify(upnMsg, { trustAnchors: [upnCert], expectedSender: "dave@corp.example" })).sender.match === false);
+
+  // A shared builder reports in the CALLER's namespace. A malformed type-id must not leak
+  // the codec's own oid/* code out of a module the caller never named.
+  check("142. a malformed otherName type-id reports as x509/bad-input, not the codec's code",
+    (await codeOf(function () {
+      return pki.x509.sign({
+        subject: "S", subjectPublicKey: await0Spki,
+        notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+        extensions: { subjectAltName: [{ otherName: { typeId: "1.40.1", value: pki.asn1.build.utf8("x") } }] },
+      }, { key: upnKey });
+    })) === "x509/bad-input");
+  // The value is spliced in raw and then SIGNED, so "one complete DER element" is decoded,
+  // not taken on the caller's word. Two concatenated TLVs inside a [0] EXPLICIT wrapper
+  // whose contract says exactly one would otherwise ship under a real signature.
+  check("144. two concatenated DER elements are refused as an otherName value",
+    (await codeOf(function () {
+      return pki.x509.sign({
+        subject: "S", subjectPublicKey: await0Spki,
+        notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+        extensions: { subjectAltName: [{ otherName: { typeId: "1.3.6.1.5.5.7.8.9",
+          value: Buffer.concat([pki.asn1.build.utf8("x"), pki.asn1.build.utf8("y")]) } }] },
+      }, { key: upnKey });
+    })) === "x509/bad-input");
+  check("145. bytes that are not DER at all are refused as an otherName value",
+    (await codeOf(function () {
+      return pki.x509.sign({
+        subject: "S", subjectPublicKey: await0Spki,
+        notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+        extensions: { subjectAltName: [{ otherName: { typeId: "1.3.6.1.5.5.7.8.9",
+          value: Buffer.from([0xff]) } }] },
+      }, { key: upnKey });
+    })) === "x509/bad-input");
+  // Already covered by the shared empty-value guard, kept so the contract is pinned where a
+  // reader looks for it.
+  check("143. a null otherName reports as x509/bad-input",
+    (await codeOf(function () {
+      return pki.x509.sign({
+        subject: "S", subjectPublicKey: await0Spki,
+        notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+        extensions: { subjectAltName: [{ otherName: null }] },
+      }, { key: upnKey });
+    })) === "x509/bad-input");
+
   check("122. an unprotected message reports fromMismatch null, never a passed comparison",
     v.headerProtection.present === false && v.headerProtection.fromMismatch === null);
 

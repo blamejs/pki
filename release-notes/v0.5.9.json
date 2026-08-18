@@ -1,0 +1,13 @@
+{
+  "version": "0.5.9",
+  "headline": "A certificate can now carry an internationalized email address, which this toolkit could read and never write.",
+  "summary": "RFC 8550 section 4.4.3 requires an email address whose local part is not ASCII to ride the otherName GeneralName as an SmtpUTF8Mailbox (RFC 8398 section 3). The decoder has always accepted that form; the certificate builder refused to emit it, so an issuer using this toolkit could not express an internationalized mailbox at all, and the sender-binding paths that consume it had no way to be exercised end to end.",
+  "sections": {
+    "Added": [
+      "pki.x509.sign accepts an otherName entry in a subjectAltName, given as { typeId, value } where typeId is an OID string and value is a Buffer holding one complete DER element. It encodes RFC 5280 section 4.2.1.6's otherName ::= SEQUENCE { type-id OBJECT IDENTIFIER, value [0] EXPLICIT ANY }, tagged [0] IMPLICIT. The value wrapper is EXPLICIT because ANY carries no tag of its own, which is what makes the encoding unambiguous and is the shape the decoder already required. This is what an SmtpUTF8Mailbox address needs, and it is equally the carrier for any other otherName a profile defines."
+    ],
+    "Fixed": [
+      "pki.smime.verify's sender binding is now exercised against certificates carrying an otherName. Two behaviours that previously had no conformance vector are pinned: a certificate whose subjectAltName carries an SmtpUTF8Mailbox does not let a legacy subject distinguished-name emailAddress speak for it, and an otherName unrelated to email, such as a Microsoft user principal name, neither erases a matching rfc822Name nor turns a definite non-match into an undecidable one."
+    ]
+  }
+}
