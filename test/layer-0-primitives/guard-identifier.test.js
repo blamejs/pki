@@ -390,31 +390,21 @@ function testKnownKeys() {
   check("and the refusal names the shape", /Proxy/.test(liarErr.message));
   check("optionsObject refuses it at the entry point too",
         errOf(function () { identifier.optionsObject(liar, E, "x/bad", "opts"); }).code === "x/bad");
-  // What optionsObject hands back is the bag everything downstream reads, so the options are read
-  // here once and carried on an object of plain values. Without that, checking names and reading
-  // values are two moments a caller's getter sits between.
-  var settled = identifier.optionsObject({ get alpha() { return 1; }, beta: 2 }, E, "x/bad", "opts");
-  check("optionsObject returns the caller's options as plain values",
-        settled.alpha === 1 && settled.beta === 2 &&
-        Object.getOwnPropertyDescriptor(settled, "alpha").get === undefined);
-  check("as its own properties, over the bag they were read from",
-        Object.prototype.hasOwnProperty.call(settled, "alpha") &&
-        Object.prototype.hasOwnProperty.call(settled, "beta"));
-  check("while a verb called with no options still gets a bag inheriting nothing",
+  // optionsObject hands the caller's own bag back, having read every option once to prove the
+  // names hold still. Which names a caller supplied is decided by where they sit, so returning a
+  // copy would throw that away; what it establishes instead is that reading does not change the
+  // set about to be checked.
+  var caller = { get alpha() { return 1; }, beta: 2 };
+  var settled = identifier.optionsObject(caller, E, "x/bad", "opts");
+  check("optionsObject returns the caller's own bag", settled === caller);
+  check("with every option still resolving as it did", settled.alpha === 1 && settled.beta === 2);
+  check("while a verb called with no options gets a bag inheriting nothing",
         Object.getPrototypeOf(identifier.optionsObject(undefined, E, "x/bad", "opts")) === null &&
         Object.getPrototypeOf(identifier.optionsObject(null, E, "x/bad", "opts")) === null);
-  // Frozen, so what this returns is what the unknown-option check reads and what the verb acts
-  // on, without that depending on no code in between writing to it.
-  check("and one that cannot be added to, rewritten or emptied afterwards",
-        Object.isFrozen(settled) &&
-        errOf(function () { "use strict"; settled.gamma = 3; }) instanceof TypeError &&
-        errOf(function () { "use strict"; settled.alpha = 99; }) instanceof TypeError &&
-        errOf(function () { "use strict"; delete settled.beta; }) instanceof TypeError &&
-        settled.alpha === 1 && settled.beta === 2 && settled.gamma === undefined);
   var reread = { reads: 0 };
   Object.defineProperty(reread, "alpha", { get: function () { this.reads++; return 1; }, enumerable: true });
   identifier.optionsObject(reread, E, "x/bad", "opts");
-  check("and the caller's getter runs once, not once per later read", reread.reads === 1);
+  check("each option is read once while the names are being settled", reread.reads === 1);
   // A getter that adds a name to its own bag leaves the checked set and the read set different.
   check("optionsObject refuses a bag that grows a name as it is read",
         errOf(function () {
@@ -430,31 +420,37 @@ function testKnownKeys() {
                                  E, "x/bad", "opts").alpha === 3);
   // The walk passes over a method so a caller's class keeps its own, and a documented option can
   // hold a function: pki.path.build takes `transport`. A defaults-style bag carries it inherited,
-  // so settling onto a bare object drops it and the verb falls back to its built-in transport,
-  // reaching the network the caller meant to replace. The settled bag keeps the original beneath
-  // it, so every name resolves as it did.
+  // and settling must leave it exactly where a name lookup finds it. Copying the reported names
+  // onto a fresh object dropped it, and the verb then fell back to the built-in HTTPS transport,
+  // reaching the network the caller meant to replace.
   var injected = function () { return "injected"; };
   var withDefaults = Object.create({ transport: injected, fetchAia: true });
   withDefaults.trustAnchors = ["anchor"];
   var settledOverDefaults = identifier.optionsObject(withDefaults, E, "x/bad", "opts");
-  check("an inherited function option still resolves through the settled bag",
+  check("an inherited function option still resolves after settling",
         settledOverDefaults.transport === injected);
   check("as does an inherited plain one", settledOverDefaults.fetchAia === true);
-  check("and settling reports the same names as the bag it was built from",
+  check("and settling changes none of the names",
         identifier.readableNames(settledOverDefaults, E, "x/bad", "o").join(",") ===
-        identifier.readableNames(withDefaults, E, "x/bad", "o").join(","));
-  // A bag sitting over an array inherits that array's elements and its `length`, which are the
-  // array's structure wherever they are reached from. Reading the kind off the wrapper alone
-  // calls them options its caller chose, and a settled bag IS such a wrapper, so an indexed bag
-  // holding an element came back refused for the field "0".
+        "trustAnchors,fetchAia");
+  // An object sitting over an array inherits that array's elements and its `length`, which are the
+  // array's structure wherever they are reached from. Reading the kind off that object alone calls
+  // them names its caller chose, and refuses an indexed bag for the field "0".
   check("an object over an array reports neither its elements nor its length",
         identifier.readableNames(Object.create([1, 2]), E, "x/bad", "o").length === 0);
-  check("and settling an indexed bag with elements leaves nothing to refuse",
+  check("an indexed bag with elements carries nothing to refuse",
         identifier.readableNames(identifier.optionsObject([1, 2], E, "x/bad", "opts"),
                                  E, "x/bad", "o").length === 0);
   check("while a real option on one is still reported",
         identifier.readableNames(identifier.optionsObject(Object.assign([1], { pem: true }),
                                  E, "x/bad", "opts"), E, "x/bad", "o").join(",") === "pem");
+  // A native accessor reached through an object with no slot behind it throws, so an options bag
+  // that is itself a collection has to stay one: `pki.cms.sign` reads `opts.detached`, and an
+  // `ArrayBuffer` bag behind a slot-less object raised a raw TypeError from that read.
+  var bufferBag = new ArrayBuffer(0);
+  check("an ArrayBuffer options bag survives settling as itself",
+        identifier.optionsObject(bufferBag, E, "x/bad", "opts") === bufferBag &&
+        identifier.optionsObject(bufferBag, E, "x/bad", "opts").detached === false);
   // A Proxy is refused by identity, never by probing its traps for a contradiction: a trap can
   // answer consistently for as long as the check looks and differ afterwards.
   var honest = new Proxy({ alpha: 1 }, {});
