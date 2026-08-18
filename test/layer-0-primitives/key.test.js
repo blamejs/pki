@@ -445,6 +445,23 @@ async function testUnknownOptionsRefused() {
   check("export still treats undefined as no options", Buffer.isBuffer(await pki.key.export(pair.publicKey, undefined)));
   check("export refuses a Buffer handed in the options position",
         await codeOf(pki.key.export(pair.publicKey, Buffer.alloc(4))) === "key/bad-input");
+
+  // `Object.keys` reports own ENUMERABLE names only, so two ordinary JavaScript objects answered
+  // `opts.password` while showing the check nothing: one carries it on a prototype, the other
+  // hides it behind enumerable:false. Either one meant export accepted the bag and returned the
+  // private key in the clear -- the refusal reached by a different object shape.
+  var inherited = Object.create({ password: "pw" });
+  check("export refuses a password carried on the prototype",
+        await codeOf(pki.key.export(pair.privateKey, inherited)) === "key/bad-input");
+  var hidden = {};
+  Object.defineProperty(hidden, "password", { value: "pw", enumerable: false });
+  check("export refuses a non-enumerable password",
+        await codeOf(pki.key.export(pair.privateKey, hidden)) === "key/bad-input");
+  // ...and the widened check must not start refusing bags that were always valid.
+  check("a null-prototype options bag is still accepted",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, Object.create(null))));
+  check("an inherited KNOWN option is still accepted",
+        typeof (await pki.key.export(pair.publicKey, Object.create({ format: "pem" }))) === "string");
 }
 
 async function main() {
