@@ -259,19 +259,19 @@ async function run() {
       check("/api deep-links into /" + e.slug, api.body.indexOf('href="/' + e.slug + '#') !== -1);
     });
 
-    // ---- /reference-errors: the harvested error catalog ----
+    // ---- /reference-errors: the harvested error catalogue ----
     var errCat = await _get(port, "/reference-errors");
     check("GET /reference-errors -> 200", errCat.status === 200);
-    check("error catalog lists the classes table", errCat.body.indexOf("Error classes") !== -1);
-    check("error catalog carries a known class", errCat.body.indexOf("CertificateError") !== -1);
-    check("error catalog carries a known domain section", errCat.body.indexOf('id="domain-asn1"') !== -1);
-    check("error catalog is populated", (errCat.body.match(/<tr>/g) || []).length >= 450);
+    check("error catalogue lists the classes table", errCat.body.indexOf("Error classes") !== -1);
+    check("error catalogue carries a known class", errCat.body.indexOf("CertificateError") !== -1);
+    check("error catalogue carries a known domain section", errCat.body.indexOf('id="domain-asn1"') !== -1);
+    check("error catalogue is populated", (errCat.body.match(/<tr>/g) || []).length >= 450);
     // Codes carried in option-object keys (code:, emptyCode:, ...) and in
     // non-first argument positions must be harvested, not only the
     // E("domain/reason", ...) first-argument shape.
-    check("error catalog carries an option-object code", errCat.body.indexOf("cms/bad-signed-data") !== -1);
-    check("error catalog carries a non-first-argument code", errCat.body.indexOf("asn1/not-buffer") !== -1);
-    check("error catalog carries a default-assignment code", errCat.body.indexOf("byte-reader/truncated") !== -1);
+    check("error catalogue carries an option-object code", errCat.body.indexOf("cms/bad-signed-data") !== -1);
+    check("error catalogue carries a non-first-argument code", errCat.body.indexOf("asn1/not-buffer") !== -1);
+    check("error catalogue carries a default-assignment code", errCat.body.indexOf("byte-reader/truncated") !== -1);
 
     // ---- Concepts pages ----
     var conceptGroup = built.navGroups.filter(function (g) { return g.group === "Concepts"; })[0];

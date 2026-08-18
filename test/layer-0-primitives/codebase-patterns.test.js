@@ -1294,7 +1294,7 @@ function testAllowMarkersAreRegistered() {
 }
 
 // ---------------------------------------------------------------------------
-// Known-antipattern catalog — scanScope-routed regex detectors (n=1 gate)
+// Known-antipattern catalogue — scanScope-routed regex detectors (n=1 gate)
 // ---------------------------------------------------------------------------
 
 // Each entry fires at n=1 — any file matching the regex (and not in the
@@ -1307,7 +1307,7 @@ function testAllowMarkersAreRegistered() {
 //                        waitUntil-vs-setTimeout rule runs here)
 var KNOWN_ANTIPATTERNS = [
   {
-    // The one test-discipline detector carried in the unified catalog:
+    // The one test-discipline detector carried in the unified catalogue:
     // a fixed-budget setTimeout sleep used as a condition-wait in a test.
     id: "test-promise-settimeout-sleep",
     primitive: "helpers.waitUntil(predicate, { timeoutMs, label }) for condition-waits OR helpers.passiveObserve(ms, label) to verify the ABSENCE of an event over a window",
@@ -1323,7 +1323,7 @@ var KNOWN_ANTIPATTERNS = [
       // they have to use setTimeout internally. The wait module is their
       // home, not a condition-wait consumer.
       "test/helpers/wait.js",
-      // This catalog carries the bug pattern as a regex literal.
+      // This catalogue carries the bug pattern as a regex literal.
       "test/layer-0-primitives/codebase-patterns.test.js",
     ],
     reason: "Every 'passes alone, fails under SMOKE_PARALLEL=64 / macOS' test flake is the same root cause: a fixed-budget setTimeout sleep too short for runner-contention reality. helpers.waitUntil polls the actual condition every 25ms up to a 5000ms cap and exits early when the predicate is truthy — fast platforms finish in milliseconds, contended platforms get the full budget. helpers.passiveObserve(ms, label) is the sibling for verifying the ABSENCE of an event over a window. Convert a hand-tuned sleep to waitUntil rather than bumping N.",
@@ -1548,7 +1548,7 @@ function testKnownAntipatterns() {
       _report("known-antipattern '" + ap.id + "' — use " + ap.primitive, bad);
     }
   }
-  if (allBad.length === 0) check("known-antipattern catalog (n=1 gate)", true);
+  if (allBad.length === 0) check("known-antipattern catalogue (n=1 gate)", true);
 }
 
 // ---------------------------------------------------------------------------

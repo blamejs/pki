@@ -25,7 +25,7 @@
  *   `asn1/trailing-bytes`, `cms/bad-version`, `x509/not-a-certificate`.
  *   A consumer needs a single `err instanceof pki.errors.PkiError` check
  *   and can switch on `err.code` without parsing prose. The full code
- *   inventory is on the Error catalog reference page, harvested from the
+ *   inventory is on the Error catalogue reference page, harvested from the
  *   source at boot.
  *
  * @section Why throwing beats returning false

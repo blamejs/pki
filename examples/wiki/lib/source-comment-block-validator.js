@@ -42,7 +42,7 @@ var ROOT_RE = /^\s*pki\./;
 
 var KNOWN_STATUSES = { stable: 1, experimental: 1, deprecated: 1 };
 
-// Compliance-posture catalog. A PKI toolkit's compliance surface is the
+// Compliance-posture catalogue. A PKI toolkit's compliance surface is the
 // standards / assurance regimes a deployment answers to. Kept small and
 // explicit — an unknown value is a typo, not a silent pass.
 var KNOWN_POSTURES = {
@@ -360,10 +360,10 @@ function validate(config) {
         findings.push({ kind: "schema", file: rel, primitive: primTag, msg: "missing @example or @exampleFile" });
       }
 
-      // 5. @status catalog.
+      // 5. @status catalogue.
       if (tags.status && !KNOWN_STATUSES[tags.status]) {
         findings.push({
-          kind: "catalog", file: rel, primitive: primTag,
+          kind: "catalogue", file: rel, primitive: primTag,
           msg: "@status must be one of " + Object.keys(KNOWN_STATUSES).join(" / ") + " (got `" + tags.status + "`)",
         });
       }
@@ -371,7 +371,7 @@ function validate(config) {
       // 6. @since semver.
       if (tags.since && (tags.since.length > 32 || !SEMVER_RE.test(tags.since))) {
         findings.push({
-          kind: "catalog", file: rel, primitive: primTag,
+          kind: "catalogue", file: rel, primitive: primTag,
           msg: "@since does not look like semver (got `" + tags.since + "`)",
         });
       }
@@ -381,24 +381,24 @@ function validate(config) {
       if (tags.originated) {
         if (tags.originated.length > 32 || !SEMVER_RE.test(tags.originated)) {
           findings.push({
-            kind: "catalog", file: rel, primitive: primTag,
+            kind: "catalogue", file: rel, primitive: primTag,
             msg: "@originated does not look like semver (got `" + tags.originated + "`)",
           });
         } else if (tags.since && SEMVER_RE.test(tags.since) && _cmpSemver(tags.originated, tags.since) > 0) {
           findings.push({
-            kind: "catalog", file: rel, primitive: primTag,
+            kind: "catalogue", file: rel, primitive: primTag,
             msg: "@originated `" + tags.originated + "` is later than @since `" + tags.since + "` (the origin cannot post-date the corrected path)",
           });
         }
       }
 
-      // 7. @compliance catalog.
+      // 7. @compliance catalogue.
       if (tags.compliance) {
         String(tags.compliance).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (p2) {
           if (!KNOWN_POSTURES[p2]) {
             findings.push({
-              kind: "catalog", file: rel, primitive: primTag,
-              msg: "@compliance value `" + p2 + "` not in posture catalog",
+              kind: "catalogue", file: rel, primitive: primTag,
+              msg: "@compliance value `" + p2 + "` not in posture catalogue",
             });
           }
         });
@@ -412,7 +412,7 @@ function validate(config) {
         String(tags.spec).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (ref) {
           if (!_isValidSpecRef(ref)) {
             findings.push({
-              kind: "catalog", file: rel, primitive: primTag,
+              kind: "catalogue", file: rel, primitive: primTag,
               msg: "@spec `" + ref + "` is not a recognized normative reference (FIPS / SP 800 / RFC / X.NNN / ISO/IEC / SEC / ANSI X9 / W3C / IEC / PKCS# / CA/Browser Forum / semver / internal)",
             });
           }
@@ -429,7 +429,7 @@ function validate(config) {
         String(tags.defends).split(",").map(function (s) { return s.trim(); }).filter(Boolean).forEach(function (ref) {
           if (!_isValidDefendsRef(ref)) {
             findings.push({
-              kind: "catalog", file: rel, primitive: primTag,
+              kind: "catalogue", file: rel, primitive: primTag,
               msg: "@defends `" + ref + "` must be a CVE-YYYY-N, CWE-N, or a named class optionally suffixed with `(CVE-.../CWE-...)`",
             });
           }

@@ -15,10 +15,14 @@
 // is exactly how the forms this gate now catches survived a hand scan that
 // claimed to be complete.
 //
-// Two forms are allowed, each for a reason that is not preference:
-//   - catalogue / catalogued / cataloguing -- the established form here.
-//   - Enrolment -- ONLY inside RFC 8894's title, which is quoted as published.
-//     Anywhere else it is a finding, so the allowance cannot spread.
+// One form is allowed, and only where it is quoted: Enrolment, inside RFC
+// 8894's published title. Anywhere else it is a finding, so the allowance
+// cannot spread.
+//
+// `catalogue` is the exception to the US preference and therefore still needs a
+// row, pointing the other way. Leaving the word out of the table entirely --
+// the first attempt -- meant neither spelling was checked, so the tree carried
+// both and the gate reported OK: an unchecked word is not a settled one.
 
 var fs = require("fs");
 var cp = require("child_process");
@@ -73,7 +77,12 @@ var FORMS = [
   ["marshalling", "marshaling"], ["marshalled", "marshaled"],
   ["travelling", "traveling"], ["travelled", "traveled"],
   ["fulfil", "fulfill"], ["fulfils", "fulfills"],
-  ["enrolment", "enrollment"], ["enrolments", "enrollments"]
+  ["enrolment", "enrollment"], ["enrolments", "enrollments"],
+  // The one word where this repository's established form is the British one,
+  // by 185 uses to 32. The direction is what the tree already says, not a
+  // preference imported from the rest of the table.
+  ["catalog", "catalogue"], ["catalogs", "catalogues"],
+  ["cataloged", "catalogued"], ["cataloging", "cataloguing"]
 ];
 
 // `Enrolment` is permitted only where the line carries RFC 8894's published
@@ -211,8 +220,9 @@ function main() {
   console.log("");
   console.log("[check-spelling-consistency] " + findings.length + " finding(s). " +
               "A reader searching for one form misses the passages written in the other.");
-  console.log("[check-spelling-consistency] catalogue is the established form here and is not " +
-              "checked; the RFC 8894 title is allowed only where that title appears.");
+  console.log("[check-spelling-consistency] the preferred form is the US one for every word " +
+              "except catalogue, which this repository settled the other way; the RFC 8894 " +
+              "title is allowed only on a line carrying that title in full.");
   return 1;
 }
 

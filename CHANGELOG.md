@@ -14,7 +14,7 @@ The documentation and the package's own source comments settle on one spelling o
 
 ### Changed
 
-- Documentation and source comments now use the US spellings behavior, recognize, unrecognized, labeled, honored, license, defense, neighbor, authorize, initialization, enrollment, signaled, modeled, favor and fulfill. 236 substitutions across 91 files: the README, the security policy, thirteen release notes and the changelog generated from them, the status-lifecycle record, the comments and error text in lib/, and the test suite and release scripts. Two spellings stay as they are: catalogue, the established form here, and Simple Certificate Enrolment Protocol, which is RFC 8894's title and is quoted as published -- allowed only where that title appears, so the exception cannot spread to the word.
+- Documentation and source comments now use the US spellings behavior, recognize, unrecognized, labeled, honored, license, defense, neighbor, authorize, initialization, enrollment, signaled, modeled, favor and fulfill. 236 substitutions across 91 files: the README, the security policy, thirteen release notes and the changelog generated from them, the status-lifecycle record, the comments and error text in lib/, and the test suite and release scripts. One word settles the other way: catalogue, which this repository already used by 185 uses to 32, so the checked form is that one and the US spelling is what now reports. Simple Certificate Enrolment Protocol is RFC 8894's title, quoted as published and allowed only on a line carrying that title in full, so the exception cannot spread to the word.
 
 ## v0.5.9 — 2026-08-17
 

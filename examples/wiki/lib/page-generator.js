@@ -441,10 +441,10 @@ function _renderApiIndex(entries, docsByNs) {
   return main.join("\n");
 }
 
-// ---- Reference: the error catalog ----
+// ---- Reference: the error catalogue ----
 function _renderErrorCatalog(libDir) {
   var main = [];
-  main.push("<h1>Error catalog</h1>");
+  main.push("<h1>Error catalogue</h1>");
   var data;
   try { data = harvestErrors.harvest(libDir); }
   catch (e) {
@@ -563,10 +563,10 @@ function build(opts) {
     pathToGroup["/overview"] = "Overview";
   }
 
-  // Reference: the auto-generated index + error catalog, pinned last.
+  // Reference: the auto-generated index + error catalogue, pinned last.
   var referenceItems = [
     { slug: "api", title: "API index", path: "/api" },
-    { slug: "reference-errors", title: "Error catalog", path: "/reference-errors" },
+    { slug: "reference-errors", title: "Error catalogue", path: "/reference-errors" },
   ];
   navGroups.push({ group: "Reference", items: referenceItems });
   referenceItems.forEach(function (it) { pathToGroup[it.path] = "Reference"; });
@@ -700,7 +700,7 @@ function build(opts) {
     description: "Every documented primitive in the toolkit, grouped by namespace, with since-version and stability.",
   });
   _addPage("/reference-errors", {
-    title: "Error catalog",
+    title: "Error catalogue",
     main: _renderErrorCatalog(libDir),
     description: "Every PkiError class and every stable domain/reason error code the toolkit throws, harvested from the source.",
   });
