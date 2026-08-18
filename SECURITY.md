@@ -491,7 +491,7 @@ security-only patches after the next major releases.
   regardless. The scope flags that decide this are IMPLICIT BOOLEANs, read under
   the DER rules that define them — one content octet of `0x00` or `0xFF` — in
   both the validator and the standalone `pki.crl` verbs, since a byte test would
-  read an empty flag as absent and an unreadable scope as a licence to answer.
+  read an empty flag as absent and an unreadable scope as a license to answer.
   That correspondence needs the certificate, so `pki.crl.isRevoked`, which is
   given a serial and nothing else, refuses any scoped CRL instead of answering
   from one: an absent serial on a CRL covering some other partition, certificate

@@ -8,9 +8,12 @@
 //
 // Why: README.md, SECURITY.md, MIGRATING.md and their siblings are the surface
 // an operator reads after `npm install`. The checker catches the mechanical
-// defects a human reviewer skims past - a code fence with no language tag, a
-// single-character ellipsis sitting inside a shell example where it breaks the
-// paste, a regional spelling mix, a product name in the wrong casing.
+// defects a human reviewer skims past. What is ENFORCED here is the set that can
+// mislead someone acting on the document: a dash inside a flag that turns a
+// copy-pasteable command into a broken one, a malformed RFC or CVE reference, a
+// credential-shaped token, a regional spelling mix. The rest of the checker's
+// families are advisory in this repository and run under `check:prose:all`; the
+// CHECKS constant below carries the evidence for each exclusion.
 //
 // The checker is a machine-local tool, NOT a dependency of this repository.
 // Hard rule #1 is zero npm runtime dependencies, and dev tooling never ships in
@@ -287,11 +290,14 @@ function runCanary() {
   try {
     fs.writeFileSync(doc, CANARY_DOC, "utf8");
 
-    // The same argv the real documents get, with the same --fail-on-findings
-    // flag. A control run under different flags would prove the checker works
-    // in a mode nothing else uses.
+    // The same argv the real documents get, INCLUDING the check scope. A control run
+    // under a wider scope proves the checker works in a mode nothing else uses: if
+    // `notation` regressed but any advisory family still flagged the fixture, the run
+    // would exit nonzero and the canary would report OK while the enforced set was dead.
+    // All three invocations here -- probe, control, real run -- go through withChecks
+    // for that reason.
     var run = proc.spawnSync(
-      process.execPath, [checker, doc, "--fail-on-findings"],
+      process.execPath, withChecks([checker, doc, "--fail-on-findings"]),
       { cwd: ROOT, encoding: "utf8", maxBuffer: MAX_REPORT }
     );
     if (run.error) {
@@ -310,7 +316,9 @@ function runCanary() {
           "the checker did not flag a known-bad input.",
           "",
           "  checker: " + checker,
-          "  control: a markdown document whose code fence carries no language tag",
+          "  control: a markdown document whose fenced command writes a flag with an em dash",
+          "           where the double hyphen belongs, which is a `notation` defect and so",
+          "           sits inside the enforced set above",
           "  result:  exit 0 under --fail-on-findings, which means it found nothing",
           "",
           "A checker that reports nothing about a document written to be reported on will",
