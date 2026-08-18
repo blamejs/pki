@@ -157,19 +157,44 @@ function testKnownKeys() {
   check("an empty object is accepted again once the pollution is gone",
         identifier.assertKnownKeys({}, KNOWN, E, "x/bad", "unknown ") === undefined);
 
-  // A prototype chain is finite only while it is acyclic. A Proxy whose `getPrototypeOf` trap
-  // returns the proxy itself makes a cycle, which the engine permits while the target stays
-  // extensible. A walk with no cycle test never returns, and the verb hangs before it has read a
-  // single option. The names are still complete, since a second lap yields nothing new.
+  // A cyclic prototype chain. `Object.setPrototypeOf` refuses to build one out of ordinary
+  // objects ("Cyclic __proto__ value"), so a Proxy whose `getPrototypeOf` trap returns itself is
+  // the only way to have one, and the Proxy refusal reaches every such value before any walk of
+  // it starts. The cycle test inside the walk is a second line under that, unreachable through
+  // any door while the first one holds. What is observable, and what is pinned here, is that a
+  // cyclic bag is refused rather than hanging the verb.
   var cyclicTarget = { alpha: 1, gamma: 3 };
   var cyclic = new Proxy(cyclicTarget, { getPrototypeOf: function () { return cyclic; } });
   check("the fixture really is a cycle", Object.getPrototypeOf(cyclic) === cyclic);
-  var cyclicNames = identifier.readableNames(cyclic);
-  check("a cyclic prototype chain terminates and reports every own name",
-        cyclicNames.length === 2 && cyclicNames.indexOf("alpha") >= 0 && cyclicNames.indexOf("gamma") >= 0);
-  check("the unknown key on a cyclic chain is still refused", errOf(function () {
+  check("a cyclic prototype chain is refused rather than walked", errOf(function () {
     identifier.assertKnownKeys(cyclic, KNOWN, E, "x/bad", "unknown ");
   }).code === "x/bad");
+  check("and the exported name walk refuses it too, with the caller's code", errOf(function () {
+    identifier.readableNames(cyclic, E, "x/bad", "opts");
+  }).code === "x/bad");
+
+  // A primitive supplies no option names, and `Reflect.ownKeys` refuses one outright, so the walk
+  // must start above it. Otherwise a caller who passes a number where an options bag belongs gets
+  // a raw TypeError about a reflection method they never called.
+  check("a number reports no readable name rather than throwing a TypeError",
+        identifier.readableNames(7, E, "x/bad", "opts").length === 0);
+  check("and null and undefined the same",
+        identifier.readableNames(null, E, "x/bad", "opts").length === 0 &&
+        identifier.readableNames(undefined, E, "x/bad", "opts").length === 0);
+  // A string boxes to something with own names, and those ARE readable, so the check refuses it.
+  check("a string in the options position is refused rather than passed over",
+        errOf(function () { identifier.assertKnownKeys("ab", KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+
+  // The factory is checked before it is needed. The one moment it is called is the moment
+  // something has already gone wrong, so a factory that is not one would turn the refusal into a
+  // TypeError from inside the guard, at the exact point the guard exists to be clear.
+  var noFactory;
+  try { identifier.readableNames({}, undefined, "x/bad", "opts"); noFactory = { message: "NO-THROW" }; }
+  catch (e) { noFactory = e; }
+  check("a missing error factory is named plainly", /needs an error factory/.test(noFactory.message));
+  // What it catches is a MISSING or non-callable E. A class cannot be told from a factory by
+  // `typeof`, both being functions, so the convention that E is called without `new` stays a
+  // convention the adapted-class vector above pins rather than something this can enforce.
 
   // A Proxy answers `ownKeys` and `get` from two independent traps, so no walk can be complete:
   // one reporting no keys while its get returns a value presents an object every enumeration
@@ -259,7 +284,7 @@ function testKnownKeys() {
         live.length === expected.length && live.every(function (k, i) { return k === expected[i]; }));
   // A plain `{}` reports nothing, which is that agreement observed through the walk itself.
   check("so a plain object reports no readable option name",
-        identifier.readableNames({}).length === 0);
+        identifier.readableNames({}, E, "x/bad", "opts").length === 0);
 }
 
 // The same defense against a name planted BEFORE this module loads, which is the shape that

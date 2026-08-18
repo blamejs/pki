@@ -332,8 +332,12 @@ async function testDeepSnapshotContract() {
   catch (e) { protoCycErr = e; }
   check("snapshotDeep refuses a cyclic prototype chain with the caller's typed code",
         protoCycErr.code === "t/bad" && protoCycErr instanceof TestError);
-  check("and the refusal names the shape rather than the stack",
-        /prototype chain is a cycle/.test(protoCycErr.message));
+  // The Proxy rule reaches it first, and that is the whole story: `Object.setPrototypeOf` refuses
+  // to build a cycle out of ordinary objects ("Cyclic __proto__ value"), so a Proxy is the only
+  // way to have one and refusing every Proxy already covers it. The cycle test in _deep stays as
+  // a second line under the first, and is unreachable while the first one holds.
+  check("and the refusal names a shape rather than reporting a stack overflow",
+        /Proxy|prototype chain is a cycle/.test(protoCycErr.message));
   // A Proxy takes its copied names from `ownKeys` and answers reads from `get`, and the two need
   // not agree. Copying one whose ownKeys is empty yields an object holding nothing while the
   // original still answers `password`, so the field the caller supplied is gone with no fault
@@ -361,6 +365,19 @@ async function testDeepSnapshotContract() {
   try { guardBytes.snapshotDeep(viaProto, TestError, "t/bad", "spec"); viaErr = { code: "NO-THROW" }; }
   catch (e) { viaErr = e; }
   check("an object inheriting from a Proxy is refused", viaErr.code === "t/bad");
+  // A `getPrototypeOf` trap runs the caller's code, so any walk of the chain does too. Reading
+  // the chain before deciding the value is a Proxy lets a throwing trap escape as its own raw
+  // Error from a guard whose contract is a typed one, which is why the Proxy test runs first.
+  var boom = new Proxy({}, { getPrototypeOf: function () { throw new Error("trap"); } });
+  var boomErr;
+  try { guardBytes.snapshotDeep(boom, TestError, "t/bad", "spec"); boomErr = new Error("NO-THROW"); }
+  catch (e) { boomErr = e; }
+  check("a Proxy whose getPrototypeOf trap throws still refuses with the caller's typed code",
+        boomErr.code === "t/bad" && boomErr instanceof TestError);
+  var boomProtoErr;
+  try { guardBytes.snapshotDeep(Object.create(boom), TestError, "t/bad", "spec"); boomProtoErr = { code: "NO-THROW" }; }
+  catch (e) { boomProtoErr = e; }
+  check("and so does an object inheriting from one", boomProtoErr.code === "t/bad");
 
   // fixArguments is the whole rule in one call: copy every argument, hand back the copies, and
   // give the caller a release that clears everything it copied. Both halves matter -- the copy
