@@ -1,7 +1,7 @@
 {
   "version": "0.5.10",
   "headline": "The documentation settles on one spelling of the words it uses in both.",
-  "summary": "The changelog carried British spellings while every other document in the repository used the US forms, so a reader searching for one form missed entries written in the other. Each pair was decided by which form already dominated the repository: defense outnumbered defence 17 to 6, license outnumbered licence 11 to 1, honor outnumbered honour 16 to 1. The changelog is generated, so the spelling is corrected in the release notes it is built from. No entry changes what it says.",
+  "summary": "The documentation mixed British and US spellings of the same words, so a reader searching for one form missed the passages written in the other. Each pair was settled by whichever form already dominated the repository, which in every case was the US one, by 17 to 6 for defense, 11 to 1 for license and 16 to 1 for honor. The changelog is generated, so its share of the corrections is made in the release notes it is built from. No entry changes what it says.",
   "sections": {
     "Changed": [
       "Documentation now uses the US spellings behavior, recognize, unrecognized, labeled, honored, license and defense. Twenty-three occurrences across thirteen release notes and the security policy. Two spellings stay as they are: catalogue, which is the established form here at 54 uses against 2, and Simple Certificate Enrolment Protocol, which is RFC 8894's title and is quoted as published."
