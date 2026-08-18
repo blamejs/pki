@@ -113,8 +113,15 @@ function testEmailEqual() {
   // fragment of the mailbox against the wrong host.
   check("the split is on the LAST @, so a quoted local-part survives",
     eq("\"x@y\"@example.com", "\"x@y\"@example.com") === "match");
-  check("an A-label host is not comparable without IDNA",
-    eq("a@xn--e1afmkfd.example", "a@xn--e1afmkfd.example") === "not-comparable");
+  // Two hosts already in A-label form are the same encoding, so no IDNA transform is
+  // needed and the ordinary ASCII rule decides. Refusing them would make every certificate
+  // with an internationalized domain unusable for sender binding, including one whose
+  // address matches exactly. The case that DOES need a transform is an A-label against a
+  // U-label, and the U-label side is non-ASCII, which is refused below.
+  check("two A-label hosts compare under the ordinary ASCII rule",
+    eq("a@xn--e1afmkfd.example", "a@XN--E1AFMKFD.EXAMPLE") === "match");
+  check("an A-label host does not match a different A-label host",
+    eq("a@xn--e1afmkfd.example", "a@xn--bcher-kva.example") === "no-match");
   check("a non-ASCII host is not comparable",
     eq(cyrillicHost, "a@x.example") === "not-comparable");
   // sec. 7.5 authorizes a case-insensitive ASCII fold and no more. A Unicode-aware

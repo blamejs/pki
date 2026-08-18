@@ -768,7 +768,16 @@ async function run() {
     extensions: { subjectAltName: [{ rfc822Name: "alice@corp.example" }] },
   }, { key: idKey });
   var idMsg = await pki.smime.sign(MSG, [{ cert: idCert, key: idKey }]);
-  async function senderOf(o) { return (await pki.smime.verify(idMsg, o)).sender; }
+  // sender.match requires a TRUSTED signer, so every fixture below names its own
+  // self-signed certificate as the anchor. Without one nothing is trusted and the binding
+  // question is unanswered -- which is vector 136 below, on purpose.
+  async function senderOf(o) {
+    return (await pki.smime.verify(idMsg, Object.assign({ trustAnchors: [idCert] }, o))).sender;
+  }
+  async function senderOfOuter(hdrs, o) {
+    return (await pki.smime.verify(withOuter(idMsg, hdrs),
+      Object.assign({ trustAnchors: [idCert] }, o))).sender;
+  }
 
   var sMatch = await senderOf({ expectedSender: "alice@corp.example" });
   check("115. expectedSender matching the certificate's rfc822Name binds the signer",
@@ -790,7 +799,7 @@ async function run() {
   // A signer whose certificate asserts no email identity cannot answer the question either --
   // and that must not read as a clean no-match.
   var plainMsg = await pki.smime.sign(MSG, signers);
-  var sNoId = (await pki.smime.verify(plainMsg, { expectedSender: "alice@corp.example" })).sender;
+  var sNoId = (await pki.smime.verify(plainMsg, { trustAnchors: [rsa.cert], expectedSender: "alice@corp.example" })).sender;
   check("121. a certificate asserting no email identity reports undecidable, not no-match",
     sNoId.checked === true && sNoId.match === null && sNoId.identities.length === 0);
 
@@ -799,23 +808,23 @@ async function run() {
   function withOuter(msgBytes, hdrs) {
     return Buffer.concat([Buffer.from(hdrs.join("\r\n") + "\r\n", "latin1"), msgBytes]);
   }
-  var fromOk = (await pki.smime.verify(withOuter(idMsg, ["From: alice@corp.example"]))).sender;
+  var fromOk = await senderOfOuter(["From: alice@corp.example"]);
   check("123. a single outer From is used when no expectedSender is given, and reports itself advisory",
     fromOk.checked === true && fromOk.source === "from" && fromOk.match === true);
-  var fromSpoof = (await pki.smime.verify(withOuter(idMsg, ["From: bob@victim.example"]))).sender;
+  var fromSpoof = await senderOfOuter(["From: bob@victim.example"]);
   check("124. an outer From the signer's certificate does not assert does not bind",
     fromSpoof.match === false && fromSpoof.source === "from");
   // A display-name form is the common real-world shape; the addr-spec inside is what compares.
-  var fromDisplay = (await pki.smime.verify(withOuter(idMsg, ["From: Alice <alice@corp.example>"]))).sender;
+  var fromDisplay = await senderOfOuter(["From: Alice <alice@corp.example>"]);
   check("125. a display-name From compares on the addr-spec inside the angle brackets",
     fromDisplay.match === true);
   // Two From headers give no unambiguous sender, so the question stays unanswered.
-  var fromTwo = (await pki.smime.verify(withOuter(idMsg, ["From: alice@corp.example", "From: bob@victim.example"]))).sender;
+  var fromTwo = await senderOfOuter(["From: alice@corp.example", "From: bob@victim.example"]);
   check("126. an ambiguous (repeated) From is not compared at all",
     fromTwo.checked === false && fromTwo.match === null);
   // expectedSender is authoritative: a hostile outer From must not override it.
-  var bothGiven = (await pki.smime.verify(withOuter(idMsg, ["From: bob@victim.example"]),
-    { expectedSender: "alice@corp.example" })).sender;
+  var bothGiven = await senderOfOuter(["From: bob@victim.example"],
+    { expectedSender: "alice@corp.example" });
   check("127. expectedSender wins over the outer From",
     bothGiven.source === "expectedSender" && bothGiven.match === true);
 
@@ -832,8 +841,7 @@ async function run() {
   // fromMismatch is tri-state: null when no protected From existed to compare against.
   // One From field can still name two mailboxes. Taking the angle address and ignoring what
   // follows would report a single compared sender over a field that named more than one.
-  var fromTrailing = (await pki.smime.verify(withOuter(idMsg,
-    ["From: Alice <alice@corp.example>, mallory@victim.example"]))).sender;
+  var fromTrailing = await senderOfOuter(["From: Alice <alice@corp.example>, mallory@victim.example"]);
   check("129c. a From with an address after the angle address is not compared",
     fromTrailing.checked === false && fromTrailing.match === null);
 
@@ -862,11 +870,11 @@ async function run() {
     notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
   }, { key: legacyKey });
   var legacyMsg = await pki.smime.sign(MSG, [{ cert: legacyCert, key: legacyKey }]);
-  var legacyOk = (await pki.smime.verify(legacyMsg, { expectedSender: "legacy@corp.example" })).sender;
+  var legacyOk = (await pki.smime.verify(legacyMsg, { trustAnchors: [legacyCert], expectedSender: "legacy@corp.example" })).sender;
   check("132. an email identity carried only in the subject DN is recognised",
     legacyOk.match === true && legacyOk.identities.indexOf("legacy@corp.example") !== -1);
   check("133. ...and still answers false for a different mailbox",
-    (await pki.smime.verify(legacyMsg, { expectedSender: "other@corp.example" })).sender.match === false);
+    (await pki.smime.verify(legacyMsg, { trustAnchors: [legacyCert], expectedSender: "other@corp.example" })).sender.match === false);
 
   // When both carriers are present and disagree, the extension is authoritative (RFC 8550
   // sec. 3: SHOULD be in subjectAltName, SHOULD NOT be in the subject). Merging them would
@@ -881,9 +889,27 @@ async function run() {
   }, { key: bothKey });
   var bothMsg = await pki.smime.sign(MSG, [{ cert: bothCert, key: bothKey }]);
   check("134. the SAN address wins when the subject DN disagrees",
-    (await pki.smime.verify(bothMsg, { expectedSender: "current@corp.example" })).sender.match === true);
+    (await pki.smime.verify(bothMsg, { trustAnchors: [bothCert], expectedSender: "current@corp.example" })).sender.match === true);
   check("135. ...and the conflicting subject DN address does not bind",
-    (await pki.smime.verify(bothMsg, { expectedSender: "stale@old.example" })).sender.match === false);
+    (await pki.smime.verify(bothMsg, { trustAnchors: [bothCert], expectedSender: "stale@old.example" })).sender.match === false);
+
+  // The trust gate. A signature verifying under the certificate that carries it proves
+  // nothing about who sent the message: anyone can self-sign a certificate naming the
+  // victim's address. With no anchor named, nothing is trusted, so the binding question is
+  // unanswered rather than answered from an unvetted certificate.
+  check("136. with no trustAnchors, a self-signed signer yields no positive binding",
+    (await pki.smime.verify(idMsg, { expectedSender: "alice@corp.example" })).sender.match === null);
+  // Two A-labels are the same encoding and need no IDNA transform to compare.
+  check("137. two addresses already in A-label form compare normally",
+    require("../../lib/guard-name").emailEqual("u@xn--bcher-kva.example", "u@XN--BCHER-KVA.EXAMPLE") === "match");
+  // The question is existential, so an unrelated identity the comparison cannot read must
+  // not erase an exact match that already answered it.
+  check("138. an uncomparable second identity does not erase an exact match",
+    (function () {
+      var g = require("../../lib/guard-name");
+      return g.emailEqual("alice@corp.example", "alice@corp.example") === "match" &&
+        g.emailEqual("x@" + String.fromCharCode(0x43f) + ".example", "alice@corp.example") === "not-comparable";
+    })());
 
   check("122. an unprotected message reports fromMismatch null, never a passed comparison",
     v.headerProtection.present === false && v.headerProtection.fromMismatch === null);
