@@ -312,16 +312,29 @@ function canary() {
     // What is asserted is the SET: the untracked file is in it and a gitignored one is not.
     // At the repository root, because `git ls-files` reports paths relative to it and the
     // assertion below compares against exactly that name.
-    var untracked = path.resolve(__dirname, "..", "check-spelling-untracked-canary.js");
-    // Cleared before it is written as well as after. A run that dies between the two leaves a
-    // file in the repository root, where it is untracked prose carrying a planted misspelling:
-    // the next run of this gate reports it and eslint refuses it, so one crash turns into a tree
-    // nothing passes on until someone deletes a file whose name explains nothing.
-    try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* nothing to clear */ }
+    //
+    // The name carries this process's pid, and the file is written only after checking that
+    // nothing is there. A fixed name would collide with whatever a developer happens to have at
+    // that path, and clearing it first to be tidy would delete their file: a gate may not destroy
+    // something it did not create in order to test itself. Nothing is removed here that this run
+    // did not write.
+    //
+    // Its content is inert on purpose. Debris from a run that dies partway is then just an empty
+    // module: still reported as untracked, still linted, but carrying no planted misspelling to
+    // fail the next run with.
+    // No leading dot: this repository ignores dotfiles by default, and `--exclude-standard`
+    // would then leave the probe out of the very list under test, which passes for the wrong
+    // reason rather than failing.
+    var probeName = "check-spelling-canary-" + process.pid + ".js";
+    var untracked = path.resolve(__dirname, "..", probeName);
+    if (fs.existsSync(untracked)) {
+      throw new Error("canary: " + probeName + " already exists; this gate will not overwrite a " +
+                      "file it did not create, so remove it and run again");
+    }
     try {
-      fs.writeFileSync(untracked, "var KIND = \"behaviour\";\n");
+      fs.writeFileSync(untracked, "module.exports = 1;\n");
       var listed = trackedFiles();
-      if (listed.indexOf("check-spelling-untracked-canary.js") === -1) {
+      if (listed.indexOf(probeName) === -1) {
         throw new Error("canary: an untracked file must be in the set this gate reads, or a new " +
                         "file is only ever read by CI");
       }
@@ -329,7 +342,7 @@ function canary() {
         throw new Error("canary: a gitignored path must stay out of the set");
       }
     } finally {
-      try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* scratch file */ }
+      try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* this run's own probe */ }
     }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* scratch dir */ }

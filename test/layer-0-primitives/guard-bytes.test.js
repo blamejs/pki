@@ -228,6 +228,36 @@ async function testDeepSnapshotContract() {
   var arrCopy = guardBytes.snapshotDeep(arrOpts, TestError, "t/bad", "spec");
   check("an array copies its elements", Array.isArray(arrCopy) && arrCopy.length === 2 && arrCopy[1] === 2);
   check("an array copies its named properties too", arrCopy.pem === true);
+  // An index is what the language calls one. `String(Number(k)) === k` also matches "-1", "1.5",
+  // "NaN", "Infinity" and "4294967295" (one past the last index), each an ordinary named property
+  // on an array: dropping them here loses a field the caller set, and guard-identifier passes
+  // over the same names, so the option reaches neither the check nor the verb.
+  var oddNames = [];
+  ["-1", "1.5", "NaN", "Infinity", "4294967295", "01"].forEach(function (k) { oddNames[k] = "x"; });
+  var oddCopy = guardBytes.snapshotDeep(oddNames, TestError, "t/bad", "spec");
+  check("a named property that merely looks numeric survives the copy",
+    ["-1", "1.5", "NaN", "Infinity", "4294967295", "01"].every(function (k) { return oddCopy[k] === "x"; }));
+  var realIdx = [7, 8];
+  check("while real indices stay elements rather than named properties",
+    Array.isArray(guardBytes.snapshotDeep(realIdx, TestError, "t/bad", "spec")) &&
+    guardBytes.snapshotDeep(realIdx, TestError, "t/bad", "spec")[1] === 8);
+  // A sparse array costs what it HOLDS, not what it measures. `[].length = 4e9` is one statement,
+  // and a copy that counted from zero to `length` would do four billion iterations for an array
+  // holding one element, inside a guard whose job includes bounding a caller's argument.
+  var sparse = [];
+  sparse[5] = "x";
+  sparse.length = 4000000000;
+  var startedAt = Date.now();
+  var sparseCopy = guardBytes.snapshotDeep(sparse, TestError, "t/bad", "spec");
+  check("a sparse array is copied by the indices it holds, not by its length",
+    sparseCopy[5] === "x" && sparseCopy.length === 4000000000 &&
+    Object.keys(sparseCopy).length === 1 && (Date.now() - startedAt) < 2000);
+  // A hole is not an element, and the copy has to measure the same either way.
+  var holed = [1, 2, 3];
+  delete holed[1];   // a hole, written without the sparse-literal syntax eslint refuses
+  var holedCopy = guardBytes.snapshotDeep(holed, TestError, "t/bad", "spec");
+  check("holes survive the copy and the length is preserved",
+    holedCopy.length === 3 && !(1 in holedCopy) && holedCopy[2] === 3);
 
   // A key handle is passed through: its meaning is not in its own properties, and a copy of one
   // cannot sign. This engine's own CryptoKey carries its key handle as an own property, so a rule

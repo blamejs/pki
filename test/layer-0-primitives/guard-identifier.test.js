@@ -200,6 +200,20 @@ function testKnownKeys() {
   var arrBad = []; arrBad.gamma = 1;
   check("and one carrying an unknown option is still refused",
         errOf(function () { identifier.assertKnownKeys(arrBad, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+  // An index is what the language calls one: an integer in [0, 2^32 - 2] spelled canonically.
+  // `String(Number(k)) === k` looks like that test and also admits "-1", "1.5", "NaN",
+  // "Infinity" and "4294967295", each an ordinary NAMED property on an array. Passing over them
+  // means an unknown option under one of those names is accepted in silence.
+  ["-1", "1.5", "NaN", "Infinity", "4294967295", "01"].forEach(function (k) {
+    var bag = [];
+    bag[k] = "x";
+    check("an unknown option named " + JSON.stringify(k) + " on an array is refused",
+          errOf(function () { identifier.assertKnownKeys(bag, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+  });
+  var realIndices = [1, 2, 3];
+  check("while real elements are not reported as options",
+        identifier.readableNames(realIndices, E, "x/bad", "o").length === 0);
+
   var viewOpts = new Uint8Array(2); viewOpts.alpha = 1;
   check("a byte view reports the caller's name and not its own surface",
         identifier.readableNames(viewOpts, E, "x/bad", "o").join(",") === "alpha");
