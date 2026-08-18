@@ -15,6 +15,9 @@ var identifier = require("../../lib/guard-identifier");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
 var check = helpers.check;
+var spawnSync = require("child_process").spawnSync;
+var path = require("path");
+var INDEX = path.resolve(__dirname, "../../index.js");
 
 var TestError = errors.defineClass("TestError");
 function E(code, message) { return new TestError(code, message); }
@@ -188,6 +191,120 @@ function testKnownKeys() {
   var honest = new Proxy({ alpha: 1 }, {});
   check("a Proxy whose traps are all default is refused on the same rule",
         errOf(function () { identifier.assertKnownKeys(honest, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+  // A plain object INHERITING from a liar. `opts.gamma` resolves through the chain, so the read
+  // reaches the trap while the object handed in is not itself a Proxy: testing only that object
+  // leaves one line of indirection open.
+  var viaProto = Object.create(liar);
+  check("the fixture is not itself a Proxy and still answers through the chain",
+        !require("util").types.isProxy(viaProto) && viaProto.gamma === 3);
+  var viaErr = errOf(function () { identifier.assertKnownKeys(viaProto, KNOWN, E, "x/bad", "unknown "); });
+  check("an object inheriting from a Proxy is refused", viaErr.code === "x/bad");
+  check("and the refusal says the bag inherits one", /inherits from a Proxy/.test(viaErr.message));
+
+  // Object.getOwnPropertyNames never returns a Symbol key, so a walk built on it cannot see one.
+  // Such a name answers no `opts.password` and reaches no verb, but it is still an option the
+  // caller supplied and nothing read, which is the thing being refused.
+  var symKey = Symbol("gamma");
+  var symBag = {};
+  symBag[symKey] = 3;
+  check("the fixture is invisible to getOwnPropertyNames but not to Reflect.ownKeys",
+        Object.getOwnPropertyNames(symBag).length === 0 && Reflect.ownKeys(symBag).length === 1);
+  var symErr = errOf(function () { identifier.assertKnownKeys(symBag, KNOWN, E, "x/bad", "unknown "); });
+  check("a Symbol-named unknown option is refused", symErr.code === "x/bad");
+  // JSON.stringify returns undefined for a Symbol, which would name the option "undefined".
+  check("and the refusal names the symbol", /Symbol\(gamma\)/.test(symErr.message));
+  // A caller's own message builder stringifies the key itself, so the Symbol has to be readable
+  // before it arrives rather than only in the default builder.
+  var builtSym = errOf(function () {
+    identifier.assertKnownKeys(symBag, KNOWN, E, "x/bad", function (k) {
+      return "unknown extension " + JSON.stringify(k);
+    });
+  });
+  check("a caller's own message builder names the symbol too",
+        /Symbol\(gamma\)/.test(builtSym.message));
+
+  // A name IS in the load-time snapshot of Object.prototype and yet is not a built-in: the
+  // built-in it shadows has been replaced by a planted value. Snapshot membership alone cannot
+  // tell those apart, and the same hole is what a name planted BEFORE this module loads walks
+  // through. Every real member is a function-valued data property or an accessor, so a planted
+  // value fails the shape test whatever the snapshot says about its name.
+  var realToString = Object.prototype.toString;
+  var plantedCode, restoredToString;
+  Object.defineProperty(Object.prototype, "toString", {
+    value: "pw", writable: true, configurable: true, enumerable: false,
+  });
+  try {
+    plantedCode = errOf(function () { identifier.assertKnownKeys({}, KNOWN, E, "x/bad", "unknown "); }).code;
+  } finally {
+    Object.defineProperty(Object.prototype, "toString", {
+      value: realToString, writable: true, configurable: true, enumerable: false,
+    });
+    restoredToString = (Object.prototype.toString === realToString);
+  }
+  check("a snapshot name replaced by a planted value is reported", plantedCode === "x/bad");
+  check("the vector restores Object.prototype.toString", restoredToString);
+  check("the real built-ins still pass the shape test",
+        identifier.assertKnownKeys({}, KNOWN, E, "x/bad", "unknown ") === undefined);
+
+  // The built-ins are named from the spec rather than read off the live Object.prototype, because
+  // reading them is the runtime under attack answering the question: a name planted before the
+  // module loads would be captured as a built-in. That trade needs this test, or an engine adding
+  // a member would report it to every caller as an unknown option. Compared here against the live
+  // object so the divergence fails in one place instead of at every verb.
+  var live = Reflect.ownKeys(Object.prototype).map(String).sort();
+  var expected = ["__defineGetter__", "__defineSetter__", "__lookupGetter__", "__lookupSetter__",
+    "__proto__", "constructor", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+    "toLocaleString", "toString", "valueOf"].sort();
+  check("the spec list matches this runtime's Object.prototype",
+        live.length === expected.length && live.every(function (k, i) { return k === expected[i]; }));
+  // A plain `{}` reports nothing, which is that agreement observed through the walk itself.
+  check("so a plain object reports no readable option name",
+        identifier.readableNames({}).length === 0);
+}
+
+// The same defense against a name planted BEFORE this module loads, which is the shape that
+// actually reaches an operator: guard-identifier snapshots Object.prototype as it loads, so a
+// name already there is inside the snapshot and no later comparison can call it foreign. The
+// plant has to precede the require, so it runs in a child.
+function testPollutionPlantedBeforeLoad() {
+  var script = [
+    'Object.defineProperty(Object.prototype, "password", { value: "pw", writable: true, configurable: true });',
+    'var pki = require(process.argv[1]);',
+    'pki.key.generate("Ed25519").then(function (pair) {',
+    '  return pki.key.export(pair.privateKey, {});',
+    '}).then(function (out) { console.log("ACCEPTED:" + out.length); },',
+    '  function (e) { console.log("REFUSED:" + e.code); });',
+  ].join("\n");
+  var r = spawnSync(process.execPath, ["-e", script, INDEX], { encoding: "utf8" });
+  check("the pre-load pollution fixture ran", !r.error && r.status === 0);
+  check("a private key is not exported in the clear on a runtime polluted before load",
+        /REFUSED:key\/bad-input/.test(r.stdout));
+  // A verb given NO options must still work there: it is handed a bag with no prototype, so it
+  // inherits nothing and the caller is never refused for a name they did not write.
+  var noOpts = [
+    'Object.defineProperty(Object.prototype, "password", { value: "pw", writable: true, configurable: true });',
+    'var pki = require(process.argv[1]);',
+    'pki.key.generate("Ed25519").then(function (pair) { return pki.key.export(pair.publicKey); })',
+    '  .then(function (out) { console.log("OK:" + out.length); }, function (e) { console.log("REFUSED:" + e.code); });',
+  ].join("\n");
+  var r2 = spawnSync(process.execPath, ["-e", noOpts, INDEX], { encoding: "utf8" });
+  check("a verb called with no options still works on a polluted runtime", /OK:\d+/.test(r2.stdout));
+
+  // The same plant, function-valued. A shape test alone calls it a built-in, since every real
+  // member is function-valued too; only naming the members from the spec separates them.
+  var fnPlant = [
+    'Object.defineProperty(Object.prototype, "password", { value: function () { return "pw"; },',
+    '  writable: true, configurable: true });',
+    'var pki = require(process.argv[1]);',
+    'pki.key.generate("Ed25519").then(function (pair) {',
+    '  return pki.key.export(pair.privateKey, {});',
+    '}).then(function (out) { console.log("ACCEPTED:" + out.length); },',
+    '  function (e) { console.log("REFUSED:" + e.code); });',
+  ].join("\n");
+  var r3 = spawnSync(process.execPath, ["-e", fnPlant, INDEX], { encoding: "utf8" });
+  check("the function-valued pre-load plant fixture ran", !r3.error && r3.status === 0);
+  check("a function-valued name planted before load is reported too",
+        /REFUSED:key\/bad-input/.test(r3.stdout));
 }
 
 // Every config-time boundary that composes assertKnownKeys must still raise its OWN typed error.
@@ -260,6 +377,7 @@ async function run() {
   testBoundsRejects();
   testBoundsWaived();
   testKnownKeys();
+  testPollutionPlantedBeforeLoad();
   await testConsumersFailClosed();
 }
 

@@ -119,6 +119,15 @@ async function testDeepSnapshotContract() {
 
   var dates = guardBytes.snapshotDeep({ d: new Date(5) }, TestError, "t/bad", "spec");
   check("snapshotDeep copies a Date by value", dates.d.getTime() === 5);
+  // A Date carries named properties like anything else, and a verb reads an option by name
+  // whatever the argument's type. Returning the instant alone leaves the copy holding nothing
+  // the caller added while the original still answers, and the checks read the copy.
+  var stamped = new Date(7);
+  stamped.pem = true;
+  var stampedCopy = guardBytes.snapshotDeep(stamped, TestError, "t/bad", "spec");
+  check("a Date keeps its instant through the copy",
+        stampedCopy instanceof Date && stampedCopy.getTime() === 7);
+  check("and carries a name the caller added to it", stampedCopy.pem === true);
 
   // The KIND of a byte value survives the copy. Each verb's field validators decide which byte
   // forms that field takes -- most accept only Buffer / Uint8Array -- so a copy that normalized
@@ -345,6 +354,13 @@ async function testDeepSnapshotContract() {
   try { guardBytes.snapshotDeep({ inner: liar }, TestError, "t/bad", "spec"); nestedErr = { code: "NO-THROW" }; }
   catch (e) { nestedErr = e; }
   check("a Proxy nested inside a spec is refused on the same rule", nestedErr.code === "t/bad");
+  // A plain object inheriting from one. The copy reads names from the whole chain, so the liar
+  // decides what is taken while the original still answers through its get trap.
+  var viaProto = Object.create(liar);
+  var viaErr;
+  try { guardBytes.snapshotDeep(viaProto, TestError, "t/bad", "spec"); viaErr = { code: "NO-THROW" }; }
+  catch (e) { viaErr = e; }
+  check("an object inheriting from a Proxy is refused", viaErr.code === "t/bad");
 
   // fixArguments is the whole rule in one call: copy every argument, hand back the copies, and
   // give the caller a release that clears everything it copied. Both halves matter -- the copy

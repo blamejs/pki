@@ -213,6 +213,18 @@ async function testBadInput() {
   CountersignBag.prototype.describe = function () { return "countersigning"; };
   check("countersign accepts an options instance whose class defines a method",
     Buffer.isBuffer(await pki.cms.countersign(countersigned, s, new CountersignBag())));
+  // The snapshot has to carry a Symbol key across, or the copy loses it before the check reads
+  // the copy and a supplied option goes unreported at exactly the verbs that copy first.
+  var symOpts = { signedAttributes: true };
+  symOpts[Symbol("signedAttribute")] = false;
+  await rejects("a Symbol-named unknown option survives the snapshot and is refused", function () {
+    return pki.cms.sign(CONTENT, s, symOpts);
+  }, "cms/bad-input");
+  // An OWN `constructor` is a value the caller wrote, and it resolves on their object. The copy
+  // skips an INHERITED one, where a class put it and the retained prototype resolves it anyway.
+  await rejects("an own constructor field survives the snapshot and is refused", function () {
+    return pki.cms.sign(CONTENT, s, { signedAttributes: true, constructor: 123 });
+  }, "cms/bad-input");
 
   await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
