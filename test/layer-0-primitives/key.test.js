@@ -462,6 +462,27 @@ async function testUnknownOptionsRefused() {
         Buffer.isBuffer(await pki.key.export(pair.publicKey, Object.create(null))));
   check("an inherited KNOWN option is still accepted",
         typeof (await pki.key.export(pair.publicKey, Object.create({ format: "pem" }))) === "string");
+
+  // Class syntax defines a getter NON-enumerable on the prototype, so a rule keyed on
+  // enumerability missed it while `opts.password` still answered. A getter exists to return a
+  // value, which is what an option is, so it is checked; a method is behavior and is not.
+  function ExportOptions() {}
+  Object.defineProperty(ExportOptions.prototype, "password", {
+    get: function () { return "pw"; }, enumerable: false, configurable: true
+  });
+  ExportOptions.prototype.describe = function () { return "opts"; };
+  check("export refuses a password exposed by a prototype getter",
+        await codeOf(pki.key.export(pair.privateKey, new ExportOptions())) === "key/bad-input");
+  var hiddenBase = {};
+  Object.defineProperty(hiddenBase, "password", { value: "pw", enumerable: false });
+  check("export refuses a password inherited AND non-enumerable",
+        await codeOf(pki.key.export(pair.privateKey, Object.create(hiddenBase))) === "key/bad-input");
+  // An instance whose class defines only methods is still a usable bag: those are behavior,
+  // and this toolkit already treats a caller's own class as a valid options object.
+  function PlainBag() { this.format = "pem"; }
+  PlainBag.prototype.describe = function () { return "bag"; };
+  check("an instance whose prototype carries only methods is still accepted",
+        typeof (await pki.key.export(pair.publicKey, new PlainBag())) === "string");
 }
 
 async function main() {
