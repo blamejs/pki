@@ -535,15 +535,32 @@ if (outcome.findings === 0) {
     "This is a failure of the TOOL, and says nothing about the prose in this repository."
   ]);
 }
-fail(1, [
+// Findings are a REPORT, and the exit status says so. A tool failure above still
+// exits non-zero -- that distinction is the whole point of classifying first --
+// but a completed run that found something a human must read is not a failed
+// command, and exiting 1 for it made the documented review step look broken
+// every time anyone ran it.
+//
+// PKI_PROSE_STRICT=1 turns findings back into a non-zero exit, for whoever wires
+// this into a pipeline once the checker can record a reviewed exception. That is
+// the switch to flip on the day it becomes a gate; until then the honest status
+// for "I read the prose and here is what I saw" is success.
+var strict = String(process.env.PKI_PROSE_STRICT || "").trim() === "1";
+var report = [
   "the checker completed and reported " + outcome.findings + " finding(s) across " +
     docs.length + " document(s).",
-  "Read every one and fix the defect in the prose. This is a REPORT, not yet a blocking",
+  "Read every one and fix the defect in the prose. This is a REPORT, not a blocking",
   "gate: the checker has no per-finding suppression, and this repository has findings that",
   "are correct as they stand -- the title of RFC 8894 really is",
   "\"Simple Certificate Enrolment Protocol\", security@pkijs.com really is the reporting",
   "address, and `rm -rf data data-e2e`",
   "really is the documented wiki test step. No check family reaches zero here, so wiring it",
   "into `npm run gates` would fail every build forever and teach everyone to ignore it.",
-  "It goes into `gates` when the checker gains a way to record a reviewed exception."
-]);
+  "It goes into `gates` when the checker gains a way to record a reviewed exception.",
+  "",
+  "Exit status is 0: findings are for a reader, not a verdict. Set PKI_PROSE_STRICT=1",
+  "to exit non-zero on findings instead."
+];
+if (strict) fail(1, report);
+report.forEach(function (l) { console.error(TAG + " " + l); });
+process.exit(0);
