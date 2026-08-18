@@ -174,6 +174,21 @@ async function pollutedOwnValueWins() {
   var plain = await pki.path.build(leaf, { trustAnchors: [anchorCert], time: T });
   check("a build-only name on the prototype does not reach the internal validate",
         plain.valid === true);
+
+  // A defaults-style bag, where the option lives on a shared prototype rather than on the bag.
+  // The forwarded set is built from the contract rather than by enumerating the bag, so a known
+  // option is taken whatever its value and wherever it sits. What this pins is the reachable
+  // half: an option on a shared prototype reaches the internal validate.
+  var seen = 0;
+  var countingChecker = {
+    check: function () { seen += 1; return Promise.resolve({ status: "unknown" }); }
+  };
+  var viaDefaults = Object.create({ revocationChecker: countingChecker, softFail: false });
+  viaDefaults.trustAnchors = [anchorCert];
+  viaDefaults.time = T;
+  var inherited = await pki.path.build(leaf, viaDefaults);
+  check("a revocation checker supplied on a prototype reaches the internal validate", seen > 0);
+  check("and its undetermined answer is not waived", inherited.valid === false);
 }
 
 function testUnderPollutedPrototype() {

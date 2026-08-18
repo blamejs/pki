@@ -11,7 +11,7 @@
  *
  * `softFail` is a RECOGNIZED option of the verb under test, on purpose. An unrecognized name is
  * refused outright, which is fail-closed and settles nothing; and on a bag that does not mention
- * the name at all, an inherited value is what `opts.softFail` genuinely answers, so honouring it
+ * the name at all, an inherited value is what `opts.softFail` genuinely answers, so honoring it
  * is correct rather than a defect. The case that needs pinning is the one in between: the caller
  * states their OWN value, and it has to win over the planted one.
  *

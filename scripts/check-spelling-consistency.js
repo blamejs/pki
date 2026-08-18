@@ -154,12 +154,25 @@ var SUPPRESS_RE = /spelling-ok:\s*([A-Za-z]+)\s*--\s*(\S.*?)\s*$/;
 // and review on every future change to the gate.
 var NUL = String.fromCharCode(0);
 
+// Every file this gate should read: the ones git tracks, PLUS the ones it does not track yet.
+//
+// `git ls-files` alone answers for the committed tree, and a file written in this working session
+// is not in it. So a brand-new file is invisible to the gate locally, is committed, and is read
+// for the first time by CI, where the finding costs a whole run instead of a second. That is how
+// a British spelling in a new test helper reached CI on a tree whose gates were green.
+// `--others --exclude-standard` adds what is untracked and not ignored, which is the same set
+// that is about to be committed, so the local run sees what CI will see.
 function trackedFiles() {
-  var out = cp.execFileSync("git", ["ls-files"], {
-    encoding: "utf8", maxBuffer: 64 * 1024 * 1024
-  });
-  return out.split("\n").filter(function (f) {
-    return f && !isDataPath(f) && f !== SELF;
+  function ls(args) {
+    return cp.execFileSync("git", ["ls-files"].concat(args), {
+      encoding: "utf8", maxBuffer: 64 * 1024 * 1024
+    }).split("\n");
+  }
+  var seen = Object.create(null);
+  return ls([]).concat(ls(["--others", "--exclude-standard"])).filter(function (f) {
+    if (!f || isDataPath(f) || f === SELF || seen[f]) return false;
+    seen[f] = 1;
+    return true;
   });
 }
 
@@ -291,6 +304,32 @@ function canary() {
     if (mixed.length !== 1 || mixed[0].found !== "behaviour") {
       throw new Error("canary: the opt-out must excuse its word only, got " +
                       mixed.map(function (f) { return f.found; }).join(","));
+    }
+    // The file list itself, which decides what any of the above ever runs on. A file written in
+    // this working session is not in `git ls-files`, so a gate built on that alone reads the
+    // committed tree and reports a clean one while the thing about to be committed carries the
+    // defect. It is then read for the first time by CI, where the finding costs a whole run.
+    // What is asserted is the SET: the untracked file is in it and a gitignored one is not.
+    // At the repository root, because `git ls-files` reports paths relative to it and the
+    // assertion below compares against exactly that name.
+    var untracked = path.resolve(__dirname, "..", "check-spelling-untracked-canary.js");
+    // Cleared before it is written as well as after. A run that dies between the two leaves a
+    // file in the repository root, where it is untracked prose carrying a planted misspelling:
+    // the next run of this gate reports it and eslint refuses it, so one crash turns into a tree
+    // nothing passes on until someone deletes a file whose name explains nothing.
+    try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* nothing to clear */ }
+    try {
+      fs.writeFileSync(untracked, "var KIND = \"behaviour\";\n");
+      var listed = trackedFiles();
+      if (listed.indexOf("check-spelling-untracked-canary.js") === -1) {
+        throw new Error("canary: an untracked file must be in the set this gate reads, or a new " +
+                        "file is only ever read by CI");
+      }
+      if (listed.some(function (f) { return f.indexOf(".test-output/") === 0; })) {
+        throw new Error("canary: a gitignored path must stay out of the set");
+      }
+    } finally {
+      try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* scratch file */ }
     }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* scratch dir */ }

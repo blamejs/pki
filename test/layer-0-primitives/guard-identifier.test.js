@@ -185,6 +185,42 @@ function testKnownKeys() {
   check("a string in the options position is refused rather than passed over",
         errOf(function () { identifier.assertKnownKeys("ab", KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
 
+  // An array, a byte view, a Map, a Set and an ArrayBuffer report only what the CALLER added.
+  // A verb reads an option by name whatever the argument's type, so `opts = []; opts.alpha = 1`
+  // is an options bag, and these kinds have to keep working. Their own surface is structural:
+  // `length` is intrinsic on an empty array, and the prototypes carry `buffer`, `byteLength`,
+  // `size` and `BYTES_PER_ELEMENT`. A walk of the whole chain reports all of it and the verb
+  // then refuses a shape it supports. guard-bytes states the same rule for which names it copies.
+  check("an empty array reports no option name", identifier.readableNames([], E, "x/bad", "o").length === 0);
+  check("and is accepted as an options bag",
+        identifier.assertKnownKeys([], KNOWN, E, "x/bad", "unknown ") === undefined);
+  var arrOpts = []; arrOpts.alpha = 1;
+  check("an array carrying a known option is accepted",
+        identifier.assertKnownKeys(arrOpts, KNOWN, E, "x/bad", "unknown ") === undefined);
+  var arrBad = []; arrBad.gamma = 1;
+  check("and one carrying an unknown option is still refused",
+        errOf(function () { identifier.assertKnownKeys(arrBad, KNOWN, E, "x/bad", "unknown "); }).code === "x/bad");
+  var viewOpts = new Uint8Array(2); viewOpts.alpha = 1;
+  check("a byte view reports the caller's name and not its own surface",
+        identifier.readableNames(viewOpts, E, "x/bad", "o").join(",") === "alpha");
+  check("a Buffer with nothing added reports nothing",
+        identifier.readableNames(Buffer.alloc(2), E, "x/bad", "o").length === 0);
+  var mapOpts = new Map(); mapOpts.alpha = 1;
+  check("a Map reports the caller's name and not `size`",
+        identifier.readableNames(mapOpts, E, "x/bad", "o").join(",") === "alpha");
+  check("an ArrayBuffer reports nothing of its own",
+        identifier.readableNames(new ArrayBuffer(2), E, "x/bad", "o").length === 0);
+  // `length` belongs to an array and a byte view and to nothing else, so on the kinds that have
+  // no own one it is a name the caller added and has to be reported like any other.
+  var abLen = new ArrayBuffer(2); abLen.length = 5;
+  check("a `length` a caller adds to an ArrayBuffer is reported rather than taken for intrinsic",
+        identifier.readableNames(abLen, E, "x/bad", "o").join(",") === "length");
+  var setLen = new Set(); setLen.length = 5;
+  check("and the same on a Set",
+        identifier.readableNames(setLen, E, "x/bad", "o").join(",") === "length");
+  check("while an array's own intrinsic length stays out",
+        identifier.readableNames([1, 2], E, "x/bad", "o").length === 0);
+
   // The factory is checked before it is needed. The one moment it is called is the moment
   // something has already gone wrong, so a factory that is not one would turn the refusal into a
   // TypeError from inside the guard, at the exact point the guard exists to be clear.
