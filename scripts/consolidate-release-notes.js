@@ -12,7 +12,7 @@
  * edits one small JSON for the live line.
  *
  * Run it as a MAINTAINER-SIDE step, NOT inside the release flow.
- * Reorganising release-notes/ mid-release would shift the tarball's file
+ * Reorganizing release-notes/ mid-release would shift the tarball's file
  * set after the release digests were computed. Consolidate only between
  * releases.
  *

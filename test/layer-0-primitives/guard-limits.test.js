@@ -47,7 +47,7 @@ function testCounter() {
   check("counter throws past the cap", typeErr(function () { c.tick(); }) === "x/many");
   // The ceiling is an authoring input: an undefined / NaN / fractional max
   // builds a counter that NEVER fires (n > NaN is false) -- a dead fanout
-  // defence. Reject at construction with a config-time TypeError.
+  // defense. Reject at construction with a config-time TypeError.
   check("undefined max throws TypeError", typeErr(function () { limits.counter(undefined, E, "x/many", "item"); }) === "TYPE");
   check("NaN max throws TypeError", typeErr(function () { limits.counter(NaN, E, "x/many", "item"); }) === "TYPE");
   check("fractional max throws TypeError", typeErr(function () { limits.counter(1.5, E, "x/many", "item"); }) === "TYPE");
@@ -63,7 +63,7 @@ function testByteCap() {
   check("byteCap returns the buffer at exactly the cap", limits.byteCap(buf, 10, E, "x/too-large", "blob") === buf);
   check("byteCap throws the typed error one byte over the cap", typeErr(function () { limits.byteCap(buf, 9, E, "x/too-large", "blob"); }) === "x/too-large");
   // The ceiling is an authoring input: an undefined / NaN / fractional / negative max
-  // makes `length > max` never fire -- a dead size defence. Config-time TypeError.
+  // makes `length > max` never fire -- a dead size defense. Config-time TypeError.
   check("byteCap undefined max throws TypeError", typeErr(function () { limits.byteCap(buf, undefined, E, "x/too-large", "blob"); }) === "TYPE");
   check("byteCap NaN max throws TypeError", typeErr(function () { limits.byteCap(buf, NaN, E, "x/too-large", "blob"); }) === "TYPE");
   check("byteCap fractional max throws TypeError", typeErr(function () { limits.byteCap(buf, 1.5, E, "x/too-large", "blob"); }) === "TYPE");

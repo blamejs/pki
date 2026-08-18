@@ -694,7 +694,7 @@ async function run() {
   check("108d. multiset counting: 3 identical inner occurrences with only 2 exposed outside -> confidential", kw3v.headerProtection.legacy.confidential.indexOf("Keywords") >= 0 && legCount(kw3v, "Keywords") === 3);
 
   // (V10) the signed-and-encrypted (C.3.17) form: the non-recursive decrypt yields a signed-data blob, not a
-  // message/rfc822 -> the documented deferral holds (legacy stays null rather than a mis-labelled inference).
+  // message/rfc822 -> the documented deferral holds (legacy stays null rather than a mis-labeled inference).
   var signedInner = await pki.smime.sign(partC, signers, { entity: true, form: "pkcs7-mime" });
   var encOfSigned = await pki.smime.encrypt(signedInner, [{ cert: rcpt.cert }], { entity: true });
   var c317 = await pki.smime.decrypt(encOfSigned, { key: rcpt.key, cert: rcpt.cert }, LEG_ON);
@@ -871,7 +871,7 @@ async function run() {
   }, { key: legacyKey });
   var legacyMsg = await pki.smime.sign(MSG, [{ cert: legacyCert, key: legacyKey }]);
   var legacyOk = (await pki.smime.verify(legacyMsg, { trustAnchors: [legacyCert], expectedSender: "legacy@corp.example" })).sender;
-  check("132. an email identity carried only in the subject DN is recognised",
+  check("132. an email identity carried only in the subject DN is recognized",
     legacyOk.match === true && legacyOk.identities.indexOf("legacy@corp.example") !== -1);
   check("133. ...and still answers false for a different mailbox",
     (await pki.smime.verify(legacyMsg, { trustAnchors: [legacyCert], expectedSender: "other@corp.example" })).sender.match === false);

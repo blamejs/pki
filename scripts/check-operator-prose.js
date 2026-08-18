@@ -184,7 +184,7 @@ var checker  = fromEnv ? path.resolve(String(override).trim()) : DEFAULT_CHECKER
 console.log(TAG + " checker: " + checker);
 console.log(TAG + " source:  " + (fromEnv ? "PKI_PROSE_CHECKER" : "default location"));
 
-// Probe for the FILE. Never infer availability from the checker's behaviour: a
+// Probe for the FILE. Never infer availability from the checker's behavior: a
 // tool that has regressed into erroring on every run must fail this gate, not
 // be mistaken for a tool that was never installed.
 if (!fs.existsSync(checker)) {

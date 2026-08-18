@@ -569,7 +569,7 @@ async function run() {
   // ---- F19: the exchange binding is a NAMED spec field, not hand-encoded ----
   // pki.cmc.verify checks a response against transactionId / senderNonce / dataReturn.
   // If the builder does not take those by name, a caller writes the natural thing,
-  // the fields are silently dropped, and the request ships with no replay defence --
+  // the fields are silently dropped, and the request ships with no replay defense --
   // which neither side can then detect, because verify only enforces the halves the
   // client says it sent.
   var bindNonce = Buffer.alloc(16, 0x5a);
@@ -593,7 +593,7 @@ async function run() {
   // F19c -- the SAME door on every descriptor nested in a spec, not only on the
   // spec itself. Each of these silently changes what gets signed: a misspelled
   // bodyPartID leaves the request auto-allocated a different identifier from the
-  // one a control references; a bodyPartID written on a control is never honoured
+  // one a control references; a bodyPartID written on a control is never honored
   // at all; and a misspelled `identity` drops the Identification control that
   // tells the server to derive the Identity Proof key from secret AND identity.
   // F19f -- a status control reports a SERVER's verdict on a request, so it has no

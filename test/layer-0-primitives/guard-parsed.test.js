@@ -3,7 +3,7 @@
 "use strict";
 //
 // guard-parsed's own contract. The doors that compose it are covered by their own
-// behavioural vectors (crl-sign, path-build, path-validate, ocsp, cmp); what is
+// behavioral vectors (crl-sign, path-build, path-validate, ocsp, cmp); what is
 // pinned here is what the guard itself promises, so a change to the shape rules
 // fails against the rule rather than only against whichever consumer noticed.
 var guard = require("../../lib/guard-parsed");
@@ -227,7 +227,7 @@ async function run() {
     var got;
     try { got = guard.acceptDerived(containers[name], "certificate", pki.schema.x509.parse, E, "x/bad", "root"); }
     catch (_e) {
-      got = null;   // refused: the assertion below names which container was not recognised
+      got = null;   // refused: the assertion below names which container was not recognized
     }
     check("a certificate given as " + name + " is parsed, not read as a rebuilt object",
       !!got && got.subject.dn === realCert.subject.dn);

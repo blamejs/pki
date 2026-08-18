@@ -54,7 +54,7 @@ async function run() {
   check("empty CRL -> 'No Revoked Certificates.' (no throw)", has(emptyRc, "No Revoked Certificates."));
   // null nextUpdate -> NONE
   check("CRL null nextUpdate -> 'Next Update: NONE'", has(pki.inspect.crl(mkCrl({ nextUpdate: false })), "Next Update: NONE"));
-  // an UNKNOWN CRITICAL crl extension renders (labelled hex) without throwing.
+  // an UNKNOWN CRITICAL crl extension renders (labeled hex) without throwing.
   var unkCrl = mkCrl({ version: 1n, crlExtensions: [ext("1.3.6.1.4.1.99999.1", b.nullValue(), true), ext(oid.byName("cRLNumber"), b.integer(1n))] });
   check("CRL unknown critical extension renders without throwing", pki.inspect.crl(unkCrl).length > 0 && has(pki.inspect.crl(unkCrl), "critical"));
   // A raw-value CRL extension (authorityKeyIdentifier) delegates to the shared _extension (keyid);

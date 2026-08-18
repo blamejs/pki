@@ -6,11 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.5.10 — 2026-08-18
 
-The documentation settles on one spelling of the words it uses in both.
+The documentation and the package's own source comments settle on one spelling of the words they use in both.
 
 ### Changed
 
-- Documentation now uses the US spellings behavior, recognize, unrecognized, labeled, honored, license and defense. Twenty-three occurrences across thirteen release notes and the security policy. Two spellings stay as they are: catalogue, which is the established form here at 54 uses against 2, and Simple Certificate Enrolment Protocol, which is RFC 8894's title and is quoted as published.
+- Documentation and source comments now use the US spellings behavior, recognize, unrecognized, labeled, honored, license, defense, neighbor, authorize, initialization, signaled, modeled, favor and fulfill. 218 substitutions across 88 files: the README, the security policy, thirteen release notes and the changelog generated from them, the status-lifecycle record, the comments and error text in lib/, and the test suite and release scripts. Two spellings stay as they are: catalogue, the established form here, and Simple Certificate Enrolment Protocol, which is RFC 8894's title and is quoted as published.
 
 ## v0.5.9 — 2026-08-17
 

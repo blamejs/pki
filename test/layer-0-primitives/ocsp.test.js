@@ -131,7 +131,7 @@ async function run() {
   // The downgrade is for `good` ONLY. A revoked verdict does not expire the way a
   // non-revocation does, so discarding a signed, current, authorized `revoked`
   // because it was replayed would hand a soft-fail caller the very certificate the
-  // responder refused -- the anti-replay defence becoming the thing that accepts it.
+  // responder refused -- the anti-replay defense becoming the thing that accepts it.
   var revokedN = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer,
     issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: "keyCompromise" },
     thisUpdate: TU, nextUpdate: NU }] },

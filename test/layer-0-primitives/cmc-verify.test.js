@@ -580,7 +580,7 @@ async function run() {
 
   // ---- RP1-RP8: the exchange binding is stated, and its absence declared ----
   // RFC 5272 sec. 6.6 names the Sender/Recipient Nonce pair as the replay
-  // defence, and every half of the binding here is conditional on the client
+  // defense, and every half of the binding here is conditional on the client
   // having sent it. A caller who retains nothing therefore gets a fully signed,
   // fully valid verdict about a response captured from ANY earlier exchange with
   // the same CA -- which is the CWE-294 this module claims to defend. So the

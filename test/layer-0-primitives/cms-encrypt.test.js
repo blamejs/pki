@@ -166,7 +166,7 @@ async function run() {
   check("PBES2 salt above the decrypt cap -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, { password: "p", salt: Buffer.alloc(pki.C.LIMITS.PBKDF2_MAX_SALT + 1) }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("EncryptedData PBES2 with a non-BufferSource salt -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, { password: "p", salt: 42 }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   // the global opts.pem drives PBES2 EncryptedData output, exactly like the raw-cek path.
-  check("EncryptedData PBES2 honours the global opts.pem", /-----BEGIN CMS-----/.test(await pki.cms.encrypt(MSG, { password: "p" }, { contentEncryptionAlgorithm: "aes-256-cbc", pem: true })));
+  check("EncryptedData PBES2 honors the global opts.pem", /-----BEGIN CMS-----/.test(await pki.cms.encrypt(MSG, { password: "p" }, { contentEncryptionAlgorithm: "aes-256-cbc", pem: true })));
   check("pwri with a Uint8Array password round-trips", Buffer.compare((await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ password: new Uint8Array(Buffer.from("pw")) }], { contentEncryptionAlgorithm: "aes-256-cbc" }), { password: "pw" })).content, MSG) === 0);
   check("pwri over aes-128 content (a 16-octet CEK) round-trips", Buffer.compare((await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ password: "p" }], { contentEncryptionAlgorithm: "aes-128-cbc" }), { password: "p" })).content, MSG) === 0);
   // EncryptedData PBES2 option arms: explicit iterations/salt + an unsupported prf.

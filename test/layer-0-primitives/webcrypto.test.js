@@ -124,7 +124,7 @@ async function testPqcSign() {
     var back = await subtle.importKey("jwk", privJwk, { name: pqcAlg }, false, ["sign"]);
     check(pqcAlg + " a private JWK re-imports AS a private key",
       back.type === "private");
-    check(pqcAlg + " ...honouring the extractable the caller asked for",
+    check(pqcAlg + " ...honoring the extractable the caller asked for",
       back.extractable === false);
     // The round-tripped key must actually SIGN -- the point of keeping the private half.
     var pqcData = Buffer.from("pqc jwk round-trip");
@@ -881,7 +881,7 @@ async function testHkdfInfoAndDeriveKeyKdfLength() {
 // algorithm is a DataError, not a mislabeled CryptoKey (algorithm confusion).
 async function testNodeErrorTyping() {
   // Import key-type vs algorithm-name mismatch -> DataError (fail-open otherwise: an RSA key
-  // labelled Ed25519 would then "sign" under the wrong scheme).
+  // labeled Ed25519 would then "sign" under the wrong scheme).
   var rsaPkcs8 = nodeCrypto.generateKeyPairSync("rsa", { modulusLength: 2048 }).privateKey.export({ format: "der", type: "pkcs8" });
   check("importKey: RSA pkcs8 under {name:Ed25519} rejected (webcrypto/data)",
     (await code(async function () { await subtle.importKey("pkcs8", rsaPkcs8, { name: "Ed25519" }, true, ["sign"]); })) === "webcrypto/data");

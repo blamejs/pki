@@ -80,7 +80,7 @@ function testViewContract() {
     guardBytes.view("0011", TestError, "t/bad", "input");
   }) === "t/bad");
 
-  // snapshot is the same door plus a private copy -- the parse-then-verify TOCTOU defence.
+  // snapshot is the same door plus a private copy -- the parse-then-verify TOCTOU defense.
   var src = Buffer.from([7, 7, 7]);
   var snap = guardBytes.snapshot(src, TestError, "t/bad", "input");
   src[0] = 0x1;
@@ -535,7 +535,7 @@ async function testOcspAndPkcs12Doors() {
   var signingWithProtoOpts = pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, protoOpts);
   protoOpts.signedAttributes = false;
   var protoSigned = pki.schema.cms.parse(await signingWithProtoOpts);
-  check("cms.sign honours a custom-prototype options object as it was at entry",
+  check("cms.sign honors a custom-prototype options object as it was at entry",
     !!protoSigned.signerInfos[0].signedAttrsBytes);
   await rejectsWith("cms.sign over attribute-shaped content with signedAttributes false",
     function () { return pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, { signedAttributes: false }); },
@@ -548,7 +548,7 @@ async function testOcspAndPkcs12Doors() {
   var signingWithInherited = pki.cms.sign(attrShaped, { cert: s.cert, key: s.key }, inheritedOpts);
   optsProto.signedAttributes = false;
   var inheritedSigned = pki.schema.cms.parse(await signingWithInherited);
-  check("cms.sign honours an inherited option as it was at entry",
+  check("cms.sign honors an inherited option as it was at entry",
     !!inheritedSigned.signerInfos[0].signedAttrsBytes);
 
   var macOpts = { mac: { secret: Buffer.from("hunter2"), salt: Buffer.alloc(16, 9), iterationCount: 2048 } };

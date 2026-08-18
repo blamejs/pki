@@ -206,7 +206,7 @@ async function testAuthRetry() {
   // accept, or refuse an offer it did make.
   // The USABLE challenge is written FIRST, so a fold that keeps the last value
   // would lose it and the exchange would be refused for offering nothing this
-  // client speaks. Putting it last would let the test pass on either behaviour,
+  // client speaks. Putting it last would let the test pass on either behavior,
   // which is no test at all.
   var tMulti = fakeTransport([
     { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"", "WWW-Authenticate": "Newfangled realm=\"est\"" }, body: "" },

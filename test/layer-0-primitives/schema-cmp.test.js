@@ -671,7 +671,7 @@ function testRejectBody() {
   // grantedWithMods). A rejection or waiting status denies/defers the request,
   // so a certificate under it is malformed even with no explicit failInfo bit —
   // the status itself, not just an explicit failInfo, gates the certificate
-  // (RFC 9810 §5.3.4). A rejection is commonly signalled by status alone.
+  // (RFC 9810 §5.3.4). A rejection is commonly signaled by status alone.
   check("CertResponse rejection status (no failInfo) with a cert rejected", parseCode(minimalMessage({
     body: body(1, certRepMessage({ responses: [certResponse({ status: pkiStatusInfo({ status: 2 }),
       certifiedKeyPair: b.sequence([b.explicit(0, RAW_CERT)]) })] })) })) === "cmp/bad-cert-response");

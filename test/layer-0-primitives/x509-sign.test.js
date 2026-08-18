@@ -541,7 +541,7 @@ async function testCoverageEdges() {
 // The shared name / extension-value builder's documented rejects (lib/pki-build.js), driven through
 // pki.x509.sign. Every one is a config-time contract an operator can trip on a typo, and each is a
 // distinct failure mode the module advertises -- so each gets its own vector rather than being
-// represented by a neighbour that happens to throw the same code.
+// represented by a neighbor that happens to throw the same code.
 async function testSharedBuilderRejects() {
   var s = makeSigner("ed25519");
   var B = pki.asn1.build;

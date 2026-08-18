@@ -193,15 +193,15 @@ async function run() {
     { rootCertificates: [revoked.rootDer], time: T, statusPolicy: "latest-by-date" });
   check("mds: the latest-by-date policy takes only the newest report",
     require("../../lib/webauthn-mds.js").statusDenied(pki.webauthn.metadataFor(byDate, revoked.aaguid), byDate) === false);
-  // An unrecognised status is IGNORED for the gate -- the specification requires a verifier not to
+  // An unrecognized status is IGNORED for the gate -- the specification requires a verifier not to
   // fail on one -- unless the caller opts into refusing it.
   var unknown = await mint({ statusReports: [{ status: "SOME_FUTURE_STATUS" }] });
   var mdUnknown = await pki.webauthn.verifyMetadataBlob(unknown.blob, { rootCertificates: [unknown.rootDer], time: T });
-  check("mds: an unrecognised status does not deny trust by default",
+  check("mds: an unrecognized status does not deny trust by default",
     require("../../lib/webauthn-mds.js").statusDenied(pki.webauthn.metadataFor(mdUnknown, unknown.aaguid), mdUnknown) === false);
   var mdStrict = await pki.webauthn.verifyMetadataBlob(unknown.blob,
     { rootCertificates: [unknown.rootDer], time: T, rejectUnknownStatus: true });
-  check("mds: rejectUnknownStatus opts into refusing an unrecognised status",
+  check("mds: rejectUnknownStatus opts into refusing an unrecognized status",
     require("../../lib/webauthn-mds.js").statusDenied(pki.webauthn.metadataFor(mdStrict, unknown.aaguid), mdStrict) === true);
 
   // ---- anchors decode per entry, not for the whole BLOB ----
@@ -456,7 +456,7 @@ async function run() {
   check("mds: a u2f attestation binds to the entry keyed by its attestation certificate",
     bound.attestationVerified === true && bound.metadata.anchors === 1 && bound.metadata.aaguid === null);
 
-  // The anchor check must VALIDATE the path, not merely recognise a name: an entry registering a
+  // The anchor check must VALIDATE the path, not merely recognize a name: an entry registering a
   // different root must not match, even though that root is a perfectly good certificate.
   var u2fWrongRoot = await mint({ aaguid: null, anchors: [base.attRootDer.toString("base64")],
     keyIdentifiers: [u2fKeyId] });
@@ -692,7 +692,7 @@ async function run() {
     (await codeOf(function () { return pki.webauthn.verify(u2f.attestationObject, u2f.clientDataHash, { time: 1780000000000 }); })) === "webauthn/bad-input");
 
   // ---- the bounded JSON reader's own verdicts keep this module's codes ----
-  // A code the spec omits falls back to the framework default, so the module's headline defences --
+  // A code the spec omits falls back to the framework default, so the module's headline defenses --
   // duplicate-member smuggling, the depth cap -- would surface under a generic code that no
   // webauthn/* consumer can switch on.
   check("mds: a duplicate member in the payload is refused under this module's code",
@@ -743,7 +743,7 @@ async function run() {
   check("mds: an oversized string BLOB is refused",
     (await codeOf(function () { return pki.webauthn.verifyMetadataBlob("A".repeat(pki.C.LIMITS.MDS_BLOB_MAX_BYTES + 1), { rootCertificates: [base.rootDer], time: T }); })) === "webauthn/too-large");
 
-  // ---- an anchor is recognised on every field it is later read for ----
+  // ---- an anchor is recognized on every field it is later read for ----
   // A looser test lets something merely certificate-SHAPED through, which then raises a raw,
   // untyped error from inside the path validator rather than a verdict.
   check("mds: a certificate-shaped object literal is not accepted as an anchor",
@@ -873,7 +873,7 @@ async function run() {
       { status: "ATTESTATION_KEY_COMPROMISE", effectiveDate: "2026-05-01", certificate: u2f.attCertDer.toString("base64") },
     ] }, { statusPolicy: "latest-by-date" }, u2fLeaf) === true);
 
-  // ---- an anchor is recognised by name AND key, so a cross-signed root still anchors ----
+  // ---- an anchor is recognized by name AND key, so a cross-signed root still anchors ----
   // The same root reissued by a cross-signing CA carries the anchor's subject and public key but is
   // not self-issued. Identifying it by self-issuedness would leave it in the path, where it cannot
   // verify under an anchor that never issued it -- refusing a chain that is in fact anchored.
@@ -1008,12 +1008,12 @@ async function run() {
 
   // ---- a policy option supplied in the wrong type must not read as "off" ----
   // A caller writing rejectUnknownStatus: "true" from a config file is asking for the stricter
-  // behaviour; comparing against `true` would record it as disabled and accept the authenticator.
+  // behavior; comparing against `true` would record it as disabled and accept the authenticator.
   check("mds: a non-boolean rejectUnknownStatus is refused, not coerced to off",
     (await codeFor({}, { rejectUnknownStatus: "true" })) === "webauthn/bad-input");
   check("mds: a non-boolean allowStale is refused", (await codeFor({}, { allowStale: 1 })) === "webauthn/bad-input");
   check("mds: a non-boolean requireRollbackCheck is refused", (await codeFor({}, { requireRollbackCheck: "yes" })) === "webauthn/bad-input");
-  check("mds: an unrecognised statusPolicy is refused rather than degrading silently",
+  check("mds: an unrecognized statusPolicy is refused rather than degrading silently",
     (await codeFor({}, { statusPolicy: "newest" })) === "webauthn/bad-input");
 
   console.log("CHECKS " + helpers.getChecks());

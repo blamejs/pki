@@ -6,7 +6,7 @@
  *
  * The toolkit accumulates a set of structural disciplines that a plain
  * unit test cannot express (they are about the SHAPE of the source, not
- * the behaviour of one primitive). Each is encoded here as a scan over
+ * the behavior of one primitive). Each is encoded here as a scan over
  * the source tree so a regression is caught at commit time rather than
  * in review. The classes covered:
  *
@@ -1050,7 +1050,7 @@ function testAlgorithmLookupNoDefault() {
 
 function testNoRemovedWebCryptoNamespace() {
   // class: removed-namespace-reference
-  // pki.WebCrypto was removed in favour of pki.webcrypto.* — its classes now hang off
+  // pki.WebCrypto was removed in favor of pki.webcrypto.* — its classes now hang off
   // the ready Crypto instance. A lingering `pki.WebCrypto` reference in operator-facing
   // PROSE (a docstring, README, ARCHITECTURE) is a documented path that no longer
   // resolves — exactly the bug class the doc-example gate cannot see (it only runs
@@ -1911,7 +1911,7 @@ function testNoDuplicateCodeBlocks() {
       // way: `return guard.async.deferred(function () { return _verb(args); })`, so a fault leaves as
       // a rejection rather than a throw past the caller's .catch, while the body still runs at entry
       // (which is what fixes the caller's arguments before they can change). The rule lives once in
-      // guard-async and is enforced behaviourally by promise-contract.test.js; only the wrapper
+      // guard-async and is enforced behaviorally by promise-contract.test.js; only the wrapper
       // repeats, and it cannot be extracted -- each one names its own inner function and arguments.
       files: [
         "lib/attrcert-sign.js:sign", "lib/cmp-build.js:transfer", "lib/cms-sign.js:sign",
@@ -1926,7 +1926,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/cmc-verify.js:<top>", "lib/cmp-verify.js:<top>", "lib/cms-verify.js:<top>",
         "lib/cms-compress.js:<top>", "lib/cms-decrypt.js:<top>", "lib/cmp-session.js:<top>",
         // The shingle starts a few tokens before the wrapper, so the enclosing-function attribution
-        // lands on whatever function precedes it in each module. These are those neighbours.
+        // lands on whatever function precedes it in each module. These are those neighbors.
         "lib/attrcert-sign.js:_buildExtensions", "lib/cmp-build.js:_classifyCmpResponse",
         "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
         "lib/csr-sign.js:_challengePassword", "lib/ocsp.js:_normCertDer",
@@ -2636,7 +2636,7 @@ function testGuardShapeReinlined() {
       regions.forEach(function (r) {
         if (isHit(_stripCommentsAndLiterals(r.body))) {
           bad.push({ file: rel, line: r.startLine,
-            content: "function `" + r.name + "` re-inlines the " + g.ref + " shape — route it through " + g.ref + " (the one place its fail-closed defence lives)" });
+            content: "function `" + r.name + "` re-inlines the " + g.ref + " shape — route it through " + g.ref + " (the one place its fail-closed defense lives)" });
         }
       });
     });
@@ -2784,7 +2784,7 @@ function testEveryGuardEnforced() {
 function testValidatorShapeReinlined() {
   // class: validator-shape-reinlined
   // The validator-family analog of guard-shape-reinlined (Layer A). Where a guard owns
-  // a CVE-class fail-closed defence once, a VALIDATOR owns a decoded TYPE's COMPLETE
+  // a CVE-class fail-closed defense once, a VALIDATOR owns a decoded TYPE's COMPLETE
   // conformance rule set once (the COSE credential key, the attestation-cert profile,
   // the TPM pubArea). Each validator function declares its characteristic validation
   // shape ON the function:
@@ -2958,7 +2958,7 @@ function testBase64DecodeNotViaGuard() {
   // decodes to a shorter, DIFFERENT value (CWE-172 / CWE-20; the wrong-key-material
   // import class). The alphabet gate + canonical re-encode round-trip + size cap
   // live ONLY in guard-encoding, so a bare Buffer.from base64 decode anywhere else
-  // re-inlines the fail-closed defence. (guard-shape-reinlined cannot enforce this:
+  // re-inlines the fail-closed defense. (guard-shape-reinlined cannot enforce this:
   // the discriminator is a STRING LITERAL its comment/literal strip removes; this
   // detector scans source lines with only comment lines blanked, so the literal
   // survives. The hex sibling stays behavioral -- Buffer.from(x,"hex") has legit
@@ -3184,7 +3184,7 @@ function testJsonParseNotViaGuard() {
   // silently resolves a DUPLICATE member last-wins (the smuggling / parser-differential
   // class, CWE-20 / CWE-436), caps neither size nor depth (CWE-770 / CWE-400), and over
   // a Buffer substitutes U+FFFD for invalid UTF-8. The strict bounded reader lives ONLY
-  // in guard-json, so a bare JSON.parse anywhere in lib re-inlines the missing defence.
+  // in guard-json, so a bare JSON.parse anywhere in lib re-inlines the missing defense.
   // JSON.parse is a builtin (rename-proof); the token is the whole detector.
   var re = /JSON\.parse\s*\(/;
   var bad = [];

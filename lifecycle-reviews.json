@@ -313,7 +313,7 @@
   },
   "pki.lint.certificate": {
     "decision": "keep-experimental",
-    "reason": "The call shape is settled but the rule set is not: the full CABF corpus, the S/MIME baseline requirements, and the CRL/OCSP profiles are still to land, and each one changes what this reports for an unchanged certificate. An operator gating on its output would see that as a behaviour change. Graduate once the rule set is complete.",
+    "reason": "The call shape is settled but the rule set is not: the full CABF corpus, the S/MIME baseline requirements, and the CRL/OCSP profiles are still to land, and each one changes what this reports for an unchanged certificate. An operator gating on its output would see that as a behavior change. Graduate once the rule set is complete.",
     "reviewedAt": "0.5.0",
     "reviewBy": "0.6.0"
   },
@@ -391,7 +391,7 @@
   },
   "pki.webauthn.verifyAssertion": {
     "decision": "keep-experimental",
-    "reason": "The ceremony this verifies is settled in WebAuthn Level 3, but its own verdict shape is not: the fields a relying party reads to decide what was checked have changed in three of the last four releases, most recently when the two accepted forms of a stored credential key were brought under one set of rules. An operator gating on the verdict would have seen each of those as a behaviour change. Graduate once a release passes without the verdict shape moving.",
+    "reason": "The ceremony this verifies is settled in WebAuthn Level 3, but its own verdict shape is not: the fields a relying party reads to decide what was checked have changed in three of the last four releases, most recently when the two accepted forms of a stored credential key were brought under one set of rules. An operator gating on the verdict would have seen each of those as a behavior change. Graduate once a release passes without the verdict shape moving.",
     "reviewedAt": "0.5.6",
     "reviewBy": "0.7.0"
   },

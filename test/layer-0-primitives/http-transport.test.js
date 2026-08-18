@@ -136,7 +136,7 @@ async function testIpv6BracketHost() {
     // TLS handshake; the localhost cert does not match ::1, so it fails at identity verification --
     // server-auth-failed proves the request reached TLS rather than failing name resolution. (The
     // identity-match encoding for an IPv6 IP SAN is node-version-sensitive, so this asserts the
-    // reached-TLS behaviour, not a positive match.)
+    // reached-TLS behavior, not a positive match.)
     var code = await codeOf(t({ method: "GET", url: "https://[::1]:" + port + "/x", tls: { anchors: [tls.certPem] } }));
     check("14d an IPv6-literal URL reaches TLS (brackets stripped from the node hostname)", code === "transport/server-auth-failed");
   } finally { srv.close(); }

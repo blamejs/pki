@@ -571,9 +571,9 @@ async function testSignSct() {
   check("119. signSct with an RSA key below 2048 bits -> ct/unsupported-algorithm", (await vres(function () { return pki.ct.signSct(entry, rsa1024); })) === "ct/unsupported-algorithm");
   // explicit timestamp (BigInt + Number) and extensions arms
   var tsSct = await pki.ct.signSct(entry, ecPriv, { timestamp: 1700000000000n, extensions: Buffer.from([0x00, 0x01, 0xff]) });
-  check("120. signSct honours an explicit BigInt timestamp + extensions", tsSct.timestamp === 1700000000000n && tsSct.extensions.equals(Buffer.from([0x00, 0x01, 0xff])) && (await pki.ct.verifySct(entry, tsSct, ecSpki)) === true);
+  check("120. signSct honors an explicit BigInt timestamp + extensions", tsSct.timestamp === 1700000000000n && tsSct.extensions.equals(Buffer.from([0x00, 0x01, 0xff])) && (await pki.ct.verifySct(entry, tsSct, ecSpki)) === true);
   var tsNumSct = await pki.ct.signSct(entry, ecPriv, { timestamp: 1700000000001 });
-  check("121. signSct honours an explicit Number timestamp", tsNumSct.timestamp === 1700000000001n);
+  check("121. signSct honors an explicit Number timestamp", tsNumSct.timestamp === 1700000000001n);
   // reconstructSignedData tolerates a null entry (fails closed on the absent entryType)
   check("122. reconstructSignedData(null, sct) -> ct/bad-entry-type", code(function () { pki.ct.reconstructSignedData(null, tsSct); }) === "ct/bad-entry-type");
   // a duck-typed impostor "KeyObject" (an asymmetricKeyType but no real key) faults typed, not raw.
