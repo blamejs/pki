@@ -850,6 +850,41 @@ async function run() {
   check("131. ...and an unverified signer contributes no identity, so the binding is not true",
     tamperedRes.sender.match !== true);
 
+  // RFC 8550 sec. 3: the address SHOULD be in subjectAltName, but a receiving agent "MUST
+  // recognize email addresses in the distinguished name field in the PKCS #9 emailAddress
+  // attribute". Reading only the extension leaves every certificate of that legacy shape
+  // permanently undecidable, which makes expectedSender unusable for that whole class.
+  var legacyPair = await pki.key.generate("Ed25519");
+  var legacyKey = await pki.key.export(legacyPair.privateKey);
+  var legacyCert = await pki.x509.sign({
+    subject: [{ emailAddress: "legacy@corp.example" }],
+    subjectPublicKey: await pki.key.export(legacyPair.publicKey),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+  }, { key: legacyKey });
+  var legacyMsg = await pki.smime.sign(MSG, [{ cert: legacyCert, key: legacyKey }]);
+  var legacyOk = (await pki.smime.verify(legacyMsg, { expectedSender: "legacy@corp.example" })).sender;
+  check("132. an email identity carried only in the subject DN is recognised",
+    legacyOk.match === true && legacyOk.identities.indexOf("legacy@corp.example") !== -1);
+  check("133. ...and still answers false for a different mailbox",
+    (await pki.smime.verify(legacyMsg, { expectedSender: "other@corp.example" })).sender.match === false);
+
+  // When both carriers are present and disagree, the extension is authoritative (RFC 8550
+  // sec. 3: SHOULD be in subjectAltName, SHOULD NOT be in the subject). Merging them would
+  // let the weaker of two conflicting identities satisfy expectedSender.
+  var bothPair = await pki.key.generate("Ed25519");
+  var bothKey = await pki.key.export(bothPair.privateKey);
+  var bothCert = await pki.x509.sign({
+    subject: [{ emailAddress: "stale@old.example" }],
+    subjectPublicKey: await pki.key.export(bothPair.publicKey),
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { subjectAltName: [{ rfc822Name: "current@corp.example" }] },
+  }, { key: bothKey });
+  var bothMsg = await pki.smime.sign(MSG, [{ cert: bothCert, key: bothKey }]);
+  check("134. the SAN address wins when the subject DN disagrees",
+    (await pki.smime.verify(bothMsg, { expectedSender: "current@corp.example" })).sender.match === true);
+  check("135. ...and the conflicting subject DN address does not bind",
+    (await pki.smime.verify(bothMsg, { expectedSender: "stale@old.example" })).sender.match === false);
+
   check("122. an unprotected message reports fromMismatch null, never a passed comparison",
     v.headerProtection.present === false && v.headerProtection.fromMismatch === null);
 
