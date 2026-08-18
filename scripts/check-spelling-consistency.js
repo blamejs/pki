@@ -98,7 +98,11 @@ function allowedOffsets(line) {
   }
 }
 
-var SKIP_EXT = /\.(png|jpe?g|gif|ico|svg|pem|der|p12|pfx|crt|cer|key|woff2?|ttf|eot|zip|gz|tgz|pdf)$/i;
+// Binary and base64 key material only. Text formats stay in scope even when
+// they are rarely prose today -- SVG carries `<title>` and `<desc>` a reader
+// sees, so skipping it by extension would leave the next one unchecked. The
+// control-byte test below, not this list, is what keeps binary out.
+var SKIP_EXT = /\.(png|jpe?g|gif|ico|pem|der|p12|pfx|crt|cer|key|woff2?|ttf|eot|zip|gz|tgz|pdf)$/i;
 
 // The gate must never report on itself: this file names every non-preferred
 // form by construction, and a check that flags its own word list is a check

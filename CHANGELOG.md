@@ -10,7 +10,7 @@ The documentation and the package's own source comments settle on one spelling o
 
 ### Added
 
-- `npm run check:spelling` reports any word in the repository that has a second accepted spelling, and runs as part of `npm run gates`. The check is whole-word and case-insensitive, both to avoid a failure mode: a substring match reports `publicEncrypt` as a misspelling, and a case-sensitive one walks past the same word capitalized or upper-cased. It self-tests on planted forms before reporting, so a word list that has stopped matching cannot pass as a clean tree.
+- `npm run check:spelling` reports any word in the repository that has a second accepted spelling. It runs in `npm run gates`, on every pull request, and again before the published tarball is packed. The check is whole-word and case-insensitive, both to avoid a failure mode: a substring match reports `publicEncrypt` as a misspelling, and a case-sensitive one walks past the same word capitalized or upper-cased. It self-tests on planted forms before reporting, so a word list that has stopped matching cannot pass as a clean tree.
 
 ### Changed
 
