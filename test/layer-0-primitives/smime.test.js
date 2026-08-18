@@ -830,6 +830,26 @@ async function run() {
     (await codeOf(function () { return pki.smime.verify(idMsg, { expectedSender: 42 }); })) === "smime/bad-input");
 
   // fromMismatch is tri-state: null when no protected From existed to compare against.
+  // One From field can still name two mailboxes. Taking the angle address and ignoring what
+  // follows would report a single compared sender over a field that named more than one.
+  var fromTrailing = (await pki.smime.verify(withOuter(idMsg,
+    ["From: Alice <alice@corp.example>, mallory@victim.example"]))).sender;
+  check("129c. a From with an address after the angle address is not compared",
+    fromTrailing.checked === false && fromTrailing.match === null);
+
+  // A signer whose signature did NOT verify must contribute no identity. cms.verify reports
+  // every matched signer including failures (ok:false), so harvesting their subjectAltName
+  // would let a tampered message read valid:false alongside sender.match:true -- and
+  // sender.match === true is exactly what this verb tells a caller to enforce.
+  var tamperedId = Buffer.from(idMsg);
+  var textAt = tamperedId.indexOf(Buffer.from("Hello S/MIME"));
+  check("129b. the signed text is locatable for the tamper vector", textAt > 0);
+  tamperedId[textAt] = tamperedId[textAt] === 0x48 ? 0x68 : 0x48;   // H <-> h
+  var tamperedRes = await pki.smime.verify(tamperedId, { expectedSender: "alice@corp.example" });
+  check("130. tampering makes the signature invalid", tamperedRes.valid === false);
+  check("131. ...and an unverified signer contributes no identity, so the binding is not true",
+    tamperedRes.sender.match !== true);
+
   check("122. an unprotected message reports fromMismatch null, never a passed comparison",
     v.headerProtection.present === false && v.headerProtection.fromMismatch === null);
 
