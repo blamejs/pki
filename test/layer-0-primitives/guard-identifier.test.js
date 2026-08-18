@@ -298,6 +298,42 @@ function testKnownKeys() {
   // member once, so an intrinsic one is the only level carrying that name, and an override
   // shadows the intrinsic still sitting above it. Keying this on the descriptors this realm
   // installed instead left a foreign subclass's override passing for the language's own.
+  // A class of the caller's, with no collection behind it at all, naming a getter after some
+  // kind's member. Falling back to every kind's names for a value that has no kind of its own let
+  // such a getter pass for the language's, so the option was neither reported nor refused.
+  function PlainNamed() {}
+  Object.defineProperty(PlainNamed.prototype, "detached", { get: function () { return 1; }, enumerable: true });
+  check("a plain class naming a getter after a kind's member reports it",
+        identifier.readableNames(new PlainNamed(), E, "x/bad", "o").join(",") === "detached");
+  function PlainSized() {}
+  Object.defineProperty(PlainSized.prototype, "size", { get: function () { return 1; }, enumerable: true });
+  check("whichever kind's member name it borrows",
+        identifier.readableNames(new PlainSized(), E, "x/bad", "o").join(",") === "size");
+  // While a prototype the language installs members on still supplies them, whatever sits in
+  // front of it: this object holds no map and inherits `size` from a real Map.prototype.
+  check("an object over a built-in prototype keeps that prototype's members unreported",
+        identifier.readableNames(Object.create(Map.prototype), E, "x/bad", "o").length === 0);
+  // A level carries only the members it defines. Letting a built-in prototype vouch for every
+  // kind's names meant a name planted on one, in a shape that reads as the language's, was passed
+  // over: `size` is a keyed collection's member and nothing an array's prototype defines.
+  [["a plain assignment", function () { Array.prototype.size = 1; }],
+   ["a non-writable value", function () {
+     Object.defineProperty(Array.prototype, "size", { value: 1, writable: false, configurable: true });
+   }],
+   ["an accessor", function () {
+     Object.defineProperty(Array.prototype, "size", { get: function () { return 1; }, configurable: true });
+   }]].forEach(function (row) {
+    row[1]();
+    var reported;
+    try {
+      reported = identifier.readableNames([], E, "x/bad", "o").map(String);
+    } finally {
+      delete Array.prototype.size;
+    }
+    check("another kind's member name planted on Array.prototype as " + row[0] + " is reported",
+          reported.indexOf("size") !== -1);
+  });
+  check("and Array.prototype is left as it was found", !("size" in Array.prototype));
   var foreignOverride = vm.runInNewContext(
     "(function () { function C() {} C.prototype = Object.create(Map.prototype);" +
     "Object.defineProperty(C.prototype, 'size', { get: function () { return 1; } });" +
