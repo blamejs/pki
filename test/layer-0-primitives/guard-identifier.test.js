@@ -241,6 +241,45 @@ function testKnownKeys() {
     check("a " + kind + " options bag from another realm reports only what its caller set",
       identifier.readableNames(bag, E, "x/bad", "o").map(String).join(",") === "pem");
   });
+  // A kind's prototype gets no exemption as a LEVEL, only its member names get one. Passing the
+  // level over whole hid anything planted on it, so `Array.prototype.password = "pw"` answered
+  // `opts.password` while the check saw nothing, and `pki.key.export(privateKey, [])` handed back
+  // an unprotected private key. Object.prototype was already read for this reason; every level is
+  // read the same way now. The plant is removed in a finally, since leaving it set would decide
+  // the result of every later check in this file.
+  var polluted = { Array: Array.prototype, Map: Map.prototype, Set: Set.prototype,
+    ArrayBuffer: ArrayBuffer.prototype, Uint8Array: Uint8Array.prototype };
+  Object.keys(polluted).forEach(function (kind) {
+    var proto = polluted[kind];
+    var bag = kind === "Array" ? [] : kind === "Map" ? new Map() : kind === "Set" ? new Set()
+      : kind === "ArrayBuffer" ? new ArrayBuffer(2) : new Uint8Array(2);
+    Object.defineProperty(proto, "password", { value: "pw", writable: true, configurable: true });
+    try {
+      check("a name planted on " + kind + ".prototype is reported off a bag of that kind",
+        identifier.readableNames(bag, E, "x/bad", "o").map(String).indexOf("password") !== -1);
+    } finally {
+      delete proto.password;
+    }
+    check("and the same bag reports nothing once it is gone",
+      identifier.readableNames(bag, E, "x/bad", "o").length === 0);
+  });
+  // Carrying a name a kind defines is not enough to be passed over; it has to be shaped the way
+  // the language leaves one. A planted `size` would otherwise hide behind the name alone, which
+  // is the same hole one level down from passing the whole level over.
+  Object.defineProperty(Array.prototype, "size", { value: "pw", writable: true, configurable: true });
+  var plantedMemberNames;
+  try {
+    plantedMemberNames = identifier.readableNames([], E, "x/bad", "o").map(String);
+  } finally {
+    delete Array.prototype.size;
+  }
+  check("a planted name that borrows a kind's member name is still reported",
+        plantedMemberNames.indexOf("size") !== -1);
+  check("while the real members of every kind stay unreported",
+        identifier.readableNames([], E, "x/bad", "o").length === 0 &&
+        identifier.readableNames(new Map(), E, "x/bad", "o").length === 0 &&
+        identifier.readableNames(Buffer.alloc(2), E, "x/bad", "o").length === 0 &&
+        identifier.readableNames(new DataView(new ArrayBuffer(2)), E, "x/bad", "o").length === 0);
   // The member names are passed over above the value and never on it. An own one shadows the
   // intrinsic, so `opts.detached` answers with the caller's value, and pki.cms.sign reads an
   // option under that name.

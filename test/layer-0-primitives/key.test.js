@@ -502,6 +502,25 @@ async function testUnknownOptionsRefused() {
         !("password" in Object.prototype));
   check("a clean empty bag is still accepted once the pollution is gone",
         (await pki.key.export(pair.publicKey, {})).equals(await pki.key.export(pair.publicKey)));
+  // The same reach through a COLLECTION's prototype. `[]` is an options bag as far as
+  // `opts.password` is concerned, and passing that whole level over as "the kind's own" hid a
+  // name planted there: export took the bag, read nothing, and returned the private key in the
+  // clear. Only the member names a kind defines are passed over, so the level itself is read.
+  Object.defineProperty(Array.prototype, "password", {
+    value: "pw", writable: true, configurable: true, enumerable: false
+  });
+  var arrayPollutedCode, arrayPollutedGone;
+  try {
+    arrayPollutedCode = await codeOf(pki.key.export(pair.privateKey, []));
+  } finally {
+    arrayPollutedGone = delete Array.prototype.password;
+  }
+  check("export refuses an option reachable only through a polluted Array.prototype",
+        arrayPollutedCode === "key/bad-input");
+  check("the array pollution vector restores Array.prototype", arrayPollutedGone === true &&
+        !("password" in Array.prototype));
+  check("and an array bag is accepted again once the pollution is gone",
+        (await pki.key.export(pair.publicKey, [])).equals(await pki.key.export(pair.publicKey)));
   // A Proxy reports its keys from one trap and answers reads from another, so an options bag
   // that enumerates as empty can still answer `password`. Export would then serialize the key
   // in the clear on a call that named a password, which is the case the refusal exists for.
