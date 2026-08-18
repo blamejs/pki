@@ -334,12 +334,23 @@ function canary() {
     // and the next `git add -A` then commits it: three have reached a branch that way, and one
     // returns as a gate failure the day a run draws that pid again.
     //
-    // Removed only where the name matches the shape this gate writes AND the content is exactly
-    // what it writes, which together are proof it wrote the file. A developer's own file at such
-    // a path holds something else and is left alone, which keeps the rule that a gate may not
-    // destroy what it did not create.
+    // Removed only where all three hold: the name has the shape this gate writes, the content is
+    // exactly what it writes, and the process whose pid the name carries is gone. The first two
+    // are proof this gate wrote it, so a developer's own file at such a path is left alone. The
+    // third is what keeps two gates running at once in one checkout from deleting each other's
+    // live probe, which turns the other run's own listing assertion into a failure.
+    //
+    // `process.kill(pid, 0)` signals nothing and reports whether the pid resolves. A pid that has
+    // been recycled onto an unrelated process reads as alive, and the file is then left where it
+    // is: erring toward keeping a file is the safe direction for a sweep.
     fs.readdirSync(path.resolve(__dirname, "..")).forEach(function (entry) {
-      if (!/^check-spelling-canary-\d+\.js$/.test(entry)) return;
+      var named = /^check-spelling-canary-(\d+)\.js$/.exec(entry);
+      if (!named) return;
+      var owner = Number(named[1]);
+      if (owner === process.pid) return;             // this run's own, handled below
+      var alive = true;
+      try { process.kill(owner, 0); } catch (e) { alive = e.code === "EPERM"; }
+      if (alive) return;
       var stale = path.resolve(__dirname, "..", entry);
       try {
         if (fs.readFileSync(stale, "utf8") !== PROBE_BODY) return;
