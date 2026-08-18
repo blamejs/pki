@@ -2,7 +2,7 @@
 
 The documentation site is a **stateless, zero-dependency** container: every
 page is generated at boot from the toolkit's `lib/` `@module` / `@primitive`
-comment blocks. There is no database, no admin login, no writable state —
+comment blocks. It runs with no database, no admin login, no writable state —
 a restart or a fresh image always reflects the current source. That makes
 deployment simple and the runtime hardened (nonroot, all capabilities
 dropped, no persistent data to protect).

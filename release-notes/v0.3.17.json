@@ -1,7 +1,7 @@
 {
   "version": "0.3.17",
   "headline": "Refresh two development-only tooling dependencies to clear newly-disclosed advisories.",
-  "summary": "The brace-expansion and tar dependencies -- used only by the test and fuzzing harnesses -- are refreshed past two newly-disclosed advisories. The toolkit ships zero runtime dependencies, so the published package contents are unchanged; this is a supply-chain hygiene refresh of the development tooling.",
+  "summary": "The brace-expansion and tar dependencies, used only by the test and fuzzing harnesses, are refreshed past two newly-disclosed advisories. The toolkit ships zero runtime dependencies, so the published package contents are unchanged; this is a supply-chain hygiene refresh of the development tooling.",
   "sections": {
     "Security": [
       "Refresh the development/fuzzing-only brace-expansion (5.0.7 -> 5.0.8, GHSA-mh99-v99m-4gvg) and tar (7.5.19 -> 7.5.22, GHSA-r292-9mhp-454m) tooling dependencies to versions clear of two newly-disclosed advisories. Both are used only by the development and fuzzing harnesses and are never part of the published package (the toolkit has zero runtime dependencies), so installed contents are unchanged."

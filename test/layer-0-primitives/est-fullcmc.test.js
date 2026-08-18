@@ -70,9 +70,10 @@ function statusV2AboutPath(segments, status) {
 // A structurally present SignerInfo: RFC 5272 sec. 3.2.1.3.4 makes verifying the
 // carrier's signature mandatory, so a Full PKI Response with no signer is refused
 // outright. These vectors are about the VERB (routing, statuses, the transport
-// gates), so they carry a signer and pass `allowUnverifiedResponse: true` -- the
-// named opt-out, which keeps it visible that authentication is exercised in
-// cmc-verify.test.js rather than silently skipped here.
+// gates), so they carry a signer and name BOTH opt-outs --
+// `allowUnverifiedResponse: true, allowUnboundResponse: true` -- which keeps it
+// visible that authentication and the exchange binding are exercised in their own
+// vectors (EB1-EB6 below, and cmc-verify.test.js) rather than silently skipped here.
 function fakeSignerInfo() {
   var sid = b.sequence([b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("CA")])])]), b.integer(1n)]);
   var signedAttrs = b.contextConstructed(0, Buffer.concat([
@@ -131,7 +132,7 @@ async function run() {
   // ---- G1: the request that crosses the wire ----------------------------
   var t1 = fakeTransport({ status: 200, headers: ct("certs-only"),
     body: pki.est.transferEncode(certsOnly([certDer])) });
-  var r1 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t1, tls: TLS, allowUnverifiedResponse: true });
+  var r1 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t1, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   check("G1. a certs-only 200 yields outcome issued with the certificates surfaced",
     r1.outcome === "issued" && r1.certificates.length === 1 &&
     Buffer.compare(r1.certificates[0], certDer) === 0);
@@ -167,7 +168,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
           body: pki.est.transferEncode(certsOnly([otherCert])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/no-issued-cert");
 
   // G1h -- a request carrying TWO certification requests is only answered when
@@ -184,14 +185,14 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", twoReq, {
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
           body: pki.est.transferEncode(certsOnly([certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/no-issued-cert");
 
   check("G1i. answering both requests issues, and every issued certificate is surfaced",
     (await pki.est.fullcmc("https://ca.example", twoReq, {
       transport: fakeTransport({ status: 200, headers: ct("certs-only"),
         body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
-      tls: TLS, allowUnverifiedResponse: true })).issuedCertificates.length === 2);
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).issuedCertificates.length === 2);
 
   // G1o/G1p -- two requests may deliberately share ONE public key (different
   // subjects, same key), and a CA answering both returns two certificates for it.
@@ -211,14 +212,14 @@ async function run() {
     (await pki.est.fullcmc("https://ca.example", sharedReq, {
       transport: fakeTransport({ status: 200, headers: ct("certs-only"),
         body: pki.est.transferEncode(certsOnly([certA, certB].sort(Buffer.compare))) }),
-      tls: TLS, allowUnverifiedResponse: true })).issuedCertificates.length === 2);
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).issuedCertificates.length === 2);
 
   check("G1p. one certificate for two such requests is still a half-answer",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", sharedReq, {
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
           body: pki.est.transferEncode(certsOnly([certA])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/no-issued-cert");
 
   check("G1q. more certificates for a key than requests for it is ambiguous",
@@ -226,7 +227,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {   // ONE request for this key
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
           body: pki.est.transferEncode(certsOnly([certA, certB].sort(Buffer.compare))) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/ambiguous-issued-cert");
 
   check("G1g. the issued certificate is named, not left for the caller to guess from the bag",
@@ -237,7 +238,7 @@ async function run() {
         // A CMS certificates SET is DER-ordered, so the bag is sorted rather than
         // written in the order that would make the point read most directly.
         body: pki.est.transferEncode(certsOnly([otherCert, certDer].sort(Buffer.compare))) }),
-      tls: TLS, allowUnverifiedResponse: true })).certificate.equals(certDer));
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).certificate.equals(certDer));
 
   // G1j/G1k -- the bytes are about to be labelled `smime-type=CMC-request`, so
   // they are confirmed to BE one before anything leaves the process. A caller
@@ -274,13 +275,13 @@ async function run() {
     (await pki.est.fullcmc("https://ca.example", nestedReq, {
       transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
         body: pki.est.transferEncode(pkiResponse([statusV2AboutPath([7, 42], 0)], [certDer])) }),
-      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
   check("G1l3. ...and a body part the nested message does not contain is refused",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", nestedReq, {
         transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
           body: pki.est.transferEncode(pkiResponse([statusV2AboutPath([7, 999], 0)], [certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "cmc/body-part-unknown");
 
   // G1l4 -- a nested message this parser cannot read back contributes no path, so a status naming
@@ -297,14 +298,14 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", opaqueReq, {
         transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
           body: pki.est.transferEncode(pkiResponse([statusV2AboutPath([9, 1], 0)], [certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "cmc/body-part-unknown");
   // ...while the element's OWN identifier stays nameable: it is a body part of this request.
   check("G1l5. ...but the nested element's own body part is still a reference this request sent",
     (await pki.est.fullcmc("https://ca.example", opaqueReq, {
       transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
         body: pki.est.transferEncode(pkiResponse([statusV2About(9, 0)], [certDer])) }),
-      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   // G1m -- the exchange's meaning is fixed at the call, not a turn later. A
   // caller that flips allowUnverifiedResponse on the next line must not be able
@@ -312,7 +313,7 @@ async function run() {
   // check it was started with.
   var liveOpts = { transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
-    tls: TLS, allowUnverifiedResponse: true };
+    tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true };
   var inFlight = pki.est.fullcmc("https://ca.example", requestDer, liveOpts);
   liveOpts.allowUnverifiedResponse = false;    // flipped after the call
   check("G1m. options changed after the call do not alter the exchange already begun",
@@ -323,7 +324,7 @@ async function run() {
   var liveReq = Buffer.from(requestDer);
   var t1m = fakeTransport({ status: 200, headers: ct("certs-only"),
     body: pki.est.transferEncode(certsOnly([certDer])) });
-  var reqInFlight = pki.est.fullcmc("https://ca.example", liveReq, { transport: t1m, tls: TLS, allowUnverifiedResponse: true });
+  var reqInFlight = pki.est.fullcmc("https://ca.example", liveReq, { transport: t1m, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   liveReq.fill(0x41);                          // rewritten on the next line
   check("G1n. the request posted is the request that was correlated",
     (await reqInFlight).outcome === "issued" && t1m.calls[0].body === pki.est.transferEncode(requestDer));
@@ -338,7 +339,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 500, headers: ct("CMC-response"),
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/http-error");
 
   // G1s -- a request mixing a readable arm with an unreadable one must not be
@@ -362,7 +363,7 @@ async function run() {
     body: pki.est.transferEncode(certsOnly([certDer])) });
   check("G1s. a request whose second arm cannot be read is refused before sending",
     (await acode(function () {
-      return pki.est.fullcmc("https://ca.example", mixed, { transport: noSend, tls: TLS, allowUnverifiedResponse: true });
+      return pki.est.fullcmc("https://ca.example", mixed, { transport: noSend, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-input");
   check("G1t. and nothing was sent for it",
     noSend.calls.length === 0);
@@ -379,7 +380,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" },
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 2, null)], [])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-content-type");
 
   // G1w -- an orm-only request asks for NO certificate, so a successful response to
@@ -394,7 +395,7 @@ async function run() {
   var ormVerdict = await pki.est.fullcmc("https://ca.example", ormRequest, {
     transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
       body: pki.est.transferEncode(pkiResponse([statusV2About(1, 0)], [])) }),
-    tls: TLS, allowUnverifiedResponse: true });
+    tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   check("G1w. an orm-only request gets a successful verdict with no certificate correlated",
     ormVerdict.outcome === "issued" && ormVerdict.certificate === undefined &&
     ormVerdict.issuedCertificates.length === 0);
@@ -409,7 +410,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", ormRequest, {
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
           body: pki.est.transferEncode(certsOnly([certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/no-issued-cert");
 
   // G1u6 -- the same ambiguity at the HEADER FIELD level, driven through the verb.
@@ -422,7 +423,7 @@ async function run() {
           headers: { "content-type": "application/pkcs7-mime; smime-type=CMC-response",
             "Content-Type": "application/pkcs7-mime; smime-type=certs-only" },
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-content-type");
 
   // G1u4 -- a Content-Type declaring BOTH arms selects neither. RFC 2045 sec. 5.1
@@ -435,7 +436,7 @@ async function run() {
         transport: fakeTransport({ status: 200,
           headers: { "content-type": "application/pkcs7-mime; smime-type=CMC-response; smime-type=certs-only" },
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-content-type");
 
   check("G1u5. and on the ERROR path the ambiguous label reports the HTTP fault, not a CMC verdict",
@@ -446,7 +447,7 @@ async function run() {
         transport: fakeTransport({ status: 400,
           headers: { "content-type": "application/pkcs7-mime; smime-type=CMC-response; smime-type=certs-only" },
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 2, null)], [])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/http-error");
 
   // G1u2 -- the verb retains WHICH body parts it sent, so a status about one it
@@ -459,14 +460,14 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
           body: pki.est.transferEncode(pkiResponse([statusV2About(999, 0)], [certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "cmc/body-part-unknown");
 
   check("G1u3. and a status about the body part it DID send is accepted",
     (await pki.est.fullcmc("https://ca.example", requestDer, {
       transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
         body: pki.est.transferEncode(pkiResponse([statusV2About(1, 0)], [certDer])) }),
-      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   // G1v -- the AuthenticatedData carrier, reachable AUTHENTICATED from the verb an
   // operator actually calls. A capability that exists only one layer down is not
@@ -479,7 +480,8 @@ async function run() {
     body: pki.est.transferEncode(authRespDer) });
 
   var authVerdict = await pki.est.fullcmc("https://ca.example", requestDer,
-    { transport: authTransport, tls: TLS, responseRecipient: { password: "s3cret" } });
+    { transport: authTransport, tls: TLS, responseRecipient: { password: "s3cret" },
+      allowUnboundResponse: true });
   check("G1v. an AuthenticatedData response authenticates through fullcmc",
     authVerdict.outcome === "pop-required" && authVerdict.signatureVerified === true);
 
@@ -502,7 +504,7 @@ async function run() {
     (await pki.est.fullcmc("https://ca.example", crmReq, {
       transport: fakeTransport({ status: 200, headers: ct("certs-only"),
         body: pki.est.transferEncode(certsOnly([certDer])) }),
-      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   // G1y/G1z -- a certs-only body carries no controls, so it cannot echo a
   // transaction or nonce. A client that sent those asked for replay binding, and
@@ -516,7 +518,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", askedForBinding, {
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
           body: pki.est.transferEncode(certsOnly([certDer])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/unbound-response");
 
   check("G1z. and it is still accepted for a request that asked for none",
@@ -524,12 +526,85 @@ async function run() {
     (await pki.est.fullcmc("https://ca.example", requestDer, {
       transport: fakeTransport({ status: 200, headers: ct("certs-only"),
         body: pki.est.transferEncode(certsOnly([certDer])) }),
-      tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
+
+  // ---- EB1-EB6: an answer to a request that asked for no binding ---------
+  // Every binding check is conditional on the request having carried the control,
+  // so a request built without one leaves nothing for the response to echo -- and
+  // an answer captured from any earlier enrollment against this CA reads as this
+  // request's. The refusal is on BOTH arms, because which rule applies must not
+  // depend on the smime-type the server chose to answer with.
+  var ID_CMC_SENDER_NONCE = "1.3.6.1.5.5.7.7.6";
+  var ID_CMC_RECIPIENT_NONCE = "1.3.6.1.5.5.7.7.7";
+  var EB_NONCE = Buffer.from("00112233445566778899aabbccddeeff", "hex");
+
+  check("EB1. a CMC-response to a request that carried no binding is refused, not answered",
+    // The CMC layer owns this arm's interpretation, so its own code surfaces --
+    // the same way cmc/unverified-response does when the signer cannot be found.
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "cmc/unbound-response");
+
+  check("EB2. a certs-only answer to the same request reaches the same refusal, in this verb's code",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "est/unbound-response");
+
+  var ebDeclared = await pki.est.fullcmc("https://ca.example", requestDer, {
+    transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+      body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+    tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
+  check("EB3. naming allowUnboundResponse interprets it, and the verdict says it is unbound",
+    ebDeclared.outcome === "issued" && ebDeclared.boundToRequest === false &&
+    ebDeclared.bound.senderNonce === false);
+
+  // A request that DOES carry a Sender Nonce needs no opt-out: the response echoes
+  // it as a Recipient Nonce and the binding is checked.
+  var ebBoundReq = await pki.cmc.build(
+    { requests: [{ tcr: csrDer }], senderNonce: EB_NONCE }, { cert: clientCert, key: key });
+  var ebBound = await pki.est.fullcmc("https://ca.example", ebBoundReq, {
+    transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+      body: pki.est.transferEncode(pkiResponse([
+        attr(2, ID_CMC_RECIPIENT_NONCE, [b.octetString(EB_NONCE)]),
+        attr(3, ID_CMC_SENDER_NONCE, [b.octetString(Buffer.alloc(16, 9))]),
+        statusV2(1, 0, null)], [certDer])) }),
+    tls: TLS, allowUnverifiedResponse: true });
+  check("EB4. a request carrying a Sender Nonce binds its answer with no opt-out at all",
+    ebBound.outcome === "issued" && ebBound.boundToRequest === true &&
+    ebBound.bound.senderNonce === true && ebBound.bound.transactionId === false);
+
+  // EB5 and EB6 pin behaviour that predates the refusal above and stay green
+  // without it: EB5 establishes that EB4's nonce is genuinely load-bearing rather
+  // than decorative, and EB6 pins the ORDER of the two certs-only refusals.
+  check("EB5. and a response that does NOT echo that nonce is refused",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", ebBoundReq, {
+        transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true });
+    })) === "cmc/nonce-mismatch");
+
+  check("EB6. allowUnboundResponse does not downgrade a binding the request DID ask for",
+    // The opt-out says "this exchange asked for no binding". It cannot turn a
+    // certs-only body into an acceptable answer to a request that sent a nonce --
+    // that is a server unable to provide what was asked for, not a caller choice.
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", ebBoundReq, {
+        transport: fakeTransport({ status: 200, headers: ct("certs-only"),
+          body: pki.est.transferEncode(certsOnly([certDer])) }),
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
+    })) === "est/unbound-response");
 
   // ---- G2 / G3: the OTHER accepted smime-type, and its case-insensitivity
   var t2 = fakeTransport({ status: 200, headers: ct("CMC-response"),
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });
-  var r2 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t2, tls: TLS, allowUnverifiedResponse: true });
+  var r2 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t2, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   check("G2. a CMC-response 200 yields issued, with the certificates from the CMS bag (PR5)",
     r2.outcome === "issued" && r2.certificates.length === 1 && r2.controls.length === 1);
 
@@ -543,7 +618,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [otherCert])) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/no-issued-cert");
 
   check("G2c. a non-issued outcome is NOT correlated -- it is no claim a certificate exists",
@@ -553,12 +628,12 @@ async function run() {
     (await pki.est.fullcmc("https://ca.example", requestDer, {
       transport: fakeTransport({ status: 200, headers: ct("CMC-response"),
         body: pki.est.transferEncode(pkiResponse([statusV2(1, 6, null)], [])) }),
-      tls: TLS, allowUnverifiedResponse: true })).outcome === "pop-required");
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "pop-required");
 
   var t3 = fakeTransport({ status: 200, headers: { "content-type": 'application/pkcs7-mime; smime-type="CMC-RESPONSE"' },
     body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) });
   check("G3. a quoted, upper-case smime-type is accepted (FC3a: compare case-insensitively)",
-    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t3, tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t3, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   // G3b -- HTTP header names are case-INSENSITIVE (RFC 9110 sec. 5.1). A server
   // sending `Content-type` is conformant, and the classifier already normalizes;
@@ -568,26 +643,26 @@ async function run() {
     headers: { "Content-type": "application/pkcs7-mime; smime-type=certs-only" },
     body: pki.est.transferEncode(certsOnly([certDer])) });
   check("G3b. an oddly-cased Content-type header is read the same way",
-    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t3b, tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t3b, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   // ---- G4: a pending verdict is DATA, not a throw ------------------------
   var pend = pkiResponse([statusV2(1, 3,
     b.sequence([b.octetString(Buffer.from("tok")), b.generalizedTime(new Date("2026-03-01T00:00:00Z"))]))]);
   var t4 = fakeTransport({ status: 200, headers: ct("CMC-response"), body: pki.est.transferEncode(pend) });
-  var r4 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t4, tls: TLS, allowUnverifiedResponse: true });
+  var r4 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t4, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   check("G4. a pending CMC status is surfaced as a verdict, never thrown",
     r4.outcome === "pending" && r4.pendToken.toString() === "tok");
 
   // ---- G5: a 202 is surfaced, never slept --------------------------------
   var t5 = fakeTransport({ status: 202, headers: { "retry-after": "60" }, body: "" });
-  var r5 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t5, tls: TLS, allowUnverifiedResponse: true });
+  var r5 = await pki.est.fullcmc("https://ca.example", requestDer, { transport: t5, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   check("G5. a 202 surfaces the Retry-After without sleeping (one call, no wait)",
     r5.retry === true && r5.retryAfterSeconds === 60 && t5.calls.length === 1);
 
   // ---- G6: the optional CA label -----------------------------------------
   var t6 = fakeTransport({ status: 200, headers: ct("certs-only"),
     body: pki.est.transferEncode(certsOnly([certDer])) });
-  await pki.est.fullcmc("https://ca.example", requestDer, { transport: t6, tls: TLS, allowUnverifiedResponse: true, label: "myca" });
+  await pki.est.fullcmc("https://ca.example", requestDer, { transport: t6, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true, label: "myca" });
   check("G6. an opts.label puts the segment before the operation (sec. 3.2.2)",
     /\/\.well-known\/est\/myca\/fullcmc$/.test(t6.calls[0].url));
 
@@ -595,38 +670,38 @@ async function run() {
   var wrapped = pki.est.transferEncode(certsOnly([certDer])).replace(/(.{16})/g, "$1\r\n\t");
   var t7 = fakeTransport({ status: 200, headers: ct("certs-only"), body: wrapped });
   check("G7. a base64 body with embedded CRLF and tabs decodes (RFC 8951 sec. 3.1)",
-    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t7, tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t7, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   var t8 = fakeTransport({ status: 200,
     headers: { "content-type": "application/pkcs7-mime; smime-type=certs-only", "content-transfer-encoding": "binary" },
     body: pki.est.transferEncode(certsOnly([certDer])) });
   check("G8. a Content-Transfer-Encoding header is ignored; the body is base64 regardless (sec. 3.2.3)",
-    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t8, tls: TLS, allowUnverifiedResponse: true })).outcome === "issued");
+    (await pki.est.fullcmc("https://ca.example", requestDer, { transport: t8, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true })).outcome === "issued");
 
   // ---- G9 / G10: 404 AND 501 both mean not-implemented -------------------
   check("G9. a 404 means this service is not implemented, not a generic HTTP error (FC8)",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer,
-        { transport: fakeTransport({ status: 404, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true });
+        { transport: fakeTransport({ status: 404, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/not-implemented");
 
   check("G10. a 501 means the same -- testing only 404 is the partial-rule trap",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer,
-        { transport: fakeTransport({ status: 501, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true });
+        { transport: fakeTransport({ status: 501, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/not-implemented");
 
   // ---- G11 / G12: the statuses that stay ordinary faults ------------------
   check("G11. a 400 with no CMC body is an ordinary HTTP fault",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer,
-        { transport: fakeTransport({ status: 400, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true });
+        { transport: fakeTransport({ status: 400, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/http-error");
 
   check("G12. a 204 is a fault here -- /fullcmc has no none-available arm (the csrattrs branch was not widened)",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer,
-        { transport: fakeTransport({ status: 204, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true });
+        { transport: fakeTransport({ status: 204, headers: {}, body: "" }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/http-error");
 
   // ---- G13: a CMC error response carries the verdict ----------------------
@@ -634,7 +709,7 @@ async function run() {
   var e13 = await acaught(function () {
     return pki.est.fullcmc("https://ca.example", requestDer, {
       transport: fakeTransport({ status: 400, headers: ct("CMC-response"), body: pki.est.transferEncode(failed) }),
-      tls: TLS, allowUnverifiedResponse: true });
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   });
   check("G13. a 4xx carrying a CMC response surfaces the CMC verdict (FC7)",
     e13 && e13.code === "est/cmc-failed" && e13.cmc && e13.cmc.failInfo === "badIdentity" &&
@@ -658,7 +733,7 @@ async function run() {
     return pki.est.fullcmc("https://ca.example", boundReq, {
       transport: fakeTransport({ status: 400, headers: ct("CMC-response"),
         body: pki.est.transferEncode(failedOther) }),
-      tls: TLS, allowUnverifiedResponse: true });
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   });
   check("G13b. a CMC error response for a DIFFERENT transaction is not attached to this one",
     e13b && e13b.code === "est/http-error");
@@ -673,7 +748,7 @@ async function run() {
     return pki.est.fullcmc("https://ca.example", boundReq, {
       transport: fakeTransport({ status: 400, headers: ct("CMC-response"),
         body: pki.est.transferEncode(failedMine) }),
-      tls: TLS, allowUnverifiedResponse: true });
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   });
   check("G13c. the matching-transaction error response IS surfaced as the CMC verdict",
     e13c && e13c.code === "est/cmc-failed" && e13c.cmc.failInfo === "badIdentity");
@@ -687,7 +762,7 @@ async function run() {
   check("G13d. claiming a transaction the request does not carry is refused",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer,   // built with NO transactionId
-        { transport: noSend13, tls: TLS, allowUnverifiedResponse: true, transactionId: 42 });
+        { transport: noSend13, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true, transactionId: 42 });
     })) === "est/bad-input");
   check("G13e. and nothing was sent under a binding that did not exist",
     noSend13.calls.length === 0);
@@ -703,7 +778,7 @@ async function run() {
   check("G13g. an unreadable transactionId control is refused rather than ignored",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", malformedBinding,
-        { transport: noSend13g, tls: TLS, allowUnverifiedResponse: true });
+        { transport: noSend13g, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-input");
   check("G13h. and it never reached the network",
     noSend13g.calls.length === 0);
@@ -729,7 +804,7 @@ async function run() {
   check("G13i. duplicate binding controls are refused before transport",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", dupBinding,
-        { transport: noSend13i, tls: TLS, allowUnverifiedResponse: true });
+        { transport: noSend13i, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-input");
   check("G13j. and that request never left either",
     noSend13i.calls.length === 0);
@@ -742,7 +817,7 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 400, headers: ct("certs-only"),
           body: pki.est.transferEncode(failedMine) }),
-        tls: TLS, allowUnverifiedResponse: true });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })).code === "est/http-error");
 
   check("G13f. a value that AGREES with the request is accepted",
@@ -751,14 +826,14 @@ async function run() {
       return pki.est.fullcmc("https://ca.example", boundReq, {
         transport: fakeTransport({ status: 400, headers: ct("CMC-response"),
           body: pki.est.transferEncode(failedMine) }),
-        tls: TLS, allowUnverifiedResponse: true, transactionId: 42 });
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true, transactionId: 42 });
     })).code === "est/cmc-failed");
 
   // ---- G14: an undecodable error body must not MASK the HTTP fault --------
   var e14 = await acaught(function () {
     return pki.est.fullcmc("https://ca.example", requestDer, {
       transport: fakeTransport({ status: 400, headers: ct("CMC-response"), body: "!!!! not base64 !!!!" }),
-      tls: TLS, allowUnverifiedResponse: true });
+      tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   });
   check("G14. garbage in a 4xx CMC body leaves the HTTP fault reported, not an asn1/* leak (FC7a)",
     e14 && e14.code === "est/http-error");
@@ -768,14 +843,14 @@ async function run() {
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" },
-          body: pki.est.transferEncode(certsOnly([certDer])) }), tls: TLS, allowUnverifiedResponse: true });
+          body: pki.est.transferEncode(certsOnly([certDer])) }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-content-type");
 
   check("G17. a 200 with an unrelated smime-type is refused",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: ct("signed-data"),
-          body: pki.est.transferEncode(certsOnly([certDer])) }), tls: TLS, allowUnverifiedResponse: true });
+          body: pki.est.transferEncode(certsOnly([certDer])) }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-content-type");
 
   // ---- G18: the LABEL and the BYTES must agree ----------------------------
@@ -783,21 +858,21 @@ async function run() {
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer, {
         transport: fakeTransport({ status: 200, headers: ct("certs-only"),
-          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }), tls: TLS, allowUnverifiedResponse: true });
+          body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/not-certs-only");
 
   // ---- G19 / G20: the body itself -----------------------------------------
   check("G19. a 200 with an empty body is refused",
     (await acode(function () {
       return pki.est.fullcmc("https://ca.example", requestDer,
-        { transport: fakeTransport({ status: 200, headers: ct("certs-only"), body: "" }), tls: TLS, allowUnverifiedResponse: true });
+        { transport: fakeTransport({ status: 200, headers: ct("certs-only"), body: "" }), tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/empty-body");
 
   // ---- G21 / G22 / G23: the gates that precede the transport --------------
   var t21 = fakeTransport({ status: 200, headers: ct("certs-only"), body: "" });
   check("G21. an http:// base URL is refused BEFORE anything is sent",
     (await acode(function () {
-      return pki.est.fullcmc("http://ca.example", requestDer, { transport: t21, tls: TLS, allowUnverifiedResponse: true });
+      return pki.est.fullcmc("http://ca.example", requestDer, { transport: t21, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/insecure-url" && t21.calls.length === 0);
 
   // No injected transport: the anchor gate belongs to the DEFAULT transport (an
@@ -818,7 +893,7 @@ async function run() {
   var t23 = fakeTransport({ status: 200, headers: ct("certs-only"), body: "" });
   check("G23. a non-DER request is refused before the transport",
     (await acode(function () {
-      return pki.est.fullcmc("https://ca.example", 123, { transport: t23, tls: TLS, allowUnverifiedResponse: true });
+      return pki.est.fullcmc("https://ca.example", 123, { transport: t23, tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/bad-input" && t23.calls.length === 0);
 
   // ---- G24: a Publish Trust Anchors control is DATA, never acted on -------
@@ -826,7 +901,7 @@ async function run() {
     attr(2, ID_CMC_TRUSTED_ANCHORS, [b.octetString(Buffer.from([1]))])], [certDer]);
   var r24 = await pki.est.fullcmc("https://ca.example", requestDer, {
     transport: fakeTransport({ status: 200, headers: ct("CMC-response"), body: pki.est.transferEncode(anchored) }),
-    tls: TLS, allowUnverifiedResponse: true });
+    tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
   check("G24. a Publish Trust Anchors control is surfaced and nothing is auto-trusted (FC11 / CT7)",
     r24.publishTrustAnchors !== null && r24.trusted === false);
 

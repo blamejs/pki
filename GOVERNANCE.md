@@ -13,7 +13,7 @@ It exists so a consumer betting their stack on the toolkit can answer three ques
 Solo maintainer, pre-1.0.
 
 - **Maintainer:** dotCooCoo (Robert Lee), via GitHub user [dotCooCoo](https://github.com/dotCooCoo).
-- **Organization:** github.com/blamejs.
+- **Organization:** [github.com/blamejs](https://github.com/blamejs).
 - **npm package:** `@blamejs/pki`. Sibling packages under the `@blamejs/*` scope are documented per package.
 - **Public site:** [pkijs.com](https://pkijs.com).
 
@@ -21,7 +21,7 @@ The project transitions to a multi-maintainer model when an aligned co-maintaine
 
 ## How decisions get made
 
-- **Technical direction.** Maintainer-final. Consumer input arrives via GitHub Issues and Discussions; the maintainer weighs it, and the final call rests with them. There is no formal vote. The capability plan is public in [ROADMAP.md](ROADMAP.md).
+- **Technical direction.** Maintainer-final. Consumer input arrives via GitHub Issues and Discussions; the maintainer weighs it, and the final call rests with them. The project holds no formal vote. The capability plan is public in [ROADMAP.md](ROADMAP.md).
 - **Security-vulnerability triage.** Per [SECURITY.md](SECURITY.md): coordinated disclosure via GitHub Security Advisories, a fix target for High and Critical vulnerabilities in the toolkit's own code and in vendored dependencies, and a public advisory on remediation.
 - **Consumer-impacting changes.** Pre-1.0, the toolkit reserves the right to break consumer-facing surface in any minor version, and major versions ship deprecation warnings at least one minor before removal. Post-1.0 the same contract applies across majors with a 24-month LTS window per [LTS-CALENDAR.md](LTS-CALENDAR.md).
 - **Releases.** Patch (`0.0.x`) is the default; minor (`0.x.0`) requires an explicit decision the maintainer documents in the release notes; major (`x.0.0`) requires a deprecation cycle. The full release workflow is documented in the project's local contributor guide.
@@ -105,7 +105,7 @@ If the maintainer becomes unavailable, the project enters a documented recovery 
 These are documented gaps in the current governance posture. The re-open trigger for each is consumer-visible, so a consumer can evaluate the project's posture against their own risk tolerance.
 
 1. **Named successor.** Not yet named; re-opens when a contributor crosses the sustained-core-area-commit threshold described above.
-2. **Second GitHub org owner.** Added within 30 days of naming a successor. There is no separate trigger; it tracks succession.
+2. **Second GitHub org owner.** Added within 30 days of naming a successor. This step has no separate trigger; it tracks succession.
 3. **OpenSSF Best Practices Badge, Silver tier.** Structurally addressable once the multi-maintainer model is live. Gold tier requires several additional discipline items beyond governance.
 
 ## References

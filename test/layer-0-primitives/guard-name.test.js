@@ -87,6 +87,54 @@ function run() {
   testRdnMultiset();
   testControlByteReject();
   testRenderEscaping();
+  testEmailEqual();
+}
+
+// RFC 5280 sec. 7.5 decides the match; RFC 8398 sec. 5 decides what may not be
+// transformed on the way. The third state is the load-bearing one: an address this
+// toolkit cannot canonicalize must report that, because "no-match" is an answer and
+// the comparison never happened.
+function testEmailEqual() {
+  var eq = name.emailEqual;
+  // Built at runtime, so this file stays pure ASCII: a raw Cyrillic host in the source
+  // is the kind of byte a later editor silently normalizes.
+  var cyrillicHost = "a@" + String.fromCharCode(0x43f, 0x440, 0x438, 0x43c, 0x435, 0x440) + ".example";
+  check("an identical address matches", eq("a@example.com", "a@example.com") === "match");
+  check("the host-part compares case-insensitively", eq("a@EXAMPLE.COM", "a@example.com") === "match");
+  // The rule most likely to be "simplified" into a full lowercase, which would let
+  // Alice@ open mail addressed to a different mailbox at the same domain.
+  check("the local-part compares case-SENSITIVELY", eq("Alice@example.com", "alice@example.com") === "no-match");
+  check("a different host does not match", eq("a@example.com", "a@other.com") === "no-match");
+  // RFC 8398 sec. 5: "implementations MUST NOT interpret any characters as wildcards".
+  check("a wildcard in the certificate is a literal, matching nothing else",
+    eq("*@example.com", "bob@example.com") === "no-match");
+  check("...and matching only itself", eq("*@example.com", "*@example.com") === "match");
+  // A quoted local-part may legally contain @; splitting on the first would compare a
+  // fragment of the mailbox against the wrong host.
+  check("the split is on the LAST @, so a quoted local-part survives",
+    eq("\"x@y\"@example.com", "\"x@y\"@example.com") === "match");
+  // Two hosts already in A-label form are the same encoding, so no IDNA transform is
+  // needed and the ordinary ASCII rule decides. Refusing them would make every certificate
+  // with an internationalized domain unusable for sender binding, including one whose
+  // address matches exactly. The case that DOES need a transform is an A-label against a
+  // U-label, and the U-label side is non-ASCII, which is refused below.
+  check("two A-label hosts compare under the ordinary ASCII rule",
+    eq("a@xn--e1afmkfd.example", "a@XN--E1AFMKFD.EXAMPLE") === "match");
+  check("an A-label host does not match a different A-label host",
+    eq("a@xn--e1afmkfd.example", "a@xn--bcher-kva.example") === "no-match");
+  check("a non-ASCII host is not comparable",
+    eq(cyrillicHost, "a@x.example") === "not-comparable");
+  // sec. 7.5 authorizes a case-insensitive ASCII fold and no more. A Unicode-aware
+  // toLowerCase() maps U+212A KELVIN SIGN onto ASCII "k", so "ban<U+212A>.com" and
+  // "bank.com" -- different byte strings, separately registrable -- would collapse into
+  // one identity. The fold must never reach outside A-Z.
+  var kelvinHost = "a@ban" + String.fromCharCode(0x212a) + ".com";
+  check("a Unicode letter that case-folds onto ASCII never collides with the ASCII host",
+    eq(kelvinHost, "a@bank.com") !== "match");
+  check("an address with no @ is not comparable", eq("noatsign", "a@b.com") === "not-comparable");
+  check("an empty host is not comparable", eq("a@", "a@b.com") === "not-comparable");
+  check("an empty local-part is not comparable", eq("@b.com", "a@b.com") === "not-comparable");
+  check("a non-string is not comparable, never a throw", eq(null, "a@b.com") === "not-comparable");
 }
 
 module.exports = { run: run };

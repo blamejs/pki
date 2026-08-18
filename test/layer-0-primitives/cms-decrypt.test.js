@@ -139,6 +139,28 @@ async function run() {
   check("a cert matching two ktri decrypts even when the first-tried recipient fails", Buffer.compare((await pki.cms.decrypt(dupKtri, { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
   check("a normal password still round-trips within the cap", Buffer.compare((await pki.cms.decrypt(hiEnv, { password: "p" })).content, MSG) === 0);
 
+  // ---- the verdict separates content integrity from origin ----
+  // An AEAD message binds the content to the key that encrypted it. It does not say who
+  // chose that key: for a ktri recipient the whole input is the recipient's PUBLIC
+  // certificate, so any stranger mints a message whose `authenticated` reads true. The
+  // verdict must therefore answer the origin question separately instead of leaving the
+  // word to imply an answer.
+  var minted = await pki.cms.encrypt(MSG, [{ cert: rsa.cert }]);
+  var aeadV = await pki.cms.decrypt(minted, { key: rsa.key, cert: rsa.cert });
+  check("authEnvelopedData reports content integrity", aeadV.authenticated === true);
+  check("...and reports that NOTHING authenticated the origin", aeadV.originAuthenticated === false);
+  check("...and names what the integrity rests on", aeadV.authenticatedBy === "content-encryption-key");
+  check("...and surfaces originatorInfo instead of decoding and dropping it", "originatorInfo" in aeadV);
+
+  var cbcV = await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" }), { key: rsa.key, cert: rsa.cert });
+  check("an unauthenticated cipher rests on no key at all", cbcV.authenticated === false && cbcV.authenticatedBy === null);
+  check("...and still answers the origin question", cbcV.originAuthenticated === false);
+
+  // A shared secret authenticates "someone who knows it", which includes every other
+  // recipient of the same message -- so it is not an origin either.
+  var pwV = await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ password: "pw" }]), { password: "pw" });
+  check("a password recipient authenticates no individual origin", pwV.originAuthenticated === false);
+
   // ---- orchestrator routing ----
   check("pki.schema.parse routes an EnvelopedData we emit to cms (authEnvelopedData)", pki.schema.parse(gEnv).contentTypeName === "authEnvelopedData");
 

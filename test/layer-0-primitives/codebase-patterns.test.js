@@ -157,6 +157,7 @@ var VALID_ALLOW_CLASSES = {
   "inline-structure-validator": 1,
   "nan-date-comparison-unguarded": 1,
   "eddsa-verify-without-loworder-gate": 1,
+  "internal-provenance-in-comment": 1,
   // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
   // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
   "swallow-unverified": 1,
@@ -506,6 +507,18 @@ function testNoDeferralMarkers() {
 // (g) fail-open verify/parse shape — `return true` inside a catch
 // ---------------------------------------------------------------------------
 
+// The index just past the `}` that closes a block whose body starts at `from`. Falls back to the
+// end of the string when the braces do not balance -- a scan that cannot find the end reports the
+// whole remainder rather than nothing, so unparseable input is loud instead of silently exempt.
+function _matchingBrace(text, from) {
+  var depth = 1;
+  for (var i = from; i < text.length; i++) {
+    if (text[i] === "{") depth++;
+    else if (text[i] === "}" && --depth === 0) return i;
+  }
+  return text.length;
+}
+
 function testNoFailOpenVerify() {
   // class: fail-open-verify
   // A verify / parse / validate routine that swallows an error and then
@@ -514,21 +527,23 @@ function testNoFailOpenVerify() {
   // block whose body returns a positive verdict — `return true`, a truthy
   // scalar, or a `{ valid: true }` / `{ verified: true }` object.
   //
-  // Structural anchor: the `catch (...) {` opener followed by a tempered
-  // token that cannot cross the catch block's closing brace at column 0 —
-  // `(?:(?!\n {0,4}\})[\s\S])` — then the positive-verdict
-  // return. The tempering keeps a later, unrelated `return true` in a
-  // sibling function from being attributed to the catch. Comments and
-  // string/regex literals are stripped first so a docstring example or a
-  // quoted message never trips the gate.
-  var VERDICT = "(?:true|1|valid|verified|isValid|ok)\\b" +
-                "|\\{[^}]*\\b(?:valid|verified|ok|allowed|trusted)\\s*:\\s*true";
-  var failOpenRe = new RegExp(
-    "catch\\s*\\([^)]*\\)\\s*\\{" +
-    "(?:(?!\\n {0,4}\\})[\\s\\S]){0,600}?" +
-    "\\breturn\\s+(?:" + VERDICT + ")",
-    "m"
-  );
+  // Structural anchor: the `catch (...) {` opener, then the block's OWN span, found by matching
+  // braces from that opener. The span is what makes the attribution right, and a regex cannot
+  // compute it. The previous form tempered on a closing brace at the start of a line, which is the
+  // shape of a brace that closes a MULTI-LINE block: a catch written on one line
+  // (`catch (_e) { return null; }`) closes inline, the temper never fired there, and the scan ran
+  // on into the enclosing function -- so a `return true` in an unrelated sibling was reported as
+  // this catch's. Both forms are now bounded by the same rule, and the single-line catch is still
+  // read, because it is the block that is found rather than a line shape.
+  //
+  // Comments and string literals are stripped first, so a docstring example or a quoted message
+  // never trips the gate. Regex literals are NOT stripped (the walk deliberately leaves them), so a
+  // `/\}/` inside a catch body could unbalance the count; an unbalanced scan therefore falls back
+  // to the rest of the file rather than to nothing, because a detector that goes quiet on input it
+  // cannot parse is the failure this class exists to prevent.
+  var VERDICT = new RegExp("\\breturn\\s+(?:(?:true|1|valid|verified|isValid|ok)\\b" +
+    "|\\{[^}]*\\b(?:valid|verified|ok|allowed|trusted)\\s*:\\s*true)");
+  var CATCH_OPENER = /catch\s*\([^)]*\)\s*\{/g;
   var files = _libFiles();
   var bad = [];
   for (var i = 0; i < files.length; i++) {
@@ -536,14 +551,18 @@ function testNoFailOpenVerify() {
     try { content = fs.readFileSync(files[i], "utf8"); }
     catch (_e) { continue; }
     var subject = _stripCommentsAndLiterals(content);
-    var m = failOpenRe.exec(subject);
-    if (m) {
-      var lineNum = subject.slice(0, m.index).split(/\r?\n/).length;
+    CATCH_OPENER.lastIndex = 0;
+    var opener;
+    while ((opener = CATCH_OPENER.exec(subject)) !== null) {
+      var bodyStart = opener.index + opener[0].length;
+      var body = subject.slice(bodyStart, _matchingBrace(subject, bodyStart));
+      if (!VERDICT.test(body)) continue;
       bad.push({
         file: _relPath(files[i]),
-        line: lineNum,
+        line: subject.slice(0, opener.index).split(/\r?\n/).length,
         content: "fail-open verify: a catch block returns a positive verdict",
       });
+      break;   // one report per file is enough to fail the gate and name the file
     }
   }
   bad = _filterMarkers(bad, "fail-open-verify");
@@ -1767,6 +1786,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/attrcert-sign.js:add", "lib/attrcert-sign.js:<top>",
         "lib/cmc-build.js:fixedRequestId", "lib/cmc-build.js:_build",
         "lib/pki-build.js:requestedExtensions", "lib/pki-build.js:<top>",
+        // The same door on an OPTIONS object: the entry check that the argument is an object, then
+        // the unknown-key refusal against that verb's own table. Same shape, different table.
+        "lib/cms-sign.js:_sign", "lib/cms-sign.js:_countersign",
+        "lib/cms-verify.js:_verify", "lib/tsp-sign.js:verify",
       ],
       mode: "family-subset",
       reason: "assertKnownKeys call-site glue: the check lives once in guard-identifier; each site binds a different key table, error class and message, so only the call and its closure repeat.",
@@ -2957,6 +2980,204 @@ function testBase64DecodeNotViaGuard() {
   _report("no lib file decodes base64/base64url via a bare lenient Buffer.from instead of guard.encoding", bad);
 }
 
+// Emphasis words that carry no technical meaning in capitals. An acronym or an
+// identifier (RFC, DER, SET OF, ANY, TRUE as an ASN.1 value, MUST as an RFC 2119
+// keyword) is excluded by not appearing here, so the count measures voice and
+// never penalises a file for naming the standards it implements. TRUE / FALSE /
+// ANY / AND / ALL / NONE are deliberately absent: each collides with an ASN.1
+// type, a field value (`cA=TRUE`), or pseudo-code in a comment.
+var _SHOUTED_EMPHASIS = ["NOT", "EVERY", "NEVER", "ALWAYS", "ONLY", "NOTHING", "WHICH",
+  "SAME", "BOTH", "ONE", "RAW", "THIS", "THE", "FULL", "REAL", "BEFORE", "AFTER",
+  "INSIDE", "OUTSIDE", "EXACTLY", "SILENTLY", "DELIBERATELY", "GENUINELY", "WHOLE",
+  "EACH", "OWN", "KIND", "CONTENT", "MORE", "LESS", "FIRST", "LAST", "WITHOUT"];
+
+// Spans where a capitalised word is technical, not emphatic: an inline code span,
+// an RFC 2119 modal pair (`MUST NOT`, `SHALL NOT`), and a field value or key
+// (`cA=TRUE`, `status: FAILED`). Removed before the emphasis count so the gate
+// measures voice and cannot be satisfied by deleting a spec citation.
+function _stripTechnicalCaps(s) {
+  return s
+    .replace(/`[^`]*`/g, " ")
+    .replace(/\b(MUST|SHALL|SHOULD|MAY|CAN|NEED|WILL|DOES)\s+NOT\b/g, " ")
+    .replace(/[=:]\s*[A-Z]{2,}\b/g, " ");
+}
+
+// Does this comment line BEGIN a prose unit, or continue a sentence the line
+// above hard-wrapped? `prev` is the preceding comment line's text, or null when
+// nothing precedes it in the run -- the start of a comment block, a blank comment
+// line, and an intervening code line all break it. A list bullet and a doc tag
+// open their own unit, and so does any line whose predecessor closed a sentence.
+//
+// Only a line that begins a unit can carry a definition head. Comments here are
+// hard-wrapped, so without this the words that happen to land after a line break
+// read as a short head and waive a mid-sentence pivot.
+function _startsProseUnit(text, prev) {
+  if (/^\s*(?:[-*]\s|@[a-z])/i.test(text)) return true;       // a bullet or a doc tag opens its own unit
+  if (prev === null || /^[\s*]*$/.test(prev)) return true;    // nothing above it, or a bare docblock opener
+  if (/^\s*@[a-z]/i.test(prev)) return true;                  // the line above was a doc tag
+  return /[.:!?][`'")\]]?\s*$/.test(prev);                    // the line above closed its sentence
+}
+
+// Comment prose of one source file: the docblock and `//` narrative, with the
+// `@example` bodies dropped because their text is code. Each kept line carries
+// `head`, the structural fact of whether it begins a prose unit.
+function _commentProse(text) {
+  var lines = _lines(text);
+  var kept = [], inExample = false, prev = null;
+  for (var i = 0; i < lines.length; i++) {
+    var raw = lines[i];
+    if (/^\s*\*\s*@example\b/.test(raw)) { inExample = true; prev = null; continue; }
+    if (inExample) {
+      if (/^\s*\*\s*@[a-z]/i.test(raw)) inExample = false; else { prev = null; continue; }
+    }
+    var m = raw.match(/^\s*(?:\/\/|\*|\/\*)\s?(.*)$/);
+    if (!m || !m[1]) { prev = null; continue; }
+    kept.push({ line: i + 1, text: m[1], head: _startsProseUnit(m[1], prev) });
+    prev = m[1];
+  }
+  return { lines: kept };
+}
+
+// Is a ` -- ` on this line the rhetorical construction, or a definition
+// separator? The two look identical and only one is a voice tic:
+//
+//   `guard.bytes.view / .source    -- untrusted byte-source -> Buffer re-view`
+//   `  - `allowUnbound` (boolean)  -- interpret a response nothing ties to ...`
+//   `@internal -- no operator-facing namespace.`
+//
+// are a term and its gloss, which is how an aligned list, an `@opts` entry and a
+// file-header title are written here. Counting those would score a file for its
+// structure and push an author toward deleting documentation to pass, which is
+// the opposite of the point. A dash is counted only MID-SENTENCE: exactly one
+// space before it, and something other than a bare identifier ahead of it.
+//
+// A short run of words is not by itself a definition head, and treating it as one
+// is how a real pivot escapes. Comments here are hard-wrapped, so a sentence that
+// turns a few words into a continuation line presents the same shape as a term and
+// its gloss. The distinguishing property is structural: a definition head OPENS its
+// prose unit (`startsUnit`), so a wrapped continuation cannot claim to be one.
+function _rhetoricalDashes(line, startsUnit) {
+  // An allow-marker's `allow:<class> -- <reason>` is this suite's own documented
+  // annotation format (see the file header). Its dash separates the machine-read
+  // class from the human reason, so counting it would push an author to break the
+  // convention the suite itself defines.
+  if (/(?:codebase-patterns:allow-file|allow:[a-z0-9][a-z0-9-]*)\b/.test(line)) return 0;
+  if (/\s{2,}--\s/.test(line)) return 0;              // aligned definition column
+  // A term and its gloss at the start of a line: an identifier, a path, a tag, or
+  // a full call signature `fn(a, b, c)`. The head must look like a name rather
+  // than a sentence, so a comma inside parentheses is part of the term while a
+  // comma in prose is not.
+  var head = line.split(/\s--\s/)[0];
+  if (startsUnit &&
+      /^\s*[-*]?\s*[@`\w][\w.`'/ -]*(?:\([^)]*\))?[`\s]*$/.test(head) &&
+      head.replace(/\([^)]*\)/, "").split(/\s+/).filter(Boolean).length <= 6) {
+    return 0;
+  }
+  return (line.match(/\S -- /g) || []).length;
+}
+
+function testNoInternalProvenanceInComments() {
+  // class: internal-provenance-in-comment
+  //
+  // A comment ships in the tarball, so it is operator-facing. It must state the
+  // invariant and never where the invariant came from: an operator reading it
+  // cannot open a private note file, a PR thread, or a review round, and a
+  // pointer to one is dead weight that also dates the code.
+  //
+  // The shapes are rename-proof because each names an artifact outside the
+  // repository: an auto-memory slug (`feedback_*` / `reference_*`), a path into
+  // a gitignored working directory, a review-round or PR-number citation, or a
+  // named external reviewer. The invariant survives; only the provenance goes.
+  var SHAPES = [
+    { re: /\b(?:feedback|reference)_[a-z0-9]+(?:_[a-z0-9]+)+\b/, what: "an auto-memory slug" },
+    { re: /\.(?:references|scratch)\//, what: "a gitignored working-directory path" },
+    { re: /\b(?:round|review) #?\d+\b/i, what: "a review-round citation" },
+    { re: /\bcodex\b/i, what: "a named external reviewer" },
+  ];
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    var lines = _lines(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < lines.length; i++) {
+      if (!/^\s*(\*|\/\/|\/\*)/.test(lines[i])) continue;   // comment lines only
+      for (var s = 0; s < SHAPES.length; s++) {
+        if (!SHAPES[s].re.test(lines[i])) continue;
+        bad.push({ file: rel, line: i + 1,
+          content: "comment cites " + SHAPES[s].what + ", which an operator reading the shipped " +
+            "tarball cannot follow. State the invariant and drop the provenance." });
+        break;
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "internal-provenance-in-comment");
+  _report("no shipped comment cites internal provenance (a memory slug, a working-directory path, a review round)", bad);
+}
+
+function testProseCadenceDensity() {
+  // class: prose-cadence-density
+  //
+  // Comment prose ships in the tarball, so it is read by operators. Three
+  // constructions express one rhetorical move -- the contrastive turn -- and a
+  // fourth shouts for emphasis:
+  //
+  //   ` -- ` used as a colon, a pause, or a pair of interruptive appositives
+  //   "rather than", the same pivot as a phrase
+  //   a capitalised ordinary word standing in for typography
+  //
+  // Parallel negation ("X, not Y") is DELIBERATELY not counted. It is the same
+  // rhetorical move, but a genuine contrast is the content -- "an inclusion
+  // question, not a consistency question" says something the flattened version
+  // does not -- and a counter that pressures an author to destroy it trades a
+  // voice tic for a loss of meaning. Counting it also rewards the wrong fix:
+  // contorting a sentence to dodge the token, which is the habit this gate
+  // exists to catch.
+  //
+  // None is wrong once. Held at the density this measures they are a voice tic
+  // that reads as generated, and the reason a ban on the em dash CHARACTER
+  // changes nothing: `--` is the same construction wearing an ASCII glyph. So
+  // the gate counts the construction per 1000 words of prose and not the
+  // character, which is what makes it un-routed-around: every substitution for
+  // the same move lands in the same counter.
+  //
+  // There is deliberately NO allow-marker for this class. A per-file opt-out
+  // would become the bucket the habit lives in, which is the failure the gate
+  // exists to prevent. The ceiling is the only tunable, and it ratchets down.
+  var PIVOT_CEILING = 8;    // per 1000 words: roughly one per three paragraphs
+  var CAPS_CEILING = 5;
+  var MIN_WORDS = 150;      // below this a single instance swamps the ratio
+  var shouted = new RegExp("\\b(" + _SHOUTED_EMPHASIS.join("|") + ")\\b", "g");
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var prose = _commentProse(fs.readFileSync(f, "utf8"));
+    var joined = prose.lines.map(function (l) { return l.text; }).join(" ");
+    var words = (joined.match(/[A-Za-z][A-Za-z'-]*/g) || []).length;
+    if (words < MIN_WORDS) return;
+    var dash = prose.lines.reduce(function (a, l) { return a + _rhetoricalDashes(l.text, l.head); }, 0);
+    var rather = (joined.match(/rather than/gi) || []).length;
+    var caps = (_stripTechnicalCaps(joined).match(shouted) || []).length;
+    var pivot = (dash + rather) * 1000 / words;
+    var capsPer = caps * 1000 / words;
+    if (pivot <= PIVOT_CEILING && capsPer <= CAPS_CEILING) return;
+    // Point at the first counted construction so the author starts somewhere real.
+    var at = 1;
+    for (var i = 0; i < prose.lines.length; i++) {
+      var t = prose.lines[i].text;
+      if (_rhetoricalDashes(t, prose.lines[i].head) || /rather than|, not [a-z]/i.test(t)) { at = prose.lines[i].line; break; }
+    }
+    bad.push({
+      file: _relPath(f), line: at,
+      content: "comment prose reads as generated: pivot " + pivot.toFixed(1) + "/1k (ceiling " +
+        PIVOT_CEILING + "; " + dash + " ` -- `, " + rather + " 'rather than'), " +
+        "shouted emphasis " + capsPer.toFixed(1) + "/1k (ceiling " + CAPS_CEILING + "; " + caps + " words). " +
+        "Rewrite the construction: a dash used as a colon becomes a colon, an interruptive " +
+        "appositive becomes parentheses or its own sentence. Substituting one uniform token " +
+        "for another scores the same.",
+    });
+  });
+  _report("comment prose stays under the cadence ceiling (pivot <= " + PIVOT_CEILING +
+    "/1k, shouted emphasis <= " + CAPS_CEILING + "/1k)", bad);
+}
+
 function testJsonParseNotViaGuard() {
   // class: json-parse-not-via-guard
   // JSON parsing of any input in lib must route through guard.json.parse. JSON.parse
@@ -3048,6 +3269,8 @@ function run() {
   testInlineStructureValidatorCluster();
   testBase64DecodeNotViaGuard();
   testJsonParseNotViaGuard();
+  testNoInternalProvenanceInComments();
+  testProseCadenceDensity();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
   testNoUnusedUnderscoreFunctions();

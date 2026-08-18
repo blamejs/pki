@@ -82,7 +82,11 @@ var CONSISTENCY_ACCEPT = [
   ["cons-5-6", 5, 6, R5, R6, [L4, L5, R4]],
   ["cons-6-7", 6, 7, R6, R7, [N45, L6, R4]],
   ["cons-7-7", 7, 7, R7, R7, []],
-  ["cons-0-7", 0, 7, EMPTY, R7, []],
+  // `cons-0-7` used to sit here, asserting that oldSize 0 -> newSize 7 verifies true. It was
+  // pinning the overclaim rather than a property: RFC 6962 sec. 2.1.2 defines PROOF(m, D[n]) for
+  // 0 < m < n, so an empty older tree has no proof to check and binds nothing about newRoot -- the
+  // `true` said a step was proven append-only when nothing had been proven. That case is now a
+  // refusal, covered by the rej-cons-old-zero-* vectors below.
 ];
 
 function testConsistencyAccept() {
@@ -145,7 +149,14 @@ function testRejects() {
   // No-argument call: opts defaults to {}, missing oldSize fails closed typed.
   check("rej-cons-no-opts", code(function () { m.verifyConsistency(); }) === "merkle/bad-input");
   check("rej-cons-old-gt-new", code(function () { m.verifyConsistency({ oldSize: 7, newSize: 3, oldRoot: H(R7), newRoot: H(R3), proof: [] }); }) === "merkle/old-size-exceeds-new");
-  check("rej-cons-old-zero-nonempty", code(function () { m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(EMPTY), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }); }) === "merkle/bad-proof-length");
+  // An empty older tree with a NON-empty newer one is outside RFC 6962 sec. 2.1.2, which defines
+  // PROOF(m, D[n]) for 0 < m < n. There is no proof to check and nothing is bound about newRoot, so
+  // returning the same `true` the honest path returns would say a step was proven append-only when
+  // nothing was proven at all -- a monitor written `if (!verifyConsistency(...)) alarm()` gets no
+  // alarm and has verified nothing. Refused, whatever the proof or the roots look like.
+  check("rej-cons-old-zero-newsize-nonzero", code(function () { m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(EMPTY), newRoot: H(R7), proof: [] }); }) === "merkle/no-consistency-claim");
+  check("rej-cons-old-zero-nonempty", code(function () { m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(EMPTY), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }); }) === "merkle/no-consistency-claim");
+  check("rej-cons-old-zero-oldroot-irrelevant", code(function () { m.verifyConsistency({ oldSize: 0, newSize: 1, oldRoot: H(flip(EMPTY)), newRoot: H(R7), proof: [] }); }) === "merkle/no-consistency-claim");
   check("rej-cons-sizes-equal-nonempty", code(function () { m.verifyConsistency({ oldSize: 7, newSize: 7, oldRoot: H(R7), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }); }) === "merkle/sizes-equal-nonempty-proof");
   check("rej-cons-empty-proof", code(function () { m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(R7), proof: [] }); }) === "merkle/empty-consistency-proof");
   check("rej-cons-bad-hashlen", code(function () { m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(R7), proof: [Buffer.alloc(31), H(L3), H(R2), H(N456)] }); }) === "merkle/bad-hash-length");
@@ -154,9 +165,9 @@ function testRejects() {
   // with sn != 0 and fails closed ("shorter than the geometry requires").
   check("rej-cons-proof-too-short", code(function () { m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(R3), newRoot: H(R7), proof: P([L2, L3, R2]) }); }) === "merkle/bad-proof-length");
   // --- consistency, RETURN false (the append-only bypass legs) ---
-  check("rej-cons-old-zero-wrongroot (false)", m.verifyConsistency({ oldSize: 0, newSize: 7, oldRoot: H(flip(EMPTY)), newRoot: H(R7), proof: [] }) === false);
-  // empty-to-empty (newSize 0): BOTH roots must be the empty root -- a bogus
-  // newRoot must not pass (an empty-old proof binds newRoot only when newSize=0).
+  // empty-to-empty (newSize 0) is the one empty-older case that IS answerable: it is the degenerate
+  // identity check, not a consistency proof, and BOTH roots must be the empty root -- a bogus
+  // newRoot must not pass.
   check("cons-empty-to-empty accepts both empty roots", m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(EMPTY), proof: [] }) === true);
   check("rej-cons-empty-to-empty-wrongnewroot (false)", m.verifyConsistency({ oldSize: 0, newSize: 0, oldRoot: H(EMPTY), newRoot: H(flip(EMPTY)), proof: [] }) === false);
   check("rej-cons-wrong-oldroot non-pow2 (false)", m.verifyConsistency({ oldSize: 3, newSize: 7, oldRoot: H(flip(R3)), newRoot: H(R7), proof: P([L2, L3, R2, N456]) }) === false);

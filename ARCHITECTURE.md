@@ -83,7 +83,7 @@ The load-bearing layer, and everything above it rides on the contract:
   produce canonical DER, so there is exactly one valid encoding per value.
 - **One definition, both directions.** A single structure definition drives
   encode and decode, so EXPLICIT/IMPLICIT context-tag handling cannot diverge.
-  There is no separate hand-rolled decoder and encoder for the same structure to
+  No separate hand-rolled decoder and encoder exist for the same structure to
   fall out of sync.
 
 `lib/cbor-det.js` applies the same posture to RFC 8949 deterministic CBOR, which

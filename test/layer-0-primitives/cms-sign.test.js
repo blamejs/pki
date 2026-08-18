@@ -169,6 +169,37 @@ async function testOutputForms() {
 async function testBadInput() {
   var s = makeSigner("ec-p256");
   await rejects("options not an object", function () { return pki.cms.sign(CONTENT, s, "nope"); }, "cms/bad-input");
+
+  // An option this verb does not read is refused, not ignored. A misspelling does not select the
+  // mode the caller meant, and swallowing it signs the message the other way with nothing said --
+  // `signedAttribute` for `signedAttributes` decides whether the signature covers the content
+  // directly or a set of attributes, which is the difference the stripping attack turns on.
+  await rejects("an unknown sign option", function () {
+    return pki.cms.sign(CONTENT, s, { signedAttribute: false });
+  }, "cms/bad-input");
+  await rejects("an option only countersign takes", function () {
+    return pki.cms.sign(CONTENT, s, { signerIndex: 0 });
+  }, "cms/bad-input");
+  // The whole documented set is still accepted -- a gate that refuses a real option would be the
+  // worse defect, and `sid` is omitted here because it needs a certificate carrying an SKI.
+  check("every documented sign option is accepted", Buffer.isBuffer(await pki.cms.sign(CONTENT, s, {
+    signedAttributes: true, signingTime: new Date(0), additionalSignedAttributes: [],
+    unsignedAttributes: [], eContentType: "data", detached: false, certificates: true, pem: false,
+  })));
+
+  var countersigned = await pki.cms.sign(CONTENT, s);
+  await rejects("an unknown countersign option", function () {
+    return pki.cms.countersign(countersigned, s, { signerIndexes: 0 });
+  }, "cms/bad-input");
+  // countersign has no content of its own, so the options that describe one are not its to take.
+  await rejects("a content option passed to countersign", function () {
+    return pki.cms.countersign(countersigned, s, { detached: true });
+  }, "cms/bad-input");
+  check("every documented countersign option is accepted",
+    Buffer.isBuffer(await pki.cms.countersign(countersigned, s, {
+      signerIndex: 0, signingTime: new Date(0), certificates: true, pem: false,
+      signedAttributes: true, additionalSignedAttributes: [],
+    })));
   await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
   // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).

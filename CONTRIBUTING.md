@@ -66,7 +66,7 @@ Every structure maps to a named RFC. Encode is canonical DER, decode is strict, 
 
 ### Code style
 
-- **CommonJS only.** `require()` and `module.exports`. No ES module syntax in `lib/`. The eslint config and workflow files are the documented exceptions (`.mjs`, `.yml`).
+- **CommonJS only.** `require()` and `module.exports`. No ES module syntax in `lib/`. The ESLint config and workflow files are the documented exceptions (`.mjs`, `.yml`).
 - **`var` declarations.** Not `let` or `const`, for consistency with the rest of the codebase.
 - **No TypeScript, no transpilation.** What ships is what runs, so consumers read the same source the runtime executes. This is the explicit design separator from upstream PKI.js.
 - **Every `.js` file starts exactly** with the SPDX line, the copyright line, and `"use strict";`, in that order.
@@ -157,4 +157,4 @@ If you are being added as a maintainer, the additional commitments are:
 - **Real-time:** the project runs no Discord or Slack; collaboration is asynchronous.
 - **Security:** `security@pkijs.com` ([SECURITY.md](SECURITY.md)).
 
-This document is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+The [Code of Conduct](CODE_OF_CONDUCT.md) governs this document.

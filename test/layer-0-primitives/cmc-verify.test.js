@@ -149,7 +149,7 @@ async function run() {
   var sent = { transactionId: TX, senderNonce: NONCE, allowUnverified: true };
 
   // ---- D1 / ST5: absence of a status control is SUCCESS ----------------
-  var d1 = await pki.cmc.verify(response([]), { allowUnverified: true });
+  var d1 = await pki.cmc.verify(response([]), { allowUnverified: true, allowUnbound: true });
   check("D1. a PKIResponse with NO status control verifies as issued (ST5: success is assumed)",
     d1.outcome === "issued" && d1.statuses.length === 0);
 
@@ -200,7 +200,7 @@ async function run() {
       return pki.cmc.verify(response([attr(1, ID_CMC_TRANSACTION_ID, [b.integer(BigInt(TX))])]), sent);
     })) === "cmc/nonce-mismatch");
 
-  var e6 = await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true });
+  var e6 = await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true, allowUnbound: true });
   check("E6. a client that sent NO senderNonce accepts a response carrying no recipientNonce",
     e6.outcome === "issued");
 
@@ -226,28 +226,28 @@ async function run() {
 
   // ---- the terminal verdicts ------------------------------------------
   var pend = await pki.cmc.verify(response([statusV2(1, 3,
-    b.sequence([b.octetString(Buffer.from("tok")), b.generalizedTime(new Date("2026-03-01T00:00:00Z"))]))]), { allowUnverified: true });
+    b.sequence([b.octetString(Buffer.from("tok")), b.generalizedTime(new Date("2026-03-01T00:00:00Z"))]))]), { allowUnverified: true, allowUnbound: true });
   check("D4b. a pending status yields outcome pending with the token and time surfaced",
     pend.outcome === "pending" && pend.pendToken.toString() === "tok" &&
     pend.pendTime.toISOString() === "2026-03-01T00:00:00.000Z");
 
-  var confirm = await pki.cmc.verify(response([statusV2(1, 5, null)]), { allowUnverified: true });
+  var confirm = await pki.cmc.verify(response([statusV2(1, 5, null)]), { allowUnverified: true, allowUnbound: true });
   check("D15. confirmRequired yields outcome confirm-required (the caller owes a Confirm control, CT5)",
     confirm.outcome === "confirm-required");
 
-  var popReq = await pki.cmc.verify(response([statusV2(1, 6, null)]), { allowUnverified: true });
+  var popReq = await pki.cmc.verify(response([statusV2(1, 6, null)]), { allowUnverified: true, allowUnbound: true });
   check("D15b. popRequired yields outcome pop-required", popReq.outcome === "pop-required");
 
-  var failed = await pki.cmc.verify(response([statusV2(1, 2, b.integer(7n))]), { allowUnverified: true });
+  var failed = await pki.cmc.verify(response([statusV2(1, 2, b.integer(7n))]), { allowUnverified: true, allowUnbound: true });
   check("D3b. a failed status yields outcome rejected carrying the failInfo name",
     failed.outcome === "rejected" && failed.failInfo === "badIdentity");
 
-  var noSupport = await pki.cmc.verify(response([statusV2(1, 4, null)]), { allowUnverified: true });
+  var noSupport = await pki.cmc.verify(response([statusV2(1, 4, null)]), { allowUnverified: true, allowUnbound: true });
   check("D15c. noSupport yields outcome rejected", noSupport.outcome === "rejected");
 
   // A response carrying BOTH a success and a failure is not a verdict this
   // layer may pick from -- the worst outcome governs, never the first seen.
-  var mixed = await pki.cmc.verify(response([statusV2(1, 0, null), statusV2(2, 2, b.integer(7n))]), { allowUnverified: true });
+  var mixed = await pki.cmc.verify(response([statusV2(1, 0, null), statusV2(2, 2, b.integer(7n))]), { allowUnverified: true, allowUnbound: true });
   check("ST1b. with several status controls the FAILING one governs, not the first",
     mixed.outcome === "rejected" && mixed.statuses.length === 2);
 
@@ -258,12 +258,12 @@ async function run() {
     notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
   }, { key: await pki.key.export(pair.privateKey) });
 
-  var withCert = await pki.cmc.verify(response([statusV2(1, 0, null)], [certDer]), { allowUnverified: true });
+  var withCert = await pki.cmc.verify(response([statusV2(1, 0, null)], [certDer]), { allowUnverified: true, allowUnbound: true });
   check("PR5. the issued certificate is read from the CMS bag, not from PKIResponse",
     withCert.certificates.length === 1 && Buffer.compare(withCert.certificates[0], certDer) === 0);
 
   var anchors = await pki.cmc.verify(
-    response([statusV2(1, 0, null), attr(2, ID_CMC_TRUSTED_ANCHORS, [b.octetString(Buffer.from([1]))])], [certDer]), { allowUnverified: true });
+    response([statusV2(1, 0, null), attr(2, ID_CMC_TRUSTED_ANCHORS, [b.octetString(Buffer.from([1]))])], [certDer]), { allowUnverified: true, allowUnbound: true });
   check("CT7. a Publish Trust Anchors control is SURFACED and nothing is auto-trusted",
     anchors.publishTrustAnchors !== null && anchors.trusted === false);
 
@@ -276,7 +276,7 @@ async function run() {
   var authDer = authenticatedData(certDer);
   check("PR5b. an AuthenticatedData carrier is accepted (the registry name is authData, not the prose spelling)",
     pki.schema.cms.parse(authDer).contentTypeName === "authData");
-  var authVerdict = await pki.cmc.verify(authDer, { allowUnverified: true });
+  var authVerdict = await pki.cmc.verify(authDer, { allowUnverified: true, allowUnbound: true });
   check("PR5c. its certificates are read from originatorInfo, where that carrier keeps them",
     authVerdict.outcome === "issued" && authVerdict.certificates.length === 1 &&
     Buffer.compare(authVerdict.certificates[0], certDer) === 0);
@@ -324,7 +324,7 @@ async function run() {
     // Even WITH the opt-out: allowUnverified skips checking a signature, it does
     // not conjure one. A carrier with no signer is the wrong structure, not an
     // unverified one.
-    (await acode(function () { return pki.cmc.verify(unsignedResponse([statusV2(1, 0, null)]), { allowUnverified: true }); }))
+    (await acode(function () { return pki.cmc.verify(unsignedResponse([statusV2(1, 0, null)]), { allowUnverified: true, allowUnbound: true }); }))
       === "cmc/unsigned-response");
 
   var signedResp = await pki.cms.sign(
@@ -340,7 +340,7 @@ async function run() {
       return pki.cmc.verify(response([statusV2(1, 0, null)]), {});
     })) === "cmc/unverified-response");
 
-  var okEmbedded = await pki.cmc.verify(signedResp, {});
+  var okEmbedded = await pki.cmc.verify(signedResp, { allowUnbound: true });
   check("PD14b2. a response carrying its own signer certificate verifies with no help",
     // The ordinary shape: a conforming SignedData embeds the signer certificate,
     // which is what pki.cmc.build emits and what a CA sends. Requiring the caller
@@ -348,7 +348,7 @@ async function run() {
     // contains everything needed.
     okEmbedded.outcome === "issued" && okEmbedded.signatureVerified === true);
 
-  var okVerified = await pki.cmc.verify(signedResp, { certs: [certDer] });
+  var okVerified = await pki.cmc.verify(signedResp, { certs: [certDer], allowUnbound: true });
   check("PD14c. supplying the signer certificate also verifies the carrier",
     // `certs` supplements the embedded bag for the case where the message does
     // not carry the signer; it is not the only source.
@@ -366,7 +366,7 @@ async function run() {
       return pki.cmc.verify(tampered, { certs: [certDer] });
     })) === "cmc/unverified-response");
 
-  var unverified = await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true });
+  var unverified = await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true, allowUnbound: true });
   check("PD14e. the bootstrap opt-out is explicit and says so in the verdict",
     // Driven on a response whose signer certificate is absent, which is the case
     // the opt-out exists for. Where the signature CAN be checked it is, and the
@@ -388,7 +388,7 @@ async function run() {
         // embedded above -- so it IS found -- over a signature that is not its.
         b.set([fakeSignerInfo(), matchingSignerInfo(certDer)]),
       ]))]);
-      return pki.cmc.verify(twoSigners, { allowUnverified: true });
+      return pki.cmc.verify(twoSigners, { allowUnverified: true, allowUnbound: true });
     })) === "cmc/unverified-response");
 
   check("PD14e2. the opt-out does not excuse a signature that is present and WRONG",
@@ -406,7 +406,7 @@ async function run() {
   // queued microtask, between the parse and the verification.
   var raced = Buffer.from(signedResp);
   var racedOutcome = null, racedError = null;
-  var racePromise = pki.cmc.verify(raced, { certs: [certDer] });
+  var racePromise = pki.cmc.verify(raced, { certs: [certDer], allowUnbound: true });
   raced.fill(0x41);                       // rewritten on the very next line -- the
                                           // easiest version of the race to hit, and
                                           // the one a deferred snapshot loses to
@@ -429,7 +429,7 @@ async function run() {
   // the first message's verdict beside the second message's verified signature.
   var parsedA = pki.schema.cms.parse(signedResp);
   var parsedError = null, parsedOutcome = null;
-  var parsedPromise = pki.cmc.verify(parsedA, { certs: [certDer] });
+  var parsedPromise = pki.cmc.verify(parsedA, { certs: [certDer], allowUnbound: true });
   parsedA.encapContentInfo = pki.schema.cms.parse(signedResp).encapContentInfo;
   parsedA.signerInfos = pki.schema.cms.parse(signedResp).signerInfos;
   try { parsedOutcome = await parsedPromise; } catch (e) { parsedError = e; }
@@ -439,7 +439,7 @@ async function run() {
   check("PD14f3. and the opt-out still interprets it, reporting that nothing was authenticated",
     // Refusing the parsed form outright would take away a decode the caller may
     // legitimately want; what is refused is the CLAIM that a signature was checked.
-    (await pki.cmc.verify(pki.schema.cms.parse(signedResp), { allowUnverified: true }))
+    (await pki.cmc.verify(pki.schema.cms.parse(signedResp), { allowUnverified: true, allowUnbound: true }))
       .signatureVerified === false);
 
   // PD14j -- what the response is ABOUT is bound too. A status names its body
@@ -448,18 +448,18 @@ async function run() {
   // server can echo both correctly while reporting on something else.
   check("PD14j. a status reporting on a body part the request never sent is refused",
     (await acode(function () {
-      return pki.cmc.verify(response([statusV2b(999, 0)]), { bodyPartIDs: [1], allowUnverified: true });
+      return pki.cmc.verify(response([statusV2b(999, 0)]), { bodyPartIDs: [1], allowUnverified: true, allowUnbound: true });
     })) === "cmc/body-part-unknown");
 
   check("PD14j2. a status on a body part the request DID send is accepted",
     // statusV2's bodyList names body part 1.
-    (await pki.cmc.verify(response([statusV2(1, 0, null)]), { bodyPartIDs: [1], allowUnverified: true }))
+    (await pki.cmc.verify(response([statusV2(1, 0, null)]), { bodyPartIDs: [1], allowUnverified: true, allowUnbound: true }))
       .outcome === "issued");
 
   check("PD14j3. body part 0 -- the reference to the enclosing PKIData -- is always in the set",
     // sec. 3.2.1 reserves 0 for the message itself, so a status about the request
     // as a whole is in the set by definition and needs no entry.
-    (await pki.cmc.verify(response([statusV2b(0, 0)]), { bodyPartIDs: [1], allowUnverified: true }))
+    (await pki.cmc.verify(response([statusV2b(0, 0)]), { bodyPartIDs: [1], allowUnverified: true, allowUnbound: true }))
       .outcome === "issued");
 
   check("PD14j5. a status reporting on a body part NESTED in a message never sent is refused",
@@ -469,7 +469,7 @@ async function run() {
     (await acode(function () {
       return pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
         b.integer(0n), b.sequence([b.sequence([b.integer(1n), b.integer(999n)])])])])]),
-      { bodyPartIDs: [1], allowUnverified: true });
+      { bodyPartIDs: [1], allowUnverified: true, allowUnbound: true });
     })) === "cmc/body-part-unknown");
 
   // A request MAY carry a nested message (cmsSequence), and a response then identifies a part
@@ -477,7 +477,8 @@ async function run() {
   // conforming answer to a request this toolkit can compose, so a path the request actually
   // holds is accepted -- and only that one. The pair is asserted together: accepting the
   // retained path proves the refusal above is about the reference, not about depth.
-  var nestedSent = { bodyPartIDs: [1, 7], bodyPartPaths: [[1], [7], [7, 42]], allowUnverified: true };
+  var nestedSent = { bodyPartIDs: [1, 7], bodyPartPaths: [[1], [7], [7, 42]], allowUnverified: true,
+    allowUnbound: true };
   check("PD14j6. a status on a body part inside a message the request DID send is accepted",
     (await pki.cmc.verify(response([attr(1, ID_CMC_STATUS_INFO_V2, [b.sequence([
       b.integer(0n), b.sequence([b.sequence([b.integer(7n), b.integer(42n)])])])])]),
@@ -515,7 +516,7 @@ async function run() {
   check("PD14j4. and with no retained set the check does not apply",
     // The same asymmetry as every other half of the binding: checked only when the
     // client kept it.
-    (await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true })).outcome === "issued");
+    (await pki.cmc.verify(response([statusV2(1, 0, null)]), { allowUnverified: true, allowUnbound: true })).outcome === "issued");
 
   // PD14h -- both sides of the comparison are frozen, not just the response.
   // The binding checks run after the signature check's await, so a `sent` the
@@ -524,7 +525,7 @@ async function run() {
   // allowUnverified before its promise turn would skip the signature check the
   // default posture requires.
   var liveNonce = Buffer.alloc(16, 7);
-  var liveSent = { allowUnverified: true };
+  var liveSent = { allowUnverified: true, allowUnbound: true };
   var mutating = pki.cmc.verify(response([statusV2(1, 0, null)]), liveSent);
   liveSent.allowUnverified = false;                 // flip AFTER the call, before its turn
   liveNonce.fill(0xff);
@@ -540,7 +541,7 @@ async function run() {
   var authResp = await pki.cms.authenticate(authBody, [{ password: "s3cret" }],
     { contentType: "id-cct-PKIResponse" });
 
-  var authOk = await pki.cmc.verify(authResp, { recipient: { password: "s3cret" } });
+  var authOk = await pki.cmc.verify(authResp, { recipient: { password: "s3cret" }, allowUnbound: true });
   check("PD14i. an AuthenticatedData response verifies under the recipient key",
     authOk.outcome === "issued" && authOk.signatureVerified === true);
 
@@ -563,7 +564,7 @@ async function run() {
     })) === "cmc/bad-input");
 
   check("PD14l. the opt-out still works and still says nothing was checked",
-    (await pki.cmc.verify(authResp, { allowUnverified: true })).signatureVerified === false);
+    (await pki.cmc.verify(authResp, { allowUnverified: true, allowUnbound: true })).signatureVerified === false);
 
   // ---- input discipline ------------------------------------------------
   check("V1. a Full PKI REQUEST handed to verify is refused (it interprets responses)",
@@ -571,11 +572,83 @@ async function run() {
       var body = b.sequence([b.sequence([]), b.sequence([]), b.sequence([]), b.sequence([])]);
       var encap = b.sequence([b.oid("1.3.6.1.5.5.7.12.2"), b.explicit(0, b.octetString(body))]);
       var sd = b.sequence([b.integer(3n), b.set([b.sequence([b.oid(SHA256), b.nullValue()])]), encap, b.set([])]);
-      return pki.cmc.verify(b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, sd)]), { allowUnverified: true });
+      return pki.cmc.verify(b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, sd)]), { allowUnverified: true, allowUnbound: true });
     })) === "cmc/not-a-response");
 
   check("V2. a non-object opts is refused config-time",
     (await acode(function () { return pki.cmc.verify(response([]), 7); })) === "cmc/bad-input");
+
+  // ---- RP1-RP8: the exchange binding is stated, and its absence declared ----
+  // RFC 5272 sec. 6.6 names the Sender/Recipient Nonce pair as the replay
+  // defence, and every half of the binding here is conditional on the client
+  // having sent it. A caller who retains nothing therefore gets a fully signed,
+  // fully valid verdict about a response captured from ANY earlier exchange with
+  // the same CA -- which is the CWE-294 this module claims to defend. So the
+  // posture is the one the carrier signature already takes in this module: check
+  // it when the caller supplies what it takes, and refuse rather than answer when
+  // nothing at all binds the response, unless the caller names that.
+  var replay = response(txControls([statusV2(4, 0, null)]));
+  // Held in a variable so the fix-ups below cannot reach it: this is the exact
+  // shape the vectors assert is REFUSED.
+  var retainedNothing = { allowUnverified: true };
+
+  check("RP1. a response with NOTHING tying it to a request is refused, not answered",
+    (await acode(function () { return pki.cmc.verify(replay, retainedNothing); }))
+      === "cmc/unbound-response");
+
+  check("RP2. the refusal survives a fully verified carrier -- a signed replay is still a replay",
+    (await acode(function () { return pki.cmc.verify(signedResp, { certs: [certDer] }); }))
+      === "cmc/unbound-response");
+
+  check("RP3. allowUnverified does NOT cover it -- the two questions are separate opt-outs",
+    (await acode(function () { return pki.cmc.verify(replay, retainedNothing); }))
+      !== "NO-THROW");
+
+  var declared = await pki.cmc.verify(replay, { allowUnverified: true, allowUnbound: true });
+  check("RP4. allowUnbound names it, and the verdict says so rather than staying silent",
+    declared.outcome === "issued" && declared.boundToRequest === false &&
+    declared.bound.transactionId === false && declared.bound.senderNonce === false &&
+    declared.bound.dataReturn === false && declared.bound.bodyPartIDs === false);
+
+  var boundTx = await pki.cmc.verify(replay, { transactionId: TX, allowUnverified: true });
+  check("RP5. a transactionId alone binds the exchange, and the verdict names WHICH half ran",
+    boundTx.boundToRequest === true && boundTx.bound.transactionId === true &&
+    boundTx.bound.senderNonce === false);
+
+  var boundBoth = await pki.cmc.verify(replay, sent);
+  check("RP6. the nonce echo is reported separately from the identifier",
+    boundBoth.bound.transactionId === true && boundBoth.bound.senderNonce === true &&
+    boundBoth.boundToRequest === true);
+
+  check("RP7. bodyPartIDs alone does NOT satisfy it -- part identifiers repeat across requests",
+    (await acode(function () {
+      return pki.cmc.verify(replay, { bodyPartIDs: [1, 4], allowUnverified: true });
+    })) === "cmc/unbound-response");
+
+  var boundData = await pki.cmc.verify(
+    response(txControls([statusV2(4, 0, null), attr(5, ID_CMC_DATA_RETURN, [b.octetString(Buffer.from("ping"))])])),
+    { dataReturn: Buffer.from("ping"), bodyPartIDs: [1, 4], allowUnverified: true });
+  check("RP8. a Data Return echo binds it too, and every checked half is reported",
+    boundData.boundToRequest === true && boundData.bound.dataReturn === true &&
+    boundData.bound.bodyPartIDs === true && boundData.bound.transactionId === false);
+
+  // A zero-length value binds nothing. An empty nonce echoes equal in every exchange that
+  // also used one, so counting its presence would report boundToRequest true for a response
+  // captured from any of them -- the replay this gate exists to refuse, passing because the
+  // comparison it ran was vacuous.
+  // This response echoes neither control, so each still refuses at its own echo check --
+  // the empty value never reaches the roll-up as a satisfied binding.
+  check("RP9. an empty senderNonce still demands the echo, and is refused without one",
+    (await acode(function () {
+      return pki.cmc.verify(replay, { senderNonce: Buffer.alloc(0), allowUnverified: true });
+    })) === "cmc/nonce-mismatch");
+  check("RP10. an empty dataReturn still demands the echo",
+    (await acode(function () {
+      return pki.cmc.verify(replay, { dataReturn: Buffer.alloc(0), allowUnverified: true });
+    })) === "cmc/data-return-missing");
+  // The roll-up itself -- that an empty value contributes nothing to boundToRequest -- needs
+  // a response that actually echoes an empty Recipient Nonce, which this fixture does not
+  // build. The lib change is in _assertBound's `_carries`; the vector for it is outstanding.
 
   console.log("CHECKS " + helpers.getChecks());
 }
