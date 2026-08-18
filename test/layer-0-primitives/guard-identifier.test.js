@@ -371,6 +371,39 @@ function testKnownKeys() {
   check("and the refusal names the shape", /Proxy/.test(liarErr.message));
   check("optionsObject refuses it at the entry point too",
         errOf(function () { identifier.optionsObject(liar, E, "x/bad", "opts"); }).code === "x/bad");
+  // What optionsObject hands back is the bag everything downstream reads, so the options are read
+  // here once and carried on an object of plain values. Without that, checking names and reading
+  // values are two moments a caller's getter sits between.
+  var settled = identifier.optionsObject({ get alpha() { return 1; }, beta: 2 }, E, "x/bad", "opts");
+  check("optionsObject returns the caller's options as plain values",
+        settled.alpha === 1 && settled.beta === 2 &&
+        Object.getOwnPropertyDescriptor(settled, "alpha").get === undefined);
+  check("on an object that inherits nothing", Object.getPrototypeOf(settled) === null);
+  // Frozen, so what this returns is what the unknown-option check reads and what the verb acts
+  // on, without that depending on no code in between writing to it.
+  check("and one that cannot be added to, rewritten or emptied afterwards",
+        Object.isFrozen(settled) &&
+        errOf(function () { "use strict"; settled.gamma = 3; }) instanceof TypeError &&
+        errOf(function () { "use strict"; settled.alpha = 99; }) instanceof TypeError &&
+        errOf(function () { "use strict"; delete settled.beta; }) instanceof TypeError &&
+        settled.alpha === 1 && settled.beta === 2 && settled.gamma === undefined);
+  var reread = { reads: 0 };
+  Object.defineProperty(reread, "alpha", { get: function () { this.reads++; return 1; }, enumerable: true });
+  identifier.optionsObject(reread, E, "x/bad", "opts");
+  check("and the caller's getter runs once, not once per later read", reread.reads === 1);
+  // A getter that adds a name to its own bag leaves the checked set and the read set different.
+  check("optionsObject refuses a bag that grows a name as it is read",
+        errOf(function () {
+          identifier.optionsObject({ get alpha() { this.gamma = 3; return 1; } }, E, "x/bad", "opts");
+        }).code === "x/bad");
+  check("and one that drops a name as it is read",
+        errOf(function () {
+          var shrinking = { beta: 2, get alpha() { delete this.beta; return 1; } };
+          identifier.optionsObject(shrinking, E, "x/bad", "opts");
+        }).code === "x/bad");
+  check("while a getter that reads its own bag without changing it is accepted",
+        identifier.optionsObject({ beta: 2, get alpha() { return this.beta + 1; } },
+                                 E, "x/bad", "opts").alpha === 3);
   // A Proxy is refused by identity, never by probing its traps for a contradiction: a trap can
   // answer consistently for as long as the check looks and differ afterwards.
   var honest = new Proxy({ alpha: 1 }, {});

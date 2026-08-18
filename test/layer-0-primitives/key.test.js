@@ -521,6 +521,25 @@ async function testUnknownOptionsRefused() {
         !("password" in Array.prototype));
   check("and an array bag is accepted again once the pollution is gone",
         (await pki.key.export(pair.publicKey, [])).equals(await pki.key.export(pair.publicKey)));
+  // A getter that adds a field to the bag it is read from. Checking the names once and reading
+  // them afterwards means the verb carries a name the check never saw: this bag shows `format`
+  // while it is checked, and grows `password` when the verb reads `format`, so export took it and
+  // returned the private key in the clear. The options are read once up front now, so the check
+  // and the verb both see the same settled set.
+  var mutatingGetter = { get format() { this.password = "pw"; return "der"; } };
+  check("export refuses a bag whose getter adds an option while it is being read",
+        (await codeOf(pki.key.export(pair.privateKey, mutatingGetter))) === "key/bad-input");
+  // The refusal is aimed at the mutation, not at accessors: an option a caller exposes through a
+  // getter is a supported shape and stays accepted, on the object and on its class.
+  check("while an ordinary getter is still read as the option it supplies",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, { get format() { return "der"; } })));
+  function GetterBag() {}
+  Object.defineProperty(GetterBag.prototype, "format", { get: function () { return "der"; } });
+  check("including one a caller's class defines",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, new GetterBag())));
+  // A getter that throws is a bad input like any other and gets this verb's own code.
+  check("and a getter that throws is refused with the verb's code",
+        (await codeOf(pki.key.export(pair.publicKey, { get format() { throw new Error("boom"); } }))) === "key/bad-input");
   // A Proxy reports its keys from one trap and answers reads from another, so an options bag
   // that enumerates as empty can still answer `password`. Export would then serialize the key
   // in the clear on a call that named a password, which is the case the refusal exists for.
