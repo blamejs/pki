@@ -150,6 +150,9 @@ jobs:
       - name: API surface snapshot gate
         run: node scripts/check-api-snapshot.js
 
+      - name: One spelling per word
+        run: node scripts/check-spelling-consistency.js
+
       - name: '@status lifecycle gate'
         run: node scripts/check-status-lifecycle.js
 

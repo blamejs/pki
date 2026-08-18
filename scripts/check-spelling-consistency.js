@@ -81,6 +81,22 @@ var FORMS = [
 // blanket exemption for the word. A quotation wrapped across two source lines
 // will therefore report -- rewrap it so the title sits on one line.
 var RFC8894_TITLE = "Simple Certificate Enrolment Protocol";
+var RFC8894_WORD_OFFSET = RFC8894_TITLE.indexOf("Enrolment");
+
+// The offsets at which the allowed word sits INSIDE a quotation of the title on
+// this line. Exempting the whole line instead would let an unrelated occurrence
+// ride along beside the citation, which is the exemption spreading by another
+// route.
+function allowedOffsets(line) {
+  var offsets = [];
+  var from = 0;
+  for (;;) {
+    var at = line.indexOf(RFC8894_TITLE, from);
+    if (at === -1) return offsets;
+    offsets.push(at + RFC8894_WORD_OFFSET);
+    from = at + 1;
+  }
+}
 
 var SKIP_EXT = /\.(png|jpe?g|gif|ico|svg|pem|der|p12|pfx|crt|cer|key|woff2?|ttf|eot|zip|gz|tgz|pdf)$/i;
 
@@ -115,13 +131,14 @@ function scanFile(file) {
   var lines = src.split("\n");
   for (var i = 0; i < lines.length; i++) {
     var line = lines[i];
+    var allowed = allowedOffsets(line);
     var m;
     WORD_RE.lastIndex = 0;
     while ((m = WORD_RE.exec(line)) !== null) {
       var lower = m[0].toLowerCase();
       var want = BY_LOWER[lower];
       if (want === undefined) continue;
-      if (lower === "enrolment" && line.indexOf(RFC8894_TITLE) !== -1) continue;
+      if (allowed.indexOf(m.index) !== -1) continue;
       findings.push({ file: file, line: i + 1, found: m[0], want: want });
     }
   }
@@ -151,6 +168,14 @@ function canary() {
     if (scanFile(probe).length !== 1) {
       throw new Error("canary: the allowed word outside the RFC title should be flagged");
     }
+    // ...including on the SAME line as the citation. A line-scoped exemption
+    // would pass this file silently, which is how an exemption spreads.
+    fs.writeFileSync(probe, RFC8894_TITLE + " governs device enrolment here.\n");
+    var sameLine = scanFile(probe);
+    if (sameLine.length !== 1 || sameLine[0].found !== "enrolment") {
+      throw new Error("canary: an occurrence beside the RFC title should still be flagged, got " +
+                      sameLine.length + " finding(s)");
+    }
     // A binary file must be skipped, not decoded into spurious findings.
     fs.writeFileSync(probe, "behaviour" + NUL + "binary\n");
     if (scanFile(probe).length !== 0) {
@@ -164,7 +189,8 @@ function canary() {
 function main() {
   canary();
   console.log("[check-spelling-consistency] canary: OK - the scanner flags planted forms, " +
-              "allows the RFC 8894 title, still flags that word elsewhere, and skips binary");
+              "allows the RFC 8894 title, still flags that word elsewhere including beside " +
+              "the title itself, and skips binary");
 
   var findings = [];
   trackedFiles().forEach(function (f) {
