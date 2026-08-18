@@ -275,6 +275,25 @@ function testKnownKeys() {
   }
   check("a planted name that borrows a kind's member name is still reported",
         plantedMemberNames.indexOf("size") !== -1);
+  // The names passed over belong to the value's OWN kind. A caller's accessor can borrow a name a
+  // different kind defines, and treating any of them as the language's lets an unknown option
+  // through: `buffer` is a byte view's member and not an array's, so on an array it is the
+  // caller's. Both of these are unknown options that reached a verb before.
+  function BorrowedName() {}
+  BorrowedName.prototype = Object.create(Array.prototype);
+  Object.defineProperty(BorrowedName.prototype, "buffer", { get: function () { return "unused"; } });
+  check("an array bag whose class defines a byte view's member name reports it",
+        identifier.readableNames(Object.setPrototypeOf([], BorrowedName.prototype), E, "x/bad", "o")
+          .map(String).join(",") === "buffer");
+  function BorrowedSize() {}
+  BorrowedSize.prototype = Object.create(Array.prototype);
+  Object.defineProperty(BorrowedSize.prototype, "size", { get: function () { return 1; } });
+  check("and one that borrows a keyed collection's member name reports it too",
+        identifier.readableNames(Object.setPrototypeOf([], BorrowedSize.prototype), E, "x/bad", "o")
+          .map(String).join(",") === "size");
+  check("while the value's own kind keeps its members unreported",
+        identifier.readableNames([], E, "x/bad", "o").length === 0 &&
+        identifier.readableNames(new Uint8Array(2), E, "x/bad", "o").length === 0);
   check("while the real members of every kind stay unreported",
         identifier.readableNames([], E, "x/bad", "o").length === 0 &&
         identifier.readableNames(new Map(), E, "x/bad", "o").length === 0 &&
@@ -378,7 +397,12 @@ function testKnownKeys() {
   check("optionsObject returns the caller's options as plain values",
         settled.alpha === 1 && settled.beta === 2 &&
         Object.getOwnPropertyDescriptor(settled, "alpha").get === undefined);
-  check("on an object that inherits nothing", Object.getPrototypeOf(settled) === null);
+  check("as its own properties, over the bag they were read from",
+        Object.prototype.hasOwnProperty.call(settled, "alpha") &&
+        Object.prototype.hasOwnProperty.call(settled, "beta"));
+  check("while a verb called with no options still gets a bag inheriting nothing",
+        Object.getPrototypeOf(identifier.optionsObject(undefined, E, "x/bad", "opts")) === null &&
+        Object.getPrototypeOf(identifier.optionsObject(null, E, "x/bad", "opts")) === null);
   // Frozen, so what this returns is what the unknown-option check reads and what the verb acts
   // on, without that depending on no code in between writing to it.
   check("and one that cannot be added to, rewritten or emptied afterwards",
@@ -404,6 +428,21 @@ function testKnownKeys() {
   check("while a getter that reads its own bag without changing it is accepted",
         identifier.optionsObject({ beta: 2, get alpha() { return this.beta + 1; } },
                                  E, "x/bad", "opts").alpha === 3);
+  // The walk passes over a method so a caller's class keeps its own, and a documented option can
+  // hold a function: pki.path.build takes `transport`. A defaults-style bag carries it inherited,
+  // so settling onto a bare object drops it and the verb falls back to its built-in transport,
+  // reaching the network the caller meant to replace. The settled bag keeps the original beneath
+  // it, so every name resolves as it did.
+  var injected = function () { return "injected"; };
+  var withDefaults = Object.create({ transport: injected, fetchAia: true });
+  withDefaults.trustAnchors = ["anchor"];
+  var settledOverDefaults = identifier.optionsObject(withDefaults, E, "x/bad", "opts");
+  check("an inherited function option still resolves through the settled bag",
+        settledOverDefaults.transport === injected);
+  check("as does an inherited plain one", settledOverDefaults.fetchAia === true);
+  check("and settling reports the same names as the bag it was built from",
+        identifier.readableNames(settledOverDefaults, E, "x/bad", "o").join(",") ===
+        identifier.readableNames(withDefaults, E, "x/bad", "o").join(","));
   // A Proxy is refused by identity, never by probing its traps for a contradiction: a trap can
   // answer consistently for as long as the check looks and differ afterwards.
   var honest = new Proxy({ alpha: 1 }, {});
