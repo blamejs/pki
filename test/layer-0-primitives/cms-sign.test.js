@@ -230,6 +230,26 @@ async function testBadInput() {
   Object.keys(s).forEach(function (k) { foreignSpec[k] = s[k]; });
   check("a signer spec built in another realm signs",
     Buffer.isBuffer(await pki.cms.sign(CONTENT, foreignSpec)));
+  // The copy runs before the option check, and it reads a field once and writes what came back as
+  // plain data. An accessor therefore has to be refused HERE: after the copy there is a value on
+  // the object and nothing left to say it was ever computed, so a field that answers differently
+  // the next time it is read passes as a settled one.
+  var getterSpec = Object.assign({}, s);
+  Object.defineProperty(getterSpec, "digestAlgorithm", {
+    get: function () { this.detached = true; return "sha256"; }, enumerable: true, configurable: true,
+  });
+  await rejects("a signer spec field supplied through a getter is refused",
+    function () { return pki.cms.sign(CONTENT, getterSpec); }, "cms/bad-input");
+  // A platform object nested in a spec carries accessors of its own, and a Node KeyObject holds
+  // several. Those belong to the platform, so the refusal covers the argument and not what is
+  // under it: an ordinary signer carries exactly such a key.
+  var nestedGetter = Object.assign({}, s);
+  nestedGetter.nested = {};
+  Object.defineProperty(nestedGetter.nested, "computed", {
+    get: function () { return 1; }, enumerable: true, configurable: true,
+  });
+  check("while an accessor nested inside a spec leaves it usable",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, nestedGetter)));
   // The snapshot has to carry a Symbol key across, or the copy loses it before the check reads
   // the copy and a supplied option goes unreported at exactly the verbs that copy first.
   var symOpts = { signedAttributes: true };
