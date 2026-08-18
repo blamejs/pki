@@ -25,6 +25,8 @@
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
+var path = require("path");
+var spawnSync = require("child_process").spawnSync;
 var b = pki.asn1.build;
 var subtle = require("../../lib/webcrypto").webcrypto.subtle;
 
@@ -130,7 +132,68 @@ function certsOnlyCms(certDers) {
   return b.sequence([b.oid(pki.oid.byName("signedData")), b.explicit(0, b.sequence(sd))]);
 }
 
+// A caller's OWN `softFail: false` on a runtime whose Object.prototype carries `softFail = true`.
+//
+// build forwards each validate option to every internal validate call, and decides which names to
+// forward by consulting a build-only table. A table read by truthiness answers for any inherited
+// name, so the caller's own `softFail` looked build-only and was dropped from the forwarded set;
+// that set was a plain `{}`, so the next pass over it re-read the planted `true` off its own
+// prototype. An explicit refusal to waive an undetermined revocation result became a waiver.
+//
+// The plant has to precede the require, so it runs in a child. The child re-enters this same file
+// to reuse its certificate fixtures, and runs only this vector.
+async function pollutedOwnValueWins() {
+  var anchorKp = await freshKeys(), leafKp = await freshKeys();
+  var anchorCert = await mkCert({ signer: anchorKp, subjectKp: anchorKp, issuerName: "Anchor",
+    subjectName: "Anchor", ca: true });
+  var leaf = await mkCert({ signer: anchorKp, subjectKp: leafKp, issuerName: "Anchor",
+    subjectName: "Leaf" });
+  // A checker that runs and answers "unknown" leaves revocation UNDETERMINED, which is the state
+  // softFail decides. (An absent checker is a different thing, and softFail does not waive it.)
+  // The caller refuses the waiver, so the answer must be no.
+  var unknownChecker = { check: function () { return Promise.resolve({ status: "unknown" }); } };
+  var refused = await pki.path.build(leaf, {
+    trustAnchors: [anchorCert], time: T, revocationChecker: unknownChecker, softFail: false
+  });
+  check("an own softFail:false wins over a planted Object.prototype softFail:true",
+        refused.valid === false);
+  // The mirror direction, which is what the build-only table decides. A name it reports as
+  // build-only is not forwarded at all, and a table read by truthiness reports every inherited
+  // name that way, so the caller's own `softFail: true` was dropped on the floor and the
+  // internal validate fell back to its default of false. Both directions are the same defect
+  // seen from each side, and only this one moves when the table lookup is the one at fault.
+  var waived = await pki.path.build(leaf, {
+    trustAnchors: [anchorCert], time: T, revocationChecker: unknownChecker, softFail: true
+  });
+  check("an own softFail:true reaches the internal validate rather than being dropped",
+        waived.valid === true);
+  // The bag the forwarded set is built in. `maxDepth` is build-only, so it is deliberately kept
+  // out of that set. A bag with a prototype re-acquires it anyway, and the next pass reports it
+  // and hands it to validate, which does not accept the name and refuses the whole call. A build
+  // that works on a clean runtime must work on one carrying a build-only name too.
+  var plain = await pki.path.build(leaf, { trustAnchors: [anchorCert], time: T });
+  check("a build-only name on the prototype does not reach the internal validate",
+        plain.valid === true);
+}
+
+function testUnderPollutedPrototype() {
+  var preload = path.resolve(__dirname, "../helpers/polluted-prototype-preload.js");
+  var env = Object.assign({}, process.env, { PKI_POLLUTED_CHILD: "1" });
+  var r = spawnSync(process.execPath, ["-r", preload, __filename], { encoding: "utf8", env: env });
+  check("the polluted-prototype child ran", !r.error && /CHECKS/.test(r.stdout || ""));
+  check("a caller's own option value wins over a planted one", r.status === 0);
+  if (r.status !== 0) {
+    console.error((r.stdout || "").split("\n").slice(-4).join("\n"));
+    console.error((r.stderr || "").split("\n").slice(-4).join("\n"));
+  }
+}
+
 async function run() {
+  if (process.env.PKI_POLLUTED_CHILD === "1") {
+    await pollutedOwnValueWins();
+    console.log("CHECKS " + helpers.getChecks());
+    return;
+  }
   // ---- V-BUILD-1: a three-cert pool builds + validates ----
   var anchorKp = await freshKeys(), interAKp = await freshKeys(), interBKp = await freshKeys(), leafKp = await freshKeys();
   var anchorCert = await mkCert({ signer: anchorKp, subjectKp: anchorKp, issuerName: "Anchor", subjectName: "Anchor", extensions: caExts() });
@@ -620,6 +683,8 @@ async function run() {
   check("AIA G2: fetchAia:true with the DEFAULT transport + no tls trust -> fetch fails closed (no-trust-anchors), skipped", (await codeOf(pki.path.build(aLeaf, { candidates: [], trustAnchors: [aRoot], time: T, fetchAia: true }))) === "path/no-path");
   var g3t = mkTransport(function () { return cert200(aInter); });
   check("AIA G3: at the depth cap (maxDepth 0) no fetch is attempted (transport uncalled)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: g3t, maxDepth: 0 })))) === "path/no-path" && g3t.calls.length === 0);
+
+  testUnderPollutedPrototype();
 
   console.log("CHECKS " + helpers.getChecks());
 }
