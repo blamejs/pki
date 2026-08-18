@@ -114,7 +114,19 @@ function allowedOffsets(line) {
 // they are rarely prose today -- SVG carries `<title>` and `<desc>` a reader
 // sees, so skipping it by extension would leave the next one unchecked. The
 // control-byte test below, not this list, is what keeps binary out.
-var SKIP_EXT = /\.(png|jpe?g|gif|ico|pem|der|p12|pfx|crt|cer|key|woff2?|ttf|eot|zip|gz|tgz|pdf)$/i;
+var SKIP_EXT = /\.(png|jpe?g|gif|ico|pem|der|p12|pfx|crt|cer|key|woff2?|ttf|eot|zip|gz|tgz|pdf|bin)$/i;
+
+// A fuzz seed is an INPUT to a parser, not prose anybody reads, and its bytes
+// are chosen to break a decoder rather than to say something. Most are binary,
+// but nothing stops one being plain ASCII that happens to contain a word in the
+// table -- and libFuzzer writes newly discovered inputs back into these
+// directories, so the corpus grows without anyone writing a sentence. Scanning
+// it can only ever produce a false finding that fails a workflow over a valid
+// test input, so the corpus is excluded by PATH rather than left to the
+// control-byte test, which an ASCII seed passes.
+var SKIP_PATH = /(^|\/)[^/]*_seed_corpus\//;
+
+function isDataPath(file) { return SKIP_EXT.test(file) || SKIP_PATH.test(file); }
 
 // The gate must never report on itself: this file names every non-preferred
 // form by construction, and a check that flags its own word list is a check
@@ -142,7 +154,7 @@ function trackedFiles() {
     encoding: "utf8", maxBuffer: 64 * 1024 * 1024
   });
   return out.split("\n").filter(function (f) {
-    return f && !SKIP_EXT.test(f) && f !== SELF;
+    return f && !isDataPath(f) && f !== SELF;
   });
 }
 
@@ -227,6 +239,13 @@ function canary() {
     fs.writeFileSync(probe, "behaviour" + NUL + "binary\n");
     if (scanFile(probe).length !== 0) {
       throw new Error("canary: a file containing a control byte should be skipped");
+    }
+    // A fuzz seed is data, whatever its bytes look like. The ASCII case is the
+    // one the control-byte test cannot catch, so the path rule has to.
+    if (!isDataPath("fuzz/x509-parse_seed_corpus/plain.bin") ||
+        !isDataPath("fuzz/cms-verify_seed_corpus/ascii-input") ||
+        isDataPath("lib/webauthn.js") || isDataPath("docs/seed_corpus-notes.md")) {
+      throw new Error("canary: the corpus path rule must cover a seed dir and nothing else");
     }
     // An identifier is not prose. Both halves of a snake_case name touch an
     // underscore, so neither is a word this gate may rewrite.
