@@ -443,6 +443,18 @@ function testKnownKeys() {
   check("and settling reports the same names as the bag it was built from",
         identifier.readableNames(settledOverDefaults, E, "x/bad", "o").join(",") ===
         identifier.readableNames(withDefaults, E, "x/bad", "o").join(","));
+  // A bag sitting over an array inherits that array's elements and its `length`, which are the
+  // array's structure wherever they are reached from. Reading the kind off the wrapper alone
+  // calls them options its caller chose, and a settled bag IS such a wrapper, so an indexed bag
+  // holding an element came back refused for the field "0".
+  check("an object over an array reports neither its elements nor its length",
+        identifier.readableNames(Object.create([1, 2]), E, "x/bad", "o").length === 0);
+  check("and settling an indexed bag with elements leaves nothing to refuse",
+        identifier.readableNames(identifier.optionsObject([1, 2], E, "x/bad", "opts"),
+                                 E, "x/bad", "o").length === 0);
+  check("while a real option on one is still reported",
+        identifier.readableNames(identifier.optionsObject(Object.assign([1], { pem: true }),
+                                 E, "x/bad", "opts"), E, "x/bad", "o").join(",") === "pem");
   // A Proxy is refused by identity, never by probing its traps for a contradiction: a trap can
   // answer consistently for as long as the check looks and differ afterwards.
   var honest = new Proxy({ alpha: 1 }, {});

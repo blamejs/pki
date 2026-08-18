@@ -540,6 +540,14 @@ async function testUnknownOptionsRefused() {
   // A getter that throws is a bad input like any other and gets this verb's own code.
   check("and a getter that throws is refused with the verb's code",
         (await codeOf(pki.key.export(pair.publicKey, { get format() { throw new Error("boom"); } }))) === "key/bad-input");
+  // An array is an options bag as far as `opts.format` is concerned, and its elements are its
+  // structure. Settling the bag puts an object over it, and reading the kind off that object
+  // alone turns the inherited elements into names its caller chose, so a bag holding one came
+  // back refused for the field "0".
+  check("an indexed bag holding elements carries no option to refuse",
+        typeof (await pki.key.generate("Ed25519", [1, 2])).privateKey === "object");
+  check("while a real option added to one is still refused",
+        (await codeOf(pki.key.generate("Ed25519", Object.assign([1], { nope: true })))) === "key/bad-input");
   // A Proxy reports its keys from one trap and answers reads from another, so an options bag
   // that enumerates as empty can still answer `password`. Export would then serialize the key
   // in the clear on a call that named a password, which is the case the refusal exists for.

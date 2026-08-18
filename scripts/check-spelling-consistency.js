@@ -325,15 +325,33 @@ function canary() {
     // No leading dot: this repository ignores dotfiles by default, and `--exclude-standard`
     // would then leave the probe out of the very list under test, which passes for the wrong
     // reason rather than failing.
+    var PROBE_BODY = "module.exports = 1;\n";
     var probeName = "check-spelling-canary-" + process.pid + ".js";
     var untracked = path.resolve(__dirname, "..", probeName);
     var probeLeft = null;
+    // A probe left behind by a run that was killed before its cleanup. Its own removal is
+    // insisted on below, so the only way one survives is a process that never reached that point,
+    // and the next `git add -A` then commits it: three have reached a branch that way, and one
+    // returns as a gate failure the day a run draws that pid again.
+    //
+    // Removed only where the name matches the shape this gate writes AND the content is exactly
+    // what it writes, which together are proof it wrote the file. A developer's own file at such
+    // a path holds something else and is left alone, which keeps the rule that a gate may not
+    // destroy what it did not create.
+    fs.readdirSync(path.resolve(__dirname, "..")).forEach(function (entry) {
+      if (!/^check-spelling-canary-\d+\.js$/.test(entry)) return;
+      var stale = path.resolve(__dirname, "..", entry);
+      try {
+        if (fs.readFileSync(stale, "utf8") !== PROBE_BODY) return;
+        fs.rmSync(stale, { force: true });
+      } catch (_e) { /* unreadable or already gone: left for the check below to report */ }
+    });
     if (fs.existsSync(untracked)) {
-      throw new Error("canary: " + probeName + " already exists; this gate will not overwrite a " +
-                      "file it did not create, so remove it and run again");
+      throw new Error("canary: " + probeName + " already exists and does not hold what this gate " +
+                      "writes, so it will not be overwritten; remove it and run again");
     }
     try {
-      fs.writeFileSync(untracked, "module.exports = 1;\n");
+      fs.writeFileSync(untracked, PROBE_BODY);
       var listed = trackedFiles();
       if (listed.indexOf(probeName) === -1) {
         throw new Error("canary: an untracked file must be in the set this gate reads, or a new " +
