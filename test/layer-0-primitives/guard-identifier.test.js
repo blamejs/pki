@@ -294,6 +294,28 @@ function testKnownKeys() {
   check("while the value's own kind keeps its members unreported",
         identifier.readableNames([], E, "x/bad", "o").length === 0 &&
         identifier.readableNames(new Uint8Array(2), E, "x/bad", "o").length === 0);
+  // An override is recognized by position, which answers in any realm: the language installs a
+  // member once, so an intrinsic one is the only level carrying that name, and an override
+  // shadows the intrinsic still sitting above it. Keying this on the descriptors this realm
+  // installed instead left a foreign subclass's override passing for the language's own.
+  var foreignOverride = vm.runInNewContext(
+    "(function () { function C() {} C.prototype = Object.create(Map.prototype);" +
+    "Object.defineProperty(C.prototype, 'size', { get: function () { return 1; } });" +
+    "return Object.setPrototypeOf(new Map(), C.prototype); })()");
+  check("a subclass from another realm overriding its own kind's member reports it",
+        identifier.readableNames(foreignOverride, E, "x/bad", "o").map(String).join(",") === "size");
+  // Every typed array kind, named or not. Listing the constructors meant the list had to be kept
+  // level with the language: `Float16Array` landed and its `BYTES_PER_ELEMENT` began reading as an
+  // option its caller never wrote.
+  // Reached through globalThis so the file still parses on a runtime that has no such global.
+  var Float16 = globalThis.Float16Array;
+  if (typeof Float16 === "function") {
+    check("a Float16Array options bag reports none of its own structure",
+          identifier.readableNames(new Float16(2), E, "x/bad", "o").length === 0);
+    check("while an option added to one is reported",
+          identifier.readableNames(Object.assign(new Float16(2), { pem: true }),
+                                   E, "x/bad", "o").join(",") === "pem");
+  }
   check("while the real members of every kind stay unreported",
         identifier.readableNames([], E, "x/bad", "o").length === 0 &&
         identifier.readableNames(new Map(), E, "x/bad", "o").length === 0 &&
