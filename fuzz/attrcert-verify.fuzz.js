@@ -40,7 +40,7 @@ async function verdictOf(input) {
   }
   if (r === null || typeof r !== "object") throw new Error("attrcert-verify fuzz: verify settled to a non-object");
   var flags = ["verified", "signatureValid", "validityChecked", "targetingChecked",
-    "holderBindingChecked", "issuerPathChecked"];
+    "revocationChecked", "noRevAvail", "holderBindingChecked", "issuerPathChecked"];
   for (var i = 0; i < flags.length; i++) {
     if (typeof r[flags[i]] !== "boolean") throw new Error("attrcert-verify fuzz: `" + flags[i] + "` is not a boolean");
   }
@@ -49,7 +49,8 @@ async function verdictOf(input) {
     throw new Error("attrcert-verify fuzz: the verdict omits a field it documents");
   }
   // A verdict that says verified must have said so about checks it actually ran.
-  if (r.verified === true && !(r.signatureValid && r.validityChecked && r.targetingChecked)) {
+  if (r.verified === true &&
+      !(r.signatureValid && r.validityChecked && r.targetingChecked && r.revocationChecked)) {
     throw new Error("attrcert-verify fuzz: verified is true while a check it depends on was not performed");
   }
   return r;
@@ -62,6 +63,9 @@ module.exports.fuzz = async function (data) {
       holder: { entityName: { directoryName: "CN=Alice" } },
       notBeforeTime: NB, notAfterTime: NA,
       attributes: { role: { roleName: { uniformResourceIdentifier: "urn:role:admin" } } },
+      // RFC 5755 sec. 6: without it the AC is rightly refused, and this AC exists to reach the
+      // paths PAST the gates, so the honest one carries the issuer's never-revoke statement.
+      extensions: { noRevAvail: true },
     }, { name: "CN=Example AA", publicKey: S.spki, key: S.key });
     var h = await pki.attrcert.verify(HONEST, TRUST, { time: AT });
     if (h.verified !== true) throw new Error("attrcert-verify fuzz: a genuine attribute certificate failed to verify");

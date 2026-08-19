@@ -43,6 +43,12 @@ function spec(over) {
     notBeforeTime: NB, notAfterTime: NA, attributes: ROLE,
   }, over || {});
 }
+// RFC 5755 sec. 6 is a gate on every pass: this verb implements the "never revoke" scheme, so an AC
+// with no noRevAvail is refused unless the caller supplies the status. Every vector that expects
+// verified === true therefore answers it, named once here. testRevocationIsAnswered exercises the
+// rule itself, including the noRevAvail route that needs no option at all.
+var OK = { time: WITHIN, revocationStatus: "notRevoked" };
+function okTarget(t) { return { time: WITHIN, revocationStatus: "notRevoked", target: t }; }
 function aaOf(s) { return { name: "CN=Example AA", publicKey: s.spki, key: s.key }; }
 // The issuer argument the verifier takes: the AC issuer this caller directly trusts (sec. 5(4)).
 function trusted(s) { return { name: "CN=Example AA", publicKey: s.spki }; }
@@ -54,7 +60,7 @@ async function testAcceptsEveryAlgorithmArm() {
   for (var i = 0; i < arms.length; i++) {
     var aa = makeSigner(arms[i]);
     var der = await pki.attrcert.sign(spec(), aaOf(aa));
-    var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+    var r = await pki.attrcert.verify(der, trusted(aa), OK);
     check("a " + arms[i] + " attribute certificate verifies", r.verified === true);
     check("a " + arms[i] + " verdict reports the signature checked", r.signatureValid === true);
   }
@@ -67,7 +73,7 @@ async function testAcceptsCompositeArm() {
   catch { check("composite arm " + arm + " available", false); return; }
   var der = await pki.attrcert.sign(spec(), aaOf(aa));
   check("a composite attribute certificate verifies",
-    (await pki.attrcert.verify(der, trusted(aa), { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(der, trusted(aa), OK)).verified === true);
 }
 
 async function testAcceptsPemAndParsed() {
@@ -75,11 +81,11 @@ async function testAcceptsPemAndParsed() {
   var der = await pki.attrcert.sign(spec(), aaOf(aa));
   var pem = pki.schema.attrcert.pemEncode(der, "ATTRIBUTE CERTIFICATE");
   check("verify accepts a DER Buffer",
-    (await pki.attrcert.verify(der, trusted(aa), { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(der, trusted(aa), OK)).verified === true);
   check("verify accepts a PEM string",
-    (await pki.attrcert.verify(pem, trusted(aa), { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(pem, trusted(aa), OK)).verified === true);
   check("verify accepts a parsed attribute certificate",
-    (await pki.attrcert.verify(pki.schema.attrcert.parse(der), trusted(aa), { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(pki.schema.attrcert.parse(der), trusted(aa), OK)).verified === true);
 }
 
 // ---- the verdict carries what it verified ---------------------------------
@@ -87,7 +93,7 @@ async function testAcceptsPemAndParsed() {
 async function testVerdictCarriesTheVerifiedFields() {
   var aa = makeSigner("ec-p256");
   var der = await pki.attrcert.sign(spec(), aaOf(aa));
-  var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+  var r = await pki.attrcert.verify(der, trusted(aa), OK);
   check("the verdict is an object", r !== null && typeof r === "object");
   check("the verdict carries the holder", !!r.holder);
   check("the verdict carries the issuer name", /Example AA/.test(r.issuer.dn));
@@ -134,7 +140,7 @@ async function testTheTrustedIssuerIsRequired() {
   check("an issuer with no public key throws attrcert/bad-input",
     (await codeOf(pki.attrcert.verify(der, { name: "CN=Example AA" }, { time: WITHIN }))) === "attrcert/bad-input");
   // The AC names its issuer; a caller who trusts a DIFFERENT name has not trusted THIS issuer.
-  var r = await pki.attrcert.verify(der, { name: "CN=Someone Else", publicKey: aa.spki }, { time: WITHIN });
+  var r = await pki.attrcert.verify(der, { name: "CN=Someone Else", publicKey: aa.spki }, OK);
   check("an issuer name that is not the one the AC names is refused", r.verified === false);
   check("the refusal names the issuer mismatch", /issuer/i.test(String(r.reason)));
 }
@@ -144,7 +150,7 @@ async function testTheTrustedIssuerIsRequired() {
 async function testValidityWindow() {
   var aa = makeSigner("ec-p256");
   var der = await pki.attrcert.sign(spec(), aaOf(aa));
-  var at = async function (t) { return pki.attrcert.verify(der, trusted(aa), { time: t }); };
+  var at = async function (t) { return pki.attrcert.verify(der, trusted(aa), { time: t, revocationStatus: "notRevoked" }); };
 
   check("inside the window verifies", (await at(WITHIN)).verified === true);
   // "If the evaluation time is equal to either notBeforeTime or notAfterTime, then the AC is
@@ -179,7 +185,7 @@ async function testUnsupportedCriticalExtensionIsRejected() {
   var b = pki.asn1.build;
   var ext = b.sequence([b.oid("1.3.6.1.4.1.99999.1"), b.boolean(true), b.octetString(b.nullValue())]);
   var der = await pki.attrcert.sign(spec({ extensions: [ext] }), aaOf(aa));
-  var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+  var r = await pki.attrcert.verify(der, trusted(aa), OK);
   check("an unrecognized critical extension is refused", r.verified === false);
   check("the refusal names the extension", /critical/i.test(String(r.reason)));
   check("the signature itself was still valid", r.signatureValid === true);
@@ -202,7 +208,7 @@ async function testAParsedButUnevaluatedCriticalIsRefused() {
     var parsedExt = pki.schema.attrcert.parse(der).extensions[0];
     check(name + " is emitted critical and parses cleanly",
       parsedExt.critical === true && !!parsedExt.decoded && parsedExt.decoded.opaque !== true);
-    var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+    var r = await pki.attrcert.verify(der, trusted(aa), OK);
     check("a critical " + name + " this verb does not evaluate is refused", r.verified === false);
     check("the refusal names the extension (" + name + ")", /critical/i.test(String(r.reason)));
   }
@@ -215,7 +221,7 @@ async function testAnAuditIdentityIsSupportedAndSurfaced() {
   var der = await pki.attrcert.sign(spec({
     extensions: { auditIdentity: Buffer.from("opaque-audit-handle", "latin1") },
   }), aaOf(aa));
-  var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+  var r = await pki.attrcert.verify(der, trusted(aa), OK);
   check("a critical audit identity does not refuse the AC", r.verified === true);
   check("the verdict carries the extensions it read", Array.isArray(r.extensions) && r.extensions.length === 1);
   check("the audit identity is reachable on the verdict", r.extensions[0].name === "acAuditIdentity");
@@ -229,17 +235,17 @@ async function testTargetingIsEnforced() {
     extensions: { targetInformation: [{ targetName: { dNSName: "server-a.example" } }] },
   }), aaOf(aa));
 
-  var named = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { dNSName: "server-a.example" } });
+  var named = await pki.attrcert.verify(der, trusted(aa), okTarget({ dNSName: "server-a.example" }));
   check("a verifier the AC names accepts it", named.verified === true);
   check("the verdict reports targeting as checked", named.targetingChecked === true);
 
-  var other = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { dNSName: "server-b.example" } });
+  var other = await pki.attrcert.verify(der, trusted(aa), okTarget({ dNSName: "server-b.example" }));
   check("a verifier the AC does not name refuses it", other.verified === false);
   check("the refusal names targeting", /target/i.test(String(other.reason)));
 
   // A targeted AC with no target supplied cannot be evaluated: sec. 4.3.2 makes rejection the duty
   // of servers not named, which a verifier that does not know its own name cannot establish.
-  var unnamed = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+  var unnamed = await pki.attrcert.verify(der, trusted(aa), OK);
   check("a targeted AC with no target supplied is not verified", unnamed.verified === false);
   check("the verdict reports targeting as unchecked", unnamed.targetingChecked === false);
 }
@@ -268,7 +274,7 @@ async function testATargetCertIssuerIsNotATarget() {
   check("the targetCert issuer name is inside the extension bytes",
     parsedExt.value.indexOf(victimName) !== -1);
 
-  var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { dNSName: "not-a-target.example" } });
+  var r = await pki.attrcert.verify(der, trusted(aa), okTarget({ dNSName: "not-a-target.example" }));
   check("a targetCert issuer name does not make a verifier a target", r.verified === false);
   check("the refusal names targeting", /target/i.test(String(r.reason)));
   // Sec. 4.3.2 defines the check as passing on a targetName or a targetGroup, and says of the third
@@ -277,6 +283,117 @@ async function testATargetCertIssuerIsNotATarget() {
   check("the sec. 4.3.2 check still ran", r.targetingChecked === true);
   check("the reason names the forbidden alternative", /targetCert/.test(String(r.reason)));
   check("the reason cites that it MUST NOT be used", /MUST NOT be used/.test(String(r.reason)));
+}
+
+// RFC 5755 sec. 6. Two schemes are defined, and this verb implements "never revoke": it holds no
+// revocation evidence and follows no pointer out of the AC. The section is explicit about what that
+// obliges -- "For AC users, the 'never revoke' scheme MUST be supported... If only the 'never
+// revoke' scheme is supported, then all ACs that do not contain a noRevAvail extension, MUST be
+// rejected" -- because "Where no noRevAvail is present, the AC issuer is implicitly stating that
+// revocation status checks are supported". RED without the fix: a signed, timely AC with no
+// noRevAvail returned verified === true, so a revoked AC granted its privileges.
+async function testRevocationIsAnswered() {
+  var aa = makeSigner("ec-p256");
+  var bare = { holder: { entityName: { directoryName: "CN=Alice" } },
+    notBeforeTime: NB, notAfterTime: NA, attributes: ROLE };
+
+  var noExt = await pki.attrcert.sign(bare, aaOf(aa));
+  var r = await pki.attrcert.verify(noExt, trusted(aa), { time: WITHIN });
+  check("an AC with no noRevAvail is refused (sec. 6)", r.verified === false);
+  check("everything before revocation still passed", r.signatureValid === true && r.validityChecked === true);
+  check("the revocation slot says the check did not run", r.revocationChecked === false);
+  check("the verdict reports no noRevAvail", r.noRevAvail === false);
+  check("the reason cites the section", /sec\. 6/.test(String(r.reason)));
+
+  // The "never revoke" scheme: the issuer states no revocation information will ever exist.
+  var never = await pki.attrcert.sign(spec({ extensions: { noRevAvail: true } }), aaOf(aa));
+  var r2 = await pki.attrcert.verify(never, trusted(aa), { time: WITHIN });
+  check("an AC carrying noRevAvail verifies", r2.verified === true);
+  check("it reports the revocation question settled", r2.revocationChecked === true);
+  check("it reports noRevAvail", r2.noRevAvail === true);
+
+  // The "pointer in AC" scheme: the caller established the status themselves.
+  var r3 = await pki.attrcert.verify(noExt, trusted(aa), { time: WITHIN, revocationStatus: "notRevoked" });
+  check("a caller-supplied notRevoked answers sec. 6", r3.verified === true);
+  check("and the slot reports the check ran", r3.revocationChecked === true);
+  check("with no noRevAvail claimed", r3.noRevAvail === false);
+
+  var r4 = await pki.attrcert.verify(noExt, trusted(aa), { time: WITHIN, revocationStatus: "revoked" });
+  check("a caller-supplied revoked refuses the AC", r4.verified === false);
+  check("a revoked AC still reports the check ran", r4.revocationChecked === true);
+  check("the reason names revocation", /revoked/.test(String(r4.reason)));
+
+  // A revoked AC is refused even when its issuer marked it never-revoke: the caller's evidence is
+  // about this certificate, and no extension in it overrides what the caller established.
+  var r5 = await pki.attrcert.verify(never, trusted(aa), { time: WITHIN, revocationStatus: "revoked" });
+  check("noRevAvail does not override a caller-supplied revoked", r5.verified === false);
+
+  check("an unknown revocationStatus is refused",
+    (await codeOf(pki.attrcert.verify(never, trusted(aa), { time: WITHIN, revocationStatus: "maybe" }))) === "attrcert/bad-input");
+  check("a non-string revocationStatus is refused",
+    (await codeOf(pki.attrcert.verify(never, trusted(aa), { time: WITHIN, revocationStatus: true }))) === "attrcert/bad-input");
+  // Read by own-membership, so a name on Object.prototype cannot answer as a status.
+  check("an inherited name is not a revocationStatus",
+    (await codeOf(pki.attrcert.verify(never, trusted(aa), { time: WITHIN, revocationStatus: "constructor" }))) === "attrcert/bad-input");
+}
+
+// RFC 5755 sec. 6 closes by making the two schemes exclusive: "An AC MUST NOT contain both a
+// noRevAvail extension and a 'pointer in AC'." Such an AC says two different things about its own
+// revocation, and reading the never-revoke claim as settling the question would resolve that
+// contradiction in the accepting direction. The rule binds BOTH directions: this toolkit refuses to
+// issue one, and refuses to verify one an outside issuer produced.
+async function testNoRevAvailAndAPointerAreExclusive() {
+  var aa = makeSigner("ec-p256");
+  var b = pki.asn1.build;
+  // CRLDistributionPoints ::= SEQUENCE OF DistributionPoint; DistributionPoint ::= SEQUENCE {
+  // distributionPoint [0] DistributionPointName OPTIONAL, ... }; DistributionPointName ::= CHOICE {
+  // fullName [0] GeneralNames, ... }, whose [0] is IMPLICIT and so replaces the GeneralNames tag.
+  var uri = b.contextPrimitive(6, Buffer.from("http://crl.example/a.crl", "latin1"));
+  var dpValue = b.sequence([b.sequence([b.contextConstructed(0, b.contextConstructed(0, uri))])]);
+  var crldp = b.sequence([b.oid(pki.oid.byName("cRLDistributionPoints")), b.octetString(dpValue)]);
+  var norev = b.sequence([b.oid(pki.oid.byName("noRevAvail")), b.octetString(b.nullValue())]);
+
+  // The signer refuses to issue one, through the pre-encoded form that can name a pointer at all.
+  check("the signer refuses noRevAvail beside a pointer",
+    (await codeOf(pki.attrcert.sign(spec({ extensions: [norev, crldp] }), aaOf(aa)))) === "attrcert/bad-input");
+  // And through the object form, for the extensions it offers by name.
+  var bothByName = await codeOf(pki.attrcert.sign(
+    spec({ extensions: { noRevAvail: true, authorityKeyIdentifier: true } }), aaOf(aa)));
+  check("the object form still issues noRevAvail beside a non-pointer extension", bothByName === null);
+
+  // An outside issuer is under no such constraint, so build one the way it would arrive: a genuine
+  // AttributeCertificateInfo carrying both, signed for real, so the verdict turns on sec. 6 alone
+  // and not on a broken signature.
+  var pointerOnly = await pki.attrcert.sign(spec({ extensions: [crldp] }), aaOf(aa));
+  var p = pki.schema.attrcert.parse(pointerOnly);
+  var tbsNode = pki.asn1.decode(p.tbsBytes);
+  var kids = tbsNode.children.map(function (c) { return c.bytes; });
+  // extensions is the LAST field of AttributeCertificateInfo, so append noRevAvail inside it.
+  var extsNode = pki.asn1.decode(kids[kids.length - 1]);
+  kids[kids.length - 1] = b.sequence(extsNode.children.map(function (c) { return b.raw(c.bytes); })
+    .concat([b.raw(norev)]));
+  var tbs = b.sequence(kids.map(function (k) { return b.raw(k); }));
+
+  var priv = await pki.key.import(aa.key, { algorithm: { name: "ECDSA", namedCurve: "P-256" } });
+  var sig = Buffer.from(await pki.webcrypto.subtle.sign(
+    { name: "ECDSA", hash: "SHA-256" }, priv, tbs));
+  // ECDSA over WebCrypto is the raw r||s pair; an AC carries the DER SEQUENCE { r, s }.
+  var half = sig.length / 2;
+  var derSig = b.sequence([
+    b.integer(BigInt("0x" + sig.subarray(0, half).toString("hex"))),
+    b.integer(BigInt("0x" + sig.subarray(half).toString("hex"))),
+  ]);
+  var algId = pki.asn1.decode(pointerOnly).children[1].bytes;
+  var forged = b.sequence([b.raw(tbs), b.raw(algId), b.bitString(derSig, 0)]);
+
+  var r = await pki.attrcert.verify(forged, trusted(aa), OK);
+  check("the forged AC's own signature is genuine", r.signatureValid === true);
+  check("an AC carrying both schemes is refused", r.verified === false);
+  check("the refusal cites the section", /sec\. 6/.test(String(r.reason)));
+  check("the refusal names the pointer", /crlDistributionPoints/.test(String(r.reason)));
+  // Refused whichever way the caller answers: the certificate itself is what is wrong.
+  check("a caller-supplied notRevoked does not rescue it",
+    (await pki.attrcert.verify(forged, trusted(aa), { time: WITHIN, revocationStatus: "notRevoked" })).verified === false);
 }
 
 // A caller-owned option is read at the call, so a caller that rewrites its options object while
@@ -321,31 +438,31 @@ async function testEveryIssuerNameFormTheSignerAccepts() {
   var der = await pki.attrcert.sign(spec(), { name: rdns, publicKey: aa.spki, key: aa.key });
 
   check("an array of RDNs names the trusted issuer",
-    (await pki.attrcert.verify(der, { name: rdns, publicKey: aa.spki }, { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(der, { name: rdns, publicKey: aa.spki }, OK)).verified === true);
 
   // The same name as raw Name DER, the third form the encoder takes.
   var nameDer = pki.schema.attrcert.parse(der).issuer.v2Form.issuerName.names[0].bytes;
   var inner = pki.asn1.decode(nameDer).children[0].bytes;   // one EXPLICIT [4] unwrap
   check("raw Name DER names the trusted issuer",
-    (await pki.attrcert.verify(der, { name: inner, publicKey: aa.spki }, { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(der, { name: inner, publicKey: aa.spki }, OK)).verified === true);
 
   // A different multi-RDN name is still refused: accepting more forms must not accept more names.
   var other = [{ countryName: "US" }, { organizationName: "Example" }, { commonName: "Other AA" }];
-  var r = await pki.attrcert.verify(der, { name: other, publicKey: aa.spki }, { time: WITHIN });
+  var r = await pki.attrcert.verify(der, { name: other, publicKey: aa.spki }, OK);
   check("a different multi-RDN name is still refused", r.verified === false);
   check("the refusal names the issuer", /issuer/i.test(String(r.reason)));
 
   // Held on the decoded name, so every input form meets it.
   check("an empty array of RDNs is refused",
-    (await codeOf(pki.attrcert.verify(der, { name: [], publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-input");
+    (await codeOf(pki.attrcert.verify(der, { name: [], publicKey: aa.spki }, OK))) === "attrcert/bad-input");
   check("an empty Name DER is refused",
-    (await codeOf(pki.attrcert.verify(der, { name: pki.asn1.build.sequence([]), publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-input");
+    (await codeOf(pki.attrcert.verify(der, { name: pki.asn1.build.sequence([]), publicKey: aa.spki }, OK))) === "attrcert/bad-input");
   check("a missing issuer.name is still refused",
-    (await codeOf(pki.attrcert.verify(der, { publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-input");
+    (await codeOf(pki.attrcert.verify(der, { publicKey: aa.spki }, OK))) === "attrcert/bad-input");
   // The same code the signer raises for the same bad name: one name encoder, one contract, so a
   // caller who mistypes the name gets the same answer whichever verb they called.
   check("a non-name issuer.name is refused as a bad name",
-    (await codeOf(pki.attrcert.verify(der, { name: 7, publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-name");
+    (await codeOf(pki.attrcert.verify(der, { name: 7, publicKey: aa.spki }, OK))) === "attrcert/bad-name");
   check("the signer refuses the same value with the same code",
     (await codeOf(pki.attrcert.sign(spec(), { name: 7, publicKey: aa.spki, key: aa.key }))) === "attrcert/bad-name");
 }
@@ -363,7 +480,7 @@ async function testGeneralNameMatchingRules() {
       ],
     },
   }), aaOf(aa));
-  var at = async function (target) { return pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: target }); };
+  var at = async function (target) { return pki.attrcert.verify(der, trusted(aa), okTarget(target)); };
 
   check("a dNSName differing only in case matches (sec. 7.2)",
     (await at({ dNSName: "server-a.example" })).verified === true);
@@ -384,11 +501,11 @@ async function testADirectoryNameTargetIsCompared() {
     extensions: { targetInformation: [{ targetName: { directoryName: "Server A" } }] },
   }), aaOf(aa));
 
-  var hit = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { directoryName: "Server A" } });
+  var hit = await pki.attrcert.verify(der, trusted(aa), okTarget({ directoryName: "Server A" }));
   check("a directoryName target the AC names is accepted", hit.verified === true);
   check("the directoryName comparison counts as a targeting check", hit.targetingChecked === true);
 
-  var miss = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { directoryName: "Server B" } });
+  var miss = await pki.attrcert.verify(der, trusted(aa), okTarget({ directoryName: "Server B" }));
   check("a directoryName target the AC does not name is refused", miss.verified === false);
   check("that refusal is a performed check", miss.targetingChecked === true);
 }
@@ -409,10 +526,10 @@ async function testSeveralTargetsGroupsFlatten() {
   check("the AC carries two Targets groups",
     pki.schema.attrcert.parse(der).extensions[0].decoded.length === 2);
   for (var host of ["server-a.example", "server-b.example"]) {
-    var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { dNSName: host } });
+    var r = await pki.attrcert.verify(der, trusted(aa), okTarget({ dNSName: host }));
     check("a server named in one of several groups is accepted (" + host + ")", r.verified === true);
   }
-  var miss = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { dNSName: "server-c.example" } });
+  var miss = await pki.attrcert.verify(der, trusted(aa), okTarget({ dNSName: "server-c.example" }));
   check("a server named in no group is still refused", miss.verified === false);
 }
 
@@ -420,7 +537,7 @@ async function testSeveralTargetsGroupsFlatten() {
 async function testAnUntargetedAcNeedsNoTarget() {
   var aa = makeSigner("ec-p256");
   var der = await pki.attrcert.sign(spec(), aaOf(aa));
-  var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN });
+  var r = await pki.attrcert.verify(der, trusted(aa), OK);
   check("an untargeted AC verifies with no target supplied", r.verified === true);
   check("targetingChecked is true when there is nothing to target", r.targetingChecked === true);
 }
@@ -432,7 +549,7 @@ async function testRebuiltParseResultIsRefused() {
   var der = await pki.attrcert.sign(spec(), aaOf(aa));
   var parsed = pki.schema.attrcert.parse(der);
   check("the parser's own result verifies",
-    (await pki.attrcert.verify(parsed, trusted(aa), { time: WITHIN })).verified === true);
+    (await pki.attrcert.verify(parsed, trusted(aa), OK)).verified === true);
   var rebuilt = Object.assign({}, parsed);
   rebuilt.attributes = [];
   check("a rebuilt attribute certificate is refused",
@@ -479,7 +596,7 @@ async function testInPlaceEditsDoNotReachTheVerdict() {
   var ok = await pki.attrcert.sign(spec(), aaOf(aa));
   var po = pki.schema.attrcert.parse(ok);
   po.issuer = { form: "v2Form", v2Form: { issuerName: { names: [{ bytes: Buffer.alloc(4) }] } } };
-  var o = await pki.attrcert.verify(po, trusted(aa), { time: WITHIN });
+  var o = await pki.attrcert.verify(po, trusted(aa), OK);
   check("a replaced issuer does not decide the trust comparison", o.verified === true);
   check("the verdict reports the signed issuer", /Example AA/.test(o.issuer.dn));
 }
@@ -531,6 +648,8 @@ async function main() {
   await testInPlaceEditsDoNotReachTheVerdict();
   await testMalformedInputThrows();
   await testUnknownOptionIsRefused();
+  await testRevocationIsAnswered();
+  await testNoRevAvailAndAPointerAreExclusive();
   await testOptionsAreFixedAtTheCall();
   await testEveryIssuerNameFormTheSignerAccepts();
   console.log("CHECKS " + helpers.getChecks());
