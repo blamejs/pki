@@ -30,6 +30,19 @@ async function testRandom() {
     var u = new Uint8Array(8); structuredClone(u.buffer, { transfer: [u.buffer] });
     pki.webcrypto.getRandomValues(u);
   })) === "webcrypto/data");
+  // The ceiling is measured on the array's own bytes. `byteLength` is an accessor on the shared
+  // typed-array prototype, so a caller's subclass answers it: one reporting 0 passed the ceiling
+  // while the fill wrote the array's real length, which bypasses the bound rather than meeting it.
+  check("getRandomValues measures the ceiling past a lying byteLength", (await code(async function () {
+    var Lying = class extends Uint8Array { get byteLength() { return 0; } };
+    pki.webcrypto.getRandomValues(new Lying(65537));
+  })) === "webcrypto/data");
+  // ...and a subclass within the ceiling is still filled, so the fix refuses no legitimate array.
+  var Sub = class extends Uint8Array { get byteLength() { return 0; } };
+  var subject = new Sub(16);
+  pki.webcrypto.getRandomValues(subject);
+  check("while a subclass within the ceiling is still filled",
+        Array.prototype.some.call(subject, function (x) { return x !== 0; }));
 }
 
 async function testDigest() {

@@ -184,6 +184,14 @@ async function testOversizedBody() {
   var emojiBody = String.fromCodePoint(0x1f600).repeat(40);
   var tUtf8 = fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: emojiBody });
   check("#13 a non-ASCII string body is measured as UTF-8 against the cap", (await codeOf(pki.est.cacerts(BASE, { transport: tUtf8, maxResponseBytes: 100 }))) === "est/response-too-large");
+  // The transport is an injectable seam, so the body is a value the caller supplies. `length` on a
+  // Buffer is shadowable by an own property, and one reporting 0 walked a megabyte body past the
+  // documented response cap. The count comes from the view's own bytes.
+  var lying = Buffer.from("x".repeat(4096));
+  Object.defineProperty(lying, "length", { get: function () { return 0; }, configurable: true });
+  var tLying = fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: lying });
+  check("#13 a Buffer body whose own `length` reports 0 is measured on its real bytes",
+    (await codeOf(pki.est.cacerts(BASE, { transport: tLying, maxResponseBytes: 100 }))) === "est/response-too-large");
 }
 
 // ---- 14 no credentials before authorization ---------------------------------

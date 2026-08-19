@@ -45,6 +45,7 @@ var TestError = errors.defineClass("TestError", { withCause: true });
 function factoryE(code, message, cause) { return new TestError(code, message, cause); }
 
 function codeOf(fn) { try { fn(); return "NO-THROW"; } catch (e) { return e && e.code; } }
+function errorOf(fn) { try { fn(); return { code: "NO-THROW" }; } catch (e) { return e; } }
 // A verb documented `-> Promise<...>` must REJECT, never throw: a synchronous throw goes straight
 // past the caller's `.catch` and nothing in the shape of the call warns them. So this calls the
 // verb OUTSIDE any try, proving the call itself returns a promise, and only then awaits it. A
@@ -93,6 +94,121 @@ function testViewContract() {
   var foreignBytes = vm.runInNewContext("new Uint8Array([1, 2, 3])");
   check("view accepts a Uint8Array from another realm and reads its bytes",
     guardBytes.view(foreignBytes, TestError, "t/bad", "input").equals(Buffer.from([1, 2, 3])));
+  // Where a view's bytes are is asked of the language, never of the view. `buffer`, `byteOffset`
+  // and `byteLength` are accessors on the shared typed-array prototype, so a caller's subclass can
+  // answer all three. One that lied substituted the memory: an array holding AA AA AA AA whose
+  // `buffer` returned another store had these doors hand back that other store's bytes, so the
+  // bytes a verb went on to hash or sign were not the bytes in the array it was given.
+  var decoyStore = new Uint8Array([0x11, 0x22, 0x33, 0x44]).buffer;
+  var LyingBuffer = class extends Uint8Array { get buffer() { return decoyStore; } };
+  var LyingBounds = class extends Uint8Array {
+    get byteOffset() { return 99; }
+    get byteLength() { return 1; }
+  };
+  var ThrowingBuffer = class extends Uint8Array {
+    get buffer() { throw new RangeError("planted"); }
+  };
+  var own = Buffer.from([0xAA, 0xAA, 0xAA, 0xAA]);
+  [["view", guardBytes.view], ["source", guardBytes.source], ["snapshot", guardBytes.snapshot]
+  ].forEach(function (door) {
+    check(door[0] + " reads a lying `buffer` override's own bytes",
+      door[1](new LyingBuffer([0xAA, 0xAA, 0xAA, 0xAA]), TestError, "t/bad", "input").equals(own));
+    check(door[0] + " reads a lying bounds override's own bytes",
+      door[1](new LyingBounds([0xAA, 0xAA, 0xAA, 0xAA]), TestError, "t/bad", "input").equals(own));
+    check(door[0] + " reads past a `buffer` override that throws",
+      door[1](new ThrowingBuffer([0xAA, 0xAA, 0xAA, 0xAA]), TestError, "t/bad", "input").equals(own));
+  });
+  // A view over shared memory is still refused, and an override cannot make ordinary memory read
+  // as shared: the store is taken from the slot, so the check answers about the real one.
+  check("a view over shared memory is refused", codeOf(function () {
+    guardBytes.view(new Uint8Array(new SharedArrayBuffer(4)), TestError, "t/bad", "input");
+  }) === "t/bad");
+  var ClaimsShared = class extends Uint8Array {
+    get buffer() { return new SharedArrayBuffer(4); }
+  };
+  check("while an override claiming shared memory does not make private memory shared",
+    guardBytes.view(new ClaimsShared([0xAA, 0xAA, 0xAA, 0xAA]), TestError, "t/bad", "input").equals(own));
+  // The copy keeps a view's kind by reading the value's slot, never `v.constructor` or
+  // `v.BYTES_PER_ELEMENT`. Both are ordinary properties a subclass answers: one that threw took
+  // the copy out through the caller's own exception, and one that lied built the copy with a
+  // different element width and a different kind than the value being copied.
+  var HostileCtor = class extends Uint8Array {};
+  Object.defineProperty(HostileCtor.prototype, "constructor",
+                        { value: function () { throw new RangeError("planted"); }, configurable: true });
+  var ctorCopy = guardBytes.snapshotDeep({ b: new HostileCtor([1, 2]) }, TestError, "t/bad", "arg").b;
+  check("a copy keeps the kind past a `constructor` that throws",
+        ctorCopy instanceof Uint8Array && Array.from(ctorCopy).join(",") === "1,2");
+  var HostileWidth = class extends Uint16Array { get BYTES_PER_ELEMENT() { return 1; } };
+  var widthCopy = guardBytes.snapshotDeep({ b: new HostileWidth([0x1234, 0x5678]) },
+                                          TestError, "t/bad", "arg").b;
+  check("and past a `BYTES_PER_ELEMENT` that lies",
+        widthCopy instanceof Uint16Array && Array.from(widthCopy).join(",") === "4660,22136");
+  // ...while every ordinary kind still copies to its own kind and its own elements.
+  [["Uint16Array", new Uint16Array([1, 2])], ["Int32Array", new Int32Array([7])],
+   ["Float64Array", new Float64Array([1.5])], ["Uint8Array", new Uint8Array([9])],
+   ["Int8Array", new Int8Array([-3])]
+  ].forEach(function (row) {
+    var copy = guardBytes.snapshotDeep({ b: row[1] }, TestError, "t/bad", "arg").b;
+    check("a " + row[0] + " copies to its own kind and elements",
+          Object.getPrototypeOf(copy) === Object.getPrototypeOf(row[1]) &&
+          Array.from(copy).join(",") === Array.from(row[1]).join(","));
+  });
+  // An array index can carry an accessor the same as a named field can, and reading one runs the
+  // caller's code. It escaped as itself from a boundary whose contract is a typed error, while the
+  // identical getter under a name was already typed -- an element and a field failing differently.
+  var hostileElement = [];
+  var elementFault = new RangeError("planted");
+  Object.defineProperty(hostileElement, "0",
+                        { enumerable: true, get: function () { throw elementFault; } });
+  hostileElement.length = 1;
+  var elementErr = errorOf(function () {
+    guardBytes.snapshotDeep(hostileElement, TestError, "t/bad", "arg");
+  });
+  check("an array element whose getter throws is refused with this boundary's code",
+        elementErr.code === "t/bad" && elementErr !== elementFault);
+  check("and the caller's own fault is carried as the cause", elementErr.cause === elementFault);
+  // ...while an ordinary array still copies its elements and keeps its holes.
+  var sparse = [1, 2, 3];
+  sparse[10] = 9;
+  var sparseCopy = guardBytes.snapshotDeep(sparse, TestError, "t/bad", "arg");
+  check("an ordinary array copies its elements and keeps its holes",
+        sparseCopy.length === 11 && sparseCopy[0] === 1 && sparseCopy[10] === 9 &&
+        !(3 in sparseCopy));
+  // A collection is walked with the intrinsic `forEach`, called against it. `forEach` is an
+  // ordinary method a caller can shadow on any instance: one that threw took the copy out through
+  // their own exception, and one yielding different entries filled the copy with something other
+  // than the collection holds.
+  var hostileMap = new Map([["a", 1]]);
+  hostileMap.forEach = function () { throw new RangeError("planted"); };
+  var mapCopy = guardBytes.snapshotDeep(hostileMap, TestError, "t/bad", "arg");
+  check("a Map with its own `forEach` still copies the entries it holds",
+        mapCopy.size === 1 && mapCopy.get("a") === 1);
+  var hostileSet = new Set([1, 2]);
+  hostileSet.forEach = function () { throw new RangeError("planted"); };
+  check("as does a Set", guardBytes.snapshotDeep(hostileSet, TestError, "t/bad", "arg").size === 2);
+  // The refusal below names the kind from what the value IS. `v.constructor.name` is two property
+  // reads a caller answers, and a getter under either took the refusal out through their exception
+  // in place of the typed error whose whole job is to say why the value was refused.
+  var hostileName = new Error("opaque");
+  hostileName.extra = 1;
+  Object.defineProperty(hostileName, "constructor",
+                        { get: function () { throw new RangeError("planted"); }, configurable: true });
+  check("an opaque value whose `constructor` throws is refused with the caller's own code",
+        codeOf(function () {
+          guardBytes.snapshotDeep(hostileName, TestError, "t/bad", "arg");
+        }) === "t/bad");
+  // A Date in a copied argument keeps the instant it holds. `getTime` is an ordinary method a
+  // subclass answers, so reading it off the value put a different instant in the copy.
+  var LyingClock = class extends Date { getTime() { return 0; } };
+  check("a copied Date holds the instant the original holds",
+        guardBytes.snapshotDeep({ when: new LyingClock(1700000000000) },
+                                TestError, "t/bad", "arg").when.valueOf() === 1700000000000);
+  // A DataView carries its own accessors rather than the typed-array ones, so both pairs have to
+  // be reached; taking only one leaves the other kind read off the value again.
+  var dvBytes = new Uint8Array([1, 2, 3, 4]);
+  check("source reads a DataView through its own intrinsic accessors",
+    guardBytes.source(new DataView(dvBytes.buffer), TestError, "t/bad", "input")
+      .equals(Buffer.from([1, 2, 3, 4])));
   // The four forms the toolkit calls bytes, and nothing else. Every door that has to decide
   // whether an argument is bytes asks this, so no door can answer a narrower list than the one
   // that finally reads them.
