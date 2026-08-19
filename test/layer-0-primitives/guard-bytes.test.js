@@ -547,6 +547,17 @@ async function testDeepSnapshotContract() {
     { value: false, enumerable: false, configurable: false, writable: false });
   check("a settled field cannot answer differently later, so it rides along",
     guardBytes.snapshotDeep(frozenField, TestError, "t/bad", "opts") === frozenField);
+  // Settled has to reach what the field POINTS AT. A binding nobody can move, holding a Date
+  // anybody can move, is an option that changes after the checks read it: cms.sign signed one
+  // signing time while the operator read another off the same object afterwards.
+  var frozenToDate = vm.runInNewContext("/x/g");
+  Object.defineProperty(frozenToDate, "signingTime",
+    { value: new Date("2030-01-01T00:00:00Z"), enumerable: true, configurable: false, writable: false });
+  var pointedErr;
+  try { guardBytes.snapshotDeep(frozenToDate, TestError, "t/bad", "opts"); pointedErr = { code: "NO-THROW" }; }
+  catch (e) { pointedErr = e; }
+  check("a settled binding onto a value that can still move is refused",
+    pointedErr.code === "t/bad" && pointedErr.message.indexOf("signingTime") !== -1);
   ["writable", "configurable"].forEach(function (which) {
     var movable = vm.runInNewContext("/x/g");
     var desc = { value: false, enumerable: false, configurable: false, writable: false };
@@ -573,6 +584,18 @@ async function testDeepSnapshotContract() {
     { signingTime: shadowed });
   check("so cms.sign encodes the signing time instead of running the override",
     Buffer.isBuffer(signedWithShadow) && signedWithShadow.length > 0);
+
+  // Across algorithms, because what this engine keeps behind a key varies by one: a signing key
+  // holds a KeyObject, an HMAC key holds the raw bytes. Both are the engine's own state on its own
+  // key object, so both reach the verb as themselves.
+  var subtle = require("../../lib/webcrypto.js").webcrypto.subtle;
+  var ecPair = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]);
+  check("an ECDSA private key reaches the verb as itself",
+    guardBytes.snapshotDeep(ecPair.privateKey, TestError, "t/bad", "key") === ecPair.privateKey);
+  var hmacKey = await subtle.generateKey({ name: "HMAC", hash: "SHA-256" }, true, ["sign", "verify"]);
+  hmacKey = hmacKey.key || hmacKey;
+  check("and so does an HMAC key, whose handle holds bytes rather than a key object",
+    guardBytes.snapshotDeep(hmacKey, TestError, "t/bad", "key") === hmacKey);
 
   // A node:crypto KeyObject is a key input `pki.hpke` documents, and its material lives behind an
   // internal slot: a copy of one holds the shape of a key and none of the key, so the copy could
