@@ -734,6 +734,48 @@ async function run() {
   check("23r. appending to an array whose map returns itself does not widen the anchor set",
     (await racePending8).trusted === false);
 
+  // A getter for a LATER field can reach back and mutate the buffer an EARLIER field handed over.
+  // Each field is therefore copied as it is read, not after the whole bag has been walked. RED
+  // without that ordering: the transactionID compared was the one the revocationChecker getter
+  // wrote, so a message the caller's own value did not match verified anyway.
+  var smuggler = Buffer.alloc(16, 9);
+  var reach = {
+    signerCert: s.cert,
+    transactionID: smuggler,
+    get revocationChecker() { smuggler.fill(7); return undefined; },
+  };
+  check("23s. a later getter cannot rewrite an earlier option's bytes",
+    (await pki.cmp.verify(raceDer, reach)).valid === false);
+
+  // An array's length is independent of what it holds. Only the elements that exist are copied, so
+  // a sparse list carrying one anchor at index 100000000 collapses to that one anchor instead of
+  // becoming a dense hundred-million-entry allocation inside verify. No ceiling is imposed: a trust
+  // store is the caller's own configuration, and path.build limits the untrusted candidate pool
+  // rather than the number of anchors, so capping this would refuse a large store that verifies.
+  var sparse = [];
+  sparse[100000000] = caCert;
+  var sparseStart = Date.now();
+  var sparseVerdict = await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: sparse, time: T });
+  check("23t. a sparse anchor list still anchors the chain", sparseVerdict.trusted === true);
+  // Wall-clock is the only observable an allocation leaves, and the two forms differ by orders of
+  // magnitude, so the bound is set far above any real machine rather than at a measured figure.
+  check("23u. and it did not densify a hundred million entries to get there",
+    (Date.now() - sparseStart) < 30000);
+
+  // An element defined non-enumerable is still an element, and every ordinary array operation
+  // consumes it, so the copy must not quietly drop the anchor and report the signer untrusted.
+  var hidden = [];
+  Object.defineProperty(hidden, "0", { value: caCert, enumerable: false, writable: true, configurable: true });
+  check("23v. a non-enumerable element is still an anchor",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: hidden, time: T })).trusted === true);
+
+  // 2^32-1 is the one uint32 the language does not treat as an array index, so a property named
+  // "4294967295" is a name the caller hung on the array, never a certificate to feed the builder.
+  var named = [caCert];
+  named["4294967295"] = "not a certificate";
+  check("23w. a property named 4294967295 is not read as a certificate",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: named, time: T })).trusted === true);
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
