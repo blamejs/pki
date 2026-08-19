@@ -67,15 +67,20 @@ async function run() {
       check("openssl req -verify accepts its own " + arm.name + " request", ov.code === 0);
 
       // (a) the toolkit's verifier over a request it did not produce.
-      check("pki.csr.verify accepts an OpenSSL-generated " + arm.name + " request",
-        (await pki.csr.verify(pem)) === true);
+      var v = await pki.csr.verify(pem);
+      check("pki.csr.verify accepts an OpenSSL-generated " + arm.name + " request", v.verified === true);
+      // The verdict's fields come from the request OpenSSL built, so this also checks the toolkit
+      // reads a foreign producer's subject and key rather than only its own encoding conventions.
+      check("the verdict reports the subject OpenSSL wrote for " + arm.name, /interop/i.test(v.subject.dn));
+      check("the verdict reports a subject key for " + arm.name,
+        !!v.subjectPublicKeyInfo && v.subjectPublicKeyInfo.bytes.length > 0);
 
       // (b) the same request with a flipped signature byte.
       var der = pki.schema.csr.pemDecode(pem);
       var bad = Buffer.from(der);
       bad[bad.length - 1] ^= 0xff;
       check("pki.csr.verify REJECTS an OpenSSL " + arm.name + " request with a flipped signature byte",
-        (await pki.csr.verify(bad)) === false);
+        (await pki.csr.verify(bad)).verified === false);
 
       var badPem = pki.schema.csr.pemEncode(bad, "CERTIFICATE REQUEST");
       var bv = ctx.withTmp(Buffer.from(badPem, "utf8"), "csr-bad-" + arm.name + ".pem", function (p) {

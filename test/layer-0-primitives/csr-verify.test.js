@@ -22,6 +22,13 @@ async function codeOf(promise) {
   catch (e) { return e && e.code; }
 }
 
+// The verb answers with a verdict object carrying the fields it verified. Most vectors below are
+// about the flag, so they drive the shipped verb through this and read `verified`; the object's
+// own shape, and the fields it re-derives, have their own vectors.
+function csrVerified(request) {
+  return pki.csr.verify(request).then(function (r) { return r.verified; });
+}
+
 // ---- accept: a well-formed request verifies under its own subject key ------
 
 async function testAcceptsEveryAlgorithmArm() {
@@ -29,7 +36,7 @@ async function testAcceptsEveryAlgorithmArm() {
   for (var i = 0; i < arms.length; i++) {
     var s = makeSigner(arms[i]);
     var der = await pki.csr.sign({ subject: "arm.example", subjectPublicKey: s.spki }, { key: s.key });
-    check("verify accepts a " + arms[i] + " request", (await pki.csr.verify(der)) === true);
+    check("verify accepts a " + arms[i] + " request", (await csrVerified(der)) === true);
   }
 }
 
@@ -39,16 +46,16 @@ async function testAcceptsCompositeArm() {
   try { s = makeCompositeSigner(arm); }
   catch { check("composite arm " + arm + " available", false); return; }
   var der = await pki.csr.sign({ subject: "composite.example", subjectPublicKey: s.spki }, { key: s.key });
-  check("verify accepts a composite request", (await pki.csr.verify(der)) === true);
+  check("verify accepts a composite request", (await csrVerified(der)) === true);
 }
 
 async function testAcceptsPemAndParsed() {
   var s = makeSigner("ed25519");
   var pem = await pki.csr.sign({ subject: "pem.example", subjectPublicKey: s.spki }, { key: s.key }, { pem: true });
-  check("verify accepts a PEM request", (await pki.csr.verify(pem)) === true);
+  check("verify accepts a PEM request", (await csrVerified(pem)) === true);
   var der = pki.schema.csr.pemDecode(pem);
-  check("verify accepts a DER Buffer", (await pki.csr.verify(der)) === true);
-  check("verify accepts a parsed request", (await pki.csr.verify(pki.schema.csr.parse(der))) === true);
+  check("verify accepts a DER Buffer", (await csrVerified(der)) === true);
+  check("verify accepts a parsed request", (await csrVerified(pki.schema.csr.parse(der))) === true);
 }
 
 // ---- refuse: the signature does not verify under the subject key ----------
@@ -60,13 +67,13 @@ async function testKeySubstitutionIsRefused() {
   var mine = makeSigner("ec-p256");
   var theirs = makeSigner("ec-p256");
   var der = await pki.csr.sign({ subject: "swap.example", subjectPublicKey: mine.spki }, { key: mine.key });
-  check("the honest request verifies", (await pki.csr.verify(der)) === true);
+  check("the honest request verifies", (await csrVerified(der)) === true);
 
   var swap = surgery.replaceTlv(der, mine.spki, theirs.spki);
   check("the key substitution matched exactly one node", swap.count === 1);
   check("the swapped request still parses", !!pki.schema.csr.parse(swap.der));
   check("a request signed by a key other than its subjectPKInfo is refused",
-    (await pki.csr.verify(swap.der)) === false);
+    (await csrVerified(swap.der)) === false);
 }
 
 // A single flipped bit in the signature value.
@@ -80,7 +87,7 @@ async function testCorruptSignatureIsRefused() {
   var forged = surgery.replaceTlv(der, asn1.build.bitString(parsed.signatureValue.bytes, 0),
     asn1.build.bitString(bad, 0));
   check("the signature substitution matched exactly one node", forged.count === 1);
-  check("a flipped signature bit is refused", (await pki.csr.verify(forged.der)) === false);
+  check("a flipped signature bit is refused", (await csrVerified(forged.der)) === false);
 }
 
 // The subject named in the request is inside the signed CertificationRequestInfo, so changing it
@@ -95,7 +102,7 @@ async function testSubjectTamperIsRefused() {
   var forged = surgery.replaceTlv(der, honest, forgedName);
   check("the subject substitution matched exactly one node", forged.count === 1);
   check("the tampered request still parses", !!pki.schema.csr.parse(forged.der));
-  check("a subject changed after signing is refused", (await pki.csr.verify(forged.der)) === false);
+  check("a subject changed after signing is refused", (await csrVerified(forged.der)) === false);
 }
 
 // ---- a rebuilt parse result is not a request ------------------------------
@@ -108,7 +115,7 @@ async function testRebuiltParseResultIsRefused() {
   var s = makeSigner("ed25519");
   var der = await pki.csr.sign({ subject: "honest.example", subjectPublicKey: s.spki }, { key: s.key });
   var parsed = pki.schema.csr.parse(der);
-  check("the parser's own result verifies", (await pki.csr.verify(parsed)) === true);
+  check("the parser's own result verifies", (await csrVerified(parsed)) === true);
 
   var rebuilt = Object.assign({}, parsed);
   rebuilt.subject = { dn: "CN=attacker", rdns: [] };
@@ -139,6 +146,48 @@ async function testRebuiltParseResultIsRefused() {
     }))) === "csr/bad-input");
 }
 
+// ---- the verdict carries the fields it verified ---------------------------
+
+// A copy of a parse result is refused, but the parser's own object still carries its record, so a
+// caller who normalizes it IN PLACE keeps a verifying request whose visible fields are their edits.
+// The verb answers with the fields re-derived from the signed bytes, so a CA that issues from the
+// result issues what was signed however the argument was handled.
+async function testVerdictCarriesTheVerifiedFields() {
+  var s = makeSigner("ed25519");
+  var der = await pki.csr.sign({
+    subject: "honest.example", subjectPublicKey: s.spki,
+    extensionRequest: { subjectAltName: [{ dNSName: "honest.example" }] },
+  }, { key: s.key });
+
+  var r = await pki.csr.verify(der);
+  check("the verdict is an object, not a bare boolean", r !== null && typeof r === "object");
+  check("verified is true for an honest request", r.verified === true);
+  check("the verdict carries the subject", /honest.example/.test(r.subject.dn));
+  check("the verdict carries the subject key", Buffer.compare(r.subjectPublicKeyInfo.bytes, s.spki) === 0);
+  check("the verdict carries the attributes", Array.isArray(r.attributes) && r.attributes.length > 0);
+  check("the verdict carries the signed byte range",
+    Buffer.compare(r.certificationRequestInfoBytes, pki.schema.csr.parse(der).certificationRequestInfoBytes) === 0);
+
+  // The finding this shape exists for: the parse result mutated in place before verifying.
+  var parsed = pki.schema.csr.parse(der);
+  parsed.subject = { dn: "CN=attacker", rdns: [] };
+  parsed.attributes = [];
+  var m = await pki.csr.verify(parsed);
+  check("an in-place edit still verifies against the signed bytes", m.verified === true);
+  check("the verdict reports the SIGNED subject, not the edited one", /honest.example/.test(m.subject.dn));
+  check("the verdict reports the SIGNED attributes, not the emptied ones", m.attributes.length > 0);
+  check("the caller's own object keeps their edit", m.subject !== parsed.subject);
+
+  // A refused request still answers with the shape, so a caller reading `.verified` is never
+  // handed undefined from a verb that returned something else.
+  var other = makeSigner("ed25519");
+  var swap = surgery.replaceTlv(der, s.spki, other.spki);
+  var bad = await pki.csr.verify(swap.der);
+  check("a refused request still answers with the verdict shape", bad !== null && typeof bad === "object");
+  check("verified is false for a refused request", bad.verified === false);
+  check("a refused verdict still carries the fields it read", /honest.example/.test(bad.subject.dn));
+}
+
 // ---- algorithm confusion: the sig algorithm must match the key ------------
 
 // RFC 9814 sec. 4 / the shared engine's key-OID == sig-OID gate. Retagging the outer
@@ -155,7 +204,7 @@ async function testAlgorithmConfusionIsRefused() {
   });
   check("both Ed25519 algorithm identifiers were found", retagged.count === 2);
   check("a signature algorithm that disagrees with the subject key is refused",
-    (await pki.csr.verify(retagged.der)) === false);
+    (await csrVerified(retagged.der)) === false);
 }
 
 // ---- fail closed on malformed input ---------------------------------------
@@ -196,7 +245,7 @@ async function testUnusableSubjectKeyIsRefused() {
     Buffer.alloc(parsed.subjectPublicKeyInfo.bytes.length - 4, 0)]);
   var broken = surgery.replaceTlv(der, parsed.subjectPublicKeyInfo.bytes, truncated);
   check("the subject-key substitution matched exactly one node", broken.count === 1);
-  var verdict = await pki.csr.verify(broken.der).catch(function (e) { return e && e.code; });
+  var verdict = await csrVerified(broken.der).catch(function (e) { return e && e.code; });
   check("a request whose subject key cannot be imported never verifies", verdict !== true);
 }
 
@@ -208,6 +257,7 @@ async function main() {
   await testCorruptSignatureIsRefused();
   await testSubjectTamperIsRefused();
   await testRebuiltParseResultIsRefused();
+  await testVerdictCarriesTheVerifiedFields();
   await testAlgorithmConfusionIsRefused();
   await testMalformedInputThrows();
   await testRejectsRatherThanThrows();

@@ -24,22 +24,28 @@ var HONEST_CRI = null;   // its signed certificationRequestInfo range, the bytes
 function isPki(e) { return e instanceof pki.errors.PkiError; }
 
 async function verdictOf(input) {
-  var v;
+  var r;
   try {
-    v = await pki.csr.verify(input);
+    r = await pki.csr.verify(input);
   } catch (e) {
     if (isPki(e)) return null;
     throw e;
   }
-  if (typeof v !== "boolean") throw new Error("csr-verify fuzz: verify settled to a non-boolean verdict");
-  return v;
+  if (r === null || typeof r !== "object") throw new Error("csr-verify fuzz: verify settled to a non-object verdict");
+  if (typeof r.verified !== "boolean") throw new Error("csr-verify fuzz: the verdict's `verified` is not a boolean");
+  // A verdict reports the fields it read, so a caller acting on it is never handed a hole.
+  if (r.subject === undefined || r.subjectPublicKeyInfo === undefined ||
+    r.attributes === undefined || r.certificationRequestInfoBytes === undefined) {
+    throw new Error("csr-verify fuzz: the verdict omits a field it documents");
+  }
+  return r.verified;
 }
 
 module.exports.fuzz = async function (data) {
   var d = Buffer.from(data);
   if (!HONEST) {
     HONEST = await pki.csr.sign({ subject: "fuzz.example", subjectPublicKey: S.spki }, { key: S.key });
-    if ((await pki.csr.verify(HONEST)) !== true) throw new Error("csr-verify fuzz: a genuine request failed to verify");
+    if ((await pki.csr.verify(HONEST)).verified !== true) throw new Error("csr-verify fuzz: a genuine request failed to verify");
     HONEST_CRI = Buffer.from(pki.schema.csr.parse(HONEST).certificationRequestInfoBytes);
   }
 
