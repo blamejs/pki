@@ -570,6 +570,24 @@ async function testDeepSnapshotContract() {
   catch (e) { trapErr = e; }
   check("a settled binding onto a Proxy is refused with this boundary's code",
     trapErr.code === "t/bad" && !(trapErr instanceof RangeError));
+  // Settled where it sits. A frozen property reached through the prototype is settled only while
+  // nothing can be put in front of it, and an extensible receiver takes an own property of the
+  // same name at any time -- after which the read answers with that one instead.
+  var frozenAbove = Object.create(RegExp.prototype);
+  Object.defineProperty(frozenAbove, "detached",
+    { value: false, writable: false, configurable: false, enumerable: true });
+  var shadowable = vm.runInNewContext("/x/g");
+  Object.setPrototypeOf(shadowable, frozenAbove);
+  var shadowErr;
+  try { guardBytes.snapshotDeep(shadowable, TestError, "t/bad", "opts"); shadowErr = { code: "NO-THROW" }; }
+  catch (e) { shadowErr = e; }
+  check("an inherited settled field on an extensible value is refused, since it can be shadowed",
+    shadowErr.code === "t/bad");
+  var unshadowable = vm.runInNewContext("/x/g");
+  Object.setPrototypeOf(unshadowable, frozenAbove);
+  Object.preventExtensions(unshadowable);
+  check("while the same field on a value nothing can be added to rides along",
+    guardBytes.snapshotDeep(unshadowable, TestError, "t/bad", "opts") === unshadowable);
   ["writable", "configurable"].forEach(function (which) {
     var movable = vm.runInNewContext("/x/g");
     var desc = { value: false, enumerable: false, configurable: false, writable: false };
