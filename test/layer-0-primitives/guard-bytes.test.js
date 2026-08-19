@@ -508,6 +508,77 @@ async function testDeepSnapshotContract() {
   catch (e) { markedErr = e; }
   check("a CryptoKey carrying a caller-added symbol field is refused", markedErr.code === "t/bad");
 
+  // Third direction, and the one enumerability hid: a field written with defineProperty is not
+  // enumerable, and skipping those judged the property by how it was written rather than by who
+  // wrote it. `Object.defineProperty` belongs to a caller as much as to a platform, so a handle
+  // passed through by reference could carry an option that no check ever saw and that stayed
+  // theirs to flip afterwards. Every kind that passes through gets the same reading.
+  var vm = require("node:vm");
+  var foreign = vm.runInNewContext("/x/g");
+  check("a foreign RegExp with nothing of its own still passes through",
+    guardBytes.snapshotDeep({ k: foreign }, TestError, "t/bad", "spec").k === foreign);
+  var concealed = vm.runInNewContext("/x/g");
+  Object.defineProperty(concealed, "detached",
+    { value: false, enumerable: false, configurable: true, writable: true });
+  check("the fixture's field answers a read while reporting as non-enumerable",
+    concealed.detached === false && Object.keys(concealed).indexOf("detached") === -1);
+  var concealedErr;
+  try { guardBytes.snapshotDeep(concealed, TestError, "t/bad", "opts"); concealedErr = { code: "NO-THROW" }; }
+  catch (e) { concealedErr = e; }
+  check("the same object carrying a non-enumerable caller field is refused",
+    concealedErr.code === "t/bad");
+  // The shipped consumer: cms.sign reads `detached` off its options bag, so the field above is a
+  // real option and the message it decides the shape of is a real artifact.
+  var s2 = signing.makeSigner("ec-p256");
+  var signErr;
+  try {
+    await pki.cms.sign(Buffer.from("content"), { cert: s2.cert, key: s2.key }, concealed);
+    signErr = { code: "NO-THROW" };
+  } catch (e) { signErr = e; }
+  check("cms.sign refuses an options bag hiding an option behind non-enumerability",
+    signErr.code === "cms/bad-input");
+
+  // A node:crypto KeyObject is a key input `pki.hpke` documents, and its material lives behind an
+  // internal slot: a copy of one holds the shape of a key and none of the key, so the copy could
+  // not export, sign or derive. It reaches the verb as itself, at the argument and below it.
+  var nodeKeys = require("node:crypto").generateKeyPairSync("x25519");
+  [["private", nodeKeys.privateKey], ["public", nodeKeys.publicKey]].forEach(function (row) {
+    var got = guardBytes.snapshotDeep(row[1], TestError, "t/bad", "key");
+    check("a node KeyObject (" + row[0] + ") reaches the verb as itself", got === row[1]);
+    var nested = guardBytes.snapshotDeep({ key: row[1] }, TestError, "t/bad", "spec").key;
+    check("and the same one nested in a spec does too", nested === row[1]);
+    check("so it can still be exported, which a copy of it could not",
+      typeof nested.export === "function" && Buffer.isBuffer(nested.export({ format: "der", type: row[0] === "private" ? "pkcs8" : "spki" })));
+  });
+  // The slot is what answers, so a lookalike wearing only the prototype is not one. Asking whether
+  // it is key-shaped reads `type`, whose getter raises a raw TypeError on a value with no key
+  // behind it; that fault is this boundary's to type, not the caller's to receive as somebody
+  // else's error.
+  var keyLookalike = Object.create(require("node:crypto").KeyObject.prototype);
+  keyLookalike.password = "hunter2";
+  var lookalikeErr;
+  try { guardBytes.snapshotDeep({ k: keyLookalike }, TestError, "t/bad", "spec"); lookalikeErr = { code: "NO-THROW" }; }
+  catch (e) { lookalikeErr = e; }
+  check("a KeyObject lookalike is refused with this boundary's code, not a raw TypeError",
+    lookalikeErr.code === "t/bad" && !(lookalikeErr instanceof TypeError));
+  check("and the caller's own fault is carried as the cause",
+    lookalikeErr.cause instanceof TypeError);
+
+  // The surfaces are tables of names, so a name has to be IN one rather than answered by one.
+  // Built as ordinary objects they answered `surface.toString` with the function every object
+  // inherits, which read as though every kind published `toString`, `constructor`, `valueOf`,
+  // `hasOwnProperty` and `__proto__` -- five names a caller can write on an object that is then
+  // handed on by reference.
+  ["toString", "constructor", "valueOf", "hasOwnProperty", "__proto__"].forEach(function (name) {
+    var carrier = vm.runInNewContext("/x/g");
+    Object.defineProperty(carrier, name, { value: 1, enumerable: false, configurable: true, writable: true });
+    var err;
+    try { guardBytes.snapshotDeep(carrier, TestError, "t/bad", "opts"); err = { code: "NO-THROW" }; }
+    catch (e) { err = e; }
+    check("a name inherited by the surface table is not on the surface: " + name,
+      err.code === "t/bad" && err.message.indexOf(name) !== -1);
+  });
+
   // A symbol key is treated exactly as a string one is, which is the point: the walk reports both,
   // so neither is a way to smuggle a field past a check or to behave differently under a copy. A
   // method a class declares under a symbol is a method like any other, so the copy no longer
