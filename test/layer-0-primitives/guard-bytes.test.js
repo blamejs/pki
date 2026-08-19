@@ -498,15 +498,37 @@ async function testDeepSnapshotContract() {
   check("so it still passes through after its surface has been read",
     guardBytes.snapshotDeep({ k: ck }, TestError, "t/bad", "spec").k === ck);
   // Second direction: a handle is passed through by REFERENCE, so a field the caller hangs on one
-  // stays theirs to change after every check has read it. That is the window the refusal closes,
-  // and a symbol key is no way around it.
+  // stays theirs to change after every check has read it. That is the window the refusal closes.
+  //
+  // A symbol key is outside it, and deliberately. Every verb reads its options by name, so nothing
+  // under a symbol reaches one and refusing a key for carrying one protects nothing; what it costs
+  // is a documented input, since another WebCrypto implementation may keep its internals under a
+  // symbol. The options door still reports one, which is the case that matters: a caller who wrote
+  // a symbol onto a bag they passed as options meant it as an option and no verb will read it.
   var marked = await require("node:crypto").webcrypto.subtle.importKey(
     "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
   marked[Symbol("pem")] = true;
-  var markedErr;
-  try { guardBytes.snapshotDeep({ k: marked }, TestError, "t/bad", "spec"); markedErr = { code: "NO-THROW" }; }
-  catch (e) { markedErr = e; }
-  check("a CryptoKey carrying a caller-added symbol field is refused", markedErr.code === "t/bad");
+  check("a CryptoKey carrying a symbol field still reaches the verb, since no verb reads one",
+    guardBytes.snapshotDeep({ k: marked }, TestError, "t/bad", "spec").k === marked);
+  var namedOnKey = await require("node:crypto").webcrypto.subtle.importKey(
+    "pkcs8", signing.makeSigner("ec-p256").key, { name: "ECDSA", namedCurve: "P-256" }, true, ["sign"]);
+  namedOnKey.detached = false;
+  var namedErr;
+  try { guardBytes.snapshotDeep({ k: namedOnKey }, TestError, "t/bad", "spec"); namedErr = { code: "NO-THROW" }; }
+  catch (e) { namedErr = e; }
+  check("while a name a verb could read is still refused on the same handle",
+    namedErr.code === "t/bad");
+  // The options door is the one that answers for a symbol, and it is untouched.
+  var symBag = {};
+  symBag[Symbol("pem")] = true;
+  var bagErr;
+  try {
+    identifier.assertKnownKeys(symBag, { cert: 1 }, function (c, m) { var e = new Error(m); e.code = c; return e; },
+      "t/bad", "unknown option ");
+    bagErr = { code: "NO-THROW" };
+  } catch (e) { bagErr = e; }
+  check("an options bag carrying a symbol is still refused at the options door",
+    bagErr.code === "t/bad");
 
   // Third direction, and the one enumerability hid: a field written with defineProperty is not
   // enumerable, and skipping those judged the property by how it was written rather than by who
