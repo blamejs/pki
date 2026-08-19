@@ -143,15 +143,40 @@ function testViewContract() {
                                           TestError, "t/bad", "arg").b;
   check("and past a `BYTES_PER_ELEMENT` that lies",
         widthCopy instanceof Uint16Array && Array.from(widthCopy).join(",") === "4660,22136");
-  // ...while every ordinary kind still copies to its own kind and its own elements.
-  [["Uint16Array", new Uint16Array([1, 2])], ["Int32Array", new Int32Array([7])],
-   ["Float64Array", new Float64Array([1.5])], ["Uint8Array", new Uint8Array([9])],
-   ["Int8Array", new Int8Array([-3])]
-  ].forEach(function (row) {
-    var copy = guardBytes.snapshotDeep({ b: row[1] }, TestError, "t/bad", "arg").b;
-    check("a " + row[0] + " copies to its own kind and elements",
-          Object.getPrototypeOf(copy) === Object.getPrototypeOf(row[1]) &&
-          Array.from(copy).join(",") === Array.from(row[1]).join(","));
+  // ...while EVERY concrete typed-array kind this runtime has still copies to its own kind and
+  // elements. Enumerated from the runtime rather than listed, because a list is complete the day
+  // it is written and short afterwards: `Float16Array` landed on Node 24, a list drafted before it
+  // refused the kind outright, and a test carrying the same stale list would not have said so.
+  var concreteKinds = Object.keys(require("util").types)
+    .filter(function (name) { return /^is[A-Za-z0-9]+Array$/.test(name); })
+    .map(function (name) { return globalThis[name.slice(2)]; })
+    .filter(function (C) { return typeof C === "function" && C.BYTES_PER_ELEMENT > 0; });
+  check("the runtime offers a plausible number of typed-array kinds", concreteKinds.length >= 9);
+  // The predicates are held as functions taken at load, not looked up by name on every call.
+  // `util.types` is an ordinary object, so a name lookup would hand the kind decision -- and the
+  // constructor the copy is built from -- to anyone who replaces a predicate on it later.
+  var nodeTypes = require("util").types;
+  var trueIsUint8 = nodeTypes.isUint8Array;
+  var claimsNothing = function () { return false; };
+  var kindUnderMutation;
+  nodeTypes.isUint8Array = claimsNothing;
+  try {
+    kindUnderMutation = guardBytes.snapshotDeep({ b: new Uint8Array([1, 2]) },
+                                                TestError, "t/bad", "arg").b;
+  } finally {
+    nodeTypes.isUint8Array = trueIsUint8;
+  }
+  check("a predicate replaced on util.types after load does not change the copy's kind",
+        kindUnderMutation instanceof Uint8Array &&
+        Array.from(kindUnderMutation).join(",") === "1,2");
+  check("and util.types is left as it was found", nodeTypes.isUint8Array === trueIsUint8);
+  concreteKinds.forEach(function (C) {
+    var big = /^Big/.test(C.name);
+    var src = big ? new C([1n, 2n]) : new C([1, 2]);
+    var copy = guardBytes.snapshotDeep({ b: src }, TestError, "t/bad", "arg").b;
+    check("a " + C.name + " copies to its own kind and elements",
+          Object.getPrototypeOf(copy) === Object.getPrototypeOf(src) &&
+          Array.from(copy).join(",") === Array.from(src).join(","));
   });
   // An array index can carry an accessor the same as a named field can, and reading one runs the
   // caller's code. It escaped as itself from a boundary whose contract is a typed error, while the
