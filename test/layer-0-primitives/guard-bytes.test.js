@@ -631,11 +631,28 @@ async function testDeepSnapshotContract() {
   check("the copy answers a Date method with the language's, not the caller's",
     shadowCopy.getUTCFullYear() === 2030);
   check("while the caller's data still comes across", shadowCopy.note === "kept");
+  // The VALUE decides, not the name. A plain value under a method's name is a field, and dropping
+  // it would take a caller's typo out of reach of the unknown-option check -- the silence this
+  // release exists to end.
+  var plainUnderMethodName = new Date("2030-01-01T00:00:00Z");
+  plainUnderMethodName.getTime = "unused";
+  var plainCopy = guardBytes.snapshotDeep({ signingTime: plainUnderMethodName },
+    TestError, "t/bad", "opts").signingTime;
+  check("a plain value under a Date method's name is carried across as the field it is",
+    plainCopy.getTime === "unused");
   var s3 = signing.makeSigner("ec-p256");
   var signedWithShadow = await pki.cms.sign(Buffer.from("content"), { cert: s3.cert, key: s3.key },
     { signingTime: shadowed });
   check("so cms.sign encodes the signing time instead of running the override",
     Buffer.isBuffer(signedWithShadow) && signedWithShadow.length > 0);
+  var typoErr;
+  try {
+    await pki.cms.sign(Buffer.from("content"), { cert: s3.cert, key: s3.key },
+      { signingTime: new Date("2030-01-01T00:00:00Z"), getTime: "unused" });
+    typoErr = { code: "NO-THROW" };
+  } catch (e) { typoErr = e; }
+  check("and an option named after a Date method still reaches the unknown-option check",
+    typoErr.code === "cms/bad-input");
 
   // Across algorithms, because what this engine keeps behind a key varies by one: a signing key
   // holds a KeyObject, an HMAC key holds the raw bytes. Both are the engine's own state on its own
