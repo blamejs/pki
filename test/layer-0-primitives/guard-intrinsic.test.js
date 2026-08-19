@@ -160,6 +160,22 @@ function testRuntimeReadsAreSnapshotted() {
     utilTypes.isDate = realIsDate;
     globalThis.isNaN = realIsNaN;
   }
+  // The re-view a wipe performs turns a backing store back into something writable, and it does
+  // that through `Buffer.from`. One returning a buffer over DIFFERENT memory hands the wipe a
+  // decoy: the fill runs, the decoy is zeroed, the call returns normally, and the plaintext it was
+  // aimed at is still readable. Every check between the two is satisfied.
+  var realFrom = Buffer.from;
+  var plaintext = realFrom.call(Buffer, "hunter2hunter2hu", "utf8");
+  var decoy = Buffer.alloc(16, 0xAA);
+  try {
+    Buffer.from = function () { return decoy; };
+    guard.secret.zeroize(plaintext, TestError, "x/bad", "the secret");
+  } finally {
+    Buffer.from = realFrom;
+  }
+  check("a replaced Buffer.from cannot redirect the wipe onto a decoy buffer",
+    Array.prototype.every.call(plaintext, function (b) { return b === 0; }));
+
   check("a replaced util.types.isDate cannot make a plain object answer as a Date", saidDate === false);
   check("a replaced global isNaN cannot make an invalid Date pass the validity check",
     acceptedInvalid === false);
