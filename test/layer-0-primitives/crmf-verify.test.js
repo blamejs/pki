@@ -194,6 +194,57 @@ async function testPoposkInputKeyMustMatchTemplate() {
     (await codeOf(pki.crmf.verifyPop(swap.der))) === "crmf/bad-popo");
 }
 
+// ---- the verdict reports only what the preimage covers --------------------
+
+// A Name (RDNSequence) carrying one commonName.
+function nameDer(cn) {
+  var b = pki.asn1.build;
+  return b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8(cn)])])]);
+}
+
+// The dangerous shape the two preimages create. When poposkInput is present the signature covers it
+// alone -- the key and the authInfo sender -- and never the certTemplate. A template that carries a
+// subject while omitting its publicKey keeps poposkInput required (so the message parses) and keeps
+// the sec. 4.1 key-equality check inapplicable (no template key to compare), leaving a subject in
+// the message that nothing signed. Reporting it beside `verified: true` would hand a CA following
+// the documented issue-from-the-verdict flow a name the requester never proved anything about.
+async function testAnUnsignedSubjectIsNotReported() {
+  var s = makeSigner("ec-p256");
+  var b = pki.asn1.build;
+  var der = await incompleteRequest(s);
+
+  ["implicit", "explicit"].forEach(function () { /* both tag forms are dual-accepted; both covered below */ });
+  for (var i = 0; i < 2; i++) {
+    var explicitForm = i === 1;
+    var count = 0;
+    var forged = surgery.patch(der, function (n) {
+      if (n.tagClass !== "context" || n.tagNumber !== 6) return undefined;
+      count++;
+      return explicitForm ? b.explicit(5, nameDer("victim.example")) : b.implicit(5, nameDer("victim.example"));
+    });
+    check("the template rewrite matched exactly one node", count === 1);
+    var m = await firstOf(forged);
+    var form = explicitForm ? "EXPLICIT" : "IMPLICIT";
+    // The signature over poposkInput is genuine, so the proof of possession itself still holds.
+    check("the " + form + " subject graft still carries a valid proof", m.cryptographicallyVerified === true);
+    check("a subject the preimage never covered is not reported (" + form + ")", m.subject === null);
+    check("the verdict says the subject is unbound (" + form + ")", m.subjectBound === false);
+    // Possession WAS proven, for the key inside poposkInput, so the verdict must name that key.
+    check("the verdict reports the key possession was proven for (" + form + ")",
+      Buffer.isBuffer(m.publicKey) && Buffer.compare(m.publicKey, s.spki) === 0);
+  }
+}
+
+// The other side of the same rule: when poposkInput is absent the preimage IS the CertRequest, so
+// the template's subject and key are both covered and both reported.
+async function testACoveredSubjectIsReportedAsBound() {
+  var s = makeSigner("ec-p256");
+  var m = await firstOf(await completeRequest(s, "bound.example"));
+  check("a certReq preimage binds the subject", m.subjectBound === true);
+  check("the bound subject is reported", /bound.example/.test(m.subject.dn));
+  check("the bound key is reported", Buffer.compare(m.publicKey, s.spki) === 0);
+}
+
 // ---- the arms that are not decidable from the message ---------------------
 
 async function testRaVerifiedNeverReadsAsVerified() {
@@ -272,6 +323,8 @@ async function main() {
   await testSubjectTamperIsRefused();
   await testPoposkInputOnACompleteTemplateIsRefused();
   await testPoposkInputKeyMustMatchTemplate();
+  await testAnUnsignedSubjectIsNotReported();
+  await testACoveredSubjectIsReportedAsBound();
   await testRaVerifiedNeverReadsAsVerified();
   await testAbsentPopIsNotVerified();
   await testMalformedInputThrows();
