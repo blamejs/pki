@@ -710,6 +710,30 @@ async function run() {
   check("23m. an accessor-backed time is read exactly once", reads === 1);
   check("23n. and the verdict is the one that single read earns", creepVerdict.trusted === true);
 
+  // The anchor list is copied without calling back into the caller's array. `map` is the caller's
+  // property, so an array that answers it with itself would leave the copy aliasing the original,
+  // and appending mid-call would widen the set the chain is built against.
+  // The entries are PARSED certificates, which every later step passes through unchanged, so a
+  // hostile `map` cannot also break the byte conversion and fail the chain for an unrelated reason.
+  //
+  // Honest status of this one: it PINS the behavior, it does not prove the loop is what produces
+  // it. Swapping the loop back to `v.map(_fixByteish)` leaves this passing -- the appended anchor
+  // does not reach the anchor set even when the container aliases, so the exposure the reviewer
+  // described is not reachable through this route. The loop is kept because dispatching a copy
+  // through a method the caller owns is the wrong shape regardless of whether today's downstream
+  // happens to absorb it, and this vector holds the outcome still while that stays true.
+  var parsedOther = pki.schema.x509.parse(s.cert), parsedCa = pki.schema.x509.parse(caCert);
+  var hostile = [parsedOther];
+  hostile.map = function () { return this; };
+  check("23o. the hostile list is a real array", Array.isArray(hostile));
+  check("23p. and its map answers with itself", hostile.map(function () { return 1; }) === hostile);
+  check("23q. baseline: the parsed CA alone does anchor the chain",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [parsedCa], time: T })).trusted === true);
+  var racePending8 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: hostile, time: T });
+  hostile.push(parsedCa);
+  check("23r. appending to an array whose map returns itself does not widen the anchor set",
+    (await racePending8).trusted === false);
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
