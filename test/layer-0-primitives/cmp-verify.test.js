@@ -905,6 +905,127 @@ async function run() {
   check("23ak. and the caller's own secret is left intact",
     faultSecret.toString("utf8") === "hunter2");
 
+  // Reducing the options runs the caller's getters, so a getter can install a replacement for a
+  // global the verb itself is about to use. Promise.prototype.finally is the sharp case: a verb that
+  // cleaned up with `.finally(...)` would dispatch into the replacement and hand back whatever it
+  // returned, so a rejected verification could be reported as a passing verdict. The cleanup is
+  // language-level try/finally, which looks nothing up. RED without it: the swapped finally was
+  // reached and its promise, not the real verdict, came back.
+  var realFinally = Promise.prototype.finally;
+  var finallyReached = false;
+  var swapOnGetter = {
+    signerCert: s.cert,
+    get transactionID() {
+      Promise.prototype.finally = function () {
+        finallyReached = true;
+        return Promise.resolve({ valid: true, trusted: true, forged: true });
+      };
+      return Buffer.alloc(16, 9);   // does NOT match the message
+    },
+  };
+  var swapVerdictOut, swapThrew = null;
+  try { swapVerdictOut = await pki.cmp.verify(raceDer, swapOnGetter); }
+  catch (e) { swapThrew = e; }
+  finally { Promise.prototype.finally = realFinally; }
+  check("23al. a finally installed by an option getter never decides the result",
+    finallyReached === false);
+  check("23am. and the mismatched transactionID is still what the verdict reports",
+    swapThrew === null && swapVerdictOut.valid === false && swapVerdictOut.forged === undefined);
+
+  // The echo-value type check is a configuration error the caller must be shown, never a routine
+  // mismatch verdict that blames the peer. It is written out as two named checks rather than a loop,
+  // because the reduction has already run the caller's getters and one of those could have replaced
+  // Array.prototype.forEach with a no-op -- switching the check off rather than failing it.
+  //
+  // Honest status: this pins the CONTRACT, not the hardening. A vector that actually installs a
+  // no-op forEach cannot isolate it, because forEach is used throughout the certificate parsing this
+  // path also runs, so the call dies there first and the refusal cannot be attributed to this check.
+  // The written-out form is kept on principle, the same principle as the loops above: a check that a
+  // caller can switch off is not a check.
+  check("23an. a string transactionID is a configuration error, not a mismatch verdict",
+    (await codeOf(pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: "not-a-buffer" }))) === "cmp/bad-input");
+  check("23ao. and so is a string expectRecipNonce",
+    (await codeOf(pki.cmp.verify(raceDer, { signerCert: s.cert, expectRecipNonce: "not-a-buffer" }))) === "cmp/bad-input");
+
+  // Whether a byte option is COPIED, and whether that copy is entered in the wipe list, must not be
+  // decided by a predicate the caller can rewrite. Buffer.isBuffer is a writable property and
+  // `instanceof Uint8Array` consults Uint8Array[Symbol.hasInstance]; both are reachable from an
+  // option getter that has already run. Answering false for the caller's own secret skipped the copy
+  // and put their live buffer where the copy belongs -- which the wipe then destroys, memory the
+  // toolkit does not own. The tests ask util.types.isUint8Array, a fact about the value.
+  // RED without that: callerOwned came back all zeros.
+  var realHasInstance = Object.getOwnPropertyDescriptor(Uint8Array, Symbol.hasInstance);
+  var realIsBuffer = Buffer.isBuffer;
+  var callerOwned = Buffer.from("hunter2", "utf8");
+  var lieOnce = true;
+  var lyingOpts = {
+    get sharedSecret() {
+      Buffer.isBuffer = function () { return false; };
+      Object.defineProperty(Uint8Array, Symbol.hasInstance, {
+        configurable: true, value: function () { if (lieOnce) { lieOnce = false; return false; } return true; },
+      });
+      return callerOwned;
+    },
+  };
+  try { await pki.cmp.verify(raceMac, lyingOpts); }
+  catch (_e) { /* the verdict is not what this vector is about */ }
+  finally {
+    Buffer.isBuffer = realIsBuffer;
+    if (realHasInstance) Object.defineProperty(Uint8Array, Symbol.hasInstance, realHasInstance);
+    else delete Uint8Array[Symbol.hasInstance];
+  }
+  check("23ap. a lying kind test cannot make the verb wipe the caller's own secret",
+    callerOwned.toString("utf8") === "hunter2");
+
+  // A STRING secret is converted to bytes once, at the door, and that copy is recorded in the same
+  // wipe list as the byte form -- so it is cleared on every path out rather than left behind by the
+  // MAC path, which is where the conversion used to happen with nothing owning the result. The
+  // string itself is immutable and cannot be cleared, which is why bytes remain the form to pass
+  // when the secret must not outlive the call.
+  //
+  // The copy is deliberately NOT observable from a test: the conversion uses a Buffer.from captured
+  // at module load, so a spy installed afterwards never sees it -- which is the property 23au/23av
+  // below actually pin. What is observable here is that the string form works and that the wipe list
+  // it feeds is the same one 23af/23ag exercise for bytes; guard-secret's own tests pin the wipe.
+  check("23aq. a string secret still verifies",
+    (await pki.cmp.verify(raceMac, { sharedSecret: "hunter2" })).valid === true);
+  check("23ar. and an empty string is still refused as a secret",
+    (await codeOf(pki.cmp.verify(raceMac, { sharedSecret: "" }))) === "cmp/bad-input");
+
+  // The conversion uses a Buffer.from captured at module load. Without that, the accessor on
+  // sharedSecret ITSELF -- the first thing the reduction reads -- can install a replacement, receive
+  // the plaintext secret as its argument, and have its RETURN become the PBMAC1 key. RED without the
+  // capture: a message MAC'd under a secret the caller never had verified as valid, and the caller's
+  // own secret was handed to the attacker's function.
+  var macUnderOther = await pki.cmp.build({ header: hdr({ transactionID: Buffer.alloc(16, 7) }), body: IRBODY },
+    { mac: { secret: "attacker-key", salt: Buffer.alloc(16, 9), iterationCount: 2048 } });
+  check("23at. baseline: the wrong secret does not verify",
+    (await pki.cmp.verify(macUnderOther, { sharedSecret: "hunter2" })).valid === false);
+
+  var realFrom = Buffer.from;
+  var stolen = null;
+  var poisoning = {};
+  Object.defineProperty(poisoning, "sharedSecret", {
+    enumerable: true, configurable: true,
+    get: function () {
+      Buffer.from = function (a, enc) {
+        if (typeof a === "string" && enc === "utf8") {
+          stolen = a; Buffer.from = realFrom;
+          return realFrom("attacker-key", "utf8");
+        }
+        return realFrom.apply(Buffer, arguments);
+      };
+      return "hunter2";
+    },
+  });
+  var poisonVerdict;
+  try { poisonVerdict = await pki.cmp.verify(macUnderOther, poisoning); }
+  catch (_e) { poisonVerdict = { valid: false }; }
+  finally { Buffer.from = realFrom; }
+  check("23au. an accessor cannot substitute the PBMAC1 key through Buffer.from",
+    poisonVerdict.valid === false);
+  check("23av. and cannot capture the caller's plaintext secret through it", stolen === null);
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
