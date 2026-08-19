@@ -590,6 +590,31 @@ function testKnownKeys() {
             identifier.optionsObject(row[1](), E, "x/bad", "opts");
           }).code === "x/bad");
   });
+  // Every question this door asks of a caller's value runs after the value has been refused as a
+  // Proxy, and a question it asks on its own behalf is typed. `Buffer.isBuffer` is an
+  // `instanceof`, so it walks the chain and runs a `getPrototypeOf` trap; the type tag is a
+  // property a caller can back with a getter. Both took the door out through the caller's own
+  // exception, from a boundary whose contract is a typed error.
+  var trapProto = new Proxy({}, { getPrototypeOf: function () { throw new RangeError("trap"); } });
+  check("a Proxy whose getPrototypeOf trap throws is refused by optionsObject",
+        errOf(function () {
+          identifier.optionsObject(trapProto, E, "x/bad", "opts");
+        }).code === "x/bad");
+  check("as is a plain bag inheriting from one",
+        errOf(function () {
+          identifier.optionsObject(Object.create(trapProto), E, "x/bad", "opts");
+        }).code === "x/bad");
+  var trapTag = {};
+  Object.defineProperty(trapTag, Symbol.toStringTag,
+                        { get: function () { throw new RangeError("trap"); }, configurable: true });
+  check("a bag whose type tag throws is refused by optionsObject",
+        errOf(function () {
+          identifier.optionsObject(trapTag, E, "x/bad", "opts");
+        }).code === "x/bad");
+  check("and a Buffer in the options position is still named",
+        errOf(function () {
+          identifier.optionsObject(Buffer.alloc(2), E, "x/bad", "opts");
+        }).code === "x/bad");
   check("while the kinds a verb does take are still accepted",
         identifier.optionsObject({}, E, "x/bad", "opts") !== null &&
         identifier.optionsObject([], E, "x/bad", "opts") !== null &&
