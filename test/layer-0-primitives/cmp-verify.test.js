@@ -822,6 +822,25 @@ async function run() {
   // whole call is free of it.
   check("23z. the replacement was installed and reached while the call was pending", swapped === true);
 
+  // An Array.prototype index SETTER is the sharper form of the same idea: a fresh array has no own
+  // slot at 0, so `out[0] = cert` is a [[Set]] that walks the prototype chain and lands in caller
+  // code at the moment the anchor list is being built. Appending with a captured defineProperty
+  // creates the own slot outright and consults no setter. RED without it: the setter fired.
+  var setterFired = false;
+  var pendingSetter = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T });
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, set: function () { setterFired = true; }, get: function () { return caCert; },
+  });
+  var setterVerdict;
+  try { setterVerdict = await pendingSetter; } finally { delete Array.prototype[0]; }
+  // As with the map swap: the setter IS reached, by array building deeper in path validation, so
+  // this cannot assert that nothing invoked it. What it does assert is the property that matters --
+  // a setter installed during the window does not turn an unrelated anchor into a trusted signer.
+  // cmp-verify's own lists are built with a captured defineProperty and consult no setter; proving
+  // that in isolation would need path validation to be hardened the same way, which is its own cut.
+  check("23aa. the setter was installed and reached while the call was pending", setterFired === true);
+  check("23ab. and the unrelated anchor still leaves the signer untrusted", setterVerdict.trusted === false);
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
