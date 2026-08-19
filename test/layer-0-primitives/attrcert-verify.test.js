@@ -280,9 +280,32 @@ async function testATargetCertIssuerIsNotATarget() {
   // Sec. 4.3.2 defines the check as passing on a targetName or a targetGroup, and says of the third
   // arm that it "MUST NOT be used". Skipping it leaves the check PERFORMED, so the slot is true and
   // the verdict is an honest refusal; matching on it would implement the forbidden alternative.
-  check("the sec. 4.3.2 check still ran", r.targetingChecked === true);
+  // The AC broke a MUST NOT of its own profile, so it is refused before any match is considered and
+  // the targets check never runs.
+  check("the sec. 4.3.2 check did not run", r.targetingChecked === false);
   check("the reason names the forbidden alternative", /targetCert/.test(String(r.reason)));
   check("the reason cites that it MUST NOT be used", /MUST NOT be used/.test(String(r.reason)));
+
+  // The refusal must not depend on which other entries the issuer put beside it: a targetCert
+  // alongside a target that DOES name this verifier is still refused, or the verdict would turn on
+  // what an attacker chose to include.
+  var mine = b.explicit(0, b.contextPrimitive(2, Buffer.from("server-a.example", "latin1")));
+  var both = b.sequence([b.oid(pki.oid.byName("targetInformation")), b.boolean(true),
+    b.octetString(b.sequence([b.sequence([mine, targetCert])]))]);
+  var derBoth = await pki.attrcert.sign(spec({ extensions: [both] }), aaOf(aa));
+  var matching = okTarget({ dNSName: "server-a.example" });
+  var rb = await pki.attrcert.verify(derBoth, trusted(aa), matching);
+  check("a matching target does not rescue an AC carrying targetCert", rb.verified === false);
+  check("that refusal also reports the check unrun", rb.targetingChecked === false);
+  check("that refusal names targetCert too", /targetCert/.test(String(rb.reason)));
+
+  // Without the forbidden entry the same target verifies, so the refusal is the targetCert and
+  // nothing else about this fixture.
+  var onlyMine = b.sequence([b.oid(pki.oid.byName("targetInformation")), b.boolean(true),
+    b.octetString(b.sequence([b.sequence([mine])]))]);
+  var derMine = await pki.attrcert.sign(spec({ extensions: [onlyMine] }), aaOf(aa));
+  check("the same target verifies when no targetCert rides along",
+    (await pki.attrcert.verify(derMine, trusted(aa), matching)).verified === true);
 }
 
 // RFC 5755 sec. 6. Two schemes are defined, and this verb implements "never revoke": it holds no
@@ -312,9 +335,13 @@ async function testRevocationIsAnswered() {
   check("it reports the revocation question settled", r2.revocationChecked === true);
   check("it reports noRevAvail", r2.noRevAvail === true);
 
-  // The "pointer in AC" scheme: the caller established the status themselves.
+  // The caller established the status themselves. `noExt` carries no pointer either, and that is
+  // deliberate: sec. 6 closes with "An AC verifier MAY use any source for AC revocation status
+  // information", so requiring a crlDistributionPoints or authorityInfoAccess pointer before
+  // accepting the caller's answer would refuse a verifier reading a directory, an out-of-band CRL,
+  // or a local record. The verdict still separates the two answers -- see noRevAvail below.
   var r3 = await pki.attrcert.verify(noExt, trusted(aa), { time: WITHIN, revocationStatus: "notRevoked" });
-  check("a caller-supplied notRevoked answers sec. 6", r3.verified === true);
+  check("a caller-supplied notRevoked answers sec. 6 with no pointer in the AC", r3.verified === true);
   check("and the slot reports the check ran", r3.revocationChecked === true);
   check("with no noRevAvail claimed", r3.noRevAvail === false);
 
@@ -422,6 +449,30 @@ async function testOptionsAreFixedAtTheCall() {
   var targeted = await pki.attrcert.sign(spec({
     extensions: { targetInformation: [{ targetName: { dNSName: "server.example" } }] },
   }), aaOf(aa));
+  // The trusted key is the fifth caller-owned input, and the one a view leaves writable for the
+  // whole of signature verification. RED without the snapshot: handing in an unrelated key of the
+  // same length and overwriting it with the real issuer's mid-call returned verified === true.
+  var real = makeSigner("ec-p256"), other = makeSigner("ec-p256");
+  var acDer = await pki.attrcert.sign(spec(), aaOf(real));
+  var swappable = Buffer.from(other.spki);
+  check("the two keys are the same length, so the overwrite is total", real.spki.length === other.spki.length);
+  var pendingKey = pki.attrcert.verify(acDer, { name: "CN=Example AA", publicKey: swappable }, OK);
+  real.spki.copy(swappable);
+  check("overwriting issuer.publicKey mid-call does not change the trusted key",
+    (await pendingKey).verified === false);
+  // Under a composite arm the engine keeps slices of the SPKI across its digest, so the window is
+  // widest there; the same call must answer for the key it was given.
+  var comp, compOther;
+  try { comp = makeCompositeSigner("id-MLDSA65-ECDSA-P256-SHA512"); compOther = makeCompositeSigner("id-MLDSA65-ECDSA-P256-SHA512"); }
+  catch { comp = null; }
+  if (comp) {
+    var compAc = await pki.attrcert.sign(spec(), aaOf(comp));
+    var compSwap = Buffer.from(compOther.spki);
+    var pendingComp = pki.attrcert.verify(compAc, { name: "CN=Example AA", publicKey: compSwap }, OK);
+    comp.spki.copy(compSwap);
+    check("a composite issuer key is fixed at the call too", (await pendingComp).verified === false);
+  }
+
   var o2 = { time: WITHIN, target: { dNSName: "attacker.example" } };
   var pending3 = pki.attrcert.verify(targeted, trusted(aa), o2);
   o2.target = { dNSName: "server.example" };
