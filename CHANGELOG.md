@@ -4,6 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.14 — 2026-08-19
+
+`pki.crmf.verifyPop` checks the proof of possession on an inbound certificate request message, the CRMF counterpart to the PKCS#10 check that shipped in 0.5.13.
+
+### Added
+
+- `pki.crmf.verifyPop(messages)` verifies the RFC 4211 proof of possession on each `CertReqMsg`, returning one verdict per message plus a top-level `verified` that is true only when every message carried a proof that held. For the `signature` proof the covered bytes are the ones the RFC names: the DER of `poposkInput` when that field is present, and the DER of `certReq` when it is absent (sec. 4.1, and the ASN.1 module, which is where the two readings of that sentence are settled). Verification composes the one path-validation signature engine, with the same algorithm-confusion (RFC 9814 sec. 4) and EdDSA low-order-point gates as the certificate and CRL paths.
+- The proofs that cannot be checked from the message are reported as such. `raVerified` is an RA's assertion that it confirmed possession out of band, so it yields `verified: false` with `method: "raVerified"`, and a caller who trusts that RA opts in by reading `method`. `keyEncipherment` and `keyAgreement` complete over a later protocol exchange, or need the CA's decryption key, so they yield `verified: false` naming the arm. Each verdict carries the `certReqId`, `subject` and `publicKey` it read, re-derived from the message's own bytes, so a CA issues from what was checked.
+
+### Changed
+
+- `pki.schema.crmf.parse` now records the bytes it read, joining the certificate, CRL, CMS and certification-request parsers, and `pki.crmf.verifyPop` accepts only a result carrying that record. A parsed message set presents the byte range a proof covers and the template a certificate would be issued from as separate properties, so a rebuilt one can hold a genuine requester's signed range beside a substituted subject. As with those parsers, the raw byte views on a parsed result now read from the parser's own copy of the input; passing DER is unaffected, and a parse result used as-is still works.
+
+### Fixed
+
+- The `pki.csr.sign` example passed `subject: "CN=device-42"`, which asks for a commonName whose value is the string `CN=device-42` and so issues `CN=CN=device-42`. A bare string is the commonName value throughout the toolkit; the example now says so and passes `"device-42"`.
+
 ## v0.5.13 — 2026-08-19
 
 `pki.csr.verify` checks an inbound certification request's proof of possession, so a CA built on this toolkit can tell that the requester holds the key they are asking it to certify.

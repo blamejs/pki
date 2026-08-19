@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.5.13",
+  "packageVersion": "0.5.14",
   "surface": {
     "C": {
       "kind": "object",
@@ -1979,6 +1979,10 @@
         "buildCertTemplate": {
           "kind": "function",
           "arity": 1
+        },
+        "verifyPop": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -3416,6 +3420,7 @@
     "pki.crl.isRevoked": "0.3.9",
     "pki.crmf.build": "0.3.3",
     "pki.crmf.buildCertTemplate": "0.3.5",
+    "pki.crmf.verifyPop": "0.5.14",
     "pki.csr.sign": "0.3.1",
     "pki.csr.verify": "0.5.13",
     "pki.ct.parseSctList": "0.1.20",
