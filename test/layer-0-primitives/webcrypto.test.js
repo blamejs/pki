@@ -43,6 +43,18 @@ async function testRandom() {
   pki.webcrypto.getRandomValues(subject);
   check("while a subclass within the ceiling is still filled",
         Array.prototype.some.call(subject, function (x) { return x !== 0; }));
+  // A view over shared memory is a write TARGET here, and the caller chose that memory. The
+  // input-side refusal answers a different question -- bytes another thread can rewrite after they
+  // have been checked cannot be checked -- and applying it here made a supported W3C call an error
+  // for worker and shared-memory callers, where the platform fills the same view.
+  var sharedBytes = new Uint8Array(new SharedArrayBuffer(16));
+  pki.webcrypto.getRandomValues(sharedBytes);
+  check("getRandomValues fills a view over shared memory",
+        Array.prototype.some.call(sharedBytes, function (x) { return x !== 0; }));
+  var sharedWords = new Int32Array(new SharedArrayBuffer(16));
+  pki.webcrypto.getRandomValues(sharedWords);
+  check("...whatever integer width it is",
+        Array.prototype.some.call(sharedWords, function (x) { return x !== 0; }));
 }
 
 async function testDigest() {
