@@ -819,6 +819,73 @@ async function run() {
   check("23x2. an anchor reachable only through the prototype is refused, never silently dropped",
     inhErr !== null && inhErr.code === "cmp/bad-input" && /dense array/.test(inhErr.message));
 
+  // A Proxy over an array answers Array.isArray truthfully while running caller code in its traps,
+  // and its ownKeys and get traps need not agree with each other or with what a later element read
+  // returns -- so a list counted through them describes nothing that will still be true when the
+  // anchors are used. The refusal is by identity, and it has to happen before any property of the
+  // list is read for it to mean anything: a `length` read or a descriptor walk placed ahead of it
+  // is the trap running first, with the door still closed behind it.
+  var trapsRun = [];
+  var trapped = new Proxy([caCert], {
+    ownKeys: function (t) { trapsRun.push("ownKeys"); return Reflect.ownKeys(t); },
+    get: function (t, k, r) { trapsRun.push("get:" + String(k)); return Reflect.get(t, k, r); },
+    getOwnPropertyDescriptor: function (t, k) {
+      trapsRun.push("gopd:" + String(k)); return Reflect.getOwnPropertyDescriptor(t, k);
+    },
+  });
+  var proxyErr = null;
+  try { await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: trapped, time: T }); }
+  catch (e) { proxyErr = e; }
+  check("23x3. a Proxy-wrapped anchor list is refused",
+    proxyErr !== null && proxyErr.code === "cmp/bad-input" && /Proxy/.test(proxyErr.message));
+  check("23x4. and refused before any of its traps ran", trapsRun.length === 0);
+
+  // Two predicates decide whether a caller's value is COPIED at all, and both are ordinary
+  // writable properties. Reading either at call time hands that decision to the caller: an
+  // `isUint8Array` answering false leaves the caller's live buffer where the copy belongs, and an
+  // `Array.isArray` answering false routes a trust list past the list door and straight back out
+  // by reference, so appending to it mid-call widens the set the chain was built against.
+  //
+  // What this vector establishes, precisely: with the array test replaced and the caller emptying
+  // the list mid-call, the call does not come back trusted. It does NOT isolate this module's
+  // captured array test as the cause -- `Array.isArray` is consulted seven more times inside a
+  // verify call by the DER reader, the schema walk and path building, so a global replacement
+  // corrupts those too and the outcome cannot be attributed to one change. The capture is kept on
+  // principle, and this records the honest limit of what the vector shows. The byte-predicate
+  // vector below has no such ambiguity: `util.types.isUint8Array` is consulted zero times through
+  // the live object during a verify call, every consumer having captured it.
+  var realIsArray = Array.isArray;
+  var liveAnchors = [caCert];
+  var swappedList;
+  try {
+    Array.isArray = function () { return false; };
+    swappedList = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: liveAnchors, time: T });
+  } finally {
+    Array.isArray = realIsArray;
+  }
+  liveAnchors.length = 0;
+  var swappedListResult = await swappedList.then(
+    function (r) { return r.trusted; }, function (e) { return "threw " + e.code; });
+  check("23y. emptying the anchor list mid-call does not yield a trusted verdict, with Array.isArray replaced",
+    swappedListResult !== true);
+
+  // HDR carries transactionID = Buffer.alloc(16, 7), so this value matches when the call is made
+  // and stops matching the moment it is overwritten.
+  var realIsU8 = require("util").types.isUint8Array;
+  var liveTxn = Buffer.alloc(16, 7);
+  var swappedBytes;
+  try {
+    require("util").types.isUint8Array = function () { return false; };
+    swappedBytes = pki.cmp.verify(raceChain, { signerCert: signerCert, time: T, transactionID: liveTxn });
+  } finally {
+    require("util").types.isUint8Array = realIsU8;
+  }
+  liveTxn.fill(9);
+  var swappedBytesResult = await swappedBytes.then(
+    function (r) { return r.valid === true ? true : r.code; }, function (e) { return "threw " + e.code; });
+  check("23y2. overwriting an echo buffer mid-call cannot change the match, with the slot test replaced",
+    swappedBytesResult === true);
+
   // Array.prototype.map is a replaceable global, and the anchor list becomes path-builder input
   // AFTER verification suspends. A caller who swaps it during that window must not end up trusted.
   //
