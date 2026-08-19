@@ -388,6 +388,35 @@ function testKnownKeys() {
     check(row[0] + " reports a getter named `" + row[2] + "`, which its kind does not define",
           identifier.readableNames(bag, E, "x/bad", "o").map(String).join(",") === row[2]);
   });
+  // `length` is structure only where the language puts it on the value itself. An array carries an
+  // own non-configurable one that no prototype can shadow; a byte view carries a prototype
+  // accessor, and a subclass can define its own over the top, so `opts.length` then answers with
+  // what the caller wrote. Passing the name over for every indexed kind hid exactly that.
+  [["a byte view", function () {
+      return new (class ViewOpts extends Uint8Array { get length() { return "unused"; } })(2);
+    }],
+   ["a Buffer", function () {
+      function Sub() {}
+      Sub.prototype = Object.create(Buffer.prototype);
+      Object.defineProperty(Sub.prototype, "length",
+                            { get: function () { return 1; }, configurable: true });
+      return Object.setPrototypeOf(Buffer.alloc(2), Sub.prototype);
+    }]
+  ].forEach(function (row) {
+    check(row[0] + " subclass overriding `length` reports it",
+          identifier.readableNames(row[1](), E, "x/bad", "o").map(String).join(",") === "length");
+  });
+  [["an array", function () { return []; }],
+   ["an array with elements", function () { return [1, 2, 3]; }],
+   ["a sparse array", function () { var a = []; a.length = 5; return a; }],
+   ["a byte view", function () { return new Uint8Array(2); }],
+   ["a Buffer", function () { return Buffer.alloc(2); }],
+   ["a foreign array", function () { return vm.runInNewContext("[1, 2]"); }],
+   ["a foreign byte view", function () { return vm.runInNewContext("new Uint8Array(2)"); }]
+  ].forEach(function (row) {
+    check(row[0] + " whose `length` the language installed reports nothing",
+          identifier.readableNames(row[1](), E, "x/bad", "o").length === 0);
+  });
   // A DataView has no integer-indexed elements and no `length`, so both are ordinary properties
   // that stay set and answer on a later read. Counting it among the indexed kinds dropped them
   // from the names reported and from the copy the verb is handed.
@@ -604,17 +633,50 @@ function testKnownKeys() {
         errOf(function () {
           identifier.optionsObject(Object.create(trapProto), E, "x/bad", "opts");
         }).code === "x/bad");
+  // The kind of an argument is read off its slot and never off a type tag, so a caller's tag is
+  // not consulted at all: a getter under it cannot run, and writing `Arguments` there names
+  // nothing. The bag below is still refused, for supplying an option through an accessor.
   var trapTag = {};
+  var tagReads = 0;
   Object.defineProperty(trapTag, Symbol.toStringTag,
-                        { get: function () { throw new RangeError("trap"); }, configurable: true });
+                        { get: function () { tagReads++; throw new RangeError("trap"); },
+                          configurable: true });
   check("a bag whose type tag throws is refused by optionsObject",
         errOf(function () {
           identifier.optionsObject(trapTag, E, "x/bad", "opts");
         }).code === "x/bad");
+  check("and the tag was never read", tagReads === 0);
+  var wearsTheTag = Object.defineProperty({ alpha: 1 }, Symbol.toStringTag,
+                                          { value: "Arguments", configurable: true });
+  check("a plain bag wearing the Arguments tag is not taken for one",
+        identifier.optionsObject(wearsTheTag, E, "x/bad", "opts") === wearsTheTag);
   check("and a Buffer in the options position is still named",
         errOf(function () {
           identifier.optionsObject(Buffer.alloc(2), E, "x/bad", "opts");
         }).code === "x/bad");
+  // Whether an argument is one of Node's Buffers is settled by its prototype chain. `Buffer` is an
+  // ordinary extensible function, so an own `Symbol.hasInstance` on it decides every `instanceof`
+  // against it, and `Buffer.isBuffer` is one: a planted answer made a plain bag refused as a
+  // Buffer, made a real Buffer pass as a bag, and a planted throw took the door out through
+  // somebody else's exception. This is the pollution the walk survives on `Object.prototype`.
+  [["throws", function () { throw new RangeError("planted"); }],
+   ["says yes to everything", function () { return true; }],
+   ["says no to everything", function () { return false; }]
+  ].forEach(function (row) {
+    var plain, buffered;
+    Object.defineProperty(Buffer, Symbol.hasInstance, { value: row[1], configurable: true });
+    try {
+      plain = errOf(function () { identifier.optionsObject({ alpha: 1 }, E, "x/bad", "opts"); });
+      buffered = errOf(function () { identifier.optionsObject(Buffer.alloc(2), E, "x/bad", "opts"); });
+    } finally {
+      delete Buffer[Symbol.hasInstance];
+    }
+    check("a runtime whose Buffer[Symbol.hasInstance] " + row[0] + " still takes a plain bag",
+          plain.code === "NO-THROW");
+    check("and still names a Buffer in the options position", buffered.code === "x/bad");
+  });
+  check("and Buffer is left as it was found",
+        !Object.getOwnPropertyDescriptor(Buffer, Symbol.hasInstance));
   check("while the kinds a verb does take are still accepted",
         identifier.optionsObject({}, E, "x/bad", "opts") !== null &&
         identifier.optionsObject([], E, "x/bad", "opts") !== null &&
