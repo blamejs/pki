@@ -558,6 +558,18 @@ async function testDeepSnapshotContract() {
   catch (e) { pointedErr = e; }
   check("a settled binding onto a value that can still move is refused",
     pointedErr.code === "t/bad" && pointedErr.message.indexOf("signingTime") !== -1);
+  // A Proxy behind a settled binding answers through a handler, so asking it anything is the harm:
+  // reading its prototype runs a trap, and a trap that throws would leave this module carrying the
+  // caller's own error out of a question it asked on its own behalf.
+  var hostileTrap = new Proxy({}, { getPrototypeOf: function () { throw new RangeError("trap"); } });
+  var frozenToProxy = vm.runInNewContext("/x/g");
+  Object.defineProperty(frozenToProxy, "note",
+    { value: hostileTrap, enumerable: true, configurable: false, writable: false });
+  var trapErr;
+  try { guardBytes.snapshotDeep(frozenToProxy, TestError, "t/bad", "opts"); trapErr = { code: "NO-THROW" }; }
+  catch (e) { trapErr = e; }
+  check("a settled binding onto a Proxy is refused with this boundary's code",
+    trapErr.code === "t/bad" && !(trapErr instanceof RangeError));
   ["writable", "configurable"].forEach(function (which) {
     var movable = vm.runInNewContext("/x/g");
     var desc = { value: false, enumerable: false, configurable: false, writable: false };
