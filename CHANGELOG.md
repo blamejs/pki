@@ -11,6 +11,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 ### Added
 
 - `pki.crl.isRevoked(crl, serialNumber, { time })` asks the question at an instant. A CRL whose `nextUpdate` has passed, whose `thisUpdate` is later, or which carries no `nextUpdate` at all is refused with `crl/not-current` instead of answered from: outside the window a CRL states, an absent serial says nothing about the certificate, and a list stating no window cannot be told from a replayed copy. This joins the refusals already made for a delta, indirect or narrowed-scope CRL, on the same reasoning -- a serial means something only within the set, and the span, a CRL speaks for. `pki.path.crlChecker` is unchanged and remains the verb that decides currency against material it fetched itself.
+- `opts.historicalMode` reads a revocation entry against that same instant, the way `pki.path.crlChecker` reads one. By default a listed serial is revoked whatever its `revocationDate` says, since a date in the future is post-dating or clock skew and must not read good; set `historicalMode` -- validating as of a past instant, a timestamped signature say -- and an entry dated after that instant has not yet applied. Given without `time` it names no instant to read against and is refused.
 
 ### Changed
 
