@@ -76,6 +76,7 @@ jobs:
           - lint-certificate
           - cms-verify
           - csr-verify
+          - crmf-verify
           - cms-sign
           - tsp-sign
           - x509-sign

@@ -1,0 +1,17 @@
+{
+  "version": "0.5.14",
+  "headline": "`pki.crmf.verifyPop` checks the proof of possession on an inbound certificate request message, the CRMF counterpart to the PKCS#10 check that shipped in 0.5.13.",
+  "summary": "A CA or RA reading `pki.schema.crmf.parse` got the requested subject, key and controls with nothing that said the requester holds the private half of the key they are asking to have certified. `pki.crmf.verifyPop(messages)` answers that for every `CertReqMsg` in the set, and reports the arms where no answer is available from the message alone instead of inventing one.",
+  "sections": {
+    "Added": [
+      "`pki.crmf.verifyPop(messages)` verifies the RFC 4211 proof of possession on each `CertReqMsg`, returning one verdict per message plus a top-level `verified` that is true only when every message carried a proof that held. For the `signature` proof the covered bytes are the ones the RFC names: the DER of `poposkInput` when that field is present, and the DER of `certReq` when it is absent (sec. 4.1, and the ASN.1 module, which is where the two readings of that sentence are settled). Verification composes the one path-validation signature engine, with the same algorithm-confusion (RFC 9814 sec. 4) and EdDSA low-order-point gates as the certificate and CRL paths.",
+      "The proofs that cannot be checked from the message are reported as such. `raVerified` is an RA's assertion that it confirmed possession out of band, so it yields `verified: false` with `method: \"raVerified\"`, and a caller who trusts that RA opts in by reading `method`. `keyEncipherment` and `keyAgreement` complete over a later protocol exchange, or need the CA's decryption key, so they yield `verified: false` naming the arm. Each verdict carries only what its preimage covers, re-derived from the message's own bytes, so a CA issues from what was checked. `publicKey` is the key possession was proven for. `subject` is the requested name when the signature was over `certReq`, which covers the whole template; a `poposkInput` preimage covers the key and the sender alone, so a subject sitting beside it in the message is unsigned and is withheld with `subjectBound: false` rather than reported next to a passing verdict."
+    ],
+    "Changed": [
+      "`pki.schema.crmf.parse` now records the bytes it read, joining the certificate, CRL, CMS and certification-request parsers, and `pki.crmf.verifyPop` accepts only a result carrying that record. A parsed message set presents the byte range a proof covers and the template a certificate would be issued from as separate properties, so a rebuilt one can hold a genuine requester's signed range beside a substituted subject. As with those parsers, the raw byte views on a parsed result now read from the parser's own copy of the input; passing DER is unaffected, and a parse result used as-is still works."
+    ],
+    "Fixed": [
+      "The `pki.csr.sign` example passed `subject: \"CN=device-42\"`, which asks for a commonName whose value is the string `CN=device-42` and so issues `CN=CN=device-42`. A bare string is the commonName value throughout the toolkit; the example now says so and passes `\"device-42\"`."
+    ]
+  }
+}
