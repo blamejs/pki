@@ -4,6 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.13 — 2026-08-19
+
+`pki.csr.verify` checks an inbound certification request's proof of possession, so a CA built on this toolkit can tell that the requester holds the key they are asking it to certify.
+
+### Added
+
+- `pki.csr.verify(request)` verifies a certification request's signature over its exact `certificationRequestInfo` bytes under the `subjectPKInfo` inside them (RFC 2986 sec. 4.2), the check `openssl req -verify` performs. `request` is DER, PEM, or a parsed request. It composes the one path-validation signature engine, with the same algorithm-confusion (RFC 9814 sec. 4) and EdDSA low-order-point gates, in place of the producing side's self-check, which waives that gate because it runs over a key the caller already controls. It fails closed on any import or verification fault, and malformed input throws a typed `CsrError`.
+- The answer is `{ verified, subject, subjectPublicKeyInfo, attributes, certificationRequestInfoBytes }`, every field re-derived from the bytes the signature covers. Issue from those. A CA that normalizes a request before verifying it holds an object carrying its own edits, and a bare boolean would report on the signed bytes while the certificate got built from the edits; the fields travel with the verdict so the two cannot come apart.
+- What `verified: true` establishes is stated in full, because the bound is the point: the producer held the private half of the key inside the request, and the subject and every requested extension are the ones covered by that signature. A CSR carries no issuer and its key is self-asserted, so a requester free to choose both can prove possession of a key they generated a moment ago under any name they like. Binding that name to an identity stays with the enrollment protocol.
+
+### Changed
+
+- `pki.schema.csr.parse` now records the bytes it read, the way the certificate, CRL and CMS parsers do, and `pki.csr.verify` accepts only a result carrying that record. A parsed request presents the signed byte range and the fields that range encodes as separate properties, so a rebuilt one (`Object.assign`, a spread, a JSON round-trip) can hold a genuine requester's signed bytes beside a substituted subject: the proof of possession verifies from the recorded range while the certificate a CA issues is for a name nobody signed. Passing DER or PEM is unaffected, and a parse result used as-is still works.
+- One visible consequence of that record: the raw byte views on a parsed request (`certificationRequestInfoBytes`, `tbsBytes`, `subject.bytes` and the rest) now read from the parser's own copy of the input rather than from your buffer, matching what `pki.schema.x509.parse` has always done. Writing into the buffer you passed no longer changes what an already-parsed request reports, and writing through one of those views no longer reaches your buffer. Code that read the fields is unaffected; code that relied on either aliasing needs to re-parse instead.
+
 ## v0.5.12 — 2026-08-19
 
 `pki.crl.isRevoked` can be asked at an instant, and a CRL that stopped speaking for that instant is refused rather than read as a clean bill of health.

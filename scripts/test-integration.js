@@ -128,7 +128,15 @@ function _spawnCapturing(cmd, args, env) {
     // into the pass count, so "N checks passed" is not inflated by skips.
     var sm = /SKIPS\s+(\d+)/.exec(rv.stdout || "");
     var skips = sm ? parseInt(sm[1], 10) : 0;
-    if (rv.code === 0) {
+    if (rv.code === 0 && checks === 0 && skips === 0) {
+      // A file that exits clean having asserted nothing is a test that is not running, and it is
+      // indistinguishable from a passing one in the totals: a missing self-invocation, a loop whose
+      // fixture generation failed into `continue`, or a guard that returned early all land here. The
+      // oracle-absent case has its own signal (SKIPS), so silence is never the honest answer.
+      failed += 1;
+      console.error("  " + _padRight(files[i], 40) + " FAILED (exited 0 having asserted nothing --" +
+        " no CHECKS and no SKIPS; the file ran but performed no cross-check)");
+    } else if (rv.code === 0) {
       totalChecks += checks;
       totalSkips += skips;
       console.log("  " + _padRight(files[i], 40) + " (" + ms + "ms, " + checks + " checks" +

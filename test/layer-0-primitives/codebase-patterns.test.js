@@ -2103,7 +2103,7 @@ function testNoDuplicateCodeBlocks() {
       files: [
         "lib/schema-cms.js:_expectedAuthDataVersion", "lib/schema-crl.js:decodeExt",
         "lib/schema-ocsp.js:_shapeResponderID", "lib/schema-x509.js:<top>",
-        "lib/schema-pkcs12.js:<top>",
+        "lib/schema-pkcs12.js:<top>", "lib/schema-csr.js:<top>",
       ],
       mode: "family-subset",
       reason: "the per-format pkix.makeRecordingParser({ pemLabel, PemError, ErrorClass, prefix, what, topSchema, ns }, kind) footer: the parse logic lives once in schema-pkix and the provenance record once in guard-parsed, while each module supplies its own label, error class, domain prefix, top schema and provenance kind. Attribution names the nearest enclosing function because the call is module-level.",
