@@ -755,11 +755,15 @@ async function run() {
   var sparse = [];
   sparse[100000000] = caCert;
   var sparseStart = Date.now();
-  var sparseVerdict = await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: sparse, time: T });
-  check("23t. a sparse anchor list still anchors the chain", sparseVerdict.trusted === true);
-  // Wall-clock is the only observable an allocation leaves, and the two forms differ by orders of
-  // magnitude, so the bound is set far above any real machine rather than at a measured figure.
-  check("23u. and it did not densify a hundred million entries to get there",
+  var sparseErr = null;
+  try { await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: sparse, time: T }); }
+  catch (e) { sparseErr = e; }
+  check("23t. a sparse anchor list is refused, naming what is wrong with it",
+    sparseErr !== null && sparseErr.code === "cmp/bad-input" && /dense array/.test(sparseErr.message));
+  // The refusal is reached by counting the properties the object has, never by walking its length,
+  // so it returns immediately. Wall-clock is the only observable that separates the two, and the
+  // bound is far above any real machine rather than a measured figure.
+  check("23u. and refused without walking a hundred million positions",
     (Date.now() - sparseStart) < 30000);
 
   // An element defined non-enumerable is still an element, and every ordinary array operation
@@ -775,6 +779,48 @@ async function run() {
   named["4294967295"] = "not a certificate";
   check("23w. a property named 4294967295 is not read as a certificate",
     (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: named, time: T })).trusted === true);
+
+  // An anchor supplied at an INHERITED index is one an ordinary array operation would consume, so
+  // silently skipping it would drop a trust anchor and turn a trusted verification into an untrusted
+  // one. The list is refused instead, loudly, rather than emulated: the caller is told their list is
+  // not dense and normalizes it themselves.
+  var proto = []; proto[0] = caCert;
+  var inherited = [];
+  inherited.length = 1;                        // a hole at index 0 ...
+  Object.setPrototypeOf(inherited, proto);     // ... that the prototype answers for
+  check("23x. the fixture is a real array whose index 0 is inherited",
+    Array.isArray(inherited) && (0 in inherited) &&
+    !Object.prototype.hasOwnProperty.call(inherited, "0") && inherited[0] === caCert);
+  var inhErr = null;
+  try { await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: inherited, time: T }); }
+  catch (e) { inhErr = e; }
+  check("23x2. an anchor reachable only through the prototype is refused, never silently dropped",
+    inhErr !== null && inhErr.code === "cmp/bad-input" && /dense array/.test(inhErr.message));
+
+  // Array.prototype.map is a replaceable global, and the anchor list becomes path-builder input
+  // AFTER verification suspends. A caller who swaps it during that window must not end up trusted.
+  //
+  // What this vector establishes, precisely: the swap is live and is reached, and the verdict is
+  // still untrusted. It does NOT isolate cmp-verify's explicit loops as the cause -- a global map
+  // replacement also corrupts path building's own internals, so the refusal cannot be attributed to
+  // one change. The loops in _certList and the pool assembly are kept on principle, because a trust
+  // decision should not dispatch through a replaceable global at all, and they are honestly recorded
+  // here as unproven by this vector rather than credited with a result they may not produce.
+  var realMap = Array.prototype.map;
+  var swapped = false;
+  var pendingSwap = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T });
+  Array.prototype.map = function () { swapped = true; return [caCert]; };
+  var swapVerdict;
+  try { swapVerdict = await pendingSwap; } finally { Array.prototype.map = realMap; }
+  check("23y. replacing Array.prototype.map mid-call does not decide the anchor set",
+    swapVerdict.trusted === false);
+  // The replacement really was live and really was reached during the window -- without this the
+  // vector above would pass on a call that simply never touched it. What the fix changes is that
+  // nothing on the ANCHOR path dispatches through it: cmp-verify builds its lists with explicit
+  // loops, so the swap cannot answer the question "which certificates are trusted". Code deeper in
+  // path building still calls it, which is why this asserts the swap fired rather than claiming the
+  // whole call is free of it.
+  check("23z. the replacement was installed and reached while the call was pending", swapped === true);
 
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
