@@ -20,6 +20,14 @@
 // the tarball, so this gate LOCATES the checker at run time and never installs,
 // vendors, or postinstalls it.
 //
+// That is why this is `npm run check:prose` and NOT part of `npm run gates`.
+// The absence rule below is right for this gate and wrong for a shared default:
+// a clone, a clean CI runner and a release environment have no checker, so a
+// `gates` that ran this would fail for everyone who has not installed an
+// external skill. It joins `gates` when the checker is something the repository
+// itself provisions; until then the reviewed-exception table and both controls
+// still do their work on every `check:prose` run.
+//
 // ABSENCE FAILS. A gate that silently skips when its tool is missing stops
 // gating at exactly the moment nobody is told, and the skip bucket is where the
 // defect it hunts ends up. The only way past this gate without the checker is a
@@ -54,10 +62,20 @@
 // to fix their writing when the tool fell over sends them hunting for a defect
 // that is not there, and hides the one that is. A non-zero exit is therefore
 // classified before it is reported: the gate asks the checker for a
-// machine-readable report of the same run and reads its SHAPE and its finding
-// COUNT. Finding TEXT is never read to decide a verdict - that would make this
-// script an opinion about the checker's output, which is the thing the
-// inherited stdio below exists to prevent.
+// machine-readable report of the same run and reads its SHAPE, its finding
+// COUNT, and each finding's location and flagged token. The finding MESSAGE is
+// never read to decide a verdict - reading it would make this script an opinion
+// about the checker's wording, which is the thing the inherited stdio below
+// exists to prevent.
+//
+// A FINDING THAT WAS READ AND FOUND CORRECT IS DECLARED IN WRITING, WITH ITS
+// CONTEXT. Some documents here carry findings that are right as they stand: the
+// published title of RFC 8894 is spelled the way the RFC Editor spells it,
+// security@pkijs.com is the address a reporter is meant to use, and the wiki test
+// step really does remove two literal directories. Those are recorded in
+// REVIEWED below and reconciled against what the checker reports, in both
+// directions, so an acceptance bounds exactly what its author read and nothing
+// that arrives later.
 //
 // Coverage is DISCOVERED from disk rather than enumerated, so a document added
 // anywhere in the repository is gated the day it lands. There is no list to go
@@ -78,14 +96,19 @@
 //                       does not) is the ambiguity this gate exists to remove.
 //
 // Exit codes:
-//   0 - the checker reported no findings, or a skip was explicitly declared
-//   1 - findings present, or the checker could not be found
+//   0 - the checker reported no findings, or every finding it reported is
+//       recorded in REVIEWED and still describes what was read there, or a skip
+//       was explicitly declared
+//   1 - a finding nobody has read, an acceptance that describes nothing, or the
+//       checker could not be found
 //   2 - the gate itself could not run (bad configuration, spawn failure)
-//   3 - the checker did not flag a known-bad control document, so it is not
-//       checking anything and its verdict cannot be trusted
+//   3 - a control came back the wrong way: the checker did not flag a known-bad
+//       document, or the reconciler raised no objection to a known-bad finding
+//       set. Something that should have reported did not, so its verdict cannot
+//       be trusted
 //   4 - the checker did not complete a run, so it returned no verdict at all
 //
-// Codes 3 and 4 are failures of the TOOL. They say nothing about the prose in
+// Codes 3 and 4 are failures of the TOOLING. They say nothing about the prose in
 // this repository, and the message on each says so.
 
 var fs    = require("node:fs");
@@ -125,6 +148,78 @@ var SKIPPED_DIRS = [
   { dir: ".test-output", reason: "gate logs - build output, gitignored" }
 ];
 
+// Findings that were read and found correct as they stand. This is the only way
+// past the gate with a finding present, and using it is meant to cost something:
+// an entry names the document, the check family, the token the checker flagged,
+// and one context string per accepted occurrence - a fragment that has to still
+// be on the flagged line for that occurrence to count as covered.
+//
+// The context is what makes an entry bound anything. `rm -rf data data-e2e`
+// names two literal directories and is the shape the check's own advice asks
+// for; `rm -rf $BUILD_DIR/` two lines later is the shape the check exists to
+// catch, and an entry keyed on the token alone would wave the second one through
+// on the first one's reasoning. Ordering follows the document: contexts are
+// matched against the occurrences in line order.
+//
+// reconcile() compares the table against the checker's report in both
+// directions, so each of these fails the gate:
+//
+//   an entry that matches nothing         the prose moved on and the acceptance
+//                                         describes something no longer there
+//   an occurrence with no entry           nobody has read it
+//   more occurrences than contexts        a new one arrived behind an accepted one
+//   a context missing from its line       the line was rewritten after it was read
+// RFC 8894's title, spelled the way the RFC Editor spells it.
+// The region check reports its third word, and the two entries below name that word by taking it
+// from the title rather than writing it out, so the spelling appears in this file only where the
+// title it belongs to appears with it.
+var RFC8894_TITLE = "Simple Certificate Enrolment Protocol";
+var RFC8894_TITLE_WORD = RFC8894_TITLE.split(" ")[2];
+
+var REVIEWED = [
+  {
+    file: "CONTRIBUTING.md", check: "notation", match: "rm -rf",
+    contexts: [
+      "rm -rf data data-e2e && node test/e2e.js && cd ../..",
+      "`cd examples/wiki && rm -rf data data-e2e && node test/e2e.js` passes."
+    ],
+    reason: "the wiki end-to-end test regenerates its store, and both operands are literal " +
+            "relative directories under examples/wiki that the test itself creates. No " +
+            "variable is interpolated, so the unset-variable case the check warns about " +
+            "cannot arise here."
+  },
+  {
+    file: "CHANGELOG.md", check: "region", match: RFC8894_TITLE_WORD,
+    contexts: [RFC8894_TITLE + " is RFC 8894's title"],
+    reason: "a changelog entry recording that this repository quotes RFC 8894's published " +
+            "title verbatim. The title is a quoted span, so its spelling is the RFC's to set."
+  },
+  {
+    file: "ROADMAP.md", check: "region", match: RFC8894_TITLE_WORD,
+    contexts: ["| RFC 8894 | " + RFC8894_TITLE + " (SCEP) |"],
+    reason: "RFC 8894's published title, quoted in the standards table. Confirmed against the " +
+            "RFC Editor index, which gives it as INFORMATIONAL, September 2020."
+  },
+  {
+    file: "CODE_OF_CONDUCT.md", check: "secrets", match: "conduct@pkijs.com",
+    contexts: ["**`conduct@pkijs.com`**"],
+    reason: "the address a report is meant to reach. RFC 2606 reserves example.com for " +
+            "fixtures, and a code of conduct that routed reports there would route them nowhere."
+  },
+  {
+    file: "CONTRIBUTING.md", check: "secrets", match: "security@pkijs.com",
+    contexts: ["- **Security:** `security@pkijs.com` ([SECURITY.md](SECURITY.md))."],
+    reason: "the vulnerability reporting address published in SECURITY.md, repeated here so a " +
+            "contributor reading only this document still finds it."
+  },
+  {
+    file: "GOVERNANCE.md", check: "secrets", match: "security@pkijs.com",
+    contexts: ["**Contact channel:** `security@pkijs.com` per SECURITY.md."],
+    reason: "the same published reporting address, named where the governance document " +
+            "describes who controls the mailbox."
+  }
+];
+
 // The deepest gated document in this tree sits three directories down. The cap
 // is a stop for a pathological tree, not a scope decision, so hitting it fails
 // the gate rather than silently truncating what gets checked.
@@ -148,6 +243,182 @@ function captured(run) {
     text.split(/\r?\n/).slice(0, 20).forEach(function (l) { out.push("  " + l); });
   });
   return out;
+}
+
+// ---------------------------------------------------------------------------
+// Reconcile what the checker reported against what somebody wrote down having
+// read it. Returns the list of things that do not line up; an empty list is the
+// only clean answer.
+//
+// `lineOf(file, line)` hands back the source line the checker flagged, or null
+// when it cannot be read. It is a parameter so the control below can drive this
+// over synthetic input without touching the tree.
+// ---------------------------------------------------------------------------
+function reconcile(findings, lineOf, reviewed) {
+  // The key is the encoded triple rather than a joined string: a token like
+  // "rm -rf" carries a space, and joining on one would let two different
+  // triples collide into a single key and share an acceptance.
+  function keyOf(o) { return JSON.stringify([o.file, o.check, o.match]); }
+  function name(o)  { return o.file + " / " + o.check + " / \"" + o.match + "\""; }
+
+  var byKey = Object.create(null);
+  findings.forEach(function (f) {
+    var k = keyOf(f);
+    if (!byKey[k]) byKey[k] = [];
+    byKey[k].push(f);
+  });
+  Object.keys(byKey).forEach(function (k) {
+    byKey[k].sort(function (a, b) { return a.line - b.line; });
+  });
+
+  var declared = Object.create(null);
+  var problems = [];
+
+  reviewed.forEach(function (r) {
+    var k = keyOf(r);
+    if (declared[k]) {
+      problems.push(
+        "two reviewed entries cover " + name(r) + ". Merge them into one: the number of " +
+        "accepted occurrences has to be readable off a single entry, or neither entry " +
+        "bounds how many there are."
+      );
+      return;
+    }
+    declared[k] = true;
+    var group = byKey[k] || [];
+    if (group.length === 0) {
+      problems.push(
+        "the reviewed exception for " + name(r) + " matches nothing the checker reported. " +
+        "The prose moved on and the acceptance now describes something that is not there - " +
+        "delete the entry."
+      );
+      return;
+    }
+    if (group.length !== r.contexts.length) {
+      problems.push(
+        "the reviewed exception for " + name(r) + " accepts " + r.contexts.length +
+        " occurrence(s) and the checker reported " + group.length + " (line" +
+        (group.length === 1 ? " " : "s ") +
+        group.map(function (f) { return f.line; }).join(", ") + "). An occurrence is being " +
+        "covered by reasoning written for a different one. Read the new line: fix it, or " +
+        "add its context to the entry."
+      );
+      return;
+    }
+    group.forEach(function (f, i) {
+      var text = lineOf(f.file, f.line);
+      if (text === null) {
+        problems.push(
+          "the checker reported " + name(r) + " at " + f.file + ":" + f.line +
+          ", and that line could not be read back to confirm the reviewed context."
+        );
+        return;
+      }
+      if (text.indexOf(r.contexts[i]) === -1) {
+        problems.push(
+          "the reviewed context for " + name(r) + " is no longer on " + f.file + ":" + f.line +
+          ".\n    reviewed: " + r.contexts[i] +
+          "\n    line now: " + text.trim() +
+          "\n    The line was rewritten after it was read, so the acceptance no longer " +
+          "covers what is on it. Read it again, then update or remove the entry."
+        );
+      }
+    });
+  });
+
+  Object.keys(byKey).forEach(function (k) {
+    if (declared[k]) return;
+    byKey[k].forEach(function (f) {
+      problems.push(
+        "unreviewed finding: " + f.file + ":" + f.line + " [" + f.check + "] \"" + f.match + "\""
+      );
+    });
+  });
+
+  return problems;
+}
+
+// Reads a flagged line back off disk, caching per document. A file that cannot
+// be read and a line number past the end both answer null, which reconcile()
+// treats as a failure rather than a pass.
+function lineReader() {
+  var cache = Object.create(null);
+  return function (file, line) {
+    if (cache[file] === undefined) {
+      try {
+        cache[file] = fs.readFileSync(path.join(ROOT, file), "utf8").split(/\r?\n/);
+      } catch (_e) {
+        // A document that cannot be read back answers null, which reconcile() treats as a failure
+        // rather than a pass: an acceptance whose line cannot be confirmed is not confirmed.
+        cache[file] = null;
+      }
+    }
+    var lines = cache[file];
+    if (lines === null || !(line >= 1 && line <= lines.length)) return null;
+    return lines[line - 1];
+  };
+}
+
+// The positive control on the reconciler. A table that accepts whatever it is
+// handed reads as a clean tree on every run, which is the same failure mode as a
+// checker that reports nothing - so the four objections the table exists to
+// raise are exercised against synthetic input before the real report is judged,
+// along with the one case that has to stay silent.
+//
+// The synthetic entry is built here rather than borrowed from REVIEWED, so
+// editing the real table cannot quietly change what the control proves.
+function reconcilerControl() {
+  var TABLE = [{
+    file: "doc.md", check: "region", match: "widgetise",
+    contexts: ["the widgetise step"], reason: "control"
+  }];
+  var hit  = { file: "doc.md", check: "region", match: "widgetise", line: 7 };
+  var more = { file: "doc.md", check: "region", match: "widgetise", line: 9 };
+  function line(f, n) { return f === "doc.md" && n === 7 ? "  the widgetise step is set" : null; }
+
+  var cases = [
+    { want: 0, why: "an occurrence whose declared context is still on its line",
+      run: function () { return reconcile([hit], line, TABLE); } },
+    { want: 1, why: "an occurrence with no entry at all",
+      run: function () { return reconcile([hit], line, []); } },
+    { want: 1, why: "a second occurrence hiding behind one accepted context",
+      run: function () { return reconcile([hit, more], line, TABLE); } },
+    { want: 1, why: "a declared context the line no longer carries",
+      run: function () { return reconcile([hit], function () { return "rewritten"; }, TABLE); } },
+    { want: 1, why: "an entry matching nothing the checker reported",
+      run: function () { return reconcile([], line, TABLE); } }
+  ];
+
+  for (var i = 0; i < cases.length; i++) {
+    var got;
+    try {
+      got = cases[i].run();
+    } catch (e) {
+      return ["the reviewed-exception control threw on " + cases[i].why + ": " + msg(e)];
+    }
+    if (!Array.isArray(got)) {
+      return ["the reviewed-exception control gave a non-list answer for " + cases[i].why + "."];
+    }
+    if (cases[i].want === 0 && got.length !== 0) {
+      return [
+        "the reviewed-exception control objected to " + cases[i].why + ".",
+        "It reported: " + got[0],
+        "",
+        "A table that rejects what it was written to accept fails every run. This is a",
+        "defect in the GATE, and nothing here is a verdict on the prose."
+      ];
+    }
+    if (cases[i].want !== 0 && got.length === 0) {
+      return [
+        "the reviewed-exception control stayed silent about " + cases[i].why + ".",
+        "",
+        "A table that raises no objection accepts every finding in this repository, so a",
+        "clean run would mean nothing. This is a defect in the GATE, and nothing here is a",
+        "verdict on the prose."
+      ];
+    }
+  }
+  return null;
 }
 
 // ---------------------------------------------------------------------------
@@ -252,7 +523,30 @@ function completionOf(fileArgs) {
   if (env.ok !== true) {
     return { completed: false, why: "its own report says it examined nothing (ok=" + JSON.stringify(env.ok) + ")" };
   }
-  return { completed: true, findings: env.findings.length };
+  // Every finding is checked for the four fields the reconciliation reads, because the checker is
+  // externally versioned and a renamed or missing one is a TOOLING incompatibility. Left unchecked
+  // it would arrive as a prose defect: a finding with no `file` reconciles against nothing and
+  // reports as unreviewed, and one with a `line` that is not a number reads a line this repository
+  // never wrote. The whole point of the classification above is that those two call for opposite
+  // actions from an operator, and that holds one level down as well.
+  for (var f = 0; f < env.findings.length; f++) {
+    var rec = env.findings[f];
+    if (!rec || typeof rec !== "object") {
+      return { completed: false, why: "finding " + f + " of its report is not an object" };
+    }
+    var missing = ["file", "check", "match"].filter(function (name) {
+      return typeof rec[name] !== "string" || rec[name] === "";
+    });
+    if (!Number.isInteger(rec.line) || rec.line < 1) missing.push("line");
+    if (missing.length) {
+      return {
+        completed: false,
+        why: "finding " + f + " of its report is missing or has retyped " + missing.join(", ") +
+          " (this gate reads those four to reconcile a finding against what has been read)"
+      };
+    }
+  }
+  return { completed: true, findings: env.findings.length, list: env.findings };
 }
 
 // ---------------------------------------------------------------------------
@@ -382,6 +676,11 @@ if (!canary.ok) fail(canary.code, canary.lines);
 console.log(TAG + " canary:  OK - the checker flagged the known-bad control document (" +
   canary.findings + " finding(s)), so its verdict below is a real one");
 
+var reconcilerFault = reconcilerControl();
+if (reconcilerFault) fail(3, reconcilerFault);
+console.log(TAG + " control: OK - the reviewed-exception table objects to an unread finding, a " +
+  "count that grew, a context that moved and an entry matching nothing");
+
 // ---------------------------------------------------------------------------
 // Discover the document set. Nothing is hardcoded, so a new document cannot
 // join the repository ungated - at any depth.
@@ -455,6 +754,13 @@ SKIPPED_DIRS.forEach(function (s) {
 EXCLUDED.forEach(function (e) {
   console.log(TAG + " excluded: " + e.file + " - " + e.reason);
 });
+// Printed on every run, in full. An acceptance nobody sees is one nobody revisits, and the
+// reason is the part that has to be re-read: it is what a future reader checks the finding
+// against when deciding whether it still holds.
+REVIEWED.forEach(function (r) {
+  console.log(TAG + " reviewed: " + r.file + " [" + r.check + "] \"" + r.match + "\" x" +
+    r.contexts.length + " - " + r.reason);
+});
 console.log("");
 
 // ---------------------------------------------------------------------------
@@ -501,6 +807,23 @@ if (run.signal) {
 
 var code = run.status;
 if (code === 0) {
+  // A clean run is where a stale acceptance hides. The table is reconciled in BOTH directions, so
+  // an entry matching nothing has to fail here as much as it does beside a finding -- otherwise the
+  // last prose fix quietly leaves an exception behind, and it sits there ready to cover a finding
+  // with the same key and context when one is reintroduced. Reconciled against an empty report,
+  // which is exactly what the checker just said.
+  var cleanProblems = CHECKS === null ? [] : reconcile([], lineReader(), REVIEWED);
+  if (cleanProblems.length) {
+    fail(1, [
+      "the checker reported no findings, and " + cleanProblems.length + " reviewed exception(s) " +
+        "no longer describe anything:",
+      ""
+    ].concat(cleanProblems.map(function (p, i) { return "  " + (i + 1) + ". " + p; })).concat([
+      "",
+      "The prose was fixed and the acceptance outlived it. Delete the entry: left in place it " +
+      "would cover the same finding silently if it ever came back."
+    ]));
+  }
   console.log("");
   console.log(TAG + " OK - no findings in " + docs.length + " operator-facing document(s)");
   process.exit(0);
@@ -552,22 +875,42 @@ if (outcome.findings === 0) {
 // the whole point of the branch it sits in. PKI_PROSE_STRICT=1 forces the strict
 // status even in `all` mode, for whoever wires that run into a pipeline.
 var strict = String(process.env.PKI_PROSE_STRICT || "").trim() === "1" || CHECKS !== null;
+
+// The enforced scope reconciles against REVIEWED. `all` mode does not: it runs families the
+// table was never written for, so every flag-only finding would read as unreviewed and the
+// answer would be noise. That run stays a reading list.
+if (CHECKS !== null) {
+  var problems = reconcile(outcome.list, lineReader(), REVIEWED);
+  if (problems.length === 0) {
+    console.log("");
+    console.log(TAG + " OK - " + docs.length + " document(s); the " + outcome.findings +
+      " finding(s) above are each recorded in REVIEWED and each still describes the line it");
+    console.log(TAG + " was read on. The checker's own report is printed in full above, so " +
+      "nothing here is hidden -- what this line adds is that somebody read it.");
+    process.exit(0);
+  }
+  fail(1, [
+    "the checker reported " + outcome.findings + " finding(s) across " + docs.length +
+      " document(s), and " + problems.length + " of them do not reconcile with what has been read:",
+    ""
+  ].concat(problems.map(function (p, i) { return "  " + (i + 1) + ". " + p; })).concat([
+    "",
+    "Fix the prose, or read the finding and record it in REVIEWED in this file with the",
+    "context it was read on and the reason it is correct as it stands. An acceptance costs a",
+    "written reason on purpose: it is what the next reader checks the finding against."
+  ]));
+}
+
 var report = [
   "the checker completed and reported " + outcome.findings + " finding(s) across " +
     docs.length + " document(s).",
-  "Read every one and fix the defect in the prose. This is a REPORT, not a blocking",
-  "gate: the checker has no per-finding suppression, and this repository has findings that",
-  "are correct as they stand -- the title of RFC 8894 really is",
-  "\"Simple Certificate Enrolment Protocol\", security@pkijs.com really is the reporting",
-  "address, and `rm -rf data data-e2e`",
-  "really is the documented wiki test step. No check family reaches zero here, so wiring it",
-  "into `npm run gates` would fail every build forever and teach everyone to ignore it.",
-  "It goes into `gates` when the checker gains a way to record a reviewed exception.",
+  "This run includes the families that are flag-only by design, which the reviewed-exception",
+  "table above was never written for, so its findings are a reading list rather than a",
+  "verdict. Read them and fix what is a defect.",
   "",
   strict
-    ? "Exit status is non-zero: these families are the enforced ones."
-    : "Exit status is 0: this run includes the flag-only families, so its findings are a " +
-      "reading list rather than a verdict. Set PKI_PROSE_STRICT=1 to fail on them instead."
+    ? "Exit status is non-zero: PKI_PROSE_STRICT=1 was set."
+    : "Exit status is 0. Set PKI_PROSE_STRICT=1 to fail on them instead."
 ];
 if (strict) fail(1, report);
 report.forEach(function (l) { console.error(TAG + " " + l); });

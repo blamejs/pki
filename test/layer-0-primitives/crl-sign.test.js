@@ -519,6 +519,46 @@ async function testPemAndIsRevoked() {
   // normalizes the query the same way schema-crl surfaces serialNumberHex, so the padded forms match.
   check("isRevoked returns the matching entry (sign padding preserved)", pki.crl.isRevoked(der, 0xabcdn).serialNumberHex === "00abcd");
   check("isRevoked returns null for an absent serial", pki.crl.isRevoked(der, 0x9999n) === null);
+  // Currency, on the same footing as the scope refusals below: outside the window a CRL states,
+  // a serial being absent says nothing about the certificate, and `null` read as "not revoked" is
+  // the composition this refusal exists to stop. Only asked when the caller states the instant.
+  function currencyCode(when, crlDer) {
+    try { pki.crl.isRevoked(crlDer || der, 0x9999n, { time: when }); return "NO-THROW"; }
+    catch (e) { return e.code; }
+  }
+  check("a serial absent from a CRL current at the time asked about is still null",
+    pki.crl.isRevoked(der, 0x9999n, { time: new Date(NU.getTime() - 1000) }) === null);
+  check("and a listed one is still found at that time",
+    pki.crl.isRevoked(der, 0xabcdn, { time: new Date(NU.getTime() - 1000) }) !== null);
+  check("past nextUpdate the CRL is refused rather than read as clean",
+    currencyCode(new Date(NU.getTime() + 1000)) === "crl/not-current");
+  check("before thisUpdate it is refused too, since it speaks for a later window",
+    currencyCode(new Date(TU.getTime() - 1000)) === "crl/not-current");
+  var noNextUpdate = await pki.crl.sign({ thisUpdate: TU, crlNumber: 7n, revoked: [] }, issuerOf(s));
+  check("a CRL stating no window at all is refused when a time is asked about",
+    currencyCode(new Date(TU.getTime() + 1000), noNextUpdate) === "crl/not-current");
+  check("while without a time it stays the structural lookup it has always been",
+    pki.crl.isRevoked(noNextUpdate, 0x9999n) === null);
+  // How an entry reads against the instant is pki.path.crlChecker's question, and the same answer
+  // is given here: present-time revokes whatever the revocationDate says, and only an explicit
+  // historical reading has an entry dated after the instant not yet applying. RD is after TU.
+  var beforeRevocation = new Date(RD.getTime() - 1000);
+  check("asked at the present moment a listed serial is revoked whatever its date says",
+    pki.crl.isRevoked(der, 0xabcdn, { time: beforeRevocation }) !== null);
+  check("read historically, an entry dated after the instant has not yet applied",
+    pki.crl.isRevoked(der, 0xabcdn, { time: beforeRevocation, historicalMode: true }) === null);
+  check("while at or after its date the historical reading still finds it",
+    pki.crl.isRevoked(der, 0xabcdn, { time: RD, historicalMode: true }) !== null);
+  check("historicalMode without a time names no instant and is refused",
+    (function () {
+      try { pki.crl.isRevoked(der, 0xabcdn, { historicalMode: true }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })() === "crl/bad-input");
+  check("an unknown option is refused rather than read as no option",
+    (function () {
+      try { pki.crl.isRevoked(der, 0x9999n, { at: TU }); return "NO-THROW"; }
+      catch (e) { return e.code; }
+    })() === "crl/bad-input");
   // Every documented serialNumber spelling resolves to the SAME entry -- a lookup must not depend on which
   // form the caller happens to hold, or a revoked certificate would read as unlisted.
   function found(v) { var e = pki.crl.isRevoked(der, v); return e && e.serialNumberHex === "00abcd"; }

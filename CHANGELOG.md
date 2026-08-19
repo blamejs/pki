@@ -4,7 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.11 — 2026-08-19
+## v0.5.12 — 2026-08-19
+
+`pki.crl.isRevoked` can be asked at an instant, and a CRL that stopped speaking for that instant is refused rather than read as a clean bill of health.
+
+### Added
+
+- `pki.crl.isRevoked(crl, serialNumber, { time })` asks the question at an instant. A CRL whose `nextUpdate` has passed, whose `thisUpdate` is later, or which carries no `nextUpdate` at all is refused with `crl/not-current` instead of answered from: outside the window a CRL states, an absent serial says nothing about the certificate, and a list stating no window cannot be told from a replayed copy. This joins the refusals already made for a delta, indirect or narrowed-scope CRL, on the same reasoning -- a serial means something only within the set, and the span, a CRL speaks for. `pki.path.crlChecker` is unchanged and remains the verb that decides currency against material it fetched itself.
+- `opts.historicalMode` reads a revocation entry against that same instant, the way `pki.path.crlChecker` reads one. By default a listed serial is revoked whatever its `revocationDate` says, since a date in the future is post-dating or clock skew and must not read good; set `historicalMode` -- validating as of a past instant, a timestamped signature say -- and an entry dated after that instant has not yet applied. Given without `time` it names no instant to read against and is refused.
+
+### Changed
+
+- `pki.crl.isRevoked` takes a third argument. It is optional and every existing call keeps its behavior and its answer: without `time` the verb is the structural lookup it has always been, and its documentation now names the question that then goes unasked, so `null` reads as "not listed on this CRL" rather than "not revoked". An option it does not read is refused rather than ignored.
+
+## v0.5.11 — 2026-08-18
 
 An option a verb never reads is now refused, so a misspelled `password` on key export can no longer leave a private key unprotected.
 
