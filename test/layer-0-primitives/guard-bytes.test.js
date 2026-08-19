@@ -513,7 +513,6 @@ async function testDeepSnapshotContract() {
   // wrote it. `Object.defineProperty` belongs to a caller as much as to a platform, so a handle
   // passed through by reference could carry an option that no check ever saw and that stayed
   // theirs to flip afterwards. Every kind that passes through gets the same reading.
-  var vm = require("node:vm");
   var foreign = vm.runInNewContext("/x/g");
   check("a foreign RegExp with nothing of its own still passes through",
     guardBytes.snapshotDeep({ k: foreign }, TestError, "t/bad", "spec").k === foreign);
@@ -537,6 +536,43 @@ async function testDeepSnapshotContract() {
   } catch (e) { signErr = e; }
   check("cms.sign refuses an options bag hiding an option behind non-enumerability",
     signErr.code === "cms/bad-input");
+
+  // What a value passed on by reference may carry is decided by whether the property can still
+  // move, which is a fact about the property. A key handle carries implementation state written
+  // with neither `writable` nor `configurable`, so nothing the checks read about it can change
+  // afterwards and the key reaches the verb as itself -- at the argument, where `pki.csr.sign`
+  // takes a key as its second argument, as much as nested in a spec.
+  var frozenField = vm.runInNewContext("/x/g");
+  Object.defineProperty(frozenField, "detached",
+    { value: false, enumerable: false, configurable: false, writable: false });
+  check("a settled field cannot answer differently later, so it rides along",
+    guardBytes.snapshotDeep(frozenField, TestError, "t/bad", "opts") === frozenField);
+  ["writable", "configurable"].forEach(function (which) {
+    var movable = vm.runInNewContext("/x/g");
+    var desc = { value: false, enumerable: false, configurable: false, writable: false };
+    desc[which] = true;
+    Object.defineProperty(movable, "detached", desc);
+    var err;
+    try { guardBytes.snapshotDeep(movable, TestError, "t/bad", "opts"); err = { code: "NO-THROW" }; }
+    catch (e) { err = e; }
+    check("a field that is " + which + " can still move, so it is refused", err.code === "t/bad");
+  });
+
+  // A copied Date answers every Date question the way a Date holding that instant answers. An own
+  // method shadows the language's, and normalizing the prototype does not reach an own property,
+  // so the shadow is left behind while the caller's data comes across.
+  var shadowed = new Date("2030-01-01T00:00:00Z");
+  shadowed.getUTCFullYear = function () { throw new Error("caller code ran"); };
+  shadowed.note = "kept";
+  var shadowCopy = guardBytes.snapshotDeep({ signingTime: shadowed }, TestError, "t/bad", "opts").signingTime;
+  check("the copy answers a Date method with the language's, not the caller's",
+    shadowCopy.getUTCFullYear() === 2030);
+  check("while the caller's data still comes across", shadowCopy.note === "kept");
+  var s3 = signing.makeSigner("ec-p256");
+  var signedWithShadow = await pki.cms.sign(Buffer.from("content"), { cert: s3.cert, key: s3.key },
+    { signingTime: shadowed });
+  check("so cms.sign encodes the signing time instead of running the override",
+    Buffer.isBuffer(signedWithShadow) && signedWithShadow.length > 0);
 
   // A node:crypto KeyObject is a key input `pki.hpke` documents, and its material lives behind an
   // internal slot: a copy of one holds the shape of a key and none of the key, so the copy could
