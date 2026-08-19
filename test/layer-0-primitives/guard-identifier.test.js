@@ -364,6 +364,40 @@ function testKnownKeys() {
   Object.defineProperty(ownDetached, "detached", { value: true, enumerable: true, configurable: true });
   check("an own member name on a buffer is still the caller's option",
         identifier.readableNames(ownDetached, E, "x/bad", "o").join(",") === "detached");
+  // A member belongs to the kind whose prototype defines it and to no neighboring kind. Answering
+  // a value with a wider set than its own exempts a name the language never put there, which is a
+  // caller's option passed over in silence: a weak collection counts nothing and has no `size`, a
+  // SharedArrayBuffer is `growable` where an ArrayBuffer is `resizable` and `detached`, a DataView
+  // reads through methods and has no `length`, and `BYTES_PER_ELEMENT` sits on a concrete typed
+  // array rather than on the prototype every kind of one shares.
+  [["a weak collection", WeakMap, "size", function () { return new WeakMap(); }],
+   ["a weak set", WeakSet, "size", function () { return new WeakSet(); }],
+   ["a buffer", ArrayBuffer, "growable", function () { return new ArrayBuffer(2); }],
+   ["shared memory", SharedArrayBuffer, "detached", function () { return new SharedArrayBuffer(2); }],
+   ["shared memory", SharedArrayBuffer, "resizable", function () { return new SharedArrayBuffer(2); }],
+   ["a DataView", DataView, "length", function () { return new DataView(new ArrayBuffer(2)); }],
+   ["a DataView", DataView, "BYTES_PER_ELEMENT", function () { return new DataView(new ArrayBuffer(2)); }],
+   ["a byte view", Uint8Array, "parent", function () { return new Uint8Array(2); }],
+   ["an array", Array, "buffer", function () { return []; }],
+   ["a keyed collection", Set, "byteLength", function () { return new Set(); }]
+  ].forEach(function (row) {
+    function Sub() {}
+    Sub.prototype = Object.create(row[1].prototype);
+    Object.defineProperty(Sub.prototype, row[2], { get: function () { return 1; }, configurable: true });
+    var bag = Object.setPrototypeOf(row[3](), Sub.prototype);
+    check(row[0] + " reports a getter named `" + row[2] + "`, which its kind does not define",
+          identifier.readableNames(bag, E, "x/bad", "o").map(String).join(",") === row[2]);
+  });
+  // A DataView has no integer-indexed elements and no `length`, so both are ordinary properties
+  // that stay set and answer on a later read. Counting it among the indexed kinds dropped them
+  // from the names reported and from the copy the verb is handed.
+  var dvBag = new DataView(new ArrayBuffer(2));
+  dvBag.length = 9;
+  dvBag[0] = "x";
+  check("the fixture keeps what was set on it",
+        dvBag.length === 9 && dvBag[0] === "x");
+  check("a DataView reports an own `length` and an own index as the options they are",
+        identifier.readableNames(dvBag, E, "x/bad", "o").map(String).sort().join(",") === "0,length");
   // A caller's own null-prototype bag has no prototype either, and its OWN names are theirs.
   var nullProto = Object.create(null);
   nullProto.alpha = 1;
@@ -535,6 +569,32 @@ function testKnownKeys() {
   check("an ArrayBuffer options bag survives settling as itself",
         identifier.optionsObject(bufferBag, E, "x/bad", "opts") === bufferBag &&
         identifier.optionsObject(bufferBag, E, "x/bad", "opts").detached === false);
+  // An object kind no caller means as an options bag is refused by name at the door. A boxed
+  // primitive is the one that has to be: `new Number(0)` and `new Boolean(false)` carry no
+  // readable name, so nothing is reported and they pass as a bag holding no options, which is the
+  // silence `0` and `false` used to buy one wrapper away.
+  [["a boxed number", function () { return new Number(0); }],
+   ["a boxed boolean", function () { return new Boolean(false); }],
+   ["a boxed string", function () { return new String("ab"); }],
+   ["an Error", function () { return new Error("x"); }],
+   ["a caller's Error subclass", function () { return new (class Sub extends Error {})("x"); }],
+   ["a Promise", function () { return Promise.resolve(1); }],
+   ["an arguments object", function () { return (function () { return arguments; })(1); }],
+   ["a foreign boxed number", function () { return vm.runInNewContext("new Number(0)"); }],
+   ["a foreign Error", function () { return vm.runInNewContext("new Error('x')"); }],
+   ["a foreign arguments object",
+    function () { return vm.runInNewContext("(function () { return arguments; })(1)"); }]
+  ].forEach(function (row) {
+    check(row[0] + " is refused as an options bag",
+          errOf(function () {
+            identifier.optionsObject(row[1](), E, "x/bad", "opts");
+          }).code === "x/bad");
+  });
+  check("while the kinds a verb does take are still accepted",
+        identifier.optionsObject({}, E, "x/bad", "opts") !== null &&
+        identifier.optionsObject([], E, "x/bad", "opts") !== null &&
+        identifier.optionsObject(new Map(), E, "x/bad", "opts") !== null &&
+        identifier.optionsObject(new Date(0), E, "x/bad", "opts") !== null);
   // A Proxy is refused by identity, never by probing its traps for a contradiction: a trap can
   // answer consistently for as long as the check looks and differ afterwards.
   var honest = new Proxy({ alpha: 1 }, {});

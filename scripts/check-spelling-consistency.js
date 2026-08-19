@@ -335,10 +335,13 @@ function canary() {
     // returns as a gate failure the day a run draws that pid again.
     //
     // Removed only where all three hold: the name has the shape this gate writes, the content is
-    // exactly what it writes, and the process whose pid the name carries is gone. The first two
-    // are proof this gate wrote it, so a developer's own file at such a path is left alone. The
-    // third is what keeps two gates running at once in one checkout from deleting each other's
-    // live probe, which turns the other run's own listing assertion into a failure.
+    // exactly what it writes, and the process whose pid the name carries is gone. The name shape
+    // is reserved for this gate, so a file matching it is its debris and no one else's; that is a
+    // claim on the name space, and not a proof of authorship, which nothing readable off a file
+    // could give. The content test is what keeps a developer who parks something at such a path
+    // from losing it. The third condition keeps two gates running at once in one checkout from
+    // deleting each other's live probe, which turns the other run's own listing assertion into a
+    // failure.
     //
     // `process.kill(pid, 0)` signals nothing and reports whether the pid resolves. A pid that has
     // been recycled onto an unrelated process reads as alive, and the file is then left where it
@@ -372,15 +375,22 @@ function canary() {
         throw new Error("canary: a gitignored path must stay out of the set");
       }
     } finally {
-      // Removal is retried, and a failure that outlasts the retries is recorded for the throw
-      // below. A single attempt whose failure is swallowed leaves the probe in the tree while the
-      // gate reports success, and the next `git add -A` commits it. A sync-and-scan client or an
-      // indexer can hold a brief lock on a file this new, which is what the retries are for.
+      // Removal is retried over a wall-clock budget, and a failure that outlasts it is recorded for
+      // the throw below. A single attempt whose failure is swallowed leaves the probe in the tree
+      // while the gate reports success, and the next `git add -A` commits it. A sync-and-scan
+      // client or an indexer can hold a lock on a file this new, and such a lock is measured in
+      // tens of milliseconds, so the retries have to be spread over time to outlast one. A bare
+      // count spins through every attempt inside a microsecond and lands in the same instant the
+      // first one did.
       //
       // Recorded rather than thrown from here, because a throw inside a finally replaces whatever
       // the block was already failing with, and the canary's own verdict is the more useful one.
-      for (var attempt = 0; attempt < 50 && fs.existsSync(untracked); attempt++) {
+      var slot = new Int32Array(new SharedArrayBuffer(4));
+      for (var waited = 0; waited < 5000 && fs.existsSync(untracked); waited += 25) {
         try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* retried by the loop */ }
+        // A synchronous wait, because this gate is synchronous throughout and a timer would need
+        // the loop it is not running under. Waiting on a slot no one ever wakes runs the timeout.
+        if (fs.existsSync(untracked)) Atomics.wait(slot, 0, 0, 25);
       }
       if (fs.existsSync(untracked)) probeLeft = probeName;
     }
