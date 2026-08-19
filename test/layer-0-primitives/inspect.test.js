@@ -32,6 +32,18 @@ function run() {
   check("inspect: serial as colon-hex", t.indexOf("09:71:42:94:84:18:3f:f3:47:54:58:66:3b:75:36:97:27:d2:96:65") >= 0);
   check("inspect: issuer + subject DN (openssl short names)", /Issuer: C=US, ST=California, O=blamejs pki, OU=Test, CN=pkijs\.com/.test(t) && /Subject: C=US/.test(t));
   check("inspect: validity in openssl date form", /Not Before: [A-Z][a-z]{2} +\d{1,2} \d\d:\d\d:\d\d \d{4} GMT/.test(t) && /Not After : /.test(t));
+  // A parsed structure can carry a Date the caller supplied, and the calendar methods are ordinary
+  // ones a subclass answers. The date printed beside a certificate is the instant the Date holds.
+  var LyingCalendar = class extends Date {
+    getUTCFullYear() { return 1999; }
+    getUTCMonth() { return 0; }
+    getUTCDate() { return 1; }
+  };
+  var parsedCert = pki.schema.x509.parse(pki.schema.x509.pemDecode(ecPem));
+  parsedCert.validity.notBefore = new LyingCalendar("2030-06-15T12:34:56Z");
+  var lied = pki.inspect.certificate(parsedCert);
+  check("inspect: a Date that reports a different calendar prints the instant it holds",
+    /Not Before: Jun 15 12:34:56 2030 GMT/.test(lied) && lied.indexOf("1999") === -1);
   check("inspect: EC key details (bits + curve)", /Public-Key: \(256 bit\)/.test(t) && /ASN1 OID: prime256v1/.test(t) && /NIST CURVE: P-256/.test(t));
   check("inspect: extensions decoded (BasicConstraints/KeyUsage/SAN/SKI)",
     /X509v3 Basic Constraints: critical\n\s+CA:TRUE/.test(t) &&
