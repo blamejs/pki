@@ -178,9 +178,10 @@ function testViewContract() {
           Object.getPrototypeOf(copy) === Object.getPrototypeOf(src) &&
           Array.from(copy).join(",") === Array.from(src).join(","));
   });
-  // An array index can carry an accessor the same as a named field can, and reading one runs the
-  // caller's code. It escaped as itself from a boundary whose contract is a typed error, while the
-  // identical getter under a name was already typed -- an element and a field failing differently.
+  // An array index can carry an accessor the same as a named field can. At the argument itself
+  // that is refused before it is read, on the same reasoning as a named accessor field: a value
+  // that can answer differently between the check and the use is not one the check covered, and
+  // refusing it means the caller's code never runs at all.
   var hostileElement = [];
   var elementFault = new RangeError("planted");
   Object.defineProperty(hostileElement, "0",
@@ -189,9 +190,19 @@ function testViewContract() {
   var elementErr = errorOf(function () {
     guardBytes.snapshotDeep(hostileElement, TestError, "t/bad", "arg");
   });
-  check("an array element whose getter throws is refused with this boundary's code",
+  check("an array element supplied through an accessor is refused at the argument",
         elementErr.code === "t/bad" && elementErr !== elementFault);
-  check("and the caller's own fault is carried as the cause", elementErr.cause === elementFault);
+  check("and it is refused without the getter having been run", elementErr.cause === undefined);
+  // Below the argument an accessor is read, matching the rule for names: a platform object nested
+  // in a spec carries its own, and refusing those turns an ordinary signer into a bad input. A
+  // getter that throws there is still typed with this boundary's code rather than escaping as
+  // itself, and the caller's own fault is carried as the cause.
+  var nestedErr = errorOf(function () {
+    guardBytes.snapshotDeep({ list: hostileElement }, TestError, "t/bad", "arg");
+  });
+  check("a nested array element whose getter throws is refused with this boundary's code",
+        nestedErr.code === "t/bad" && nestedErr !== elementFault);
+  check("and the caller's own fault is carried as the cause", nestedErr.cause === elementFault);
   // ...while an ordinary array still copies its elements and keeps its holes.
   var sparse = [1, 2, 3];
   sparse[10] = 9;
@@ -981,6 +992,69 @@ async function testOcspAndPkcs12Doors() {
 // same time-of-check/time-of-use window a detached buffer opens, reached from the other side,
 // and it is the one a mechanical "route this through the guard" edit reintroduces: `view` and
 // `snapshot` differ by exactly this and nothing else at the call site.
+// An array reads its elements through its prototype chain wherever it has a hole, so the
+// set a consumer sees is not the set `Reflect.ownKeys` reports. A copy built from the own
+// keys alone hands the verb a shorter list than the caller passed, and the verb then acts
+// on a signer, an anchor or a policy that was never dropped by anyone.
+async function testInheritedArrayElementsSurviveTheCopy() {
+  var s = signing.makeSigner("ec-p256");
+
+  var signers = [];
+  signers.length = 1;                              // one slot, and the slot is a hole
+  Object.setPrototypeOf(signers, Object.assign(Object.create(Array.prototype), {
+    0: { cert: s.cert, key: s.key }
+  }));
+  check("the fixture reads as a one-signer list to an ordinary consumer",
+    signers.length === 1 && signers[0] !== undefined && Reflect.ownKeys(signers).indexOf("0") === -1);
+
+  var der = await pki.cms.sign(Buffer.from("content"), signers);
+  var parsed = pki.schema.cms.parse(der);
+  check("cms.sign signs with the signer the array resolves, not the hole its own keys report",
+    parsed.signerInfos.length === 1);
+  var verdict = await pki.cms.verify(der, { certs: [s.cert] });
+  check("and the message it produced verifies", verdict.valid === true);
+
+  // The other direction: an inherited index at or past `length` is not something a
+  // length-bounded read reaches, so carrying it across would lengthen the copy.
+  var two = [{ cert: s.cert, key: s.key }];
+  Object.setPrototypeOf(two, Object.assign(Object.create(Array.prototype), { 1: "past the end" }));
+  var der2 = await pki.cms.sign(Buffer.from("content"), two);
+  check("an inherited index past length does not lengthen the copy",
+    pki.schema.cms.parse(der2).signerInfos.length === 1);
+}
+
+// A Date is accepted by its internal slot, which admits a subclass from any realm, and a
+// subclass answers `getTime` with whatever it likes. Every verb whose arguments this module
+// copies is reached only by the copy, so the copy is where that has to stop: it reads the
+// instant intrinsically and hands on a plain Date holding it. What the verb compares is then
+// the instant the caller's Date holds rather than the one it reports, and no later read
+// inside the verb can reopen the gap.
+async function testCallerDateCannotAnswerTheInstant() {
+  var LyingDate = class extends Date { getTime() { return 0; } };
+  var lying = new LyingDate("2030-01-01T00:00:00Z");
+  check("the fixture holds one instant and reports another",
+    lying.getTime() === 0 && Date.prototype.getTime.call(lying) !== 0);
+
+  var copied = guardBytes.snapshotDeep({ notBefore: lying }, TestError, "t/bad", "spec").notBefore;
+  check("the copy holds the instant the original holds, not the one it reported",
+    Date.prototype.getTime.call(copied) === Date.parse("2030-01-01T00:00:00Z"));
+  check("and it answers with that instant, since the subclass was left behind",
+    copied.getTime() === Date.parse("2030-01-01T00:00:00Z"));
+
+  // The shipped verb behind that copy: an inverted validity is refused on the instants the
+  // Dates hold. Reported as zero, notBefore would have sorted before notAfter and issued.
+  var s = signing.makeSigner("ec-p256");
+  var threw = null;
+  try {
+    await pki.x509.sign({
+      subject: "lying-date", serialNumber: 3n, subjectPublicKey: s.spki,
+      notBefore: lying, notAfter: new Date("2020-01-01T00:00:00Z"),
+    }, { key: s.key });
+  } catch (e) { threw = e; }
+  check("x509.sign refuses the inverted validity the held instants describe",
+    threw !== null && threw.code === "x509/bad-input");
+}
+
 async function testCallerCannotRewriteAfterEntry() {
   var s = signing.makeSigner("ec-p256");
 
@@ -1063,6 +1137,8 @@ async function run() {
   await testIssuanceDoors();
   await testOcspAndPkcs12Doors();
   await testCallerCannotRewriteAfterEntry();
+  await testInheritedArrayElementsSurviveTheCopy();
+  await testCallerDateCannotAnswerTheInstant();
 }
 
 module.exports = { run: run };

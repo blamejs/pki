@@ -572,6 +572,24 @@ async function testCoreRejections() {
   var res9b = await run([future], { time: T2027, trustAnchor: anchor });
   check("not-yet-valid leaf rejected", res9b.valid === false && failCodes(res9b).indexOf("path/not-yet-valid") !== -1);
 
+  // The same expired leaf, checked at a `time` that holds 2027 and reports 2020. `opts.time`
+  // is validated at entry through the intrinsic, so the held instant is what was accepted;
+  // comparing the Date object against the certificate's would have coerced it through
+  // `Symbol.toPrimitive`, asking the caller a second time and getting a different answer. A
+  // caller who wanted an expired certificate to pass needed only that one method.
+  var ReportsAnEarlierMoment = class extends Date {
+    [Symbol.toPrimitive](hint) {
+      if (hint === "number" || hint === "default") return Date.parse("2020-06-01T00:00:00Z");
+      return Date.prototype.toString.call(this);
+    }
+  };
+  var twoFaced = new ReportsAnEarlierMoment(T2027.toISOString());
+  check("the fixture holds 2027 and reports 2020",
+    Date.prototype.getTime.call(twoFaced) === T2027.getTime() && Number(twoFaced) === Date.parse("2020-06-01T00:00:00Z"));
+  var res9c = await run([expired], { time: twoFaced, trustAnchor: anchor });
+  check("a Date that reports an earlier moment than it holds cannot revive an expired leaf",
+    res9c.valid === false && failCodes(res9c).indexOf("path/expired") !== -1);
+
   // name-chaining break.
   var inter = await mkCert({ subject: "Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var orphan = await mkCert({ subject: "Orphan", issuer: "SomebodyElse", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
