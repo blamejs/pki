@@ -890,6 +890,21 @@ async function run() {
   check("23ai. and mutating the caller's Date afterwards still leaves the signer untrusted",
     dateVerdict.trusted === false);
 
+  // The secret's copy is made before the later options are reduced, so a fault in one of THOSE is
+  // the path on which the copy would be left unowned. Reducing collects each copy as it is made,
+  // and the wipe runs over what was collected rather than over a result that never existed. The
+  // copy is not reachable from here; what is observable is that the call still refuses cleanly and
+  // the caller's own secret is untouched, which is what the collect-then-wipe must not break.
+  var faultSecret = Buffer.from("hunter2", "utf8");
+  var sparseAfterSecret = [];
+  sparseAfterSecret[100000000] = caCert;
+  var faultCode = await codeOf(pki.cmp.verify(raceMac, {
+    sharedSecret: faultSecret, trustAnchors: sparseAfterSecret,
+  }));
+  check("23aj. a fault after the secret is copied still refuses cleanly", faultCode === "cmp/bad-input");
+  check("23ak. and the caller's own secret is left intact",
+    faultSecret.toString("utf8") === "hunter2");
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
