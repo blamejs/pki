@@ -271,6 +271,83 @@ async function testATargetCertIssuerIsNotATarget() {
   var r = await pki.attrcert.verify(der, trusted(aa), { time: WITHIN, target: { dNSName: "not-a-target.example" } });
   check("a targetCert issuer name does not make a verifier a target", r.verified === false);
   check("the refusal names targeting", /target/i.test(String(r.reason)));
+  // Sec. 4.3.2 defines the check as passing on a targetName or a targetGroup, and says of the third
+  // arm that it "MUST NOT be used". Skipping it leaves the check PERFORMED, so the slot is true and
+  // the verdict is an honest refusal; matching on it would implement the forbidden alternative.
+  check("the sec. 4.3.2 check still ran", r.targetingChecked === true);
+  check("the reason names the forbidden alternative", /targetCert/.test(String(r.reason)));
+  check("the reason cites that it MUST NOT be used", /MUST NOT be used/.test(String(r.reason)));
+}
+
+// A caller-owned option is read at the call, so a caller that rewrites its options object while
+// signature verification is suspended cannot change the verdict that call returns. RED without the
+// fix: every one of these returned verified === true.
+async function testOptionsAreFixedAtTheCall() {
+  var aa = makeSigner("ec-p256");
+  var der = await pki.attrcert.sign(spec(), aaOf(aa));
+
+  // The same Date object, mutated through setTime while WebCrypto works.
+  var d = new Date("2099-01-01T00:00:00Z");
+  var pending = pki.attrcert.verify(der, trusted(aa), { time: d });
+  d.setTime(WITHIN.getTime());
+  var r = await pending;
+  check("a Date mutated mid-call does not move the evaluation instant", r.verified === false);
+  check("the out-of-window refusal stands", /validity/.test(String(r.reason)));
+
+  // The property replaced rather than the Date mutated.
+  var o = { time: new Date("2099-01-01T00:00:00Z") };
+  var pending2 = pki.attrcert.verify(der, trusted(aa), o);
+  o.time = WITHIN;
+  check("opts.time replaced mid-call does not move the evaluation instant",
+    (await pending2).verified === false);
+
+  // The same for the targeting decision.
+  var targeted = await pki.attrcert.sign(spec({
+    extensions: { targetInformation: [{ targetName: { dNSName: "server.example" } }] },
+  }), aaOf(aa));
+  var o2 = { time: WITHIN, target: { dNSName: "attacker.example" } };
+  var pending3 = pki.attrcert.verify(targeted, trusted(aa), o2);
+  o2.target = { dNSName: "server.example" };
+  check("opts.target replaced mid-call does not change who the verifier claims to be",
+    (await pending3).verified === false);
+}
+
+// The trusted issuer name is accepted in every form pki.attrcert.sign accepts for the issuing AA.
+// RED without the fix: only the string form was accepted, so an AC issued under a multi-RDN AA name
+// -- the ordinary case -- could not be verified at all.
+async function testEveryIssuerNameFormTheSignerAccepts() {
+  var aa = makeSigner("ec-p256");
+  var rdns = [{ countryName: "US" }, { organizationName: "Example" }, { commonName: "AA" }];
+  var der = await pki.attrcert.sign(spec(), { name: rdns, publicKey: aa.spki, key: aa.key });
+
+  check("an array of RDNs names the trusted issuer",
+    (await pki.attrcert.verify(der, { name: rdns, publicKey: aa.spki }, { time: WITHIN })).verified === true);
+
+  // The same name as raw Name DER, the third form the encoder takes.
+  var nameDer = pki.schema.attrcert.parse(der).issuer.v2Form.issuerName.names[0].bytes;
+  var inner = pki.asn1.decode(nameDer).children[0].bytes;   // one EXPLICIT [4] unwrap
+  check("raw Name DER names the trusted issuer",
+    (await pki.attrcert.verify(der, { name: inner, publicKey: aa.spki }, { time: WITHIN })).verified === true);
+
+  // A different multi-RDN name is still refused: accepting more forms must not accept more names.
+  var other = [{ countryName: "US" }, { organizationName: "Example" }, { commonName: "Other AA" }];
+  var r = await pki.attrcert.verify(der, { name: other, publicKey: aa.spki }, { time: WITHIN });
+  check("a different multi-RDN name is still refused", r.verified === false);
+  check("the refusal names the issuer", /issuer/i.test(String(r.reason)));
+
+  // Held on the decoded name, so every input form meets it.
+  check("an empty array of RDNs is refused",
+    (await codeOf(pki.attrcert.verify(der, { name: [], publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-input");
+  check("an empty Name DER is refused",
+    (await codeOf(pki.attrcert.verify(der, { name: pki.asn1.build.sequence([]), publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-input");
+  check("a missing issuer.name is still refused",
+    (await codeOf(pki.attrcert.verify(der, { publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-input");
+  // The same code the signer raises for the same bad name: one name encoder, one contract, so a
+  // caller who mistypes the name gets the same answer whichever verb they called.
+  check("a non-name issuer.name is refused as a bad name",
+    (await codeOf(pki.attrcert.verify(der, { name: 7, publicKey: aa.spki }, { time: WITHIN }))) === "attrcert/bad-name");
+  check("the signer refuses the same value with the same code",
+    (await codeOf(pki.attrcert.sign(spec(), { name: 7, publicKey: aa.spki, key: aa.key }))) === "attrcert/bad-name");
 }
 
 // RFC 5280 sec. 7.2: "When comparing DNS names for equality, conforming implementations MUST
@@ -454,6 +531,8 @@ async function main() {
   await testInPlaceEditsDoNotReachTheVerdict();
   await testMalformedInputThrows();
   await testUnknownOptionIsRefused();
+  await testOptionsAreFixedAtTheCall();
+  await testEveryIssuerNameFormTheSignerAccepts();
   console.log("CHECKS " + helpers.getChecks());
 }
 
