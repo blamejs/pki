@@ -35,6 +35,19 @@ var ARMS = [
   { name: "ed25519", newkey: "ed25519" },
 ];
 
+// Whether `openssl req -verify` accepted the request, read from BOTH signals it offers. The exit
+// code alone is not enough: OpenSSL 3.0.x exits 0 for a request whose self-signature fails and
+// reports the failure only on stderr, while 3.5.x exits non-zero for the same input. A check
+// resting on either signal by itself passes on one line of releases and silently accepts a forged
+// request on the other, so the verdict is a failure if either signal says so.
+function opensslVerifies(pemPath) {
+  var r = ctx.runOpenssl(["req", "-in", pemPath, "-noout", "-verify"], { allowNonZero: true });
+  var out = String(r.stderr || "") + String(r.stdout || "");
+  // Failure phrases only: the success line also names the self-signature ("... verify OK"), so a
+  // pattern matching the subject rather than the outcome would reject every valid request.
+  return r.code === 0 && !/verify failure|does not match/i.test(out);
+}
+
 function genRequest(arm) {
   // -nodes leaves the generated private key unencrypted, so no passphrase prompt can block the run.
   var args = ["req", "-new", "-nodes", "-subj", "/CN=" + arm.name + " interop/O=Interop/C=US",
@@ -63,8 +76,7 @@ async function run() {
       var pem = fs.readFileSync(arm._csrPath, "utf8");
 
       // (c) the oracle's own verdict on the bytes it produced, so the comparison below is anchored.
-      var ov = ctx.runOpenssl(["req", "-in", arm._csrPath, "-noout", "-verify"], { allowNonZero: true });
-      check("openssl req -verify accepts its own " + arm.name + " request", ov.code === 0);
+      check("openssl req -verify accepts its own " + arm.name + " request", opensslVerifies(arm._csrPath) === true);
 
       // (a) the toolkit's verifier over a request it did not produce.
       var v = await pki.csr.verify(pem);
@@ -83,10 +95,8 @@ async function run() {
         (await pki.csr.verify(bad)).verified === false);
 
       var badPem = pki.schema.csr.pemEncode(bad, "CERTIFICATE REQUEST");
-      var bv = ctx.withTmp(Buffer.from(badPem, "utf8"), "csr-bad-" + arm.name + ".pem", function (p) {
-        return ctx.runOpenssl(["req", "-in", p, "-noout", "-verify"], { allowNonZero: true });
-      });
-      check("both verifiers reject the same tampered " + arm.name + " bytes", bv.code !== 0);
+      var bv = ctx.withTmp(Buffer.from(badPem, "utf8"), "csr-bad-" + arm.name + ".pem", opensslVerifies);
+      check("both verifiers reject the same tampered " + arm.name + " bytes", bv === false);
     } finally {
       try { fs.unlinkSync(arm._keyPath); } catch (_e) { /* best-effort */ }
       try { fs.unlinkSync(arm._csrPath); } catch (_e) { /* best-effort */ }
