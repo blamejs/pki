@@ -510,7 +510,13 @@ security-only patches after the next major releases.
   That correspondence needs the certificate, so `pki.crl.isRevoked`, which is
   given a serial and nothing else, refuses any scoped CRL instead of answering
   from one: an absent serial on a CRL covering some other partition, certificate
-  kind, or revocation reason is not an unrevoked certificate.
+  kind, or revocation reason is not an unrevoked certificate. A CRL also speaks
+  for a span, and the same reasoning applies to it: told the instant a question is
+  asked at, `pki.crl.isRevoked` refuses a list whose `nextUpdate` has passed,
+  whose `thisUpdate` is later, or which states no `nextUpdate` at all and so
+  cannot be told from a replayed copy. Told no instant it answers structurally
+  and says so, and a serial's absence then means it is not on that list rather
+  than that the certificate is unrevoked.
 - **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
   authoritative only when an authorized responder signed it: the issuing CA
   directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in its
