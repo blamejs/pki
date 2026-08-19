@@ -621,6 +621,95 @@ async function run() {
   var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
   check("21e. an opt-in transactionID against a message that carries none -> cmp/transaction-id-mismatch", (await pki.cmp.verify(noTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
 
+  // ===== 23. every caller-owned option is fixed at the call =====
+  // Verification suspends this verb -- PBMAC1 derivation on one path, the signature engine on the
+  // other -- and an option read after it resumes answers for whatever the caller last wrote. RED
+  // without the fix: each of these returned valid === true for a message the option did not match.
+  var raceDer = await buildSig({ transactionID: Buffer.alloc(16, 7) });
+  check("23a. baseline: a transactionID the message does not carry is refused",
+    (await pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 9) })).valid === false);
+  check("23b. baseline: the matching transactionID passes",
+    (await pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 7) })).valid === true);
+
+  // The buffer itself is overwritten, so the caller never touches the property.
+  var raceBuf = Buffer.alloc(16, 9);
+  var racePending = pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: raceBuf });
+  raceBuf.fill(7);
+  check("23c. overwriting the transactionID buffer mid-call does not change the verdict",
+    (await racePending).valid === false);
+
+  // The property is replaced on the caller's own options object.
+  var raceOpts = { signerCert: s.cert, transactionID: Buffer.alloc(16, 9) };
+  var racePending2 = pki.cmp.verify(raceDer, raceOpts);
+  raceOpts.transactionID = Buffer.alloc(16, 7);
+  check("23d. replacing opts.transactionID mid-call does not change the verdict",
+    (await racePending2).valid === false);
+
+  // The MAC path suspends inside PBMAC1 derivation, so it has the same window.
+  var raceMac = await buildMac("hunter2", {}, { transactionID: Buffer.alloc(16, 7) });
+  var macOpts = { sharedSecret: "hunter2", transactionID: Buffer.alloc(16, 9) };
+  var racePending3 = pki.cmp.verify(raceMac, macOpts);
+  macOpts.transactionID = Buffer.alloc(16, 7);
+  check("23e. the MAC path fixes the transactionID at the call too",
+    (await racePending3).valid === false);
+
+  // expectRecipNonce is the sibling echo value and takes the same route.
+  var raceNonce = Buffer.alloc(16, 3);
+  var racePending4 = pki.cmp.verify(raceDer, { signerCert: s.cert, expectRecipNonce: raceNonce });
+  raceNonce.fill(0);
+  var rn = await racePending4;
+  check("23f. overwriting expectRecipNonce mid-call does not change the verdict", rn.valid === false);
+
+  // A Date is re-made at the same instant, so setTime on the caller's own object cannot move the
+  // instant the chain is validated at. The call starts OUTSIDE the signer's validity, where the
+  // chain fails, and is mutated to an instant inside it -- the direction that would gain trust.
+  var raceChain = await pki.cmp.build({ header: Object.assign({ messageTime: T }, HDR), body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
+  var OUTSIDE = new Date("2099-01-01T00:00:00Z");
+  check("23g. baseline: an instant past the signer's validity leaves it untrusted",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: new Date(OUTSIDE.getTime()) })).trusted === false);
+  var raceDate = new Date(OUTSIDE.getTime());
+  var racePending5 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: raceDate });
+  raceDate.setTime(T.getTime());
+  check("23h. calling setTime on the caller's Date mid-call does not gain trust",
+    (await racePending5).trusted === false);
+
+  // Appending to the anchor array after the call does not widen the set the chain was built against.
+  // The array starts with an unrelated anchor, so the call is well-formed and the chain simply fails.
+  var raceAnchors = [s.cert];
+  check("23i. baseline: an unrelated anchor leaves the signer untrusted",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T })).trusted === false);
+  check("23j. baseline: the real anchor makes it trusted",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
+  var racePending6 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: raceAnchors, time: T });
+  raceAnchors.push(caCert);
+  check("23k. appending to opts.trustAnchors mid-call does not make the signer trusted",
+    (await racePending6).trusted === false);
+
+  // A PARSED anchor is passed through by reference on purpose -- guard.parsed records provenance
+  // against the object's identity, so a copy would stop being recognized as parser output. What
+  // makes that safe is the far end: path validation re-derives a parsed certificate from the bytes
+  // it recorded, so a field edited on the caller's object never reaches the decision.
+  var parsedAnchor = pki.schema.x509.parse(caCert);
+  var racePending7 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [parsedAnchor], time: T });
+  parsedAnchor.subject = { dn: "CN=Not The CA", rdns: [] };
+  parsedAnchor.tbsBytes = Buffer.alloc(4);
+  check("23l. a parsed anchor still anchors the chain after its fields are edited mid-call",
+    (await racePending7).trusted === true);
+
+  // Each field is read from the caller's object once. An accessor that answers differently on each
+  // read would otherwise let the value that PASSED the check differ from the value that was USED --
+  // the same defect as the mid-call swap, moved inside the reducer. Here the first read is a valid
+  // Date inside the signer's validity and every later read is one far outside it: whichever single
+  // read the verb takes, the two must not be mixed into an instant the caller never supplied.
+  var reads = 0;
+  var creeping = {
+    signerCert: signerCert, trustAnchors: [caCert],
+    get time() { reads += 1; return reads === 1 ? new Date(T.getTime()) : new Date("2099-01-01T00:00:00Z"); },
+  };
+  var creepVerdict = await pki.cmp.verify(raceChain, creeping);
+  check("23m. an accessor-backed time is read exactly once", reads === 1);
+  check("23n. and the verdict is the one that single read earns", creepVerdict.trusted === true);
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override

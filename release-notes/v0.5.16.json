@@ -1,0 +1,12 @@
+{
+  "version": "0.5.16",
+  "headline": "`pki.cmp.verify` reads every option at the call, so a caller that reuses its options object while verification runs cannot change the verdict that call returns.",
+  "summary": "Verifying a CMP message suspends the call -- PBMAC1 derivation on the MAC path, the signature engine on the other. Five options were read after it resumed, so they answered for whatever the caller last wrote rather than for the call that was made. A caller could pass a transaction identifier the message does not carry, overwrite the buffer while the MAC derived, and be told the message was valid.",
+  "sections": {
+    "Fixed": [
+      "`pki.cmp.verify` reduces every option to a value the caller no longer reaches, before verification begins. `transactionID` and `expectRecipNonce` are copied, so overwriting the buffer that was passed in changes nothing; `trustAnchors` and `intermediates` have their array copied, so appending an anchor mid-call cannot widen the set the chain is built against; and a `time` that is a real `Date` is re-made at the same instant, so calling `setTime` on it cannot move the point the signer's certificate is validated at. A `time` that is not a `Date` passes through untouched, so the input error it already earns is the one it still gets.",
+      "Each option is read from the caller's object exactly once, before anything is validated or copied. A property can be an accessor, and an accessor is free to answer a different value each time it is asked, so a second read would let the value that passed the check differ from the value that was used.",
+      "Two things stay caller-owned by design, and the release is explicit about them. A parsed certificate passed as an anchor or an intermediate is held by reference, because `pki.schema.x509.parse` results carry their provenance against the object's identity and a copy would stop being recognized as parser output; editing one mid-call changes nothing, since path validation re-derives a parsed certificate from the bytes it recorded. And a `revocationChecker` is the caller's own callback, so what it answers is theirs to decide whenever it is called."
+    ]
+  }
+}

@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.16 — 2026-08-19
+
+`pki.cmp.verify` reads every option at the call, so a caller that reuses its options object while verification runs cannot change the verdict that call returns.
+
+### Fixed
+
+- `pki.cmp.verify` reduces every option to a value the caller no longer reaches, before verification begins. `transactionID` and `expectRecipNonce` are copied, so overwriting the buffer that was passed in changes nothing; `trustAnchors` and `intermediates` have their array copied, so appending an anchor mid-call cannot widen the set the chain is built against; and a `time` that is a real `Date` is re-made at the same instant, so calling `setTime` on it cannot move the point the signer's certificate is validated at. A `time` that is not a `Date` passes through untouched, so the input error it already earns is the one it still gets.
+- Each option is read from the caller's object exactly once, before anything is validated or copied. A property can be an accessor, and an accessor is free to answer a different value each time it is asked, so a second read would let the value that passed the check differ from the value that was used.
+- Two things stay caller-owned by design, and the release is explicit about them. A parsed certificate passed as an anchor or an intermediate is held by reference, because `pki.schema.x509.parse` results carry their provenance against the object's identity and a copy would stop being recognized as parser output; editing one mid-call changes nothing, since path validation re-derives a parsed certificate from the bytes it recorded. And a `revocationChecker` is the caller's own callback, so what it answers is theirs to decide whenever it is called.
+
 ## v0.5.15 — 2026-08-19
 
 `pki.attrcert.verify` checks an attribute certificate against the RFC 5755 validation rules, so a consumer reading its privilege attributes is reading ones an issuer actually granted.
