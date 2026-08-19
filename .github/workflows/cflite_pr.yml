@@ -86,6 +86,7 @@ jobs:
           - cms-verify
           - csr-verify
           - crmf-verify
+          - attrcert-verify
           - cms-sign
           - tsp-sign
           - x509-sign
