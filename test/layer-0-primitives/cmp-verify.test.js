@@ -696,19 +696,39 @@ async function run() {
   check("23l. a parsed anchor still anchors the chain after its fields are edited mid-call",
     (await racePending7).trusted === true);
 
-  // Each field is read from the caller's object once. An accessor that answers differently on each
-  // read would otherwise let the value that PASSED the check differ from the value that was USED --
-  // the same defect as the mid-call swap, moved inside the reducer. Here the first read is a valid
-  // Date inside the signer's validity and every later read is one far outside it: whichever single
-  // read the verb takes, the two must not be mixed into an instant the caller never supplied.
-  var reads = 0;
-  var creeping = {
+  // An options bag whose fields are ACCESSORS is refused outright, by the toolkit's own options
+  // door. That single rule is what closes the whole caller-getter class rather than one member of
+  // it: an accessor is caller code running inside the call before the verb has done anything, and
+  // from there it can rewrite the very predicates and constructors the verb is about to use --
+  // Buffer.from, Array.isArray, util.types.isUint8Array, Promise.prototype.then. Hardening each of
+  // those in turn is a list with no end; refusing the accessor removes the window they all need.
+  // The accessor is never even read, so it cannot act before being refused.
+  var accessorRead = false;
+  var accessorBag = {
     signerCert: signerCert, trustAnchors: [caCert],
-    get time() { reads += 1; return reads === 1 ? new Date(T.getTime()) : new Date("2099-01-01T00:00:00Z"); },
+    get time() { accessorRead = true; return new Date(T.getTime()); },
   };
-  var creepVerdict = await pki.cmp.verify(raceChain, creeping);
-  check("23m. an accessor-backed time is read exactly once", reads === 1);
-  check("23n. and the verdict is the one that single read earns", creepVerdict.trusted === true);
+  check("23m. an accessor-backed options bag is refused",
+    (await codeOf(pki.cmp.verify(raceChain, accessorBag))) === "cmp/bad-input");
+  check("23n. and the accessor was never invoked", accessorRead === false);
+  check("23n2. the refusal names the field and what to pass instead", await (async function () {
+    try { await pki.cmp.verify(raceChain, accessorBag); return false; }
+    catch (e) { return /"time"/.test(e.message) && /plain values/.test(e.message); }
+  })());
+
+  // The rule holds one level down. An accessor under an INDEX of a certificate list is caller code
+  // exactly as an accessor under a name is, and a list is where it pays: an element can answer as
+  // one certificate to a check and as another to the read, or simply run and rewrite a predicate
+  // the reduction has not reached yet. RED without the element check: the getter ran.
+  var elementRead = false;
+  var accessorList = [];
+  Object.defineProperty(accessorList, "0", {
+    enumerable: true, configurable: true,
+    get: function () { elementRead = true; return caCert; },
+  });
+  check("23n3. an accessor-backed certificate-list element is refused",
+    (await codeOf(pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: accessorList, time: T }))) === "cmp/bad-input");
+  check("23n4. and that element was never read", elementRead === false);
 
   // The anchor list is copied without calling back into the caller's array. `map` is the caller's
   // property, so an array that answers it with itself would leave the copy aliasing the original,
@@ -734,18 +754,20 @@ async function run() {
   check("23r. appending to an array whose map returns itself does not widen the anchor set",
     (await racePending8).trusted === false);
 
-  // A getter for a LATER field can reach back and mutate the buffer an EARLIER field handed over.
-  // Each field is therefore copied as it is read, not after the whole bag has been walked. RED
-  // without that ordering: the transactionID compared was the one the revocationChecker getter
-  // wrote, so a message the caller's own value did not match verified anyway.
+  // A getter for a LATER field reaching back to mutate the buffer an EARLIER field handed over is
+  // the same class, and it dies at the same door: the bag is refused before any field is read. The
+  // ordering discipline in the reducer (copy each field as it is read) is kept behind that door
+  // anyway, because a rule that holds only while another rule holds is not a rule.
   var smuggler = Buffer.alloc(16, 9);
   var reach = {
     signerCert: s.cert,
     transactionID: smuggler,
     get revocationChecker() { smuggler.fill(7); return undefined; },
   };
-  check("23s. a later getter cannot rewrite an earlier option's bytes",
-    (await pki.cmp.verify(raceDer, reach)).valid === false);
+  check("23s. a bag whose later field reaches back through a getter is refused",
+    (await codeOf(pki.cmp.verify(raceDer, reach))) === "cmp/bad-input");
+  check("23s2. and the earlier field's bytes were never touched",
+    smuggler.every(function (b) { return b === 9; }));
 
   // An array's length is independent of what it holds. Only the elements that exist are copied, so
   // a sparse list carrying one anchor at index 100000000 collapses to that one anchor instead of
@@ -905,12 +927,12 @@ async function run() {
   check("23ak. and the caller's own secret is left intact",
     faultSecret.toString("utf8") === "hunter2");
 
-  // Reducing the options runs the caller's getters, so a getter can install a replacement for a
-  // global the verb itself is about to use. Promise.prototype.finally is the sharp case: a verb that
-  // cleaned up with `.finally(...)` would dispatch into the replacement and hand back whatever it
-  // returned, so a rejected verification could be reported as a passing verdict. The cleanup is
-  // language-level try/finally, which looks nothing up. RED without it: the swapped finally was
-  // reached and its promise, not the real verdict, came back.
+  // The sharpest form of the accessor class: a getter that installs a replacement for a global the
+  // verb itself is about to use. Promise.prototype.finally is the example -- a verb cleaning up with
+  // `.finally(...)` would dispatch into the replacement and hand back whatever it returned, so a
+  // rejected verification could be reported as passing. Two things stop it, and the order matters:
+  // the bag is refused before the getter runs at all, and the cleanup is language-level try/finally,
+  // which looks nothing up even if something did get installed.
   var realFinally = Promise.prototype.finally;
   var finallyReached = false;
   var swapOnGetter = {
@@ -923,14 +945,12 @@ async function run() {
       return Buffer.alloc(16, 9);   // does NOT match the message
     },
   };
-  var swapVerdictOut, swapThrew = null;
-  try { swapVerdictOut = await pki.cmp.verify(raceDer, swapOnGetter); }
-  catch (e) { swapThrew = e; }
+  var swapCode;
+  try { swapCode = await codeOf(pki.cmp.verify(raceDer, swapOnGetter)); }
   finally { Promise.prototype.finally = realFinally; }
-  check("23al. a finally installed by an option getter never decides the result",
-    finallyReached === false);
-  check("23am. and the mismatched transactionID is still what the verdict reports",
-    swapThrew === null && swapVerdictOut.valid === false && swapVerdictOut.forged === undefined);
+  check("23al. the bag carrying that getter is refused before it can install anything",
+    swapCode === "cmp/bad-input");
+  check("23am. and the replacement was never installed", finallyReached === false);
 
   // The echo-value type check is a configuration error the caller must be shown, never a routine
   // mismatch verdict that blames the peer. It is written out as two named checks rather than a loop,
@@ -949,26 +969,24 @@ async function run() {
 
   // Whether a byte option is COPIED, and whether that copy is entered in the wipe list, must not be
   // decided by a predicate the caller can rewrite. Buffer.isBuffer is a writable property and
-  // `instanceof Uint8Array` consults Uint8Array[Symbol.hasInstance]; both are reachable from an
-  // option getter that has already run. Answering false for the caller's own secret skipped the copy
-  // and put their live buffer where the copy belongs -- which the wipe then destroys, memory the
-  // toolkit does not own. The tests ask util.types.isUint8Array, a fact about the value.
-  // RED without that: callerOwned came back all zeros.
+  // `instanceof Uint8Array` consults Uint8Array[Symbol.hasInstance]. Answering false for the
+  // caller's own secret skipped the copy and put their live buffer where the copy belongs -- which
+  // the wipe then destroys, memory the toolkit does not own. Two independent things stop it: the
+  // accessor that would install the lie is refused at the door, and the tests ask
+  // util.types.isUint8Array, which is a fact about the value rather than a claim about its
+  // prototype. The second still holds for a caller who rewrites the globals without an accessor.
   var realHasInstance = Object.getOwnPropertyDescriptor(Uint8Array, Symbol.hasInstance);
   var realIsBuffer = Buffer.isBuffer;
   var callerOwned = Buffer.from("hunter2", "utf8");
   var lieOnce = true;
-  var lyingOpts = {
-    get sharedSecret() {
-      Buffer.isBuffer = function () { return false; };
-      Object.defineProperty(Uint8Array, Symbol.hasInstance, {
-        configurable: true, value: function () { if (lieOnce) { lieOnce = false; return false; } return true; },
-      });
-      return callerOwned;
-    },
-  };
-  try { await pki.cmp.verify(raceMac, lyingOpts); }
-  catch (_e) { /* the verdict is not what this vector is about */ }
+  try {
+    // No accessor here: the globals are rewritten directly, which is the form the door cannot see.
+    Buffer.isBuffer = function () { return false; };
+    Object.defineProperty(Uint8Array, Symbol.hasInstance, {
+      configurable: true, value: function () { if (lieOnce) { lieOnce = false; return false; } return true; },
+    });
+    await pki.cmp.verify(raceMac, { sharedSecret: callerOwned });
+  } catch (_e) { /* the verdict is not what this vector is about */ }
   finally {
     Buffer.isBuffer = realIsBuffer;
     if (realHasInstance) Object.defineProperty(Uint8Array, Symbol.hasInstance, realHasInstance);
@@ -992,11 +1010,13 @@ async function run() {
   check("23ar. and an empty string is still refused as a secret",
     (await codeOf(pki.cmp.verify(raceMac, { sharedSecret: "" }))) === "cmp/bad-input");
 
-  // The conversion uses a Buffer.from captured at module load. Without that, the accessor on
-  // sharedSecret ITSELF -- the first thing the reduction reads -- can install a replacement, receive
-  // the plaintext secret as its argument, and have its RETURN become the PBMAC1 key. RED without the
-  // capture: a message MAC'd under a secret the caller never had verified as valid, and the caller's
-  // own secret was handed to the attacker's function.
+  // The authentication bypass this pair exists for, and the two independent things that stop it.
+  //
+  // The accessor on sharedSecret -- the first thing the reduction reads -- could install a
+  // Buffer.from replacement, receive the plaintext secret as its argument, and have its RETURN
+  // become the PBMAC1 key: a message authenticated under a secret the caller never held then
+  // verified. The options door refuses the accessor outright, and the conversion uses a Buffer.from
+  // captured at module load, so the swap has nothing to reach even from outside an accessor.
   var macUnderOther = await pki.cmp.build({ header: hdr({ transactionID: Buffer.alloc(16, 7) }), body: IRBODY },
     { mac: { secret: "attacker-key", salt: Buffer.alloc(16, 9), iterationCount: 2048 } });
   check("23at. baseline: the wrong secret does not verify",
@@ -1004,25 +1024,35 @@ async function run() {
 
   var realFrom = Buffer.from;
   var stolen = null;
+  function poison() {
+    Buffer.from = function (a, enc) {
+      if (typeof a === "string" && enc === "utf8") {
+        stolen = a; Buffer.from = realFrom;
+        return realFrom("attacker-key", "utf8");
+      }
+      return realFrom.apply(Buffer, arguments);
+    };
+  }
+
+  // (a) through an accessor -- refused before the accessor runs.
   var poisoning = {};
   Object.defineProperty(poisoning, "sharedSecret", {
     enumerable: true, configurable: true,
-    get: function () {
-      Buffer.from = function (a, enc) {
-        if (typeof a === "string" && enc === "utf8") {
-          stolen = a; Buffer.from = realFrom;
-          return realFrom("attacker-key", "utf8");
-        }
-        return realFrom.apply(Buffer, arguments);
-      };
-      return "hunter2";
-    },
+    get: function () { poison(); return "hunter2"; },
   });
+  var viaAccessor;
+  try { viaAccessor = await codeOf(pki.cmp.verify(macUnderOther, poisoning)); }
+  finally { Buffer.from = realFrom; }
+  check("23au. an accessor that would substitute the PBMAC1 key is refused at the door",
+    viaAccessor === "cmp/bad-input");
+
+  // (b) without one -- the global is rewritten directly, which no door can see, and the captured
+  // constructor is what holds. This is the half that survives if the door is ever relaxed.
   var poisonVerdict;
-  try { poisonVerdict = await pki.cmp.verify(macUnderOther, poisoning); }
+  try { poison(); poisonVerdict = await pki.cmp.verify(macUnderOther, { sharedSecret: "hunter2" }); }
   catch (_e) { poisonVerdict = { valid: false }; }
   finally { Buffer.from = realFrom; }
-  check("23au. an accessor cannot substitute the PBMAC1 key through Buffer.from",
+  check("23au2. and a direct Buffer.from swap cannot substitute it either",
     poisonVerdict.valid === false);
   check("23av. and cannot capture the caller's plaintext secret through it", stolen === null);
 
