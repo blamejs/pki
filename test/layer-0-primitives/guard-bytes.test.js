@@ -358,16 +358,29 @@ async function testDeepSnapshotContract() {
   // What separates a HANDLE from a data bag is not the prototype. A caller's own class used as an
   // options object is data, and passing it through on the strength of its prototype left the whole
   // window open for it: pki.cms.sign takes any non-Buffer object as options, so an instance whose
-  // signedAttributes flipped after the call still reached the signing turn. It is copied, with its
-  // prototype kept so its methods still resolve.
+  // signedAttributes flipped after the call still reached the signing turn. It is copied -- as a
+  // plain object, because the class is the caller's too. Keeping it left the copy dispatching into
+  // their code, and a class can be rewritten after the call has begun, so a copy taken to stop the
+  // argument changing under the verb changed with it.
   function Bag() { this.v = 1; }
   Bag.prototype.describe = function () { return "bag " + this.v; };
   var bag = new Bag();
   var bagCopy = guardBytes.snapshotDeep({ h: bag }, TestError, "t/bad", "spec").h;
   check("a class instance carrying data is copied, not aliased", bagCopy !== bag);
-  check("the copy keeps its prototype and its methods", bagCopy instanceof Bag && bagCopy.describe() === "bag 1");
+  check("the copy is a plain object carrying the data, not an instance of the caller's class",
+    !(bagCopy instanceof Bag) && Object.getPrototypeOf(bagCopy) === Object.prototype &&
+    bagCopy.v === 1 && bagCopy.describe === undefined);
   bag.v = 99;
   check("the copy does not follow a later write to the instance", bagCopy.v === 1);
+  Bag.prototype.describe = function () { throw new RangeError("planted"); };
+  check("nor a later rewrite of the class it came from", bagCopy.describe === undefined);
+  // A dictionary with no prototype keeps having none. Gaining `Object.prototype` would make the
+  // copy inherit whatever a runtime has planted there -- names the original never answered.
+  var dict = Object.create(null);
+  dict.pem = true;
+  var dictCopy = guardBytes.snapshotDeep({ h: dict }, TestError, "t/bad", "spec").h;
+  check("a null-prototype dictionary copies to one with no prototype either",
+    Object.getPrototypeOf(dictCopy) === null && dictCopy.pem === true);
 
   // An INHERITED field is data the verb reads too -- `opts.signedAttributes` resolves through the
   // prototype chain. Copying own keys and keeping the caller's prototype would leave it live, so
@@ -484,16 +497,17 @@ async function testDeepSnapshotContract() {
   catch (e) { markedErr = e; }
   check("a CryptoKey carrying a caller-added symbol field is refused", markedErr.code === "t/bad");
 
-  // A symbol key is now treated exactly as a string one is, which is the point: the walk reports
-  // both, so neither is a way to smuggle a field past a check or to behave differently under a
-  // copy. A class that declares a method under a symbol keeps it, and an accessor that throws is
-  // the caller's typed error either way rather than a raw one from inside the copy.
+  // A symbol key is treated exactly as a string one is, which is the point: the walk reports both,
+  // so neither is a way to smuggle a field past a check or to behave differently under a copy. A
+  // method a class declares under a symbol is a method like any other, so the copy no longer
+  // carries it -- the copy is a plain object, and nothing the caller wrote runs through it.
   var METHOD = Symbol("describe");
   function SymBag() { this.pem = true; }
   SymBag.prototype[METHOD] = function () { return 42; };
   var symCopy = guardBytes.snapshotDeep(new SymBag(), TestError, "t/bad", "spec");
-  check("a class method declared under a symbol survives the copy and still runs",
-        symCopy.pem === true && typeof symCopy[METHOD] === "function" && symCopy[METHOD]() === 42);
+  check("a class method declared under a symbol is left behind with the class",
+        symCopy.pem === true && symCopy[METHOD] === undefined &&
+        Object.getPrototypeOf(symCopy) === Object.prototype);
   function ThrowSym() {}
   Object.defineProperty(ThrowSym.prototype, Symbol("boom"), {
     get: function () { throw new Error("ran"); }, enumerable: false, configurable: true
@@ -581,10 +595,19 @@ async function testDeepSnapshotContract() {
   check("including one added where Object.keys cannot see it",
     guardBytes.snapshotDeep({ c: hiddenOption }, TestError, "t/bad", "spec").c !== hiddenOption);
 
-  // Copying and checking are one rule read from two sides, so a copy that loses what the check
-  // reads splits them. A subclass of a collection carries its additions on a prototype the copy
-  // has to keep. Drop it and the methods the class defines land on the copy as own names, where
-  // the check that refuses an unknown option refuses the caller's own bag.
+  // The copy is a plain one of its kind, and never carries the caller's prototype back.
+  //
+  // The prototype is part of the argument, so restoring it left the copy dispatching into the
+  // caller's code: a `map` on an array subclass, a `getUTCFullYear` on a Date subclass, reached by
+  // the verb through what was supposed to be a private snapshot. One that threw surfaced the
+  // caller's own exception from inside a verb, and the prototype could be rewritten AFTER the call
+  // had begun, so the value the checks read and the value the verb ran against were the same
+  // object only until the caller changed its class.
+  //
+  // Restoring it was for the names: copying and checking are one rule read from two sides, and a
+  // copy the check reads differently splits them. That is measured below rather than assumed --
+  // the names match without it, because a method the class defines is not a name this walk
+  // reports and so is not copied onto the copy as one.
   function ArrayBag() {}
   ArrayBag.prototype = Object.create(Array.prototype);
   ArrayBag.prototype.constructor = ArrayBag;
@@ -592,10 +615,10 @@ async function testDeepSnapshotContract() {
   var arrayBag = Object.setPrototypeOf([], ArrayBag.prototype);
   arrayBag.pem = true;
   var arrayCopy = guardBytes.snapshotDeep({ o: arrayBag }, TestError, "t/bad", "spec").o;
-  check("a collection subclass keeps its prototype through the copy",
-    Object.getPrototypeOf(arrayCopy) === ArrayBag.prototype &&
-    typeof arrayCopy.describe === "function");
-  check("so the copy reports the same option names as the original",
+  check("a collection subclass copies to a plain one of its kind",
+    Array.isArray(arrayCopy) && Object.getPrototypeOf(arrayCopy) === Array.prototype &&
+    arrayCopy.describe === undefined);
+  check("and the copy still reports the same option names as the original",
     identifier.readableNames(arrayCopy, TestError, "t/bad", "o").join(",") ===
     identifier.readableNames(arrayBag, TestError, "t/bad", "o").join(",") &&
     identifier.readableNames(arrayCopy, TestError, "t/bad", "o").join(",") === "pem");
@@ -607,10 +630,29 @@ async function testDeepSnapshotContract() {
   mapBag.set("k", 1);
   mapBag.pem = true;
   var mapCopy = guardBytes.snapshotDeep({ o: mapBag }, TestError, "t/bad", "spec").o;
-  check("a Map subclass keeps its prototype and its entries",
-    Object.getPrototypeOf(mapCopy) === MapBag.prototype && mapCopy.get("k") === 1);
+  check("a Map subclass copies to a plain Map, keeping its entries",
+    Object.getPrototypeOf(mapCopy) === Map.prototype && mapCopy.get("k") === 1 &&
+    mapCopy.describe === undefined);
   check("and reports the same option names as the original",
     identifier.readableNames(mapCopy, TestError, "t/bad", "o").join(",") === "pem");
+  // The methods a verb goes on to call are the language's, whatever class the caller passed. An
+  // override that throws is unreachable through the copy, and so is one installed after the call
+  // began -- the copy's class was decided when it was made, and it is not the caller's.
+  var TrapArray = class extends Array { map() { throw new RangeError("planted"); } };
+  var trapList = new TrapArray();
+  trapList.push({ ref: 1 });
+  var listCopy = guardBytes.snapshotDeep({ signers: trapList }, TestError, "t/bad", "spec").signers;
+  check("an array subclass whose `map` throws is copied to one a verb can walk",
+    listCopy.map(function (x) { return x.ref; }).join(",") === "1");
+  var TrapDate = class extends Date { getUTCFullYear() { throw new RangeError("planted"); } };
+  var dateCopy = guardBytes.snapshotDeep({ signingTime: new TrapDate(0) },
+                                         TestError, "t/bad", "spec").signingTime;
+  check("a Date subclass whose method throws is copied to one a verb can read",
+    dateCopy.getUTCFullYear() === 1970 && dateCopy.valueOf() === 0);
+  // ...and rewriting the caller's class after the call cannot reach the copy either.
+  TrapArray.prototype.map = function () { throw new RangeError("planted later"); };
+  check("a prototype rewritten after the copy was taken does not reach it",
+    listCopy.map(function (x) { return x.ref; }).join(",") === "1");
 
   check("snapshotDeep refuses a detached leaf", codeOf(function () {
     guardBytes.snapshotDeep({ b: detachedBuffer(4) }, TestError, "t/bad", "spec");

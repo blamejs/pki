@@ -346,14 +346,23 @@ function canary() {
     // `process.kill(pid, 0)` signals nothing and reports whether the pid resolves. A pid that has
     // been recycled onto an unrelated process reads as alive, and the file is then left where it
     // is: erring toward keeping a file is the safe direction for a sweep.
+    //
+    // A probe carrying THIS pid is the one case the liveness test cannot decide, and skipping it
+    // deadlocked the gate: an operating system reassigns a pid, so a run killed before its cleanup
+    // could be followed by one drawing the same number. The old file then read as "this run's own,
+    // handled below", the existence check refused to overwrite it, and every run failed until
+    // somebody deleted it by hand. This sweep runs BEFORE the probe is written, so at this moment
+    // this run has no probe: a file bearing its pid was left by a process that has already exited,
+    // whatever the pid says now, and the content test still keeps a developer's own file safe.
     fs.readdirSync(path.resolve(__dirname, "..")).forEach(function (entry) {
       var named = /^check-spelling-canary-(\d+)\.js$/.exec(entry);
       if (!named) return;
       var owner = Number(named[1]);
-      if (owner === process.pid) return;             // this run's own, handled below
-      var alive = true;
-      try { process.kill(owner, 0); } catch (e) { alive = e.code === "EPERM"; }
-      if (alive) return;
+      if (owner !== process.pid) {
+        var alive = true;
+        try { process.kill(owner, 0); } catch (e) { alive = e.code === "EPERM"; }
+        if (alive) return;
+      }
       var stale = path.resolve(__dirname, "..", entry);
       try {
         if (fs.readFileSync(stale, "utf8") !== PROBE_BODY) return;

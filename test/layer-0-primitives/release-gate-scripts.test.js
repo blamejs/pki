@@ -270,6 +270,45 @@ function run() {
   testSbomHashesVerifiedAgainstDisk();
   testSbomEmptyManifestStillEmits();
   testSsdfAttestationRequiresCommit();
+  testSpellingCanarySweepsARecycledPid();
+}
+
+// ---- spelling gate: a probe left under a pid the OS later reassigns -------------
+//
+// The gate writes a probe named for its own pid, proves the file set it reads includes an
+// untracked file, and removes it. A run killed in between leaves the probe behind, and an
+// operating system reassigns pids: a later run can draw the same number. Treating a probe bearing
+// "my" pid as this run's own then deadlocked the gate -- it refused to overwrite the file and
+// failed every invocation until somebody deleted it by hand.
+//
+// A pid cannot be predicted from outside, so the probe is planted from INSIDE the process that
+// then loads the gate: same pid by construction, which is the case the sweep has to decide.
+//
+// What is asserted is the SWEEP, never the gate's exit status. The gate exits non-zero for a
+// spelling finding, and for an environment with no `git` on PATH at all -- the container image
+// this suite also runs in is one. Asserting a clean exit would make an unrelated environmental
+// failure read as a defect in this sweep, and the sweep's own answer is whether the file survived
+// and whether the gate refused to overwrite it.
+function testSpellingCanarySweepsARecycledPid() {
+  var gate = path.join(ROOT, "scripts", "check-spelling-consistency.js").replace(/\\/g, "/");
+  var child = [
+    "var fs=require('fs');",
+    "var planted=" + JSON.stringify(ROOT.replace(/\\/g, "/")) +
+      "+'/check-spelling-canary-'+process.pid+'.js';",
+    "fs.writeFileSync(planted, 'module.exports = 1;\\n');",
+    "process.stderr.write('PLANTED '+planted+'\\n');",
+    "require(" + JSON.stringify(gate) + ");"
+  ].join("");
+  var run = cp.spawnSync(process.execPath, ["-e", child], { cwd: ROOT, encoding: "utf8" });
+  var both = String(run.stderr || "") + String(run.stdout || "");
+  var plantedPath = ((both.match(/PLANTED (.+)/) || [])[1] || "").trim();
+  var survived = plantedPath ? fs.existsSync(plantedPath) : true;
+  if (plantedPath && survived) fs.rmSync(plantedPath, { force: true });
+
+  check("the spelling gate plants and reports its probe path", plantedPath !== "");
+  check("a probe bearing a reused pid is swept rather than taken for this run's own", !survived);
+  check("and the gate never reports the file as one it will not overwrite",
+        !/already exists and does not hold/.test(both));
 }
 
 module.exports = { run: run };
