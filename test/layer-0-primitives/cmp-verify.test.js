@@ -841,6 +841,21 @@ async function run() {
   check("23aa. the setter was installed and reached while the call was pending", setterFired === true);
   check("23ab. and the unrelated anchor still leaves the signer untrusted", setterVerdict.trusted === false);
 
+  // A byte option is copied through guard.bytes.snapshot, this toolkit's door for caller bytes, so a
+  // source the door refuses stays refused. A SharedArrayBuffer-backed view is the case: another
+  // thread can rewrite it at any moment, and a bare Buffer.from would have laundered it into an
+  // ordinary Buffer that every later check accepts without the door's rules ever having run.
+  var shared = new Uint8Array(new SharedArrayBuffer(16));
+  shared.fill(7);
+  check("23ac. the fixture really is SharedArrayBuffer-backed",
+    shared.buffer instanceof SharedArrayBuffer);
+  check("23ad. a shared-memory transactionID is refused rather than copied",
+    (await codeOf(pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: shared }))) === "cmp/bad-input");
+  var sharedSecretView = new Uint8Array(new SharedArrayBuffer(8));
+  sharedSecretView.fill(1);
+  check("23ae. and so is a shared-memory sharedSecret",
+    (await codeOf(pki.cmp.verify(raceMac, { sharedSecret: sharedSecretView }))) === "cmp/bad-input");
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
