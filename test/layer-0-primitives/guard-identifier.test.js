@@ -352,6 +352,21 @@ function testKnownKeys() {
           identifier.readableNames(Object.assign(new Float16(2), { pem: true }),
                                    E, "x/bad", "o").join(",") === "pem");
   }
+  // The kinds are recognized by identity, so an object a caller builds OVER the prototype they
+  // share is theirs. Recognizing them by their parent instead let anyone mint a level that read as
+  // the language's, and a field inherited from it was passed over as structure rather than
+  // reported as the option it is.
+  var TYPED_PARENT = Object.getPrototypeOf(Uint8Array.prototype);
+  var mintedLevel = Object.create(TYPED_PARENT);
+  Object.defineProperty(mintedLevel, "BYTES_PER_ELEMENT",
+    { value: 1, writable: false, configurable: false, enumerable: false });
+  check("a level a caller minted over the shared typed-array prototype is not the language's",
+        identifier.readableNames(Object.create(mintedLevel), E, "x/bad", "o")
+          .map(String).indexOf("BYTES_PER_ELEMENT") !== -1);
+  check("while a real concrete typed array still reports none of its own structure",
+        identifier.readableNames(new Uint8Array(2), E, "x/bad", "o").length === 0 &&
+        identifier.readableNames(new Int32Array(2), E, "x/bad", "o").length === 0 &&
+        identifier.readableNames(new BigInt64Array(2), E, "x/bad", "o").length === 0);
   check("while the real members of every kind stay unreported",
         identifier.readableNames([], E, "x/bad", "o").length === 0 &&
         identifier.readableNames(new Map(), E, "x/bad", "o").length === 0 &&
