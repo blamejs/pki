@@ -75,6 +75,7 @@ jobs:
           - webauthn-mds
           - lint-certificate
           - cms-verify
+          - csr-verify
           - cms-sign
           - tsp-sign
           - x509-sign
