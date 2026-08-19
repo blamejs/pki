@@ -60,6 +60,48 @@ function run() {
   // no-label throw path (the instant assertValid default label).
   check("18. within throws with the default label on a bad instant and no label", threw(function () { guard.within(invalid, lower, upper, E, "x/bad-time"); }) === "x/bad-time");
 
+  // A value that inherits from Date.prototype and holds no instant. `instanceof Date` says yes
+  // to it, so a guard keyed on that runs `getTime()` on it and the raw TypeError that method
+  // throws escapes as itself, out of a boundary whose contract is a typed error.
+  var lookalike = Object.create(Date.prototype);
+  check("19. a Date lookalike passes instanceof, which is why that test is not the one used",
+        lookalike instanceof Date === true);
+  check("20. isDate reads the slot, so it says no to one", guard.isDate(lookalike) === false);
+  check("21. and yes to a real Date, valid or invalid",
+        guard.isDate(valid) === true && guard.isDate(invalid) === true);
+  check("22. assertValid refuses a lookalike with the caller's code, not a raw TypeError",
+        threw(function () { guard.assertValid(lookalike, E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("23. within refuses one as an instant", threw(function () { guard.within(lookalike, lower, upper, E, "x/bad-time", "t"); }) === "x/bad-time");
+  check("24. and as either bound",
+        threw(function () { guard.within(mid, lookalike, upper, E, "x/bad-time", "t"); }) === "x/bad-time" &&
+        threw(function () { guard.within(mid, lower, lookalike, E, "x/bad-time", "t"); }) === "x/bad-time");
+  // A Date built in another realm has that realm's prototype, so the same identity-shaped test
+  // misses it in the other direction and calls a real instant no Date at all.
+  var foreignDate = require("vm").runInNewContext("new Date(0)");
+  check("25. a Date from another realm fails instanceof", foreignDate instanceof Date === false);
+  check("26. isDate accepts it, because the slot is what holds the instant",
+        guard.isDate(foreignDate) === true && guard.assertValid(foreignDate, E, "x/bad", "t") === foreignDate);
+
+  // The instant is read from the slot, never through the value's `getTime`. That is an ordinary
+  // method on Date.prototype, so a subclass or an own property answers it: one that threw left
+  // this guard through the caller's own exception, and one that answered differently on each call
+  // made the instant validated and the instant compared two different reads of one argument.
+  var Throwing = class extends Date { getTime() { throw new RangeError("planted"); } };
+  check("27. assertValid accepts a Date whose getTime override throws",
+        guard.assertValid(new Throwing(1000), E, "x/bad", "t") instanceof Throwing);
+  check("28. and refuses one holding no instant however its override answers",
+        threw(function () {
+          var Lying = class extends Date { getTime() { return 1000; } };
+          guard.assertValid(new Lying("not-a-date"), E, "x/bad-time", "t");
+        }) === "x/bad-time");
+  var reads = 0;
+  var Drifting = class extends Date { getTime() { reads++; return reads === 1 ? 1000 : 9e15; } };
+  check("29. within compares the instant the value holds, not the one its override reports",
+        guard.within(new Drifting(1000), new Date(0), new Date(2000), E, "x/bad", "t") === true);
+  check("30. and the override was never called", reads === 0);
+  check("31. instantOf reads the slot through the intrinsic",
+        guard.instantOf(new Drifting(1234)) === 1234);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

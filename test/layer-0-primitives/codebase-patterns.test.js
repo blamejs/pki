@@ -1790,6 +1790,36 @@ function testNoDuplicateCodeBlocks() {
         // the unknown-key refusal against that verb's own table. Same shape, different table.
         "lib/cms-sign.js:_sign", "lib/cms-sign.js:_countersign",
         "lib/cms-verify.js:_verify", "lib/tsp-sign.js:verify",
+        // pki.key's six verbs, pki.path's two, pki.lint.certificate and pki.ocsp.verify. Each
+        // binds its own table, error class and message. key.export names the verb that
+        // encrypts, and path.validate and path.build name each other's anchor spelling, so the
+        // wording carries the per-verb content and only the call repeats.
+        "lib/key.js:encrypt", "lib/key.js:decrypt", "lib/key.js:export_",
+        "lib/key.js:import_", "lib/key.js:generate", "lib/key.js:publicFromPrivate",
+        "lib/path-validate.js:validate", "lib/path-validate.js:build",
+        "lib/lint.js:certificate", "lib/ocsp.js:verify",
+        "lib/ocsp.js:_buildRequest", "lib/ocsp.js:_sign",
+      ],
+      mode: "family-subset",
+      reason: "assertKnownKeys call-site glue: the check lives once in guard-identifier; each site binds a different key table, error class and message, so only the call and its closure repeat.",
+    },
+    {
+      // Producing-module helper glue, surfaced rather than introduced. These seven functions do
+      // unrelated jobs: an extensions list, a POP link witness, a PEM decode, a countersignature
+      // preimage, a challengePassword attribute, a signingCertificateV2, and a critical-SAN test.
+      // They share only the builder idiom every one of them is written in: read a spec field,
+      // guard it, hand it to a b.* encoder. Nothing is extractable without inventing a helper
+      // that would take a different shape per caller.
+      //
+      // It became visible when the entry preamble in cms-sign shrank by a line, sliding the
+      // token windows in that file until a 60-token run lined up with the others. A duplicate
+      // detector reports on alignment, so an edit anywhere in a file can surface a coincidence
+      // that was always there; that is worth allowlisting rather than chasing.
+      files: [
+        "lib/attrcert-sign.js:_buildExtensions", "lib/cmc-build.js:popLinkWitnessV2",
+        "lib/cms-sign.js:_pemToDer", "lib/cms-sign.js:_targetPreimage",
+        "lib/csr-sign.js:_challengePassword", "lib/tsp-sign.js:_signingCertV2",
+        "lib/x509-sign.js:_hasCriticalSan",
       ],
       mode: "family-subset",
       reason: "assertKnownKeys call-site glue: the check lives once in guard-identifier; each site binds a different key table, error class and message, so only the call and its closure repeat.",

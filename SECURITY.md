@@ -161,6 +161,21 @@ security-only patches after the next major releases.
   typed instead of aliasing a second spelling of the same value past a verifier.
   JSON parsing is bounded in size and nesting and assigns `__proto__` as an own
   property, never a prototype mutation.
+- **A value that answers differently on the second read.** Where a verb takes an
+  object, the toolkit reads its state through the language rather than through
+  the object: a `Date` gives up its instant through the intrinsic `getTime` and
+  is compared as a number, so neither an overriding subclass nor a
+  `Symbol.toPrimitive` decides the moment a certificate is checked at; a byte
+  view's contents are read through the intrinsic accessors that reach its buffer,
+  so a lying `byteLength` cannot shorten what gets hashed; and the kind of a
+  value is settled from its internal slot, which admits an equivalent built from
+  another realm and refuses a lookalike carrying only the prototype. Arguments
+  that outlive a promise turn are deep-copied at entry, and a field supplied
+  through an accessor is refused there rather than read once and stored, since a
+  value that can differ between the check and the use is not one the check
+  covered. The boundary is the process: code that loads before this package can
+  replace the built-ins it captures, and nothing inside a library can defend
+  against that.
 - **One signature covering several encodings.** A type-3 C509 certificate is a
   re-encoding of an X.509 certificate, and the X.509 signature covers the bytes
   it rebuilds rather than the C509 bytes themselves. Where the specification

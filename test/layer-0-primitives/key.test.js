@@ -394,6 +394,192 @@ async function testSecondEngineCopy() {
   })());
 }
 
+// An option this module does not read is refused, not ignored. The case that matters most is
+// `pki.key.export(privateKey, { password })`: export does not encrypt, so ignoring it wrote the
+// private key in the clear from a call site that reads as though it were protected.
+async function testUnknownOptionsRefused() {
+  var pair = await pki.key.generate("Ed25519");
+  var pkcs8 = await pki.key.export(pair.privateKey);
+  var spki = await pki.key.export(pair.publicKey);
+  var epki = await pki.key.encrypt(pair.privateKey, "pw");
+
+  check("export refuses opts.password rather than writing a plaintext key",
+        await codeOf(pki.key.export(pair.privateKey, { password: "pw" })) === "key/bad-input");
+  check("export's refusal names the verb that does encrypt", await (async function () {
+    try { await pki.key.export(pair.privateKey, { password: "pw" }); return false; }
+    catch (e) { return /pki\.key\.encrypt/.test(e.message); }
+  })());
+  check("export still accepts the options it reads",
+        typeof (await pki.key.export(pair.publicKey, { format: "pem", label: "PUBLIC KEY" })) === "string");
+
+  // The two PBKDF2 knobs are named per direction; each verb refuses the other's spelling.
+  check("encrypt refuses the decrypt-side maxIterations",
+        await codeOf(pki.key.encrypt(pair.privateKey, "pw", { maxIterations: 1000 })) === "key/bad-input");
+  check("decrypt refuses the encrypt-side iterations",
+        await codeOf(pki.key.decrypt(epki, "pw", { iterations: 1000 })) === "key/bad-input");
+  check("encrypt still accepts its own iterations",
+        Buffer.isBuffer(await pki.key.encrypt(pair.privateKey, "pw", { iterations: 2048 })));
+  check("decrypt still accepts its own maxIterations",
+        Buffer.isBuffer(await pki.key.decrypt(epki, "pw", { maxIterations: 1000000 })));
+
+  check("generate refuses a misspelled extractable",
+        await codeOf(pki.key.generate("Ed25519", { extractible: false })) === "key/bad-input");
+  check("import refuses a misspelled option",
+        await codeOf(pki.key.import(spki, { typ: "spki" })) === "key/bad-input");
+  check("import still accepts the options it reads",
+        (await pki.key.import(pkcs8, { extractable: true })).extractable === true);
+  check("publicFromPrivate refuses a misspelled option",
+        await codeOf(pki.key.publicFromPrivate(pair.privateKey, { pemm: true })) === "key/bad-input");
+  check("publicFromPrivate still accepts pem",
+        typeof (await pki.key.publicFromPrivate(pair.privateKey, { pem: true })) === "string");
+
+  // `opts = opts || {}` treated false / 0 / "" / NaN as "no options given" and rewrote them to
+  // {} BEFORE the shape check could see them, so four non-objects were accepted as valid. Only
+  // null and undefined mean absent; everything else non-object is a caller error.
+  var falsy = [false, 0, "", NaN];
+  for (var i = 0; i < falsy.length; i++) {
+    check("export refuses the falsy non-object " + String(falsy[i]) + " rather than defaulting it",
+          await codeOf(pki.key.export(pair.publicKey, falsy[i])) === "key/bad-input");
+  }
+  check("export still treats null as no options", Buffer.isBuffer(await pki.key.export(pair.publicKey, null)));
+  check("export still treats undefined as no options", Buffer.isBuffer(await pki.key.export(pair.publicKey, undefined)));
+  check("export refuses a Buffer handed in the options position",
+        await codeOf(pki.key.export(pair.publicKey, Buffer.alloc(4))) === "key/bad-input");
+
+  // `Object.keys` reports own ENUMERABLE names only, so two ordinary JavaScript objects answered
+  // `opts.password` while showing the check nothing: one carries it on a prototype, the other
+  // hides it behind enumerable:false. On either one export accepts the bag and returns the
+  // private key in the clear, which is the refusal reached by a different object shape.
+  var inherited = Object.create({ password: "pw" });
+  check("export refuses a password carried on the prototype",
+        await codeOf(pki.key.export(pair.privateKey, inherited)) === "key/bad-input");
+  var hidden = {};
+  Object.defineProperty(hidden, "password", { value: "pw", enumerable: false });
+  check("export refuses a non-enumerable password",
+        await codeOf(pki.key.export(pair.privateKey, hidden)) === "key/bad-input");
+  // ...and the widened check must not start refusing bags that were always valid.
+  check("a null-prototype options bag is still accepted",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, Object.create(null))));
+  check("an inherited KNOWN option is still accepted",
+        typeof (await pki.key.export(pair.publicKey, Object.create({ format: "pem" }))) === "string");
+
+  // Class syntax defines a getter NON-enumerable on the prototype, so a rule keyed on
+  // enumerability missed it while `opts.password` still answered. A getter exists to return a
+  // value, which is what an option is, so it is checked; a method is behavior and is not.
+  function ExportOptions() {}
+  Object.defineProperty(ExportOptions.prototype, "password", {
+    get: function () { return "pw"; }, enumerable: false, configurable: true
+  });
+  ExportOptions.prototype.describe = function () { return "opts"; };
+  check("export refuses a password exposed by a prototype getter",
+        await codeOf(pki.key.export(pair.privateKey, new ExportOptions())) === "key/bad-input");
+  var hiddenBase = {};
+  Object.defineProperty(hiddenBase, "password", { value: "pw", enumerable: false });
+  check("export refuses a password inherited AND non-enumerable",
+        await codeOf(pki.key.export(pair.privateKey, Object.create(hiddenBase))) === "key/bad-input");
+  // An instance whose class defines only methods is still a usable bag: those are behavior,
+  // and this toolkit already treats a caller's own class as a valid options object.
+  function PlainBag() { this.format = "pem"; }
+  PlainBag.prototype.describe = function () { return "bag"; };
+  check("an instance whose prototype carries only methods is still accepted",
+        typeof (await pki.key.export(pair.publicKey, new PlainBag())) === "string");
+  // A polluted Object.prototype reaches an empty bag. `{}.password` answers "pw" while the
+  // object itself holds nothing. Stopping the walk at Object.prototype excludes the whole
+  // object and lets this through, so the built-ins are skipped by identity against a snapshot
+  // taken at load and a name added afterwards is still reported.
+  Object.defineProperty(Object.prototype, "password", {
+    value: "pw", writable: true, configurable: true, enumerable: false
+  });
+  var pollutedCode, pollutedThrew;
+  try {
+    pollutedCode = await codeOf(pki.key.export(pair.privateKey, {}));
+  } finally {
+    pollutedThrew = delete Object.prototype.password;
+  }
+  check("export refuses an option reachable only through a polluted Object.prototype",
+        pollutedCode === "key/bad-input");
+  check("the pollution vector restores Object.prototype", pollutedThrew === true &&
+        !("password" in Object.prototype));
+  check("a clean empty bag is still accepted once the pollution is gone",
+        (await pki.key.export(pair.publicKey, {})).equals(await pki.key.export(pair.publicKey)));
+  // The same reach through a COLLECTION's prototype. `[]` is an options bag as far as
+  // `opts.password` is concerned, and passing that whole level over as "the kind's own" hid a
+  // name planted there: export took the bag, read nothing, and returned the private key in the
+  // clear. Only the member names a kind defines are passed over, so the level itself is read.
+  Object.defineProperty(Array.prototype, "password", {
+    value: "pw", writable: true, configurable: true, enumerable: false
+  });
+  var arrayPollutedCode, arrayPollutedGone;
+  try {
+    arrayPollutedCode = await codeOf(pki.key.export(pair.privateKey, []));
+  } finally {
+    arrayPollutedGone = delete Array.prototype.password;
+  }
+  check("export refuses an option reachable only through a polluted Array.prototype",
+        arrayPollutedCode === "key/bad-input");
+  check("the array pollution vector restores Array.prototype", arrayPollutedGone === true &&
+        !("password" in Array.prototype));
+  check("and an array bag is accepted again once the pollution is gone",
+        (await pki.key.export(pair.publicKey, [])).equals(await pki.key.export(pair.publicKey)));
+  // An option supplied through an accessor is refused, whatever the accessor does. A getter is
+  // asked again every time it is read, so the value the check saw says nothing about the one the
+  // verb goes on to use, and a name checked once can be joined by another on a later read. Each
+  // of these reached export and returned the private key in the clear.
+  check("export refuses a bag whose getter adds an option while it is being read",
+        (await codeOf(pki.key.export(pair.privateKey,
+          { get format() { this.password = "pw"; return "der"; } }))) === "key/bad-input");
+  var deferredReads = 0;
+  var deferred = {
+    get format() { deferredReads++; if (deferredReads > 1) { this.password = "pw"; } return "der"; },
+  };
+  check("and one whose getter defers that to a later read",
+        (await codeOf(pki.key.export(pair.privateKey, deferred))) === "key/bad-input");
+  check("with the option never landing on it", !("password" in deferred));
+  function GetterBag() {}
+  Object.defineProperty(GetterBag.prototype, "format", { get: function () { return "der"; } });
+  check("and one whose class supplies an option through a getter",
+        (await codeOf(pki.key.export(pair.publicKey, new GetterBag()))) === "key/bad-input");
+  check("and a plain getter that does nothing surprising at all",
+        (await codeOf(pki.key.export(pair.publicKey,
+          { get format() { return "der"; } }))) === "key/bad-input");
+  // What stays accepted is an object whose options are values, including one whose class carries
+  // methods: a method is machinery, not an option, and nothing about it is re-read.
+  check("while a bag of plain values is accepted",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, { format: "der" })));
+  function MethodBag() { this.format = "der"; }
+  MethodBag.prototype.describe = function () { return "bag"; };
+  check("as is one whose class defines methods",
+        Buffer.isBuffer(await pki.key.export(pair.publicKey, new MethodBag())));
+  // An array is an options bag as far as `opts.format` is concerned, and its elements are its
+  // structure. Settling the bag puts an object over it, and reading the kind off that object
+  // alone turns the inherited elements into names its caller chose, so a bag holding one came
+  // back refused for the field "0".
+  check("an indexed bag holding elements carries no option to refuse",
+        typeof (await pki.key.generate("Ed25519", [1, 2])).privateKey === "object");
+  check("while a real option added to one is still refused",
+        (await codeOf(pki.key.generate("Ed25519", Object.assign([1], { nope: true })))) === "key/bad-input");
+  // A Proxy reports its keys from one trap and answers reads from another, so an options bag
+  // that enumerates as empty can still answer `password`. Export would then serialize the key
+  // in the clear on a call that named a password, which is the case the refusal exists for.
+  var opaque = new Proxy({}, {
+    ownKeys: function () { return []; },
+    get: function (_, k) { return k === "password" ? "pw" : undefined; },
+  });
+  check("the fixture enumerates as empty while answering password",
+        Object.getOwnPropertyNames(opaque).length === 0 && opaque.password === "pw");
+  check("export refuses an options bag whose reported keys need not be what it answers",
+        await codeOf(pki.key.export(pair.privateKey, opaque)) === "key/bad-input");
+  // An array whose prototype has been replaced by an ordinary object. `Array.isArray` still says
+  // yes, so a rule that stops reading the chain for that kind stops here; but there is no
+  // `Array.prototype` above it and nothing structural to protect, and `opts.password` resolves.
+  var replacedProto = [];
+  Object.setPrototypeOf(replacedProto, { password: "pw" });
+  check("the fixture is an array with no kind prototype above it",
+        Array.isArray(replacedProto) && replacedProto.password === "pw");
+  check("export refuses an option on a replaced array prototype rather than writing a plain key",
+        await codeOf(pki.key.export(pair.privateKey, replacedProto)) === "key/bad-input");
+}
+
 async function main() {
   await testExportRoundTrip();
   await testPbes2RoundTrip();
@@ -406,6 +592,7 @@ async function main() {
   await testEncryptCorners();
   await testForeignCryptoKeys();
   await testSecondEngineCopy();
+  await testUnknownOptionsRefused();
   console.log("CHECKS " + helpers.getChecks());
 }
 

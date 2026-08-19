@@ -7,6 +7,7 @@
 // pinned here is what the guard itself promises, so a change to the shape rules
 // fails against the rule rather than only against whichever consumer noticed.
 var guard = require("../../lib/guard-parsed");
+var vm = require("vm");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
 var signing = require("../helpers/signing");
@@ -215,12 +216,23 @@ async function run() {
   // "your certificate was rebuilt" about bytes they never touched.
   var derBytes = pki.schema.x509.pemDecode(vectors.CERT_EC_PEM);
   var derAb = derBytes.buffer.slice(derBytes.byteOffset, derBytes.byteOffset + derBytes.length);
+  // A realm is one of the ways a container varies, so the class the door claims to accept has to
+  // be tested across it. A buffer built in a `vm` context holds bytes and inherits from that
+  // context, so a test keyed on this realm's prototypes calls it no byte container at all and
+  // sends it down the rebuilt-object branch, while the module that finally reads the bytes takes
+  // it. The two doors then answer differently about one argument.
+  var foreignAb = vm.runInNewContext("new ArrayBuffer(" + derBytes.length + ")");
+  new Uint8Array(foreignAb).set(derBytes);
+  var foreignU8 = vm.runInNewContext("new Uint8Array(" + derBytes.length + ")");
+  foreignU8.set(derBytes);
   var containers = {
     Buffer: derBytes,
     Uint8Array: new Uint8Array(derAb),
     "a non-Uint8Array view": new Int8Array(derAb),
     DataView: new DataView(derAb),
     ArrayBuffer: derAb,
+    "an ArrayBuffer from another realm": foreignAb,
+    "a Uint8Array from another realm": foreignU8,
     "a PEM string": vectors.CERT_EC_PEM,
   };
   Object.keys(containers).forEach(function (name) {

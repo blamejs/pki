@@ -26,10 +26,46 @@ async function testRandom() {
   check("getRandomValues rejects >64KiB", (await code(async function () { pki.webcrypto.getRandomValues(new Uint8Array(65537)); })) === "webcrypto/data");
   check("getRandomValues rejects Float64Array", (await code(async function () { pki.webcrypto.getRandomValues(new Float64Array(4)); })) === "webcrypto/data");
   // A detached-backed view must fail closed as a typed error, not a raw TypeError.
+  //
+  // This is a deliberate divergence from the platform, recorded here so it is not "fixed" toward
+  // it later. A detached store measures zero bytes, so `node:crypto`'s getRandomValues treats the
+  // call as a no-op and hands the array back: the caller asked for randomness, received none, and
+  // is told nothing. Refusing says which argument was unusable. Handing back an unfilled buffer
+  // from a randomness call is the shape a caller then uses as a key.
   check("getRandomValues rejects a detached-backed view", (await code(async function () {
     var u = new Uint8Array(8); structuredClone(u.buffer, { transfer: [u.buffer] });
     pki.webcrypto.getRandomValues(u);
   })) === "webcrypto/data");
+  // ...and a genuinely empty array is not that case: it holds a live store, asks for no bytes, and
+  // comes back as itself, which is what the platform does too.
+  var empty = new Uint8Array(0);
+  check("while a zero-length view is returned unchanged",
+        pki.webcrypto.getRandomValues(empty) === empty);
+  // The ceiling is measured on the array's own bytes. `byteLength` is an accessor on the shared
+  // typed-array prototype, so a caller's subclass answers it: one reporting 0 passed the ceiling
+  // while the fill wrote the array's real length, which bypasses the bound rather than meeting it.
+  check("getRandomValues measures the ceiling past a lying byteLength", (await code(async function () {
+    var Lying = class extends Uint8Array { get byteLength() { return 0; } };
+    pki.webcrypto.getRandomValues(new Lying(65537));
+  })) === "webcrypto/data");
+  // ...and a subclass within the ceiling is still filled, so the fix refuses no legitimate array.
+  var Sub = class extends Uint8Array { get byteLength() { return 0; } };
+  var subject = new Sub(16);
+  pki.webcrypto.getRandomValues(subject);
+  check("while a subclass within the ceiling is still filled",
+        Array.prototype.some.call(subject, function (x) { return x !== 0; }));
+  // A view over shared memory is a write TARGET here, and the caller chose that memory. The
+  // input-side refusal answers a different question -- bytes another thread can rewrite after they
+  // have been checked cannot be checked -- and applying it here made a supported W3C call an error
+  // for worker and shared-memory callers, where the platform fills the same view.
+  var sharedBytes = new Uint8Array(new SharedArrayBuffer(16));
+  pki.webcrypto.getRandomValues(sharedBytes);
+  check("getRandomValues fills a view over shared memory",
+        Array.prototype.some.call(sharedBytes, function (x) { return x !== 0; }));
+  var sharedWords = new Int32Array(new SharedArrayBuffer(16));
+  pki.webcrypto.getRandomValues(sharedWords);
+  check("...whatever integer width it is",
+        Array.prototype.some.call(sharedWords, function (x) { return x !== 0; }));
 }
 
 async function testDigest() {

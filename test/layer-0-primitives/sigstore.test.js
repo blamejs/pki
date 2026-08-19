@@ -189,6 +189,22 @@ async function run() {
   // at integratedTime but expired at a far-future "now" -> reject with an override. ---
   check("Fulcio cert rejected when checked far after the log time", (await codeOf(pki.sigstore.verifyBundle(BUNDLE, Object.assign({}, TM, { time: new Date("2030-01-01T00:00:00Z") })))).indexOf("sigstore/") === 0);
 
+  // The same far-future override, wearing a `getTime` that answers with the log time
+  // instead. `time` is accepted by its internal slot, so a subclass from any realm gets
+  // in; reading the instant back off the value asked the caller what time it was, and the
+  // ephemeral Fulcio certificate was then checked inside its ten-minute window no matter
+  // when the caller said to check it.
+  var LogTimeDate = class extends Date {
+    getTime() { return v.integratedTime * 1000; }
+  };
+  var answersItsOwnQuestion = new LogTimeDate("2030-01-01T00:00:00Z");
+  check("the fixture holds the far-future instant and reports the log time",
+    Date.prototype.getTime.call(answersItsOwnQuestion) === Date.parse("2030-01-01T00:00:00Z") &&
+    answersItsOwnQuestion.getTime() === v.integratedTime * 1000);
+  check("a caller Date cannot answer the instant the Fulcio chain is checked at",
+    (await codeOf(pki.sigstore.verifyBundle(BUNDLE,
+      Object.assign({}, TM, { time: answersItsOwnQuestion })))).indexOf("sigstore/") === 0);
+
   // --- Identity: the SAN + Fulcio issuer/source surface; a policy match accepts,
   // a mismatch rejects (the core of Sigstore identity verification). ---
   check("identity surfaces the SAN URI + OIDC issuer + source repo", v && v.identity.san.type === "uri" &&

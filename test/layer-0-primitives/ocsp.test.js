@@ -528,6 +528,51 @@ async function run() {
   check("sign without a responder key -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ certID: Buffer.alloc(4), status: "good" }] }, { cert: w.responderCertDer }); })) === "ocsp/bad-input");
   check("sign with no responses -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
 
+  // ---- an option this module does not read is refused, not ignored ----
+  // Each of the three verbs carries a nonce option, and each means something different:
+  // buildRequest SENDS one, sign ECHOES one, verify BINDS against the one that was sent. A
+  // misspelling on any of them leaves the anti-replay binding absent while the call site reads
+  // as though it were present.
+  check("buildRequest refuses a misspelled nonce",
+    await codeOfAsync(function () {
+      return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonces: true });
+    }) === "ocsp/bad-input");
+  check("buildRequest still accepts every option its @opts block documents",
+    Buffer.isBuffer(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
+      { hashAlgorithm: "sha256", nonce: true })));
+  check("sign refuses a misspelled nonce",
+    await codeOfAsync(function () {
+      return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good" }] },
+        { cert: w.issuerCertDer, key: w.issuerKey }, { noncce: Buffer.alloc(4, 1) });
+    }) === "ocsp/bad-input");
+  check("verify refuses a misspelled requestNonce",
+    await codeOfAsync(function () {
+      return pki.ocsp.verify(Buffer.alloc(2), { cert: w.targetCertDer, issuer: w.issuerCertDer, requestNonces: Buffer.alloc(4) });
+    }) === "ocsp/bad-input");
+  check("verify's refusal names the option that binds the response",
+    await (async function () {
+      try {
+        await pki.ocsp.verify(Buffer.alloc(2), { cert: w.targetCertDer, issuer: w.issuerCertDer, requestNonces: Buffer.alloc(4) });
+        return false;
+      } catch (e) { return /requestNonce/.test(e.message); }
+    })());
+
+  // buildRequest and sign take their arguments through guard.bytes.fixedCall, whose snapshot
+  // copies every readable name onto a fresh object. A method the caller's class defines therefore
+  // arrives as an own property, and the check has to hold anyway: it recognizes a method by the
+  // identical function on the chain above, which reads the same before and after the copy.
+  function RequestBag() { this.hashAlgorithm = "sha256"; }
+  RequestBag.prototype.describe = function () { return "request"; };
+  check("buildRequest accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
+      new RequestBag())));
+  function ResponseBag() { this.embedCert = true; }
+  ResponseBag.prototype.describe = function () { return "response"; };
+  check("sign accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.ocsp.sign(
+      { responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good" }] },
+      { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, new ResponseBag())));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

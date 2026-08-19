@@ -200,6 +200,69 @@ async function testBadInput() {
       signerIndex: 0, signingTime: new Date(0), certificates: true, pem: false,
       signedAttributes: true, additionalSignedAttributes: [],
     })));
+
+  // These two verbs take their arguments through guard.bytes.fixedCall, whose snapshot copies
+  // every readable name onto a fresh object. A method the caller's class defines therefore
+  // arrives as an own property, and the check has to hold anyway: it recognizes a method by the
+  // identical function on the chain above, which reads the same before and after the copy.
+  function SignBag() { this.signedAttributes = true; }
+  SignBag.prototype.describe = function () { return "signing"; };
+  check("sign accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, s, new SignBag())));
+  function CountersignBag() { this.signerIndex = 0; }
+  CountersignBag.prototype.describe = function () { return "countersigning"; };
+  check("countersign accepts an options instance whose class defines a method",
+    Buffer.isBuffer(await pki.cms.countersign(countersigned, s, new CountersignBag())));
+  // The copy chooses how to read a value by kind, and asking the prototype rather than the slot
+  // gets both directions wrong. A plain object built over `Map.prototype` answers `instanceof
+  // Map` and holds no entries, so a copy that trusted that ran `forEach` on it and the raw
+  // TypeError escaped a verb that only ever refuses in its own code. A real Map from another
+  // realm is the mirror case: it holds entries and fails `instanceof`.
+  var mapProtoSpec = Object.create(Map.prototype);
+  Object.keys(s).forEach(function (k) { mapProtoSpec[k] = s[k]; });
+  check("a signer spec built over Map.prototype signs rather than raising an untyped error",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, mapProtoSpec)));
+  var arrayProtoSpec = Object.create(Array.prototype);
+  Object.keys(s).forEach(function (k) { arrayProtoSpec[k] = s[k]; });
+  check("and one built over Array.prototype signs, with the kind's own names left out of it",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, arrayProtoSpec)));
+  var foreignSpec = require("vm").runInNewContext("({})");
+  Object.keys(s).forEach(function (k) { foreignSpec[k] = s[k]; });
+  check("a signer spec built in another realm signs",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, foreignSpec)));
+  // The copy runs before the option check, and it reads a field once and writes what came back as
+  // plain data. An accessor therefore has to be refused HERE: after the copy there is a value on
+  // the object and nothing left to say it was ever computed, so a field that answers differently
+  // the next time it is read passes as a settled one.
+  var getterSpec = Object.assign({}, s);
+  Object.defineProperty(getterSpec, "digestAlgorithm", {
+    get: function () { this.detached = true; return "sha256"; }, enumerable: true, configurable: true,
+  });
+  await rejects("a signer spec field supplied through a getter is refused",
+    function () { return pki.cms.sign(CONTENT, getterSpec); }, "cms/bad-input");
+  // A platform object nested in a spec carries accessors of its own, and a Node KeyObject holds
+  // several. Those belong to the platform, so the refusal covers the argument and not what is
+  // under it: an ordinary signer carries exactly such a key.
+  var nestedGetter = Object.assign({}, s);
+  nestedGetter.nested = {};
+  Object.defineProperty(nestedGetter.nested, "computed", {
+    get: function () { return 1; }, enumerable: true, configurable: true,
+  });
+  check("while an accessor nested inside a spec leaves it usable",
+    Buffer.isBuffer(await pki.cms.sign(CONTENT, nestedGetter)));
+  // The snapshot has to carry a Symbol key across, or the copy loses it before the check reads
+  // the copy and a supplied option goes unreported at exactly the verbs that copy first.
+  var symOpts = { signedAttributes: true };
+  symOpts[Symbol("signedAttribute")] = false;
+  await rejects("a Symbol-named unknown option survives the snapshot and is refused", function () {
+    return pki.cms.sign(CONTENT, s, symOpts);
+  }, "cms/bad-input");
+  // A `constructor` the caller wrote themselves resolves on their object, so the copy carries it.
+  // An inherited one came from a class, and the retained prototype resolves it on the copy anyway.
+  await rejects("an own constructor field survives the snapshot and is refused", function () {
+    return pki.cms.sign(CONTENT, s, { signedAttributes: true, constructor: 123 });
+  }, "cms/bad-input");
+
   await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
   // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).
@@ -211,6 +274,11 @@ async function testBadInput() {
   await rejects("signer key a bad type", function () { return pki.cms.sign(CONTENT, { cert: s.cert, key: 12345 }); }, "cms/bad-input");
   await rejects("an invalid signingTime Date", function () { return pki.cms.sign(CONTENT, s, { signingTime: new Date("not a date") }); }, "cms/bad-input");
   await rejects("a non-Date signingTime", function () { return pki.cms.sign(CONTENT, s, { signingTime: "2026-01-01" }); }, "cms/bad-input");
+  // A value that inherits from Date.prototype and holds no instant. `instanceof Date` says yes to
+  // it, so a check keyed on that lets it through and the `getTime()` that follows throws a raw
+  // TypeError from inside a verb whose every refusal is a typed one.
+  await rejects("a signingTime that inherits from Date and holds no instant",
+    function () { return pki.cms.sign(CONTENT, s, { signingTime: Object.create(Date.prototype) }); }, "cms/bad-input");
   // an unsupported signer key algorithm (X25519 is a KEM key, not a signing key).
   var x = crypto.generateKeyPairSync("x25519");
   var xSpki = x.publicKey.export({ format: "der", type: "spki" });

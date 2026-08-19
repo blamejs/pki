@@ -154,12 +154,25 @@ var SUPPRESS_RE = /spelling-ok:\s*([A-Za-z]+)\s*--\s*(\S.*?)\s*$/;
 // and review on every future change to the gate.
 var NUL = String.fromCharCode(0);
 
+// Every file this gate should read, which is the ones git tracks and the ones it does not yet.
+//
+// `git ls-files` alone answers for the committed tree, and a file written in this working session
+// is not in it. So a brand-new file is invisible to the gate locally, is committed, and is read
+// for the first time by CI, where the finding costs a whole run instead of a second. That is how
+// a British spelling in a new test helper reached CI on a tree whose gates were green.
+// `--others --exclude-standard` adds what is untracked and not ignored, which is the same set
+// that is about to be committed, so the local run sees what CI will see.
 function trackedFiles() {
-  var out = cp.execFileSync("git", ["ls-files"], {
-    encoding: "utf8", maxBuffer: 64 * 1024 * 1024
-  });
-  return out.split("\n").filter(function (f) {
-    return f && !isDataPath(f) && f !== SELF;
+  function ls(args) {
+    return cp.execFileSync("git", ["ls-files"].concat(args), {
+      encoding: "utf8", maxBuffer: 64 * 1024 * 1024
+    }).split("\n");
+  }
+  var seen = Object.create(null);
+  return ls([]).concat(ls(["--others", "--exclude-standard"])).filter(function (f) {
+    if (!f || isDataPath(f) || f === SELF || seen[f]) return false;
+    seen[f] = 1;
+    return true;
   });
 }
 
@@ -291,6 +304,108 @@ function canary() {
     if (mixed.length !== 1 || mixed[0].found !== "behaviour") {
       throw new Error("canary: the opt-out must excuse its word only, got " +
                       mixed.map(function (f) { return f.found; }).join(","));
+    }
+    // The file list itself, which decides what any of the above ever runs on. A file written in
+    // this working session is not in `git ls-files`, so a gate built on that alone reads the
+    // committed tree and reports a clean one while the thing about to be committed carries the
+    // defect. It is then read for the first time by CI, where the finding costs a whole run.
+    // What is asserted is the SET: the untracked file is in it and a gitignored one is not.
+    // At the repository root, because `git ls-files` reports paths relative to it and the
+    // assertion below compares against exactly that name.
+    //
+    // The name carries this process's pid, and the file is written only after checking that
+    // nothing is there. A fixed name would collide with whatever a developer happens to have at
+    // that path, and clearing it first to be tidy would delete their file: a gate may not destroy
+    // something it did not create in order to test itself. Nothing is removed here that this run
+    // did not write.
+    //
+    // Its content is inert on purpose. Debris from a run that dies partway is then just an empty
+    // module: still reported as untracked, still linted, but carrying no planted misspelling to
+    // fail the next run with.
+    // No leading dot: this repository ignores dotfiles by default, and `--exclude-standard`
+    // would then leave the probe out of the very list under test, which passes for the wrong
+    // reason rather than failing.
+    var PROBE_BODY = "module.exports = 1;\n";
+    var probeName = "check-spelling-canary-" + process.pid + ".js";
+    var untracked = path.resolve(__dirname, "..", probeName);
+    var probeLeft = null;
+    // A probe left behind by a run that was killed before its cleanup. Its own removal is
+    // insisted on below, so the only way one survives is a process that never reached that point,
+    // and the next `git add -A` then commits it: three have reached a branch that way, and one
+    // returns as a gate failure the day a run draws that pid again.
+    //
+    // Removed only where all three hold: the name has the shape this gate writes, the content is
+    // exactly what it writes, and the process whose pid the name carries is gone. The name shape
+    // is reserved for this gate, so a file matching it is its debris and no one else's; that is a
+    // claim on the name space, and not a proof of authorship, which nothing readable off a file
+    // could give. The content test is what keeps a developer who parks something at such a path
+    // from losing it. The third condition keeps two gates running at once in one checkout from
+    // deleting each other's live probe, which turns the other run's own listing assertion into a
+    // failure.
+    //
+    // `process.kill(pid, 0)` signals nothing and reports whether the pid resolves. A pid that has
+    // been recycled onto an unrelated process reads as alive, and the file is then left where it
+    // is: erring toward keeping a file is the safe direction for a sweep.
+    //
+    // A probe carrying THIS pid is the one case the liveness test cannot decide, and skipping it
+    // deadlocked the gate: an operating system reassigns a pid, so a run killed before its cleanup
+    // could be followed by one drawing the same number. The old file then read as "this run's own,
+    // handled below", the existence check refused to overwrite it, and every run failed until
+    // somebody deleted it by hand. This sweep runs BEFORE the probe is written, so at this moment
+    // this run has no probe: a file bearing its pid was left by a process that has already exited,
+    // whatever the pid says now, and the content test still keeps a developer's own file safe.
+    fs.readdirSync(path.resolve(__dirname, "..")).forEach(function (entry) {
+      var named = /^check-spelling-canary-(\d+)\.js$/.exec(entry);
+      if (!named) return;
+      var owner = Number(named[1]);
+      if (owner !== process.pid) {
+        var alive = true;
+        try { process.kill(owner, 0); } catch (e) { alive = e.code === "EPERM"; }
+        if (alive) return;
+      }
+      var stale = path.resolve(__dirname, "..", entry);
+      try {
+        if (fs.readFileSync(stale, "utf8") !== PROBE_BODY) return;
+        fs.rmSync(stale, { force: true });
+      } catch (_e) { /* unreadable or already gone: left for the check below to report */ }
+    });
+    if (fs.existsSync(untracked)) {
+      throw new Error("canary: " + probeName + " already exists and does not hold what this gate " +
+                      "writes, so it will not be overwritten; remove it and run again");
+    }
+    try {
+      fs.writeFileSync(untracked, PROBE_BODY);
+      var listed = trackedFiles();
+      if (listed.indexOf(probeName) === -1) {
+        throw new Error("canary: an untracked file must be in the set this gate reads, or a new " +
+                        "file is only ever read by CI");
+      }
+      if (listed.some(function (f) { return f.indexOf(".test-output/") === 0; })) {
+        throw new Error("canary: a gitignored path must stay out of the set");
+      }
+    } finally {
+      // Removal is retried over a wall-clock budget, and a failure that outlasts it is recorded for
+      // the throw below. A single attempt whose failure is swallowed leaves the probe in the tree
+      // while the gate reports success, and the next `git add -A` commits it. A sync-and-scan
+      // client or an indexer can hold a lock on a file this new, and such a lock is measured in
+      // tens of milliseconds, so the retries have to be spread over time to outlast one. A bare
+      // count spins through every attempt inside a microsecond and lands in the same instant the
+      // first one did.
+      //
+      // Recorded rather than thrown from here, because a throw inside a finally replaces whatever
+      // the block was already failing with, and the canary's own verdict is the more useful one.
+      var slot = new Int32Array(new SharedArrayBuffer(4));
+      for (var waited = 0; waited < 5000 && fs.existsSync(untracked); waited += 25) {
+        try { fs.rmSync(untracked, { force: true }); } catch (_e) { /* retried by the loop */ }
+        // A synchronous wait, because this gate is synchronous throughout and a timer would need
+        // the loop it is not running under. Waiting on a slot no one ever wakes runs the timeout.
+        if (fs.existsSync(untracked)) Atomics.wait(slot, 0, 0, 25);
+      }
+      if (fs.existsSync(untracked)) probeLeft = probeName;
+    }
+    if (probeLeft) {
+      throw new Error("canary: could not remove its own probe " + probeLeft + "; delete it " +
+                      "before committing, since a gate must leave the tree as it found it");
     }
   } finally {
     try { fs.rmSync(dir, { recursive: true, force: true }); } catch (_e) { /* scratch dir */ }
