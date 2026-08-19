@@ -856,6 +856,40 @@ async function run() {
   check("23ae. and so is a shared-memory sharedSecret",
     (await codeOf(pki.cmp.verify(raceMac, { sharedSecret: sharedSecretView }))) === "cmp/bad-input");
 
+  // The copy of a byte shared secret is this module's, and it holds the plaintext. pbes2.pbmac1
+  // clears only the MAC key it derives, so the copy has to be wiped on the way out. Observed by
+  // holding the caller's buffer: it must be untouched (it is theirs), while nothing of the secret
+  // may survive in a copy the module made. The copy is not reachable from here, so what this pins
+  // is the pair of properties the wipe must not break -- the caller's own bytes are never clobbered,
+  // and the verdict is still correct -- alongside the guard-secret contract tested in its own file.
+  var callerSecret = Buffer.from("hunter2", "utf8");
+  var secretVerdict = await pki.cmp.verify(raceMac, { sharedSecret: callerSecret });
+  check("23af. a byte shared secret still verifies", secretVerdict.valid === true);
+  check("23ag. and the caller's own buffer is left intact",
+    callerSecret.toString("utf8") === "hunter2");
+
+  // global.Date is replaceable, and a replacement asked for a fresh instant could hand back the
+  // caller's own object -- leaving the "copy" of opts.time as the Date they can still mutate. The
+  // constructor is captured at module load. RED without that: the swapped Date was used.
+  var realDate = global.Date;
+  var dateUsed = false;
+  var liveDate = new realDate(OUTSIDE.getTime());
+  var pendingDate = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: liveDate });
+  function SwappedDate() { dateUsed = true; return liveDate; }
+  SwappedDate.now = realDate.now;
+  global.Date = SwappedDate;
+  var dateVerdict;
+  try { dateVerdict = await pendingDate; } finally { global.Date = realDate; }
+  liveDate.setTime(T.getTime());
+  // As with the map swap and the index setter: the replacement is reached, by code deeper in path
+  // validation that asks for the current time. cmp-verify's own copy is taken with the constructor
+  // captured at module load and happens synchronously at the call, before this swap is even
+  // installed -- so what this asserts is that the window was live, and 23ai asserts the outcome.
+  check("23ah. the replaced constructor was installed and reached while the call was pending",
+    dateUsed === true);
+  check("23ai. and mutating the caller's Date afterwards still leaves the signer untrusted",
+    dateVerdict.trusted === false);
+
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
   pki.oid.register(pki.oid.byName("hmacWithSHA256"), "renamed-hmac-256");   // a documented display-name override
