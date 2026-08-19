@@ -6,7 +6,7 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.5.16 — 2026-08-19
 
-`pki.cmp.verify` reads every option at the call, so a caller that reuses its options object while verification runs cannot change the verdict that call returns.
+`pki.cmp.verify` reads every option at the call, and every guard takes what it needs from the runtime when it loads, so code a caller runs afterwards cannot change what a verification decides.
 
 ### Fixed
 
