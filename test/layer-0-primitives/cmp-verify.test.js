@@ -886,6 +886,32 @@ async function run() {
   check("23y2. overwriting an echo buffer mid-call cannot change the match, with the slot test replaced",
     swappedBytesResult === true);
 
+  // The index scan asks the same array question a second time, deeper in. A replacement answering
+  // `false` there made the scan report no indices, so the accessor refusal had nothing to refuse
+  // and an accessor under index 0 was reached by the copy loop -- the caller's own Error escaping
+  // a boundary whose contract is a typed refusal, with the getter free to rewrite globals before
+  // anything it returned was snapshotted.
+  var realIsArray2 = Array.isArray;
+  var getterRan = false;
+  var accessorAnchors = [];
+  Object.defineProperty(accessorAnchors, "0", {
+    get: function () { getterRan = true; throw new Error("raw error from the caller's getter"); },
+    enumerable: true, configurable: true,
+  });
+  Object.defineProperty(accessorAnchors, "length", { value: 1, writable: true, configurable: false });
+  var accessorOutcome;
+  try {
+    Array.isArray = function () { return false; };
+    accessorOutcome = await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: accessorAnchors, time: T })
+      .then(function () { return "resolved"; },
+        function (e) { return e.code ? "typed " + e.code : "raw " + e.message; });
+  } finally {
+    Array.isArray = realIsArray2;
+  }
+  check("23y3. an accessor-backed anchor is refused typed, with the array test replaced",
+    accessorOutcome === "typed cmp/bad-input");
+  check("23y4. and the accessor was never invoked", getterRan === false);
+
   // Array.prototype.map is a replaceable global, and the anchor list becomes path-builder input
   // AFTER verification suspends. A caller who swaps it during that window must not end up trusted.
   //
