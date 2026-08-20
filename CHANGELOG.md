@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.18 — 2026-08-20
+
+Every producing verb refuses an authoring field it does not read, so a misspelling is a refusal at the call instead of a signed artifact that quietly omits what was asked for.
+
+### Changed
+
+- The TSA argument of `pki.tsp.sign` accepts fields beyond the certificate and key it reads. It is a credential bag rather than a field spec: a signer object from a key store carries handles alongside the certificate and key, and refusing those would reject a legitimate call rather than catch a mistake. The imprint and the options, which a caller writes out by hand, are where the check applies.
+
+### Fixed
+
+- `pki.x509.sign` refuses an unrecognised field on the certificate spec, the issuer and the options. `extension` in place of `extensions` signed a certificate carrying NONE of them: a caller asking for `basicConstraints: { cA: true }` and `keyUsage` got neither, and nothing in the returned certificate said so. An `issuer` nested inside the spec is refused by name as well -- the issuer is the second argument, and nesting it produced a self-signed certificate with no error, which reads as a broken signer rather than a mis-shaped call.
+- `pki.crl.sign` refuses an unrecognised field on the CRL spec, the issuer and the options. The revoked list is `revoked`; the parser reports the same list as `revokedCertificates`, so a caller round-tripping a parsed CRL back into signing reached for that name and got a correctly signed, structurally valid CRL asserting that nothing is revoked. The refusal names the field the producer reads.
+- `pki.pkcs12.build` refuses an unrecognised field on the store spec and the options, and no longer accepts an option belonging to `open` or `verifyMac`. A store that silently omits a certificate or a key looks well formed and opens cleanly; the omission surfaces wherever it is later imported.
+- `pki.cms.encrypt` and `pki.cms.authenticate` each refuse an unrecognised option, against separate tables. The two verbs have different option sets, so a single shared table would have accepted either verb's keys and defeated the check.
+- `pki.tsp.sign` refuses an unrecognised field on the message imprint and the options. A one-letter slip -- `odering` for `ordering` -- emitted a token with the ordering flag unset, which is a claim about the timestamp the caller believed they had made.
+
 ## v0.5.17 — 2026-08-20
 
 A failed integrity check destroys the plaintext it recovered, AuthEnvelopedData validates the attributes it is asked to authenticate, and every refusal names the rule it is actually applying.

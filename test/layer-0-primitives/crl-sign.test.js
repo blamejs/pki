@@ -32,6 +32,45 @@ function issuerOf(s, name) { return { name: name || "Test CRL Issuer", publicKey
 function crlExt(c, name) { return c.crlExtensions.filter(function (x) { return x.oid === byName(name); })[0]; }
 function entryExt(entry, name) { return entry.crlEntryExtensions.filter(function (x) { return x.oid === byName(name); })[0]; }
 
+// ---- unknown keys on each caller-owned argument -----------------------------
+// A CRL is an assertion about what is revoked, so a dropped key here is uniquely dangerous: the
+// worst case is a correctly signed, structurally valid CRL that says NOTHING is revoked. That is
+// what `revoked` misspelled as `revokedCertificates` produced -- and `revokedCertificates` is not
+// an arbitrary typo, it is the name the PARSER uses for the same list, so a caller round-tripping a
+// parsed CRL back into sign reaches for it first.
+async function testUnknownArgumentKeys() {
+  var s = makeSigner("ec-p256");
+  var entry = { serialNumber: 0x1234n, revocationDate: RD };
+
+  async function attempt(spec, issuer, opts) {
+    var out = null, err = null;
+    try { out = await pki.crl.sign(spec, issuer || issuerOf(s), opts); } catch (e) { err = e; }
+    return { code: err && err.code, msg: (err && err.message) || "", out: out };
+  }
+
+  var parserName = await attempt({ thisUpdate: TU, nextUpdate: NU, revokedCertificates: [entry] });
+  check("spec.revokedCertificates (the parser's name for `revoked`) -> crl/bad-input", parserName.code === "crl/bad-input");
+  check("...and NO CRL is emitted", parserName.out === null);
+  check("...and the message points at the field the producer reads", /revoked/.test(parserName.msg));
+
+  var invented = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry], nextUpdateTime: NU });
+  check("an invented spec key -> crl/bad-input", invented.code === "crl/bad-input" && invented.out === null);
+
+  var badIssuer = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] },
+    { key: s.key, name: "Test CRL Issuer", publicKey: s.spki, certificate: s.cert });
+  check("an unknown issuer key -> crl/bad-input", badIssuer.code === "crl/bad-input" && badIssuer.out === null);
+
+  var badOpts = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, null, { digestAlgorithms: "sha256" });
+  check("an unknown option -> crl/bad-input", badOpts.code === "crl/bad-input" && badOpts.out === null);
+
+  // Every key the producer actually reads still round-trips, so the table admits the real surface.
+  var full = await pki.crl.sign({
+    issuer: "Test CRL Issuer", thisUpdate: TU, nextUpdate: NU, crlNumber: 7n,
+    revoked: [entry], extensions: { authorityKeyIdentifier: true },
+  }, issuerOf(s));
+  check("every documented spec key is still accepted", pki.schema.crl.parse(full).revokedCertificates.length === 1);
+}
+
 // ---- round-trip + field decoding -------------------------------------------
 
 async function testRoundTrip() {
@@ -904,6 +943,7 @@ async function main() {
   await testPreEncodedExtProfile();
   await testPemAndIsRevoked();
   await testFailClosed();
+  await testUnknownArgumentKeys();
   console.log("CHECKS " + helpers.getChecks());
 }
 

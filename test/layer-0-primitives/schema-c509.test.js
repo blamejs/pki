@@ -1721,7 +1721,7 @@ async function run() {
       subject: [{ commonName: ARMS[ai2][0] }], subjectPublicKey: armSpki, serialNumber: Buffer.from([1]),
       notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
       extensions: { keyUsage: ["digitalSignature"] },
-    }, { key: armKp.privateKey, issuer: { name: "CN=I", publicKey: armSpki } });
+    }, { key: armKp.privateKey, name: "CN=I", publicKey: armSpki });
     var armC509 = pki.schema.c509.encode(armDer);
     check("373." + ai2 + " " + ARMS[ai2][2] + " -- the encoder's spelling is the one the decoder requires",
       pki.cbor.decode(armC509).children[6].majorType === ARMS[ai2][1] &&
@@ -1737,7 +1737,7 @@ async function run() {
     subject: [{ commonName: "Self" }], subjectPublicKey: armSpki, serialNumber: Buffer.from([1]),
     notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"),
     extensions: { keyUsage: ["digitalSignature"] },
-  }, { key: armKp.privateKey, issuer: { name: [{ commonName: "Self" }], publicKey: armSpki } });
+  }, { key: armKp.privateKey, name: [{ commonName: "Self" }], publicKey: armSpki });
   var ssC509 = pki.schema.c509.encode(ssDer);
   var ssFields = pki.cbor.decode(ssC509).children;
   check("374. a self-signed certificate encodes its issuer as the CBOR simple value null",

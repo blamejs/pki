@@ -115,6 +115,28 @@ async function testNoMac() {
   check("#12 verifyMac on a MAC-less store throws (never a falsy verdict)", (await boolOf(pki.pkcs12.verifyMac(p12, "1234"))) === "THREW:pkcs12/bad-input");
 }
 
+// ---- unknown keys on the spec and the options -------------------------------
+// A store that silently omits the certificate or the key a caller asked for looks well formed and
+// opens cleanly; the omission surfaces wherever it is later imported. `certificates` is the shape
+// that caused it -- a plausible plural for the shorthand form's `cert`.
+async function testUnknownBuildKeys() {
+  var s = signer();
+  var spec = { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] };
+
+  check("an unknown spec field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: spec.safeContents, certificates: [s.cert] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("an unknown build option -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", nonsenseOption: 1 }))) === "pkcs12/bad-input");
+  // verifyMac and open have disjoint option sets; build must not admit theirs.
+  check("an option belonging to pkcs12.open -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", signerCerts: [s.cert] }))) === "pkcs12/bad-input");
+  // The shorthand form and every real build option still work.
+  check("the { key, cert } shorthand still builds",
+    (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })) != null);
+  check("pem is still accepted",
+    typeof (await pki.pkcs12.build(spec, { password: "1234", pem: true })) === "string");
+}
+
 // ---- #13 / #14 MacData.iterations DEFAULT-1 + SHA-1 PBMAC1 floor -----------
 async function testMacFailClosed() {
   var s = signer();
@@ -350,6 +372,7 @@ async function main() {
   await testAttributes();
   await testFailClosedInputs();
   await testBagTypes();
+  await testUnknownBuildKeys();
   console.log("CHECKS " + helpers.getChecks());
 }
 

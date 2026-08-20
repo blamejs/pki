@@ -159,6 +159,21 @@ async function run() {
   // plaintext against a message whose whole purpose was to conceal it. A decoder still accepts one
   // (another implementation may legitimately emit it), but this toolkit will not produce one.
   var mdAttr = b.sequence([b.oid(O("messageDigest")), b.set([b.octetString(Buffer.alloc(32, 1))])]);
+  // Both exported verbs gate their own option set, and the sets are disjoint -- one shared table
+  // would accept every other verb's keys, which is the hole rather than the door. A dropped option
+  // here is a message built without what the caller asked for, and nothing says so.
+  check("cms.encrypt rejects an unknown option",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { nonsenseOption: 1 }); })) === "cms/bad-input");
+  check("cms.encrypt rejects an option belonging to cms.authenticate",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { macAlgorithm: "hmac-sha256" }); })) === "cms/bad-input");
+  check("cms.authenticate rejects an unknown option",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ cert: rsa.cert }], { nonsenseOption: 1 }); })) === "cms/bad-input");
+  check("cms.authenticate rejects an option belonging to cms.encrypt",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" }); })) === "cms/bad-input");
+  // The shared per-recipient options still reach both verbs through the recipient builders.
+  check("a recipient option shared by both verbs is still accepted by encrypt",
+    (await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { oaepHash: "sha384" })) != null);
+
   check("AuthEnvelopedData with a caller-supplied message-digest authAttr is refused",
     (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [mdAttr] }); })) === "cms/bad-input");
   check("that refusal names the clause and the reason, not just the attribute",

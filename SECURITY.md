@@ -188,6 +188,23 @@ security-only patches after the next major releases.
   specification itself permits remains, in that a registered algorithm may ride
   as its registry integer or as its object identifier, so identify a certificate
   by the X.509 bytes it reconstructs rather than by its C509 bytes.
+- **A misspelled authoring field silently omitted from a signed artifact.** Every
+  producing verb refuses a field it does not read, on each caller-owned argument,
+  before any of them is used. Without that door the artifact is built, signed and
+  returned while simply not carrying what was asked for, and nothing in the
+  result says so. The cases were not hypothetical: `extension` in place of
+  `extensions` on `pki.x509.sign` produced a signed certificate with NO
+  extensions, so an intended CA shipped without `basicConstraints` and an
+  intended constrained certificate without `keyUsage`; `revokedCertificates` in
+  place of `revoked` on `pki.crl.sign` produced a correctly signed, structurally
+  valid CRL asserting that NOTHING is revoked; and an issuer nested inside the
+  spec rather than passed as the second argument produced a self-signed
+  certificate. Each permitted-field table is derived from what the verb actually
+  reads, including through the helpers it delegates to, because a table naming a
+  field nothing reads reopens the same hole. A caller-owned CREDENTIAL bag is
+  deliberately exempt where its extra fields are not typos -- a signer object
+  carrying a key handle alongside the certificate and key is a normal shape, and
+  refusing it would reject a legitimate call rather than catch a mistake.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the
   bytes that were actually signed rather than re-encoding and hoping for

@@ -269,6 +269,46 @@ async function testFailClosed() {
   check("missing subjectPublicKey -> throws", await codeOf(pki.x509.sign({ subject: "x", notBefore: NB, notAfter: NA }, { key: s.key })) !== null);
   // a typo'd extension key is rejected at config-time (not silently dropped).
   check("unknown extension key -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, extensions: { keyUsag: ["digitalSignature"] } }, { key: s.key })) === "x509/bad-input");
+
+  // The SPEC itself gets the same door the extensions sub-object already had. Without it a
+  // misspelled `extension` produced a SIGNED CERTIFICATE CARRYING NO EXTENSIONS: the caller asked
+  // for basicConstraints and keyUsage and got neither, with nothing to read as a failure. The
+  // artifact is asserted absent, not merely the code, because the failure was that one WAS emitted.
+  async function specReject(spec, issuer) {
+    var emitted = null, err = null;
+    try { emitted = await pki.x509.sign(spec, issuer || { key: s.key }); } catch (e) { err = e; }
+    return { code: err && err.code, msg: (err && err.message) || "", emitted: emitted };
+  }
+  var typo = await specReject({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA,
+    extension: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] } });
+  check("spec.extension (typo for extensions) -> x509/bad-input", typo.code === "x509/bad-input");
+  check("...and NO certificate is emitted", typo.emitted === null);
+  check("...and the message names the offending key", /extension/.test(typo.msg));
+
+  var invented = await specReject({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, pathLenConstraint: 0 });
+  check("an invented spec key -> x509/bad-input", invented.code === "x509/bad-input" && invented.emitted === null);
+
+  // The issuer is argument TWO. Nesting it in the spec silently self-signed, which reads as a
+  // toolkit bug rather than a mis-shaped call, so the door has to cover this spelling too.
+  var nested = await specReject({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, issuer: { key: s.key } });
+  check("spec.issuer (the issuer is argument two) -> x509/bad-input", nested.code === "x509/bad-input" && nested.emitted === null);
+
+  // The other two caller-owned objects get the same treatment: one door per argument, so no
+  // argument is the one nobody thought to gate.
+  var badIssuer = await specReject({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+    { key: s.key, certificate: s.cert });
+  check("an unknown issuer key -> x509/bad-input", badIssuer.code === "x509/bad-input" && badIssuer.emitted === null);
+
+  var badOpts = null;
+  try { await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key }, { digestAlgorithms: "sha256" }); }
+  catch (e) { badOpts = e; }
+  check("an unknown option -> x509/bad-input", badOpts && badOpts.code === "x509/bad-input");
+
+  // The six real spec keys still round-trip, so the table admits what the producer reads.
+  check("every documented spec key is still accepted", (await pki.x509.sign({
+    subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA, serialNumber: 42n,
+    extensions: { keyUsage: ["digitalSignature"] },
+  }, { key: s.key })) != null);
   // a malformed subject SPKI is rejected at issuance (validated before it is embedded raw).
   var B = pki.asn1.build;
   check("non-DER subjectPublicKey -> x509/bad-input", await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: Buffer.from([0x30, 0x05]), notBefore: NB, notAfter: NA }, { key: s.key })) === "x509/bad-input");   // truncated SEQUENCE

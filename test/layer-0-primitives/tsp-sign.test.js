@@ -57,6 +57,29 @@ async function testRoundTrip() {
   check("signing-certificate attribute present", hasSignCert);
 }
 
+// ---- unknown keys on the imprint and the options ----
+// A dropped option here is a token that quietly lacks what was asked for: `odering` for `ordering`
+// emitted a token with the flag unset, which is a claim about the timestamp the caller believes
+// they made. The TSA is deliberately ungated -- it is a caller-owned credential bag whose extra
+// fields (this toolkit's own signer helper returns keyObject and spki) are not typos.
+async function testUnknownSignKeys() {
+  var tsa = makeSigner("ec-p256");
+  async function code(fn) { try { await fn(); return null; } catch (e) { return e && e.code; } }
+
+  check("an unknown messageImprint field -> tsp/bad-input",
+    (await code(function () {
+      return pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: imprint("sha256").hashedMessage, digest: 1 },
+        tsa, { policy: "1.2.3", serialNumber: 1 });
+    })) === "tsp/bad-input");
+  check("an unknown option -> tsp/bad-input",
+    (await code(function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, nonsenseOption: 1 }); })) === "tsp/bad-input");
+  check("a one-letter option typo (odering) -> tsp/bad-input",
+    (await code(function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, odering: true }); })) === "tsp/bad-input");
+  // The TSA bag the toolkit's own helper produces still signs, extra fields and all.
+  check("a signer bag with helper-supplied extra fields still signs",
+    (await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 3, ordering: true })) != null);
+}
+
 // ---- imprint hash algorithms + TSA key algorithms ----
 async function testAlgorithms() {
   for (var h of ["sha256", "sha384", "sha512"]) {
@@ -161,6 +184,7 @@ async function run() {
   await testPassthrough();
   await testBadInput();
   await testRequestExtensions();
+  await testUnknownSignKeys();
 }
 
 module.exports = { run: run };
