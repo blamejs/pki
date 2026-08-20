@@ -233,6 +233,12 @@ function testWholeFamilyUnderFullPoisoning() {
     isView: ArrayBuffer.isView, isArray: Array.isArray, isInteger: Number.isInteger,
     isNaN: globalThis.isNaN, isDate: utilTypes.isDate,
     gopd: Object.getOwnPropertyDescriptor, ownKeys: Reflect.ownKeys,
+    // The array operations a guard walks its OWN arrays with. A `forEach` no-op makes a scan over
+    // real keys report nothing, and whatever is keyed on that scan then passes vacuously.
+    arrForEach: Array.prototype.forEach, arrEvery: Array.prototype.every,
+    arrIndexOf: Array.prototype.indexOf, arrPush: Array.prototype.push,
+    arrFilter: Array.prototype.filter, arrMap: Array.prototype.map,
+    arrSort: Array.prototype.sort,
   };
   var bufferFrom = Buffer.from;
   var secret = bufferFrom.call(Buffer, "hunter2hunter2hu", "utf8");
@@ -254,6 +260,13 @@ function testWholeFamilyUnderFullPoisoning() {
     utilTypes.isDate = function () { return true; };
     Object.getOwnPropertyDescriptor = function () { return { value: 1, writable: true }; };
     Reflect.ownKeys = function () { return []; };
+    Array.prototype.forEach = function () { };
+    Array.prototype.every = function () { return true; };
+    Array.prototype.indexOf = function () { return -1; };
+    Array.prototype.push = function () { return 0; };
+    Array.prototype.filter = function () { return []; };
+    Array.prototype.map = function () { return []; };
+    Array.prototype.sort = function () { return this; };
 
     r.dn = name.rdnEqual(rdn(CN, "alice"), rdn(CN, "bobby"), F, "x/bad", "the name");
     guard.secret.zeroize(secret, TestError, "x/bad", "the secret");
@@ -274,6 +287,10 @@ function testWholeFamilyUnderFullPoisoning() {
     Array.isArray = real.isArray; Number.isInteger = real.isInteger;
     globalThis.isNaN = real.isNaN; utilTypes.isDate = real.isDate;
     Object.getOwnPropertyDescriptor = real.gopd; Reflect.ownKeys = real.ownKeys;
+    Array.prototype.forEach = real.arrForEach; Array.prototype.every = real.arrEvery;
+    Array.prototype.indexOf = real.arrIndexOf; Array.prototype.push = real.arrPush;
+    Array.prototype.filter = real.arrFilter; Array.prototype.map = real.arrMap;
+    Array.prototype.sort = real.arrSort;
   }
 
   check("under full poisoning, guard-name keeps two different names apart", r.dn === false);
