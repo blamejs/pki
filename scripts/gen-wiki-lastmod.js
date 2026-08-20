@@ -93,7 +93,7 @@ function main() {
   var keep = {};
   Object.keys(all).forEach(function (f) {
     if (/^lib\/[^/]+\.js$/.test(f) || f === "README.md" ||
-        /^examples\/wiki\/(concepts\.js|lib\/[^/]+\.js)$/.test(f)) keep[f] = all[f];
+        /^examples\/wiki\/(concepts\.js|site\.config\.js|lib\/[^/]+\.js)$/.test(f)) keep[f] = all[f];
   });
   var sorted = {};
   Object.keys(keep).sort().forEach(function (k) { sorted[k] = keep[k]; });

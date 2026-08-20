@@ -12,6 +12,7 @@
   "examples/wiki/lib/source-comment-block-validator.js": "2026-08-18",
   "examples/wiki/lib/source-doc-parser.js": "2026-07-06",
   "examples/wiki/lib/symbol-index.js": "2026-07-13",
+  "examples/wiki/site.config.js": "2026-07-04",
   "lib/acme.js": "2026-08-20",
   "lib/asn1-der.js": "2026-08-20",
   "lib/asn1-schema.js": "2026-07-04",

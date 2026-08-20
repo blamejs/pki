@@ -93,12 +93,22 @@ var REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 // folding it in would move all 46 dates for a CSS tweak, which is the same overclaim as stamping
 // build time. Absent from the manifest -> contributes nothing, and the pages fall back to their
 // own sources.
+// site.config.js belongs here too: it selects the library directory the entries are derived from
+// and decides the navigation grouping, so a change to it can add a page, remove one, or move it.
 var GENERATOR_SOURCES = (function () {
   var names;
   try { names = fs.readdirSync(__dirname).filter(function (n) { return /\.js$/.test(n); }); }
-  catch (_e) { return []; }
-  return names.map(function (n) { return "examples/wiki/lib/" + n; });
+  catch (_e) { return ["examples/wiki/site.config.js"]; }
+  return names.map(function (n) { return "examples/wiki/lib/" + n; }).concat(["examples/wiki/site.config.js"]);
 })();
+
+// WHAT IS DELIBERATELY NOT AN INPUT: the cross-file `@related` resolution. A concept or namespace
+// page renders links whose targets come from the global primitive index, so a change in an
+// unrelated module can alter a link on this page. Dating for that would make every page depend on
+// the whole library tree, and all 46 dates would collapse to "the newest thing in the repository" --
+// which is true, carries no per-page signal, and is the flattening this manifest exists to avoid.
+// The line drawn is the one a crawler cares about: the date a page's OWN asserted content last
+// changed, not the date one of its outbound links acquired a new target.
 
 // source: a repo-relative path, an absolute path under the repo, or an array of either (a page
 // generated from several files takes the most recent of them). Unknown -> null.
@@ -729,7 +739,7 @@ function build(opts) {
       code: 'var res = await pki.cms.verify(signedDer, { trustAnchors: [rootDer] });\nres.valid;                // every signer verified\nres.eContentType;         // "1.2.840.113549.1.7.1" -- the encapsulated type, as an OID\nres.signers[0].ok;        // this signer verified\nres.trusted;              // the signers chained to an anchor',
       more: "/cms" },
     { q: "Validate a certificate chain to a trust anchor",
-      code: '// note the singular option here -- cms.verify above takes trustAnchors, an array\nvar res = await pki.path.validate([leaf, intermediate], {\n  trustAnchor: rootDer,\n  time: new Date(),\n});\nres.valid;                // the verb throws on malformed input, so this is a real verdict\nres.revocationChecked;    // what was actually checked, not what was assumed\nres.results[0].checks;    // [ { name: "signature", ok }, { name: "nameChaining", ok }, ... ]',
+      code: '// Two shapes to get right. The path runs ANCHOR-ADJACENT FIRST and the TARGET LAST --\n// the reverse of how a chain is usually written. And the anchor is an object built from the\n// parsed root, not the root\'s DER (cms.verify above takes trustAnchors, an array; this is\n// trustAnchor, one value).\nvar root = pki.schema.x509.parse(rootDer);\nvar res = await pki.path.validate([intermediate, leaf], {\n  trustAnchor: {\n    name: root.subject,\n    publicKey: root.subjectPublicKeyInfo.bytes,\n    algorithm: root.subjectPublicKeyInfo.algorithm,\n  },\n  time: new Date(),\n});\nres.valid;                // true -- the verb throws on malformed input, so this is a real verdict\nres.revocationChecked;    // what was actually checked, not what was assumed\nres.results[0].checks;    // [ { name: "signature", ok }, { name: "nameChaining", ok }, ... ]',
       more: "/path" },
     { q: "Check whether a certificate has been revoked",
       code: 'var crl = pki.schema.crl.parse(crlDer);\nvar revoked = crl.revokedCertificates.filter(function (r) {\n  return r.serialNumber === cert.serialNumber;   // both are BigInt\n});\nrevoked[0] && revoked[0].revocationDate;         // Date',
@@ -784,7 +794,9 @@ function build(opts) {
     main: homeMain.join("\n"),
     description: SITE_DESCRIPTION,
     ldKind: "website",
-    source: "README.md",
+    // The whole library tree, not just the README: the namespace cards below render each module's
+    // @title and @card, so editing any module's block changes what this page says.
+    source: ["README.md"].concat(Object.keys(docsByPath)),
   });
 
   // ---- Overview page (rendered README) ----
