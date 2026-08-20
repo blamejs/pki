@@ -312,6 +312,22 @@ async function testFailClosed() {
     await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
       { key: s.key, cert: s.cert })) === "x509/bad-input");
 
+  // The issuer has two mutually exclusive FORMS: an issuing certificate, or an explicit name plus
+  // public key. The certificate branch wins whenever cert is present and neither name nor publicKey
+  // is read on it, so a caller who supplied both got a certificate issued by the CERT's DN while
+  // having named a different issuer -- the same silent discard a misspelling produces.
+  var ca = makeSigner("ec-p256");
+  var caCert = pki.schema.x509.parse(await pki.x509.sign({
+    subject: "Issuing CA", subjectPublicKey: ca.spki, notBefore: NB, notAfter: NA,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
+  }, { key: ca.key }));
+  var mixedIssuer = await specReject(base, { key: ca.key, cert: caCert, name: "CN=Different CA" });
+  check("an issuing cert mixed with an explicit name -> x509/bad-input", mixedIssuer.code === "x509/bad-input");
+  check("...and NO certificate is emitted", mixedIssuer.emitted === null);
+  check("each issuer form on its own still signs",
+    (await pki.x509.sign(base, { key: ca.key, cert: caCert })) != null &&
+    (await pki.x509.sign(base, { key: ca.key, name: "CN=Explicit CA", publicKey: ca.spki })) != null);
+
   var badOpts = null;
   try { await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key }, { digestAlgorithms: "sha256" }); }
   catch (e) { badOpts = e; }

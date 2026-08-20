@@ -202,6 +202,50 @@ async function run() {
     (await pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "sha384" }], {})) != null &&
     (await pki.cms.encrypt(MSG, [{ cert: ec.cert, ukm: Buffer.from([1, 2]) }], {})) != null);
 
+  // The TOP-LEVEL oaepHash / keyIdentifier / ukm are per-recipient DEFAULTS, so which of them a
+  // message consumes depends on the arms its recipients select. A message whose only recipient is a
+  // password recipient reads none of them, so naming one described a wrapping never performed.
+  check("oaepHash with only a password recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: "pw" }], { oaepHash: "sha512", contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("ukm with only an RSA recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { ukm: Buffer.from([1, 2]) }); })) === "cms/bad-input");
+  check("cms.authenticate applies the same rule",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ password: "pw" }], { oaepHash: "sha512" }); })) === "cms/bad-input");
+  check("a default a selected recipient DOES read is still accepted",
+    (await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { oaepHash: "sha384" })) != null &&
+    (await pki.cms.encrypt(MSG, [{ cert: ec.cert }], { ukm: Buffer.from([1, 2]) })) != null);
+  check("one consuming recipient among several is enough",
+    (await pki.cms.encrypt(MSG, [{ password: "pw" }, { cert: rsa.cert }], { oaepHash: "sha384", contentEncryptionAlgorithm: "aes-256-cbc" })) != null);
+  // A recipient that supplies its own value reads the descriptor, never the top-level default, so
+  // the default is discarded exactly as a misspelling would be.
+  check("a default every recipient overrides -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "sha384" }], { oaepHash: "sha512" }); })) === "cms/bad-input");
+  check("...and the same default still reaches a recipient that does NOT override it",
+    (await pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "sha384" }, { cert: rsa.cert }], { oaepHash: "sha512" })) != null);
+  // EncryptedData carries no RecipientInfos, so it reads none of the three.
+  check("a per-recipient default on an EncryptedData -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1) }, { oaepHash: "sha512", contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("...and an EncryptedData without one still builds",
+    (await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1) }, { contentEncryptionAlgorithm: "aes-256-cbc" })) != null);
+
+  // authAttrs go into an AuthEnvelopedData, which only an AEAD content algorithm produces. A CBC
+  // algorithm selects EnvelopedData, which has no field for them, so the attributes a caller asked
+  // to authenticate were dropped and the message went out with no authenticated attributes at all.
+  check("authAttrs with a CBC content algorithm -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc", authAttrs: [contentTypeAttr] }); })) === "cms/bad-input");
+  check("...and the same attributes under an AEAD algorithm still build",
+    (await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [contentTypeAttr] })) != null);
+  // authenticatedAttributes: false MACs the content octets directly, so no attribute set is built
+  // and the digest algorithm that names its hash is read by nothing.
+  check("digestAlgorithm with authenticatedAttributes: false -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ cert: rsa.cert }], { authenticatedAttributes: false, digestAlgorithm: "sha512" }); })) === "cms/bad-input");
+  check("authAttrs with authenticatedAttributes: false -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.authenticate(MSG, [{ cert: rsa.cert }], { authenticatedAttributes: false, authAttrs: [contentTypeAttr] }); })) === "cms/bad-input");
+  check("both are still read when the attribute set is built",
+    (await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], { digestAlgorithm: "sha512", authAttrs: [] })) != null);
+  check("...and the bare branch still authenticates",
+    (await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], { authenticatedAttributes: false })) != null);
+
   // The single EncryptedData descriptor has the same two-arm shape, so it gets the same per-arm
   // treatment: the `cek` branch derives nothing, and a union table let a caller hand it a work
   // factor that was discarded exactly as a misspelling would be.

@@ -163,6 +163,38 @@ async function testUnknownBuildKeys() {
     (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" })) != null &&
     (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })) != null);
 
+  // opts answers to the same two forms. recipientCerts is read only where _normalizeSpec assembles
+  // the safes itself, so under the full form it selected nothing: a plaintext key bag was emitted as
+  // an id-data safe while the caller had asked for recipient-enveloped privacy. Artifact asserted absent.
+  var rcpt = signing.makeRecipient("rsa");
+  var fullRecip = await emittedOf(pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "key", key: s.key }] }] },
+    { password: "1234", recipientCerts: [rcpt.cert] }));
+  check("recipientCerts under the safeContents form -> pkcs12/bad-input", fullRecip.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", fullRecip.out === null);
+  check("the shorthand form still reads recipientCerts",
+    (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234", recipientCerts: [rcpt.cert] })) != null);
+  check("the full form carries privacy per entry instead",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: s.key }], recipients: [{ cert: rcpt.cert }] }] },
+      { password: "1234" })) != null);
+
+  // Which form a spec is gets decided ONCE and the door and the builder both act on that decision.
+  // Decided separately the two spellings drift, and the door then checks a form the builder will
+  // not assemble. (A spec supplying the field through an accessor is refused before either looks.)
+  var accessorSpec = {};
+  Object.defineProperty(accessorSpec, "safeContents", {
+    enumerable: true, get: function () { return [{ bags: [{ type: "cert", cert: s.cert }] }]; },
+  });
+  check("an accessor-backed spec field is refused outright",
+    (await codeOf(pki.pkcs12.build(accessorSpec, { password: "1234" }))) === "pkcs12/bad-input");
+  // A safeContents that is present but not a list is not the full form. It is named as the field
+  // that is wrong, rather than switching the door to a form the builder will not assemble.
+  var notAList = null;
+  try { await pki.pkcs12.build({ safeContents: { bags: [] }, key: s.key, cert: s.cert }, { password: "1234" }); }
+  catch (e) { notAList = e; }
+  check("a non-list safeContents -> pkcs12/bad-input naming safeContents",
+    notAList != null && notAList.code === "pkcs12/bad-input" && /field "safeContents"/.test(notAList.message));
+
   // A safeContents entry is checked against the privacy branch it selects. contentEncryptionAlgorithm
   // is the public-key branch's cipher and is read by nothing on a password safe, whose cipher comes
   // from encrypt.cipher -- so an explicit request was accepted and the default used anyway.

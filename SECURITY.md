@@ -215,7 +215,14 @@ security-only patches after the next major releases.
   a misspelling of those is refused for what it leaves missing, but a name
   belonging on a DIFFERENT argument, written there instead, is read by nothing
   and dropped in silence -- `ordering` placed on the TSA argument of
-  `pki.tsp.sign` emitted a token the size of one that never requested it.
+  `pki.tsp.sign` emitted a token the size of one that never requested it. Where
+  an argument has mutually exclusive FORMS, the table is the one the selected
+  form reads, because a union admits what the chosen branch never looks at: an
+  issuing certificate supplied alongside an explicit issuer name signed under the
+  certificate's own distinguished name; `recipientCerts` under the PKCS#12
+  `safeContents` form selected no privacy at all and the private key went out in
+  the clear; and `pss` under CMP MAC protection emitted a message byte for byte
+  identical to one that never named it.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the
   bytes that were actually signed rather than re-encoding and hoping for

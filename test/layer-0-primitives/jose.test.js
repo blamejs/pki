@@ -38,6 +38,41 @@ async function testJws() {
     (await acode(function () { return pki.jose.verify(jws, { profile: "acme-outer", keys: ecJwk }); })) === "jose/bad-input");
   check("25d. ...and an unknown sign option likewise",
     (await acode(function () { return pki.jose.sign({ protected: outerHeader({ jwk: ecJwk }), payload: Buffer.from("{}"), key: ec.privateKey, profiel: "acme-outer" }); })) === "jose/bad-input");
+  // The public JWK has two sources and the embedded one wins, so opts.jwk is read in kid mode
+  // only. Supplied beside a header that embeds its own, it selected nothing: the signature
+  // parameters came from the header's key while the caller had named a different one.
+  var rsaPair = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var rsaPubJwk = await subtle.exportKey("jwk", rsaPair.publicKey);
+  check("25e. opts.jwk beside a header that embeds one -> jose/bad-input",
+    (await acode(function () { return pki.jose.sign({ protected: outerHeader({ jwk: ecJwk }), payload: Buffer.from("{}"), key: ec.privateKey, jwk: rsaPubJwk }); })) === "jose/bad-input");
+  check("25f. opts.jwk in kid mode is still read",
+    (await pki.jose.sign({ protected: outerHeader({ kid: "https://ca.example/acct/1" }), payload: Buffer.from("{}"), key: ec.privateKey, jwk: ecJwk })).signature != null);
+  // The header is a caller-owned object, so a getter can answer each read differently. Serializing
+  // it once and reading the snapshot means the header validated, the header embedded and the key
+  // confirmed against the signature are the same values: below, a private JWK offered to the
+  // serializer alone would otherwise be published in a header that passed the public-only check.
+  var privJwk = await subtle.exportKey("jwk", ec.privateKey);
+  function serializesAs(value, shipped) {
+    var o = Object.assign({}, value);
+    Object.defineProperty(o, "toJSON", { enumerable: false, value: function () { return shipped; } });
+    return o;
+  }
+  // The public-only check reads own members; the serializer asks the object what to emit. Split
+  // apart, the JWK that passed the check is not the JWK that ships.
+  check("25g. a jwk that serializes its private half -> jose/private-key-material",
+    (await acode(function () {
+      return pki.jose.sign({ protected: outerHeader({ jwk: serializesAs(ecJwk, privJwk) }), payload: Buffer.from("{}"), key: ec.privateKey });
+    })) === "jose/private-key-material");
+  // Same split on the algorithm: validated as ES256, shipped as something the profile forbids.
+  check("25h. a header that serializes a different alg is judged on what it ships",
+    (await acode(function () {
+      return pki.jose.sign({ protected: serializesAs(outerHeader({ jwk: ecJwk }), { alg: "none", nonce: "AAAA", url: "https://ca.example/o", jwk: ecJwk }), payload: Buffer.from("{}"), key: ec.privateKey });
+    })) === "jose/bad-alg");
+  // A header that cannot be serialized is refused rather than reaching the signer.
+  var circular = { alg: "ES256", nonce: "AAAA", url: "https://ca.example/o", jwk: ecJwk };
+  circular.self = circular;
+  check("25i. an unserializable protected header -> jose/bad-header",
+    (await acode(function () { return pki.jose.sign({ protected: circular, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-header");
 
   // 25c-25f. A caller who supplies opts.key is naming the key the message must be signed under.
   // The acme-outer profile also permits an embedded jwk, and when both are present the message

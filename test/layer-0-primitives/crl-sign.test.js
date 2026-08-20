@@ -63,6 +63,21 @@ async function testUnknownArgumentKeys() {
   var badOpts = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, null, { digestAlgorithms: "sha256" });
   check("an unknown option -> crl/bad-input", badOpts.code === "crl/bad-input" && badOpts.out === null);
 
+  // The issuer has two mutually exclusive FORMS. The certificate branch wins whenever cert is
+  // present and reads neither name nor publicKey, so a caller supplying both signed a CRL issued by
+  // the CERT's DN while having named a different issuer, with nothing to read as a failure.
+  var caCert = pki.schema.x509.parse(await pki.x509.sign({
+    subject: "Test CRL Issuer", subjectPublicKey: s.spki, notBefore: TU, notAfter: NU,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] },
+  }, { key: s.key }));
+  var mixedIssuer = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] },
+    { key: s.key, cert: caCert, name: "Different CRL Issuer" });
+  check("an issuing cert mixed with an explicit name -> crl/bad-input", mixedIssuer.code === "crl/bad-input");
+  check("...and NO CRL is emitted", mixedIssuer.out === null);
+  check("each issuer form on its own still signs",
+    (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, { key: s.key, cert: caCert })) != null &&
+    (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, issuerOf(s))) != null);
+
   // The ENTRY is a caller-owned object too, and every optional field on it is encoded only when
   // present. `reson` listed the certificate as revoked carrying no reasonCode at all, in a CRL that
   // verifies, so a relying party cannot tell it from a revocation given without a reason.
