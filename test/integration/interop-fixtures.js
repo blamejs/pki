@@ -481,7 +481,7 @@ module.exports = {
         var signer = require("../helpers/signing").makeSigner("ec-p256");
         var certPath = ctx.tmpFile(ctx.pki.schema.x509.pemEncode(signer.cert, "CERTIFICATE"), "cert.pem");
         var imprint = { hashAlgorithm: "sha256", hashedMessage: require("node:crypto").createHash("sha256").update("timestamped document").digest() };
-        var token = ctx.tmpFile(await ctx.pki.tsp.sign(imprint, signer, { policy: "1.3.6.1.4.1.1", serialNumber: 1, nonce: 42 }), "token.der");
+        var token = ctx.tmpFile(await ctx.pki.tsp.sign(imprint, { cert: signer.cert, key: signer.key }, { policy: "1.3.6.1.4.1.1", serialNumber: 1, nonce: 42 }), "token.der");
         var r = ctx.runOpenssl(["cms", "-verify", "-noverify", "-inform", "DER", "-in", token, "-certfile", certPath], { allowNonZero: true });
         ctx.check("openssl cms -verify accepts our timestamp token's signature", r.code === 0);
       },

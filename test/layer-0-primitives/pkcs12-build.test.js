@@ -115,6 +115,191 @@ async function testNoMac() {
   check("#12 verifyMac on a MAC-less store throws (never a falsy verdict)", (await boolOf(pki.pkcs12.verifyMac(p12, "1234"))) === "THREW:pkcs12/bad-input");
 }
 
+// ---- unknown keys on the spec and the options -------------------------------
+// A store that silently omits the certificate or the key a caller asked for looks well formed and
+// opens cleanly; the omission surfaces wherever it is later imported. `certificates` is the shape
+// that caused it -- a plausible plural for the shorthand form's `cert`.
+async function testUnknownBuildKeys() {
+  var s = signer();
+  var spec = { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] };
+
+  check("an unknown spec field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: spec.safeContents, certificates: [s.cert] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("an unknown build option -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", nonsenseOption: 1 }))) === "pkcs12/bad-input");
+  // verifyMac and open have disjoint option sets; build must not admit theirs.
+  check("an option belonging to pkcs12.open -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", signerCerts: [s.cert] }))) === "pkcs12/bad-input");
+  // A safeContents entry carries the PRIVACY directive for everything inside it, and the entry is
+  // where the worst misspelling lands. A present-but-falsy `encrypt` already fails closed, but a
+  // MISSPELLED one is neither present nor falsy: it slipped past that guard, no privacy was
+  // selected, and the safe went out as plaintext id-data -- an unshrouded keyBag in the clear,
+  // inside a PFX whose MAC still verified and which opens without complaint. Refuse before the
+  // dispatch, and assert the STORE IS NOT EMITTED rather than only the code.
+  async function emittedOf(promise) {
+    try { return { out: await promise, code: null }; } catch (e) { return { out: null, code: e && e.code }; }
+  }
+  function keyBagSafe(privacyKey) {
+    var sc = { bags: [{ type: "key", key: s.key }] };
+    sc[privacyKey] = { password: "1234" };
+    return { safeContents: [sc] };
+  }
+  var typo = await emittedOf(pki.pkcs12.build(keyBagSafe("encrpyt"), { password: "1234" }));
+  check("a misspelled safeContents privacy directive -> pkcs12/bad-input", typo.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", typo.out === null);
+  // The control that gives the vector its stakes: spelled correctly, the private key does not
+  // appear in the emitted bytes. Without the door the misspelled call above emitted it verbatim.
+  var priv = await pki.pkcs12.build(keyBagSafe("encrypt"), { password: "1234" });
+  check("encrypt spelled correctly -> the private key is not in the emitted store",
+    Buffer.from(priv).indexOf(Buffer.from(s.key)) === -1);
+  // The spec has two mutually exclusive FORMS. _normalizeSpec returns spec.safeContents the moment
+  // it is an array and never reads the shorthand fields, so a union built a store with the key
+  // silently absent -- the same omission the door exists to refuse, reached by mixing forms.
+  var mixedForm = await emittedOf(pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }], key: s.key }, { password: "1234" }));
+  check("the full form mixed with a shorthand field -> pkcs12/bad-input", mixedForm.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", mixedForm.out === null);
+  check("each form on its own still builds",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" })) != null &&
+    (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })) != null);
+
+  // opts answers to the same two forms. recipientCerts is read only where _normalizeSpec assembles
+  // the safes itself, so under the full form it selected nothing: a plaintext key bag was emitted as
+  // an id-data safe while the caller had asked for recipient-enveloped privacy. Artifact asserted absent.
+  var rcpt = signing.makeRecipient("rsa");
+  var fullRecip = await emittedOf(pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "key", key: s.key }] }] },
+    { password: "1234", recipientCerts: [rcpt.cert] }));
+  check("recipientCerts under the safeContents form -> pkcs12/bad-input", fullRecip.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", fullRecip.out === null);
+  check("the shorthand form still reads recipientCerts",
+    (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234", recipientCerts: [rcpt.cert] })) != null);
+  check("the full form carries privacy per entry instead",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: s.key }], recipients: [{ cert: rcpt.cert }] }] },
+      { password: "1234" })) != null);
+
+  // Which form a spec is gets decided ONCE and the door and the builder both act on that decision.
+  // Decided separately the two spellings drift, and the door then checks a form the builder will
+  // not assemble. (A spec supplying the field through an accessor is refused before either looks.)
+  var accessorSpec = {};
+  Object.defineProperty(accessorSpec, "safeContents", {
+    enumerable: true, get: function () { return [{ bags: [{ type: "cert", cert: s.cert }] }]; },
+  });
+  check("an accessor-backed spec field is refused outright",
+    (await codeOf(pki.pkcs12.build(accessorSpec, { password: "1234" }))) === "pkcs12/bad-input");
+  // A safeContents that is present but not a list is not the full form. It is named as the field
+  // that is wrong, rather than switching the door to a form the builder will not assemble.
+  // The MAC descriptor is checked against the algorithm it selects. The classic Appendix B key
+  // derivation produces a key at the hash's own output length, so a keyLength there was an explicit
+  // security parameter that emitted the same MAC as the call that never named it.
+  check("keyLength on a classic HMAC MAC -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { algorithm: "hmac", keyLength: 64 } }))) === "pkcs12/bad-input");
+  check("...and on the default algorithm, which is the classic one",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { keyLength: 64 } }))) === "pkcs12/bad-input");
+  check("keyLength on a PBMAC1 MAC is still read",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", keyLength: 32 } })) != null);
+  check("an unrecognized algorithm is still named by _buildMacData",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { algorithm: "hmc", keyLength: 64 } }))) === "pkcs12/bad-input");
+
+  var notAList = null;
+  try { await pki.pkcs12.build({ safeContents: { bags: [] }, key: s.key, cert: s.cert }, { password: "1234" }); }
+  catch (e) { notAList = e; }
+  check("a non-list safeContents -> pkcs12/bad-input naming safeContents",
+    notAList != null && notAList.code === "pkcs12/bad-input" && /field "safeContents"/.test(notAList.message));
+
+  // A safeContents entry is checked against the privacy branch it selects. contentEncryptionAlgorithm
+  // is the public-key branch's cipher and is read by nothing on a password safe, whose cipher comes
+  // from encrypt.cipher -- so an explicit request was accepted and the default used anyway.
+  check("a public-key cipher field on a password safe -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }],
+      encrypt: { password: "1234" }, contentEncryptionAlgorithm: "aes-128-cbc" }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("the cipher a password safe DOES read still builds",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }],
+      encrypt: { password: "1234", cipher: "aes-128-cbc" } }] }, { password: "1234" })) != null);
+  check("an encrypt field on a plaintext safe is still the directive, not an unknown key",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" })) != null);
+
+  check("an unknown safeContents field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }], recipient: [] }] },
+      { password: "1234" }))) === "pkcs12/bad-input");
+
+  // Same rule one level down: the bag, and the encrypt descriptor it carries. A misspelled bag
+  // attribute is dropped from the emitted bag; a misspelled PBE parameter silently reverts to the
+  // default, so a caller who asked for a stronger KDF gets the built-in one and nothing says so.
+  check("an unknown bag field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, freindlyName: "x" }] }] },
+      { password: "1234" }))) === "pkcs12/bad-input");
+  // Per TYPE, not one union: `encrypt` is real on a shroudedKey bag and read by nothing on a plain
+  // key bag, so a union table accepted it and emitted the private key as a plaintext keyBag while
+  // the caller had supplied an explicit encryption directive. The artifact is asserted absent.
+  var wrongArm = await emittedOf(pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "key", key: s.key, encrypt: { password: "1234" } }] }] },
+    { password: "1234" }));
+  check("encrypt on a plaintext key bag -> pkcs12/bad-input", wrongArm.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", wrongArm.out === null);
+  check("the same field on a shroudedKey bag still builds",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key, encrypt: { password: "1234" } }] }] },
+      { password: "1234" })) != null);
+  check("a cert field on a key bag -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: s.key, cert: s.cert }] }] },
+      { password: "1234" }))) === "pkcs12/bad-input");
+  check("an unknown encrypt-descriptor field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key,
+      encrypt: { password: "1234", iteration: 4096 } }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // Every real field at both levels still builds.
+  check("the documented bag and encrypt fields still build",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [
+      { type: "shroudedKey", key: s.key, encrypt: { password: "1234", cipher: "aes-128-cbc", iterations: 4096 },
+        friendlyName: "k", localKeyId: Buffer.from([1, 2]) },
+      { type: "cert", cert: s.cert, friendlyName: "c" },
+    ] }] }, { password: "1234" })) != null);
+
+  // opts.mac is the third descriptor this verb reads, and every one of its fields has a default,
+  // so a misspelled `iterations` produced a store MAC'd at the shipped iteration count while the
+  // caller believed they had raised it.
+  check("an unknown mac-descriptor field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", iteration: 4096 } }))) === "pkcs12/bad-input");
+  // An array satisfies typeof "object" and carries no name any table lists, so it slipped through
+  // as an empty descriptor and produced the DEFAULT MAC. opts.integrity already excluded arrays.
+  check("an array opts.mac -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: [] }))) === "pkcs12/bad-input");
+  check("a non-empty array opts.mac -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: [1, 2] }))) === "pkcs12/bad-input");
+  check("opts.mac false still omits the MAC",
+    (await pki.pkcs12.build(spec, { password: "1234", mac: false })) != null);
+  check("the documented mac fields still build",
+    (await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 4096 } })) != null);
+
+  // The two READING verbs take their own disjoint option sets. `maxIterations` caps the work a
+  // hostile store can demand, so a misspelling restored the built-in ceiling and the tighter bound
+  // the caller set was never applied.
+  var p12 = await pki.pkcs12.build(spec, { password: "1234" });
+  check("pki.pkcs12.open, a misspelled maxIterations -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.open(p12, "1234", { maxIteration: 1000 }))) === "pkcs12/bad-input");
+  check("pki.pkcs12.open, a build option -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.open(p12, "1234", { mac: { iterations: 2048 } }))) === "pkcs12/bad-input");
+  check("pki.pkcs12.verifyMac, a misspelled maxIterations -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.verifyMac(p12, "1234", { maxIteration: 1000 }))) === "pkcs12/bad-input");
+  check("the documented open options are still accepted",
+    (await pki.pkcs12.open(p12, "1234", { maxIterations: 200000 })) != null);
+  // recipientIndex is read by cms-decrypt, which open hands this whole options object to. A table
+  // built from this module's own reads would refuse it and break selecting a recipient by index.
+  check("an option open forwards to the CMS layer is still accepted",
+    (await pki.pkcs12.open(p12, "1234", { recipientIndex: 0 })) != null);
+  check("the documented verifyMac option is still accepted",
+    (await pki.pkcs12.verifyMac(p12, "1234", { maxIterations: 200000 })) === true);
+
+  // The shorthand form and every real build option still work.
+  check("the { key, cert } shorthand still builds",
+    (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })) != null);
+  check("pem is still accepted",
+    typeof (await pki.pkcs12.build(spec, { password: "1234", pem: true })) === "string");
+}
+
 // ---- #13 / #14 MacData.iterations DEFAULT-1 + SHA-1 PBMAC1 floor -----------
 async function testMacFailClosed() {
   var s = signer();
@@ -145,6 +330,28 @@ async function testAttributes() {
 async function testFailClosedInputs() {
   var s = signer();
   check("#11 public-key integrity with no signer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/bad-input");
+  // The integrity signers are authoring input for this store, so they answer to the same rule as
+  // every other field written here. Every field beyond the identity has a default, so a misspelled
+  // signature parameter signed the store under PKCS#1 with SHA-256 while the caller asked for PSS,
+  // and the store records only what was used.
+  var spec11 = { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] };
+  check("a misspelled signature parameter on an integrity signer -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key, ps: true } } }))) === "pkcs12/bad-input");
+  check("a key-only field on a certificate signer -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signers: [{ cert: s.cert, key: s.key, keyIdentifier: Buffer.alloc(20) }] } }))) === "pkcs12/bad-input");
+  // signer is the one-signer spelling of signers, and the list wins outright, so supplying both
+  // signed the store under the list alone and dropped the single signer without a word.
+  check("both signer and signers -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key }, signers: [{ cert: s.cert, key: s.key }] } }))) === "pkcs12/bad-input");
+  check("either spelling on its own still signs the store",
+    (await pki.pkcs12.build(spec11, { password: "1234", integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key } } })) != null &&
+    (await pki.pkcs12.build(spec11, { password: "1234", integrity: { mode: "public-key", signers: [{ cert: s.cert, key: s.key }] } })) != null);
+  check("the parameters spelled correctly still sign the store",
+    (await pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key, pss: true, digestAlgorithm: "sha384" } } })) != null);
   check("an unknown bag type -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "bogus" }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a keyBag with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a shroudedKey with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
@@ -350,6 +557,7 @@ async function main() {
   await testAttributes();
   await testFailClosedInputs();
   await testBagTypes();
+  await testUnknownBuildKeys();
   console.log("CHECKS " + helpers.getChecks());
 }
 

@@ -132,4 +132,13 @@ function makeCompositeSigner(arm, opts) {
   };
 }
 
-module.exports = { makeSigner: makeSigner, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt };
+// makeTsa(alg, opts) -> { cert, key }: the TSA argument pki.tsp.sign actually reads. makeSigner
+// also returns keyObject and spki for callers that need them, and handing the whole bag to a verb
+// that reads two of its fields is the shape the unknown-field doors exist to refuse -- a name
+// belonging on the OPTIONS, placed here instead, would otherwise be dropped in silence.
+function makeTsa(alg, opts) {
+  var s = makeSigner(alg, opts);
+  return { cert: s.cert, key: s.key };
+}
+
+module.exports = { makeSigner: makeSigner, makeTsa: makeTsa, minimalCert: minimalCert, makeCompositeSigner: makeCompositeSigner, makeRecipient: makeRecipient, keyUsageExt: keyUsageExt };

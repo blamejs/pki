@@ -188,6 +188,41 @@ security-only patches after the next major releases.
   specification itself permits remains, in that a registered algorithm may ride
   as its registry integer or as its object identifier, so identify a certificate
   by the X.509 bytes it reconstructs rather than by its C509 bytes.
+- **A misspelled authoring field silently omitted from a signed artifact.** Every
+  producing verb refuses a field it does not read, on each caller-owned argument,
+  before any of them is used. Without that door the artifact is built, signed and
+  returned while simply not carrying what was asked for, and nothing in the
+  result says so. The cases were not hypothetical: `extension` in place of
+  `extensions` on `pki.x509.sign` produced a signed certificate with NO
+  extensions, so an intended CA shipped without `basicConstraints` and an
+  intended constrained certificate without `keyUsage`; `revokedCertificates` in
+  place of `revoked` on `pki.crl.sign` produced a correctly signed, structurally
+  valid CRL asserting that NOTHING is revoked; and an issuer nested inside the
+  spec rather than passed as the second argument produced a self-signed
+  certificate. Each permitted-field table is derived from what the verb actually
+  reads, including through the helpers it delegates to, because a table naming a
+  field nothing reads reopens the same hole. A NESTED descriptor carries its own
+  table, because the level above cannot see its fields: a PKCS#12 `safeContents`
+  entry holds the privacy directive for everything inside it, and a misspelled
+  `encrypt` there was neither present nor falsy, so it passed the check that
+  rejects a present-but-falsy directive and the safe was emitted as plaintext
+  `id-data` -- an unshrouded private-key bag in the clear, inside a PFX whose
+  MAC still verified and which opened without complaint. A bag is checked
+  against the fields ITS OWN TYPE reads, because a union admits a field the
+  chosen type never looks at: `encrypt` on a plaintext key bag was accepted and
+  ignored, emitting the key unencrypted. The rule covers every caller-owned
+  argument without exception, including one that carries only required fields:
+  a misspelling of those is refused for what it leaves missing, but a name
+  belonging on a DIFFERENT argument, written there instead, is read by nothing
+  and dropped in silence -- `ordering` placed on the TSA argument of
+  `pki.tsp.sign` emitted a token the size of one that never requested it. Where
+  an argument has mutually exclusive FORMS, the table is the one the selected
+  form reads, because a union admits what the chosen branch never looks at: an
+  issuing certificate supplied alongside an explicit issuer name signed under the
+  certificate's own distinguished name; `recipientCerts` under the PKCS#12
+  `safeContents` form selected no privacy at all and the private key went out in
+  the clear; and `pss` under CMP MAC protection emitted a message byte for byte
+  identical to one that never named it.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the
   bytes that were actually signed rather than re-encoding and hoping for

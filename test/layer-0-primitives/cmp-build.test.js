@@ -64,6 +64,20 @@ async function run() {
   check("4a. a protected build carries BOTH protectionAlg and protection", mi.header.protectionAlg && mi.header.protectionAlg.name === "ecdsaWithSHA256" && Buffer.isBuffer(mi.protection.bytes));
   check("4b. supplying both {key,cert} and {mac} -> cmp/bad-input", await codeOf(pki.cmp.build(irMsg, { key: s.key, cert: s.cert, mac: { secret: "x" } })) === "cmp/bad-input");
   check("4c. supplying neither protection selector -> cmp/bad-input", await codeOf(pki.cmp.build(irMsg, {})) === "cmp/bad-input");
+  // The signature parameters are read only by the signature form. Under PBMAC1 a requested pss or
+  // digestAlgorithm selected nothing and the message went out MAC'd under the default PRF, identical
+  // byte for byte to the call that never named them.
+  var MAC = { mac: { secret: "a-shared-secret", salt: Buffer.alloc(16, 7), iterationCount: 100000 } };
+  check("4d. pss under MAC protection -> cmp/bad-input",
+    await codeOf(pki.cmp.build(irMsg, { mac: MAC.mac, pss: true })) === "cmp/bad-input");
+  check("4e. digestAlgorithm under MAC protection -> cmp/bad-input",
+    await codeOf(pki.cmp.build(irMsg, { mac: MAC.mac, digestAlgorithm: "sha512" })) === "cmp/bad-input");
+  check("4f. the same parameters on the signature form still build",
+    (await pki.cmp.build(irMsg, { key: s.key, cert: s.cert, digestAlgorithm: "sha512" })) != null);
+  check("4g. MAC protection without them still builds", (await pki.cmp.build(irMsg, MAC)) != null);
+  check("4h. an option shared by both forms is accepted on each",
+    typeof (await pki.cmp.build(irMsg, { mac: MAC.mac, pem: true })) === "string" &&
+    typeof (await pki.cmp.build(irMsg, Object.assign({ pem: true }, SIG))) === "string");
 
   var ccBump = { header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: -1, hashAlg: "sha256" }] } };
   check("5a. a certConf hashAlg auto-bumps pvno to cmp2021(3)", parse(await pki.cmp.build(ccBump, SIG)).header.pvno === 3);

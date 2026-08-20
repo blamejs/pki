@@ -392,6 +392,27 @@ function cmdInterop(opts) {
 
 // ---- Subcommands ---------------------------------------------------------
 
+// The static gate battery. Every gate in it reads the WORKING TREE, so a run
+// answers only for the bytes present at the moment it runs: a cut that edits
+// the release notes or regenerates the CHANGELOG after an earlier hand-run
+// leaves that run answering for a tree the commit no longer contains. Running
+// it wherever a commit is about to be created is what makes the LAST edit the
+// gated one, and it covers the cut shape that skips `prepare` — a feature
+// already in the working tree cannot satisfy prepare's clean-main requirement,
+// so prepare-only gating leaves that shape resting on the operator's memory.
+function _staticGates() {
+  _section("static gates");
+  _run("npx", ["--yes", "eslint@10.3.0", "--max-warnings", "0", "."]);
+  _runScriptIfPresent("test/layer-0-primitives/codebase-patterns.test.js");
+  _runScriptIfPresent("scripts/validate-source-comment-blocks.js");
+  _run("node", ["scripts/check-api-snapshot.js"]);
+  _runScriptIfPresent("scripts/check-spelling-consistency.js");
+  _runScriptIfPresent("scripts/check-status-lifecycle.js");
+  _run("node", ["scripts/pin-all.js", "--check"]);
+  _ok("eslint + codebase-patterns + source-comment-blocks + api-snapshot + spelling + " +
+      "status-lifecycle + lockfile pin currency clean");
+}
+
 function cmdPrepare(opts) {
   _section("prepare");
   if (!_gitOnMain()) {
@@ -414,15 +435,7 @@ function cmdPrepare(opts) {
   _section("regen artifacts");
   _regenArtifacts();
 
-  _section("static gates");
-  _run("npx", ["--yes", "eslint@10.3.0", "--max-warnings", "0", "."]);
-  _runScriptIfPresent("test/layer-0-primitives/codebase-patterns.test.js");
-  _runScriptIfPresent("scripts/validate-source-comment-blocks.js");
-  _runScriptIfPresent("scripts/check-status-lifecycle.js");
-  _runScriptIfPresent("scripts/check-spelling-consistency.js");
-  _run("node", ["scripts/pin-all.js", "--check"]);
-  _ok("eslint + codebase-patterns + source-comment-blocks + status-lifecycle + spelling + " +
-      "lockfile pin currency clean");
+  _staticGates();
 
   _section("supply-chain currency");
   // A stale vendored bundle becomes a release blocker HERE instead of an
@@ -507,6 +520,15 @@ function cmdCommit() {
     throw new Error("release: commit must run on main or " + branch +
                     " (currently on " + current + ")");
   }
+
+  // AFTER the branch is selected, never before: every gate reads the working
+  // tree, and the checkout above can replace it. Running from `main` with the
+  // release branch already present would otherwise validate main's bytes and
+  // then commit the branch's -- the same "answered for a tree the commit does
+  // not contain" fault the battery exists to close. A failing gate here leaves
+  // the branch checked out, which is idempotent and costs nothing; committing
+  // ungated bytes is not.
+  _staticGates();
 
   // If HEAD already carries a commit for this release, skip the second
   // commit and verify the existing signature instead.
@@ -628,6 +650,11 @@ function cmdPushFix(opts) {
   // otherwise a stale branch whose PR already merged/closed would get a new
   // commit and a recreated remote branch before the lookup failed.
   var prNum = _openPrNumber(branch);
+
+  // A fix commit reaches the same CI as the release commit, so it answers to the
+  // same battery. Running it here — after the PR lookup, before the commit —
+  // keeps a failing gate from creating a commit that has to be rolled back.
+  _staticGates();
 
   _section("commit");
   _run("git", ["add", "-A"]);
