@@ -190,6 +190,21 @@ async function run() {
   check("every documented password-recipient field is still accepted",
     (await pki.cms.encrypt(MSG, [{ password: "pw", iterations: 2048, prf: "hmacWithSHA256" }], {})) != null);
 
+  // The single EncryptedData descriptor has the same two-arm shape, so it gets the same per-arm
+  // treatment: the `cek` branch derives nothing, and a union table let a caller hand it a work
+  // factor that was discarded exactly as a misspelling would be.
+  check("a password field on a cek EncryptedData descriptor -> cms/bad-input",
+    (await codeOf(function () {
+      return pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1), iterations: 100000 }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+    })) === "cms/bad-input");
+  check("a cek on a password EncryptedData descriptor -> cms/bad-input",
+    (await codeOf(function () {
+      return pki.cms.encrypt(MSG, { password: "pw", cek: Buffer.alloc(32, 1) }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+    })) === "cms/bad-input");
+  check("each arm's own documented fields still build",
+    (await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1) }, { contentEncryptionAlgorithm: "aes-256-cbc" })) != null &&
+    (await pki.cms.encrypt(MSG, { password: "pw", iterations: 2048, prf: "hmacWithSHA256" }, { contentEncryptionAlgorithm: "aes-256-cbc" })) != null);
+
   check("AuthEnvelopedData with a caller-supplied message-digest authAttr is refused",
     (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [mdAttr] }); })) === "cms/bad-input");
   check("that refusal names the clause and the reason, not just the attribute",
