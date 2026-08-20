@@ -84,15 +84,40 @@ var LASTMOD = (function () {
 })();
 var REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
 
+// The renderers themselves are an input to every page. Several pages have their text authored HERE
+// rather than in a content file -- the home page's headings and examples, the API index, the error
+// catalogue -- and every page's headings, titles and primitive sections are produced by this code.
+// So a change to a renderer IS a change to the pages it renders, and dating a page only by the
+// content file it also reads reports a revision older than the page. Chrome (stylesheet, client
+// script, icons) is deliberately NOT here: it changes how a page looks, not what it says, and
+// folding it in would move all 46 dates for a CSS tweak, which is the same overclaim as stamping
+// build time. Absent from the manifest -> contributes nothing, and the pages fall back to their
+// own sources.
+var GENERATOR_SOURCES = (function () {
+  var names;
+  try { names = fs.readdirSync(__dirname).filter(function (n) { return /\.js$/.test(n); }); }
+  catch (_e) { return []; }
+  return names.map(function (n) { return "examples/wiki/lib/" + n; });
+})();
+
 // source: a repo-relative path, an absolute path under the repo, or an array of either (a page
 // generated from several files takes the most recent of them). Unknown -> null.
 function _lastmodFor(source) {
   if (!source) return null;
-  if (Array.isArray(source)) {
-    var best = null;
-    source.forEach(function (s) { var d = _lastmodFor(s); if (d && (!best || d > best)) best = d; });
-    return best;
-  }
+  var best = _newestOf(GENERATOR_SOURCES);
+  var d = _rawLastmod(source);
+  return d && (!best || d > best) ? d : best;
+}
+
+function _newestOf(list) {
+  var best = null;
+  list.forEach(function (s) { var d = _rawLastmod(s); if (d && (!best || d > best)) best = d; });
+  return best;
+}
+
+function _rawLastmod(source) {
+  if (!source) return null;
+  if (Array.isArray(source)) return _newestOf(source);
   var rel = path.isAbsolute(source) ? path.relative(REPO_ROOT, source) : source;
   rel = rel.split(path.sep).join("/");
   return Object.prototype.hasOwnProperty.call(LASTMOD, rel) ? LASTMOD[rel] : null;

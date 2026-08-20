@@ -82,12 +82,18 @@ function main() {
   var today = new Date().toISOString().slice(0, 10);
   var dirty = dirtyPaths();
   Object.keys(dirty).forEach(function (f) { all[f] = today; });
-  // Only the paths the wiki reads: the toolkit's modules, the README the home and overview pages
-  // render, and the concepts file. Shipping the whole repository's history as a lookup table would
-  // put thousands of irrelevant rows in the container image.
+  // Only the paths a page's content depends on: the toolkit's modules (whose @module and @primitive
+  // blocks every namespace page renders), the README the home and overview pages render, the
+  // concepts file, and the wiki's OWN renderers. That last group matters because several pages have
+  // their text authored in the generator rather than in a content file -- the home page's headings
+  // and examples, the API index, the error catalogue -- so a generator change IS a change to those
+  // pages, and dating them only by the content file they also read reports a revision older than
+  // the page. Shipping the whole repository's history as a lookup table would put thousands of
+  // irrelevant rows in the container image.
   var keep = {};
   Object.keys(all).forEach(function (f) {
-    if (/^lib\/[^/]+\.js$/.test(f) || f === "README.md" || f === "examples/wiki/concepts.js") keep[f] = all[f];
+    if (/^lib\/[^/]+\.js$/.test(f) || f === "README.md" ||
+        /^examples\/wiki\/(concepts\.js|lib\/[^/]+\.js)$/.test(f)) keep[f] = all[f];
   });
   var sorted = {};
   Object.keys(keep).sort().forEach(function (k) { sorted[k] = keep[k]; });
