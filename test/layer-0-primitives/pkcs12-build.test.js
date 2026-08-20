@@ -341,6 +341,14 @@ async function testFailClosedInputs() {
   check("a key-only field on a certificate signer -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
       integrity: { mode: "public-key", signers: [{ cert: s.cert, key: s.key, keyIdentifier: Buffer.alloc(20) }] } }))) === "pkcs12/bad-input");
+  // signer is the one-signer spelling of signers, and the list wins outright, so supplying both
+  // signed the store under the list alone and dropped the single signer without a word.
+  check("both signer and signers -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key }, signers: [{ cert: s.cert, key: s.key }] } }))) === "pkcs12/bad-input");
+  check("either spelling on its own still signs the store",
+    (await pki.pkcs12.build(spec11, { password: "1234", integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key } } })) != null &&
+    (await pki.pkcs12.build(spec11, { password: "1234", integrity: { mode: "public-key", signers: [{ cert: s.cert, key: s.key }] } })) != null);
   check("the parameters spelled correctly still sign the store",
     (await pki.pkcs12.build(spec11, { password: "1234",
       integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key, pss: true, digestAlgorithm: "sha384" } } })) != null);
