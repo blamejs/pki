@@ -1359,6 +1359,21 @@ async function testMlKemImport() {
   catch (e) { f32Verdict = e.code || e.constructor.name; }
   finally { global.Float32Array = realF32; }
   check("a Float32Array is refused with the global constructor replaced", f32Verdict === "webcrypto/data");
+
+  // A non-list `keyUsages` is named at the door rather than becoming an empty permission set. The
+  // asymmetric branch partitions the usages before either half is constructed, and `filter` treats a
+  // non-list as array-like and yields `[]`, so both halves arrived valid and the call minted an
+  // unusable PAIR. The symmetric branches hand the value straight to the constructor, whose own door
+  // catches those -- so the two paths are checked separately here.
+  for (var bu = 0; bu < 3; bu++) {
+    var badUsages = [42, "sign", {}][bu];
+    check("generateKey (asymmetric) with a non-array keyUsages " + JSON.stringify(badUsages) + " -> webcrypto/syntax",
+      (await code((function (u) { return function () { return subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, u); }; })(badUsages))) === "webcrypto/syntax");
+    check("generateKey (symmetric) with the same -> webcrypto/syntax",
+      (await code((function (u) { return function () { return subtle.generateKey({ name: "AES-GCM", length: 256 }, true, u); }; })(badUsages))) === "webcrypto/syntax");
+  }
+  check("a real usages array still generates a pair",
+    (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])).privateKey.usages.length === 1);
 }
 
 module.exports = { run: run };
