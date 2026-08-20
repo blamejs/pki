@@ -172,6 +172,17 @@ async function run() {
   check("reject: delegate WITHOUT id-kp-OCSPSigning EKU -> unauthorized, unknown", (function (r) { return r.responderAuthorized === false && r.status === "unknown"; })(await verify(w, await signWith(noEku))));
   var anyEku = await w.delegate({ eku: ["anyExtendedKeyUsage"] });
   check("reject: anyExtendedKeyUsage does NOT authorize -> unknown", (await verify(w, await signWith(anyEku))).status === "unknown");
+  // Responder authorization is a decision about who may answer, so it must not be reachable through
+  // the prototype: `indexOf` replaced after load reports id-kp-OCSPSigning present in a purpose list
+  // that does not carry it, and a delegate the CA never authorized answers for the whole issuer.
+  var anyEkuSigned = await signWith(anyEku);
+  var realIndexOf = Array.prototype.indexOf;
+  Array.prototype.indexOf = function () { return 0; };
+  var anyEkuSwapped;
+  try { anyEkuSwapped = await verify(w, anyEkuSigned); }
+  finally { Array.prototype.indexOf = realIndexOf; }
+  check("reject: ...and stays unauthorized with Array.prototype.indexOf replaced after load",
+    anyEkuSwapped.responderAuthorized === false && anyEkuSwapped.status === "unknown");
   var noNocheck = await w.delegate({ nocheck: false });
   check("reject: delegate missing id-pkix-ocsp-nocheck -> unauthorized (RFC 6960 sec. 4.2.2.2.1)", (function (r) { return r.responderAuthorized === false && r.status === "unknown"; })(await verify(w, await signWith(noNocheck))));
   var expired = await w.delegate({ notAfter: new Date("2027-03-01Z") });   // valid window ends before T

@@ -1022,6 +1022,28 @@ async function testTrustSeam() {
   check("trust: ...while its signature is still reported sound, which is a different claim",
     wrongAnchor.valid === true);
 
+  // The trust verdict is a decision about the message, so it must not be reachable through the
+  // prototype: `every` replaced after load answers true without consulting a single signer, and a
+  // message no supplied anchor covers reports trusted:true.
+  var realEvery = Array.prototype.every;
+  Array.prototype.every = function () { return true; };
+  var wrongAnchorSwapped;
+  try { wrongAnchorSwapped = await pki.cms.verify(signed, Object.assign({ trustAnchors: [otherCa.der] }, AT)); }
+  finally { Array.prototype.every = realEvery; }
+  check("trust: ...and stays untrusted with Array.prototype.every replaced after load",
+    wrongAnchorSwapped.trusted === false);
+  // Signature soundness is the sibling verdict in the same function and answers the same way: a
+  // message whose signature does not verify must not report valid:true because `every` was replaced.
+  var forged = Buffer.from(signed);
+  forged[forged.length - 1] ^= 0xff;   // corrupt the last signature byte
+  var realEvery2 = Array.prototype.every;
+  Array.prototype.every = function () { return true; };
+  var forgedSwapped;
+  try { forgedSwapped = await pki.cms.verify(forged, AT); }
+  finally { Array.prototype.every = realEvery2; }
+  check("trust: a corrupted signature stays invalid with Array.prototype.every replaced after load",
+    forgedSwapped.valid === false);
+
   // A self-signed certificate the attacker minted and embedded: exactly what `valid: true` alone
   // could not distinguish from a real signer.
   var rogue = makeSigner("ec-p256");

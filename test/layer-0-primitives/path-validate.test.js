@@ -698,6 +698,37 @@ async function testCoreRejections() {
   var injCrit = await mkCert({ subject: "Inj", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext(injOid, true, b.nullValue())] });
   var res18e = await run([injCrit], { time: T2027, trustAnchor: anchor });
   check("a critical extension whose OID a caller tried to inject is still rejected", res18e.valid === false && failCodes(res18e).indexOf("path/unrecognized-critical-extension") !== -1);
+
+  // Freezing the table stops a WRITE to it; it does not stop an inherited lookup. The membership
+  // test must ask the table for its OWN property, or a name planted on Object.prototype answers for
+  // every OID the table does not carry and the unrecognized-critical gate reports the extension
+  // processed.
+  var protoOid = "1.2.3.4.5.6.7.8.10";
+  var protoCrit = await mkCert({ subject: "Proto", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext(protoOid, true, b.nullValue())] });
+  // The options bag has a null prototype so the unknown-option door does not see the planted name
+  // and refuse the call first; this vector is aimed at the extension table, not at that door.
+  var protoOpts = Object.create(null);
+  protoOpts.time = T2027;
+  protoOpts.trustAnchor = anchor;
+  var res18f;
+  Object.prototype[protoOid] = true;  try { res18f = await run([protoCrit], protoOpts); }
+  finally { delete Object.prototype[protoOid]; }
+  check("a critical extension whose OID was planted on Object.prototype is still rejected",
+    res18f.valid === false && failCodes(res18f).indexOf("path/unrecognized-critical-extension") !== -1);
+
+  // The same planted name, on a CA certificate rather than the target. Only one of the two tables is
+  // consulted for a non-target, so a vector aimed at the target alone does not answer for this
+  // position: there, the second lookup happens to trip on the same planted name and mask the first.
+  var protoInter = await mkCert({ subject: "ProtoInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ext(protoOid, true, b.nullValue())] });
+  var protoLeaf = await mkCert({ subject: "ProtoLeaf", issuer: "ProtoInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  var protoOpts2 = Object.create(null);
+  protoOpts2.time = T2027;
+  protoOpts2.trustAnchor = anchor;
+  var res18g;
+  Object.prototype[protoOid] = true;  try { res18g = await run([protoInter, protoLeaf], protoOpts2); }
+  finally { delete Object.prototype[protoOid]; }
+  check("a planted OID does not make a CA certificate's critical extension processed",
+    res18g.valid === false && failCodes(res18g).indexOf("path/unrecognized-critical-extension") !== -1);
 }
 
 // ---------------------------------------------------------------------------
@@ -2668,6 +2699,17 @@ async function testInitialInputsAndTargetGates() {
   var leafEkuCode = await mkCert({ subject: "EkuCode", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_CODE_SIGNING], false)] });
   var resEkuMiss = await run([leafEkuCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] });
   check("required purpose missing from the EKU fails path/eku-not-permitted", resEkuMiss.valid === false && failCodes(resEkuMiss).indexOf("path/eku-not-permitted") !== -1);
+  // The purpose test is a RULE, so it is decided by comparison rather than by a prototype method.
+  // Written as `purposes.indexOf(p) !== -1`, the answer came from `Array.prototype.indexOf` as it
+  // was at the moment of the call: replaced after load to report every value present, this same
+  // codeSigning-only certificate satisfied a serverAuth requirement and the chain went from
+  // valid:false to valid:true, with every check around it still running and passing.
+  var realIndexOf = Array.prototype.indexOf;
+  Array.prototype.indexOf = function () { return 0; };
+  var resEkuSwapped;
+  try { resEkuSwapped = await run([leafEkuCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] }); }
+  finally { Array.prototype.indexOf = realIndexOf; }
+  check("...and still fails with Array.prototype.indexOf replaced after load", resEkuSwapped.valid === false);
   // anyExtendedKeyUsage satisfies a required purpose (4.2.1.12: rejecting it is
   // an application MAY, not the default).
   var leafEkuAny = await mkCert({ subject: "EkuAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_ANY], false)] });
@@ -3020,6 +3062,19 @@ async function testTrustAnchorConstraints() {
   var taNot = withMeta({ purposes: { serverAuth: false, emailProtection: false, codeSigning: false } });
   var r22 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taNot, checkPurpose: "serverAuth" });
   check("T22 purpose not trusted -> path/purpose-not-trusted", r22.valid === false && failCodes(r22).indexOf("path/purpose-not-trusted") !== -1);
+  // The purposes map is the operator's restriction, so it must answer from its OWN entries: a name
+  // planted on Object.prototype would otherwise grant the purpose on every anchor that omits it.
+  var taOmits = withMeta({ purposes: { emailProtection: false } });
+  var t22Opts = Object.create(null);
+  t22Opts.time = T2027;
+  t22Opts.trustAnchor = taOmits;
+  t22Opts.checkPurpose = "serverAuth";
+  var leafT22 = await leafAt(BEFORE);
+  var r22p;
+  Object.prototype.serverAuth = true;  try { r22p = await run([leafT22], t22Opts); }
+  finally { delete Object.prototype.serverAuth; }
+  check("T22 a purpose planted on Object.prototype does not grant anchor trust",
+    r22p.valid === false && failCodes(r22p).indexOf("path/purpose-not-trusted") !== -1);
   // T23 -- delegator for the purpose + leaf before D -> valid.
   var taOk = withMeta({ purposes: { serverAuth: true, emailProtection: false, codeSigning: false }, distrustAfter: { serverAuth: D } });
   var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taOk, checkPurpose: "serverAuth" });

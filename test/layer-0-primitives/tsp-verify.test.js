@@ -710,6 +710,15 @@ async function testChainAndBindings() {
     return pki.cms.sign(tst, { cert: essTsa.cert, key: essTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2(1)] }] });
   }
   check("TSTInfo critical unknown extension -> tsp/unknown-critical-extension", (await pki.tsp.verify(await extTok(true), DATA, {})).code === "tsp/unknown-critical-extension");
+  // The scan for a critical extension IS the gate, so it must not be reachable through the
+  // prototype: `some` replaced after load answers false and the unusable token is accepted.
+  var realSome = Array.prototype.some;
+  Array.prototype.some = function () { return false; };
+  var critSwapped;
+  try { critSwapped = await pki.tsp.verify(await extTok(true), DATA, {}); }
+  finally { Array.prototype.some = realSome; }
+  check("TSTInfo ...and is still refused with Array.prototype.some replaced after load",
+    critSwapped.code === "tsp/unknown-critical-extension");
   check("TSTInfo non-critical extension -> accepted", (await pki.tsp.verify(await extTok(false), DATA, {})).valid === true);
 
   // the ESSCertID(V2) certificate binding is an identity pin: a SHA-1 certHash (RFC 2634 ESSCertID)

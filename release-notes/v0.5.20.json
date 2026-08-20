@@ -1,0 +1,24 @@
+{
+  "version": "0.5.20",
+  "headline": "Five verdicts that turned on list membership now decide it by comparison, so replacing an array method after the module loads cannot change what a certificate, a responder or a signed message is found to be.",
+  "summary": "A rule written as `purposes.indexOf(purpose) !== -1` asks the runtime, at the moment of the call, which function `indexOf` is. Replaced after this package loaded, it reports every purpose present on every certificate, and the check around it still runs and still passes. Measured on the previous release: a leaf restricted to `emailProtection`, asked for `requiredEku: [\"serverAuth\"]`, took `pki.path.validate` from `valid: false` to `valid: true`. The membership tests that decide a verdict now run as a loop over `===`, so what the prototype says is no longer part of the answer.",
+  "sections": {
+    "Fixed": [
+      "`pki.path.validate` holds its `requiredEku` gate against a replaced `Array.prototype.indexOf`. The purpose test IS the decision about what the certificate may be used for, and dispatched live it reported `serverAuth` present on a leaf whose extended key usage carried only `emailProtection`, returning a valid chain for a certificate the caller had asked it to refuse. Certificate-policy membership and the `anyPolicy` scans in the policy tree are decided the same way.",
+      "`pki.cms.verify` keeps `trusted: false` for a message no supplied anchor covers. The message-level verdict combined the per-signer answers with `every`, and a replaced one reported the whole set trusted without consulting a single signer.",
+      "An OCSP response is still refused when its delegate lacks id-kp-OCSPSigning. Responder authorization is the decision about who may answer for an issuer, and reading the purpose list through the prototype let a delegate the CA never authorized speak for the whole issuer.",
+      "A TPM attestation certificate still needs the tcg-kp-AIKCertificate purpose. That test is what makes a leaf an attestation key, so reading it live let an ordinary certificate be accepted as one.",
+      "A timestamp token carrying an unrecognized critical extension is still refused (RFC 3161 sec. 2.4.2). The scan for a critical extension IS the gate, and a replaced `Array.prototype.some` answering false made the extension invisible and the unusable token acceptable.",
+      "`pki.cms.verify` keeps `valid: false` for a message whose signature does not verify. The soundness verdict combined the per-signer answers the same way the trust verdict did, so a corrupted signature reported `valid: true`.",
+      "`pki.path.validate` asks its processed-extension tables for their OWN entries. Freezing a table prevents a write to it and does not prevent an inherited lookup, so a name planted on `Object.prototype` answered for every OID the table did not carry and an unrecognized critical extension counted as processed. On a CA certificate only one of the two tables is consulted, so the chain was accepted rather than refused (RFC 5280 sec. 6.1.4).",
+      "A trust anchor's `purposes` map is read for its own entries too. The map is the operator's restriction, and an inherited `true` granted the purpose on every anchor whose map did not name it. `distrustAfter` is read the same way.",
+      "The ML-DSA digest-strength rule (RFC 9882 sec. 3.3) is one question both the signer and the CMS verifier ask, and it answers from the policy table's own entries. A digest name planted on `Object.prototype` answered for every name a parameter set's row omits, so a below-strength digest passed the strength check: `sha256` was accepted for ML-DSA-87 on both paths. The check also had two copies, which is why it now lives in the module that owns the table."
+    ],
+    "Added": [
+      "`guard-list`, an internal choke point for membership decided by comparison. Four verbs cover the rule shapes a verdict needs: is this value present, are all of these present, does any member satisfy a test, do all of them. An absent list is honestly empty rather than a throw, because these run on verdict paths where a throw would read as a different verdict. It is not on the public namespace; the surface is the verdicts above."
+    ],
+    "Changed": [
+      "Certification-path building asks its loop-detection and fetch-dedupe sets through captured methods. These bound the work a hostile chain can cause, and a replaced `Set.prototype.has` answering false let a cycle be walked and a URL be fetched repeatedly until a size cap stopped it."
+    ]
+  }
+}
