@@ -34,7 +34,7 @@
 
 var crypto = require("node:crypto");
 var pki = require("..");
-var TSA = require("../test/helpers/signing").makeSigner("ec-p256");
+var TSA = require("../test/helpers/signing").makeTsa("ec-p256");
 
 // The verification modes run only when the surface exports
 // pki.tsp.verify; the parse entry points are the core target either way.

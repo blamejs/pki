@@ -15,7 +15,7 @@
  */
 
 var pki = require("..");
-var TSA = require("../test/helpers/signing").makeSigner("ec-p256");
+var TSA = require("../test/helpers/signing").makeTsa("ec-p256");
 
 function isPki(e) { return e instanceof pki.errors.PkiError; }
 
