@@ -114,6 +114,40 @@ function run() {
   check("26. allMatch refuses on a list carrying its own lying every",
     list.allMatch(["ab"], isLong) === false);
 
+  // ==== the scan is bounded by the length it started with ====
+  // Array.prototype.every reads length once. A loop that re-reads it can be driven forever by a
+  // caller-owned array whose indexed read appends, which is a synchronous denial of service on the
+  // option lists that reach these verbs (pki.tsp.request/verify certs and extensions,
+  // pki.path.validate userInitialPolicySet). The predicate here gives up after 50 calls so a
+  // regression fails the assertion instead of hanging the suite.
+  function grower(initial) {
+    var backing = [];
+    for (var i = 0; i < initial; i++) backing.push(1);
+    return new Proxy(backing, {
+      get: function (t, k) {
+        if (typeof k === "string" && String(Number(k)) === k) { t.push(1); return 1; }
+        return t[k];
+      },
+    });
+  }
+  var calls = 0;
+  var allRes = list.allMatch(grower(2), function () { calls++; return calls < 50; });
+  check("27. allMatch scans only the length the list had at entry, so a growing list terminates",
+    calls === 2 && allRes === true);
+
+  calls = 0;
+  var anyRes = list.anyMatches(grower(3), function () { calls++; return false; });
+  check("28. anyMatches is bounded the same way", calls === 3 && anyRes === false);
+
+  calls = 0;
+  var containsRes = list.contains(grower(4), "absent");
+  check("29. contains is bounded the same way", containsRes === false);
+
+  // containsAll iterates the caller's REQUIRED values, which is the caller-owned list on the
+  // pki.path.validate requiredEku route.
+  var allValsRes = list.containsAll(["serverAuth"], grower(2));
+  check("30. containsAll is bounded by the required-values length at entry", allValsRes === false);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
