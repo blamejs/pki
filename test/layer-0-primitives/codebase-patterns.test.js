@@ -149,6 +149,7 @@ var VALID_ALLOW_CLASSES = {
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
   "guard-shape-reinlined": 1,
+  "guard-reads-runtime-live": 1,
   "ocsp-responder-auth-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
   "guard-without-enforcement": 1,
@@ -1747,6 +1748,26 @@ function testNoDuplicateCodeBlocks() {
   //     reason: "why these are not extractable" }
   var KNOWN_CLUSTERS = [
     {
+      // The per-guard capture header: a run of `var _x = intrinsic.y;` bindings taking what the
+      // module reads from the runtime before any caller code can reach it. The uniformity IS the
+      // point -- every guard binds the same names to the same intrinsics, so a reader comparing two
+      // modules sees one list in the same shape and can tell at a glance what each still reads
+      // live. Extracting it further is not possible: each module binds a DIFFERENT subset (the byte
+      // guard needs isView, the identifier guard needs ownKeys), and a shared object handed around
+      // would reintroduce the property read at the call site that the capture exists to remove.
+      // family-subset so any 3+ of the guards match as more of them are swept.
+      files: [
+        "lib/guard-bytes.js:<top>", "lib/guard-identifier.js:<top>", "lib/guard-parsed.js:<top>",
+        "lib/guard-compress.js:<top>", "lib/guard-encoding.js:<top>", "lib/guard-json.js:<top>",
+        "lib/guard-header.js:<top>", "lib/guard-der.js:<top>", "lib/guard-limits.js:<top>",
+        "lib/guard-range.js:<top>", "lib/guard-async.js:<top>", "lib/guard-time.js:<top>",
+        "lib/guard-name.js:<top>", "lib/guard-text.js:<top>", "lib/guard-secret.js:<top>",
+        "lib/cmp-verify.js:<top>", "lib/ocsp-verify.js:makeOcspVerify",
+      ],
+      mode: "family-subset",
+      reason: "The per-guard capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across guards; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
+    },
+    {
       // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
       // delegations to the shared pkix.pemDecode / pkix.pemEncode, differing only
       // in the default PEM label + error class. The parse LOGIC is already factored
@@ -2756,6 +2777,121 @@ function testAsn1ReaderExists() {
   _report("every asn1.read.<name> call names a reader the codec actually exports", bad);
 }
 
+function testGuardReadsRuntimeLive() {
+  // class: guard-reads-runtime-live
+  // A guard decides things, and it decides them with operations it reads from the runtime. Every
+  // one of those is an ordinary writable property of a global, so reading it at the moment it runs
+  // hands the decision to whoever last wrote it. The failures are silent and in the PASSING
+  // direction: a `forEach` replaced with a no-op makes a scan report nothing over real keys and
+  // the rule keyed on that scan then passes over an empty list; a `toLowerCase` returning a
+  // constant makes every distinguished name equal to every other.
+  //
+  // This was found SIX times in a row, one reference at a time, each fix closing exactly the one
+  // named and leaving the next tier live: the method, then the `.call` used to invoke it, then the
+  // array test asked again deeper in, then the constructor a re-view built with, then the
+  // re-encode half of a round trip whose decode half was captured, then the array and collection
+  // prototypes. This detector exists so the seventh is found here rather than by a reviewer.
+  //
+  // The rule: inside lib/guard-*.js, a bare `Global.member(` or a bare `x.method(` on one of the
+  // known-replaceable operation names is a live read. The safe spellings are a module-load capture
+  // (a `_`-prefixed local bound from guard-intrinsic or from the prototype directly) and a call
+  // through it. guard-intrinsic itself is where the captures are taken, so it is exempt.
+  var LIVE_STATICS = [
+    "Object\\.(?:create|keys|assign|freeze|getPrototypeOf|setPrototypeOf|getOwnPropertyNames|getOwnPropertyDescriptor|defineProperty|isExtensible)",
+    "Array\\.isArray", "ArrayBuffer\\.isView", "Reflect\\.(?:ownKeys|apply)",
+    "Buffer\\.(?:from|alloc|isBuffer|byteLength|concat|compare)",
+    "Number\\.(?:isInteger|isSafeInteger|isNaN)", "String\\.fromCharCode",
+    "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)", "Promise\\.(?:resolve|reject)",
+  ];
+  // `equals` and `compare` are Buffer.prototype's identity verbs, `toString` and `subarray` its
+  // byte-to-text and byte-slice steps. Each decides something on its own: one `equals` answering
+  // true matches any value against any other, and one `toString` returning a constant makes every
+  // name equal every other name it is compared against.
+  // The string and pattern verbs are here because an identity comparison is built out of them: where
+  // a mailbox separator sits, which substring is the domain, whether a local-part is well-formed,
+  // how a URI splits into scheme and authority. Each is one replaceable call, and moving any one of
+  // them moves the boundary, so the name the verb ends up comparing is not the one on the wire.
+  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|concat|join|" +
+    "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
+    "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
+    "includes|hasOwnProperty)";
+  var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
+  // A method call whose receiver is NOT a `_`-prefixed capture. The receiver may be a whole member
+  // expression: `sanNode.bytes.equals(...)` dispatches off a prototype exactly as `bytes.equals(...)`
+  // does, and matching only a bare identifier let that one through. What the leading `_` exclusion
+  // has to apply to is the ROOT of the expression, since that is where a capture is named.
+  // `intrinsic.x(` and `guard.x(` are module handles rather than prototypes, so they are excluded
+  // by name below.
+  var MODULE_HANDLES = /^(?:intrinsic|_intrinsic|guard|helpers|pkix|schema|oid|asn1|cbor|C|errors|util|crypto|os|fs|path|constants)$/;
+  var methodRe = new RegExp(
+    "(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)((?:\\.[A-Za-z$][\\w$]*)*)\\." + LIVE_METHODS + "\\s*\\(", "g");
+  // The conversions and predicates called as bare globals. They read as language rather than as
+  // code, which is why they outlasted every other read here: an index test is
+  // `String(Number(k)) === k`, an arc bound is a bound on `BigInt(part)`, a JSON number is refused
+  // by `isFinite(v)`, and a default validation time is `new Date()`. Each is an ordinary writable
+  // property of globalThis. A property access like `Number.isInteger` is not a call and is
+  // excluded; `new Date(...)` IS included, because which constructor runs is the question.
+  var convertRe =
+    /(?:^|[^\w.$])(?:new\s+)?(String|Number|Boolean|BigInt|Date|isFinite|isNaN|parseInt|parseFloat|ArrayBuffer|Uint8Array|DataView|Object)\s*\(/g;
+  // A prototype OBJECT used as an identity sentinel -- "is this plain", "is this a Buffer", "has
+  // the chain walk reached the top". It is reached as a property of a replaceable global, so after
+  // a replacement the sentinel is a different object and every comparison against it is false.
+  // A `uncurry(X.prototype.m)` capture is a call-time-free read taken at load, so it is excluded.
+  var protoRe = /(?:^|[^\w.$])(Object|Buffer|Array|Function|Promise)\.prototype(?!\s*\.\s*\w+\s*\))/g;
+  // SCOPE, chosen so it needs no list to maintain. A module is IN if it imports guard-intrinsic:
+  // taking the captures is how a module opts into the discipline, and once opted in it is held to
+  // it completely rather than at the one site somebody happened to change. A module that has not
+  // opted in is out of scope and stays out until it does, so the rule extends by the same edit
+  // that would otherwise create a half-swept file. Naming the modules instead would be a judgment
+  // about which ones decide things, and the seven rounds above are what that judgment is worth.
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (rel === "lib/guard-intrinsic.js") return;   // where the captures are taken
+    var src = fs.readFileSync(f, "utf8");
+    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(src)) return;
+    var lines = _lines(src);
+    for (var i = 0; i < lines.length; i++) {
+      // A `*`-led line is the continuation of a block comment. The stripper works one line at a
+      // time, so it cannot see the `/*` that opened it, and a `@example` block would otherwise be
+      // read as code.
+      if (/^\s*\*/.test(lines[i])) continue;
+      var code = _stripCommentsAndLiterals(lines[i]);
+      var m;
+      staticRe.lastIndex = 0;
+      while ((m = staticRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "reads `" + m[0].replace(/\s*\($/, "") + "` from the runtime at call time — " +
+            "bind it at module load through guard-intrinsic, so a caller who replaces it afterwards " +
+            "cannot decide what this guard concludes" });
+      }
+      methodRe.lastIndex = 0;
+      while ((m = methodRe.exec(code)) !== null) {
+        if (MODULE_HANDLES.test(m[1])) continue;
+        bad.push({ file: rel, line: i + 1,
+          content: "dispatches `" + m[0].trim() + "` through a live prototype — " +
+            "use the uncurried capture from guard-intrinsic, so a replaced prototype method cannot " +
+            "decide what this guard concludes" });
+      }
+      protoRe.lastIndex = 0;
+      while ((m = protoRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "compares against the live `" + m[1] + ".prototype` — take the sentinel from " +
+            "guard-intrinsic, so a replaced global cannot make the comparison answer about a " +
+            "different object" });
+      }
+      convertRe.lastIndex = 0;
+      while ((m = convertRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "converts through the live global `" + m[1] + "` — take it from guard-intrinsic, " +
+            "so a replacement cannot decide what this value converts to" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "guard-reads-runtime-live");
+  _report("no module that imports guard-intrinsic reads a replaceable runtime operation at call time", bad);
+}
+
 function testEveryGuardEnforced() {
   // class: guard-without-enforcement
   // Anti-drift META-check -- the guard-family analog of the @primitive comment-
@@ -3292,6 +3428,7 @@ function run() {
   testRawSecretExportIsWiped();
   testConstantTimeCompareShortCircuited();
   testAsn1ReaderExists();
+  testGuardReadsRuntimeLive();
   testEveryGuardEnforced();
   testGuardErrorFactoryNotClass();
   testValidatorShapeReinlined();

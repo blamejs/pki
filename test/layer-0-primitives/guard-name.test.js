@@ -82,12 +82,91 @@ function testRenderEscaping() {
   check("clean DN value untouched", name.escapeDnValue("pkijs.com") === "pkijs.com");
 }
 
+// Every operation this guard is built out of is taken from the prototypes at module load, so a
+// caller who rewrites one afterwards changes nothing here. Each value compared is a primitive
+// string, so `"x".toLowerCase()` reaches whatever `String.prototype` holds at the moment it runs,
+// and those are ordinary writable properties. A `toLowerCase` returning a constant answers the
+// whole of this guard's job on the caller's behalf: every DN compares equal to every other, so
+// chaining accepts an unrelated issuer, a revocation entry matches a certificate it was never
+// written for, and a name constraint stops excluding anything.
+//
+// Three structurally different members of the class are exercised, since the claim quantifies over
+// String.prototype and not over one method: the case fold, the character read the canonical walk is
+// built on, and the character-code read the control-byte reject is built on.
+function testNotCallerReplaceable() {
+  // Equal-length values, so a replacement that answers the same character for every position
+  // produces the same canonical form on both sides. Two different lengths would stay different
+  // whatever the replacement returns, and the vector would pass without the guard holding.
+  var A = rdn(CN, "alice"), B = rdn(CN, "bobby");
+  var swaps = [
+    // The case fold, answered as one constant for every input.
+    ["toLowerCase", function () { return "same"; }],
+    // The character read the canonical walk builds its output from.
+    ["charAt", function () { return "s"; }],
+    // The character-code read the whitespace collapse consults. Answering SPACE for every position
+    // drops every character, so each value canonicalizes to the empty string.
+    ["charCodeAt", function () { return 0x20; }]
+  ];
+  for (var i = 0; i < swaps.length; i++) {
+    var key = swaps[i][0], real = String.prototype[key], equal;
+    try {
+      String.prototype[key] = swaps[i][1];
+      equal = name.rdnEqual(A, B, E, "x/bad", "the name");
+    } finally {
+      String.prototype[key] = real;
+    }
+    check("a replaced String.prototype." + key + " cannot make two different DNs compare equal",
+      equal === false);
+  }
+  // The control-byte reject reads character codes too, and it is the CVE-2009-2408 defense: a
+  // charCodeAt that never reports a control byte lets `good.example.com\0.evil.com` through the
+  // one check standing between it and a comparison or a display.
+  var realCharCodeAt = String.prototype.charCodeAt, nulCode;
+  try {
+    String.prototype.charCodeAt = function () { return 0x61; };
+    nulCode = codeOf(function () {
+      name.assertNoControlBytes("good.example.com" + NUL + ".evil.com", E, "x/bad", "the name");
+    });
+  } finally {
+    String.prototype.charCodeAt = realCharCodeAt;
+  }
+  check("a replaced String.prototype.charCodeAt cannot hide an embedded control byte",
+    nulCode === "x/bad");
+  // The escaping side of the same class: a replaced charAt decides what a report line says a
+  // subject was, which is the display-confusion half of what this module defends.
+  var realCharAt = String.prototype.charAt, escaped;
+  try {
+    String.prototype.charAt = function () { return "s"; };
+    escaped = name.escapeDnValue("foo, CN=admin");
+  } finally {
+    String.prototype.charAt = realCharAt;
+  }
+  check("a replaced String.prototype.charAt cannot rewrite an escaped DN value",
+    escaped === "foo\\, CN=admin");
+
+  // The shape test that decides whether a comparison can happen at all. Replacing it points the
+  // wrong way -- comparisons become refusals rather than false matches -- so this pins the
+  // capture, and it does so on the refusal side, where a caller could otherwise deny service to
+  // every name comparison the toolkit makes.
+  var realIsArray = Array.isArray, sameDn;
+  try {
+    Array.isArray = function () { return false; };
+    // Caught inside the swap so the failure reports as this check rather than escaping the suite.
+    try { sameDn = name.rdnEqual(rdn(CN, "alice"), rdn(CN, "alice"), E, "x/bad", "the name"); }
+    catch (e) { sameDn = "threw " + (e.code || "OTHER"); }
+  } finally {
+    Array.isArray = realIsArray;
+  }
+  check("a replaced Array.isArray cannot turn a valid comparison into a refusal", sameDn === true);
+}
+
 function run() {
   testDnEqual();
   testRdnMultiset();
   testControlByteReject();
   testRenderEscaping();
   testEmailEqual();
+  testNotCallerReplaceable();
 }
 
 // RFC 5280 sec. 7.5 decides the match; RFC 8398 sec. 5 decides what may not be

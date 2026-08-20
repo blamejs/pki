@@ -86,6 +86,23 @@ function run() {
       thrown instanceof TestError && thrown.code === "test/bad-secret");
   }
 
+  // ---- the wipe does not dispatch through a property a caller can replace ----
+  // Buffer shadows the typed-array fill with its own writable `Buffer.prototype.fill`, so reading
+  // the method off the value at wipe time would let a caller decide what wiping means. A no-op
+  // replacement is the worst shape of that: every wipe in the toolkit returns normally, having
+  // cleared nothing, and no verdict, error or log changes. Without the module-load capture the
+  // secret below survives verbatim.
+  var realFill = Buffer.prototype.fill;
+  var noop = Buffer.from("hunter2hunter2hu", "utf8");
+  try {
+    Buffer.prototype.fill = function () { return this; };
+    secret.zeroize(noop, E, "test/bad-secret", "noop-fill");
+  } finally {
+    Buffer.prototype.fill = realFill;
+  }
+  check("a replaced Buffer.prototype.fill cannot turn the wipe into a silent no-op",
+    Array.prototype.every.call(noop, function (x) { return x === 0; }));
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

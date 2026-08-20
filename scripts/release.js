@@ -1075,9 +1075,25 @@ function _flagValue(name) {
   return undefined;
 }
 
-// The push-fix commit message: `-m "…"` / `--message "…"` (value in the next
-// token) or `--message="…"` (attached). Returns undefined if absent.
+// The push-fix commit message: `-F <path>` / `--message-file <path>` reads it from a file, or
+// `-m "…"` / `--message "…"` / `--message="…"` gives it inline. Returns undefined if absent.
+//
+// Prefer the file form for anything with punctuation in it. An inline message is typed on a command
+// line, where the shell expands a backtick or a `$` before the argument ever reaches this script,
+// and the damage is silent: the commit lands with a mangled body that reads as a successful commit.
+// A file is read here, after the shell is out of the way.
 function _messageValue() {
+  var fileAttached = _flagValue("--message-file");
+  var filePath = fileAttached;
+  if (filePath === undefined) {
+    for (var f = 0; f < args.length; f++) {
+      if (args[f] === "-F" || args[f] === "--message-file") { filePath = args[f + 1]; break; }
+    }
+  }
+  if (filePath !== undefined) {
+    if (!filePath) throw new Error("release: --message-file needs a path");
+    return fs.readFileSync(filePath, "utf8").replace(/\s+$/, "");
+  }
   var attached = _flagValue("--message");
   if (attached !== undefined) return attached;
   for (var i = 0; i < args.length; i++) {

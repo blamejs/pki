@@ -332,6 +332,28 @@ async function run() {
   check("9m. an empty-subject cert: a sender matching a subjectAltName entry verifies", (await pki.cmp.verify(await eeMsg("ee.example"), { signerCert: eeCert })).valid === true);
   check("9n. an empty-subject cert: a sender NOT in the subjectAltName -> cmp/sender-mismatch", (await pki.cmp.verify(await eeMsg("evil.example"), { signerCert: eeCert })).code === "cmp/sender-mismatch");
   check("9o. an empty-subject cert: a case-different dNSName sender still matches the SAN (RFC 5280 sec. 4.2.1.6)", (await pki.cmp.verify(await eeMsg("EE.EXAMPLE"), { signerCert: eeCert })).valid === true);
+  // The same non-matching sender, with the step that turns the SAN's bytes into text replaced. A
+  // dNSName SAN is read latin1, so a `toString` answering with the sender's own name for that one
+  // encoding makes any certificate's SAN read as any sender -- and the binding that decides whether
+  // this signer is allowed to speak for this sender then holds for a name it never carried. Only
+  // the latin1 call is answered, so PEM, hex and base64 elsewhere in the call are untouched and the
+  // refusal is attributable to this comparison.
+  var evilMsg = await eeMsg("evil.example");           // built before the replacement, so only verify runs under it
+  var realBufToString = Buffer.prototype.toString;
+  var spoofedSan;
+  try {
+    Buffer.prototype.toString = function () {
+      var real = realBufToString.apply(this, arguments);
+      // Only the SAN's own bytes are answered for. Lying for every latin1 call instead would break
+      // certificate parsing, and the refusal could then not be attributed to this comparison.
+      return real === "ee.example" ? "evil.example" : real;
+    };
+    spoofedSan = (await pki.cmp.verify(evilMsg, { signerCert: eeCert })).code;
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("9n2. and still a mismatch with Buffer.prototype.toString replaced for latin1",
+    spoofedSan === "cmp/sender-mismatch");
   // A MALFORMED dNSName (an empty label) is compared byte-exact, not case-folded, so a byte-distinct identity
   // differing only in case does not bind (RFC 5280 sec. 4.2.1.6 / RFC 1034 preferred name syntax).
   var badDnsCert = await pki.x509.sign({ subject: [], subjectPublicKey: eeSpki, serialNumber: 47, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "Victim..COM" }] } }, { key: caKey, cert: caCert });
@@ -570,6 +592,57 @@ async function run() {
   check("15e. an unknown opts key -> throws cmp/bad-input", await codeOf(pki.cmp.verify(derMsg, { signerCert: s.cert, bogus: 1 })) === "cmp/bad-input");
   // an empty PBMAC1 secret has no entropy -> a peer could forge a matching MAC; require a non-empty secret.
   check("15f. an empty-string sharedSecret on a MAC message -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "" })) === "cmp/bad-input");
+  // The same gate, with the length it measures replaced. A string secret is converted to bytes at
+  // the door, so the emptiness check reads a typed array from there on -- and on a typed array
+  // `length` is a configurable accessor on the prototype. One reporting a positive value for an
+  // empty buffer would let `sharedSecret: ""` past the gate, so `_nonEmptySecret` measures through
+  // the byte guard's captured intrinsic getter.
+  //
+  // The replacement lies only where the real length is zero, and reports the true length everywhere
+  // else. That is what makes the vector attributable: a blanket lie also breaks the DER reader, so
+  // the call would be refused for a reason that has nothing to do with this gate. Reporting 8 for
+  // an empty view and the truth for every other one leaves the whole parse intact and moves exactly
+  // one decision -- whether the converted secret is empty.
+  var taProto15 = Object.getPrototypeOf(Uint8Array.prototype);
+  var realLen15 = Object.getOwnPropertyDescriptor(taProto15, "length");
+  var realGet15 = realLen15.get;
+  var emptyOutcome;
+  try {
+    Object.defineProperty(taProto15, "length", {
+      get: function () { var n = realGet15.call(this); return n === 0 ? 8 : n; },
+      configurable: true,
+    });
+    emptyOutcome = await codeOf(pki.cmp.verify(macDer, { sharedSecret: "" }));
+  } finally {
+    Object.defineProperty(taProto15, "length", realLen15);
+  }
+  check("15f2. and still refused with the typed-array length getter replaced",
+    emptyOutcome === "cmp/bad-input");
+
+  // A trust-anchor list must be dense and hold its positions as its own elements, so a hole cannot
+  // be filled from the prototype with an anchor the caller never passed. The density count asks
+  // which own names are indices, and that question is `String(ix) === k`.
+  // "00" is a numeric name that is not the canonical spelling of its number: Number("00") is 0 and
+  // String(0) is "0", so it is not an index and position 0 stays a hole.
+  var holed = [];
+  holed.length = 1;
+  holed["00"] = s.cert;
+  check("15g. a trust-anchor list with a hole is refused",
+    await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", trustAnchors: holed })) === "cmp/bad-input");
+  // The same list, with the conversion the index test is built on replaced so that "00" answers as
+  // the canonical spelling of 0. What this shows is the outcome: the call still refuses. It does
+  // NOT isolate the index test -- the element at the hole reads back undefined, and the byte-source
+  // check refuses that whatever the density count concluded. The isolating vector for the same
+  // replacement is in guard-intrinsic.test.js, where the index scan's own answer is observed.
+  var realString = globalThis.String;
+  var holedOutcome;
+  try {
+    globalThis.String = function (x) { return x === 0 ? "00" : realString(x); };
+    holedOutcome = await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", trustAnchors: holed }));
+  } finally {
+    globalThis.String = realString;
+  }
+  check("15g2. and still refused with the global String replaced", holedOutcome === "cmp/bad-input");
   check("15g. a zero-length Buffer sharedSecret -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: Buffer.alloc(0) })) === "cmp/bad-input");
 
   // ===== 16. direction-agnostic acceptance (a RESPONSE arm verifies exactly like a request) =====
@@ -620,6 +693,534 @@ async function run() {
   check("21d. a valid-DER-but-not-a-certificate signerCert (corrupt required config) -> throws cmp/bad-input, not a routine not-found verdict", await codeOf(pki.cmp.verify(await buildSig(), { signerCert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) })) === "cmp/bad-input");
   var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
   check("21e. an opt-in transactionID against a message that carries none -> cmp/transaction-id-mismatch", (await pki.cmp.verify(noTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
+
+  // ===== 23. every caller-owned option is fixed at the call =====
+  // Verification suspends this verb -- PBMAC1 derivation on one path, the signature engine on the
+  // other -- and an option read after it resumes answers for whatever the caller last wrote. RED
+  // without the fix: each of these returned valid === true for a message the option did not match.
+  var raceDer = await buildSig({ transactionID: Buffer.alloc(16, 7) });
+  check("23a. baseline: a transactionID the message does not carry is refused",
+    (await pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 9) })).valid === false);
+  check("23b. baseline: the matching transactionID passes",
+    (await pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 7) })).valid === true);
+
+  // The buffer itself is overwritten, so the caller never touches the property.
+  var raceBuf = Buffer.alloc(16, 9);
+  var racePending = pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: raceBuf });
+  raceBuf.fill(7);
+  check("23c. overwriting the transactionID buffer mid-call does not change the verdict",
+    (await racePending).valid === false);
+
+  // The property is replaced on the caller's own options object.
+  var raceOpts = { signerCert: s.cert, transactionID: Buffer.alloc(16, 9) };
+  var racePending2 = pki.cmp.verify(raceDer, raceOpts);
+  raceOpts.transactionID = Buffer.alloc(16, 7);
+  check("23d. replacing opts.transactionID mid-call does not change the verdict",
+    (await racePending2).valid === false);
+
+  // The MAC path suspends inside PBMAC1 derivation, so it has the same window.
+  var raceMac = await buildMac("hunter2", {}, { transactionID: Buffer.alloc(16, 7) });
+  var macOpts = { sharedSecret: "hunter2", transactionID: Buffer.alloc(16, 9) };
+  var racePending3 = pki.cmp.verify(raceMac, macOpts);
+  macOpts.transactionID = Buffer.alloc(16, 7);
+  check("23e. the MAC path fixes the transactionID at the call too",
+    (await racePending3).valid === false);
+
+  // expectRecipNonce is the sibling echo value and takes the same route.
+  var raceNonce = Buffer.alloc(16, 3);
+  var racePending4 = pki.cmp.verify(raceDer, { signerCert: s.cert, expectRecipNonce: raceNonce });
+  raceNonce.fill(0);
+  var rn = await racePending4;
+  check("23f. overwriting expectRecipNonce mid-call does not change the verdict", rn.valid === false);
+
+  // A Date is re-made at the same instant, so setTime on the caller's own object cannot move the
+  // instant the chain is validated at. The call starts OUTSIDE the signer's validity, where the
+  // chain fails, and is mutated to an instant inside it -- the direction that would gain trust.
+  var raceChain = await pki.cmp.build({ header: Object.assign({ messageTime: T }, HDR), body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
+  var OUTSIDE = new Date("2099-01-01T00:00:00Z");
+  check("23g. baseline: an instant past the signer's validity leaves it untrusted",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: new Date(OUTSIDE.getTime()) })).trusted === false);
+  var raceDate = new Date(OUTSIDE.getTime());
+  var racePending5 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: raceDate });
+  raceDate.setTime(T.getTime());
+  check("23h. calling setTime on the caller's Date mid-call does not gain trust",
+    (await racePending5).trusted === false);
+
+  // Appending to the anchor array after the call does not widen the set the chain was built against.
+  // The array starts with an unrelated anchor, so the call is well-formed and the chain simply fails.
+  var raceAnchors = [s.cert];
+  check("23i. baseline: an unrelated anchor leaves the signer untrusted",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T })).trusted === false);
+  check("23j. baseline: the real anchor makes it trusted",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: T })).trusted === true);
+  var racePending6 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: raceAnchors, time: T });
+  raceAnchors.push(caCert);
+  check("23k. appending to opts.trustAnchors mid-call does not make the signer trusted",
+    (await racePending6).trusted === false);
+
+  // A PARSED anchor is passed through by reference on purpose -- guard.parsed records provenance
+  // against the object's identity, so a copy would stop being recognized as parser output. What
+  // makes that safe is the far end: path validation re-derives a parsed certificate from the bytes
+  // it recorded, so a field edited on the caller's object never reaches the decision.
+  var parsedAnchor = pki.schema.x509.parse(caCert);
+  var racePending7 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [parsedAnchor], time: T });
+  parsedAnchor.subject = { dn: "CN=Not The CA", rdns: [] };
+  parsedAnchor.tbsBytes = Buffer.alloc(4);
+  check("23l. a parsed anchor still anchors the chain after its fields are edited mid-call",
+    (await racePending7).trusted === true);
+
+  // An options bag whose fields are ACCESSORS is refused outright, by the toolkit's own options
+  // door. That single rule is what closes the whole caller-getter class rather than one member of
+  // it: an accessor is caller code running inside the call before the verb has done anything, and
+  // from there it can rewrite the very predicates and constructors the verb is about to use --
+  // Buffer.from, Array.isArray, util.types.isUint8Array, Promise.prototype.then. Hardening each of
+  // those in turn is a list with no end; refusing the accessor removes the window they all need.
+  // The accessor is never even read, so it cannot act before being refused.
+  var accessorRead = false;
+  var accessorBag = {
+    signerCert: signerCert, trustAnchors: [caCert],
+    get time() { accessorRead = true; return new Date(T.getTime()); },
+  };
+  check("23m. an accessor-backed options bag is refused",
+    (await codeOf(pki.cmp.verify(raceChain, accessorBag))) === "cmp/bad-input");
+  check("23n. and the accessor was never invoked", accessorRead === false);
+  check("23n2. the refusal names the field and what to pass instead", await (async function () {
+    try { await pki.cmp.verify(raceChain, accessorBag); return false; }
+    catch (e) { return /"time"/.test(e.message) && /plain values/.test(e.message); }
+  })());
+
+  // The rule holds one level down. An accessor under an INDEX of a certificate list is caller code
+  // exactly as an accessor under a name is, and a list is where it pays: an element can answer as
+  // one certificate to a check and as another to the read, or simply run and rewrite a predicate
+  // the reduction has not reached yet. RED without the element check: the getter ran.
+  var elementRead = false;
+  var accessorList = [];
+  Object.defineProperty(accessorList, "0", {
+    enumerable: true, configurable: true,
+    get: function () { elementRead = true; return caCert; },
+  });
+  check("23n3. an accessor-backed certificate-list element is refused",
+    (await codeOf(pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: accessorList, time: T }))) === "cmp/bad-input");
+  check("23n4. and that element was never read", elementRead === false);
+
+  // The anchor list is copied without calling back into the caller's array. `map` is the caller's
+  // property, so an array that answers it with itself would leave the copy aliasing the original,
+  // and appending mid-call would widen the set the chain is built against.
+  // The entries are PARSED certificates, which every later step passes through unchanged, so a
+  // hostile `map` cannot also break the byte conversion and fail the chain for an unrelated reason.
+  //
+  // Honest status of this one: it PINS the behavior, it does not prove the loop is what produces
+  // it. Swapping the loop back to `v.map(_fixByteish)` leaves this passing -- the appended anchor
+  // does not reach the anchor set even when the container aliases, so the exposure the reviewer
+  // described is not reachable through this route. The loop is kept because dispatching a copy
+  // through a method the caller owns is the wrong shape regardless of whether today's downstream
+  // happens to absorb it, and this vector holds the outcome still while that stays true.
+  var parsedOther = pki.schema.x509.parse(s.cert), parsedCa = pki.schema.x509.parse(caCert);
+  var hostile = [parsedOther];
+  hostile.map = function () { return this; };
+  check("23o. the hostile list is a real array", Array.isArray(hostile));
+  check("23p. and its map answers with itself", hostile.map(function () { return 1; }) === hostile);
+  check("23q. baseline: the parsed CA alone does anchor the chain",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [parsedCa], time: T })).trusted === true);
+  var racePending8 = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: hostile, time: T });
+  hostile.push(parsedCa);
+  check("23r. appending to an array whose map returns itself does not widen the anchor set",
+    (await racePending8).trusted === false);
+
+  // A getter for a LATER field reaching back to mutate the buffer an EARLIER field handed over is
+  // the same class, and it dies at the same door: the bag is refused before any field is read. The
+  // ordering discipline in the reducer (copy each field as it is read) is kept behind that door
+  // anyway, because a rule that holds only while another rule holds is not a rule.
+  var smuggler = Buffer.alloc(16, 9);
+  var reach = {
+    signerCert: s.cert,
+    transactionID: smuggler,
+    get revocationChecker() { smuggler.fill(7); return undefined; },
+  };
+  check("23s. a bag whose later field reaches back through a getter is refused",
+    (await codeOf(pki.cmp.verify(raceDer, reach))) === "cmp/bad-input");
+  check("23s2. and the earlier field's bytes were never touched",
+    smuggler.every(function (b) { return b === 9; }));
+
+  // An array's length is independent of what it holds. Only the elements that exist are copied, so
+  // a sparse list carrying one anchor at index 100000000 collapses to that one anchor instead of
+  // becoming a dense hundred-million-entry allocation inside verify. No ceiling is imposed: a trust
+  // store is the caller's own configuration, and path.build limits the untrusted candidate pool
+  // rather than the number of anchors, so capping this would refuse a large store that verifies.
+  var sparse = [];
+  sparse[100000000] = caCert;
+  var sparseStart = Date.now();
+  var sparseErr = null;
+  try { await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: sparse, time: T }); }
+  catch (e) { sparseErr = e; }
+  check("23t. a sparse anchor list is refused, naming what is wrong with it",
+    sparseErr !== null && sparseErr.code === "cmp/bad-input" && /dense array/.test(sparseErr.message));
+  // The refusal is reached by counting the properties the object has, never by walking its length,
+  // so it returns immediately. Wall-clock is the only observable that separates the two, and the
+  // bound is far above any real machine rather than a measured figure.
+  check("23u. and refused without walking a hundred million positions",
+    (Date.now() - sparseStart) < 30000);
+
+  // An element defined non-enumerable is still an element, and every ordinary array operation
+  // consumes it, so the copy must not quietly drop the anchor and report the signer untrusted.
+  var hidden = [];
+  Object.defineProperty(hidden, "0", { value: caCert, enumerable: false, writable: true, configurable: true });
+  check("23v. a non-enumerable element is still an anchor",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: hidden, time: T })).trusted === true);
+
+  // 2^32-1 is the one uint32 the language does not treat as an array index, so a property named
+  // "4294967295" is a name the caller hung on the array, never a certificate to feed the builder.
+  var named = [caCert];
+  named["4294967295"] = "not a certificate";
+  check("23w. a property named 4294967295 is not read as a certificate",
+    (await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: named, time: T })).trusted === true);
+
+  // An anchor supplied at an INHERITED index is one an ordinary array operation would consume, so
+  // silently skipping it would drop a trust anchor and turn a trusted verification into an untrusted
+  // one. The list is refused instead, loudly, rather than emulated: the caller is told their list is
+  // not dense and normalizes it themselves.
+  var proto = []; proto[0] = caCert;
+  var inherited = [];
+  inherited.length = 1;                        // a hole at index 0 ...
+  Object.setPrototypeOf(inherited, proto);     // ... that the prototype answers for
+  check("23x. the fixture is a real array whose index 0 is inherited",
+    Array.isArray(inherited) && (0 in inherited) &&
+    !Object.prototype.hasOwnProperty.call(inherited, "0") && inherited[0] === caCert);
+  var inhErr = null;
+  try { await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: inherited, time: T }); }
+  catch (e) { inhErr = e; }
+  check("23x2. an anchor reachable only through the prototype is refused, never silently dropped",
+    inhErr !== null && inhErr.code === "cmp/bad-input" && /dense array/.test(inhErr.message));
+
+  // A Proxy over an array answers Array.isArray truthfully while running caller code in its traps,
+  // and its ownKeys and get traps need not agree with each other or with what a later element read
+  // returns -- so a list counted through them describes nothing that will still be true when the
+  // anchors are used. The refusal is by identity, and it has to happen before any property of the
+  // list is read for it to mean anything: a `length` read or a descriptor walk placed ahead of it
+  // is the trap running first, with the door still closed behind it.
+  var trapsRun = [];
+  var trapped = new Proxy([caCert], {
+    ownKeys: function (t) { trapsRun.push("ownKeys"); return Reflect.ownKeys(t); },
+    get: function (t, k, r) { trapsRun.push("get:" + String(k)); return Reflect.get(t, k, r); },
+    getOwnPropertyDescriptor: function (t, k) {
+      trapsRun.push("gopd:" + String(k)); return Reflect.getOwnPropertyDescriptor(t, k);
+    },
+  });
+  var proxyErr = null;
+  try { await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: trapped, time: T }); }
+  catch (e) { proxyErr = e; }
+  check("23x3. a Proxy-wrapped anchor list is refused",
+    proxyErr !== null && proxyErr.code === "cmp/bad-input" && /Proxy/.test(proxyErr.message));
+  check("23x4. and refused before any of its traps ran", trapsRun.length === 0);
+
+  // Two predicates decide whether a caller's value is COPIED at all, and both are ordinary
+  // writable properties. Reading either at call time hands that decision to the caller: an
+  // `isUint8Array` answering false leaves the caller's live buffer where the copy belongs, and an
+  // `Array.isArray` answering false routes a trust list past the list door and straight back out
+  // by reference, so appending to it mid-call widens the set the chain was built against.
+  //
+  // What this vector establishes, precisely: with the array test replaced and the caller emptying
+  // the list mid-call, the call does not come back trusted. It does NOT isolate this module's
+  // captured array test as the cause -- `Array.isArray` is consulted seven more times inside a
+  // verify call by the DER reader, the schema walk and path building, so a global replacement
+  // corrupts those too and the outcome cannot be attributed to one change. The capture is kept on
+  // principle, and this records the honest limit of what the vector shows. The byte-predicate
+  // vector below has no such ambiguity: `util.types.isUint8Array` is consulted zero times through
+  // the live object during a verify call, every consumer having captured it.
+  var realIsArray = Array.isArray;
+  var liveAnchors = [caCert];
+  var swappedList;
+  try {
+    Array.isArray = function () { return false; };
+    swappedList = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: liveAnchors, time: T });
+  } finally {
+    Array.isArray = realIsArray;
+  }
+  liveAnchors.length = 0;
+  var swappedListResult = await swappedList.then(
+    function (r) { return r.trusted; }, function (e) { return "threw " + e.code; });
+  check("23y. emptying the anchor list mid-call does not yield a trusted verdict, with Array.isArray replaced",
+    swappedListResult !== true);
+
+  // HDR carries transactionID = Buffer.alloc(16, 7), so this value matches when the call is made
+  // and stops matching the moment it is overwritten.
+  var realIsU8 = require("util").types.isUint8Array;
+  var liveTxn = Buffer.alloc(16, 7);
+  var swappedBytes;
+  try {
+    require("util").types.isUint8Array = function () { return false; };
+    swappedBytes = pki.cmp.verify(raceChain, { signerCert: signerCert, time: T, transactionID: liveTxn });
+  } finally {
+    require("util").types.isUint8Array = realIsU8;
+  }
+  liveTxn.fill(9);
+  var swappedBytesResult = await swappedBytes.then(
+    function (r) { return r.valid === true ? true : r.code; }, function (e) { return "threw " + e.code; });
+  check("23y2. overwriting an echo buffer mid-call cannot change the match, with the slot test replaced",
+    swappedBytesResult === true);
+
+  // The index scan asks the same array question a second time, deeper in. A replacement answering
+  // `false` there made the scan report no indices, so the accessor refusal had nothing to refuse
+  // and an accessor under index 0 was reached by the copy loop -- the caller's own Error escaping
+  // a boundary whose contract is a typed refusal, with the getter free to rewrite globals before
+  // anything it returned was snapshotted.
+  var realIsArray2 = Array.isArray;
+  var getterRan = false;
+  var accessorAnchors = [];
+  Object.defineProperty(accessorAnchors, "0", {
+    get: function () { getterRan = true; throw new Error("raw error from the caller's getter"); },
+    enumerable: true, configurable: true,
+  });
+  Object.defineProperty(accessorAnchors, "length", { value: 1, writable: true, configurable: false });
+  var accessorOutcome;
+  try {
+    Array.isArray = function () { return false; };
+    accessorOutcome = await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: accessorAnchors, time: T })
+      .then(function () { return "resolved"; },
+        function (e) { return e.code ? "typed " + e.code : "raw " + e.message; });
+  } finally {
+    Array.isArray = realIsArray2;
+  }
+  check("23y3. an accessor-backed anchor is refused typed, with the array test replaced",
+    accessorOutcome === "typed cmp/bad-input");
+  check("23y4. and the accessor was never invoked", getterRan === false);
+
+  // Array.prototype.map is a replaceable global, and the anchor list becomes path-builder input
+  // AFTER verification suspends. A caller who swaps it during that window must not end up trusted.
+  //
+  // What this vector establishes, precisely: the swap is live and is reached, and the verdict is
+  // still untrusted. It does NOT isolate cmp-verify's explicit loops as the cause -- a global map
+  // replacement also corrupts path building's own internals, so the refusal cannot be attributed to
+  // one change. The loops in _certList and the pool assembly are kept on principle, because a trust
+  // decision should not dispatch through a replaceable global at all, and they are honestly recorded
+  // here as unproven by this vector rather than credited with a result they may not produce.
+  var realMap = Array.prototype.map;
+  var swapped = false;
+  var pendingSwap = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T });
+  Array.prototype.map = function () { swapped = true; return [caCert]; };
+  var swapVerdict;
+  try { swapVerdict = await pendingSwap; } finally { Array.prototype.map = realMap; }
+  check("23y. replacing Array.prototype.map mid-call does not decide the anchor set",
+    swapVerdict.trusted === false);
+  // The replacement really was live and really was reached during the window -- without this the
+  // vector above would pass on a call that simply never touched it. What the fix changes is that
+  // nothing on the ANCHOR path dispatches through it: cmp-verify builds its lists with explicit
+  // loops, so the swap cannot answer the question "which certificates are trusted". Code deeper in
+  // path building still calls it, which is why this asserts the swap fired rather than claiming the
+  // whole call is free of it.
+  check("23z. the replacement was installed and reached while the call was pending", swapped === true);
+
+  // An Array.prototype index SETTER is the sharper form of the same idea: a fresh array has no own
+  // slot at 0, so `out[0] = cert` is a [[Set]] that walks the prototype chain and lands in caller
+  // code at the moment the anchor list is being built. Appending with a captured defineProperty
+  // creates the own slot outright and consults no setter. RED without it: the setter fired.
+  var setterFired = false;
+  var pendingSetter = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [s.cert], time: T });
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true, set: function () { setterFired = true; }, get: function () { return caCert; },
+  });
+  var setterVerdict;
+  try { setterVerdict = await pendingSetter; } finally { delete Array.prototype[0]; }
+  // As with the map swap: the setter IS reached, by array building deeper in path validation, so
+  // this cannot assert that nothing invoked it. What it does assert is the property that matters --
+  // a setter installed during the window does not turn an unrelated anchor into a trusted signer.
+  // cmp-verify's own lists are built with a captured defineProperty and consult no setter; proving
+  // that in isolation would need path validation to be hardened the same way, which is its own cut.
+  check("23aa. the setter was installed and reached while the call was pending", setterFired === true);
+  check("23ab. and the unrelated anchor still leaves the signer untrusted", setterVerdict.trusted === false);
+
+  // A byte option is copied through guard.bytes.snapshot, this toolkit's door for caller bytes, so a
+  // source the door refuses stays refused. A SharedArrayBuffer-backed view is the case: another
+  // thread can rewrite it at any moment, and a bare Buffer.from would have laundered it into an
+  // ordinary Buffer that every later check accepts without the door's rules ever having run.
+  var shared = new Uint8Array(new SharedArrayBuffer(16));
+  shared.fill(7);
+  check("23ac. the fixture really is SharedArrayBuffer-backed",
+    shared.buffer instanceof SharedArrayBuffer);
+  check("23ad. a shared-memory transactionID is refused rather than copied",
+    (await codeOf(pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: shared }))) === "cmp/bad-input");
+  var sharedSecretView = new Uint8Array(new SharedArrayBuffer(8));
+  sharedSecretView.fill(1);
+  check("23ae. and so is a shared-memory sharedSecret",
+    (await codeOf(pki.cmp.verify(raceMac, { sharedSecret: sharedSecretView }))) === "cmp/bad-input");
+
+  // The copy of a byte shared secret is this module's, and it holds the plaintext. pbes2.pbmac1
+  // clears only the MAC key it derives, so the copy has to be wiped on the way out. Observed by
+  // holding the caller's buffer: it must be untouched (it is theirs), while nothing of the secret
+  // may survive in a copy the module made. The copy is not reachable from here, so what this pins
+  // is the pair of properties the wipe must not break -- the caller's own bytes are never clobbered,
+  // and the verdict is still correct -- alongside the guard-secret contract tested in its own file.
+  var callerSecret = Buffer.from("hunter2", "utf8");
+  var secretVerdict = await pki.cmp.verify(raceMac, { sharedSecret: callerSecret });
+  check("23af. a byte shared secret still verifies", secretVerdict.valid === true);
+  check("23ag. and the caller's own buffer is left intact",
+    callerSecret.toString("utf8") === "hunter2");
+
+  // global.Date is replaceable, and a replacement asked for a fresh instant could hand back the
+  // caller's own object -- leaving the "copy" of opts.time as the Date they can still mutate. The
+  // constructor is captured at module load. RED without that: the swapped Date was used.
+  var realDate = global.Date;
+  var dateUsed = false;
+  var liveDate = new realDate(OUTSIDE.getTime());
+  var pendingDate = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: liveDate });
+  function SwappedDate() { dateUsed = true; return liveDate; }
+  SwappedDate.now = realDate.now;
+  global.Date = SwappedDate;
+  var dateVerdict;
+  try { dateVerdict = await pendingDate; } finally { global.Date = realDate; }
+  liveDate.setTime(T.getTime());
+  // As with the map swap and the index setter: the replacement is reached, by code deeper in path
+  // validation that asks for the current time. cmp-verify's own copy is taken with the constructor
+  // captured at module load and happens synchronously at the call, before this swap is even
+  // installed -- so what this asserts is that the window was live, and 23ai asserts the outcome.
+  check("23ah. the replaced constructor was installed and reached while the call was pending",
+    dateUsed === true);
+  check("23ai. and mutating the caller's Date afterwards still leaves the signer untrusted",
+    dateVerdict.trusted === false);
+
+  // The secret's copy is made before the later options are reduced, so a fault in one of THOSE is
+  // the path on which the copy would be left unowned. Reducing collects each copy as it is made,
+  // and the wipe runs over what was collected rather than over a result that never existed. The
+  // copy is not reachable from here; what is observable is that the call still refuses cleanly and
+  // the caller's own secret is untouched, which is what the collect-then-wipe must not break.
+  var faultSecret = Buffer.from("hunter2", "utf8");
+  var sparseAfterSecret = [];
+  sparseAfterSecret[100000000] = caCert;
+  var faultCode = await codeOf(pki.cmp.verify(raceMac, {
+    sharedSecret: faultSecret, trustAnchors: sparseAfterSecret,
+  }));
+  check("23aj. a fault after the secret is copied still refuses cleanly", faultCode === "cmp/bad-input");
+  check("23ak. and the caller's own secret is left intact",
+    faultSecret.toString("utf8") === "hunter2");
+
+  // The sharpest form of the accessor class: a getter that installs a replacement for a global the
+  // verb itself is about to use. Promise.prototype.finally is the example -- a verb cleaning up with
+  // `.finally(...)` would dispatch into the replacement and hand back whatever it returned, so a
+  // rejected verification could be reported as passing. Two things stop it, and the order matters:
+  // the bag is refused before the getter runs at all, and the cleanup is language-level try/finally,
+  // which looks nothing up even if something did get installed.
+  var realFinally = Promise.prototype.finally;
+  var finallyReached = false;
+  var swapOnGetter = {
+    signerCert: s.cert,
+    get transactionID() {
+      Promise.prototype.finally = function () {
+        finallyReached = true;
+        return Promise.resolve({ valid: true, trusted: true, forged: true });
+      };
+      return Buffer.alloc(16, 9);   // does NOT match the message
+    },
+  };
+  var swapCode;
+  try { swapCode = await codeOf(pki.cmp.verify(raceDer, swapOnGetter)); }
+  finally { Promise.prototype.finally = realFinally; }
+  check("23al. the bag carrying that getter is refused before it can install anything",
+    swapCode === "cmp/bad-input");
+  check("23am. and the replacement was never installed", finallyReached === false);
+
+  // The echo-value type check is a configuration error the caller must be shown, never a routine
+  // mismatch verdict that blames the peer. It is written out as two named checks rather than a loop,
+  // because the reduction has already run the caller's getters and one of those could have replaced
+  // Array.prototype.forEach with a no-op -- switching the check off rather than failing it.
+  //
+  // Honest status: this pins the CONTRACT, not the hardening. A vector that actually installs a
+  // no-op forEach cannot isolate it, because forEach is used throughout the certificate parsing this
+  // path also runs, so the call dies there first and the refusal cannot be attributed to this check.
+  // The written-out form is kept on principle, the same principle as the loops above: a check that a
+  // caller can switch off is not a check.
+  check("23an. a string transactionID is a configuration error, not a mismatch verdict",
+    (await codeOf(pki.cmp.verify(raceDer, { signerCert: s.cert, transactionID: "not-a-buffer" }))) === "cmp/bad-input");
+  check("23ao. and so is a string expectRecipNonce",
+    (await codeOf(pki.cmp.verify(raceDer, { signerCert: s.cert, expectRecipNonce: "not-a-buffer" }))) === "cmp/bad-input");
+
+  // Whether a byte option is COPIED, and whether that copy is entered in the wipe list, must not be
+  // decided by a predicate the caller can rewrite. Buffer.isBuffer is a writable property and
+  // `instanceof Uint8Array` consults Uint8Array[Symbol.hasInstance]. Answering false for the
+  // caller's own secret skipped the copy and put their live buffer where the copy belongs -- which
+  // the wipe then destroys, memory the toolkit does not own. Two independent things stop it: the
+  // accessor that would install the lie is refused at the door, and the tests ask
+  // util.types.isUint8Array, which is a fact about the value rather than a claim about its
+  // prototype. The second still holds for a caller who rewrites the globals without an accessor.
+  var realHasInstance = Object.getOwnPropertyDescriptor(Uint8Array, Symbol.hasInstance);
+  var realIsBuffer = Buffer.isBuffer;
+  var callerOwned = Buffer.from("hunter2", "utf8");
+  var lieOnce = true;
+  try {
+    // No accessor here: the globals are rewritten directly, which is the form the door cannot see.
+    Buffer.isBuffer = function () { return false; };
+    Object.defineProperty(Uint8Array, Symbol.hasInstance, {
+      configurable: true, value: function () { if (lieOnce) { lieOnce = false; return false; } return true; },
+    });
+    await pki.cmp.verify(raceMac, { sharedSecret: callerOwned });
+  } catch (_e) { /* the verdict is not what this vector is about */ }
+  finally {
+    Buffer.isBuffer = realIsBuffer;
+    if (realHasInstance) Object.defineProperty(Uint8Array, Symbol.hasInstance, realHasInstance);
+    else delete Uint8Array[Symbol.hasInstance];
+  }
+  check("23ap. a lying kind test cannot make the verb wipe the caller's own secret",
+    callerOwned.toString("utf8") === "hunter2");
+
+  // A STRING secret is converted to bytes once, at the door, and that copy is recorded in the same
+  // wipe list as the byte form -- so it is cleared on every path out rather than left behind by the
+  // MAC path, which is where the conversion used to happen with nothing owning the result. The
+  // string itself is immutable and cannot be cleared, which is why bytes remain the form to pass
+  // when the secret must not outlive the call.
+  //
+  // The copy is deliberately NOT observable from a test: the conversion uses a Buffer.from captured
+  // at module load, so a spy installed afterwards never sees it -- which is the property 23au/23av
+  // below actually pin. What is observable here is that the string form works and that the wipe list
+  // it feeds is the same one 23af/23ag exercise for bytes; guard-secret's own tests pin the wipe.
+  check("23aq. a string secret still verifies",
+    (await pki.cmp.verify(raceMac, { sharedSecret: "hunter2" })).valid === true);
+  check("23ar. and an empty string is still refused as a secret",
+    (await codeOf(pki.cmp.verify(raceMac, { sharedSecret: "" }))) === "cmp/bad-input");
+
+  // The authentication bypass this pair exists for, and the two independent things that stop it.
+  //
+  // The accessor on sharedSecret -- the first thing the reduction reads -- could install a
+  // Buffer.from replacement, receive the plaintext secret as its argument, and have its RETURN
+  // become the PBMAC1 key: a message authenticated under a secret the caller never held then
+  // verified. The options door refuses the accessor outright, and the conversion uses a Buffer.from
+  // captured at module load, so the swap has nothing to reach even from outside an accessor.
+  var macUnderOther = await pki.cmp.build({ header: hdr({ transactionID: Buffer.alloc(16, 7) }), body: IRBODY },
+    { mac: { secret: "attacker-key", salt: Buffer.alloc(16, 9), iterationCount: 2048 } });
+  check("23at. baseline: the wrong secret does not verify",
+    (await pki.cmp.verify(macUnderOther, { sharedSecret: "hunter2" })).valid === false);
+
+  var realFrom = Buffer.from;
+  var stolen = null;
+  function poison() {
+    Buffer.from = function (a, enc) {
+      if (typeof a === "string" && enc === "utf8") {
+        stolen = a; Buffer.from = realFrom;
+        return realFrom("attacker-key", "utf8");
+      }
+      return realFrom.apply(Buffer, arguments);
+    };
+  }
+
+  // (a) through an accessor -- refused before the accessor runs.
+  var poisoning = {};
+  Object.defineProperty(poisoning, "sharedSecret", {
+    enumerable: true, configurable: true,
+    get: function () { poison(); return "hunter2"; },
+  });
+  var viaAccessor;
+  try { viaAccessor = await codeOf(pki.cmp.verify(macUnderOther, poisoning)); }
+  finally { Buffer.from = realFrom; }
+  check("23au. an accessor that would substitute the PBMAC1 key is refused at the door",
+    viaAccessor === "cmp/bad-input");
+
+  // (b) without one -- the global is rewritten directly, which no door can see, and the captured
+  // constructor is what holds. This is the half that survives if the door is ever relaxed.
+  var poisonVerdict;
+  try { poison(); poisonVerdict = await pki.cmp.verify(macUnderOther, { sharedSecret: "hunter2" }); }
+  catch (_e) { poisonVerdict = { valid: false }; }
+  finally { Buffer.from = realFrom; }
+  check("23au2. and a direct Buffer.from swap cannot substitute it either",
+    poisonVerdict.valid === false);
+  check("23av. and cannot capture the caller's plaintext secret through it", stolen === null);
 
   // ===== 22. PBMAC1 dispatches on the immutable OID, not the mutable registry display name (LAST: mutates oid) =====
   var oidMsg = await buildMac("hunter2");
