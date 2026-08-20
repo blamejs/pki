@@ -275,6 +275,24 @@ function testRuntimeReadsAreSnapshotted() {
   check("a replaced typed-array length getter cannot short the copy of a secret",
     copiedLen === secretLen);
 
+  // Which own names count as array indices is `String(Number(k)) === k`, and both halves are
+  // ordinary writable properties of globalThis. "00" is numeric but not the canonical spelling of
+  // its number, so it is not an index and the position it sits at stays a hole. A `String` that
+  // answers "00" for 0 makes it count, and a list with a hole then reports itself as dense.
+  var holed = [];
+  holed.length = 1;
+  holed["00"] = "not-an-element";
+  var realString = globalThis.String;
+  var reported;
+  try {
+    globalThis.String = function (x) { return x === 0 ? "00" : realString(x); };
+    reported = guard.identifier.readableIndices(holed, F, "x/bad", "the list");
+  } finally {
+    globalThis.String = realString;
+  }
+  check("a replaced global String cannot make a non-index name count as an index",
+    Array.isArray(reported) && reported.length === 0);
+
   check("a replaced util.types.isDate cannot make a plain object answer as a Date", saidDate === false);
   check("a replaced global isNaN cannot make an invalid Date pass the validity check",
     acceptedInvalid === false);

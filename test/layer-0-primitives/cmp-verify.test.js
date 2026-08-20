@@ -618,6 +618,31 @@ async function run() {
   }
   check("15f2. and still refused with the typed-array length getter replaced",
     emptyOutcome === "cmp/bad-input");
+
+  // A trust-anchor list must be dense and hold its positions as its own elements, so a hole cannot
+  // be filled from the prototype with an anchor the caller never passed. The density count asks
+  // which own names are indices, and that question is `String(ix) === k`.
+  // "00" is a numeric name that is not the canonical spelling of its number: Number("00") is 0 and
+  // String(0) is "0", so it is not an index and position 0 stays a hole.
+  var holed = [];
+  holed.length = 1;
+  holed["00"] = s.cert;
+  check("15g. a trust-anchor list with a hole is refused",
+    await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", trustAnchors: holed })) === "cmp/bad-input");
+  // The same list, with the conversion the index test is built on replaced so that "00" answers as
+  // the canonical spelling of 0. What this shows is the outcome: the call still refuses. It does
+  // NOT isolate the index test -- the element at the hole reads back undefined, and the byte-source
+  // check refuses that whatever the density count concluded. The isolating vector for the same
+  // replacement is in guard-intrinsic.test.js, where the index scan's own answer is observed.
+  var realString = globalThis.String;
+  var holedOutcome;
+  try {
+    globalThis.String = function (x) { return x === 0 ? "00" : realString(x); };
+    holedOutcome = await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", trustAnchors: holed }));
+  } finally {
+    globalThis.String = realString;
+  }
+  check("15g2. and still refused with the global String replaced", holedOutcome === "cmp/bad-input");
   check("15g. a zero-length Buffer sharedSecret -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: Buffer.alloc(0) })) === "cmp/bad-input");
 
   // ===== 16. direction-agnostic acceptance (a RESPONSE arm verifies exactly like a request) =====

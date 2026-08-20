@@ -2825,6 +2825,19 @@ function testGuardReadsRuntimeLive() {
   var MODULE_HANDLES = /^(?:intrinsic|_intrinsic|guard|helpers|pkix|schema|oid|asn1|cbor|C|errors|util|crypto|os|fs|path|constants)$/;
   var methodRe = new RegExp(
     "(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)((?:\\.[A-Za-z$][\\w$]*)*)\\." + LIVE_METHODS + "\\s*\\(", "g");
+  // The conversions and predicates called as bare globals. They read as language rather than as
+  // code, which is why they outlasted every other read here: an index test is
+  // `String(Number(k)) === k`, an arc bound is a bound on `BigInt(part)`, a JSON number is refused
+  // by `isFinite(v)`, and a default validation time is `new Date()`. Each is an ordinary writable
+  // property of globalThis. A property access like `Number.isInteger` is not a call and is
+  // excluded; `new Date(...)` IS included, because which constructor runs is the question.
+  var convertRe =
+    /(?:^|[^\w.$])(?:new\s+)?(String|Number|Boolean|BigInt|Date|isFinite|isNaN|parseInt|parseFloat|ArrayBuffer|Uint8Array|DataView|Object)\s*\(/g;
+  // A prototype OBJECT used as an identity sentinel -- "is this plain", "is this a Buffer", "has
+  // the chain walk reached the top". It is reached as a property of a replaceable global, so after
+  // a replacement the sentinel is a different object and every comparison against it is false.
+  // A `uncurry(X.prototype.m)` capture is a call-time-free read taken at load, so it is excluded.
+  var protoRe = /(?:^|[^\w.$])(Object|Buffer|Array|Function|Promise)\.prototype(?!\s*\.\s*\w+\s*\))/g;
   // SCOPE, chosen so it needs no list to maintain. A module is IN if it imports guard-intrinsic:
   // taking the captures is how a module opts into the discipline, and once opted in it is held to
   // it completely rather than at the one site somebody happened to change. A module that has not
@@ -2839,6 +2852,10 @@ function testGuardReadsRuntimeLive() {
     if (!/require\(["']\.\/guard-intrinsic["']\)/.test(src)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
+      // A `*`-led line is the continuation of a block comment. The stripper works one line at a
+      // time, so it cannot see the `/*` that opened it, and a `@example` block would otherwise be
+      // read as code.
+      if (/^\s*\*/.test(lines[i])) continue;
       var code = _stripCommentsAndLiterals(lines[i]);
       var m;
       staticRe.lastIndex = 0;
@@ -2855,6 +2872,19 @@ function testGuardReadsRuntimeLive() {
           content: "dispatches `" + m[0].trim() + "` through a live prototype — " +
             "use the uncurried capture from guard-intrinsic, so a replaced prototype method cannot " +
             "decide what this guard concludes" });
+      }
+      protoRe.lastIndex = 0;
+      while ((m = protoRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "compares against the live `" + m[1] + ".prototype` — take the sentinel from " +
+            "guard-intrinsic, so a replaced global cannot make the comparison answer about a " +
+            "different object" });
+      }
+      convertRe.lastIndex = 0;
+      while ((m = convertRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "converts through the live global `" + m[1] + "` — take it from guard-intrinsic, " +
+            "so a replacement cannot decide what this value converts to" });
       }
     }
   });
