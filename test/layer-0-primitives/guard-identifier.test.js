@@ -840,7 +840,8 @@ async function testConsumersFailClosed() {
       serialNumber: Buffer.from([1]), notBefore: NB, notAfter: NA }, over);
   }
   function crl(over) {
-    return Object.assign({ issuer: [{ commonName: "x" }], thisUpdate: NB, nextUpdate: NA }, over);
+    // No spec.issuer: ISSUER names one, and the producer reads spec.issuer only when it does not.
+    return Object.assign({ thisUpdate: NB, nextUpdate: NA }, over);
   }
   function ac(over) {
     return Object.assign({ holder: { entityName: [{ dNSName: "holder.test" }] }, serialNumber: Buffer.from([1]),

@@ -40,6 +40,8 @@ Every producing verb refuses an authoring field it does not read, so a misspelli
 - `pki.pkcs12.build` decides which of the two spec forms it has once, and the field check and the builder both act on that decision. Held separately the two tests disagreed on a `safeContents` that is present but not a list, so the refusal named a field that was correct instead of the one that was wrong.
 - `pki.cms.encrypt` refuses `authAttrs` under a CBC content algorithm. Authenticated attributes are carried by an `AuthEnvelopedData`, which an AEAD algorithm produces; a CBC algorithm selects `EnvelopedData`, which has no field for them, so the attributes a caller asked to authenticate were dropped and the message went out without them.
 - `pki.cms.authenticate` refuses `digestAlgorithm` and `authAttrs` when `authenticatedAttributes` is `false`. That branch MACs the content octets directly and builds no attribute set, so the digest algorithm that names its hash, and any attribute added to it, are read by nothing.
+- `pem` on an `EncryptedData` descriptor is refused; it is an option, the third argument, as on every other verb here. A second spelling on the descriptor was read by the password arm alone, so a `{ cek, pem: true }` descriptor was accepted and returned DER.
+- `pki.crl.sign` refuses `spec.issuer` when the issuer argument already names one. The distinguished name has three possible sources and `issuer.cert` and `issuer.name` both win outright, so a spec naming one issuer beside a certificate for another produced a CRL, which verifies, issued under the certificate's name. `spec.issuer` is still the name when the issuer argument supplies none.
 
 ## v0.5.17 — 2026-08-20
 

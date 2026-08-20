@@ -227,6 +227,15 @@ async function run() {
     (await codeOf(function () { return pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1) }, { oaepHash: "sha512", contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("...and an EncryptedData without one still builds",
     (await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1) }, { contentEncryptionAlgorithm: "aes-256-cbc" })) != null);
+  // pem selects the output encoding of the whole call and is the third argument. On the descriptor
+  // it was a second spelling only one arm read, so a cek descriptor asking for PEM got DER back.
+  check("pem on a cek descriptor -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1), pem: true }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("pem on a password descriptor -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, { password: "p", pem: true }, { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("opts.pem is honored on both EncryptedData arms",
+    /-----BEGIN CMS-----/.test(await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 1) }, { contentEncryptionAlgorithm: "aes-256-cbc", pem: true })) &&
+    /-----BEGIN CMS-----/.test(await pki.cms.encrypt(MSG, { password: "p" }, { contentEncryptionAlgorithm: "aes-256-cbc", pem: true })));
 
   // authAttrs go into an AuthEnvelopedData, which only an AEAD content algorithm produces. A CBC
   // algorithm selects EnvelopedData, which has no field for them, so the attributes a caller asked

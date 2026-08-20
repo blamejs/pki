@@ -78,6 +78,20 @@ async function testUnknownArgumentKeys() {
     (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, { key: s.key, cert: caCert })) != null &&
     (await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, issuerOf(s))) != null);
 
+  // spec.issuer is a THIRD source for the distinguished name, and it is read only when neither
+  // issuer.cert nor issuer.name supplies one. Beside either of those it named an issuer the CRL was
+  // not signed under, in a CRL that verifies.
+  var specVsCert = await attempt({ issuer: "Wrong CA", thisUpdate: TU, nextUpdate: NU, revoked: [entry] },
+    { key: s.key, cert: caCert });
+  check("spec.issuer beside an issuing certificate -> crl/bad-input", specVsCert.code === "crl/bad-input");
+  check("...and NO CRL is emitted", specVsCert.out === null);
+  check("spec.issuer beside an explicit issuer.name -> crl/bad-input",
+    (await attempt({ issuer: "Wrong CA", thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, issuerOf(s))).code === "crl/bad-input");
+  var fromSpec = await pki.crl.sign({ issuer: "Spec-named CA", thisUpdate: TU, nextUpdate: NU, revoked: [entry] },
+    { key: s.key, publicKey: s.spki });
+  check("spec.issuer is still the name when the issuer argument supplies none",
+    pki.schema.crl.parse(fromSpec).issuer.dn === "CN=Spec-named CA");
+
   // The ENTRY is a caller-owned object too, and every optional field on it is encoded only when
   // present. `reson` listed the certificate as revoked carrying no reasonCode at all, in a CRL that
   // verifies, so a relying party cannot tell it from a revocation given without a reason.
@@ -93,10 +107,11 @@ async function testUnknownArgumentKeys() {
       .some(function (x) { return x.name === "reasonCode" && x.value === 1; }));
 
   // Every key the producer actually reads still round-trips, so the table admits the real surface.
+  // The issuer argument here names no distinguished name, which is the form spec.issuer supplies.
   var full = await pki.crl.sign({
     issuer: "Test CRL Issuer", thisUpdate: TU, nextUpdate: NU, crlNumber: 7n,
     revoked: [entry], extensions: { authorityKeyIdentifier: true },
-  }, issuerOf(s));
+  }, { key: s.key, publicKey: s.spki });
   check("every documented spec key is still accepted", pki.schema.crl.parse(full).revokedCertificates.length === 1);
 }
 
