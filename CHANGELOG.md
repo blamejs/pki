@@ -4,7 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.16 — 2026-08-20
+## v0.5.17 — 2026-08-20
+
+A failed integrity check destroys the plaintext it recovered, AuthEnvelopedData validates the attributes it is asked to authenticate, and every refusal names the rule it is actually applying.
+
+### Changed
+
+- The refusals for a content cipher in the wrong container now cite the rule they apply. RFC 5083 sec. 2 defines `AuthEnvelopedData` in terms of a content-authenticated-encryption algorithm; it never names GCM, and RFC 5084 sec. 3.1 defines AES-CCM for that content type. Saying the standard required GCM sent an operator to argue with a specification that says the opposite. The check now draws the line the RFC draws -- authenticated versus not -- and an AES-CCM message is declined separately, by name, as an algorithm this toolkit does not implement rather than as an unrecognized OID. Error codes are unchanged.
+- Documentation pages at pkijs.com carry the expanded name of the format they describe in the title and heading, so a page about CMS says Cryptographic Message Syntax rather than three letters that mean a content management system elsewhere. The sitemap now reports each page's real last-changed date, taken from the commit that last touched the source it is generated from, and omits the date where it is unknown instead of reporting the build time. The home page gained runnable examples for the six things people most often arrive wanting to do.
+
+### Fixed
+
+- A failed AEAD integrity check now destroys the plaintext it recovered. `update` returns the complete recovered plaintext and `final` is what decides whether the message was authentic at all, so on a forged `AuthEnvelopedData` the plaintext existed in full before anything had judged it, and the buffer was then dropped unreferenced and unzeroed. RFC 5083 sec. 1 requires it to be destroyed. The success path leaked too, less visibly: joining the two halves copies them, leaving the first buffer as a second complete copy of the plaintext that the caller never receives and nothing else would ever clear. Both exits are now cleared, at every cipher the toolkit runs -- CMS content decryption and the RFC 3211 password-recipient unwrap, PBES2, HPKE `open`, PKCS#12 safe decryption, and the AES-GCM, AES-CBC, AES-CTR and AES-KW paths of the WebCrypto engine.
+- `pki.cms.encrypt` validates the authenticated attributes a caller supplies for an `AuthEnvelopedData` before it MACs them. Each must be a well-formed `Attribute SEQUENCE { type, non-empty SET OF value }` with no repeated type (RFC 5652 sec. 5.3). `AuthenticatedData` had enforced this all along; `AuthEnvelopedData` accepted whatever it was handed and emitted it, so a malformed attribute reached the wire with the MAC already computed over it and the operator learned of it from a peer's parser rather than from the builder.
+- `pki.cms.encrypt` refuses a `message-digest` attribute in an `AuthEnvelopedData`'s `authAttrs`. Its value is the unencrypted one-way hash of the plaintext, so disclosing it alongside the ciphertext enables content tracking and confirms a guessed plaintext against a message that was encrypted to prevent exactly that (RFC 5083 sec. 2.1 and sec. 5). Decryption still accepts one, since another implementation may legitimately emit it; the toolkit will not produce one. `AuthenticatedData` is unaffected -- it builds and MACs its own `message-digest` by design (RFC 5652 sec. 9.2).
+
+## v0.5.16 — 2026-08-19
 
 `pki.cmp.verify` reads every option at the call, and every guard takes what it needs from the runtime when it loads, so code a caller runs afterwards cannot change what a verification decides.
 

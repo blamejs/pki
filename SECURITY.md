@@ -309,6 +309,20 @@ security-only patches after the next major releases.
   correct-length tampered ciphertext must still implicit-reject to a pseudo-random
   secret rather than throw: a throw there would be a decryption oracle, and the
   CMS uniform verdict depends on it not being one.
+- **Recovered plaintext after a failed integrity check (RFC 5083 §1).** A cipher
+  produces the whole recovered plaintext before the step that decides whether the
+  message was authentic, so on a forged AEAD message the plaintext exists in full
+  and is then abandoned. Withholding it from the caller is not destroying it, and
+  RFC 5083 §1 requires a receiver whose integrity check fails to destroy it. Every
+  cipher the toolkit runs — CMS content decryption and the RFC 3211 password
+  recipient unwrap, PBES2, HPKE `open`, PKCS#12 safe decryption, and the AES-GCM,
+  AES-CBC, AES-CTR and AES-KW paths of the crypto engine — goes through one place
+  that clears both halves on both exits. The success path is cleared for the same
+  reason: joining the halves copies them, so the first buffer would otherwise
+  remain as a second complete copy of the plaintext that the caller never receives
+  and nothing else would clear. The same best-effort limits stated above apply:
+  this shortens the window in which the plaintext is readable rather than
+  guaranteeing no copy survives.
 - **PBES2 private-key decryption is not a padding oracle (CWE-208).**
   `pki.key.decrypt` (RFC 5958 EncryptedPrivateKeyInfo under RFC 8018 PBES2) reads
   the attacker-controlled PBKDF2 salt and iteration count, and validates the

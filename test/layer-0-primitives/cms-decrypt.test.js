@@ -421,6 +421,36 @@ async function run() {
   check("the same message with its own algorithm still opens through one of those recipients",
     Buffer.compare((await pki.cms.decrypt(samePw, { password: "pw" })).content, MSG) === 0);
 
+  // What the refusal SAYS, not just that it refuses. RFC 5083 sec. 2.1 requires an authenticated
+  // encryption algorithm for AuthEnvelopedData; it never names GCM, and RFC 5084 sec. 3.1 defines
+  // AES-CCM for exactly this content type. A message telling an operator the standard requires GCM
+  // sends them to argue with a spec that says the opposite. Each refusal has to name the rule that
+  // is actually being applied -- the RFC's where the RFC decides, this toolkit's where it does not.
+  var msgOf = async function (fn) { try { await fn(); return "NO-THROW"; } catch (e) { return String(e.message || ""); } };
+
+  var cbcInAead = await msgOf(function () { return pki.cms.decrypt(_swapContentEncAlg(aeadEnv, O("aes256-CBC")), algKm); });
+  check("an AuthEnvelopedData naming a CBC cipher is refused for not being AEAD, not for not being GCM",
+    /authenticated encryption/i.test(cbcInAead) && !/GCM cipher/.test(cbcInAead));
+  // RFC 5083 sec. 2 is where the content type is defined in terms of a content-authenticated-
+  // encryption algorithm. Sec. 2.1 is the ASN.1 type, and it is where the authAttrs rule lives --
+  // citing it for the algorithm rule is the same over-citation this vector exists to prevent.
+  check("that refusal cites the clause that states the rule it applies (RFC 5083 sec. 2)",
+    /RFC 5083 sec\. 2(?!\.\d)/.test(cbcInAead));
+
+  var aeadInEnv = await msgOf(function () { return pki.cms.decrypt(_swapContentEncAlg(algEnv, O("aes256-GCM")), algKm); });
+  check("an EnvelopedData naming an AEAD cipher is told which content type that algorithm belongs in",
+    /authEnvelopedData/.test(aeadInEnv) && !/CBC cipher/.test(aeadInEnv));
+
+  // CCM parses completely -- the OIDs are registered, the nonce is bounded to 7..13 and the ICV
+  // length restricted to the seven legal values -- and then decryption declines it. Declining is
+  // fine; reporting it as merely "unsupported <dotted oid>" is not, because that is also what an
+  // operator sees for an OID this toolkit has never heard of, and the two need different actions.
+  var ccmInAead = await msgOf(function () { return pki.cms.decrypt(_swapContentEncAlg(aeadEnv, O("aes256-CCM")), algKm); });
+  check("an AuthEnvelopedData naming AES-CCM is refused as unimplemented here, not as an unknown OID",
+    /AES-CCM/.test(ccmInAead) && /this toolkit|not implemented/i.test(ccmInAead));
+  check("the AES-CCM refusal points at the clause that legitimises the algorithm (RFC 5084 sec. 3.1)",
+    /RFC 5084 sec\. 3\.1/.test(ccmInAead));
+
   // orchestrator routing
   check("pki.schema.parse routes an emitted EncryptedData to cms", pki.schema.parse(cekEnv).contentTypeName === "encryptedData");
 

@@ -59,7 +59,88 @@ function _readmeLink(href) {
 var esc = ent.escapeHtml;
 
 var BRAND = "pkijs.com";
+// The npm coordinate, which is what a reader searches for after seeing the package anywhere else,
+// and the category words a developer actually types. A <title> ending in a bare domain carries
+// neither: "CMS" alone is a content management system to a search engine, and "ACME" is a
+// corporation. Every page title therefore ends in both, so each page states what it is about and
+// which package it documents without depending on the domain name to carry the meaning.
+var PACKAGE = "@blamejs/pki";
+var CATEGORY = "JavaScript PKI toolkit";
 var SITE_DESCRIPTION = "A pure-JavaScript PKI toolkit: X.509, ASN.1/DER, OID, CMS, OCSP, timestamping, EST, and PKCS formats — with an in-house, fail-closed DER codec, a post-quantum-first algorithm registry, and zero runtime dependencies.";
+
+// A search result renders roughly 60 characters of a title before truncating it, and a page whose
+// own name is long has nothing to gain from a suffix that gets cut off. So the suffixes are ordered
+// longest to shortest and the first one that still fits wins: a short name keeps the category words
+// a reader is likely to have typed, a long one keeps only the package it documents, and a name that
+// is already at the limit stands alone. Truncation costs a click, not an index entry, so the last
+// row is a floor rather than a hard cap.
+// The commit dates scripts/gen-wiki-lastmod.js left behind, keyed by repo-relative source path.
+// Read once at load. Absent (a tree that never ran the script, or a checkout without one) means
+// every page reports an unknown date and the sitemap simply carries no <lastmod>, which is the
+// honest outcome -- the generator never falls back to the clock.
+var LASTMOD = (function () {
+  try { return JSON.parse(fs.readFileSync(path.join(__dirname, "..", "page-lastmod.json"), "utf8")); }
+  catch (_e) { return {}; }
+})();
+var REPO_ROOT = path.resolve(__dirname, "..", "..", "..");
+
+// The renderers themselves are an input to every page. Several pages have their text authored HERE
+// rather than in a content file -- the home page's headings and examples, the API index, the error
+// catalogue -- and every page's headings, titles and primitive sections are produced by this code.
+// So a change to a renderer IS a change to the pages it renders, and dating a page only by the
+// content file it also reads reports a revision older than the page. Chrome (stylesheet, client
+// script, icons) is deliberately NOT here: it changes how a page looks, not what it says, and
+// folding it in would move all 46 dates for a CSS tweak, which is the same overclaim as stamping
+// build time. Absent from the manifest -> contributes nothing, and the pages fall back to their
+// own sources.
+// site.config.js belongs here too: it selects the library directory the entries are derived from
+// and decides the navigation grouping, so a change to it can add a page, remove one, or move it.
+var GENERATOR_SOURCES = (function () {
+  var names;
+  try { names = fs.readdirSync(__dirname).filter(function (n) { return /\.js$/.test(n); }); }
+  catch (_e) { return ["examples/wiki/site.config.js"]; }
+  return names.map(function (n) { return "examples/wiki/lib/" + n; }).concat(["examples/wiki/site.config.js"]);
+})();
+
+// WHAT IS DELIBERATELY NOT AN INPUT: the cross-file `@related` resolution. A concept or namespace
+// page renders links whose targets come from the global primitive index, so a change in an
+// unrelated module can alter a link on this page. Dating for that would make every page depend on
+// the whole library tree, and all 46 dates would collapse to "the newest thing in the repository" --
+// which is true, carries no per-page signal, and is the flattening this manifest exists to avoid.
+// The line drawn is the one a crawler cares about: the date a page's OWN asserted content last
+// changed, not the date one of its outbound links acquired a new target.
+
+// source: a repo-relative path, an absolute path under the repo, or an array of either (a page
+// generated from several files takes the most recent of them). Unknown -> null.
+function _lastmodFor(source) {
+  if (!source) return null;
+  var best = _newestOf(GENERATOR_SOURCES);
+  var d = _rawLastmod(source);
+  return d && (!best || d > best) ? d : best;
+}
+
+function _newestOf(list) {
+  var best = null;
+  list.forEach(function (s) { var d = _rawLastmod(s); if (d && (!best || d > best)) best = d; });
+  return best;
+}
+
+function _rawLastmod(source) {
+  if (!source) return null;
+  if (Array.isArray(source)) return _newestOf(source);
+  var rel = path.isAbsolute(source) ? path.relative(REPO_ROOT, source) : source;
+  rel = rel.split(path.sep).join("/");
+  return Object.prototype.hasOwnProperty.call(LASTMOD, rel) ? LASTMOD[rel] : null;
+}
+
+var TITLE_BUDGET = 62;
+function _titleWithSuffix(name) {
+  var suffixes = [" — " + CATEGORY + " | " + PACKAGE, " | " + PACKAGE, ""];
+  for (var i = 0; i < suffixes.length; i++) {
+    if (name.length + suffixes[i].length <= TITLE_BUDGET) return name + suffixes[i];
+  }
+  return name + suffixes[suffixes.length - 1];
+}
 
 // A one-line meta description from prose: strip tags/whitespace, cap length.
 function _metaDescription(src) {
@@ -238,13 +319,19 @@ function _renderPrimitive(p, index) {
 // JSON-LD structured data. Emitted as an inline <script type="application/
 // ld+json"> whose sha256 the server adds to that page's script-src, so the
 // CSP stays hash-strict with no 'unsafe-inline'.
+// The site is NAMED for the package it documents, not for the domain it happens to be served from.
+// A reader who meets this project anywhere else meets it as `@blamejs/pki`, and a structured-data
+// name of "pkijs.com" ties the documentation to a hostname that is one letter from an unrelated
+// project's. The domain remains the canonical URL; it is no longer the identity.
+var SITE_NAME = PACKAGE;
 function _jsonLd(kind, opts) {
   var data;
   if (kind === "website") {
     data = {
       "@context": "https://schema.org",
       "@type": "WebSite",
-      "name": BRAND,
+      "name": SITE_NAME,
+      "alternateName": BRAND,
       "url": opts.siteUrl + "/",
       "description": SITE_DESCRIPTION,
     };
@@ -255,7 +342,7 @@ function _jsonLd(kind, opts) {
       "headline": opts.title,
       "url": opts.canonical,
       "description": opts.description,
-      "isPartOf": { "@type": "WebSite", "name": BRAND, "url": opts.siteUrl + "/" },
+      "isPartOf": { "@type": "WebSite", "name": SITE_NAME, "url": opts.siteUrl + "/" },
     };
   }
   // `<` is escaped inside the JSON so no value can close the script
@@ -274,7 +361,9 @@ function _shell(opts) {
   var siteUrl = (opts.siteUrl || "https://" + BRAND).replace(/\/+$/, "");
   var canonical = siteUrl + (opts.path || "/");
   var desc = String(opts.description || SITE_DESCRIPTION).replace(/\s+/g, " ").trim();
-  var fullTitle = esc(opts.title) + " — " + BRAND;
+  // `seoTitle` is the expanded name where a page has one (@fullname on the @module block); `title`
+  // stays the short sidebar label. A page that is already a phrase supplies neither and reads fine.
+  var fullTitle = esc(_titleWithSuffix(opts.seoTitle || opts.title));
   var ogImage = siteUrl + "/pkijs-logo.png";
   var hrefs = (opts.assets && opts.assets.hrefs) || {};
   var head = [
@@ -301,7 +390,7 @@ function _shell(opts) {
     '<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">',
     // Open Graph.
     '<meta property="og:type" content="website">',
-    '<meta property="og:site_name" content="' + BRAND + '">',
+    '<meta property="og:site_name" content="' + SITE_NAME + '">',
     '<meta property="og:title" content="' + fullTitle + '">',
     '<meta property="og:description" content="' + esc(desc) + '">',
     '<meta property="og:url" content="' + esc(canonical) + '">',
@@ -576,14 +665,17 @@ function build(opts) {
 
   // One place stamps every page: shell + etag + CSP hash + search text.
   function _addPage(pth, meta) {
-    // meta: { title, h1, main, description, ldKind, headings }
+    // meta: { title, seoTitle, h1, main, description, ldKind, headings, source }
     var canonical = siteUrl + pth;
+    // The structured-data name follows the <title>, not the sidebar label: a rich result that says
+    // "CMS" and a title that says "Cryptographic Message Syntax" describe two different pages.
     var ld = _jsonLd(meta.ldKind || "article", {
-      siteUrl: siteUrl, title: meta.title, canonical: canonical,
+      siteUrl: siteUrl, title: meta.seoTitle || meta.title, canonical: canonical,
       description: meta.description || SITE_DESCRIPTION,
     });
     var html = _shell({
       title: meta.title,
+      seoTitle: meta.seoTitle,
       path: pth,
       description: meta.description,
       nav: _renderNav(navGroups, pth, pathToGroup[pth] || null),
@@ -597,6 +689,7 @@ function build(opts) {
       h1:    meta.h1 || meta.title,
       html:  html,
       etag:  _etag(html),
+      lastmod: _lastmodFor(meta.source),
       cspScriptHashes: [ld.cspHash],
     };
     searchIndexArr.push({
@@ -611,7 +704,11 @@ function build(opts) {
   var homeMain = [];
   homeMain.push('<div class="hero">');
   homeMain.push('<img src="/pkijs-logo.png" alt="' + esc(BRAND) + ' logo">');
-  homeMain.push("<div><h1>" + esc(BRAND) + '</h1><div class="tag">A pure-JavaScript PKI toolkit that owns its stack — X.509, ASN.1/DER, OID, PQC-first.</div></div>');
+  // The heading states what the package is. A domain name as the h1 tells a reader arriving from a
+  // search nothing they did not already see in the address bar, and gives a crawler no subject.
+  homeMain.push("<div><h1>" + esc(PACKAGE) + " — pure-JavaScript PKI toolkit for Node.js</h1>" +
+    '<div class="tag">X.509 certificates, ASN.1/DER, CMS, OCSP, CRLs and PKCS formats, with a fail-closed codec, ' +
+    "post-quantum algorithms alongside the classical ones, and no npm runtime dependencies.</div></div>");
   homeMain.push("</div>");
   homeMain.push('<div class="pills">');
   ["Zero npm dependencies", "PQC-first", "Fail-closed DER", "CommonJS, no transpilation", "Apache-2.0"].forEach(function (p) {
@@ -629,6 +726,46 @@ function build(opts) {
     "cert.validity.notAfter;          // Date\n" +
     'cert.signatureAlgorithm.name;    // "sha256WithRSAEncryption"', "js"));
   homeMain.push('<div class="callout callout-tip"><span class="callout-label">Tip</span>Parse without knowing the format first: <code>pki.schema.parse(der)</code> detects which of the toolkit\'s registered formats the bytes encode — certificate, CRL, CSR, CMS, OCSP, PKCS#8, PKCS#12, timestamp token, and the rest — and routes to the owning parser. <code>pki.schema.all()</code> lists the registered formats.</div>');
+
+  // Task-shaped entry points. The rest of the site answers "what is the signature of X", which only
+  // helps a reader who already knows X exists. These answer "how do I do Y", which is both what gets
+  // searched for and what gets linked to, and each one hands off to the namespace page that owns it.
+  homeMain.push('<h2 id="common-tasks"><a href="#common-tasks">Common tasks</a></h2>');
+  var TASKS = [
+    { q: "Read a certificate's subject, validity and extensions",
+      code: 'var cert = pki.schema.x509.parse(pemOrDer);\ncert.subject.dn;          // "CN=example.com, O=Example"\ncert.validity.notAfter;   // Date\ncert.serialNumberHex;     // "75cb4dae..."\ncert.extensions;          // [ { oid, name: "subjectAltName", critical, value }, ... ]',
+      more: "/x509" },
+    { q: "Verify a CMS / PKCS#7 signature",
+      code: 'var res = await pki.cms.verify(signedDer, { trustAnchors: [rootDer] });\nres.valid;                // every signer verified\nres.eContentType;         // "1.2.840.113549.1.7.1" -- the encapsulated type, as an OID\nres.signers[0].ok;        // this signer verified\nres.trusted;              // the signers chained to an anchor',
+      more: "/cms" },
+    { q: "Validate a certificate chain to a trust anchor",
+      code: '// Two shapes to get right. The path runs ANCHOR-ADJACENT FIRST and the TARGET LAST --\n// the reverse of how a chain is usually written. And the anchor is an object built from the\n// parsed root, not the root\'s DER (cms.verify above takes trustAnchors, an array; this is\n// trustAnchor, one value).\nvar root = pki.schema.x509.parse(rootDer);\nvar res = await pki.path.validate([intermediate, leaf], {\n  trustAnchor: {\n    name: root.subject,\n    publicKey: root.subjectPublicKeyInfo.bytes,\n    algorithm: root.subjectPublicKeyInfo.algorithm.oid,   // the anchor\'s own key algorithm\n  },\n  time: new Date(),\n});\nres.valid;                // true -- the verb throws on malformed input, so this is a real verdict\nres.revocationChecked;    // what was actually checked, not what was assumed\nres.results[0].checks;    // [ { name: "signature", ok }, { name: "nameChaining", ok }, ... ]',
+      more: "/path" },
+    { q: "Check whether a certificate has been revoked",
+      code: 'var crl = pki.schema.crl.parse(crlDer);\nvar revoked = crl.revokedCertificates.filter(function (r) {\n  return r.serialNumber === cert.serialNumber;   // both are BigInt\n});\nrevoked[0] && revoked[0].revocationDate;         // Date',
+      more: "/crl" },
+    { q: "Create a certificate signing request",
+      code: '// sign(spec, key, opts) -- the signing key is the SECOND argument, not an option\nvar csrPem = await pki.csr.sign(\n  { subject: "CN=example.com", subjectPublicKey: spkiDer },\n  { key: keyDer },\n  { pem: true }\n);',
+      more: "/csr" },
+    { q: "Open a PKCS#12 keystore",
+      code: '// The password is a positional argument; omitting it is not the empty password\nvar store = await pki.pkcs12.open(p12Bytes, "changeit");\nstore.macVerified;        // the integrity MAC checked out',
+      more: "/pkcs12" },
+  ];
+  homeMain.push('<div class="tasks">');
+  TASKS.forEach(function (t, i) {
+    var id = "task-" + (i + 1);
+    homeMain.push('<h3 id="' + id + '"><a href="#' + id + '">' + esc(t.q) + "</a></h3>");
+    homeMain.push(_renderPre(t.code, "js"));
+    homeMain.push('<p class="more"><a href="' + esc(t.more) + '">Full reference for this namespace</a></p>');
+  });
+  homeMain.push("</div>");
+
+  homeMain.push('<h2 id="requirements"><a href="#requirements">Requirements</a></h2>');
+  homeMain.push("<p>Node.js LTS, as shipped. The package is CommonJS and is published without a build step, " +
+    "so <code>require(\"@blamejs/pki\")</code> loads the same JavaScript that lives in the repository. " +
+    "There is no TypeScript compilation, no bundler, and no transpilation between the source and the tarball. " +
+    "Cryptography runs on Node's built-in <code>node:crypto</code>, which covers the classical algorithms and " +
+    "the FIPS post-quantum ones, so no native module is compiled at install time.</p>");
 
   homeMain.push('<h2 id="design-tenets"><a href="#design-tenets">Design tenets</a></h2>');
   homeMain.push('<ul class="tenets">');
@@ -648,15 +785,29 @@ function build(opts) {
     homeMain.push('<a class="card" href="/' + esc(e.slug) + '"><h3>' + esc(e.title) + "</h3><p>" + esc(desc) + "</p></a>");
   });
   homeMain.push("</div>");
-  _addPage("/", { title: "Home", h1: BRAND, main: homeMain.join("\n"), description: SITE_DESCRIPTION, ldKind: "website" });
+  // The home page's own <title> is the one query surface that has to stand alone, so it names the
+  // package and the job rather than the word "Home", which describes no page's subject.
+  _addPage("/", {
+    title: "Home",
+    seoTitle: "X.509, ASN.1/DER and CMS for Node.js",
+    h1: PACKAGE,
+    main: homeMain.join("\n"),
+    description: SITE_DESCRIPTION,
+    ldKind: "website",
+    // The whole library tree, not just the README: the namespace cards below render each module's
+    // @title and @card, so editing any module's block changes what this page says.
+    source: ["README.md"].concat(Object.keys(docsByPath)),
+  });
 
   // ---- Overview page (rendered README) ----
   if (readmeHtml) {
     _addPage("/overview", {
       title: "Overview",
-      h1: BRAND,
+      seoTitle: "Overview: what ships, and how it differs from the alternatives",
+      h1: PACKAGE,
       main: '<div class="readme">' + readmeHtml + "</div>",
       description: SITE_DESCRIPTION,
+      source: "README.md",
     });
   }
 
@@ -667,6 +818,7 @@ function build(opts) {
       main: _renderConcept(c, index),
       description: _metaDescription(_renderProse(c.prose)),
       headings: c.sections.map(function (s) { return s.heading; }).join(" "),
+      source: "examples/wiki/concepts.js",
     });
   });
 
@@ -676,8 +828,20 @@ function build(opts) {
     var rec = docsByNs[ns];
     if (!rec) return;
     var modTags = (rec.module && rec.module.tags) || {};
+    // An entry can span several namespaces (pki.tsp and pki.schema.tsp both land on /tsp), and the
+    // page renders under the first. The expanded name is taken from whichever of them declares one,
+    // so a slug does not silently keep its bare acronym because the module that carries the
+    // @fullname happens to sort second.
+    var fullname = null;
+    for (var ni = 0; ni < e.namespaces.length && !fullname; ni++) {
+      var nrec = docsByNs[e.namespaces[ni]];
+      var ntags = (nrec && nrec.module && nrec.module.tags) || {};
+      if (ntags.fullname) fullname = ntags.fullname;
+    }
     var main = [];
-    main.push("<h1>" + esc(e.title) + "</h1>");
+    // The heading follows the <title>, so the page's most prominent line names the thing in the
+    // words a reader arriving from a search actually used, not the sidebar's four-letter label.
+    main.push("<h1>" + esc(fullname || e.title) + "</h1>");
     var introSrc = modTags.intro || (e.card && e.card.description) || "";
     if (introSrc) main.push('<div class="intro">' + _renderProse(introSrc).replace(/^<p>|<\/p>$/g, "") + "</div>");
     var headingParts = [];
@@ -687,32 +851,49 @@ function build(opts) {
     });
     _addPage("/" + e.slug, {
       title: e.title,
+      seoTitle: fullname || e.title,
       main: main.join("\n"),
       description: _metaDescription(introSrc),
       headings: headingParts.join(" "),
+      source: e.namespaces.map(function (n) { return docsByNs[n] && docsByNs[n].sourcePath; }).filter(Boolean),
     });
   });
 
   // ---- Reference pages ----
+  // Both are built from the whole of lib/, so their last-modified date is the most recent commit
+  // across every file that feeds them rather than any single module's.
+  var allSources = Object.keys(docsByPath);
   _addPage("/api", {
     title: "API index",
+    seoTitle: "API index: every primitive by namespace",
     main: _renderApiIndex(entries, docsByNs),
     description: "Every documented primitive in the toolkit, grouped by namespace, with since-version and stability.",
+    source: allSources,
   });
   _addPage("/reference-errors", {
     title: "Error catalogue",
+    seoTitle: "Error catalogue: every domain/reason code",
     main: _renderErrorCatalog(libDir),
     description: "Every PkiError class and every stable domain/reason error code the toolkit throws, harvested from the source.",
+    source: allSources,
   });
 
   // ---- Machine surfaces: symbols manifest, sitemap, robots ----
   var symbols = symbolIndex.build(entries, docsByNs, { bare: _bare, anchor: _anchor });
   var symbolsJson = JSON.stringify({ count: symbols.length, symbols: symbols });
 
-  var today = new Date().toISOString().slice(0, 10);
+  // <lastmod> comes from the commit that last touched the source the page is generated from (see
+  // scripts/gen-wiki-lastmod.js), never from the clock. Stamping build time would tell a crawler
+  // that all 46 URLs changed on every deploy, which is false for all but the one that did, and a
+  // <lastmod> that is demonstrably unreliable is one a crawler learns to disregard. Where the date
+  // is unknown -- no manifest, or a source file with no commit yet -- the element is omitted, which
+  // sitemaps.org allows and which claims nothing rather than claiming something untrue.
+  // <changefreq> is dropped for the same reason: "weekly" on every URL was never measured.
   var sitemapEntries = Object.keys(pages).sort().map(function (p) {
-    return "  <url><loc>" + esc(siteUrl + p) + "</loc><lastmod>" + today + "</lastmod>" +
-      "<changefreq>weekly</changefreq><priority>" + (p === "/" ? "1.0" : "0.8") + "</priority></url>";
+    var mod = pages[p].lastmod;
+    return "  <url><loc>" + esc(siteUrl + p) + "</loc>" +
+      (mod ? "<lastmod>" + esc(mod) + "</lastmod>" : "") +
+      "<priority>" + (p === "/" ? "1.0" : "0.8") + "</priority></url>";
   });
   var sitemapXml = '<?xml version="1.0" encoding="UTF-8"?>\n' +
     '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">\n' +

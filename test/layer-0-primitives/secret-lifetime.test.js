@@ -80,7 +80,22 @@ function tap() {
   real.createHmac = nodeCrypto.createHmac;
   nodeCrypto.createHmac = function (alg, key) { grab("hmac.key", key); return real.createHmac.apply(this, arguments); };
   real.createDecipheriv = nodeCrypto.createDecipheriv;
-  nodeCrypto.createDecipheriv = function (alg, key) { grab("cipher.key", key); return real.createDecipheriv.apply(this, arguments); };
+  // A decipher's update() returns recovered plaintext, and it returns it BEFORE final() decides
+  // whether the message was authentic. Buffer.concat then copies those bytes into the result, so
+  // the update buffer is a second, redundant copy on the success path and the ONLY copy on the
+  // failure path -- where RFC 5083 sec. 1 requires the plaintext be destroyed, not merely withheld.
+  // Capturing it here is the only view of that buffer a test can hold.
+  nodeCrypto.createDecipheriv = function (alg, key) {
+    grab("cipher.key", key);
+    var d = real.createDecipheriv.apply(this, arguments);
+    var realUpdate = d.update.bind(d);
+    d.update = function () {
+      var out = realUpdate.apply(null, arguments);
+      if (Buffer.isBuffer(out) && out.length) grab("decipher.update", out);
+      return out;
+    };
+    return d;
+  };
   // pbkdf2Sync returns the password-derived KEK / content key the CMS layer holds directly.
   real.pbkdf2Sync = nodeCrypto.pbkdf2Sync;
   nodeCrypto.pbkdf2Sync = function (pw) { grab("pbkdf2.pw", pw); return grab("pbkdf2.kek", real.pbkdf2Sync.apply(this, arguments)); };
@@ -817,6 +832,56 @@ async function run() {
   check("...it held real key material", decoded.length > 0 && decoded.every(function (c) { return anyNonZero(c.snap); }));
   check("...and it is cleared even though the throw came from the setup, not the unwrap",
     decoded.length > 0 && decoded.every(function (c) { return allZero(c.buf); }));
+
+  // ---- RFC 5083 sec. 1: a failed integrity check destroys the plaintext ----------
+  // "The recipient MUST verify the integrity of the received content before releasing any
+  // information, especially the plaintext of the content. If the integrity verification fails,
+  // the receiver MUST destroy all of the plaintext of the content."
+  //
+  // Withholding is not destroying. A decipher's update() hands back the recovered plaintext and
+  // final() is what rejects the tag, so on a tampered message the whole plaintext exists before
+  // anything has decided the message is a forgery.
+  var aeadRecip = await makeRecipient("rsa");
+  var aeadGood = await pki.cms.encrypt(MSG, [{ cert: aeadRecip.cert }]);   // AuthEnvelopedData / GCM
+
+  // The tamper has to land on the mac. Flipping a byte anywhere else corrupts the RSA-wrapped
+  // content-encryption key, so the failure happens at unwrap and the cipher is never reached --
+  // and because the refusal is deliberately uniform, that looks identical from outside.
+  var aeadMac = pki.schema.parse(aeadGood).mac;
+  var macAt = aeadGood.indexOf(aeadMac);
+  var aeadBad = Buffer.from(aeadGood);
+  aeadBad[macAt] = aeadBad[macAt] ^ 0x01;
+
+  t = tap();
+  var aeadCode = null;
+  try {
+    try { await pki.cms.decrypt(aeadBad, { key: aeadRecip.key, cert: aeadRecip.cert }); }
+    catch (e) { aeadCode = e.code; }
+  } finally { t.restore(); }
+  check("a mac-tampered AuthEnvelopedData is refused", aeadCode === "cms/decrypt-failed");
+  wipedAll(t, "decipher.update", "pki.cms.decrypt destroys the plaintext of a forged AuthEnvelopedData");
+
+  // The same buffer on the SUCCESS path. Buffer.concat copies, so the update() output is a second
+  // full copy of the plaintext that the caller never receives and that nothing else will clear.
+  t = tap();
+  var okOut;
+  try { okOut = await pki.cms.decrypt(aeadGood, { key: aeadRecip.key, cert: aeadRecip.cert }); }
+  finally { t.restore(); }
+  check("an intact AuthEnvelopedData still decrypts", Buffer.compare(okOut.content, MSG) === 0);
+  wipedAll(t, "decipher.update", "pki.cms.decrypt clears its intermediate plaintext copy on success");
+
+  // The CBC sibling, reached through a password-based EncryptedData. Here final() throws on a
+  // padding failure rather than a tag failure, and update() has already produced every block but
+  // the last. Same shape, same obligation, different module (pbes2.cbcDecrypt).
+  var pwEnv = await pki.cms.encrypt(MSG, [{ password: "hunter2" }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  t = tap();
+  var pwCode = null;
+  try {
+    try { await pki.cms.decrypt(pwEnv, { password: "wrong-password" }); }
+    catch (e) { pwCode = e.code; }
+  } finally { t.restore(); }
+  check("a wrong password on an EncryptedData is refused", pwCode != null);
+  wipedAll(t, "decipher.update", "a wrong password destroys the partial plaintext pbes2 produced");
 
   console.log("CHECKS " + helpers.getChecks());
 }
