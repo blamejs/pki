@@ -219,6 +219,16 @@ async function run() {
   // ---- CertID mismatch (cross-CA substitution defense) ----
   var wrongCertId = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.altCaCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("CertID mismatch: issuerKeyHash of a different CA -> not-about-this-cert, unknown", (await verify(w, wrongCertId)).status === "unknown");
+  // The CertID binding is what says the response concerns THIS certificate, so it is decided with a
+  // captured byte comparison: `Buffer.prototype.equals` replaced after load reports every hash
+  // equal, and a `good` signed for a different CA answers for the certificate under check.
+  var realEquals = Buffer.prototype.equals;
+  Buffer.prototype.equals = function () { return true; };
+  var wrongCertIdSwapped;
+  try { wrongCertIdSwapped = await verify(w, wrongCertId); }
+  finally { Buffer.prototype.equals = realEquals; }
+  check("CertID mismatch: ...and stays unknown with Buffer.prototype.equals replaced after load",
+    wrongCertIdSwapped.status === "unknown");
 
   // ---- signed request (optionalSignature) + requestorName forms ----
   var signedReq = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
