@@ -919,14 +919,18 @@ async function run() {
   // `Array.isArray` answering false routes a trust list past the list door and straight back out
   // by reference, so appending to it mid-call widens the set the chain was built against.
   //
-  // What this vector establishes, precisely: with the array test replaced and the caller emptying
-  // the list mid-call, the call does not come back trusted. It does NOT isolate this module's
-  // captured array test as the cause -- `Array.isArray` is consulted seven more times inside a
-  // verify call by the DER reader, the schema walk and path building, so a global replacement
-  // corrupts those too and the outcome cannot be attributed to one change. The capture is kept on
-  // principle, and this records the honest limit of what the vector shows. The byte-predicate
-  // vector below has no such ambiguity: `util.types.isUint8Array` is consulted zero times through
-  // the live object during a verify call, every consumer having captured it.
+  // What this vector establishes: the replacement is INERT. Every consumer inside a verify call --
+  // this module, the DER reader, the schema walk, path building -- takes the array test at load, so
+  // replacing the global changes nothing about the verdict, and emptying the list afterwards
+  // changes nothing either because the list was copied at the door.
+  //
+  // The assertion is equality with the untampered call rather than "not trusted". A valid anchor
+  // passed to a valid chain SHOULD come back trusted; demanding otherwise would only be satisfied
+  // by the replacement breaking something, which is what it used to do when these consumers still
+  // read the global and a global swap corrupted the whole call. Comparing against the baseline is
+  // what distinguishes "the capture held" from "the call fell over for an unrelated reason".
+  var baselineResult = await pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: [caCert], time: T })
+    .then(function (r) { return r.trusted; }, function (e) { return "threw " + e.code; });
   var realIsArray = Array.isArray;
   var liveAnchors = [caCert];
   var swappedList;
@@ -939,8 +943,10 @@ async function run() {
   liveAnchors.length = 0;
   var swappedListResult = await swappedList.then(
     function (r) { return r.trusted; }, function (e) { return "threw " + e.code; });
-  check("23y. emptying the anchor list mid-call does not yield a trusted verdict, with Array.isArray replaced",
-    swappedListResult !== true);
+  check("23y. a replaced Array.isArray plus emptying the anchor list mid-call leaves the verdict as it was",
+    swappedListResult === baselineResult);
+  check("23y1. and that baseline verdict is a real trusted one, so the comparison is not vacuous",
+    baselineResult === true);
 
   // HDR carries transactionID = Buffer.alloc(16, 7), so this value matches when the call is made
   // and stops matching the moment it is overwritten.
@@ -1002,13 +1008,13 @@ async function run() {
   try { swapVerdict = await pendingSwap; } finally { Array.prototype.map = realMap; }
   check("23y. replacing Array.prototype.map mid-call does not decide the anchor set",
     swapVerdict.trusted === false);
-  // The replacement really was live and really was reached during the window -- without this the
-  // vector above would pass on a call that simply never touched it. What the fix changes is that
-  // nothing on the ANCHOR path dispatches through it: cmp-verify builds its lists with explicit
-  // loops, so the swap cannot answer the question "which certificates are trusted". Code deeper in
-  // path building still calls it, which is why this asserts the swap fired rather than claiming the
-  // whole call is free of it.
-  check("23z. the replacement was installed and reached while the call was pending", swapped === true);
+  // The replacement is never reached at all. This asserted the opposite while path building still
+  // dispatched through the live global: the swap fired, and the check existed to prove the vector
+  // above was not passing on a call that simply never touched it. Now that every module on the
+  // route takes its array operations at load, a mid-call replacement reaches nothing, which is the
+  // stronger property and the one an operator actually depends on -- a verdict that cannot be
+  // steered is better than one that is steered and then refused.
+  check("23z. the replacement is never reached during the call", swapped === false);
 
   // An Array.prototype index SETTER is the sharper form of the same idea: a fresh array has no own
   // slot at 0, so `out[0] = cert` is a [[Set]] that walks the prototype chain and lands in caller
@@ -1069,12 +1075,12 @@ async function run() {
   var dateVerdict;
   try { dateVerdict = await pendingDate; } finally { global.Date = realDate; }
   liveDate.setTime(T.getTime());
-  // As with the map swap and the index setter: the replacement is reached, by code deeper in path
-  // validation that asks for the current time. cmp-verify's own copy is taken with the constructor
-  // captured at module load and happens synchronously at the call, before this swap is even
-  // installed -- so what this asserts is that the window was live, and 23ai asserts the outcome.
-  check("23ah. the replaced constructor was installed and reached while the call was pending",
-    dateUsed === true);
+  // The replacement is never reached. This asserted the opposite while path validation still asked
+  // the live global for the current instant; now that it takes the constructor at load, a swap
+  // installed mid-call reaches nothing. cmp-verify's own copy was already immune -- it is taken
+  // synchronously at the call, before the swap is installed -- so what changed is the code deeper
+  // in the route, and the property worth asserting is that no part of the call consults it.
+  check("23ah. the replaced constructor is never reached during the call", dateUsed === false);
   check("23ai. and mutating the caller's Date afterwards still leaves the signer untrusted",
     dateVerdict.trusted === false);
 
