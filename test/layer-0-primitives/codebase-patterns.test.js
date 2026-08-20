@@ -1763,6 +1763,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-range.js:<top>", "lib/guard-async.js:<top>", "lib/guard-time.js:<top>",
         "lib/guard-name.js:<top>", "lib/guard-text.js:<top>", "lib/guard-secret.js:<top>",
         "lib/cmp-verify.js:<top>", "lib/ocsp-verify.js:makeOcspVerify",
+        "lib/jose.js:<top>", "lib/webcrypto.js:<top>",
       ],
       mode: "family-subset",
       reason: "The per-guard capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across guards; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
@@ -2832,6 +2833,13 @@ function testGuardReadsRuntimeLive() {
   var MODULE_HANDLES = /^(?:intrinsic|_intrinsic|guard|helpers|pkix|schema|oid|asn1|cbor|C|errors|util|crypto|os|fs|path|constants)$/;
   var methodRe = new RegExp(
     "(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)((?:\\.[A-Za-z$][\\w$]*)*)\\." + LIVE_METHODS + "\\s*\\(", "g");
+  // The same dispatch off a CALL RESULT rather than off a named chain. `_String(name).toUpperCase()`
+  // reads `toUpperCase` from whatever the call returned, exactly as `name.toUpperCase()` does, and
+  // the rule is the same -- but the pattern above needs an identifier before the dot, so four of
+  // these survived a migration that had removed every other spelling. One of them decided which
+  // hash a digest ran under, so a replaced case fold answered SHA-1 to a caller who asked for
+  // SHA-256. The receiver is unnamed here, so the match is reported by its method alone.
+  var callResultMethodRe = new RegExp("\\)\\s*\\." + LIVE_METHODS + "\\s*\\(", "g");
   // The conversions and predicates called as bare globals. They read as language rather than as
   // code, which is why they outlasted every other read here: an index test is
   // `String(Number(k)) === k`, an arc bound is a bound on `BigInt(part)`, a JSON number is refused
@@ -2877,6 +2885,13 @@ function testGuardReadsRuntimeLive() {
         if (MODULE_HANDLES.test(m[1])) continue;
         bad.push({ file: rel, line: i + 1,
           content: "dispatches `" + m[0].trim() + "` through a live prototype — " +
+            "use the uncurried capture from guard-intrinsic, so a replaced prototype method cannot " +
+            "decide what this guard concludes" });
+      }
+      callResultMethodRe.lastIndex = 0;
+      while ((m = callResultMethodRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "dispatches `" + m[0].trim() + "` off a call result through a live prototype — " +
             "use the uncurried capture from guard-intrinsic, so a replaced prototype method cannot " +
             "decide what this guard concludes" });
       }

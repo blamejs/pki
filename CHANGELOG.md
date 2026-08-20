@@ -4,6 +4,25 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.19 — 2026-08-20
+
+The crypto engine and the JWS signer decide with operations captured at load, so code that runs after the module does cannot change what a permission check concludes.
+
+### Changed
+
+- `pki.webcrypto` and `pki.jose` are held to the live-read rule the guard family already follows: the check over `lib/` that refuses reading an operation from the runtime at call time covers every module that takes the captures, and these two now do. Operator-visible behavior is unchanged except where a refusal that could be bypassed now holds.
+
+### Fixed
+
+- The WebCrypto key-usage check holds against a replaced `Array.prototype.indexOf`. The membership test IS the permission decision, so it runs through the captured method: dispatched live, a key permitted only for `verify` passed the engine's gate for `sign` and failed later, in the platform's own crypto, with an untyped fault instead of `webcrypto/invalid-access`.
+- A CryptoKey's usage list is a copy this engine took with a captured `slice`, so a replaced one cannot leave the caller holding the array the key is checked against for the rest of its life. The same applies to the partition that decides which usages each half of a generated pair is minted with.
+- `pki.key.import`, `pki.key.generate` and `subtle.generateKey` refuse a non-array `usages` by name. It reached the key constructor, where `Array.prototype.slice` on a number yields an empty list, so the call minted a key permitted for nothing rather than naming the argument that was wrong. The asymmetric branch of `generateKey` partitions the usages before either half is constructed and `filter` treats a non-list the same way, so it is checked at that verb's own door and the whole pair is refused.
+- The AES-GCM ciphertext and authentication tag are split with a captured `subarray`, so a replaced one cannot hand the tag check a different range of the same buffer.
+- A JWK thumbprint (RFC 7638 sec. 3.3) is built with a captured serializer. The canonical JSON is the thumbprint's preimage, so a replaced `JSON.stringify` changes the identity every consumer compares keys by.
+- The JOSE header checks -- own-name reads, the `crit` list walk, the embedded-JWK shape test -- and the protected-header serialization all run on captured operations, so a caller who reaches the header through an accessor cannot decide which of them apply.
+- A digest runs under the algorithm the caller named. The hash name is case-folded to pick its registry row, and dispatched live a replaced `String.prototype.toUpperCase` answering `SHA-1` gave a caller who asked for SHA-256 a 20-byte digest. The same fold picks the HMAC block size and decides whether a key's algorithm matches the operation's.
+- `getRandomValues` settles the kinds WebCrypto refuses from the value's internal slot rather than by `instanceof` against a replaceable global, so a real `Float32Array` cannot pass a check written to reject it by swapping the constructor the comparison names.
+
 ## v0.5.18 — 2026-08-20
 
 Every producing verb refuses an authoring field it does not read, so a misspelling is a refusal at the call instead of a signed artifact that quietly omits what was asked for.

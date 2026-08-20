@@ -52,7 +52,7 @@
   "lib/guard-encoding.js": "2026-08-19",
   "lib/guard-header.js": "2026-08-19",
   "lib/guard-identifier.js": "2026-08-19",
-  "lib/guard-intrinsic.js": "2026-08-19",
+  "lib/guard-intrinsic.js": "2026-08-20",
   "lib/guard-json.js": "2026-08-19",
   "lib/guard-limits.js": "2026-08-19",
   "lib/guard-name.js": "2026-08-19",

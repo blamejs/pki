@@ -1313,6 +1313,67 @@ async function testMlKemImport() {
   var bareSeedP8 = b.sequence([b.integer(0n), b.sequence([b.oid(O("id-ml-kem-768"))]), b.octetString(seed64)]);
   check("ML-KEM bare-seed pkcs8 under AES-GCM (guard dodge) -> webcrypto/not-supported",
     (await code(function () { return subtle.importKey("pkcs8", bareSeedP8, { name: "AES-GCM" }, true, []); })) === "webcrypto/not-supported");
+
+  // The permission checks decide with intrinsics captured at load, so a caller who receives control
+  // afterwards cannot change what they conclude. Replaced live, `Array.prototype.indexOf` reports
+  // every usage present and the engine's own refusal is never raised: a key minted to verify reaches
+  // the signing call, which then fails only in the platform's crypto with an untyped fault.
+  var verifyOnly = await subtle.importKey("jwk", await subtle.exportKey("jwk", (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])).publicKey),
+    { name: "ECDSA", namedCurve: "P-256" }, true, ["verify"]);
+  async function signCode() { return code(function () { return subtle.sign({ name: "ECDSA", hash: "SHA-256" }, verifyOnly, Buffer.from("x")); }); }
+  var plainVerdict = await signCode();
+  check("a verify-only key is refused for signing", plainVerdict === "webcrypto/invalid-access");
+  var realIndexOf = Array.prototype.indexOf;
+  Array.prototype.indexOf = function () { return 0; };
+  var swappedVerdict;
+  try { swappedVerdict = await signCode(); } finally { Array.prototype.indexOf = realIndexOf; }
+  check("...and still refused with Array.prototype.indexOf replaced after load", swappedVerdict === plainVerdict);
+
+  // The same question one level up: the usage list a key carries is a copy this engine took, so a
+  // replaced `slice` cannot leave the caller holding the list the key is later checked against.
+  var realSlice = Array.prototype.slice;
+  var leaked = null;
+  Array.prototype.slice = function () { leaked = this; return this; };
+  var minted;
+  try { minted = await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"]); }
+  finally { Array.prototype.slice = realSlice; }
+  check("a key's usage list is not the caller's array", leaked === null || minted.privateKey.usages !== leaked);
+
+  // The case fold is what picks the hash registry row. Dispatched live, a replaced `toUpperCase`
+  // answering "SHA-1" gave a caller who asked for SHA-256 a 20-byte digest, with nothing between
+  // the request and the hash saying the algorithm had changed.
+  var realUpper = String.prototype.toUpperCase;
+  String.prototype.toUpperCase = function () { return "SHA-1"; };
+  var digestLen;
+  try { digestLen = Buffer.from(await subtle.digest("SHA-256", Buffer.from("abc"))).length; }
+  finally { String.prototype.toUpperCase = realUpper; }
+  check("SHA-256 stays SHA-256 with String.prototype.toUpperCase replaced", digestLen === 32);
+
+  // The kinds getRandomValues refuses are settled from the value's internal slot, so replacing the
+  // global constructor cannot make a real Float32Array pass a check written to reject it.
+  var realF32 = global.Float32Array;
+  var f32 = new realF32(4);
+  global.Float32Array = function Fake() {};
+  var f32Verdict;
+  try { pki.webcrypto.getRandomValues(f32); f32Verdict = "ACCEPTED"; }
+  catch (e) { f32Verdict = e.code || e.constructor.name; }
+  finally { global.Float32Array = realF32; }
+  check("a Float32Array is refused with the global constructor replaced", f32Verdict === "webcrypto/data");
+
+  // A non-list `keyUsages` is named at the door rather than becoming an empty permission set. The
+  // asymmetric branch partitions the usages before either half is constructed, and `filter` treats a
+  // non-list as array-like and yields `[]`, so both halves arrived valid and the call minted an
+  // unusable PAIR. The symmetric branches hand the value straight to the constructor, whose own door
+  // catches those -- so the two paths are checked separately here.
+  for (var bu = 0; bu < 3; bu++) {
+    var badUsages = [42, "sign", {}][bu];
+    check("generateKey (asymmetric) with a non-array keyUsages " + JSON.stringify(badUsages) + " -> webcrypto/syntax",
+      (await code((function (u) { return function () { return subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, u); }; })(badUsages))) === "webcrypto/syntax");
+    check("generateKey (symmetric) with the same -> webcrypto/syntax",
+      (await code((function (u) { return function () { return subtle.generateKey({ name: "AES-GCM", length: 256 }, true, u); }; })(badUsages))) === "webcrypto/syntax");
+  }
+  check("a real usages array still generates a pair",
+    (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])).privateKey.usages.length === 1);
 }
 
 module.exports = { run: run };
