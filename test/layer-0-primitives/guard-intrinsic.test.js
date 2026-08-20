@@ -20,6 +20,7 @@
 var intrinsic = require("../../lib/guard-intrinsic");
 var guard = require("../../lib/guard-all");
 var name = require("../../lib/guard-name");
+var encoding = require("../../lib/guard-encoding");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
 var check = helpers.check;
@@ -175,6 +176,43 @@ function testRuntimeReadsAreSnapshotted() {
   }
   check("a replaced Buffer.from cannot redirect the wipe onto a decoy buffer",
     Array.prototype.every.call(plaintext, function (b) { return b === 0; }));
+
+  // Canonicality is decided by decoding the text and re-encoding the result, so BOTH halves of
+  // that round trip settle the answer. Capturing the decoder and leaving the re-encoder live keeps
+  // the hole open from the other side: a `toString` returning the input makes every non-canonical
+  // encoding compare equal to its own re-encoding. `AB` decodes to 0x00, whose canonical form is
+  // `AA`, so it must be refused.
+  var realToStr = Buffer.prototype.toString, encOutcome;
+  try {
+    Buffer.prototype.toString = function () { return "AB"; };
+    try {
+      encoding.base64url("AB", 100, F, "x/bad", "the value");
+      encOutcome = "accepted";
+    } catch (e) { encOutcome = e.code; }
+  } finally {
+    Buffer.prototype.toString = realToStr;
+  }
+  check("a replaced Buffer.prototype.toString cannot make a non-canonical encoding canonical",
+    encOutcome === "x/bad");
+
+  // On a typed array `length` is a configurable accessor on the prototype, and the Buffer arm's
+  // cap comparison reads it. One returning 0 admits a buffer of any size and then decodes it in
+  // full, which is the allocation the cap exists to bound.
+  var taProto = Object.getPrototypeOf(Uint8Array.prototype);
+  var realLenDesc = Object.getOwnPropertyDescriptor(taProto, "length");
+  var capOutcome;
+  try {
+    Object.defineProperty(taProto, "length", { get: function () { return 0; }, configurable: true });
+    try {
+      guard.text.decode(Buffer.alloc(4096), 16, TestError,
+        { tooLarge: "x/too-large", badInput: "x/bad-input", label: "the text" });
+      capOutcome = "accepted";
+    } catch (e) { capOutcome = e.code || "OTHER"; }
+  } finally {
+    Object.defineProperty(taProto, "length", realLenDesc);
+  }
+  check("a replaced typed-array length getter cannot admit an over-cap Buffer",
+    capOutcome === "x/too-large");
 
   check("a replaced util.types.isDate cannot make a plain object answer as a Date", saidDate === false);
   check("a replaced global isNaN cannot make an invalid Date pass the validity check",
