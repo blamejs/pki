@@ -2776,6 +2776,69 @@ function testAsn1ReaderExists() {
   _report("every asn1.read.<name> call names a reader the codec actually exports", bad);
 }
 
+function testGuardReadsRuntimeLive() {
+  // class: guard-reads-runtime-live
+  // A guard decides things, and it decides them with operations it reads from the runtime. Every
+  // one of those is an ordinary writable property of a global, so reading it at the moment it runs
+  // hands the decision to whoever last wrote it. The failures are silent and in the PASSING
+  // direction: a `forEach` replaced with a no-op makes a scan report nothing over real keys and
+  // the rule keyed on that scan then passes over an empty list; a `toLowerCase` returning a
+  // constant makes every distinguished name equal to every other.
+  //
+  // This was found SIX times in a row, one reference at a time, each fix closing exactly the one
+  // named and leaving the next tier live: the method, then the `.call` used to invoke it, then the
+  // array test asked again deeper in, then the constructor a re-view built with, then the
+  // re-encode half of a round trip whose decode half was captured, then the array and collection
+  // prototypes. This detector exists so the seventh is found here rather than by a reviewer.
+  //
+  // The rule: inside lib/guard-*.js, a bare `Global.member(` or a bare `x.method(` on one of the
+  // known-replaceable operation names is a live read. The safe spellings are a module-load capture
+  // (a `_`-prefixed local bound from guard-intrinsic or from the prototype directly) and a call
+  // through it. guard-intrinsic itself is where the captures are taken, so it is exempt.
+  var LIVE_STATICS = [
+    "Object\\.(?:create|keys|assign|freeze|getPrototypeOf|setPrototypeOf|getOwnPropertyNames|getOwnPropertyDescriptor|defineProperty|isExtensible)",
+    "Array\\.isArray", "ArrayBuffer\\.isView", "Reflect\\.(?:ownKeys|apply)",
+    "Buffer\\.(?:from|alloc|isBuffer|byteLength|concat|compare)",
+    "Number\\.(?:isInteger|isSafeInteger|isNaN)", "String\\.fromCharCode",
+    "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)", "Promise\\.(?:resolve|reject)",
+  ];
+  var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|concat|join|" +
+    "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime)";
+  var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
+  // A method call whose receiver is NOT a `_`-prefixed capture. `intrinsic.x(` and `guard.x(` are
+  // module handles, not prototypes, so they are excluded by requiring a bare identifier receiver.
+  var methodRe = new RegExp("(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)\\." + LIVE_METHODS + "\\s*\\(", "g");
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (!/^lib\/guard-[a-z-]+\.js$/.test(rel)) return;
+    if (rel === "lib/guard-intrinsic.js") return;   // where the captures are taken
+    var src = fs.readFileSync(f, "utf8");
+    var lines = _lines(src);
+    for (var i = 0; i < lines.length; i++) {
+      var code = _stripCommentsAndLiterals(lines[i]);
+      var m;
+      staticRe.lastIndex = 0;
+      while ((m = staticRe.exec(code)) !== null) {
+        bad.push({ file: rel, line: i + 1,
+          content: "reads `" + m[0].replace(/\s*\($/, "") + "` from the runtime at call time — " +
+            "bind it at module load through guard-intrinsic, so a caller who replaces it afterwards " +
+            "cannot decide what this guard concludes" });
+      }
+      methodRe.lastIndex = 0;
+      while ((m = methodRe.exec(code)) !== null) {
+        if (m[1] === "util" || m[1] === "intrinsic" || m[1] === "guard") continue;
+        bad.push({ file: rel, line: i + 1,
+          content: "dispatches `" + m[0].trim() + "` through a live prototype — " +
+            "use the uncurried capture from guard-intrinsic, so a replaced prototype method cannot " +
+            "decide what this guard concludes" });
+      }
+    }
+  });
+  bad = _filterMarkers(bad, "guard-reads-runtime-live");
+  _report("no lib/guard-*.js module reads a replaceable runtime operation at call time", bad);
+}
+
 function testEveryGuardEnforced() {
   // class: guard-without-enforcement
   // Anti-drift META-check -- the guard-family analog of the @primitive comment-
@@ -3312,6 +3375,7 @@ function run() {
   testRawSecretExportIsWiped();
   testConstantTimeCompareShortCircuited();
   testAsn1ReaderExists();
+  testGuardReadsRuntimeLive();
   testEveryGuardEnforced();
   testGuardErrorFactoryNotClass();
   testValidatorShapeReinlined();
