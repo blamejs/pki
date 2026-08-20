@@ -497,10 +497,6 @@ function cmdSmoke() {
 }
 
 function cmdCommit() {
-  // Before any git mutation, so a failing gate leaves the working tree and the
-  // branch list exactly as they were and the operator re-runs cleanly.
-  _staticGates();
-
   _section("commit");
   var next = _readPackageVersion();
   var branch = _releaseBranchFor(next);
@@ -524,6 +520,15 @@ function cmdCommit() {
     throw new Error("release: commit must run on main or " + branch +
                     " (currently on " + current + ")");
   }
+
+  // AFTER the branch is selected, never before: every gate reads the working
+  // tree, and the checkout above can replace it. Running from `main` with the
+  // release branch already present would otherwise validate main's bytes and
+  // then commit the branch's -- the same "answered for a tree the commit does
+  // not contain" fault the battery exists to close. A failing gate here leaves
+  // the branch checked out, which is idempotent and costs nothing; committing
+  // ungated bytes is not.
+  _staticGates();
 
   // If HEAD already carries a commit for this release, skip the second
   // commit and verify the existing signature instead.
