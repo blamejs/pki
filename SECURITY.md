@@ -173,9 +173,17 @@ security-only patches after the next major releases.
   that outlive a promise turn are deep-copied at entry, and a field supplied
   through an accessor is refused there rather than read once and stored, since a
   value that can differ between the check and the use is not one the check
-  covered. The boundary is the process: code that loads before this package can
-  replace the built-ins it captures, and nothing inside a library can defend
-  against that.
+  covered. The same rule governs the OPERATIONS a decision is made with, not
+  only the values it reads: a check written as `key.usages.indexOf(usage)` asks
+  the runtime, at the moment of the call, which function `indexOf` is, so one
+  replaced afterwards reports every usage present and the refusal is never
+  raised. The crypto engine, the JWS signer and every guard therefore take what
+  they decide with at load and invoke it without reading a property of the
+  captured function, so a permission check, a canonical serialization, or the
+  split between a ciphertext and its authentication tag concludes the same thing
+  whenever it runs. The boundary is the process: code that loads before this
+  package can replace the built-ins it captures, and nothing inside a library can
+  defend against that.
 - **One signature covering several encodings.** A type-3 C509 certificate is a
   re-encoding of an X.509 certificate, and the X.509 signature covers the bytes
   it rebuilds rather than the C509 bytes themselves. Where the specification
