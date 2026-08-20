@@ -189,6 +189,22 @@ async function testUnknownBuildKeys() {
     (await codeOf(pki.pkcs12.build(accessorSpec, { password: "1234" }))) === "pkcs12/bad-input");
   // A safeContents that is present but not a list is not the full form. It is named as the field
   // that is wrong, rather than switching the door to a form the builder will not assemble.
+  // The MAC descriptor is checked against the algorithm it selects. The classic Appendix B key
+  // derivation produces a key at the hash's own output length, so a keyLength there was an explicit
+  // security parameter that emitted the same MAC as the call that never named it.
+  check("keyLength on a classic HMAC MAC -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { algorithm: "hmac", keyLength: 64 } }))) === "pkcs12/bad-input");
+  check("...and on the default algorithm, which is the classic one",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { keyLength: 64 } }))) === "pkcs12/bad-input");
+  check("keyLength on a PBMAC1 MAC is still read",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", keyLength: 32 } })) != null);
+  check("an unrecognized algorithm is still named by _buildMacData",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] },
+      { password: "1234", mac: { algorithm: "hmc", keyLength: 64 } }))) === "pkcs12/bad-input");
+
   var notAList = null;
   try { await pki.pkcs12.build({ safeContents: { bags: [] }, key: s.key, cert: s.cert }, { password: "1234" }); }
   catch (e) { notAList = e; }

@@ -42,6 +42,7 @@ Every producing verb refuses an authoring field it does not read, so a misspelli
 - `pki.cms.authenticate` refuses `digestAlgorithm` and `authAttrs` when `authenticatedAttributes` is `false`. That branch MACs the content octets directly and builds no attribute set, so the digest algorithm that names its hash, and any attribute added to it, are read by nothing.
 - `pem` on an `EncryptedData` descriptor is refused; it is an option, the third argument, as on every other verb here. A second spelling on the descriptor was read by the password arm alone, so a `{ cek, pem: true }` descriptor was accepted and returned DER.
 - `pki.crl.sign` refuses `spec.issuer` when the issuer argument already names one. The distinguished name has three possible sources and `issuer.cert` and `issuer.name` both win outright, so a spec naming one issuer beside a certificate for another produced a CRL, which verifies, issued under the certificate's name. `spec.issuer` is still the name when the issuer argument supplies none.
+- `opts.mac.keyLength` on a `pki.pkcs12.build` store is refused under the classic `hmac` algorithm, which is the default. The Appendix B derivation produces a key at the hash's own output length and reads no key length, so an explicit one was discarded and the store carried the same MAC as a call that never named it. `keyLength` remains a PBMAC1 parameter (RFC 9579).
 
 ## v0.5.17 — 2026-08-20
 
