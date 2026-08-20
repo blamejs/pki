@@ -219,10 +219,77 @@ function testRuntimeReadsAreSnapshotted() {
     acceptedInvalid === false);
 }
 
+// The whole class at once. The vectors above each poison one reference and drive one guard, which
+// is how they stay diagnostic; this poisons every global the guard family used to read live and
+// drives all of them together, which is the property an operator actually depends on. A guard swept
+// later inherits this without a new vector being written for it.
+function testWholeFamilyUnderFullPoisoning() {
+  var utilTypes = require("util").types;
+  var real = {
+    toLowerCase: String.prototype.toLowerCase, charAt: String.prototype.charAt,
+    charCodeAt: String.prototype.charCodeAt, fill: Uint8Array.prototype.fill,
+    bufToString: Buffer.prototype.toString, decode: TextDecoder.prototype.decode,
+    getTime: Date.prototype.getTime, isBuffer: Buffer.isBuffer, byteLength: Buffer.byteLength,
+    isView: ArrayBuffer.isView, isArray: Array.isArray, isInteger: Number.isInteger,
+    isNaN: globalThis.isNaN, isDate: utilTypes.isDate,
+    gopd: Object.getOwnPropertyDescriptor, ownKeys: Reflect.ownKeys,
+  };
+  var bufferFrom = Buffer.from;
+  var secret = bufferFrom.call(Buffer, "hunter2hunter2hu", "utf8");
+  var r = {};
+  try {
+    String.prototype.toLowerCase = function () { return "same"; };
+    String.prototype.charAt = function () { return "s"; };
+    String.prototype.charCodeAt = function () { return 0x20; };
+    Uint8Array.prototype.fill = function () { return this; };
+    Buffer.prototype.toString = function () { return "SUBSTITUTED"; };
+    TextDecoder.prototype.decode = function () { return "SUBSTITUTED"; };
+    Date.prototype.getTime = function () { return 0; };
+    Buffer.isBuffer = function () { return false; };
+    Buffer.byteLength = function () { return 0; };
+    ArrayBuffer.isView = function () { return false; };
+    Array.isArray = function () { return false; };
+    Number.isInteger = function () { return true; };
+    globalThis.isNaN = function () { return false; };
+    utilTypes.isDate = function () { return true; };
+    Object.getOwnPropertyDescriptor = function () { return { value: 1, writable: true }; };
+    Reflect.ownKeys = function () { return []; };
+
+    r.dn = name.rdnEqual(rdn(CN, "alice"), rdn(CN, "bobby"), F, "x/bad", "the name");
+    guard.secret.zeroize(secret, TestError, "x/bad", "the secret");
+    r.wiped = Array.prototype.every.call(secret, function (b) { return b === 0; });
+    r.text = guard.text.decode(bufferFrom.call(Buffer, "abc"), 16, TestError,
+      { tooLarge: "x/too-large", badInput: "x/bad-input", label: "the text" });
+    r.instant = guard.time.instantOf(new Date(1700000000000));
+    r.notADate = guard.time.isDate({});
+    r.viewLen = guard.bytes.view(bufferFrom.call(Buffer, [1, 2, 3]), TestError, "x/bad", "b").length;
+    try { encoding.base64url("AB", 100, F, "x/bad", "v"); r.enc = "accepted"; }
+    catch (e) { r.enc = e.code; }
+  } finally {
+    String.prototype.toLowerCase = real.toLowerCase; String.prototype.charAt = real.charAt;
+    String.prototype.charCodeAt = real.charCodeAt; Uint8Array.prototype.fill = real.fill;
+    Buffer.prototype.toString = real.bufToString; TextDecoder.prototype.decode = real.decode;
+    Date.prototype.getTime = real.getTime; Buffer.isBuffer = real.isBuffer;
+    Buffer.byteLength = real.byteLength; ArrayBuffer.isView = real.isView;
+    Array.isArray = real.isArray; Number.isInteger = real.isInteger;
+    globalThis.isNaN = real.isNaN; utilTypes.isDate = real.isDate;
+    Object.getOwnPropertyDescriptor = real.gopd; Reflect.ownKeys = real.ownKeys;
+  }
+
+  check("under full poisoning, guard-name keeps two different names apart", r.dn === false);
+  check("under full poisoning, guard-secret still clears the buffer", r.wiped === true);
+  check("under full poisoning, guard-text returns the bytes it decoded", r.text === "abc");
+  check("under full poisoning, guard-time reads the instant the Date holds", r.instant === 1700000000000);
+  check("under full poisoning, guard-time still refuses a plain object as a Date", r.notADate === false);
+  check("under full poisoning, guard-bytes measures the view it was given", r.viewLen === 3);
+  check("under full poisoning, guard-encoding still refuses a non-canonical value", r.enc === "x/bad");
+}
+
 function run() {
   testUncurryContract();
   testEveryComposingGuardHolds();
   testRuntimeReadsAreSnapshotted();
+  testWholeFamilyUnderFullPoisoning();
 }
 
 module.exports = { run: run };

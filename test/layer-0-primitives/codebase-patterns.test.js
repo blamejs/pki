@@ -1747,6 +1747,26 @@ function testNoDuplicateCodeBlocks() {
   //     reason: "why these are not extractable" }
   var KNOWN_CLUSTERS = [
     {
+      // The per-guard capture header: a run of `var _x = intrinsic.y;` bindings taking what the
+      // module reads from the runtime before any caller code can reach it. The uniformity IS the
+      // point -- every guard binds the same names to the same intrinsics, so a reader comparing two
+      // modules sees one list in the same shape and can tell at a glance what each still reads
+      // live. Extracting it further is not possible: each module binds a DIFFERENT subset (the byte
+      // guard needs isView, the identifier guard needs ownKeys), and a shared object handed around
+      // would reintroduce the property read at the call site that the capture exists to remove.
+      // family-subset so any 3+ of the guards match as more of them are swept.
+      files: [
+        "lib/guard-bytes.js:<top>", "lib/guard-identifier.js:<top>", "lib/guard-parsed.js:<top>",
+        "lib/guard-compress.js:<top>", "lib/guard-encoding.js:<top>", "lib/guard-json.js:<top>",
+        "lib/guard-header.js:<top>", "lib/guard-der.js:<top>", "lib/guard-limits.js:<top>",
+        "lib/guard-range.js:<top>", "lib/guard-async.js:<top>", "lib/guard-time.js:<top>",
+        "lib/guard-name.js:<top>", "lib/guard-text.js:<top>", "lib/guard-secret.js:<top>",
+        "lib/cmp-verify.js:<top>", "lib/ocsp-verify.js:makeOcspVerify",
+      ],
+      mode: "family-subset",
+      reason: "The per-guard capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across guards; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
+    },
+    {
       // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
       // delegations to the shared pkix.pemDecode / pkix.pemEncode, differing only
       // in the default PEM label + error class. The parse LOGIC is already factored
