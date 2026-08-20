@@ -2808,12 +2808,18 @@ function testGuardReadsRuntimeLive() {
   // A method call whose receiver is NOT a `_`-prefixed capture. `intrinsic.x(` and `guard.x(` are
   // module handles, not prototypes, so they are excluded by requiring a bare identifier receiver.
   var methodRe = new RegExp("(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)\\." + LIVE_METHODS + "\\s*\\(", "g");
+  // SCOPE, chosen so it needs no list to maintain. A module is IN if it imports guard-intrinsic:
+  // taking the captures is how a module opts into the discipline, and once opted in it is held to
+  // it completely rather than at the one site somebody happened to change. A module that has not
+  // opted in is out of scope and stays out until it does, so the rule extends by the same edit
+  // that would otherwise create a half-swept file. Naming the modules instead would be a judgment
+  // about which ones decide things, and the seven rounds above are what that judgment is worth.
   var bad = [];
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
-    if (!/^lib\/guard-[a-z-]+\.js$/.test(rel)) return;
     if (rel === "lib/guard-intrinsic.js") return;   // where the captures are taken
     var src = fs.readFileSync(f, "utf8");
+    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(src)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
       var code = _stripCommentsAndLiterals(lines[i]);
@@ -2836,7 +2842,7 @@ function testGuardReadsRuntimeLive() {
     }
   });
   bad = _filterMarkers(bad, "guard-reads-runtime-live");
-  _report("no lib/guard-*.js module reads a replaceable runtime operation at call time", bad);
+  _report("no module that imports guard-intrinsic reads a replaceable runtime operation at call time", bad);
 }
 
 function testEveryGuardEnforced() {
