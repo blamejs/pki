@@ -96,6 +96,16 @@ function run() {
     code(function () { attcert.aikCert({ version: 3, subject: subject([[CN, "x"]]) }, aikExts(), E, "att/bad"); }) === "att/bad");
   check("aikCert rejects an AIK leaf missing the tcg-kp-AIKCertificate EKU",
     code(function () { attcert.aikCert({ version: 3, subject: subject([]) }, aikExts({ extKeyUsage: { value: [oid.byName("serverAuth")] } }), E, "att/bad"); }) === "att/bad");
+  // The purpose test IS what makes a leaf an AIK certificate, so it must not be reachable through
+  // the prototype: `indexOf` replaced after load reports the purpose present on any certificate.
+  var realIndexOf = Array.prototype.indexOf;
+  Array.prototype.indexOf = function () { return 0; };
+  var aikSwapped;
+  try {
+    aikSwapped = code(function () { attcert.aikCert({ version: 3, subject: subject([]) }, aikExts({ extKeyUsage: { value: [oid.byName("serverAuth")] } }), E, "att/bad"); });
+  } finally { Array.prototype.indexOf = realIndexOf; }
+  check("aikCert ...and still rejects it with Array.prototype.indexOf replaced after load",
+    aikSwapped === "att/bad");
   check("aikCert rejects an AIK leaf with no extKeyUsage at all",
     code(function () { attcert.aikCert({ version: 3, subject: subject([]) }, aikExts({ extKeyUsage: null }), E, "att/bad"); }) === "att/bad");
   check("aikCert rejects an AIK leaf whose SAN lacks the tcg attributes",
