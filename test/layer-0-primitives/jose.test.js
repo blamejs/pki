@@ -68,10 +68,20 @@ async function testJws() {
     (await acode(function () {
       return pki.jose.sign({ protected: serializesAs(outerHeader({ jwk: ecJwk }), { alg: "none", nonce: "AAAA", url: "https://ca.example/o", jwk: ecJwk }), payload: Buffer.from("{}"), key: ec.privateKey });
     })) === "jose/bad-alg");
+  // Serializing the header runs the caller's own code, and that code can reach the options bag it
+  // is being checked against. The door runs first, so a misspelling cannot delete itself.
+  var selfErasing = { alg: "ES256", nonce: "AAAA", url: "https://ca.example/o", jwk: ecJwk };
+  var bag = { protected: selfErasing, payload: Buffer.from("{}"), key: ec.privateKey, profiel: "acme-outer" };
+  Object.defineProperty(selfErasing, "toJSON", {
+    enumerable: false,
+    value: function () { delete bag.profiel; return { alg: "ES256", nonce: "AAAA", url: "https://ca.example/o", jwk: ecJwk }; },
+  });
+  check("25i. an option the header's own code deletes is still refused",
+    (await acode(function () { return pki.jose.sign(bag); })) === "jose/bad-input");
   // A header that cannot be serialized is refused rather than reaching the signer.
   var circular = { alg: "ES256", nonce: "AAAA", url: "https://ca.example/o", jwk: ecJwk };
   circular.self = circular;
-  check("25i. an unserializable protected header -> jose/bad-header",
+  check("25j. an unserializable protected header -> jose/bad-header",
     (await acode(function () { return pki.jose.sign({ protected: circular, payload: Buffer.from("{}"), key: ec.privateKey }); })) === "jose/bad-header");
 
   // 25c-25f. A caller who supplies opts.key is naming the key the message must be signed under.
