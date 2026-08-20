@@ -130,6 +130,57 @@ async function testUnknownBuildKeys() {
   // verifyMac and open have disjoint option sets; build must not admit theirs.
   check("an option belonging to pkcs12.open -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build(spec, { password: "1234", signerCerts: [s.cert] }))) === "pkcs12/bad-input");
+  // A safeContents entry carries the PRIVACY directive for everything inside it, and the entry is
+  // where the worst misspelling lands. A present-but-falsy `encrypt` already fails closed, but a
+  // MISSPELLED one is neither present nor falsy: it slipped past that guard, no privacy was
+  // selected, and the safe went out as plaintext id-data -- an unshrouded keyBag in the clear,
+  // inside a PFX whose MAC still verified and which opens without complaint. Refuse before the
+  // dispatch, and assert the STORE IS NOT EMITTED rather than only the code.
+  async function emittedOf(promise) {
+    try { return { out: await promise, code: null }; } catch (e) { return { out: null, code: e && e.code }; }
+  }
+  function keyBagSafe(privacyKey) {
+    var sc = { bags: [{ type: "key", key: s.key }] };
+    sc[privacyKey] = { password: "1234" };
+    return { safeContents: [sc] };
+  }
+  var typo = await emittedOf(pki.pkcs12.build(keyBagSafe("encrpyt"), { password: "1234" }));
+  check("a misspelled safeContents privacy directive -> pkcs12/bad-input", typo.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", typo.out === null);
+  // The control that gives the vector its stakes: spelled correctly, the private key does not
+  // appear in the emitted bytes. Without the door the misspelled call above emitted it verbatim.
+  var priv = await pki.pkcs12.build(keyBagSafe("encrypt"), { password: "1234" });
+  check("encrypt spelled correctly -> the private key is not in the emitted store",
+    Buffer.from(priv).indexOf(Buffer.from(s.key)) === -1);
+  check("an unknown safeContents field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }], recipient: [] }] },
+      { password: "1234" }))) === "pkcs12/bad-input");
+
+  // Same rule one level down: the bag, and the encrypt descriptor it carries. A misspelled bag
+  // attribute is dropped from the emitted bag; a misspelled PBE parameter silently reverts to the
+  // default, so a caller who asked for a stronger KDF gets the built-in one and nothing says so.
+  check("an unknown bag field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, freindlyName: "x" }] }] },
+      { password: "1234" }))) === "pkcs12/bad-input");
+  check("an unknown encrypt-descriptor field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key,
+      encrypt: { password: "1234", iteration: 4096 } }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // Every real field at both levels still builds.
+  check("the documented bag and encrypt fields still build",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [
+      { type: "shroudedKey", key: s.key, encrypt: { password: "1234", cipher: "aes-128-cbc", iterations: 4096 },
+        friendlyName: "k", localKeyId: Buffer.from([1, 2]) },
+      { type: "cert", cert: s.cert, friendlyName: "c" },
+    ] }] }, { password: "1234" })) != null);
+
+  // opts.mac is the third descriptor this verb reads, and every one of its fields has a default,
+  // so a misspelled `iterations` produced a store MAC'd at the shipped iteration count while the
+  // caller believed they had raised it.
+  check("an unknown mac-descriptor field -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", iteration: 4096 } }))) === "pkcs12/bad-input");
+  check("the documented mac fields still build",
+    (await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 4096 } })) != null);
+
   // The shorthand form and every real build option still work.
   check("the { key, cert } shorthand still builds",
     (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })) != null);

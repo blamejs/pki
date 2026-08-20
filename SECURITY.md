@@ -201,10 +201,17 @@ security-only patches after the next major releases.
   spec rather than passed as the second argument produced a self-signed
   certificate. Each permitted-field table is derived from what the verb actually
   reads, including through the helpers it delegates to, because a table naming a
-  field nothing reads reopens the same hole. A caller-owned CREDENTIAL bag is
-  deliberately exempt where its extra fields are not typos -- a signer object
-  carrying a key handle alongside the certificate and key is a normal shape, and
-  refusing it would reject a legitimate call rather than catch a mistake.
+  field nothing reads reopens the same hole. A NESTED descriptor carries its own
+  table, because the level above cannot see its fields: a PKCS#12 `safeContents`
+  entry holds the privacy directive for everything inside it, and a misspelled
+  `encrypt` there was neither present nor falsy, so it passed the check that
+  rejects a present-but-falsy directive and the safe was emitted as plaintext
+  `id-data` -- an unshrouded private-key bag in the clear, inside a PFX whose
+  MAC still verified and which opened without complaint. Where omitting a field
+  REFUSES the call outright, no door is needed and none is added: the TSA
+  argument of `pki.tsp.sign` carries only required fields, so a misspelling is
+  already refused for what it leaves missing and can never yield a token that
+  claims less than was asked for.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the
   bytes that were actually signed rather than re-encoding and hoping for

@@ -1820,6 +1820,13 @@ function testNoDuplicateCodeBlocks() {
         "lib/path-validate.js:validate", "lib/path-validate.js:build",
         "lib/lint.js:certificate", "lib/ocsp.js:verify",
         "lib/ocsp.js:_buildRequest", "lib/ocsp.js:_sign",
+        // The same door on a NESTED descriptor, where the spec is a tree rather than one object.
+        // A PKCS#12 store nests safeContents -> bags -> the PBE descriptor, and each level carries
+        // fields the level above cannot see, so each needs its own table and its own message; the
+        // extensions builders are the same shape one level inside a certificate spec.
+        "lib/pkcs12-build.js:_buildAuthSafeElement", "lib/pkcs12-build.js:_buildBag",
+        "lib/pkcs12-build.js:_pbeOpts",
+        "lib/attrcert-sign.js:_buildExtensions", "lib/x509-sign.js:_buildExtensions",
       ],
       mode: "family-subset",
       reason: "assertKnownKeys call-site glue: the check lives once in guard-identifier; each site binds a different key table, error class and message, so only the call and its closure repeat.",
