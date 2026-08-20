@@ -294,10 +294,23 @@ async function testFailClosed() {
   check("spec.issuer (the issuer is argument two) -> x509/bad-input", nested.code === "x509/bad-input" && nested.emitted === null);
 
   // The other two caller-owned objects get the same treatment: one door per argument, so no
-  // argument is the one nobody thought to gate.
+  // argument is the one nobody thought to gate. On the issuer the door carries a verdict of its
+  // own: the issuing certificate is OPTIONAL, so a dropped one falls through to self-signing
+  // rather than being missed. This spec certifies the signer's own key, which is what a
+  // cross-certificate or a re-issue looks like, so the key/public-key correspondence check
+  // cannot tell the two apart -- without the door the misspelling below emits a certificate
+  // naming its own subject as its issuer, and nothing in the result says so.
   var badIssuer = await specReject({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
     { key: s.key, certificate: s.cert });
   check("an unknown issuer key -> x509/bad-input", badIssuer.code === "x509/bad-input" && badIssuer.emitted === null);
+
+  // The control that gives the vector above its meaning. Spelled correctly, this same call is
+  // REFUSED: the supplied issuer is not a CA. So the misspelling did not merely lose a field, it
+  // routed around that refusal and emitted a certificate -- the door restores the verdict the
+  // correctly-spelled call gets.
+  check("cert spelled correctly -> refused, the issuer is not a CA",
+    await codeOf(pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA },
+      { key: s.key, cert: s.cert })) === "x509/bad-input");
 
   var badOpts = null;
   try { await pki.x509.sign({ subject: "x", subjectPublicKey: s.spki, notBefore: NB, notAfter: NA }, { key: s.key }, { digestAlgorithms: "sha256" }); }

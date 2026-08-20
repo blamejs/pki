@@ -60,8 +60,10 @@ async function testRoundTrip() {
 // ---- unknown keys on the imprint and the options ----
 // A dropped option here is a token that quietly lacks what was asked for: `odering` for `ordering`
 // emitted a token with the flag unset, which is a claim about the timestamp the caller believes
-// they made. The TSA is deliberately ungated -- it is a caller-owned credential bag whose extra
-// fields (this toolkit's own signer helper returns keyObject and spki) are not typos.
+// they made. The TSA is deliberately ungated on a property rather than a preference: both fields
+// it carries are REQUIRED, so a misspelling is refused for what it leaves missing and can never
+// yield a token that claims less than was asked for. Callers also hand a key store's object
+// through whole, extra fields and all.
 async function testUnknownSignKeys() {
   var tsa = makeSigner("ec-p256");
   async function code(fn) { try { await fn(); return null; } catch (e) { return e && e.code; } }
@@ -78,6 +80,35 @@ async function testUnknownSignKeys() {
   // The TSA bag the toolkit's own helper produces still signs, extra fields and all.
   check("a signer bag with helper-supplied extra fields still signs",
     (await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 3, ordering: true })) != null);
+
+  // The other two producing verbs in this module take the same door. Every option they encode is
+  // OPTIONAL in the structure, so a misspelled name is missed by nothing and the artifact goes out
+  // saying something the caller did not ask for. Both assert the ARTIFACT IS ABSENT, because the
+  // failure being closed is that one was emitted.
+  function emitted(fn) {
+    var out = null, err = null;
+    try { out = fn(); } catch (e) { err = e; }
+    return { code: err && err.code, out: out };
+  }
+
+  // `nonce` misspelled emitted a request carrying NO nonce, and the caller then matched the reply
+  // against a replay defense that was never on the wire.
+  var badNonce = emitted(function () { return pki.tsp.request(imprint("sha256"), { noncce: 12345n }); });
+  check("pki.tsp.request, a misspelled nonce -> tsp/bad-input", badNonce.code === "tsp/bad-input");
+  check("...and NO request is emitted", badNonce.out === null);
+  check("pki.tsp.request, an invented option -> tsp/bad-input",
+    emitted(function () { return pki.tsp.request(imprint("sha256"), { nonsenseOption: 1 }); }).code === "tsp/bad-input");
+  check("pki.tsp.request, every documented option is still accepted",
+    pki.tsp.request(imprint("sha256"), { reqPolicy: "1.2.3", nonce: 7n, certReq: true }) != null);
+
+  // `status` carries the verdict and defaults to granted(0), so a misspelling does not lose a
+  // detail -- it inverts the answer. Without the door this emitted a GRANTED response.
+  var tok = await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 11 });
+  var badStatus = emitted(function () { return pki.tsp.response(tok, { statu: 2 }); });
+  check("pki.tsp.response, a misspelled status -> tsp/bad-input", badStatus.code === "tsp/bad-input");
+  check("...and NO response is emitted", badStatus.out === null);
+  check("pki.tsp.response, every documented option is still accepted",
+    pki.tsp.response(tok, { status: 0, statusString: "ok" }) != null);
 }
 
 // ---- imprint hash algorithms + TSA key algorithms ----
