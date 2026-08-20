@@ -162,6 +162,20 @@ async function testUnknownBuildKeys() {
   check("an unknown bag field -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, freindlyName: "x" }] }] },
       { password: "1234" }))) === "pkcs12/bad-input");
+  // Per TYPE, not one union: `encrypt` is real on a shroudedKey bag and read by nothing on a plain
+  // key bag, so a union table accepted it and emitted the private key as a plaintext keyBag while
+  // the caller had supplied an explicit encryption directive. The artifact is asserted absent.
+  var wrongArm = await emittedOf(pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "key", key: s.key, encrypt: { password: "1234" } }] }] },
+    { password: "1234" }));
+  check("encrypt on a plaintext key bag -> pkcs12/bad-input", wrongArm.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", wrongArm.out === null);
+  check("the same field on a shroudedKey bag still builds",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key, encrypt: { password: "1234" } }] }] },
+      { password: "1234" })) != null);
+  check("a cert field on a key bag -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: s.key, cert: s.cert }] }] },
+      { password: "1234" }))) === "pkcs12/bad-input");
   check("an unknown encrypt-descriptor field -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key,
       encrypt: { password: "1234", iteration: 4096 } }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
@@ -178,8 +192,35 @@ async function testUnknownBuildKeys() {
   // caller believed they had raised it.
   check("an unknown mac-descriptor field -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", iteration: 4096 } }))) === "pkcs12/bad-input");
+  // An array satisfies typeof "object" and carries no name any table lists, so it slipped through
+  // as an empty descriptor and produced the DEFAULT MAC. opts.integrity already excluded arrays.
+  check("an array opts.mac -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: [] }))) === "pkcs12/bad-input");
+  check("a non-empty array opts.mac -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: [1, 2] }))) === "pkcs12/bad-input");
+  check("opts.mac false still omits the MAC",
+    (await pki.pkcs12.build(spec, { password: "1234", mac: false })) != null);
   check("the documented mac fields still build",
     (await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha256", iterations: 4096 } })) != null);
+
+  // The two READING verbs take their own disjoint option sets. `maxIterations` caps the work a
+  // hostile store can demand, so a misspelling restored the built-in ceiling and the tighter bound
+  // the caller set was never applied.
+  var p12 = await pki.pkcs12.build(spec, { password: "1234" });
+  check("pki.pkcs12.open, a misspelled maxIterations -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.open(p12, "1234", { maxIteration: 1000 }))) === "pkcs12/bad-input");
+  check("pki.pkcs12.open, a build option -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.open(p12, "1234", { mac: { iterations: 2048 } }))) === "pkcs12/bad-input");
+  check("pki.pkcs12.verifyMac, a misspelled maxIterations -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.verifyMac(p12, "1234", { maxIteration: 1000 }))) === "pkcs12/bad-input");
+  check("the documented open options are still accepted",
+    (await pki.pkcs12.open(p12, "1234", { maxIterations: 200000 })) != null);
+  // recipientIndex is read by cms-decrypt, which open hands this whole options object to. A table
+  // built from this module's own reads would refuse it and break selecting a recipient by index.
+  check("an option open forwards to the CMS layer is still accepted",
+    (await pki.pkcs12.open(p12, "1234", { recipientIndex: 0 })) != null);
+  check("the documented verifyMac option is still accepted",
+    (await pki.pkcs12.verifyMac(p12, "1234", { maxIterations: 200000 })) === true);
 
   // The shorthand form and every real build option still work.
   check("the { key, cert } shorthand still builds",

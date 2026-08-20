@@ -207,11 +207,15 @@ security-only patches after the next major releases.
   `encrypt` there was neither present nor falsy, so it passed the check that
   rejects a present-but-falsy directive and the safe was emitted as plaintext
   `id-data` -- an unshrouded private-key bag in the clear, inside a PFX whose
-  MAC still verified and which opened without complaint. Where omitting a field
-  REFUSES the call outright, no door is needed and none is added: the TSA
-  argument of `pki.tsp.sign` carries only required fields, so a misspelling is
-  already refused for what it leaves missing and can never yield a token that
-  claims less than was asked for.
+  MAC still verified and which opened without complaint. A bag is checked
+  against the fields ITS OWN TYPE reads, because a union admits a field the
+  chosen type never looks at: `encrypt` on a plaintext key bag was accepted and
+  ignored, emitting the key unencrypted. The rule covers every caller-owned
+  argument without exception, including one that carries only required fields:
+  a misspelling of those is refused for what it leaves missing, but a name
+  belonging on a DIFFERENT argument, written there instead, is read by nothing
+  and dropped in silence -- `ordering` placed on the TSA argument of
+  `pki.tsp.sign` emitted a token the size of one that never requested it.
 - **Round-trip drift on signed bytes.** `pki.schema.x509.parse` returns the exact
   `tbsBytes` byte range that was signed, so a downstream verifier hashes the
   bytes that were actually signed rather than re-encoding and hoping for

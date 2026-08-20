@@ -17,7 +17,7 @@ var helpers = require("../helpers");
 var signing = require("../helpers/signing");
 var pki = helpers.pki;
 var check = helpers.check;
-var makeSigner = signing.makeSigner;
+var makeTsa = signing.makeTsa;
 
 var DATA = Buffer.from("the document being timestamped");
 function imprint(hashAlgorithm) {
@@ -34,7 +34,7 @@ async function rejects(label, fn, code) {
 
 // ---- round-trip: a full-featured token verifies and decodes ----
 async function testRoundTrip() {
-  var tsa = makeSigner("ec-p256");
+  var tsa = makeTsa("ec-p256");
   var mi = imprint("sha256");
   var token = await pki.tsp.sign(mi, tsa, {
     policy: "1.2.3.4.1", serialNumber: 42, genTime: new Date("2026-07-13T12:00:00Z"),
@@ -60,12 +60,13 @@ async function testRoundTrip() {
 // ---- unknown keys on the imprint and the options ----
 // A dropped option here is a token that quietly lacks what was asked for: `odering` for `ordering`
 // emitted a token with the flag unset, which is a claim about the timestamp the caller believes
-// they made. The TSA is deliberately ungated on a property rather than a preference: both fields
-// it carries are REQUIRED, so a misspelling is refused for what it leaves missing and can never
-// yield a token that claims less than was asked for. Callers also hand a key store's object
-// through whole, extra fields and all.
+// they made. All THREE caller-owned arguments are gated, including the TSA. A misspelling of the
+// TSA's own two fields was always refused for what it left missing, but that is only half the
+// class: a name belonging on the OPTIONS, written on the TSA instead, is read by nothing and
+// dropped in silence -- `ordering` there emitted a token the same size as one that never asked
+// for it, with the flag unset.
 async function testUnknownSignKeys() {
-  var tsa = makeSigner("ec-p256");
+  var tsa = makeTsa("ec-p256");
   async function code(fn) { try { await fn(); return null; } catch (e) { return e && e.code; } }
 
   check("an unknown messageImprint field -> tsp/bad-input",
@@ -77,9 +78,30 @@ async function testUnknownSignKeys() {
     (await code(function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, nonsenseOption: 1 }); })) === "tsp/bad-input");
   check("a one-letter option typo (odering) -> tsp/bad-input",
     (await code(function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, odering: true }); })) === "tsp/bad-input");
-  // The TSA bag the toolkit's own helper produces still signs, extra fields and all.
-  check("a signer bag with helper-supplied extra fields still signs",
+  check("the TSA's own two fields still sign",
     (await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 3, ordering: true })) != null);
+  // A signing OPTION misplaced onto the TSA. Without the door this signed, and the token was the
+  // same length as one that never asked for ordering -- the flag was simply never set.
+  check("a signing option misplaced onto the TSA -> tsp/bad-input",
+    (await code(function () {
+      return pki.tsp.sign(imprint("sha256"), { cert: tsa.cert, key: tsa.key, ordering: true },
+        { policy: "1.2.3", serialNumber: 4 });
+    })) === "tsp/bad-input");
+  check("a key-store field on the TSA -> tsp/bad-input",
+    (await code(function () {
+      return pki.tsp.sign(imprint("sha256"), { cert: tsa.cert, key: tsa.key, keyObject: {} },
+        { policy: "1.2.3", serialNumber: 5 });
+    })) === "tsp/bad-input");
+
+  // Accuracy is a nested descriptor whose three fields are all OPTIONAL, so `milis` emitted an
+  // EMPTY Accuracy that parses back as zero seconds/millis/micros: the token understates its own
+  // precision, which is a claim about the timestamp the caller believed they had made.
+  check("an unknown accuracy field -> tsp/bad-input",
+    (await code(function () {
+      return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 21, accuracy: { milis: 500 } });
+    })) === "tsp/bad-input");
+  check("accuracy spelled correctly still signs",
+    (await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 22, accuracy: { seconds: 1, millis: 500 } })) != null);
 
   // The other two producing verbs in this module take the same door. Every option they encode is
   // OPTIONAL in the structure, so a misspelled name is missed by nothing and the artifact goes out
@@ -96,6 +118,14 @@ async function testUnknownSignKeys() {
   var badNonce = emitted(function () { return pki.tsp.request(imprint("sha256"), { noncce: 12345n }); });
   check("pki.tsp.request, a misspelled nonce -> tsp/bad-input", badNonce.code === "tsp/bad-input");
   check("...and NO request is emitted", badNonce.out === null);
+  // The imprint is the request's OTHER caller-owned object, held to the same table sign uses: a
+  // request option written on the imprint reaches nothing, so `nonce` there put a request on the
+  // wire with no nonce while the caller believed they had asked for one.
+  var badReqImprint = emitted(function () {
+    return pki.tsp.request({ hashAlgorithm: "sha256", hashedMessage: imprint("sha256").hashedMessage, nonce: 7n }, {});
+  });
+  check("pki.tsp.request, a request option on the imprint -> tsp/bad-input", badReqImprint.code === "tsp/bad-input");
+  check("...and NO request is emitted", badReqImprint.out === null);
   check("pki.tsp.request, an invented option -> tsp/bad-input",
     emitted(function () { return pki.tsp.request(imprint("sha256"), { nonsenseOption: 1 }); }).code === "tsp/bad-input");
   check("pki.tsp.request, every documented option is still accepted",
@@ -114,30 +144,30 @@ async function testUnknownSignKeys() {
 // ---- imprint hash algorithms + TSA key algorithms ----
 async function testAlgorithms() {
   for (var h of ["sha256", "sha384", "sha512"]) {
-    var t = await pki.tsp.sign(imprint(h), makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 1 });
+    var t = await pki.tsp.sign(imprint(h), makeTsa("ec-p256"), { policy: "1.2.3", serialNumber: 1 });
     check("imprint " + h + " -> verifies", (await pki.cms.verify(t)).valid === true);
   }
   for (var alg of ["rsa", "ec-p384", "ed25519"]) {
-    var t2 = await pki.tsp.sign(imprint("sha256"), makeSigner(alg), { policy: "1.2.3", serialNumber: 2 });
+    var t2 = await pki.tsp.sign(imprint("sha256"), makeTsa(alg), { policy: "1.2.3", serialNumber: 2 });
     check("TSA key " + alg + " -> verifies", (await pki.cms.verify(t2)).valid === true);
   }
   // a non-sha256 ESSCertIDv2 hash algorithm (carries an explicit hashAlgorithm).
-  var t3 = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 3, certHashAlgorithm: "sha512" });
+  var t3 = await pki.tsp.sign(imprint("sha256"), makeTsa("ec-p256"), { policy: "1.2.3", serialNumber: 3, certHashAlgorithm: "sha512" });
   check("certHashAlgorithm sha512 -> verifies", (await pki.cms.verify(t3)).valid === true);
 }
 
 // ---- output passthrough: policy by name, PEM, sid ----
 async function testPassthrough() {
   // policy as a registered OID name.
-  var byName = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256"), { policy: "sha256", serialNumber: 5 });
+  var byName = await pki.tsp.sign(imprint("sha256"), makeTsa("ec-p256"), { policy: "sha256", serialNumber: 5 });
   check("policy by OID name -> verifies", (await pki.cms.verify(byName)).valid === true);
   // PEM output + a ski signer identifier passed through to cms.sign.
-  var pem = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256", { ski: true }), { policy: "1.2.3", serialNumber: 6, pem: true, sid: "ski" });
+  var pem = await pki.tsp.sign(imprint("sha256"), makeTsa("ec-p256", { ski: true }), { policy: "1.2.3", serialNumber: 6, pem: true, sid: "ski" });
   check("pem:true -> a CMS PEM string", typeof pem === "string" && pem.indexOf("-----BEGIN CMS-----") === 0);
   check("PEM token verifies + ski sid", (await pki.cms.verify(pem)).signers[0].sid.subjectKeyIdentifier != null);
 
   // the TSA certificate supplied as a PEM string and as a Uint8Array.
-  var tsa = makeSigner("ec-p256");
+  var tsa = makeTsa("ec-p256");
   var certPem = pki.schema.x509.pemEncode(tsa.cert, "CERTIFICATE");
   check("TSA cert as PEM -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: certPem, key: tsa.key }, { policy: "1.2.3", serialNumber: 7 }))).valid === true);
   check("TSA cert as Uint8Array -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: new Uint8Array(tsa.cert), key: tsa.key }, { policy: "1.2.3", serialNumber: 8 }))).valid === true);
@@ -157,7 +187,7 @@ async function testPassthrough() {
 
 // ---- config-time misuse fails closed with a typed tsp/* error ----
 async function testBadInput() {
-  var tsa = makeSigner("ec-p256");
+  var tsa = makeTsa("ec-p256");
   await rejects("options not an object", function () { return pki.tsp.sign(imprint("sha256"), tsa, "nope"); }, "tsp/bad-input");
   await rejects("imprint without a hashAlgorithm", function () { return pki.tsp.sign({ hashedMessage: Buffer.alloc(32) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("imprint with an unsupported hash", function () { return pki.tsp.sign({ hashAlgorithm: "md5", hashedMessage: Buffer.alloc(16) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");

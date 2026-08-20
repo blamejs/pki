@@ -19,7 +19,9 @@ var helpers = require("../helpers");
 var signing = require("../helpers/signing");
 var pki = helpers.pki;
 var check = helpers.check;
-var makeSigner = signing.makeSigner;
+// Named apart from this file's own makeTsa(ext, opts) below, which builds a self-signed TSA with a
+// real anchor; this one is the shared helper narrowed to the { cert, key } pki.tsp.sign reads.
+var makeTsaSigner = signing.makeTsa;
 var b = pki.asn1.build;
 
 var DATA = Buffer.from("the document the timestamp request covers");
@@ -59,7 +61,7 @@ function testRequestMinimal() {
 
 // ---- response round-trip (granted) wraps a real token ----
 async function testResponseGranted() {
-  var token = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 1, genTime: new Date("2027-01-01T00:00:00Z") });
+  var token = await pki.tsp.sign(imprint("sha256"), makeTsaSigner("ec-p256"), { policy: "1.2.3", serialNumber: 1, genTime: new Date("2027-01-01T00:00:00Z") });
   var der = pki.tsp.response(token, {});
   check("response returns a DER Buffer", Buffer.isBuffer(der));
   var resp = pki.tsp.parseResponse(der);
@@ -99,7 +101,7 @@ function testStrictDer() {
 
 // ---- the response orchestrator still routes a TimeStampResp to schema.tsp ----
 async function testOrchestratorRouting() {
-  var token = await pki.tsp.sign(imprint("sha256"), makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 2 });
+  var token = await pki.tsp.sign(imprint("sha256"), makeTsaSigner("ec-p256"), { policy: "1.2.3", serialNumber: 2 });
   var der = pki.tsp.response(token, {});
   // pki.schema.parse detects + routes; a TimeStampResp yields the tsp result (a tsp-specific
   // timeStampToken shape), proving it routed to schema.tsp and was not mis-detected.
@@ -524,7 +526,7 @@ async function testTspCoverage() {
 async function testBuilderCoverage() {
   var mi = imprint("sha256");
   var tsa = makeTsa(ekuExt([TS_EKU], true));
-  var token = await pki.tsp.sign(mi, makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 10 });
+  var token = await pki.tsp.sign(mi, makeTsaSigner("ec-p256"), { policy: "1.2.3", serialNumber: 10 });
   // request: PEM output + the config-time input validations.
   check("request pem:true -> PEM string", typeof pki.tsp.request(mi, { pem: true }) === "string");
   rejectsSync("request bad opts type -> tsp/bad-input", function () { return pki.tsp.request(mi, Buffer.from([1])); }, "tsp/bad-input");
@@ -544,7 +546,7 @@ async function testBuilderCoverage() {
   check("response statusString array round-trips", pki.tsp.parseResponse(pki.tsp.response(null, { status: 2, statusString: ["a", "b"], failInfo: ["badAlg"] })).statusString.length === 2);
   rejectsSync("response empty statusString array -> tsp/bad-input (PKIFreeText SIZE 1..MAX)", function () { return pki.tsp.response(null, { status: 2, statusString: [], failInfo: ["badAlg"] }); }, "tsp/bad-input");
   check("response accepts a Uint8Array token", Buffer.isBuffer(pki.tsp.response(new Uint8Array(token), {})));
-  var pemToken = await pki.tsp.sign(mi, makeSigner("ec-p256"), { policy: "1.2.3", serialNumber: 11, pem: true });
+  var pemToken = await pki.tsp.sign(mi, makeTsaSigner("ec-p256"), { policy: "1.2.3", serialNumber: 11, pem: true });
   check("response accepts a PEM-string token", Buffer.isBuffer(pki.tsp.response(pemToken, {})));
   rejectsSync("response bad token type -> tsp/bad-input", function () { return pki.tsp.response(12345, {}); }, "tsp/bad-input");
   // response status + status<->token coupling throws (RFC 3161 sec. 2.4.2).

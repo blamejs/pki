@@ -174,6 +174,22 @@ async function run() {
   check("a recipient option shared by both verbs is still accepted by encrypt",
     (await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { oaepHash: "sha384" })) != null);
 
+  // The RECIPIENT DESCRIPTOR is caller-owned too, and its per-arm fields all default, so a
+  // misspelling there encrypted the content key under the shipped parameters rather than the ones
+  // asked for: `oaepHsh` used default SHA-256 OAEP, and a misspelled PBE parameter on a password
+  // recipient derived the key at the default work factor. Each arm gets its own table, because a
+  // union would admit fields the chosen arm never reads.
+  check("an unknown field on a certificate recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHsh: "sha512" }], {}); })) === "cms/bad-input");
+  check("an unknown field on a password recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: "pw", iteration: 1000 }], {}); })) === "cms/bad-input");
+  check("a password-recipient field on a certificate recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, salt: Buffer.alloc(8) }], {}); })) === "cms/bad-input");
+  check("every documented certificate-recipient field is still accepted",
+    (await pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "sha384", keyIdentifier: "issuerAndSerial" }], {})) != null);
+  check("every documented password-recipient field is still accepted",
+    (await pki.cms.encrypt(MSG, [{ password: "pw", iterations: 2048, prf: "hmacWithSHA256" }], {})) != null);
+
   check("AuthEnvelopedData with a caller-supplied message-digest authAttr is refused",
     (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [mdAttr] }); })) === "cms/bad-input");
   check("that refusal names the clause and the reason, not just the attribute",
@@ -181,7 +197,7 @@ async function run() {
   // AuthenticatedData builds its own message-digest and MACs it, which is how that content type
   // works (RFC 5652 sec. 9.2). The rule above is AuthEnvelopedData's alone and must not leak here.
   check("AuthenticatedData still carries the message-digest attribute its own content type requires",
-    (await pki.cms.authenticate(MSG, [{ cert: rsa.cert, key: rsa.key }], {})) != null);
+    (await pki.cms.authenticate(MSG, [{ cert: rsa.cert }], {})) != null);
   // PBKDF2 prf equal to the DEFAULT hmacWithSHA1 MUST be omitted.
   var sha1Pwri = pki.schema.cms.parse(await pki.cms.encrypt(MSG, [{ password: "p", prf: "hmacWithSHA1" }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
   check("pwri PBKDF2-params omit the DEFAULT hmacWithSHA1 prf (salt + iterationCount only)", pki.asn1.decode(sha1Pwri.recipientInfos[0].keyDerivationAlgorithm.parameters).children.length === 2);

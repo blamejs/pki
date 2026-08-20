@@ -247,7 +247,7 @@ async function testTimestampToken() {
   var primarySig = parse(base.cms).signerInfos[0].signature;
   var digest = require("crypto").createHash("sha256").update(primarySig).digest();
   var tsa = makeSigner("ec-p256");
-  var token = await pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: digest }, tsa, { policy: "1.2.3.4.1", serialNumber: 7 });
+  var token = await pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: digest }, { cert: tsa.cert, key: tsa.key }, { policy: "1.2.3.4.1", serialNumber: 7 });
   // Attach the token as an id-aa-timeStampToken unsigned attribute on the primary signer.
   var out = await pki.cms.sign(CONTENT, { cert: base.signer.cert, key: base.signer.key }, {
     unsignedAttributes: [{ type: "timeStampToken", values: [token] }],

@@ -63,6 +63,20 @@ async function testUnknownArgumentKeys() {
   var badOpts = await attempt({ thisUpdate: TU, nextUpdate: NU, revoked: [entry] }, null, { digestAlgorithms: "sha256" });
   check("an unknown option -> crl/bad-input", badOpts.code === "crl/bad-input" && badOpts.out === null);
 
+  // The ENTRY is a caller-owned object too, and every optional field on it is encoded only when
+  // present. `reson` listed the certificate as revoked carrying no reasonCode at all, in a CRL that
+  // verifies, so a relying party cannot tell it from a revocation given without a reason.
+  var badEntry = await attempt({ thisUpdate: TU, nextUpdate: NU,
+    revoked: [{ serialNumber: 7n, revocationDate: TU, reson: "keyCompromise" }] });
+  check("an unknown revoked-entry field -> crl/bad-input", badEntry.code === "crl/bad-input");
+  check("...and NO CRL is emitted", badEntry.out === null);
+  // The reason spelled correctly still reaches the entry, so the vector above is about the NAME.
+  var withReason = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU,
+    revoked: [{ serialNumber: 7n, revocationDate: TU, reason: "keyCompromise" }] }, issuerOf(s));
+  check("reason spelled correctly -> the entry carries reasonCode keyCompromise(1)",
+    pki.schema.crl.parse(withReason).revokedCertificates[0].crlEntryExtensions
+      .some(function (x) { return x.name === "reasonCode" && x.value === 1; }));
+
   // Every key the producer actually reads still round-trips, so the table admits the real surface.
   var full = await pki.crl.sign({
     issuer: "Test CRL Issuer", thisUpdate: TU, nextUpdate: NU, crlNumber: 7n,
