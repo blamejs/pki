@@ -330,6 +330,20 @@ async function testAttributes() {
 async function testFailClosedInputs() {
   var s = signer();
   check("#11 public-key integrity with no signer -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { integrity: { mode: "public-key" }, password: "1234" }))) === "pkcs12/bad-input");
+  // The integrity signers are authoring input for this store, so they answer to the same rule as
+  // every other field written here. Every field beyond the identity has a default, so a misspelled
+  // signature parameter signed the store under PKCS#1 with SHA-256 while the caller asked for PSS,
+  // and the store records only what was used.
+  var spec11 = { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] };
+  check("a misspelled signature parameter on an integrity signer -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key, ps: true } } }))) === "pkcs12/bad-input");
+  check("a key-only field on a certificate signer -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signers: [{ cert: s.cert, key: s.key, keyIdentifier: Buffer.alloc(20) }] } }))) === "pkcs12/bad-input");
+  check("the parameters spelled correctly still sign the store",
+    (await pki.pkcs12.build(spec11, { password: "1234",
+      integrity: { mode: "public-key", signer: { cert: s.cert, key: s.key, pss: true, digestAlgorithm: "sha384" } } })) != null);
   check("an unknown bag type -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "bogus" }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a keyBag with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "key", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a shroudedKey with non-key bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");

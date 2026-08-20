@@ -43,6 +43,7 @@ Every producing verb refuses an authoring field it does not read, so a misspelli
 - `pem` on an `EncryptedData` descriptor is refused; it is an option, the third argument, as on every other verb here. A second spelling on the descriptor was read by the password arm alone, so a `{ cek, pem: true }` descriptor was accepted and returned DER.
 - `pki.crl.sign` refuses `spec.issuer` when the issuer argument already names one. The distinguished name has three possible sources and `issuer.cert` and `issuer.name` both win outright, so a spec naming one issuer beside a certificate for another produced a CRL, which verifies, issued under the certificate's name. `spec.issuer` is still the name when the issuer argument supplies none.
 - `opts.mac.keyLength` on a `pki.pkcs12.build` store is refused under the classic `hmac` algorithm, which is the default. The Appendix B derivation produces a key at the hash's own output length and reads no key length, so an explicit one was discarded and the store carried the same MAC as a call that never named it. `keyLength` remains a PBMAC1 parameter (RFC 9579).
+- A `pki.pkcs12.build` public-key integrity signer is checked against the form it selects, `{ cert, key }` or `{ spki, keyIdentifier, key }`, plus the signature parameters. Every field beyond the identity has a default, so a misspelled `pss` or `digestAlgorithm` signed the store under PKCS#1 with SHA-256 while the caller had asked for something else, and a store records only what was used.
 
 ## v0.5.17 — 2026-08-20
 
