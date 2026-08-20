@@ -152,6 +152,29 @@ async function testUnknownBuildKeys() {
   var priv = await pki.pkcs12.build(keyBagSafe("encrypt"), { password: "1234" });
   check("encrypt spelled correctly -> the private key is not in the emitted store",
     Buffer.from(priv).indexOf(Buffer.from(s.key)) === -1);
+  // The spec has two mutually exclusive FORMS. _normalizeSpec returns spec.safeContents the moment
+  // it is an array and never reads the shorthand fields, so a union built a store with the key
+  // silently absent -- the same omission the door exists to refuse, reached by mixing forms.
+  var mixedForm = await emittedOf(pki.pkcs12.build(
+    { safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }], key: s.key }, { password: "1234" }));
+  check("the full form mixed with a shorthand field -> pkcs12/bad-input", mixedForm.code === "pkcs12/bad-input");
+  check("...and NO store is emitted", mixedForm.out === null);
+  check("each form on its own still builds",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" })) != null &&
+    (await pki.pkcs12.build({ key: s.key, cert: s.cert }, { password: "1234" })) != null);
+
+  // A safeContents entry is checked against the privacy branch it selects. contentEncryptionAlgorithm
+  // is the public-key branch's cipher and is read by nothing on a password safe, whose cipher comes
+  // from encrypt.cipher -- so an explicit request was accepted and the default used anyway.
+  check("a public-key cipher field on a password safe -> pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }],
+      encrypt: { password: "1234" }, contentEncryptionAlgorithm: "aes-128-cbc" }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("the cipher a password safe DOES read still builds",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }],
+      encrypt: { password: "1234", cipher: "aes-128-cbc" } }] }, { password: "1234" })) != null);
+  check("an encrypt field on a plaintext safe is still the directive, not an unknown key",
+    (await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" })) != null);
+
   check("an unknown safeContents field -> pkcs12/bad-input",
     (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }], recipient: [] }] },
       { password: "1234" }))) === "pkcs12/bad-input");

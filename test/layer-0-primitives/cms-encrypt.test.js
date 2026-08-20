@@ -190,6 +190,18 @@ async function run() {
   check("every documented password-recipient field is still accepted",
     (await pki.cms.encrypt(MSG, [{ password: "pw", iterations: 2048, prf: "hmacWithSHA256" }], {})) != null);
 
+  // A certificate recipient dispatches on the certificate's KEY ALGORITHM, and those arms read
+  // different fields: RSA reads oaepHash and never ukm; ECDH/X25519 and ML-KEM read ukm and never
+  // oaepHash. One table across all three wrapped the content key under the arm's own defaults while
+  // the caller had named a hash it does not consume.
+  check("oaepHash on a key-agreement certificate recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: ec.cert, oaepHash: "sha512" }], {}); })) === "cms/bad-input");
+  check("ukm on an RSA certificate recipient -> cms/bad-input",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, ukm: Buffer.from([1, 2]) }], {}); })) === "cms/bad-input");
+  check("each certificate arm still accepts the field it does read",
+    (await pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "sha384" }], {})) != null &&
+    (await pki.cms.encrypt(MSG, [{ cert: ec.cert, ukm: Buffer.from([1, 2]) }], {})) != null);
+
   // The single EncryptedData descriptor has the same two-arm shape, so it gets the same per-arm
   // treatment: the `cek` branch derives nothing, and a union table let a caller hand it a work
   // factor that was discarded exactly as a misspelling would be.
