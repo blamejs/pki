@@ -125,12 +125,12 @@ async function run() {
 
     // Each namespace page.
     var docs = parser.parseTree(site.LIB_DIR);
-    var primCountByNs = {};
+    var primCountByNs = {}, docsByNs = {};
     Object.keys(docs).forEach(function (f) {
       var rec = docs[f];
       if (!rec.module) return;
       var ns = String(rec.module.tags.module || "").replace(/^\s*pki\./, "").trim();
-      if (ns) primCountByNs[ns] = rec.primitives.length;
+      if (ns) { primCountByNs[ns] = rec.primitives.length; docsByNs[ns] = rec; }
     });
 
     for (var i = 0; i < entries.length; i++) {
@@ -139,8 +139,18 @@ async function run() {
       var resp = await _get(port, pth);
       check("GET " + pth + " -> 200", resp.status === 200);
       check(pth + " renders an <h1>", /<h1[^>]*>[\s\S]*?<\/h1>/.test(resp.body));
-      check(pth + " <h1> carries the title", resp.body.indexOf(">" + e.title + "</h1>") !== -1 ||
-        resp.body.indexOf(e.title + "</h1>") !== -1);
+      // The heading is the module's @fullname when it declares one -- the expanded name a reader
+      // arriving from a search used -- and the short sidebar @title otherwise. Asserting the exact
+      // string either way keeps this a real check: a page that renders neither still fails.
+      var wantH1 = null;
+      for (var ni = 0; ni < e.namespaces.length && !wantH1; ni++) {
+        var nrec = docsByNs[e.namespaces[ni]];
+        var ntags = (nrec && nrec.module && nrec.module.tags) || {};
+        if (ntags.fullname) wantH1 = ntags.fullname;
+      }
+      wantH1 = wantH1 || e.title;
+      check(pth + " <h1> carries " + (wantH1 === e.title ? "the title" : "the @fullname"),
+        resp.body.indexOf(">" + wantH1 + "</h1>") !== -1 || resp.body.indexOf(wantH1 + "</h1>") !== -1);
       // Populated content: at least one rendered primitive section.
       var wantPrims = primCountByNs[e.namespaces[0]] || 0;
       check(pth + " renders " + wantPrims + " primitive section(s)",

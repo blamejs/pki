@@ -270,7 +270,11 @@ function _regenArtifacts() {
   _run("node", ["scripts/refresh-api-snapshot.js"]);
   _run("node", ["scripts/check-api-snapshot.js"]);
   _run("node", ["scripts/check-changelog-extract.js"]);
-  _ok("lockfiles + CHANGELOG + MIGRATING + api-snapshot regenerated");
+  // The wiki's sitemap reports each page's last-changed date from this manifest. It has to be
+  // rebuilt with the cut, because the container that serves the site has no .git to ask and a
+  // manifest left at the previous release would understate every page this release touched.
+  _run("node", ["scripts/gen-wiki-lastmod.js"]);
+  _ok("lockfiles + CHANGELOG + MIGRATING + api-snapshot + wiki lastmod regenerated");
 }
 
 // Verify HEAD's commit signature via two independent paths:

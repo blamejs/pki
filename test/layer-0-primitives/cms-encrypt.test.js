@@ -138,6 +138,35 @@ async function run() {
   // AuthEnvelopedData with a non-id-data content type MUST carry authAttrs (RFC 5083 sec. 2.1).
   check("AuthEnvelopedData + non-data contentType + no authAttrs -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentType: "signedData" }); })) === "cms/bad-input");
   check("AuthEnvelopedData + non-data contentType + authAttrs is accepted", Buffer.compare((await pki.cms.decrypt(await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentType: "signedData", authAttrs: [b.sequence([b.oid(O("contentType")), b.set([b.oid(O("signedData"))])])] }), { key: rsa.key, cert: rsa.cert })).content, MSG) === 0);
+
+  // What a caller may put in authAttrs. The AuthenticatedData producer already validates every
+  // attribute it MACs -- well-formed Attribute SEQUENCE, non-empty value SET, no repeated type
+  // (RFC 5652 sec. 5.3) -- and AuthEnvelopedData MACs caller attributes exactly the same way, so
+  // the same rule binds it. Emitting a malformed attribute produces a message this toolkit's own
+  // parser rejects, and the operator finds out from a peer rather than from the builder.
+  var badShape = b.sequence([b.oid(O("contentType"))]);                            // no value SET
+  check("AuthEnvelopedData with a malformed authAttr is refused at the build door",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [badShape] }); })) === "cms/bad-input");
+  var emptyVals = b.sequence([b.oid(O("contentType")), b.set([])]);
+  check("AuthEnvelopedData with an empty authAttr value SET is refused at the build door",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [emptyVals] }); })) === "cms/bad-input");
+  var dupAttr = b.sequence([b.oid(O("contentType")), b.set([b.oid(O("data"))])]);
+  check("AuthEnvelopedData with a repeated authAttr type is refused at the build door",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [dupAttr, dupAttr] }); })) === "cms/bad-input");
+
+  // RFC 5083 sec. 2.1 and sec. 5: authAttrs SHOULD NOT carry message-digest, because the value is
+  // the UNENCRYPTED hash of the plaintext -- it enables content tracking and confirms a guessed
+  // plaintext against a message whose whole purpose was to conceal it. A decoder still accepts one
+  // (another implementation may legitimately emit it), but this toolkit will not produce one.
+  var mdAttr = b.sequence([b.oid(O("messageDigest")), b.set([b.octetString(Buffer.alloc(32, 1))])]);
+  check("AuthEnvelopedData with a caller-supplied message-digest authAttr is refused",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [mdAttr] }); })) === "cms/bad-input");
+  check("that refusal names the clause and the reason, not just the attribute",
+    /RFC 5083 sec\. 2\.1/.test(await (async function () { try { await pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { authAttrs: [mdAttr] }); return ""; } catch (e) { return String(e.message || ""); } })()));
+  // AuthenticatedData builds its own message-digest and MACs it, which is how that content type
+  // works (RFC 5652 sec. 9.2). The rule above is AuthEnvelopedData's alone and must not leak here.
+  check("AuthenticatedData still carries the message-digest attribute its own content type requires",
+    (await pki.cms.authenticate(MSG, [{ cert: rsa.cert, key: rsa.key }], {})) != null);
   // PBKDF2 prf equal to the DEFAULT hmacWithSHA1 MUST be omitted.
   var sha1Pwri = pki.schema.cms.parse(await pki.cms.encrypt(MSG, [{ password: "p", prf: "hmacWithSHA1" }], { contentEncryptionAlgorithm: "aes-256-cbc" }));
   check("pwri PBKDF2-params omit the DEFAULT hmacWithSHA1 prf (salt + iterationCount only)", pki.asn1.decode(sha1Pwri.recipientInfos[0].keyDerivationAlgorithm.parameters).children.length === 2);

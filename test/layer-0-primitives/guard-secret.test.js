@@ -18,6 +18,7 @@
  * backing store. The vectors below pin what the guard does, not a stronger claim.
  */
 
+var nodeCrypto = require("crypto");
 var secret = require("../../lib/guard-secret");
 var errors = require("../../lib/framework-error");
 var helpers = require("../helpers");
@@ -102,6 +103,42 @@ function run() {
   }
   check("a replaced Buffer.prototype.fill cannot turn the wipe into a silent no-op",
     Array.prototype.every.call(noop, function (x) { return x === 0; }));
+
+  // ---- cipherFinish clears both intermediates on both exits ----
+  // The contract, held directly rather than through a format module: the two buffers the
+  // update/final pair produces are cleared whether the transform completes or throws, and the
+  // buffer the caller receives is a separate copy that is NOT cleared.
+  var seen = [];
+  function tapped(real) {
+    return {
+      update: function (x) { var b2 = real.update(x); seen.push(b2); return b2; },
+      final: function () { var b2 = real.final(); seen.push(b2); return b2; },
+    };
+  }
+  function allZero(b2) { return Array.prototype.every.call(b2, function (x) { return x === 0; }); }
+
+  var aesKey = Buffer.alloc(32, 7), aesIv = Buffer.alloc(16, 9);
+  var plain = Buffer.from("attack at dawn, bring the keys!!", "utf8");
+  var encd = nodeCrypto.createCipheriv("aes-256-cbc", aesKey, aesIv);
+  seen = [];
+  var out = secret.cipherFinish(tapped(encd), plain, TestError, "test/bad-secret", "probe");
+  check("cipherFinish returns a buffer that is not one of its intermediates",
+    seen.length === 2 && seen.indexOf(out) === -1 && !allZero(out));
+  check("cipherFinish clears both intermediates on the success path",
+    seen.every(allZero));
+
+  // The failing exit: a CBC decrypt of bytes whose padding cannot be valid. update() has already
+  // produced the full candidate plaintext by the time final() rejects it, which is the buffer
+  // RFC 5083 sec. 1 is about.
+  var forged = Buffer.alloc(32, 0x41);
+  var decd = nodeCrypto.createDecipheriv("aes-256-cbc", aesKey, aesIv);
+  seen = [];
+  var threw = null;
+  try { secret.cipherFinish(tapped(decd), forged, TestError, "test/bad-secret", "probe"); }
+  catch (e) { threw = e; }
+  check("cipherFinish propagates the transform's own failure rather than absorbing it", threw !== null);
+  check("cipherFinish clears the candidate plaintext when the transform rejects the input",
+    seen.length >= 1 && seen.every(allZero));
 
   console.log("CHECKS " + helpers.getChecks());
 }
