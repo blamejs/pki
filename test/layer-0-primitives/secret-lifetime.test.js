@@ -146,11 +146,21 @@ function tap() {
 function allZero(b) { return b.length > 0 && Buffer.from(b).every(function (x) { return x === 0; }); }
 function anyNonZero(b) { return Buffer.from(b).some(function (x) { return x !== 0; }); }
 
+// What the tap DID see, for a failure that captured nothing. "No buffer was captured" has two very
+// different causes -- the operation never allocated one, or it allocated one under another label --
+// and the bare count cannot tell them apart, so a failure here names the labels that were recorded.
+function sawInstead(t) {
+  var seen = {}, i;
+  for (i = 0; i < t.caps.length; i++) seen[t.caps[i].label] = (seen[t.caps[i].label] || 0) + 1;
+  var names = Object.keys(seen).sort().map(function (k) { return k + "x" + seen[k]; });
+  return names.length ? " (the tap recorded: " + names.join(", ") + ")" : " (the tap recorded nothing at all)";
+}
+
 // Same contract as wiped() below, for a label whose count depends on how many derivations a flow
 // performs (a KEK derivation count is an implementation detail; that every one is cleared is not).
 function wipedAll(t, label, what) {
   var got = t.of(label);
-  check(what + ": at least one secret buffer was captured", got.length > 0);
+  check(what + ": at least one " + label + " buffer was captured" + (got.length ? "" : sawInstead(t)), got.length > 0);
   check(what + ": every captured buffer held real secret material", got.length > 0 && got.every(function (c) { return anyNonZero(c.snap); }));
   check(what + ": every captured buffer is zeroed", got.length > 0 && got.every(function (c) { return allZero(c.buf); }));
 }
@@ -159,14 +169,15 @@ function wipedAll(t, label, what) {
 // moment it is handed to the engine.
 function wipedRaw(t, len, what) {
   var got = t.of("import.raw").filter(function (c) { return c.buf.length === len; });
-  check(what + ": a " + len + "-octet key was imported", got.length > 0);
+  check(what + ": a " + len + "-octet key was imported" + (got.length ? "" : sawInstead(t)), got.length > 0);
   check(what + ": it held real key material", got.length > 0 && got.every(function (c) { return anyNonZero(c.snap); }));
   check(what + ": it is zeroed afterwards", got.length > 0 && got.every(function (c) { return allZero(c.buf); }));
 }
 
 function wiped(t, label, want, what) {
   var got = t.of(label);
-  check(what + ": the provider allocated " + want + " secret buffer(s)", got.length === want);
+  check(what + ": the provider allocated " + want + " " + label + " buffer(s), got " + got.length +
+    (got.length ? "" : sawInstead(t)), got.length === want);
   check(what + ": every captured buffer held real secret material", got.length > 0 && got.every(function (c) { return anyNonZero(c.snap); }));
   check(what + ": every captured buffer is zeroed after the operation", got.length > 0 && got.every(function (c) { return allZero(c.buf); }));
 }

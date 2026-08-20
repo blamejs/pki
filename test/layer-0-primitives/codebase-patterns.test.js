@@ -1660,6 +1660,34 @@ function _isBoilerplate(slice) {
   // prefix is exactly this 3-instantiation window; a format with more sub-schemas
   // has 4+.)
   if (factoryDecls >= 3) return true;
+  // The guard-intrinsic capture header: a run of `var _x = intrinsic.y;` bindings that name the
+  // runtime operations a module decides with, taken once at load. Every module that opts into the
+  // discipline carries one and they repeat in shape by construction -- the operations themselves
+  // already live in guard-intrinsic, so there is nothing left to extract. A member read, unlike the
+  // factory form above, has no call after the property, which is what separates the two.
+  // The guard-intrinsic capture header: the run of bindings that name the runtime operations a
+  // module decides with, taken once at load. Every module that opts into the discipline carries
+  // one, and they repeat in shape by construction -- the operations themselves already live in
+  // guard-intrinsic, so there is nothing left here to extract.
+  //
+  // It comes in three forms that a 50-token window mixes freely: a member read
+  // (`var _keys = intrinsic.keys;`), an uncurried capture
+  // (`var _push = intrinsic.uncurry(Array.prototype.push);`), and a bare alias for a global used
+  // as a constructor (`var _Promise = Promise;`). Counting the forms separately meant a window
+  // straddling them reached no threshold, so this counts the BINDING, whatever follows it. Note the
+  // right-hand side may be a preserved global rather than `_ID`: _normalizeJsLine leaves Promise,
+  // Buffer, Object and their siblings under their own names.
+  var GLOBAL_ROOT = "(?:_ID|Promise|Object|Array|String|Number|Boolean|Date|RegExp|Error|Math|JSON|Symbol|Map|Set|BigInt|Buffer)";
+  var captureDecls = (joined.match(new RegExp("\\bvar\\s+_ID\\s+=\\s+" + GLOBAL_ROOT + "\\b", "g")) || []).length;
+  if (captureDecls >= 3) return true;
+  // The per-module framework glue that sits directly under that header: the typed-error factory
+  // (`function E(code, message, cause) { return new XError(code, message, cause); }`) and the OID
+  // resolver (`function O(name) { return oid.byName(name); }`). Both are single-expression
+  // declarations the conventions require per module -- E must close over its own error class so a
+  // boundary keeps its own domain/reason, and O over its own namespace -- so they repeat in shape
+  // while being unextractable. Two such declarations in one window is that glue, not logic.
+  var oneLineFns = (joined.match(/\bfunction\s+_ID\s+\((?:\s+_ID\s+,)*\s+_ID\s+\)\s+\{\s+return\b/g) || []).length;
+  if (oneLineFns >= 2) return true;
   // The module-header TRANSITION: a slice that mixes a top-of-file require with a
   // factory-instantiation run is the header every format module shares (the 5
   // requires flow into `var NS = pkix.makeNS(...)` + `var X = pkix.factory(NS)`).
@@ -1763,6 +1791,9 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-range.js:<top>", "lib/guard-async.js:<top>", "lib/guard-time.js:<top>",
         "lib/guard-name.js:<top>", "lib/guard-text.js:<top>", "lib/guard-secret.js:<top>",
         "lib/cmp-verify.js:<top>", "lib/ocsp-verify.js:makeOcspVerify",
+        "lib/trust.js:<top>", "lib/cmp-build.js:<top>",
+        "lib/attrcert-sign.js:<top>", "lib/crmf-sign.js:<top>",
+        "lib/cmc-verify.js:<top>", "lib/cmp-session.js:<top>",
       ],
       mode: "family-subset",
       reason: "The per-guard capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across guards; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
