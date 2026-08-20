@@ -214,6 +214,67 @@ function testRuntimeReadsAreSnapshotted() {
   check("a replaced typed-array length getter cannot admit an over-cap Buffer",
     capOutcome === "x/too-large");
 
+  // The same accessor against the size cap every bounded byte input in the toolkit runs through.
+  // A getter answering 0 makes `size > max` false for a buffer of any size, so the cap is not
+  // raised or widened, it is gone.
+  var byteCapOutcome;
+  try {
+    Object.defineProperty(taProto, "length", { get: function () { return 0; }, configurable: true });
+    try {
+      guard.limits.byteCap(Buffer.alloc(4096), 16, F, "x/too-large", "the input");
+      byteCapOutcome = "accepted";
+    } catch (e) { byteCapOutcome = e.code || "OTHER"; }
+  } finally {
+    Object.defineProperty(taProto, "length", realLenDesc);
+  }
+  check("a replaced typed-array length getter cannot admit an over-cap byteCap input",
+    byteCapOutcome === "x/too-large");
+
+  // And against the control-byte scan that defends the name-truncation class. The accessor is the
+  // loop's end, so one answering 0 runs the loop zero times: the name still carries the control
+  // byte, and the walk that would have found it reports nothing.
+  var ia5 = Buffer.from([0x61, 0x00, 0x62]);   // "a", NUL, "b" -- built as bytes, source stays ASCII
+  var ia5Outcome;
+  try {
+    Object.defineProperty(taProto, "length", { get: function () { return 0; }, configurable: true });
+    try {
+      guard.name.assertPrintableIa5(ia5, F, "x/bad-name", "the name");
+      ia5Outcome = "accepted";
+    } catch (e) { ia5Outcome = e.code || "OTHER"; }
+  } finally {
+    Object.defineProperty(taProto, "length", realLenDesc);
+  }
+  check("a replaced typed-array length getter cannot skip the control-byte scan",
+    ia5Outcome === "x/bad-name");
+
+  // The same accessor against the argument copy, where the consequence is a secret rather than a
+  // refusal. The copy's size decides how large the private store is, how much of it the caller gets
+  // back, and how much of it goes on the wipe list. An accessor answering short leaves `release`
+  // clearing the front of a copy that still holds the rest of the secret. The replacement below
+  // shrinks only 16-byte views, so every other buffer in the process still reports its true size
+  // and the surrounding machinery is undisturbed.
+  var secretLen = 16;
+  var copiedLen;
+  try {
+    Object.defineProperty(taProto, "length", {
+      get: function () {
+        var real = realLenDesc.get.call(this);
+        return real === secretLen ? 4 : real;
+      },
+      configurable: true,
+    });
+    var held = Buffer.from("hunter2hunter2hu", "utf8");
+    var kept = guard.bytes.snapshotDeep(held, TestError, "x/bad", "the secret", { collect: [] });
+    // Measured through the real accessor, so the assertion is not itself answered by the
+    // replacement it is testing.
+    Object.defineProperty(taProto, "length", realLenDesc);
+    copiedLen = realLenDesc.get.call(kept);
+  } finally {
+    Object.defineProperty(taProto, "length", realLenDesc);
+  }
+  check("a replaced typed-array length getter cannot short the copy of a secret",
+    copiedLen === secretLen);
+
   check("a replaced util.types.isDate cannot make a plain object answer as a Date", saidDate === false);
   check("a replaced global isNaN cannot make an invalid Date pass the validity check",
     acceptedInvalid === false);

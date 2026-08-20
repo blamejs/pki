@@ -332,6 +332,28 @@ async function run() {
   check("9m. an empty-subject cert: a sender matching a subjectAltName entry verifies", (await pki.cmp.verify(await eeMsg("ee.example"), { signerCert: eeCert })).valid === true);
   check("9n. an empty-subject cert: a sender NOT in the subjectAltName -> cmp/sender-mismatch", (await pki.cmp.verify(await eeMsg("evil.example"), { signerCert: eeCert })).code === "cmp/sender-mismatch");
   check("9o. an empty-subject cert: a case-different dNSName sender still matches the SAN (RFC 5280 sec. 4.2.1.6)", (await pki.cmp.verify(await eeMsg("EE.EXAMPLE"), { signerCert: eeCert })).valid === true);
+  // The same non-matching sender, with the step that turns the SAN's bytes into text replaced. A
+  // dNSName SAN is read latin1, so a `toString` answering with the sender's own name for that one
+  // encoding makes any certificate's SAN read as any sender -- and the binding that decides whether
+  // this signer is allowed to speak for this sender then holds for a name it never carried. Only
+  // the latin1 call is answered, so PEM, hex and base64 elsewhere in the call are untouched and the
+  // refusal is attributable to this comparison.
+  var evilMsg = await eeMsg("evil.example");           // built before the replacement, so only verify runs under it
+  var realBufToString = Buffer.prototype.toString;
+  var spoofedSan;
+  try {
+    Buffer.prototype.toString = function () {
+      var real = realBufToString.apply(this, arguments);
+      // Only the SAN's own bytes are answered for. Lying for every latin1 call instead would break
+      // certificate parsing, and the refusal could then not be attributed to this comparison.
+      return real === "ee.example" ? "evil.example" : real;
+    };
+    spoofedSan = (await pki.cmp.verify(evilMsg, { signerCert: eeCert })).code;
+  } finally {
+    Buffer.prototype.toString = realBufToString;
+  }
+  check("9n2. and still a mismatch with Buffer.prototype.toString replaced for latin1",
+    spoofedSan === "cmp/sender-mismatch");
   // A MALFORMED dNSName (an empty label) is compared byte-exact, not case-folded, so a byte-distinct identity
   // differing only in case does not bind (RFC 5280 sec. 4.2.1.6 / RFC 1034 preferred name syntax).
   var badDnsCert = await pki.x509.sign({ subject: [], subjectPublicKey: eeSpki, serialNumber: 47, notBefore: NB, notAfter: NA, extensions: { keyUsage: ["digitalSignature"], subjectAltName: [{ dNSName: "Victim..COM" }] } }, { key: caKey, cert: caCert });
@@ -570,6 +592,32 @@ async function run() {
   check("15e. an unknown opts key -> throws cmp/bad-input", await codeOf(pki.cmp.verify(derMsg, { signerCert: s.cert, bogus: 1 })) === "cmp/bad-input");
   // an empty PBMAC1 secret has no entropy -> a peer could forge a matching MAC; require a non-empty secret.
   check("15f. an empty-string sharedSecret on a MAC message -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "" })) === "cmp/bad-input");
+  // The same gate, with the length it measures replaced. A string secret is converted to bytes at
+  // the door, so the emptiness check reads a typed array from there on -- and on a typed array
+  // `length` is a configurable accessor on the prototype. One reporting a positive value for an
+  // empty buffer would let `sharedSecret: ""` past the gate, so `_nonEmptySecret` measures through
+  // the byte guard's captured intrinsic getter.
+  //
+  // The replacement lies only where the real length is zero, and reports the true length everywhere
+  // else. That is what makes the vector attributable: a blanket lie also breaks the DER reader, so
+  // the call would be refused for a reason that has nothing to do with this gate. Reporting 8 for
+  // an empty view and the truth for every other one leaves the whole parse intact and moves exactly
+  // one decision -- whether the converted secret is empty.
+  var taProto15 = Object.getPrototypeOf(Uint8Array.prototype);
+  var realLen15 = Object.getOwnPropertyDescriptor(taProto15, "length");
+  var realGet15 = realLen15.get;
+  var emptyOutcome;
+  try {
+    Object.defineProperty(taProto15, "length", {
+      get: function () { var n = realGet15.call(this); return n === 0 ? 8 : n; },
+      configurable: true,
+    });
+    emptyOutcome = await codeOf(pki.cmp.verify(macDer, { sharedSecret: "" }));
+  } finally {
+    Object.defineProperty(taProto15, "length", realLen15);
+  }
+  check("15f2. and still refused with the typed-array length getter replaced",
+    emptyOutcome === "cmp/bad-input");
   check("15g. a zero-length Buffer sharedSecret -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: Buffer.alloc(0) })) === "cmp/bad-input");
 
   // ===== 16. direction-agnostic acceptance (a RESPONSE arm verifies exactly like a request) =====

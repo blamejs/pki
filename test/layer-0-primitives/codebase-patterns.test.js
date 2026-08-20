@@ -149,6 +149,7 @@ var VALID_ALLOW_CLASSES = {
   "wiki-port-cross-artifact-drift": 1,
   "schema-build-drops-parsed-field": 1,
   "guard-shape-reinlined": 1,
+  "guard-reads-runtime-live": 1,
   "ocsp-responder-auth-reinlined": 1,
   "constant-time-compare-short-circuited": 1,
   "guard-without-enforcement": 1,
@@ -2802,12 +2803,28 @@ function testGuardReadsRuntimeLive() {
     "Number\\.(?:isInteger|isSafeInteger|isNaN)", "String\\.fromCharCode",
     "JSON\\.stringify", "Math\\.(?:floor|ceil|min|max)", "Promise\\.(?:resolve|reject)",
   ];
+  // `equals` and `compare` are Buffer.prototype's identity verbs, `toString` and `subarray` its
+  // byte-to-text and byte-slice steps. Each decides something on its own: one `equals` answering
+  // true matches any value against any other, and one `toString` returning a constant makes every
+  // name equal every other name it is compared against.
+  // The string and pattern verbs are here because an identity comparison is built out of them: where
+  // a mailbox separator sits, which substring is the domain, whether a local-part is well-formed,
+  // how a URI splits into scheme and authority. Each is one replaceable call, and moving any one of
+  // them moves the boundary, so the name the verb ends up comparing is not the one on the wire.
   var LIVE_METHODS = "(?:forEach|map|filter|every|some|indexOf|sort|push|concat|join|" +
-    "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime)";
+    "toLowerCase|toUpperCase|charAt|charCodeAt|fill|getTime|equals|compare|toString|subarray|" +
+    "slice|lastIndexOf|search|test|exec|replace|split|trim|substring|substr|startsWith|endsWith|" +
+    "includes|hasOwnProperty)";
   var staticRe = new RegExp("\\b(?:" + LIVE_STATICS.join("|") + ")\\s*\\(", "g");
-  // A method call whose receiver is NOT a `_`-prefixed capture. `intrinsic.x(` and `guard.x(` are
-  // module handles, not prototypes, so they are excluded by requiring a bare identifier receiver.
-  var methodRe = new RegExp("(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)\\." + LIVE_METHODS + "\\s*\\(", "g");
+  // A method call whose receiver is NOT a `_`-prefixed capture. The receiver may be a whole member
+  // expression: `sanNode.bytes.equals(...)` dispatches off a prototype exactly as `bytes.equals(...)`
+  // does, and matching only a bare identifier let that one through. What the leading `_` exclusion
+  // has to apply to is the ROOT of the expression, since that is where a capture is named.
+  // `intrinsic.x(` and `guard.x(` are module handles rather than prototypes, so they are excluded
+  // by name below.
+  var MODULE_HANDLES = /^(?:intrinsic|_intrinsic|guard|helpers|pkix|schema|oid|asn1|cbor|C|errors|util|crypto|os|fs|path|constants)$/;
+  var methodRe = new RegExp(
+    "(?:^|[^\\w.$])(?!_)([A-Za-z$][\\w$]*)((?:\\.[A-Za-z$][\\w$]*)*)\\." + LIVE_METHODS + "\\s*\\(", "g");
   // SCOPE, chosen so it needs no list to maintain. A module is IN if it imports guard-intrinsic:
   // taking the captures is how a module opts into the discipline, and once opted in it is held to
   // it completely rather than at the one site somebody happened to change. A module that has not
@@ -2833,7 +2850,7 @@ function testGuardReadsRuntimeLive() {
       }
       methodRe.lastIndex = 0;
       while ((m = methodRe.exec(code)) !== null) {
-        if (m[1] === "util" || m[1] === "intrinsic" || m[1] === "guard") continue;
+        if (MODULE_HANDLES.test(m[1])) continue;
         bad.push({ file: rel, line: i + 1,
           content: "dispatches `" + m[0].trim() + "` through a live prototype — " +
             "use the uncurried capture from guard-intrinsic, so a replaced prototype method cannot " +
