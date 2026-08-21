@@ -1179,6 +1179,23 @@ async function testIssuedCertificateBinding() {
   check("#17 BD-11c a certificate whose only name is an unmappable common name is refused",
     (await codeOf(acme11c.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/unsupported-identifier-type");
 
+  // BD-11f the ordinary IP request shape: the address in the subject common name AND in the matching
+  // iPAddress SAN, which CABF TLS BR 7.1.4.2.2 permits and issuers write. The common name repeats a
+  // name the alternative names already carry, so it adds no identifier and the request stands. A
+  // common name naming a DIFFERENT address is nowhere in those names, so it is one the order never
+  // covered. Driven through finalize, which is the side that reads every common name.
+  var ipReqKp = signing.makeSigner("ec-p256", { cn: "192.0.2.1" });
+  var ipReqCsr = await pki.csr.sign({ subject: "192.0.2.1", subjectPublicKey: ipReqKp.spki,
+    extensionRequest: { subjectAltName: [{ iPAddress: "192.0.2.1" }] } }, { key: ipReqKp.key });
+  var acmeIpReq = await withAccount(serve(myLeaf));
+  check("#17 BD-11f an IP CSR naming the address in both the common name and the matching SAN is accepted",
+    (await codeOf(acmeIpReq.finalize({ finalize: A.URLS.finalize, identifiers: [{ type: "ip", value: "192.0.2.1" }] }, { csr: ipReqCsr }))) === "NO-THROW");
+  var ipOtherKp = signing.makeSigner("ec-p256", { cn: "192.0.2.9" });
+  var ipOtherCsr = await pki.csr.sign({ subject: "192.0.2.9", subjectPublicKey: ipOtherKp.spki,
+    extensionRequest: { subjectAltName: [{ iPAddress: "192.0.2.1" }] } }, { key: ipOtherKp.key });
+  check("#17 BD-11f an IP CSR whose common name names another address is rejected",
+    (await codeOf(acmeIpReq.finalize({ finalize: A.URLS.finalize, identifiers: [{ type: "ip", value: "192.0.2.1" }] }, { csr: ipOtherCsr }))) === "acme/unsupported-identifier-type");
+
   // BD-11e an address in a common name is not an ip identity even spelled canonically. Address
   // matching reads the iPAddress SAN and never falls back to the common name, so a certificate naming
   // the ordered address only there cannot authenticate it.
