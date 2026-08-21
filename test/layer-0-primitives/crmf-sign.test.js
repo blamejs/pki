@@ -419,6 +419,41 @@ async function testPopoPrivKeyArms() {
     (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "subsequentMessage",
       subsequentMessage: "encrCert", archve: true })))) === "crmf/bad-input");
 
+  // V9h-pre -- `type` is not the only thing that picks the arm: a spec that supplies a key and omits
+  // `type` selects the signature arm, and that arm reads pop.sender. Checking fields against an
+  // unresolved arm would refuse a shape this verb has always built.
+  var implicitSig = await pki.crmf.build({ certReqId: 1n, certTemplate: { publicKey: s.spki },
+    pop: { sender: { dNSName: "h.example" } } }, { key: s.key });
+  check("POP an implicit signature arm still reads pop.sender",
+    parse(implicitSig)[0].popo.type === "signature");
+
+  // V9h -- spec.pop is a CHOICE, so a field belonging to a DIFFERENT arm is refused rather than
+  // accepted and ignored. Checked across the arms, not on one of them: a caller who supplies the key
+  // material beside subsequentMessage believes they are sending the key, and gets a message that
+  // declares a later exchange instead. Each cell names a field that is legal somewhere else.
+  var CROSS_ARM = [
+    { what: "privateKey beside subsequentMessage",
+      pop: { type: "keyEncipherment", method: "subsequentMessage", subsequentMessage: "encrCert", privateKey: kemPkcs8 } },
+    { what: "archive beside subsequentMessage",
+      pop: { type: "keyAgreement", method: "subsequentMessage", subsequentMessage: "challengeResp", archive: true } },
+    { what: "subsequentMessage beside encryptedKey",
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8, identifier: "d",
+        recipients: [{ cert: recip.cert }], archive: true, subsequentMessage: "encrCert" } },
+    { what: "sender beside a POPOPrivKey arm",
+      pop: { type: "keyEncipherment", method: "subsequentMessage", subsequentMessage: "encrCert", sender: { dNSName: "h.example" } } },
+    { what: "raVerified beside a POPOPrivKey arm",
+      pop: { type: "keyAgreement", method: "subsequentMessage", subsequentMessage: "encrCert", raVerified: true } },
+    { what: "privateKey beside raVerified",
+      pop: { type: "raVerified", raVerified: true, privateKey: kemPkcs8 } },
+    { what: "method beside the signature arm",
+      pop: { type: "signature", method: "encryptedKey" } },
+  ];
+  for (var ci = 0; ci < CROSS_ARM.length; ci++) {
+    var cell = CROSS_ARM[ci];
+    check("POP " + cell.what + " is refused, not silently ignored",
+      (await codeOf(pki.crmf.build(spec(cell.pop)))) === "crmf/bad-input");
+  }
+
   // V10 -- the signature arm still builds unchanged through the rewritten dispatch.
   var sigDer = await pki.crmf.build({ certReqId: 1n, certTemplate: tpl(s.spki) }, { key: s.key });
   check("POP the signature arm is unchanged by the POPOPrivKey dispatch",
