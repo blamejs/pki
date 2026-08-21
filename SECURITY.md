@@ -986,11 +986,16 @@ security-only patches after the next major releases.
   CSR asked to have certified, and its identifier set — subject common names plus
   dNSName and iPAddress subject alternative names — must equal the order's
   identifiers, under the same relation the outbound CSR check uses so the two
-  halves cannot disagree. Both are required by default; a download made without
-  them is refused rather than returned unchecked, and the result reports which
-  bindings ran so a waived one cannot read as a performed one. The check covers
-  whichever chain is returned, an alternate chosen through `selectChain`
-  included.
+  halves cannot disagree. At least one of the two is required by default, since a
+  caller holding only the order or only the CSR can still bind what it has; a
+  download supplying neither is refused rather than returned unchecked. The
+  result reports which of the two ran, so a binding that was not performed cannot
+  read as one that was, and neither can a waived one. An identifier that maps to
+  no certificate name — a registered ACME identifier type other than `dns` or
+  `ip`, or a `subjectAltName` that is neither a dNSName nor an iPAddress — is
+  refused rather than dropped, so the comparison never reports a set as checked
+  after leaving part of it out. The check covers whichever chain is returned, an
+  alternate chosen through `selectChain` included.
 - **ACME client transport is fail-closed on the wire (CWE-295 / CWE-319 /
   CWE-770 / CWE-294).** `pki.acme.client` drives a live directory over the same
   `pki.transport` socket choke point, with no path that disables TLS server
