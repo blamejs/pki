@@ -243,6 +243,137 @@ async function testCoverageEdges() {
 // `oid.name(t) || t` message fallback (only an UNREGISTERED OID in a duplicate error takes the `|| t`
 // arm), and the object-form duplicate-control guard (distinct control keys map to distinct OIDs, so a
 // collision is unreachable in the object form; the array form's duplicate check IS driven above).
+// ---- POPOPrivKey: the arms a key that cannot sign has to use ---------------
+//
+// RFC 4211 sec. 4.2 / 4.3, restated at RFC 9810 sec. 5.2.8.3. An encryption or key-agreement key
+// cannot produce a POPOSigningKey, so without these arms an ML-KEM enrollment has no buildable
+// proof at all and the only reachable alternative is raVerified, which is not one.
+async function testPopoPrivKeyArms() {
+  var s = makeSigner("ec-p256");
+  var kem = await pki.key.generate("ML-KEM-768");
+  var kemSpki = await pki.key.export(kem.publicKey);
+  var kemPkcs8 = await pki.key.export(kem.privateKey);
+  function spec(pop, over) {
+    return Object.assign({ certReqId: 1n, certTemplate: tpl(kemSpki), pop: pop }, over || {});
+  }
+
+  // V1/V2 -- both SubsequentMessage values under both outer arms. Four cells, because the recurring
+  // defect in this codebase is a rule that holds for one arm and not its sibling.
+  var cells = [
+    { type: "keyEncipherment", subsequentMessage: "encrCert" },
+    { type: "keyEncipherment", subsequentMessage: "challengeResp" },
+    { type: "keyAgreement", subsequentMessage: "encrCert" },
+    { type: "keyAgreement", subsequentMessage: "challengeResp" },
+  ];
+  for (var i = 0; i < cells.length; i++) {
+    var der = await pki.crmf.build(spec({ type: cells[i].type, method: "subsequentMessage", subsequentMessage: cells[i].subsequentMessage }));
+    var m = parse(der)[0];
+    check("POP " + cells[i].type + "/" + cells[i].subsequentMessage + " round-trips through the parser",
+      m.popo && m.popo.type === cells[i].type && m.popo.method === "subsequentMessage");
+  }
+
+  // V3 -- the outer [2]/[3] tag is EXPLICIT (X.680 sec. 31.2.7: the field is CHOICE-typed). Emitted
+  // IMPLICITLY the message still decodes as something, so the round-trip above cannot separate the
+  // two encodings; only reading the tag structure can.
+  var expDer = await pki.crmf.build(spec({ type: "keyEncipherment", method: "subsequentMessage", subsequentMessage: "encrCert" }));
+  var popoNode = asn1.decode(parse(expDer)[0].popo.bytes);
+  check("POP the keyEncipherment [2] wrapper is EXPLICIT around one context alternative",
+    popoNode.tagClass === "context" && popoNode.tagNumber === 2 &&
+    !!popoNode.children && popoNode.children.length === 1 &&
+    popoNode.children[0].tagClass === "context" && popoNode.children[0].tagNumber === 1);
+
+  // V4 -- SubsequentMessage is INTEGER { encrCert(0), challengeResp(1) }; nothing else is a value.
+  check("POP an unknown subsequentMessage value is refused",
+    (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "subsequentMessage", subsequentMessage: "somethingElse" })))) === "crmf/bad-popo");
+
+  // V5 -- the two arms the specification deprecates are refused by name, each naming its successor.
+  check("POP thisMessage is refused as deprecated",
+    (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "thisMessage" })))) === "crmf/bad-popo");
+  check("POP dhMAC is refused as deprecated",
+    (await codeOf(pki.crmf.build(spec({ type: "keyAgreement", method: "dhMAC" })))) === "crmf/bad-popo");
+
+  // V6 -- agreeMAC refuses TWICE for different reasons, and the pair is the point: under
+  // keyEncipherment it is non-conforming (sec. 4.2 lists three methods, none of them a MAC), and
+  // under keyAgreement it is conforming but not built here. One check blurring them would pass
+  // while the builder disagreed with its own parser.
+  var encMac = await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "agreeMAC" })));
+  var agrMac = await codeOf(pki.crmf.build(spec({ type: "keyAgreement", method: "agreeMAC" })));
+  check("POP agreeMAC under keyEncipherment is refused as non-conforming", encMac === "crmf/bad-popo");
+  check("POP agreeMAC under keyAgreement is refused as not built", agrMac === "crmf/unsupported-popo");
+
+  // V7 -- encryptedKey round-trips, including the parser's INDEPENDENT id-ct-encKeyWithID check.
+  var recip = makeSigner("rsa");
+  var encSpec = spec({ type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8,
+    identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true });
+  var encDer = await pki.crmf.build(encSpec);
+  var encMsg = parse(encDer)[0];
+  check("POP encryptedKey round-trips through the parser's own content-type check",
+    encMsg.popo && encMsg.popo.type === "keyEncipherment" && encMsg.popo.method === "encryptedKey");
+
+  // V8 -- the ASN.1 marks identifier OPTIONAL and sec. 4.2.1 then makes it MUST for a POP. A builder
+  // derived from the module rather than the prose emits it absent and still round-trips.
+  check("POP encryptedKey without an identifier is refused (RFC 4211 sec. 4.2.1)",
+    (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8,
+      recipients: [{ cert: recip.cert }], archive: true })))) === "crmf/bad-popo");
+
+  // V9 -- sending the private key is reachable only on an explicit opt-in, the raVerified precedent.
+  check("POP encryptedKey without the archival opt-in is refused (RFC 9810 sec. 5.2.8.3.1)",
+    (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8,
+      identifier: "device-42", recipients: [{ cert: recip.cert }] })))) === "crmf/bad-popo");
+
+  // V9c -- the whole point of the arm. RFC 4211 sec. 4.2: encryptedKey carries "the encrypted private
+  // key MATCHING THE PUBLIC KEY for which the certificate is to be issued". Enclosing an unrelated key
+  // proves possession of something the request never asked to have certified, and every structural
+  // check above still passes on it -- the message round-trips, the content type is right, the
+  // identifier is there. Only comparing the two keys separates a proof from a decoration.
+  var otherKem = await pki.key.generate("ML-KEM-768");
+  var otherPkcs8 = await pki.key.export(otherKem.privateKey);
+  check("POP encryptedKey enclosing a key other than the requested one is refused",
+    (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey", privateKey: otherPkcs8,
+      identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true })))) === "crmf/bad-popo");
+  // ...and the template has to name a key at all, or there is nothing for the enclosed one to match.
+  check("POP encryptedKey with no certTemplate.publicKey is refused",
+    (await codeOf(pki.crmf.build({ certReqId: 1n, certTemplate: { subject: [{ commonName: "device" }] },
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8, identifier: "d",
+        recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
+
+  // V9d -- the arm composes the CMS producer, and that composition is invisible to the caller. A
+  // malformed recipient or an algorithm CMS does not carry must still surface in this module's
+  // namespace, or `pki.crmf.build`'s documented "throws a typed CrmfError" is untrue for one arm.
+  var badRecip = await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey",
+    privateKey: kemPkcs8, identifier: "d", recipients: [{ nonsense: true }], archive: true })));
+  check("POP a malformed encryptedKey recipient surfaces as a CrmfError (got " + badRecip + ")",
+    typeof badRecip === "string" && badRecip.indexOf("crmf/") === 0);
+  var badCea = await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey",
+    privateKey: kemPkcs8, identifier: "d", recipients: [{ cert: recip.cert }], archive: true,
+    contentEncryptionAlgorithm: "aes-999-cbc" })));
+  check("POP an unsupported content-encryption algorithm surfaces as a CrmfError (got " + badCea + ")",
+    typeof badCea === "string" && badCea.indexOf("crmf/") === 0);
+
+  // V9b -- every gate above is one a caller turns off by naming it, so a misspelled key must not read
+  // as an omitted one: `archve: true` would withhold the archival consent while looking like it gave it.
+  check("POP a misspelled pop field is refused rather than dropped",
+    (await codeOf(pki.crmf.build(spec({ type: "keyEncipherment", method: "subsequentMessage",
+      subsequentMessage: "encrCert", archve: true })))) === "crmf/bad-input");
+
+  // V10 -- the signature arm still builds unchanged through the rewritten dispatch.
+  var sigDer = await pki.crmf.build({ certReqId: 1n, certTemplate: tpl(s.spki) }, { key: s.key });
+  check("POP the signature arm is unchanged by the POPOPrivKey dispatch",
+    parse(sigDer)[0].popo.type === "signature");
+
+  // V11 -- RFC 9810 sec. 5.2.8.3: "When using agreeMAC or encryptedKey choices, the pvno cmp2021(3)
+  // MUST be used." That is a CMP header rule the CRMF layer cannot enforce for itself.
+  var cmpHdr = { sender: { directoryName: "CN=client" }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7) };
+  var cmpSig = { key: s.key, cert: s.cert };
+  var cmpEnc = await pki.cmp.build({ header: cmpHdr, body: { ir: encSpec } }, cmpSig);
+  check("POP a CMP request carrying an encryptedKey POP announces cmp2021(3)",
+    pki.schema.cmp.parse(cmpEnc).header.pvno === 3);
+  var cmpSub = await pki.cmp.build({ header: cmpHdr,
+    body: { ir: spec({ type: "keyEncipherment", method: "subsequentMessage", subsequentMessage: "encrCert" }) } }, cmpSig);
+  check("POP a subsequentMessage POP does not force the version up",
+    pki.schema.cmp.parse(cmpSub).header.pvno === 2);
+}
+
 async function main() {
   await testRoundTrip();
   await testPemOutput();
@@ -256,6 +387,7 @@ async function main() {
   await testBatchAndVersion();
   await testCoverageEdges();
   await testFailClosed();
+  await testPopoPrivKeyArms();
   console.log("CHECKS " + helpers.getChecks());
 }
 

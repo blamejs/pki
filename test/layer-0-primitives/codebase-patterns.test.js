@@ -2989,6 +2989,8 @@ function testGuardReadsRuntimeLive() {
   var MIGRATING = {
     "lib/acme.js": 245,
     "lib/est.js": 203,
+    "lib/cmp-build.js": 152,
+    "lib/crmf-sign.js": 47,
     "lib/path-validate.js": 188,
     "lib/webauthn.js": 178,
     "lib/asn1-der.js": 135,

@@ -41,9 +41,26 @@ module.exports.fuzz = async function (data) {
   if ((flags & 1) && !(flags & 32)) spec.pop = { type: "signature", sender: { dNSName: (name.replace(/[^A-Za-z0-9.-]/g, "x") || "h.example") } };
   if (flags & 32) { spec.pop = { type: "raVerified", raVerified: true }; }
 
+  // The POPOPrivKey arms (RFC 4211 sec. 4.2 / 4.3), which a key that cannot sign has to use. A second
+  // byte drives the outer arm, the method name (including the deprecated and unbuilt ones, which must
+  // refuse rather than emit) and the SubsequentMessage value, so the fuzzer reaches the refusals and
+  // the emissions through the same door a caller uses.
+  var privKeyPop = (flags & 128) !== 0;
+  if (privKeyPop) {
+    var sel = d.length > 34 ? d[34] : 0;
+    var METHODS = ["subsequentMessage", "encryptedKey", "agreeMAC", "thisMessage", "dhMAC", "nonsense"];
+    spec.pop = {
+      type: (sel & 1) ? "keyAgreement" : "keyEncipherment",
+      method: METHODS[(sel >> 1) % METHODS.length],
+      subsequentMessage: (sel & 64) ? "challengeResp" : "encrCert",
+      privateKey: req.key, identifier: name.slice(0, 32) || "id",
+      recipients: [{ cert: req.cert }], archive: (sel & 128) !== 0,
+    };
+  }
+
   var der;
   try {
-    der = (flags & 32) ? await pki.crmf.build(spec) : await pki.crmf.build(spec, { key: req.key });
+    der = (flags & 32) || privKeyPop ? await pki.crmf.build(spec) : await pki.crmf.build(spec, { key: req.key });
   } catch (e) {
     if (isPki(e)) return;
     throw e;
