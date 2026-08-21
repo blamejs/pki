@@ -1256,6 +1256,12 @@ async function run() {
   // refused, not just the generic key OID.
   check("170i. a keySpec algId naming rsassaPss -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsassaPss"))])))]).session.info({ certReqTemplate: true }))));
   check("170j. a keySpec algId naming sha256WithRSAEncryption -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha256WithRSAEncryption")), B.nullValue()])))]).session.info({ certReqTemplate: true }))));
+  // RSA is registered on three arcs, so an arc test is not the rule. These two sit outside PKCS#1.
+  check("170l. a keySpec algId naming id-rsa-kem -> refused (RSA off the PKCS#1 arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-rsa-kem"))])))]).session.info({ certReqTemplate: true }))));
+  check("170m. a keySpec algId naming id-kem-rsa -> refused (RSA on the ISO arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-kem-rsa"))])))]).session.info({ certReqTemplate: true }))));
+  // An algorithm the registry cannot name is refused too: it can be neither acted on as a key
+  // requirement nor ruled out as RSA, and guessing either way would be a verdict about nothing.
+  check("170n. a keySpec algId the registry does not name -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.6.1.4.1.99999.7")])))]).session.info({ certReqTemplate: true }))));
   check("170k. a keySpec algId naming rsaesOaep -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsaesOaep"))])))]).session.info({ certReqTemplate: true }))));
   var rsaAlgId = B.sequence([B.oid(pki.oid.byName("rsaEncryption")), B.nullValue()]);
   check("170d. a keySpec algId naming RSA -> refused (sec. 4.3.3: MUST give an algorithm other than RSA)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", rsaAlgId))]).session.info({ certReqTemplate: true }))));
@@ -1264,7 +1270,10 @@ async function run() {
   //                choice is a directoryName GeneralName, and thisUpdate is omitted when absent. =====
   var crlsValue = B.sequence([B.raw(REAL_CRL)]);
   var s171 = mk([H.genpOf("crls", crlsValue)]);
-  var r171 = await s171.session.info({ crlUpdate: { issuer: [{ commonName: "cmp-ca.example" }] } });
+  // REAL_CRL is signed under CLIENT's certificate, so its issuer is CN=client -- the source this
+  // request has to name for the answer to be an answer to it.
+  var CRL_ISSUER = [{ commonName: "client" }];
+  var r171 = await s171.session.info({ crlUpdate: { issuer: CRL_ISSUER } });
   check("171a. info({crlUpdate}) -> answered with the returned CRL list", r171.outcome === "answered" && Array.isArray(r171.value) && r171.value.length === 1);
   var genm171 = sentRr(s171.transport, 0);
   check("171b. the genm names id-it-crlStatusList (the response names id-it-crls)", genm171[0].name === "crlStatusList");
@@ -1273,11 +1282,26 @@ async function run() {
   check("171d. thisUpdate is OMITTED when the EE holds no instance of the CRL (sec. 4.3.4)", cs171.children[0].children.length === 1);
   check("171e. the source is the issuer [1] arm carrying a directoryName GeneralName", cs171.children[0].children[0].tagClass === "context" && cs171.children[0].children[0].tagNumber === 1);
   var s172 = mk([H.genpOf("crls", crlsValue)]);
-  await s172.session.info({ crlUpdate: { issuer: [{ commonName: "cmp-ca.example" }], thisUpdate: new Date("2026-01-01T00:00:00Z") } });
+  await s172.session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: new Date("2025-06-01T00:00:00Z") } });
   check("172a. a supplied thisUpdate is carried in the CRLStatus", pki.asn1.decode(sentRr(s172.transport, 0)[0].value).children[0].children.length === 2);
   // A certificate is a well-formed SEQUENCE and is not a CertificateList; answering a CRL request
   // with one would hand back something no revocation check can read.
   check("172a2. a crlUpdate answered with a certificate rather than a CRL -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", B.sequence([B.raw(H.caCert)]))]).session.info({ crlUpdate: { issuer: [{ commonName: "c" }] } }))));
+  // sec. 4.3.4 answers with the latest CRL FROM THE REFERENCED SOURCE, and only when it is newer
+  // than a supplied thisUpdate. A CRL for some other issuer, or one no newer, answers a different
+  // question, and the response is required to carry no value at all rather than that one.
+  check("172a3. a CRL from an issuer other than the one the request named -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: [{ commonName: "some-other-ca" }] } }))));
+  check("172a4. a CRL no newer than the supplied thisUpdate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: new Date("2026-06-01T00:00:00Z") } }))));
+  check("172a5. a CRL exactly AT the supplied thisUpdate is not more recent -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: new Date("2026-01-01T00:00:00Z") } }))));
+  // The comparison happens after the transport round-trip, so the instant is taken when the request
+  // is built. A caller still holding that Date must not be able to move the bar under the answer.
+  var movingDate = new Date("2026-06-01T00:00:00Z");
+  var s172a7 = mk([function () { movingDate.setUTCFullYear(2020); return H.genpOf("crls", crlsValue); }]);
+  check("172a7. a caller mutating the thisUpdate Date mid-transaction does not move the freshness bar", /^cmp\//.test(await codeOf(s172a7.session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: movingDate } }))));
+  // The dpn arm names a pointer the responder resolves internally, and a CertificateList need not
+  // say which point it came from, so there is nothing to bind it against; freshness still applies.
+  var r172a6 = await mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] } } });
+  check("172a6. a dpn request is not bound by issuer name (nothing in the response names the point)", r172a6.outcome === "answered" && r172a6.value.length === 1);
   check("172b. a crlUpdate naming neither dpn nor issuer -> cmp/bad-input (sec. 4.3.4)", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: {} })) === "cmp/bad-input");
   // The dpn arm of CRLSource: an EXPLICIT [0] wrapping a DistributionPointName, whose own fullName
   // [0] keeps the IMPLICIT tagging of the module it is imported from.
