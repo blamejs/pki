@@ -946,6 +946,16 @@ async function testIssuedCertificateBinding() {
   // The leaves are built directly rather than issued: the binding under test reads the subject public
   // key and the subjectAltName, so a real chain would add nothing the check consults.
   var b = pki.asn1.build;
+  // A leaf whose common name is a UTF8String. signing.minimalCert encodes a PrintableString, which
+  // admits neither the wildcard `*` nor a non-ASCII character, and both are needed below.
+  function certWithUtf8Cn(spki, cn, exts) {
+    var alg = b.sequence([b.oid(pki.oid.byName("ecdsaWithSHA256"))]);
+    var name = b.sequence([b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.utf8(cn)])])]);
+    var validity = b.sequence([b.utcTime(new Date("2020-01-01T00:00:00Z")), b.utcTime(new Date("2040-01-01T00:00:00Z"))]);
+    var tbs = [b.explicit(0, b.integer(2n)), b.integer(0x77n), alg, name, validity, name, b.raw(spki)];
+    if (exts && exts.length) tbs.push(b.explicit(3, b.sequence(exts)));
+    return b.sequence([b.sequence(tbs), alg, b.bitString(Buffer.from([0, 0, 0, 0]), 0)]);
+  }
   function sanExt(dns) {
     return b.sequence([b.oid(pki.oid.byName("subjectAltName")),
       b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from(dns, "latin1"))]))]);
@@ -1138,12 +1148,63 @@ async function testIssuedCertificateBinding() {
     { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] });
   check("#17 BD-11 an IP certificate naming the address in both CN and SAN binds to an ip order",
     r11.certificate.equals(ipLeaf) && r11.boundToIdentifiers === true);
-  // BD-11b a common name that reads as an address but is not its canonical form maps to no order
-  // identifier, and is refused rather than normalized into one.
+  // BD-11b a common name that reads as an address but is not its canonical form is not an identifier
+  // this comparison can express, and it is left out rather than normalized into one. Leaving a name
+  // out of the CERTIFICATE's set can only make that set smaller, so equality with the order fails
+  // rather than passes -- the opposite of dropping an ORDER identifier, which is why that one is
+  // refused instead. Here the iPAddress SAN carries the address the order asked for, and the
+  // authoritative name matches.
   var badIpLeaf = signing.minimalCert(mine.spki, { cn: "192.0.2.01", exts: [ipSan] });
   var acme11b = await withAccount(serve(badIpLeaf));
-  check("#17 BD-11b a non-canonical IP-literal common name is refused",
-    (await codeOf(acme11b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/unsupported-identifier-type");
+  var r11b = await acme11b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] });
+  check("#17 BD-11b a non-canonical IP-literal common name contributes nothing; the SAN decides",
+    r11b.certificate.equals(badIpLeaf) && r11b.boundToIdentifiers === true);
+  // BD-11c and it cannot make a mismatch pass: with no matching SAN, the certificate binds to nothing.
+  var badIpNoSan = signing.minimalCert(mine.spki, { cn: "192.0.2.01" });
+  var acme11c = await withAccount(serve(badIpNoSan));
+  check("#17 BD-11c a certificate whose only name is that common name binds to no order identifier",
+    (await codeOf(acme11c.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/certificate-identifier-mismatch");
+
+  // BD-12 the common name is folded with ASCII case rules, never the Unicode mapping. Several
+  // characters lowercase INTO ASCII -- U+212A KELVIN SIGN becomes "k" -- so a full fold would turn a
+  // name the certificate does not carry as a DNS label into one that compares equal to an order
+  // identifier. The certificate here names only the Kelvin-sign form and carries no SAN, so under a
+  // Unicode fold it would satisfy an order for "k.example". (Source stays ASCII: the character is
+  // built at runtime.)
+  var kelvin = String.fromCharCode(0x212a);
+  var kelvinLeaf = certWithUtf8Cn(mine.spki, kelvin + ".example", []);
+  var acme12 = await withAccount(serve(kelvinLeaf));
+  check("#17 BD-12 a Unicode common name that lowercases into ASCII does not satisfy the order",
+    (await codeOf(acme12.downloadCertificate(A.URLS.certificate,
+      { expectedSpki: mine.spki, identifiers: [{ type: "dns", value: "k.example" }] }))) === "acme/certificate-identifier-mismatch");
+
+  // BD-12b a wildcard survives the same gate: an order identifier carries the `*.` verbatim
+  // (RFC 8555 sec. 7.1.3) and the certificate carries it as a SAN, so both sides must still match.
+  var wildSan = b.sequence([b.oid(pki.oid.byName("subjectAltName")),
+    b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from("*.example.org", "latin1"))]))]);
+  var wildLeaf = certWithUtf8Cn(mine.spki, "*.example.org", [wildSan]);
+  var acme12b = await withAccount(serve(wildLeaf));
+  var r12b = await acme12b.downloadCertificate(A.URLS.certificate,
+    { expectedSpki: mine.spki, identifiers: [{ type: "dns", value: "*.example.org" }] });
+  check("#17 BD-12b a wildcard certificate binds to a wildcard order",
+    r12b.certificate.equals(wildLeaf) && r12b.boundToIdentifiers === true);
+
+  // BD-13 where the certificate asserts subject alternative names, those are its identity and the
+  // subject common name is not an additional one. The common name here is itself a valid dns name and
+  // a DIFFERENT one from the SAN -- the ordinary "CN=www.example.org, SAN=example.org" shape -- so
+  // counting it would add a second identifier and make a SAN set that is exactly the order's compare
+  // unequal. (An organizational common name would not discriminate: it is not a dns name at all, and
+  // is left out either way.)
+  var orgCnLeaf = signing.minimalCert(mine.spki, { cn: "www.example.org", exts: [sanExt("example.org")] });
+  var acme13 = await withAccount(serve(orgCnLeaf));
+  var r13 = await acme13.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS });
+  check("#17 BD-13 an organizational common name beside a matching SAN does not break the binding",
+    r13.certificate.equals(orgCnLeaf) && r13.boundToIdentifiers === true);
+  // BD-13b with no SAN at all the common name is the only name there is, and it still has to match.
+  var cnOnlyMatch = signing.minimalCert(mine.spki, { cn: "example.org" });
+  var acme13b = await withAccount(serve(cnOnlyMatch));
+  check("#17 BD-13b a certificate with no SAN binds on its common name",
+    (await acme13b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS })).boundToIdentifiers === true);
 
   // BD-8 bad binding input is a config error, refused before the certificate is read.
   var acme8 = await withAccount(serve(myLeaf));
