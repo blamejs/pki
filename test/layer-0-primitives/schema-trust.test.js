@@ -496,6 +496,28 @@ async function testCsvHeaderKeyed() {
   check("T16: unknown Trust Bits token -> trust/bad-csv",
     codeOf(function () { pki.trust.parseCcadbCsv(badBits); }) === "trust/bad-csv");
 
+  // T16a: "toString" is not a Trust Bits token, and the only thing that says so is an
+  // own-membership test against the token table. A caller who replaces
+  // Object.prototype.hasOwnProperty after this module loaded must not be able to turn
+  // that answer to true -- doing so would read the token's value off Object.prototype
+  // and mint an anchor from a row CCADB never granted. The reader asks an operation it
+  // took at load, so the row is still refused.
+  var protoBits = csvOf([CSV_HEADER, ["Test Root A", q("toString"), "", "", q(pemA)]]);
+  var realHasOwn = Object.prototype.hasOwnProperty;
+  Object.defineProperty(Object.prototype, "hasOwnProperty",
+    { value: function () { return true; }, writable: true, configurable: true });
+  var bitsUnderSubstitution;
+  try {
+    bitsUnderSubstitution = codeOf(function () { pki.trust.parseCcadbCsv(protoBits); });
+  } finally {
+    Object.defineProperty(Object.prototype, "hasOwnProperty",
+      { value: realHasOwn, writable: true, configurable: true });
+  }
+  check("T16a: a Trust Bits token naming an Object.prototype member is refused with hasOwnProperty replaced",
+    bitsUnderSubstitution === "trust/bad-csv");
+  check("T16a: the same token is refused with no substitution",
+    codeOf(function () { pki.trust.parseCcadbCsv(protoBits); }) === "trust/bad-csv");
+
   // T16b: the CURRENT CCADB vocabulary (the EKU-derived trust-bit names) maps to
   // the same purposes as the legacy Mozilla-report labels.
   var curBits = csvOf([CSV_HEADER, ["Test Root A", q("Server Authentication; Secure Email; Code Signing"), "", "", q(pemA)]]);

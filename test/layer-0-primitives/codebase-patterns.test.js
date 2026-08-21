@@ -1767,14 +1767,16 @@ function testNoDuplicateCodeBlocks() {
   //     reason: "why these are not extractable" }
   var KNOWN_CLUSTERS = [
     {
-      // The per-guard capture header: a run of `var _x = intrinsic.y;` bindings taking what the
+      // The per-module capture header: a run of `var _x = intrinsic.y;` bindings taking what the
       // module reads from the runtime before any caller code can reach it. The uniformity IS the
-      // point -- every guard binds the same names to the same intrinsics, so a reader comparing two
-      // modules sees one list in the same shape and can tell at a glance what each still reads
+      // point -- every module binds the same names to the same intrinsics, so a reader comparing two
+      // of them sees one list in the same shape and can tell at a glance what each still reads
       // live. Extracting it further is not possible: each module binds a DIFFERENT subset (the byte
-      // guard needs isView, the identifier guard needs ownKeys), and a shared object handed around
-      // would reintroduce the property read at the call site that the capture exists to remove.
-      // family-subset so any 3+ of the guards match as more of them are swept.
+      // guard needs isView, the identifier guard needs ownKeys, a format module needs hasOwn), and a
+      // shared object handed around would reintroduce the property read at the call site that the
+      // capture exists to remove. The family spans guards, format modules and producing modules,
+      // because taking the captures is what puts a module under the live-read gate at all.
+      // family-subset so any 3+ of them match as more are swept.
       files: [
         "lib/guard-bytes.js:<top>", "lib/guard-identifier.js:<top>", "lib/guard-parsed.js:<top>",
         "lib/guard-compress.js:<top>", "lib/guard-encoding.js:<top>", "lib/guard-json.js:<top>",
@@ -1783,9 +1785,16 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-name.js:<top>", "lib/guard-text.js:<top>", "lib/guard-secret.js:<top>",
         "lib/cmp-verify.js:<top>", "lib/ocsp-verify.js:makeOcspVerify",
         "lib/jose.js:<top>", "lib/webcrypto.js:<top>",
+        "lib/acme.js:<top>", "lib/est.js:<top>", "lib/webauthn.js:<top>", "lib/trust.js:<top>",
+        "lib/webauthn-mds.js:<top>", "lib/attrcert-sign.js:<top>", "lib/http-digest.js:<top>",
+        "lib/schema-pkix.js:<top>", "lib/ct.js:<top>", "lib/crl-sign.js:<top>",
+        "lib/cmc-build.js:<top>", "lib/cmc-verify.js:<top>", "lib/hpke.js:<top>",
+        "lib/schema-attrcert.js:<top>", "lib/tls-cert-compress.js:<top>",
+        "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
+        "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>",
       ],
       mode: "family-subset",
-      reason: "The per-guard capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across guards; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
+      reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
     },
     {
       // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
@@ -2382,7 +2391,11 @@ function testNumberNarrowsUnboundedInteger() {
         new RegExp(idRe + "\\s*<=\\s*\\d").test(scope) ||           // id <= N
         /Number\.isSafeInteger/.test(scope) ||
         new RegExp(idRe + "\\s*&\\s*0x").test(scope) ||             // masked
-        /hasOwnProperty|\.indexOf\(/.test(scope);                    // small-enum whitelist
+        // Small-enum whitelist. Matched as a CALL, not as a bare word: the own-membership question
+        // has several spellings in this tree (`_hasOwn(t, k)`, `intrinsic.hasOwn(t, k)`,
+        // `Object.prototype.hasOwnProperty.call(t, k)`), and requiring the open paren keeps a
+        // similarly-named identifier or a comment that merely mentions one from posing as a bound.
+        /hasOwn\w*\s*(?:\.\s*call\s*)?\(|\.indexOf\(/.test(scope);
       if (!bounded) {
         bad.push({ file: rel, line: i + 1,
           content: "Number(" + id + ") narrows an ASN.1 integer read with no dominating bound — a value past 2^53 rounds silently; add a range check (id > Nn), Number.isSafeInteger, or a whitelist before narrowing (the RSASSA-PSS / PKCS#12 / CMP exact-or-rejected rule)" });
@@ -2956,27 +2969,44 @@ function testGuardReadsRuntimeLive() {
   });
   bad = _filterMarkers(bad, "guard-reads-runtime-live");
 
-  // MIGRATING, a per-module budget rather than a skip list. Widening the scope above to both
-  // spellings of "takes the captures" armed nine modules at once, and their reads are being
-  // converted a module at a time. A budget is not an exemption: it names an exact number, so a NEW
-  // live read in one of these files pushes the module over its figure and fails the gate the same
-  // way a fresh one would. The number is the only thing on this list -- there is no per-site
-  // allowance, so nothing can hide behind "already dirty".
+  // MIGRATING, a per-module budget rather than a skip list. A module enters the scope above the
+  // moment it takes the captures, which arms the whole file at once while its reads are converted a
+  // module at a time. A budget is not an exemption: it names an exact number, so a NEW live read in
+  // one of these files pushes the module over its figure and fails the gate the same way a fresh
+  // one would. The number is the only thing on this list -- there is no per-site allowance, so
+  // nothing can hide behind "already dirty".
   //
   // It ratchets DOWN only. Converting sites without lowering the figure also fails, because a
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
+    "lib/acme.js": 285,
+    "lib/est.js": 203,
+    "lib/path-validate.js": 188,
+    "lib/webauthn.js": 178,
     "lib/asn1-der.js": 135,
-    "lib/pki-build.js": 56,
-    "lib/x509-sign.js": 28,
-    "lib/path-validate.js": 189,
+    "lib/trust.js": 111,
     "lib/cms-sign.js": 93,
+    "lib/webauthn-mds.js": 92,
+    "lib/attrcert-sign.js": 91,
     "lib/tsp-sign.js": 89,
+    "lib/http-digest.js": 85,
+    "lib/schema-pkix.js": 81,
     "lib/pkcs12-build.js": 78,
-    "lib/cms-verify.js": 76,
+    "lib/ct.js": 78,
+    "lib/cms-verify.js": 75,
     "lib/cms-encrypt.js": 73,
+    "lib/crl-sign.js": 72,
+    "lib/cmc-build.js": 64,
+    "lib/pki-build.js": 56,
+    "lib/hpke.js": 54,
     "lib/cms-decrypt.js": 53,
+    "lib/cmc-verify.js": 39,
+    "lib/x509-sign.js": 28,
+    "lib/schema-attrcert.js": 26,
+    "lib/tls-cert-compress.js": 19,
+    "lib/schema-crl.js": 10,
+    "lib/schema-ocsp.js": 9,
   };
   var counts = {};
   bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });

@@ -190,6 +190,21 @@ function testExtensionStrictness() {
   // reasonCode must be a DEFINED CRLReason — 7 is unused, 11 is out of range.
   check("reasonCode 7 (unused) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(7n))])] })) === "crl/bad-extension-value");
   check("reasonCode 11 (out of range) rejected", parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(11n))])] })) === "crl/bad-extension-value");
+  // The whitelist that calls 7 undefined is the only gate on the value, and it asks
+  // an own-membership question. A caller who replaces Object.prototype.hasOwnProperty
+  // after this module loaded must not get to answer it: the decoder asks an operation
+  // it took at load, so reasonCode 7 is still refused under the substitution.
+  var realHasOwn = Object.prototype.hasOwnProperty;
+  Object.defineProperty(Object.prototype, "hasOwnProperty",
+    { value: function () { return true; }, writable: true, configurable: true });
+  var reasonUnderSubstitution;
+  try {
+    reasonUnderSubstitution = parseCode(crl({ version: 1n, revoked: [revoked(1n, utc("2026-02-01T00:00:00Z"), [ext("2.5.29.21", b.enumerated(7n))])] }));
+  } finally {
+    Object.defineProperty(Object.prototype, "hasOwnProperty",
+      { value: realHasOwn, writable: true, configurable: true });
+  }
+  check("reasonCode 7 refused with hasOwnProperty replaced", reasonUnderSubstitution === "crl/bad-extension-value");
   // serialNumberHex uses the raw INTEGER content bytes (matches x509, preserves DER sign padding).
   check("high-bit revoked serial hex preserves DER sign padding (0x80 -> 0080)", (function () {
     var m = parse(crl({ version: 1n, revoked: [revoked(0x80n, utc("2026-02-01T00:00:00Z"))], crlExtensions: [ext("2.5.29.20", b.integer(1n))] }));

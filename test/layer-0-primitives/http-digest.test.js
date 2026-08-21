@@ -161,6 +161,22 @@ async function run() {
   // ===== DG-a-*: the answer() security policy fails closed =====
   function ans(www, pol) { var ch = httpDigest.parseChallenge(www, E, "est/digest-bad-challenge"); return httpDigest.answer(ch, { method: "GET", uri: "/x", username: "u", password: "p", policy: { allowMD5: pol && pol.allowMD5, allowLegacyQop: pol && pol.allowLegacyQop, codes: CODES }, rng: function () { return "cc"; } }, E); }
   check("DG-a-unsup. an unsupported offered algorithm is refused, never downgraded", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth", algorithm=SHA-1', {}); }) === "est/digest-unsupported-algorithm");
+  // DG-a-protoalg: the unsupported-algorithm gate asks the algorithm table whether it carries the
+  // name. Asked of an ordinary object literal that question reaches Object.prototype, so an
+  // algorithm named for one of its members answers with a truthy value the table never held --
+  // the refusal is skipped and the descriptor's own fields read as undefined, which surfaces as an
+  // untyped TypeError out of a public path instead of the typed refusal. Every member of
+  // Object.prototype is refused by name.
+  function ansObj(alg) {
+    return httpDigest.answer({ scheme: "Digest", realm: "r", nonce: "n", qop: ["auth"], algorithm: alg,
+      domain: null, opaque: null, stale: false, userhash: false, charset: null },
+    { method: "GET", uri: "/x", username: "u", password: "p", policy: { codes: CODES }, rng: function () { return "cc"; } }, E);
+  }
+  ["constructor", "toString", "valueOf", "hasOwnProperty", "isPrototypeOf", "propertyIsEnumerable",
+    "toLocaleString", "__proto__"].forEach(function (alg) {
+    check("DG-a-protoalg. an algorithm named " + alg + " is refused unsupported, not read off the prototype",
+      codeOf(function () { ansObj(alg); }) === "est/digest-unsupported-algorithm");
+  });
   check("DG-a-md5. MD5 is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', {}); }) === "est/digest-weak-algorithm");
   check("DG-a-md5allow. MD5 is answered when opted in", param(ans('Digest realm="r", nonce="n", qop="auth", algorithm=MD5', { allowMD5: true }), "algorithm") === "MD5");
   check("DG-a-md5default. an absent algorithm defaults to MD5 and is refused by default", codeOf(function () { ans('Digest realm="r", nonce="n", qop="auth"', {}); }) === "est/digest-weak-algorithm");

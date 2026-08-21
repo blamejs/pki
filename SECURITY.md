@@ -177,11 +177,16 @@ security-only patches after the next major releases.
   only the values it reads: a check written as `key.usages.indexOf(usage)` asks
   the runtime, at the moment of the call, which function `indexOf` is, so one
   replaced afterwards reports every usage present and the refusal is never
-  raised. The crypto engine, the JWS signer and every guard therefore take what
-  they decide with at load and invoke it without reading a property of the
-  captured function, so a permission check, a canonical serialization, or the
-  split between a ciphertext and its authentication tag concludes the same thing
-  whenever it runs. The boundary is the process: code that loads before this
+  raised. The crypto engine, the JWS signer, the format decoders and every guard
+  therefore take what they decide with at load and invoke it without reading a
+  property of the captured function, so a permission check, a canonical
+  serialization, or the split between a ciphertext and its authentication tag
+  concludes the same thing whenever it runs. Asking whether a registry carries a
+  name has the same shape, since written out it reads a membership test and the
+  call that applies it, and either answering the wrong way admits a name the
+  registry never held: an undefined OCSP response status, a reserved CRL reason
+  code, a trust bit no root program granted. Those questions are asked through a
+  captured operation as well. The boundary is the process: code that loads before this
   package can replace the built-ins it captures, and nothing inside a library can
   defend against that.
 - **One signature covering several encodings.** A type-3 C509 certificate is a
