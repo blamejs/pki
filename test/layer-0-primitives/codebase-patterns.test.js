@@ -272,14 +272,28 @@ function _stripCommentsAndLiterals(content) {
 // the two cases that make a naive strip swallow real source -- a `/*` written inside a `//` comment
 // or inside a string opens nothing, because by then the scanner is already in another state.
 //
-// Residual: a regex literal containing quote or comment characters can still mislead it, the same
-// limit _stripCommentsAndLiterals carries.
+// Regex literals are consumed as literals, because a quote or a comment opener inside one would
+// otherwise put the scanner into the wrong state for the rest of the file: `var re = /"/;` before a
+// capture import made the import look like string content, and the module fell out of scope. Which
+// of the two meanings a `/` carries is decided by what precedes it, the way the language decides
+// it: after a value it divides, and after an operator, an opening bracket or nothing it begins a
+// literal.
+function _regexAllowedAfter(c, tail) {
+  if (c === "" || "(,=:[!&|?{};+-*%~^<>".indexOf(c) !== -1) return true;
+  // A keyword ends in a letter, so the character before the slash cannot settle these on its own:
+  // `return /"/` and `typeof /x/` both open a literal where `a / b` divides. The preceding TOKEN
+  // decides, and a property of the same name (`o.return`) is not one.
+  return /(?:^|[^\w$.])(?:return|typeof|instanceof|new|delete|void|throw|case|yield|await|in|of|do|else)$/
+    .test(tail);
+}
+
 function _executableSource(src) {
   var out = "";
   var inBlock = false;
   var quote = null;
   var lit = "";
   var esc = false;
+  var lastSig = "";   // last significant character of code, which decides what a `/` means next
   var tpl = [];   // one brace-depth counter per open `${ }`, so nesting returns to the right level
   for (var i = 0; i < src.length; i++) {
     var ch = src[i];
@@ -319,8 +333,23 @@ function _executableSource(src) {
     }
     if (ch === "/" && nx === "/") { while (i < src.length && src[i] !== "\n") i++; out += "\n"; continue; }
     if (ch === "/" && nx === "*") { inBlock = true; i++; continue; }
+    if (ch === "/" && _regexAllowedAfter(lastSig, out.slice(-24).replace(/\s+$/, ""))) {
+      var inClass = false;
+      for (i++; i < src.length; i++) {
+        var rc = src[i];
+        if (rc === "\\") { i++; continue; }
+        if (rc === "\n") break;              // unterminated: stop rather than run on
+        if (rc === "[") inClass = true;
+        else if (rc === "]") inClass = false;
+        else if (rc === "/" && !inClass) break;
+      }
+      out += " ";
+      lastSig = "0";                          // the literal is a value, so a `/` after it divides
+      continue;
+    }
     if (ch === "\"" || ch === "'" || ch === "`") { quote = ch; lit = ""; continue; }
     out += ch;
+    if (ch.trim() !== "") lastSig = ch;
   }
   return out;
 }
