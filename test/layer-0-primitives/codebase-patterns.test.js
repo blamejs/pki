@@ -261,98 +261,24 @@ function _stripCommentsAndLiterals(content) {
   return out;
 }
 
-// The executable text of a source file: comments removed, and every string literal emptied EXCEPT
-// one whose whole content is a name the scope test asks about, which is kept so `require("...")`
-// and `guard["intrinsic"]` stay readable. A literal that merely CONTAINS such a name is still
-// emptied, which is what separates the code from a quotation of it.
+// Does this module take the guard-intrinsic captures? Asked of the LOADED MODULE GRAPH, not of the
+// text. Node records what each module actually required, so this is the fact itself rather than a
+// reading of the source, and no way of writing the import or of hiding one changes the answer: a
+// commented-out or quoted require is not in the graph, and neither is a name that only appears in
+// prose. Deciding it lexically needed a scanner that carried comment, string, template and regex
+// state, and settling a regex against a division still wanted a real parser.
 //
-// It carries block-comment and string state across lines because neither can be settled a line at a
-// time, and guessing from a leading `*` is wrong in both directions: it skips `*/ realCode()`, and
-// it treats an unstarred line in the middle of a comment as code. Carrying the state also settles
-// the two cases that make a naive strip swallow real source -- a `/*` written inside a `//` comment
-// or inside a string opens nothing, because by then the scanner is already in another state.
-//
-// Regex literals are consumed as literals, because a quote or a comment opener inside one would
-// otherwise put the scanner into the wrong state for the rest of the file: `var re = /"/;` before a
-// capture import made the import look like string content, and the module fell out of scope. Which
-// of the two meanings a `/` carries is decided by what precedes it, the way the language decides
-// it: after a value it divides, and after an operator, an opening bracket or nothing it begins a
-// literal.
-function _regexAllowedAfter(c, tail) {
-  if (c === "" || "(,=:[!&|?{};+-*%~^<>".indexOf(c) !== -1) return true;
-  // A keyword ends in a letter, so the character before the slash cannot settle these on its own:
-  // `return /"/` and `typeof /x/` both open a literal where `a / b` divides. The preceding TOKEN
-  // decides, and a property of the same name (`o.return`) is not one.
-  return /(?:^|[^\w$.])(?:return|typeof|instanceof|new|delete|void|throw|case|yield|await|in|of|do|else)$/
-    .test(tail);
+// guard-all deliberately does not re-export the captures, so a DIRECT require is the only way to
+// reach them, and a direct require is exactly what shows up here as a child.
+function _takesCaptures(absPath) {
+  var entry = require.cache[absPath];
+  if (!entry) return false;   // never loaded: it cannot have taken them
+  for (var i = 0; i < entry.children.length; i++) {
+    if (/[\\/]guard-intrinsic\.js$/.test(entry.children[i].filename)) return true;
+  }
+  return false;
 }
 
-function _executableSource(src) {
-  var out = "";
-  var inBlock = false;
-  var quote = null;
-  var lit = "";
-  var esc = false;
-  var lastSig = "";   // last significant character of code, which decides what a `/` means next
-  var tpl = [];   // one brace-depth counter per open `${ }`, so nesting returns to the right level
-  for (var i = 0; i < src.length; i++) {
-    var ch = src[i];
-    var nx = src[i + 1];
-    if (inBlock) {
-      if (ch === "*" && nx === "/") { inBlock = false; i++; }
-      else if (ch === "\n") { out += "\n"; }
-      continue;
-    }
-    if (quote !== null) {
-      if (esc) { lit += ch; esc = false; continue; }
-      if (ch === "\\") { esc = true; continue; }
-      // A template interpolation RUNS. Only the literal segments around it are text, so the scan
-      // leaves literal mode here and reads `${ ... }` as the code it is.
-      if (quote === "`" && ch === "$" && nx === "{") {
-        out += quote + quote;
-        lit = ""; quote = null;
-        tpl.push(0);
-        out += " ";
-        i++;
-        continue;
-      }
-      if (ch === quote) {
-        out += (lit === "./guard-intrinsic" || lit === "intrinsic") ? quote + lit + quote : quote + quote;
-        quote = null; lit = "";
-        continue;
-      }
-      lit += ch;
-      continue;
-    }
-    if (tpl.length > 0) {
-      if (ch === "{") { tpl[tpl.length - 1]++; }
-      else if (ch === "}") {
-        if (tpl[tpl.length - 1] === 0) { tpl.pop(); quote = "`"; lit = ""; out += " "; continue; }
-        tpl[tpl.length - 1]--;
-      }
-    }
-    if (ch === "/" && nx === "/") { while (i < src.length && src[i] !== "\n") i++; out += "\n"; continue; }
-    if (ch === "/" && nx === "*") { inBlock = true; i++; continue; }
-    if (ch === "/" && _regexAllowedAfter(lastSig, out.slice(-24).replace(/\s+$/, ""))) {
-      var inClass = false;
-      for (i++; i < src.length; i++) {
-        var rc = src[i];
-        if (rc === "\\") { i++; continue; }
-        if (rc === "\n") break;              // unterminated: stop rather than run on
-        if (rc === "[") inClass = true;
-        else if (rc === "]") inClass = false;
-        else if (rc === "/" && !inClass) break;
-      }
-      out += " ";
-      lastSig = "0";                          // the literal is a value, so a `/` after it divides
-      continue;
-    }
-    if (ch === "\"" || ch === "'" || ch === "`") { quote = ch; lit = ""; continue; }
-    out += ch;
-    if (ch.trim() !== "") lastSig = ch;
-  }
-  return out;
-}
 
 // ---------------------------------------------------------------------------
 // (a) SPDX header + "use strict" on every source file
@@ -2880,6 +2806,10 @@ function testAsn1ReaderExists() {
 
 function testGuardReadsRuntimeLive() {
   // class: guard-reads-runtime-live
+  // Load the toolkit so the module graph the scope decision reads is populated. Requiring the entry
+  // point pulls in every lib module, and a module the entry point never reaches cannot be taking
+  // the captures in anything that ships.
+  require("../../index.js");
   // A guard decides things, and it decides them with operations it reads from the runtime. Every
   // one of those is an ordinary writable property of a global, so reading it at the moment it runs
   // hands the decision to whoever last wrote it. The failures are silent and in the PASSING
@@ -2978,18 +2908,7 @@ function testGuardReadsRuntimeLive() {
     // what separates the call from a quotation of it: `require("./guard-intrinsic")` keeps its
     // argument, and a string reading `"require('./guard-intrinsic')"` is one literal whose content
     // is something longer, so it collapses and takes the require wording inside it with it.
-    //
-    // The second spelling matches ACCESS to the captures, which is three forms and not one: read as
-    // a property off any receiver (which also covers a plain alias, since binding one has to read
-    // it), read through a computed key, or destructured out of whatever holds it. Matching a call
-    // through the property described only the first, and matching the bare name went too far the
-    // other way, enrolling a module for an unrelated local that happened to share it.
-    //
-    // Whitespace is allowed wherever the language allows it, so `require ("...")` and a call broken
-    // across lines are the same import.
-    var ACCESS = /\.\s*intrinsic\b|\[\s*(["'])intrinsic\1\s*\]|\{[^{}]*\bintrinsic\b[^{}]*\}\s*=/;
-    var exec = _executableSource(src);
-    if (!/require\s*\(\s*["']\.\/guard-intrinsic["']\s*\)/.test(exec) && !ACCESS.test(exec)) return;
+    if (!_takesCaptures(f)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
       // A `*`-led line is the continuation of a block comment. The stripper works one line at a

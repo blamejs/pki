@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.21 — 2026-08-20
+## v0.5.21 — 2026-08-21
 
 The check that holds the crypto engine to load-time captures could be satisfied around, so nine modules had taken the safe primitive at one site and were never held to it anywhere else.
 
@@ -14,7 +14,7 @@ The check that holds the crypto engine to load-time captures could be satisfied 
 
 ### Changed
 
-- The live-read check now recognizes both ways a module takes the captures, rather than only a direct import. This is the enforcement change: a module that adopts one safe primitive is held to the rule everywhere, so a partially converted file cannot sit outside the check indefinitely.
+- Taking the captures has one spelling again. The guard orchestrator no longer re-exports them, so a module reaches them by importing the module that holds them, and the check reads that off the loaded module graph rather than off the text. This is the enforcement change: a module that adopts one safe primitive is held to the rule everywhere, and no way of writing the import, or of writing something that resembles one, changes the answer.
 - The seven modules the widened check surfaced carry a declared count of remaining reads rather than an exemption. A new live read pushes a module past its figure and fails, and converting reads without lowering the figure fails too, so the number keeps naming the real count. A module reaching zero leaves the list and is held to zero.
 
 ### Fixed

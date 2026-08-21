@@ -10,7 +10,7 @@
       "A signing key is classified by asking the value what it is rather than by `instanceof` against a global. The old test read the `Uint8Array` binding at call time, and it answered wrongly in both directions on its own terms: a real typed array from another realm was not one, and an object built on the prototype was."
     ],
     "Changed": [
-      "The live-read check now recognizes both ways a module takes the captures, rather than only a direct import. This is the enforcement change: a module that adopts one safe primitive is held to the rule everywhere, so a partially converted file cannot sit outside the check indefinitely.",
+      "Taking the captures has one spelling again. The guard orchestrator no longer re-exports them, so a module reaches them by importing the module that holds them, and the check reads that off the loaded module graph rather than off the text. This is the enforcement change: a module that adopts one safe primitive is held to the rule everywhere, and no way of writing the import, or of writing something that resembles one, changes the answer.",
       "The seven modules the widened check surfaced carry a declared count of remaining reads rather than an exemption. A new live read pushes a module past its figure and fails, and converting reads without lowering the figure fails too, so the number keeps naming the real count. A module reaching zero leaves the list and is held to zero."
     ],
     "Added": [
