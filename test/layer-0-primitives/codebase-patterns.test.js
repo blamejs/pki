@@ -261,6 +261,50 @@ function _stripCommentsAndLiterals(content) {
   return out;
 }
 
+// The executable text of a source file: comments removed, and every string literal emptied EXCEPT
+// one whose whole content is a module path, which is kept so a `require("...")` stays readable.
+//
+// It carries block-comment and string state across lines because neither can be settled a line at a
+// time, and guessing from a leading `*` is wrong in both directions: it skips `*/ realCode()`, and
+// it treats an unstarred line in the middle of a comment as code. Carrying the state also settles
+// the two cases that make a naive strip swallow real source -- a `/*` written inside a `//` comment
+// or inside a string opens nothing, because by then the scanner is already in another state.
+//
+// Residual: a regex literal containing quote or comment characters can still mislead it, the same
+// limit _stripCommentsAndLiterals carries.
+function _executableSource(src) {
+  var out = "";
+  var inBlock = false;
+  var quote = null;
+  var lit = "";
+  var esc = false;
+  for (var i = 0; i < src.length; i++) {
+    var ch = src[i];
+    var nx = src[i + 1];
+    if (inBlock) {
+      if (ch === "*" && nx === "/") { inBlock = false; i++; }
+      else if (ch === "\n") { out += "\n"; }
+      continue;
+    }
+    if (quote !== null) {
+      if (esc) { lit += ch; esc = false; continue; }
+      if (ch === "\\") { esc = true; continue; }
+      if (ch === quote) {
+        out += lit === "./guard-intrinsic" ? quote + lit + quote : quote + quote;
+        quote = null; lit = "";
+        continue;
+      }
+      lit += ch;
+      continue;
+    }
+    if (ch === "/" && nx === "/") { while (i < src.length && src[i] !== "\n") i++; out += "\n"; continue; }
+    if (ch === "/" && nx === "*") { inBlock = true; i++; continue; }
+    if (ch === "\"" || ch === "'" || ch === "`") { quote = ch; lit = ""; continue; }
+    out += ch;
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------
 // (a) SPDX header + "use strict" on every source file
 // ---------------------------------------------------------------------------
@@ -2872,7 +2916,21 @@ function testGuardReadsRuntimeLive() {
     // The second spelling is matched WITHOUT naming its receiver. `guard` is what every module
     // calls the orchestrator today, and anchoring on that name would rebuild the same hole one
     // rename away: a module binding it as anything else would reach the captures and stay outside.
-    if (!/require\(["']\.\/guard-intrinsic["']\)|\.intrinsic\./.test(src)) return;
+    //
+    // Both are decided from EXECUTABLE source. Read off the raw file, a `.intrinsic.` written in a
+    // comment or a documentation example enrolls a module that never touches the captures, and the
+    // gate then demands a conversion that has nothing to do with what the file does. The two
+    // spellings need different text: the require path IS a string literal, so it is matched with
+    // comments removed and literals intact, while the property access is matched with both removed.
+    // Decided from EXECUTABLE text, so neither spelling can be conjured by prose. A `.intrinsic.`
+    // in a comment or a documentation string enrolls a module that never touches the captures and
+    // the gate then demands conversions unrelated to anything the file does, while a commented-out
+    // or quoted `require` does the same. Emptying every literal except an actual module path is
+    // what separates the call from a quotation of it: `require("./guard-intrinsic")` keeps its
+    // argument, and a string reading `"require('./guard-intrinsic')"` is one literal whose content
+    // is something longer, so it collapses and takes the require wording inside it with it.
+    var exec = _executableSource(src);
+    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(exec) && !/\.intrinsic\./.test(exec)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
       // A `*`-led line is the continuation of a block comment. The stripper works one line at a
