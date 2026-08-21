@@ -2947,8 +2947,14 @@ function testGuardReadsRuntimeLive() {
     // what separates the call from a quotation of it: `require("./guard-intrinsic")` keeps its
     // argument, and a string reading `"require('./guard-intrinsic')"` is one literal whose content
     // is something longer, so it collapses and takes the require wording inside it with it.
+    //
+    // The second spelling matches the PROPERTY, not a call through it. Requiring a trailing dot
+    // described one way of using the captures and missed every other: `var intrinsic =
+    // guard.intrinsic;` and `var { hasOwn } = guard.intrinsic;` both take them and neither has a
+    // dot after `intrinsic`. Reading that property at all is what enrolls a module, whatever it
+    // does with the result afterwards.
     var exec = _executableSource(src);
-    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(exec) && !/\.intrinsic\./.test(exec)) return;
+    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(exec) && !/\.intrinsic\b/.test(exec)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
       // A `*`-led line is the continuation of a block comment. The stripper works one line at a
