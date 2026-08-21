@@ -919,28 +919,29 @@ async function run() {
   // `Array.isArray` answering false routes a trust list past the list door and straight back out
   // by reference, so appending to it mid-call widens the set the chain was built against.
   //
-  // What this vector establishes, precisely: with the array test replaced and the caller emptying
-  // the list mid-call, the call does not come back trusted. It does NOT isolate this module's
-  // captured array test as the cause -- `Array.isArray` is consulted seven more times inside a
-  // verify call by the DER reader, the schema walk and path building, so a global replacement
-  // corrupts those too and the outcome cannot be attributed to one change. The capture is kept on
-  // principle, and this records the honest limit of what the vector shows. The byte-predicate
-  // vector below has no such ambiguity: `util.types.isUint8Array` is consulted zero times through
-  // the live object during a verify call, every consumer having captured it.
-  var realIsArray = Array.isArray;
+  // The anchor list is REDUCED at the door, so the verdict answers for what the caller supplied
+  // when the call was made and a later edit to that array cannot move it. The window is real: the
+  // list is read inside the chain step, which runs after the signature check has been awaited, so a
+  // caller who edits the array between the call and its settlement is editing it mid-call.
+  //
+  // An earlier pair of vectors here replaced `Array.isArray` and claimed to measure this module's
+  // captured test. They could not: the door runs past an await, by which time the replacement has
+  // been restored, so the outcome never depended on it. What is measured now is the copy, in both
+  // directions, which is the property that actually holds the verdict still.
+
+  // Narrowing: the list carried the issuing CA when the call was made, so emptying it afterwards
+  // cannot retroactively unmake the verdict. Held by reference it would find no anchors and report
+  // untrusted, which is a different message's answer.
   var liveAnchors = [caCert];
-  var swappedList;
-  try {
-    Array.isArray = function () { return false; };
-    swappedList = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: liveAnchors, time: T });
-  } finally {
-    Array.isArray = realIsArray;
-  }
+  var shrinking = pki.cmp.verify(raceChain, { signerCert: signerCert, trustAnchors: liveAnchors, time: T });
   liveAnchors.length = 0;
-  var swappedListResult = await swappedList.then(
+  var shrinkResult = await shrinking.then(
     function (r) { return r.trusted; }, function (e) { return "threw " + e.code; });
-  check("23y. emptying the anchor list mid-call does not yield a trusted verdict, with Array.isArray replaced",
-    swappedListResult !== true);
+  check("23y. emptying the anchor list mid-call leaves the verdict the supplied list earned",
+    shrinkResult === true);
+
+  // The widening direction is 23k above, which appends the real CA to a list that started with an
+  // unrelated anchor. This is its complement, and the same copy answers for both.
 
   // HDR carries transactionID = Buffer.alloc(16, 7), so this value matches when the call is made
   // and stops matching the moment it is overwritten.

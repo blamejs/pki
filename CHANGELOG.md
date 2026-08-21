@@ -4,7 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.21 — 2026-08-21
+## v0.5.22 — 2026-08-21
+
+The list tests that decide whether a caller's argument is refused, and which form an extension spec is in, now answer from operations taken at load rather than read when they run.
+
+### Changed
+
+- The DER codec, the PKIX builders and the certificate signer are held to the live-read rule, with the reads each still carries declared as a count that can only fall. Certification-path validation's declared count falls in this release as its list doors convert.
+
+### Fixed
+
+- The DER builder refuses a non-list of children under a captured test. Every structure this toolkit encodes passes through that door, and it was the busiest live read in the library by two orders of magnitude.
+- `pki.x509.sign` picks which form the caller's extension spec is in with a captured test. That choice decides which fields are read and therefore what is signed into the certificate: answering wrongly sends an object down the list arm, and the extensions it carries are never seen. The same test decides whether the spec asserts keyCertSign, which is what makes the issued certificate a CA.
+- The name, key-usage and GeneralNames builders refuse a non-list argument under a captured test, as do certification-path validation's own list doors.
+
+## v0.5.21 — 2026-08-20
 
 The check that holds the crypto engine to load-time captures could be satisfied around, so nine modules had taken the safe primitive at one site and were never held to it anywhere else.
 
