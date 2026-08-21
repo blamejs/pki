@@ -4,6 +4,30 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.25 — 2026-08-21
+
+A key that cannot sign can now prove possession, so an ML-KEM certificate request has a proof to carry instead of no option at all.
+
+### Added
+
+- `pki.crmf.build` emits a `POPOPrivKey` proof of possession under `pop.type` of `keyEncipherment` or `keyAgreement`. `pop.method: 'subsequentMessage'` with `pop.subsequentMessage` of `encrCert` or `challengeResp` declares which follow-up exchange completes the proof (RFC 9810 sec. 5.2.8.3.2 and sec. 5.2.8.3.3); no key material leaves the requester and every key type can produce it. `pop.method: 'encryptedKey'` encloses the requester's private key for the certification authority in a CMS `EnvelopedData` whose content type is `id-ct-encKeyWithID`, taking `pop.privateKey`, `pop.recipients`, `pop.identifier`, and `pop.archive: true`. `pki.cmp.build` carries either in an `ir`, `cr`, or `kur` body.
+- The requested version follows what the message carries: a CMP request whose proof of possession uses `encryptedKey` or `agreeMAC` announces cmp2021(3), which RFC 9810 sec. 5.2.8.3 requires. Before this a request carrying an `encryptedKey` proof went out announcing cmp2000(2), and this toolkit's own reader refused the message it had just built.
+
+### Changed
+
+- `spec.pop` refuses a field it does not recognize. Each rule below is one a caller turns off by naming it, so a misspelled key must not read as an omitted one: `archve: true` would have withheld the archival consent while appearing to give it.
+
+### Security
+
+- An `encryptedKey` proof must enclose the private half of `certTemplate.publicKey`. RFC 4211 sec. 4.2 defines the field as "the encrypted private key matching the public key for which the certificate is to be issued"; enclosing any other key proves possession of something the request never asked to have certified, while every structural check still passes. The public key is derived from the supplied private key through the toolkit's own key engine and compared before the message is built.
+- An `encryptedKey` proof requires `pop.identifier`. The ASN.1 marks `EncKeyWithID.identifier` OPTIONAL and RFC 4211 sec. 4.2.1 then makes it mandatory whenever the purpose is proving possession, for a reason the section states: without it a decrypting agent holds a key it cannot attribute, so an intercepted key can be wrapped in someone else's request and recovered.
+- The two alternatives RFC 4211 sec. 4.2 deprecates as it defines them, `thisMessage` and `dhMAC`, are refused with their successors named. `pki.schema.crmf.parse` still reads both, since a peer may send one.
+- A `keyEncipherment` proof cannot carry a MAC alternative. RFC 4211 sec. 4.2 lists three methods for an encipherment key and introduces the MAC alternatives only in sec. 4.3, "for keyAgreement (only)". The parser already refused such a message; the builder no longer produces one.
+
+### Notes
+
+- The `agreeMAC` proof is not built. It requires the RFC 2875 static Diffie-Hellman shared secret between the requester's key and a certification authority certificate the requester already holds, a classical key-agreement primitive this toolkit does not otherwise carry. `pki.crmf.verifyPop` continues to report an inbound `agreeMAC` as unverified, naming the arm. Use `subsequentMessage`, which any key type can produce.
+
 ## v0.5.24 — 2026-08-21
 
 An ACME certificate download is now bound to the order that asked for it, so a certificate for another key or another name is refused instead of returned as the issued one.

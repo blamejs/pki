@@ -29,10 +29,14 @@ function install() {
     value: function (value) {
       var hadContent = false;
       for (var i = 0; i < this.length; i++) { if (this[i] !== 0) { hadContent = true; break; } }
+      var before = Buffer.from(this);
       var out = realFill.apply(this, arguments);
       var allZeroAfter = true;
       for (var j = 0; j < this.length; j++) { if (this[j] !== 0) { allZeroAfter = false; break; } }
-      if (value === 0) records.push({ hadContent: hadContent, allZeroAfter: allZeroAfter });
+      // `before` lets a caller count how many DISTINCT copies of one secret were cleared. The
+      // argument boundary deep-copies and clears its own copy, whose bytes are identical to a copy a
+      // verb takes internally, so a boolean cannot tell the two apart and a count can.
+      if (value === 0) records.push({ hadContent: hadContent, allZeroAfter: allZeroAfter, before: before.toString("base64") });
       return out;
     },
     writable: true, configurable: true,
@@ -54,6 +58,12 @@ function run(input) {
     work = pki.ocsp.sign({ responderID: "byName", responses: [] }, { cert: b64(p.cert), key: callerKey });
   } else if (p.op === "cmc-build") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }] }, { cert: b64(p.cert), key: callerKey });
+  } else if (p.op === "crmf-encryptedkey-sync-fail") {
+    // An encryptedKey proof whose validation fails SYNCHRONOUSLY, after the arm has taken its own
+    // plaintext copy of the private key. Cleanup attached only to the promise runs on none of these.
+    work = pki.crmf.build({ certReqId: 1n, certTemplate: { subject: [{ commonName: "d" }], publicKey: b64(p.spki) },
+      pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: callerKey, identifier: "d",
+        recipients: [], archive: true } });
   } else if (p.op === "cmc-build-identity") {
     work = pki.cmc.build({ requests: [{ tcr: b64(p.csr) }],
       identityProof: { secret: b64(p.secret), identity: b64(p.identity) } },
