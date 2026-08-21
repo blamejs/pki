@@ -337,6 +337,39 @@ async function testPopoPrivKeyArms() {
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8, identifier: "d",
         recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
 
+  // V9e -- one key has more than one legal SPKI. A P-256 key whose template carries the COMPRESSED
+  // point is the same key as the uncompressed form publicFromPrivate derives, and the signature arm
+  // already accepts such a template, so refusing it here would make one arm of the verb reject what
+  // its sibling builds. The refusal must still hold for a genuinely different key, which the next
+  // check pins so the fix cannot have widened into an acceptance.
+  var ec = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var ecPkcs8 = ec.privateKey.export({ format: "der", type: "pkcs8" });
+  var ecJwk = ec.publicKey.export({ format: "jwk" });
+  var ecX = Buffer.from(ecJwk.x, "base64url"), ecY = Buffer.from(ecJwk.y, "base64url");
+  var compressedPoint = Buffer.concat([Buffer.from([(ecY[ecY.length - 1] & 1) ? 3 : 2]), ecX]);
+  var ecAlgId = asn1.decode(ec.publicKey.export({ format: "der", type: "spki" })).children[0].bytes;
+  var compressedSpki = asn1.build.sequence([asn1.build.raw(ecAlgId), asn1.build.bitString(compressedPoint, 0)]);
+  var compDer = await pki.crmf.build({ certReqId: 1n, certTemplate: tpl(compressedSpki),
+    pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: ecPkcs8, identifier: "device-42",
+      recipients: [{ cert: recip.cert }], archive: true } });
+  check("POP a compressed-point template is the same key as the derived uncompressed one",
+    parse(compDer)[0].popo.method === "encryptedKey");
+  var otherEc = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  check("POP ...and a different P-256 key under the same encoding is still refused",
+    (await codeOf(pki.crmf.build({ certReqId: 1n, certTemplate: tpl(compressedSpki),
+      pop: { type: "keyEncipherment", method: "encryptedKey",
+        privateKey: otherEc.privateKey.export({ format: "der", type: "pkcs8" }), identifier: "d",
+        recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-popo");
+
+  // V9f -- this arm is the one place the toolkit handles a caller's private key as plaintext, so the
+  // copies it makes are cleared. The caller's own buffer is copied rather than borrowed, so it stays
+  // intact; a wipe that reached it would destroy the caller's key.
+  var wipeKey = Buffer.from(kemPkcs8);
+  var wipeBefore = Buffer.from(wipeKey);
+  await pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey", privateKey: wipeKey,
+    identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true }));
+  check("POP the caller's own private key buffer is left intact", wipeKey.equals(wipeBefore));
+
   // V9d -- the arm composes the CMS producer, and that composition is invisible to the caller. A
   // malformed recipient or an algorithm CMS does not carry must still surface in this module's
   // namespace, or `pki.crmf.build`'s documented "throws a typed CrmfError" is untrue for one arm.
