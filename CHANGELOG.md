@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.23 — 2026-08-21
+## v0.5.24 — 2026-08-21
+
+An ACME certificate download is now bound to the order that asked for it, so a certificate for another key or another name is refused instead of returned as the issued one.
+
+### Changed
+
+- `downloadCertificate` requires the material that makes that check possible: `expectedSpki`, `identifiers`, or both. A call supplying neither is refused with `acme/binding-required` rather than returning a certificate nothing looked at. Passing `requireBinding: false` waives the requirement to supply material and never the check on material that is supplied, and the result reports `boundToKey` and `boundToIdentifiers` so an unchecked download cannot read as a checked one. See MIGRATING.md.
+
+### Fixed
+
+- `downloadCertificate` checks the end-entity certificate it received against the order: its subject public key must be the one this order's CSR asked to have certified (`acme/certificate-key-mismatch`), and its identifier set -- subject common names and dNSName / iPAddress subject alternative names -- must equal the order's identifiers (`acme/certificate-identifier-mismatch`). The identifier relation is the one the outbound CSR check already uses, so the two halves of the exchange cannot disagree about what matches. The binding runs on whichever chain is returned, including a chain chosen through `selectChain`.
+
+## v0.5.23 — 2026-08-20
 
 The tables that decide which status codes, revocation reasons, trust bits and extensions this toolkit recognizes now answer from an operation taken at load, and an unsupported HTTP Digest algorithm is refused rather than read off a prototype.
 

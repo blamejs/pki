@@ -18,16 +18,29 @@ var A = require("../helpers/acme-transport");
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
 function jwsProtected(bodyStr) { return JSON.parse(Buffer.from(JSON.parse(bodyStr).protected, "base64").toString("latin1")); }
 
-var ACCT, CSR;
+var ACCT, CSR, CSR_SPKI, ISSUED_PEM;
+// downloadCertificate binds the issued certificate to the order by default. A vector exercising some
+// OTHER download gate (media type, size cap, Link parsing, chain selection) passes this to say so:
+// what it is testing is reached, and the binding it is not testing is declared rather than assumed.
+var NO_BIND = { requireBinding: false };
 async function setup() {
   ACCT = await A.makeAccount();
   var certKp = signing.makeSigner("ec-p256", { cn: "example.org" });   // a DISTINCT key from the account (no key-reuse)
+  CSR_SPKI = certKp.spki;
   CSR = await pki.csr.sign({ subject: "example.org", subjectPublicKey: certKp.spki, extensionRequest: { subjectAltName: [{ dNSName: "example.org" }] } }, { key: certKp.key });
+  // The certificate the happy flow's CA issues: the CSR's own key, the order's own identifier. The
+  // default fixture certificate answers neither, so a flow served that one is not an enrollment this
+  // caller could use -- which is exactly what the download binding now says.
+  var b = pki.asn1.build;
+  var san = b.sequence([b.oid(pki.oid.byName("subjectAltName")),
+    b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from("example.org", "latin1"))]))]);
+  var issued = signing.minimalCert(certKp.spki, { cn: "example.org", exts: [san] });
+  ISSUED_PEM = "-----BEGIN CERTIFICATE-----\n" + issued.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n+$/, "") + "\n-----END CERTIFICATE-----";
 }
 
 // ---- 1 happy full flow ------------------------------------------------------
 async function testHappyFlow() {
-  var s = A.acmeServer({ orderStates: ["pending", "ready", "valid"] });
+  var s = A.acmeServer({ orderStates: ["pending", "ready", "valid"], certPems: [ISSUED_PEM] });
   var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s));
   var acct = await acme.newAccount({ termsOfServiceAgreed: true });
   check("#1 newAccount captures the account URL as kid", acct.url === A.URLS.account && acct.account.status === "valid");
@@ -43,8 +56,12 @@ async function testHappyFlow() {
   check("#1 finalize submits the CSR", finalized.status === "processing" || finalized.status === "valid");
   var valid = await acme.pollOrder(ord.url, { onRetryAfter: function () {} });
   check("#1 pollOrder walks to a terminal (valid) state", valid.status === "valid" && valid.certificate === A.URLS.certificate);
-  var dl = await acme.downloadCertificate(valid.certificate);
+  // The full flow binds for real: the key this order's CSR asked to have certified, and the order's
+  // own identifiers. This is the one download in the suite driven end to end from a finalize, so it
+  // is the one that must reach the certificate through the check rather than around it.
+  var dl = await acme.downloadCertificate(valid.certificate, { expectedSpki: CSR_SPKI, identifiers: valid.identifiers, requireBinding: true });
   check("#1 downloadCertificate returns the leaf + chain", Buffer.isBuffer(dl.certificate) && Array.isArray(dl.chain));
+  check("#1 downloadCertificate reports both bindings as checked", dl.boundToKey === true && dl.boundToIdentifiers === true);
   // every post-account POST is kid-signed with the captured account URL; each carries its own nonce.
   var posts = s.calls.filter(function (c) { return c.method === "POST"; });
   var kidPosts = posts.filter(function (c) { return c.url !== A.URLS.newAccount; });
@@ -220,7 +237,7 @@ async function testOversized() {
   var s = A.acmeServer({ certPems: [big] });
   var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s, { maxResponseBytes: 500 }));
   await acme.newAccount({});
-  check("#10 an oversized certificate download is rejected", (await codeOf(acme.downloadCertificate(A.URLS.certificate))) === "acme/response-too-large");
+  check("#10 an oversized certificate download is rejected", (await codeOf(acme.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/response-too-large");
 }
 
 // ---- 11 pre-push audit hardening (RFC 8555 sec. 6.1/6.4/6.5/7.4, CWE-770) ----
@@ -256,7 +273,7 @@ async function testAuditHardening() {
   var sAccept = A.acmeServer({ certRequiresPemAccept: true });
   var acmeAccept = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sAccept));
   await acmeAccept.newAccount({});
-  var dl = await acmeAccept.downloadCertificate(A.URLS.certificate);
+  var dl = await acmeAccept.downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#11 downloadCertificate resolves against a pem-Accept-gated cert resource", dl.certificate != null);
   var certPost = sAccept.calls.filter(function (c) { return c.url === A.URLS.certificate; })[0];
   check("#11 the recorded cert-download Accept is pem-certificate-chain", String(certPost.headers.accept || "").indexOf("application/pem-certificate-chain") === 0);
@@ -341,11 +358,11 @@ async function testReviewHardening() {
   var sBad = A.acmeServer({ certPems: ["-----BEGIN CERTIFICATE-----\nMIIBLEAF\n-----END CERTIFICATE-----"] });
   var acmeBad = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sBad));
   await acmeBad.newAccount({});
-  check("#12 a downloaded non-X.509 certificate body is rejected", (await codeOf(acmeBad.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  check("#12 a downloaded non-X.509 certificate body is rejected", (await codeOf(acmeBad.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
   var sOk = A.acmeServer({});
   var acmeOk = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sOk));
   await acmeOk.newAccount({});
-  check("#12 a real downloaded certificate is parsed + returned as DER", Buffer.isBuffer((await acmeOk.downloadCertificate(A.URLS.certificate)).certificate));
+  check("#12 a real downloaded certificate is parsed + returned as DER", Buffer.isBuffer((await acmeOk.downloadCertificate(A.URLS.certificate, NO_BIND)).certificate));
 
   // (b) an HTTP-date Retry-After delay is computed at the RESPONSE RECEIPT time (an injectable clock),
   // not collapsed to 1s: the surfaced delay reflects (date - receipt).
@@ -451,7 +468,7 @@ async function testReadyAndRelativeRedirect() {
   var sCt = A.acmeServer({ certContentType: "text/plain" });
   var acmeCt = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sCt));
   await acmeCt.newAccount({});
-  check("#13 a wrong cert media type fails closed", (await codeOf(acmeCt.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  check("#13 a wrong cert media type fails closed", (await codeOf(acmeCt.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
 
   // (g) caller PAYLOAD options cannot override the client-owned JWS session fields (url / nonce): the
   // protected header stays bound to the actual request, not a value spread from a lower-level config.
@@ -486,12 +503,12 @@ async function testReadyAndRelativeRedirect() {
   var sLook = A.acmeServer({ certContentType: "application/pem-certificate-chain-evil" });
   var acmeLook = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sLook));
   await acmeLook.newAccount({});
-  check("#13 a lookalike cert media type fails closed", (await codeOf(acmeLook.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  check("#13 a lookalike cert media type fails closed", (await codeOf(acmeLook.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
   // and the exact token WITH parameters is accepted.
   var sParam = A.acmeServer({ certContentType: "application/pem-certificate-chain; charset=utf-8" });
   var acmeParam = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sParam));
   await acmeParam.newAccount({});
-  check("#13 the exact media type with parameters is accepted", Buffer.isBuffer((await acmeParam.downloadCertificate(A.URLS.certificate)).certificate));
+  check("#13 the exact media type with parameters is accepted", Buffer.isBuffer((await acmeParam.downloadCertificate(A.URLS.certificate, NO_BIND)).certificate));
 
   // (k) the mTLS credential is bound to the CONFIGURED directory origin: a directory-advertised
   // cross-origin URL (a compromised/redirected directory) does NOT receive the client certificate/key,
@@ -672,12 +689,12 @@ async function testReadyAndRelativeRedirect() {
   var sText = A.acmeServer({ certPems: ["Here is your certificate:\n" + chainPem] });
   var acmeText = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sText));
   await acmeText.newAccount({});
-  check("#13 explanatory text outside the PEM chain fails closed", (await codeOf(acmeText.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  check("#13 explanatory text outside the PEM chain fails closed", (await codeOf(acmeText.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
   // a clean chain (whitespace-separated PEM only) still downloads.
   var sClean = A.acmeServer({ certPems: [chainPem] });
   var acmeClean = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sClean));
   await acmeClean.newAccount({});
-  check("#13 a clean PEM chain downloads", Buffer.isBuffer((await acmeClean.downloadCertificate(A.URLS.certificate)).certificate));
+  check("#13 a clean PEM chain downloads", Buffer.isBuffer((await acmeClean.downloadCertificate(A.URLS.certificate, NO_BIND)).certificate));
 
   // (x) an ERROR status from newNonce (a rate limit) fails closed rather than using the error's nonce.
   var sBadNonce = A.acmeServer({ newNonceStatus: 429 });
@@ -912,6 +929,151 @@ async function testRenewalWindow() {
   check("#15 RW-22 a matching-window previous with a malformed selectedTime is rejected", (await codeOf(clientAt(sReuse, T).renewalWindow(certDer, { previous: { suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, selectedTime: "not-a-date" } }))) === "acme/bad-input");
 }
 
+// ---- 17 the downloaded certificate answers THIS order (RFC 8555 sec. 7.4 / sec. 7.4.2) ------
+// The outbound direction already binds: finalize refuses a CSR whose identifier set is not the
+// order's (acme/csr-identifier-mismatch) and refuses the account key (acme/key-reuse). Nothing bound
+// the INBOUND direction, so a certificate URL answering with any certificate at all was installed as
+// "the certificate for this order" -- a different key (one the caller does not hold) or a different
+// name. The sibling client fails closed on the same question: pki.est picks the issued certificate by
+// public-key match against the submitted CSR and refuses when none matches.
+async function testIssuedCertificateBinding() {
+  function toPem(der) { return "-----BEGIN CERTIFICATE-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n+$/, "") + "\n-----END CERTIFICATE-----"; }
+  async function withAccount(s) {
+    var c = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s));
+    await c.newAccount({ termsOfServiceAgreed: true });
+    return c;
+  }
+  // The leaves are built directly rather than issued: the binding under test reads the subject public
+  // key and the subjectAltName, so a real chain would add nothing the check consults.
+  var b = pki.asn1.build;
+  function sanExt(dns) {
+    return b.sequence([b.oid(pki.oid.byName("subjectAltName")),
+      b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from(dns, "latin1"))]))]);
+  }
+  var ca = signing.makeSigner("ec-p256", { cn: "Binding Test CA" });
+  // The leaf the caller ASKED for: its own key, its own name.
+  var mineKp = signing.makeSigner("ec-p256", { cn: "example.org", exts: [sanExt("example.org")] });
+  var mine = { spki: mineKp.spki }, myLeaf = mineKp.cert;
+  // A leaf for the SAME name under a key the caller does not hold.
+  var otherKp = signing.makeSigner("ec-p256", { cn: "example.org", exts: [sanExt("example.org")] });
+  var otherKeyLeaf = otherKp.cert, otherSpki = otherKp.spki;
+  // A leaf for the caller's OWN key under a name the order never asked for.
+  var otherNameLeaf = signing.minimalCert(mine.spki, { cn: "victim.example", exts: [sanExt("victim.example")] });
+  var caPem = toPem(ca.cert);
+  var ORDER_IDS = [{ type: "dns", value: "example.org" }];
+  function serve(leafDer) { return A.acmeServer({ certPems: [toPem(leafDer), caPem] }); }
+
+  // BD-1 the binding material is REQUIRED by default: a download that cannot be checked is refused
+  // rather than returned unchecked, so an operator never installs a certificate nothing looked at.
+  var acme1 = await withAccount(serve(myLeaf));
+  check("#17 BD-1 a download with no binding material is refused by default",
+    (await codeOf(acme1.downloadCertificate(A.URLS.certificate))) === "acme/binding-required");
+
+  // BD-2 the certificate the order asked for passes, and the verdict SAYS what it checked.
+  var acme2 = await withAccount(serve(myLeaf));
+  var r2 = await acme2.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS });
+  check("#17 BD-2 the asked-for certificate downloads", r2.certificate.equals(myLeaf));
+  check("#17 BD-2 the verdict reports both bindings as checked", r2.boundToKey === true && r2.boundToIdentifiers === true);
+
+  // BD-3 a certificate for a DIFFERENT key is refused -- the caller cannot use it, and installing it
+  // would take a working service down while the CA's answer looked successful.
+  var acme3 = await withAccount(serve(otherKeyLeaf));
+  check("#17 BD-3 a certificate for another key is refused",
+    (await codeOf(acme3.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/certificate-key-mismatch");
+
+  // BD-4 a certificate for a DIFFERENT name is refused, even though its key is the caller's.
+  var acme4 = await withAccount(serve(otherNameLeaf));
+  check("#17 BD-4 a certificate for another identifier is refused",
+    (await codeOf(acme4.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/certificate-identifier-mismatch");
+
+  // BD-5 each half stands alone: supplying only one still checks that one.
+  var acme5a = await withAccount(serve(otherKeyLeaf));
+  check("#17 BD-5 expectedSpki alone still refuses another key",
+    (await codeOf(acme5a.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, requireBinding: false }))) === "acme/certificate-key-mismatch");
+  var acme5b = await withAccount(serve(otherNameLeaf));
+  check("#17 BD-5 identifiers alone still refuses another name",
+    (await codeOf(acme5b.downloadCertificate(A.URLS.certificate, { identifiers: ORDER_IDS, requireBinding: false }))) === "acme/certificate-identifier-mismatch");
+
+  // BD-6 requireBinding:false waives the REQUIREMENT to supply material, never the check on material
+  // that IS supplied -- so the waiver cannot become the place a mismatch hides. With nothing supplied
+  // the verdict says so rather than reading as a pass.
+  var acme6 = await withAccount(serve(otherNameLeaf));
+  var r6 = await acme6.downloadCertificate(A.URLS.certificate, { requireBinding: false });
+  check("#17 BD-6 an explicit waiver downloads", r6.certificate.equals(otherNameLeaf));
+  check("#17 BD-6 the verdict reports both bindings as unchecked", r6.boundToKey === false && r6.boundToIdentifiers === false);
+  var acme6b = await withAccount(serve(otherKeyLeaf));
+  check("#17 BD-6 a waiver does not disable a supplied check",
+    (await codeOf(acme6b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS, requireBinding: false }))) === "acme/certificate-key-mismatch");
+
+  // BD-7 the binding holds on the chain that is RETURNED, not only the primary one. A selectChain
+  // caller ends up with an alternate, and an alternate is fetched from a URL the server named.
+  var s7 = A.acmeServer({ certPems: [toPem(myLeaf), caPem], alternateChains: [[toPem(myLeaf), caPem]] });
+  var acme7 = await withAccount(s7);
+  var r7 = await acme7.downloadCertificate(A.URLS.certificate,
+    { expectedSpki: mine.spki, identifiers: ORDER_IDS, selectChain: function (c) { return c.certificates.length === 2; } });
+  check("#17 BD-7 a selected chain is bound too", r7.certificate.equals(myLeaf) && r7.boundToKey === true);
+
+  // BD-8a the key the certificate is checked against is the one supplied at the call, not whatever the
+  // caller's Buffer holds when the response lands. The comparison happens after a network round trip,
+  // so a retained reference would let a caller rewrite the answer mid-flight: here the buffer is
+  // overwritten with the OTHER key's bytes while the certificate request is outstanding, and the
+  // correct certificate must still be accepted.
+  var mutable = Buffer.from(mine.spki);
+  var sMut = serve(myLeaf);
+  var baseTransport = A.clientOpts(ACCT, sMut).transport;
+  var acmeMut = pki.acme.client(A.URLS.directory, Object.assign(A.clientOpts(ACCT, sMut), {
+    transport: function (req) {
+      // Rewrite the caller's buffer at the moment the certificate request goes out.
+      if (String(req.url).indexOf("/cert/") !== -1) otherSpki.copy(mutable);
+      return baseTransport(req);
+    },
+  }));
+  await acmeMut.newAccount({ termsOfServiceAgreed: true });
+  var rMut = await acmeMut.downloadCertificate(A.URLS.certificate, { expectedSpki: mutable, identifiers: ORDER_IDS });
+  check("#17 BD-8a a caller Buffer rewritten mid-flight does not change what the certificate is checked against",
+    rMut.certificate.equals(myLeaf) && rMut.boundToKey === true);
+
+  // BD-8b the identifier sets are asked `set[key]`, so against an ordinary object that question would
+  // reach Object.prototype: a name planted there answers for an identifier neither side carried, and
+  // since the comparison is set-equality, a planted extra can hide a real mismatch by making the
+  // certificate's own extra name read as one the order wanted. The sets are built with no prototype,
+  // so a planted name answers for nothing.
+  //
+  // What this vector can assert END TO END is that the download does not succeed under a polluted
+  // prototype. The refusal an operator sees arrives EARLIER than the comparison -- the unknown-option
+  // door refuses any options bag carrying a name the verb does not define, inherited names included --
+  // so the pollution never reaches the binding through a client verb. The null prototype is therefore
+  // defense in depth here rather than the only thing standing in the way, and it is what the
+  // comparison would rely on if a future caller reached it another way. The planted names are chosen
+  // to be exactly the two keys that would flip this comparison.
+  var plantedA = "dns:victim.example", plantedB = "dns:example.org";
+  var acmePlant = await withAccount(serve(otherNameLeaf));
+  Object.defineProperty(Object.prototype, plantedA, { value: true, writable: true, configurable: true });
+  Object.defineProperty(Object.prototype, plantedB, { value: true, writable: true, configurable: true });
+  var plantedCode;
+  try {
+    plantedCode = await codeOf(acmePlant.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }));
+  } finally {
+    delete Object.prototype[plantedA];
+    delete Object.prototype[plantedB];
+  }
+  check("#17 BD-8b a download under a polluted Object.prototype does not succeed (got " + plantedCode + ")",
+    plantedCode !== "NO-THROW");
+  // And the comparison's own sets carry no prototype, which is what makes the planted keys inert if a
+  // caller ever reaches the binding without passing an options bag through the door above.
+  check("#17 BD-8b the identifier comparison is not reachable through Object.prototype",
+    (await codeOf(acmePlant.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/certificate-identifier-mismatch");
+
+  // BD-8 bad binding input is a config error, refused before the certificate is read.
+  var acme8 = await withAccount(serve(myLeaf));
+  check("#17 BD-8 a non-Buffer expectedSpki is refused",
+    (await codeOf(acme8.downloadCertificate(A.URLS.certificate, { expectedSpki: "nope", identifiers: ORDER_IDS }))) === "acme/bad-input");
+  check("#17 BD-8 an empty identifier array is refused",
+    (await codeOf(acme8.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [] }))) === "acme/bad-input");
+  check("#17 BD-8 a non-boolean requireBinding is refused",
+    (await codeOf(acme8.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS, requireBinding: "no" }))) === "acme/bad-input");
+}
+
 // ---- 16 alternate-chain selection (RFC 8555 sec. 7.4.2 / RFC 8288 Link) ------
 async function testAlternateChains() {
   function toPem(der) { return "-----BEGIN CERTIFICATE-----\n" + der.toString("base64").replace(/(.{64})/g, "$1\n").replace(/\n+$/, "") + "\n-----END CERTIFICATE-----"; }
@@ -926,74 +1088,74 @@ async function testAlternateChains() {
   function altCalls(s) { return s.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/cert/1/alt/") === 0; }).length; }
 
   // AL-1 no Link -> the primary chain, empty alternates.
-  var r1 = await (await withAccount(A.acmeServer({ certPems: primary }))).downloadCertificate(A.URLS.certificate);
+  var r1 = await (await withAccount(A.acmeServer({ certPems: primary }))).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-1 no Link resolves the primary chain with empty alternates", r1.certificate.equals(leafDer) && r1.alternates.length === 0);
 
   // AL-2 a well-formed Link is LISTED but not fetched without a predicate.
   var s2 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
-  var r2 = await (await withAccount(s2)).downloadCertificate(A.URLS.certificate);
+  var r2 = await (await withAccount(s2)).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-2 a Link alternate is listed but not fetched", r2.alternates.length === 1 && r2.alternates[0] === ALT0 && altCalls(s2) === 0);
 
   // AL-3 a predicate selects the CA-B alternate (both cert URLs POST-as-GET'd, same leaf).
   var s3 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
-  var r3 = await (await withAccount(s3)).downloadCertificate(A.URLS.certificate, { selectChain: pickB });
+  var r3 = await (await withAccount(s3)).downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB });
   check("#16 AL-3 selectChain picks the CA-B alternate", r3.certificate.equals(leafDer) && r3.certificates[r3.certificates.length - 1].equals(rootBDer) && altCalls(s3) === 1);
 
   // AL-4 a predicate that matches nothing fails closed.
   var acme4 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
-  check("#16 AL-4 no matching candidate fails closed", (await codeOf(acme4.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/no-matching-chain");
+  check("#16 AL-4 no matching candidate fails closed", (await codeOf(acme4.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return false; } }))) === "acme/no-matching-chain");
 
   // AL-5 rel is a WHOLE-token, case-insensitive match (no substring); the param name folds too.
-  async function altCount(link) { return (await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link }))).downloadCertificate(A.URLS.certificate)).alternates.length; }
+  async function altCount(link) { return (await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link }))).downloadCertificate(A.URLS.certificate, NO_BIND)).alternates.length; }
   check("#16 AL-5 a multi-token rel matches alternate", (await altCount("<" + ALT0 + ">;rel=\"alternate index\"")) === 1);
   check("#16 AL-5 a substring rel does not match", (await altCount("<" + ALT0 + ">;rel=\"alternateX\"")) === 0 && (await altCount("<" + ALT0 + ">;rel=\"xalternate\"")) === 0);
   check("#16 AL-5 the rel token and param name are case-insensitive", (await altCount("<" + ALT0 + ">;Rel=\"ALTERNATE\"")) === 1);
 
   // AL-6 a malformed Link fails closed WHEN alternates are requested, is ignored otherwise; http target fails closed.
   var acme6a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }));
-  check("#16 AL-6 a malformed Link with selection fails closed", (await codeOf(acme6a.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
-  var r6b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-6 a malformed Link with selection fails closed", (await codeOf(acme6a.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB }))) === "acme/bad-link");
+  var r6b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" }))).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-6 a malformed Link without selection is ignored", r6b.certificate.equals(leafDer) && r6b.alternates.length === 0);
   var acme6c = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<http://acme.example/cert/1/alt/0>;rel=\"alternate\"" }));
-  check("#16 AL-6 an http alternate target fails closed", (await codeOf(acme6c.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  check("#16 AL-6 an http alternate target fails closed", (await codeOf(acme6c.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB }))) === "acme/bad-link");
   // A cross-origin https alternate is an SSRF vector -- an untrusted Link header MUST NOT steer the account-key
   // -signed POST-as-GET to another origin. It fails closed under selection, and is not even listed without one.
   var xLink = "<https://evil.example/cert/1/alt/0>;rel=\"alternate\"";
   var acme6d = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }));
-  check("#16 AL-6 a cross-origin https alternate fails closed under selection", (await codeOf(acme6d.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
-  var r6e = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }))).downloadCertificate(A.URLS.certificate);
+  check("#16 AL-6 a cross-origin https alternate fails closed under selection", (await codeOf(acme6d.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB }))) === "acme/bad-link");
+  var r6e = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: xLink }))).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-6 a cross-origin alternate is not listed without selection", r6e.certificate.equals(leafDer) && r6e.alternates.length === 0);
 
   // AL-7 the alternate-fetch budget is bounded (CWE-770): 20 advertised, cap 4 -> reject after exactly 4 fetches.
   var many = []; for (var i = 0; i < 20; i++) many.push(altB);
   var s7 = A.acmeServer({ certPems: primary, alternateChains: many });
   var acme7 = await withAccount(s7);
-  check("#16 AL-7 the alternate fetch budget is enforced", (await codeOf(acme7.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; }, maxAlternates: 4 }))) === "acme/too-many-alternates");
+  check("#16 AL-7 the alternate fetch budget is enforced", (await codeOf(acme7.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return false; }, maxAlternates: 4 }))) === "acme/too-many-alternates");
   check("#16 AL-7 exactly maxAlternates alternates were fetched", altCalls(s7) === 4);
 
   // AL-8 a fetched alternate inherits every download gate (media type, size).
   var acme8a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], altContentType: "text/plain" }));
-  check("#16 AL-8 a wrong-media-type alternate fails closed", (await codeOf(acme8a.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-certificate-chain");
+  check("#16 AL-8 a wrong-media-type alternate fails closed", (await codeOf(acme8a.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return false; } }))) === "acme/bad-certificate-chain");
   var bigRoot = "-----BEGIN CERTIFICATE-----\n" + "A".repeat(2000) + "\n-----END CERTIFICATE-----";
   var acme8b = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({ certPems: [leafPem], alternateChains: [[leafPem, bigRoot]] }), { maxResponseBytes: 1200 }));
   await acme8b.newAccount({ termsOfServiceAgreed: true });
-  check("#16 AL-8 an oversize alternate is rejected", (await codeOf(acme8b.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/response-too-large");
+  check("#16 AL-8 an oversize alternate is rejected", (await codeOf(acme8b.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return false; } }))) === "acme/response-too-large");
 
   // AL-9 same-leaf invariant, URL dedup, predicate-throw propagation.
   var acme9a = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [[otherLeafPem, rootBPem]] }));
-  check("#16 AL-9 an alternate with a different leaf is rejected", (await codeOf(acme9a.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-alternate");
+  check("#16 AL-9 an alternate with a different leaf is rejected", (await codeOf(acme9a.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return false; } }))) === "acme/bad-alternate");
   var s9b = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\", <" + ALT0 + ">;rel=\"alternate\"" });
-  var r9b = await (await withAccount(s9b)).downloadCertificate(A.URLS.certificate, { selectChain: pickB });
+  var r9b = await (await withAccount(s9b)).downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB });
   check("#16 AL-9 a duplicate alternate URL is fetched once", r9b.certificates[r9b.certificates.length - 1].equals(rootBDer) && altCalls(s9b) === 1);
   var acme9c = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
-  check("#16 AL-9 a throwing selectChain propagates (not swallowed)", (await codeOf(acme9c.downloadCertificate(A.URLS.certificate, { selectChain: function () { throw new Error("boom"); } }))) === "RAW:boom");
+  check("#16 AL-9 a throwing selectChain propagates (not swallowed)", (await codeOf(acme9c.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { throw new Error("boom"); } }))) === "RAW:boom");
 
   // AL-10 both header shapes parse: node's comma-joined string AND an injected array of Link values.
   var joined = "<" + A.URLS.certificate + "/alt/0>;rel=\"alternate\", <" + A.URLS.certificate + "/alt/1>;rel=\"alternate\"";
-  var r10a = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: joined }))).downloadCertificate(A.URLS.certificate);
+  var r10a = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: joined }))).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-10 a comma-joined Link string parses both alternates", r10a.alternates.length === 2);
   var arr = ["<" + A.URLS.certificate + "/alt/0>;rel=\"alternate\"", "<" + A.URLS.certificate + "/alt/1>;rel=\"alternate\""];
-  var r10b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: arr }))).downloadCertificate(A.URLS.certificate);
+  var r10b = await (await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB, altB], certLinkHeader: arr }))).downloadCertificate(A.URLS.certificate, NO_BIND);
   check("#16 AL-10 an array of Link headers parses both alternates", r10b.alternates.length === 2);
 
   // AL-11 RFC 8288 tokenizer edges: a comma or semicolon inside a quoted param value is not a separator; a
@@ -1005,46 +1167,46 @@ async function testAlternateChains() {
 
   // AL-11b a certificate response with NO content-type (a non-conforming server) fails the media-type gate.
   var acme11b = await withAccount(A.acmeServer({ certPems: primary, certNoContentType: true }));
-  check("#16 AL-11 a missing content-type on the chain fails closed", (await codeOf(acme11b.downloadCertificate(A.URLS.certificate))) === "acme/bad-certificate-chain");
+  check("#16 AL-11 a missing content-type on the chain fails closed", (await codeOf(acme11b.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/bad-certificate-chain");
 
   // AL-12 malformed-header edges fail closed under selection: an unterminated quote, and an over-cap header.
-  function codeForLink(link) { return withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link })).then(function (a) { return codeOf(a.downloadCertificate(A.URLS.certificate, { selectChain: pickB })); }); }
+  function codeForLink(link) { return withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: link })).then(function (a) { return codeOf(a.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB })); }); }
   check("#16 AL-12 an unterminated quote fails closed", (await codeForLink("<" + ALT0 + ">;rel=\"alternate")) === "acme/bad-link");
   check("#16 AL-12 an over-cap Link header fails closed", (await codeForLink("<" + ALT0 + ">;title=\"" + "a".repeat(8300) + "\";rel=\"alternate\"")) === "acme/bad-link");
 
   // AL-13 selectChain must be a function; a predicate that accepts the PRIMARY returns it without fetching an alternate.
   var acme13 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB] }));
-  check("#16 AL-13 a non-function selectChain is rejected", (await codeOf(acme13.downloadCertificate(A.URLS.certificate, { selectChain: 5 }))) === "acme/bad-input");
+  check("#16 AL-13 a non-function selectChain is rejected", (await codeOf(acme13.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: 5 }))) === "acme/bad-input");
   var s13 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
-  var r13 = await (await withAccount(s13)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
+  var r13 = await (await withAccount(s13)).downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return true; } });
   check("#16 AL-13 a predicate accepting the primary skips the alternate fetch", r13.certificate.equals(leafDer) && altCalls(s13) === 0);
 
   // AL-14 the Link header size cap is AGGREGATE, not per-field: an array of fields each under the per-field
   // size but summing over the cap fails closed (CWE-770 -- a duplicate/injected Link array cannot amplify).
   var bigField = "<" + ALT0 + ">;rel=\"alternate\";title=\"" + "a".repeat(5000) + "\"";
   var acme14 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: [bigField, bigField] }));
-  check("#16 AL-14 the Link header cap is aggregate across fields", (await codeOf(acme14.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  check("#16 AL-14 the Link header cap is aggregate across fields", (await codeOf(acme14.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB }))) === "acme/bad-link");
 
   // AL-15 a Link parameter not introduced by ';' (RFC 8288: <URI> *(";" param)) is malformed -> fails closed.
   var acme15 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">rel=\"alternate\"" }));
-  check("#16 AL-15 a Link param not preceded by a semicolon fails closed", (await codeOf(acme15.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  check("#16 AL-15 a Link param not preceded by a semicolon fails closed", (await codeOf(acme15.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB }))) === "acme/bad-link");
 
   // AL-16 an UNQUOTED param value must be a single token (RFC 8288 / RFC 7230): whitespace in an unquoted rel
   // (rel=alternate garbage) is malformed and MUST NOT be split-and-matched -- a quoted list is the valid form.
   var acme16 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=alternate garbage" }));
-  check("#16 AL-16 whitespace in an unquoted param value fails closed", (await codeOf(acme16.downloadCertificate(A.URLS.certificate, { selectChain: pickB }))) === "acme/bad-link");
+  check("#16 AL-16 whitespace in an unquoted param value fails closed", (await codeOf(acme16.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: pickB }))) === "acme/bad-link");
   check("#16 AL-16 a well-formed UNQUOTED rel token still matches", (await altCount("<" + ALT0 + ">;rel=alternate")) === 1);
 
   // AL-17 the primary is evaluated BEFORE a malformed Link is rejected: if selectChain accepts the primary, a
   // malformed alternate Link (which is never needed) does not fail the download.
   var s17 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "not-a-link;rel=\"alternate\"" });
-  var r17 = await (await withAccount(s17)).downloadCertificate(A.URLS.certificate, { selectChain: function () { return true; } });
+  var r17 = await (await withAccount(s17)).downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return true; } });
   check("#16 AL-17 a matching primary is returned despite a malformed Link", r17.certificate.equals(leafDer) && altCalls(s17) === 0);
 
   // AL-18 empty Link fields count toward the aggregate cap: a huge array of empty fields cannot amplify parse work.
   var empties = []; for (var e18 = 0; e18 < 10000; e18++) empties.push("");
   var acme18 = await withAccount(A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: empties }));
-  check("#16 AL-18 many empty Link fields hit the aggregate cap", (await codeOf(acme18.downloadCertificate(A.URLS.certificate, { selectChain: function () { return false; } }))) === "acme/bad-link");
+  check("#16 AL-18 many empty Link fields hit the aggregate cap", (await codeOf(acme18.downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: function () { return false; } }))) === "acme/bad-link");
 
   // AL-19 a relative Link URI carrying whitespace that URL parsing would REPAIR is rejected, not silently
   // resolved (RFC 3986: a URI-reference has no raw whitespace) -- mirrors the client's own URL canonicality gate.
@@ -1084,7 +1246,7 @@ async function testAlternateChains() {
 
   // AL-31 an ASYNC selectChain (returns a Promise) is awaited, not treated as always-truthy.
   var s31 = A.acmeServer({ certPems: primary, alternateChains: [altB] });
-  var r31 = await (await withAccount(s31)).downloadCertificate(A.URLS.certificate, { selectChain: async function (c) { return c.certificates[c.certificates.length - 1].equals(rootBDer); } });
+  var r31 = await (await withAccount(s31)).downloadCertificate(A.URLS.certificate, { requireBinding: false, selectChain: async function (c) { return c.certificates[c.certificates.length - 1].equals(rootBDer); } });
   check("#16 AL-31 an async selectChain is awaited", r31.certificates[r31.certificates.length - 1].equals(rootBDer) && r31.certificate.equals(leafDer));
 
   // AL-32 a rel="alternate" link with an anchor param has a DIFFERENT context (RFC 8288 sec. 3.2): anchored to
@@ -1141,7 +1303,7 @@ async function testAlternateChains() {
   // AL-47 a same-origin IPv6-literal TARGET authority is valid (a bracket is legal in an authority, only invalid
   // in a path): an IPv6-hosted cert URL advertising a same-origin IPv6 alternate resolves it.
   var s47 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<https://[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
-  var r47 = await (await withAccount(s47)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
+  var r47 = await (await withAccount(s47)).downloadCertificate("https://[2001:db8::1]/cert/1", { requireBinding: false, selectChain: pickB });
   check("#16 AL-47 a same-origin IPv6 target authority resolves the alternate", r47.certificates[r47.certificates.length - 1].equals(rootBDer));
   // AL-48 a valid authority IP-literal does not license a bracket elsewhere: "https://[::1]/cert/[alt]" carries a
   // stray bracket in the path and fails closed.
@@ -1160,7 +1322,7 @@ async function testAlternateChains() {
   // AL-53 a scheme-relative (network-path) reference with an IP-literal authority ("//[2001:db8::1]/...", RFC 3986
   // sec. 4.2) is a valid same-origin alternate against an IPv6-hosted cert, and resolves.
   var s53 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<//[2001:db8::1]/cert/1/alt/0>;rel=\"alternate\"" });
-  var r53 = await (await withAccount(s53)).downloadCertificate("https://[2001:db8::1]/cert/1", { selectChain: pickB });
+  var r53 = await (await withAccount(s53)).downloadCertificate("https://[2001:db8::1]/cert/1", { requireBinding: false, selectChain: pickB });
   check("#16 AL-53 a scheme-relative IPv6-authority alternate resolves", r53.certificates[r53.certificates.length - 1].equals(rootBDer));
   // AL-54 a reference with an EMPTY authority ("////acme.example/..." or "///x") fails closed: WHATWG would repair
   // it by promoting a path segment to the host (here back to the cert's own origin), so a malformed raw reference
@@ -1232,7 +1394,7 @@ async function testAlternateChains() {
   // download URL that already carries the encoded form -- "'" is a reserved sub-delim, not equal to its escape
   // (RFC 3986 sec. 6.2.2.2), so the resolution repaired it and the anchor is an unreliable context (skipped).
   var s74 = A.acmeServer({ certPems: primary, alternateChains: [altB], certLinkHeader: "<" + ALT0 + ">;rel=\"alternate\";anchor=\"?x='\"" });
-  var r74 = await (await withAccount(s74)).downloadCertificate("https://acme.example/cert/1?x=%27");
+  var r74 = await (await withAccount(s74)).downloadCertificate("https://acme.example/cert/1?x=%27", NO_BIND);
   check("#16 AL-74 a re-encoded-query anchor does not spoof the certificate context", r74.alternates.length === 0);
   // AL-75 a non-numeric port ("host:bad") is malformed (RFC 3986 port = *DIGIT), not merely non-canonical, so a
   // target carrying one FAILS the whole header closed (a structural reject before resolution), not skipped.
@@ -1271,6 +1433,7 @@ async function main() {
   await testNewAuthz();
   await testRenewalWindow();
   await testAlternateChains();
+  await testIssuedCertificateBinding();
   await testRemainingVerbs();
   await testRenewalInfo();
   await testOversized();

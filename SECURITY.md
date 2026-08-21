@@ -978,6 +978,19 @@ security-only patches after the next major releases.
   SubjectAltName (RFC 8737), a wildcard is one leading label on a `dns`
   identifier only, and the ARI certID preserves the serial's DER sign-padding
   byte so it matches what the CA computes (RFC 9773).
+- **ACME issued-certificate binding (CWE-345).** RFC 8555 states nothing about
+  what the certificate resource may answer with, so the certificate an ACME
+  client installs is bound to the order it placed by the client rather than by
+  the wire. `downloadCertificate` checks the returned end-entity certificate
+  against the order in both respects: it must certify the public key that order's
+  CSR asked to have certified, and its identifier set — subject common names plus
+  dNSName and iPAddress subject alternative names — must equal the order's
+  identifiers, under the same relation the outbound CSR check uses so the two
+  halves cannot disagree. Both are required by default; a download made without
+  them is refused rather than returned unchecked, and the result reports which
+  bindings ran so a waived one cannot read as a performed one. The check covers
+  whichever chain is returned, an alternate chosen through `selectChain`
+  included.
 - **ACME client transport is fail-closed on the wire (CWE-295 / CWE-319 /
   CWE-770 / CWE-294).** `pki.acme.client` drives a live directory over the same
   `pki.transport` socket choke point, with no path that disables TLS server
