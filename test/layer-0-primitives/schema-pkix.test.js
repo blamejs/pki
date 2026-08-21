@@ -736,6 +736,31 @@ function testGeneralNameArms() {
     schema.walk(GNS, asn1.decode(b.sequence([b.contextPrimitive(2, Buffer.from("a.example", "ascii"))])), NS).result.names.length === 1);
   check("generalNames bare factory rejects an empty SEQUENCE with the default code",
     code(function () { schema.walk(GNS, asn1.decode(b.sequence([])), NS); }) === "path/bad-general-names");
+
+  // Which arm a GeneralName alternative takes is decided by a tag number the encoded value supplies,
+  // and that question is asked of tables that hold no prototype. Given ordinary ones a caller plants
+  // the answer: a numeric name on Object.prototype routes a dNSName down the constructed arm, where
+  // neither the X.690 sec. 10.2 primitive-form rule nor the CVE-2009-2408 control-byte reject is
+  // reached, and a constructed [2] carrying an embedded NUL decodes as a name with a null value.
+  var NUL = String.fromCharCode(0);
+  var constructedDns = b.contextConstructed(2, b.ia5("exam" + NUL + "ple.org"));
+  var ipPrimitive = b.contextPrimitive(7, Buffer.from([192, 0, 2, 1]));
+  check("gn a constructed dNSName [2] is refused with no planted name",
+    rej(constructedDns) === "path/bad-general-name");
+  Object.prototype[2] = 1;
+  var plantedConstructed;
+  try { plantedConstructed = rej(constructedDns); }
+  finally { delete Object.prototype[2]; }
+  check("gn a planted numeric name cannot route a dNSName past the primitive-form and control-byte checks (got " + plantedConstructed + ")",
+    plantedConstructed === "path/bad-general-name");
+  // The same table read in the other direction: a planted [7] would put an iPAddress on the IA5
+  // arm, where its octets are read as a string and a legitimate address stops decoding.
+  Object.prototype[7] = 1;
+  var plantedIp;
+  try { plantedIp = schema.walk(GNv, asn1.decode(ipPrimitive), NS); }
+  finally { delete Object.prototype[7]; }
+  check("gn a planted numeric name cannot move an iPAddress onto the IA5 arm",
+    Buffer.isBuffer(plantedIp.value) && plantedIp.value.equals(Buffer.from([192, 0, 2, 1])));
 }
 
 // ---------------------------------------------------------------------------
@@ -862,6 +887,69 @@ function testDnsNameProblem() {
 }
 
 // ---------------------------------------------------------------------------
+// Every decision this module reaches is taken with operations bound at load and
+// tables that hold no prototype, so a caller who replaces one afterwards does
+// not get to decide what a structure decodes to, or which rule it is held to.
+// ---------------------------------------------------------------------------
+
+function testDecisionsSurviveSubstitution() {
+  // The captures themselves. Every module reaches this one object through the registry, so a single
+  // property assignment would redirect a call-time read in all of them at once.
+  var I = require("../../lib/guard-intrinsic");
+  var realMapCapture = I.map;
+  try { I.map = function () { return ["forged"]; }; } catch (_e) { /* a frozen object refuses the write */ }
+  check("the intrinsic captures cannot be reassigned through the module registry", I.map === realMapCapture);
+
+  // The extension-decoder registry answers off an OID read from the certificate, so a dotted name
+  // planted on Object.prototype must not become a decoder for an extension nobody registered.
+  var UNREGISTERED = "2.5.29.99";
+  Object.prototype[UNREGISTERED] = function () { return { forged: true }; };
+  var plantedDecoder;
+  try { plantedDecoder = pkix.certExtensionDecoders(NS).byOid[UNREGISTERED]; }
+  finally { delete Object.prototype[UNREGISTERED]; }
+  check("a planted dotted name is not a registered extension decoder", plantedDecoder === undefined);
+
+  // The DisplayText alternatives are a CHOICE of four string types. A planted tag number must not
+  // add a fifth: a PrintableString explicitText is not a DisplayText and yields no entry.
+  var printableNotice = asn1.decode(b.sequence([b.printable("hello")]));
+  Object.prototype[asn1.TAGS.PRINTABLE_STRING] = 1;
+  var plantedNotice;
+  try { plantedNotice = pkix.userNoticeTexts(printableNotice); }
+  finally { delete Object.prototype[asn1.TAGS.PRINTABLE_STRING]; }
+  check("a planted tag number does not add a DisplayText alternative", plantedNotice.length === 0);
+
+  // The DisplayText bound is counted in characters, and the count is taken with a bound operation.
+  var realArrayFrom = Array.from;
+  Object.defineProperty(Array, "from", { value: function () { return { length: 1 }; }, writable: true, configurable: true });
+  var plantedChars;
+  try { plantedChars = pkix.displayTextChars("abc"); }
+  finally { Object.defineProperty(Array, "from", { value: realArrayFrom, writable: true, configurable: true }); }
+  check("the DisplayText character count is not decided by a replaced Array.from", plantedChars === 3);
+
+  // RFC 5280 sec. 4.1.2.5: a date through 2049 MUST be UTCTime, and which side of the cutover a
+  // GeneralizedTime falls on is read off the decoded date. That read is bound here too, though the
+  // codec's own round-trip check refuses a substituted year accessor before this leaf sees the
+  // date, so the binding has no separate verdict to pin and this vector holds only the clean shape.
+  var TIME = pkix.time(NS);
+  check("a GeneralizedTime through 2049 is refused (RFC 5280 sec. 4.1.2.5)",
+    code(function () { schema.walk(TIME, asn1.decode(b.generalizedTime(new Date(Date.UTC(2000, 0, 1)))), NS); }) === "path/bad-time");
+
+  // keyUsageOf caches one decoder per namespace. The cache lookup is a bound operation, so a
+  // replaced WeakMap read cannot substitute a decoder that reports usages the certificate omits.
+  var kuExt = { oid: OID_KU, value: b.raw(Buffer.from([0x03, 0x02, 0x07, 0x80])) };   // digitalSignature only
+  var realWeakGet = WeakMap.prototype.get;
+  Object.defineProperty(WeakMap.prototype, "get", {
+    value: function () { return function () { return { keyCertSign: true, digitalSignature: false }; }; },
+    writable: true, configurable: true,
+  });
+  var plantedKu;
+  try { plantedKu = pkix.keyUsageOf(NS, { extensions: [kuExt] }, NS.E, "path/bad-key-usage", "leaf"); }
+  finally { Object.defineProperty(WeakMap.prototype, "get", { value: realWeakGet, writable: true, configurable: true }); }
+  check("a replaced cache read cannot substitute the keyUsage decoder",
+    !!plantedKu && plantedKu.digitalSignature === true && plantedKu.keyCertSign === false);
+}
+
+// ---------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------
 
@@ -891,6 +979,7 @@ function run() {
   testCrlDistributionPointShapes();
   testCertExtensionDecodersLoadGuard();
   testSignedEnvelopeTbs();
+  testDecisionsSurviveSubstitution();
 }
 
 module.exports = { run: run };

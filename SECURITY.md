@@ -188,7 +188,16 @@ security-only patches after the next major releases.
   code, a trust bit no root program granted. Those questions are asked through a
   captured operation as well. The boundary is the process: code that loads before this
   package can replace the built-ins it captures, and nothing inside a library can
-  defend against that.
+  defend against that. Two doors into that class stay shut for the same reason.
+  Each guard module freezes what it exports, because a boundary reaches its check
+  as a property of the guard object at the moment of the call and every module is
+  handed the same object, so one assignment would otherwise replace a
+  constant-time comparison, a size cap or a secret wipe everywhere at once. And a
+  table asked a question by a key the wire supplies -- which GeneralName
+  alternative a context tag selects, which string types are DisplayText, which
+  decoder an extension OID resolves to, whether a policy OID has already been
+  seen -- carries no prototype, so a name planted on `Object.prototype` cannot
+  answer for an entry nothing registered.
 - **One signature covering several encodings.** A type-3 C509 certificate is a
   re-encoding of an X.509 certificate, and the X.509 signature covers the bytes
   it rebuilds rather than the C509 bytes themselves. Where the specification
@@ -978,6 +987,44 @@ security-only patches after the next major releases.
   SubjectAltName (RFC 8737), a wildcard is one leading label on a `dns`
   identifier only, and the ARI certID preserves the serial's DER sign-padding
   byte so it matches what the CA computes (RFC 9773).
+- **ACME issued-certificate binding (CWE-345).** RFC 8555 states nothing about
+  what the certificate resource may answer with, so the certificate an ACME
+  client installs is bound to the order it placed by the client rather than by
+  the wire. `downloadCertificate` checks the returned end-entity certificate
+  against the order in both respects: it must certify the public key that order's
+  CSR asked to have certified, and its identifier set must equal the order's
+  identifiers. At least one of the two is required by default, since a caller
+  holding only the order or only the CSR can still bind what it has; a download
+  supplying neither is refused rather than returned unchecked. The result reports
+  which of the two ran, so a binding that was not performed cannot read as one
+  that was, and neither can a waived one. The check covers whichever chain is
+  returned, an alternate chosen through `selectChain` included.
+
+  A certificate's identifier set is its dNSName and iPAddress subject alternative
+  names; its subject common name is read only where it asserts none. Where an
+  alternative name is present the common name is not an additional identity —
+  name matching has read the alternative names and ignored the common name for
+  many years, and CABF TLS BR 7.1.4.2.2 requires any common name to appear among
+  them anyway — and an address in a common name is never an IP identity, because
+  address matching does not fall back to it. The outbound CSR check deliberately
+  parts from that and reads every common name the request carries, alternative
+  names present or not: the two sides answer different questions. The issued
+  certificate's set says what that certificate authenticates. The CSR's says what
+  the request is asking to have certified, and a CA may carry a common name
+  through into the certificate it issues, so a request naming the order's
+  identifier in an alternative name and an unauthorized one in its subject is a
+  request for a name the order does not cover.
+
+  A name that maps to no ACME order identifier is refused rather than dropped, on
+  both sides: an order identifier of a registered type other than `dns` or `ip`,
+  a `subjectAltName` that is neither a dNSName nor an iPAddress, and a subject
+  common name that is neither a dns name nor a canonical IP address. Dropping one
+  would let a set report as checked after leaving part of it out — a subject may
+  carry several common names, and dropping the unmappable one while another
+  supplies the match reports the set as bound while the certificate still names
+  something the order never covered. Names are folded with ASCII case rules
+  rather than the Unicode mapping, so a character whose Unicode lowercase is
+  ASCII is not read as the ASCII name it would fold to.
 - **ACME client transport is fail-closed on the wire (CWE-295 / CWE-319 /
   CWE-770 / CWE-294).** `pki.acme.client` drives a live directory over the same
   `pki.transport` socket choke point, with no path that disables TLS server

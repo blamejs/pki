@@ -44,6 +44,23 @@ async function acode(fn) {
   catch (e) { return (e && e.code) || ("RAW:" + (e && e.constructor && e.constructor.name)); }
 }
 
+// Runs one verb in a child process that records every wipe. See test/helpers/observe-secret-wipe.js
+// for why the observation cannot be installed in this process.
+function observeWipe(payload) {
+  var enc = { op: payload.op };
+  ["cert", "key", "csr", "secret", "identity"].forEach(function (k) {
+    if (payload[k] !== undefined) enc[k] = Buffer.from(payload[k]).toString("base64");
+  });
+  var r = require("node:child_process").spawnSync(process.execPath,
+    [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+    { encoding: "utf8", input: JSON.stringify(enc) });
+  var report = null;
+  if (!r.error && r.status === 0) {
+    try { report = JSON.parse(String(r.stdout).trim().split("\n").pop()); } catch (_e) { report = null; }
+  }
+  return { status: r.status, report: report };
+}
+
 async function signer() {
   var pair = await pki.key.generate("Ed25519");
   var key = await pki.key.export(pair.privateKey);
@@ -85,27 +102,16 @@ async function run() {
   // so the clear is watched where the toolkit performs it: each buffer must hold key material
   // when handed over and be all-zero afterwards. The caller's key is checked to be intact too,
   // since wiping the wrong buffer would destroy it.
-  var guardAll = require("../../lib/guard-all");
-  var realZeroizeAll = guardAll.secret.zeroizeAll;
-  var wiped = [];
-  guardAll.secret.zeroizeAll = function (list) {
-    var seen = (list || []).filter(Boolean).map(function (bufr) {
-      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
-    });
-    var out = realZeroizeAll.apply(this, arguments);
-    wiped.push.apply(wiped, seen);
-    return out;
-  };
-  var callerKey = Buffer.from(s.key);
-  var keyBefore = Buffer.from(callerKey);
-  try {
-    await pki.cmc.build({ requests: [{ tcr: csrDer }] }, { cert: s.cert, key: callerKey });
-  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
+  // Observed from a child process: the wipe runs through a fill captured at module load and the
+  // guard family freezes its exports, so a test that wrapped the guard in-process would be doing
+  // the very thing both defenses refuse -- and would report success by doing it.
+  var buildObs = observeWipe({ op: "cmc-build", cert: s.cert, key: s.key, csr: csrDer });
+  check("F1d. the wipe observation ran (child exit " + buildObs.status + ")", buildObs.report !== null);
   check("F1d. the signer key copy is wiped once signing settles",
-    wiped.length > 0 && wiped.every(function (e) {
-      return e.hadContent && e.buf.every(function (x) { return x === 0; });
-    }));
-  check("F1e. ...and the caller's own key is left intact", callerKey.equals(keyBefore));
+    !!buildObs.report && buildObs.report.wiped.length > 0 &&
+      buildObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      buildObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
+  check("F1e. ...and the caller's own key is left intact", !!buildObs.report && buildObs.report.callerKeyIntact === true);
   check("F1c. the tcr arm round-trips to the CSR that went in",
     parsed.requests.length === 1 && parsed.requests[0].arm === "tcr" &&
     Buffer.compare(parsed.requests[0].certificationRequestBytes, csrDer) === 0);
@@ -276,23 +282,13 @@ async function run() {
   // would clear the cheapest copy and keep the rest, so the clear is observed where the toolkit
   // performs it: every buffer handed over must have held content and read all-zero afterwards.
   // The identity arm is used because it is the one that allocates all three.
-  var derivationWiped = [];
-  guardAll.secret.zeroizeAll = function (list) {
-    var seen = (list || []).filter(Boolean).map(function (bufr) {
-      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
-    });
-    var out = realZeroizeAll.apply(this, arguments);
-    derivationWiped.push.apply(derivationWiped, seen);
-    return out;
-  };
-  try {
-    await pki.cmc.build({ requests: [{ tcr: csrDer }],
-      identityProof: { secret: SECRET, identity: IDENTITY } }, { cert: s.cert, key: s.key });
-  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
+  var derivObs = observeWipe({ op: "cmc-build-identity", cert: s.cert, key: s.key, csr: csrDer,
+    secret: SECRET, identity: IDENTITY });
+  check("F6h. the derivation wipe observation ran (child exit " + derivObs.status + ")", derivObs.report !== null);
   check("F6h. every copy of the shared secret the derivation allocated is cleared",
-    derivationWiped.length >= 3 && derivationWiped.every(function (e) {
-      return e.hadContent && e.buf.every(function (x) { return x === 0; });
-    }));
+    !!derivObs.report && derivObs.report.wiped.length >= 3 &&
+      derivObs.report.wiped.some(function (e) { return e.hadContent; }) &&
+      derivObs.report.wiped.every(function (e) { return e.allZeroAfter; }));
 
   // F6d -- sec. 6.2.1's "Implementations MUST be able to support tokens at least
   // 16 characters long" is a requirement on what this code must ACCEPT, not a

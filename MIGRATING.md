@@ -14,6 +14,37 @@ The toolkit has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
+### v0.5.24 — `pki.acme.client(...).downloadCertificate(url, opts)`
+
+The verb needs to be told which certificate the download is allowed to be, and refuses with acme/binding-required when it is not.
+
+Pass `expectedSpki` (the DER SubjectPublicKeyInfo this order's CSR asked to have certified) and
+`identifiers` (the order's own identifier array). Either alone is accepted, and each is checked
+on its own.
+
+Nothing previously bound the certificate a CA returned to the order that was placed, so a
+certificate resource answering with a certificate for another key, or another name, came back as
+the issued certificate for that order. The outbound half of the exchange already refuses a CSR
+whose identifier set is not the order's, and the other enrollment clients bind the issued
+certificate to the requested key, so this closes the one direction that did not.
+
+```js
+var order = await client.pollOrder(orderUrl);
+var res = await client.downloadCertificate(order.certificate);   // used to accept any answer
+
+var res = await client.downloadCertificate(order.certificate,
+  { expectedSpki: csrSpki, identifiers: order.identifiers });
+// res.boundToKey === true, res.boundToIdentifiers === true
+```
+
+A mismatch is `acme/certificate-key-mismatch` or `acme/certificate-identifier-mismatch`.
+
+Where the material genuinely is not available -- reading a certificate resource outside an
+enrollment -- pass `requireBinding: false`. The result then reports `boundToKey: false` and
+`boundToIdentifiers: false` rather than reading as a checked download. That waiver drops the
+requirement to supply material and never the check on material that is supplied, so a value
+passed alongside it is still compared.
+
 ### v0.5.8 — `pki.smime.verify(...).headerProtection.fromMismatch`
 
 Now null when there was no protected From to compare against, where it used to be false.
