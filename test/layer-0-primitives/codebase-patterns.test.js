@@ -2948,13 +2948,14 @@ function testGuardReadsRuntimeLive() {
     // argument, and a string reading `"require('./guard-intrinsic')"` is one literal whose content
     // is something longer, so it collapses and takes the require wording inside it with it.
     //
-    // The second spelling matches the PROPERTY, not a call through it. Requiring a trailing dot
-    // described one way of using the captures and missed every other: `var intrinsic =
-    // guard.intrinsic;` and `var { hasOwn } = guard.intrinsic;` both take them and neither has a
-    // dot after `intrinsic`. Reading that property at all is what enrolls a module, whatever it
-    // does with the result afterwards.
+    // The second spelling matches the NAME, in any position. Each narrower form of this test was
+    // a description of one way to take the captures, and every one of them had a next way: a call
+    // through the property, then a property read without a call, then a binding aliased off the
+    // orchestrator, then the same binding destructured out of it or out of the require. A module
+    // has to name `intrinsic` in code to reach the object at all, whatever it binds it to
+    // afterwards, so that is the rule rather than any shape built on top of it.
     var exec = _executableSource(src);
-    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(exec) && !/\.intrinsic\b/.test(exec)) return;
+    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(exec) && !/\bintrinsic\b/.test(exec)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
       // A `*`-led line is the continuation of a block comment. The stripper works one line at a
