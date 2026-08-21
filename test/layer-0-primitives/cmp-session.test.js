@@ -1262,6 +1262,12 @@ async function run() {
   // An algorithm the registry cannot name is refused too: it can be neither acted on as a key
   // requirement nor ruled out as RSA, and guessing either way would be a verdict about nothing.
   check("170n. a keySpec algId the registry does not name -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.6.1.4.1.99999.7")])))]).session.info({ certReqTemplate: true }))));
+  // pki.oid.register overrides an OID's forward display name, so a check that asked whether the
+  // NAME said RSA would answer no for a renamed rsaEncryption while the algorithm was unchanged.
+  // The identifiers are read at load, which is before any caller can re-register one.
+  pki.oid.register(pki.oid.byName("rsaEncryption"), "genericPublicKey");
+  check("170o. a renamed rsaEncryption is still refused (the identifier decides, not the label)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.1"), B.nullValue()])))]).session.info({ certReqTemplate: true }))));
+  pki.oid.register("1.2.840.113549.1.1.1", "rsaEncryption");   // put the label back for later checks
   check("170k. a keySpec algId naming rsaesOaep -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsaesOaep"))])))]).session.info({ certReqTemplate: true }))));
   var rsaAlgId = B.sequence([B.oid(pki.oid.byName("rsaEncryption")), B.nullValue()]);
   check("170d. a keySpec algId naming RSA -> refused (sec. 4.3.3: MUST give an algorithm other than RSA)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", rsaAlgId))]).session.info({ certReqTemplate: true }))));
