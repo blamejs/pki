@@ -1159,11 +1159,33 @@ async function testIssuedCertificateBinding() {
   var r11b = await acme11b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] });
   check("#17 BD-11b a non-canonical IP-literal common name contributes nothing; the SAN decides",
     r11b.certificate.equals(badIpLeaf) && r11b.boundToIdentifiers === true);
-  // BD-11c and it cannot make a mismatch pass: with no matching SAN, the certificate binds to nothing.
+  // BD-11c where there is no SAN the common name IS consulted, and one that maps to no order
+  // identifier is refused rather than left out. Dropping it is unsafe even though a smaller
+  // certificate set can only fail equality, because a subject may carry several common names: drop the
+  // unmappable one while another supplies the match and the set reports as bound while the certificate
+  // still names something the order never covered. BD-11d is that shape.
   var badIpNoSan = signing.minimalCert(mine.spki, { cn: "192.0.2.01" });
   var acme11c = await withAccount(serve(badIpNoSan));
-  check("#17 BD-11c a certificate whose only name is that common name binds to no order identifier",
-    (await codeOf(acme11c.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/certificate-identifier-mismatch");
+  check("#17 BD-11c a certificate whose only name is an unmappable common name is refused",
+    (await codeOf(acme11c.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/unsupported-identifier-type");
+
+  // BD-11d two common names, no SAN: one is the order's, the other a trailing-dot spelling that a
+  // hostname matcher accepts as a name this certificate covers. Leaving the second out would let the
+  // first satisfy the comparison and report boundToIdentifiers true for a certificate that also names
+  // something the order never authorized.
+  var twoCn = b.sequence([
+    b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.printable("example.org")])]),
+    b.set([b.sequence([b.oid(pki.oid.byName("commonName")), b.printable("victim.example.")])]),
+  ]);
+  var alg2 = b.sequence([b.oid(pki.oid.byName("ecdsaWithSHA256"))]);
+  var val2 = b.sequence([b.utcTime(new Date("2020-01-01T00:00:00Z")), b.utcTime(new Date("2040-01-01T00:00:00Z"))]);
+  var twoCnLeaf = b.sequence([
+    b.sequence([b.explicit(0, b.integer(2n)), b.integer(0x78n), alg2, twoCn, val2, twoCn, b.raw(mine.spki)]),
+    alg2, b.bitString(Buffer.from([0, 0, 0, 0]), 0),
+  ]);
+  var acme11d = await withAccount(serve(twoCnLeaf));
+  check("#17 BD-11d an unmappable common name beside a matching one is refused, not dropped",
+    (await codeOf(acme11d.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/unsupported-identifier-type");
 
   // BD-12 the common name is folded with ASCII case rules, never the Unicode mapping. Several
   // characters lowercase INTO ASCII -- U+212A KELVIN SIGN becomes "k" -- so a full fold would turn a
@@ -1174,9 +1196,11 @@ async function testIssuedCertificateBinding() {
   var kelvin = String.fromCharCode(0x212a);
   var kelvinLeaf = certWithUtf8Cn(mine.spki, kelvin + ".example", []);
   var acme12 = await withAccount(serve(kelvinLeaf));
+  // Under an ASCII fold the name stays non-ASCII, so it maps to no order identifier and is refused;
+  // under a Unicode fold it would BE "k.example" and the download would succeed.
   check("#17 BD-12 a Unicode common name that lowercases into ASCII does not satisfy the order",
     (await codeOf(acme12.downloadCertificate(A.URLS.certificate,
-      { expectedSpki: mine.spki, identifiers: [{ type: "dns", value: "k.example" }] }))) === "acme/certificate-identifier-mismatch");
+      { expectedSpki: mine.spki, identifiers: [{ type: "dns", value: "k.example" }] }))) === "acme/unsupported-identifier-type");
 
   // BD-12b a wildcard survives the same gate: an order identifier carries the `*.` verbatim
   // (RFC 8555 sec. 7.1.3) and the certificate carries it as a SAN, so both sides must still match.
