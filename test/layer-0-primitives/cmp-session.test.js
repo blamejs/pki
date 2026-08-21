@@ -1349,6 +1349,21 @@ async function run() {
   var s175i = mk([H.genpOf("rootCaKeyUpdate", rootUpd)]);
   check("175f2. info({rootCaCert: <valid DER that is not a certificate>}) -> cmp/bad-input", await codeOf(s175i.session.info({ rootCaCert: B.nullValue() })) === "cmp/bad-input");
   check("175f3. that refusal does not engage the transport", s175i.transport.calls.length === 0);
+  // This value goes back on the wire, so it takes the forms that carry their own bytes.
+  var r175f4 = await mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: pki.schema.x509.pemEncode(OLD_ROOT, "CERTIFICATE") });
+  check("175f4. a PEM certificate is accepted for rootCaCert", r175f4.outcome === "answered");
+  // The byte-source guard would refuse a parsed certificate anyway; the named branch exists so the
+  // refusal SAYS why this argument differs from revoke's, which does take the parsed form.
+  var e175f5 = null;
+  try { await mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: pki.schema.x509.parse(OLD_ROOT) }); }
+  catch (e) { e175f5 = e; }
+  check("175f5. an already-parsed certificate is refused, and the message says it keeps no source DER", e175f5 && e175f5.code === "cmp/bad-input" && /keeps no source DER/.test(e175f5.message));
+  check("175f6. a string that is not PEM -> cmp/bad-input", await codeOf(mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: "not a pem block" })) === "cmp/bad-input");
+  // The keySpec algId names a public-key algorithm an entity can generate; a registered digest or
+  // cipher is neither RSA nor a key algorithm, and a requirement to generate one cannot be acted on.
+  check("170p. a keySpec algId naming a digest (sha256) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha256"))])))]).session.info({ certReqTemplate: true }))));
+  var r170q = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-ml-dsa-65"))])))]).session.info({ certReqTemplate: true });
+  check("170q. a keySpec algId naming ML-DSA-65 is accepted", r170q.value.keySpec[0].algorithmName === "id-ml-dsa-65");
   check("175g. info({certReqTemplate: 'x'}) -> cmp/bad-input", await codeOf(mk([H.genpOf("certReqTemplate")]).session.info({ certReqTemplate: "x" })) === "cmp/bad-input");
   // pki.cmp.build's own rr door, reached directly rather than through the session, which resolves
   // the reason name at its own door first.
