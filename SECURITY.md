@@ -978,6 +978,19 @@ security-only patches after the next major releases.
   update are parsed as X.509 certificates, and a CRL delivered by either a
   revocation response or a CRL request is parsed as a `CertificateList`, so a
   responder cannot answer with any well-formed SEQUENCE and have it read as one.
+  A root CA key update is held to more than that, because its three certificates
+  are only useful in the relationships §4.3.2 names: `newWithOld` must carry the
+  new root key, name the same subject as `newWithNew`, and be issued and signed
+  by the old root the request named; `oldWithNew`, when sent, must carry the old
+  root key, name the old root, and be issued and signed by the new one. Binding
+  the keys alone would not do it — a certification authority that has ever issued
+  an ordinary certificate for the new key satisfies key equality and signature
+  validity, and its holder could pair it with a self-signed certificate of their
+  own choosing and have the result read as the authority's rollover — so the
+  names are bound too, under the RFC 5280 §7.1 canonical comparison. The
+  signatures are checked by the same certification-path engine that verifies a
+  message's protection, so a responder cannot deliver three unrelated
+  certificates and have the update reported as one an entity can act on.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms

@@ -1144,23 +1144,73 @@ async function run() {
   // ===== 165/166/167. rootCaCert -> rootCaKeyUpdate (sec. 4.3.2): the two OIDs DIFFER across the
   //                    exchange, and the profile makes newWithOld required where RFC 9480's ASN.1
   //                    marks it OPTIONAL. =====
-  var rootUpd = B.sequence([B.raw(H.caCert), B.explicit(0, B.raw(H.signerCert))]);
+  // A root CA key update is three certificates in NAMED relationships (sec. 4.3.2), so the fixture
+  // has to be a real rollover: OLD is the root the request names, NEW is the replacement, and the
+  // two cross-certificates each carry one key signed by the other. Three unrelated certificates
+  // would establish nothing, which is the whole reason the relationships are checked.
+  var OLDK = signing.makeSigner("ec-p256", { cn: "root-old" });
+  var NEWK = signing.makeSigner("ec-p256", { cn: "root-new" });
+  var VALID = { notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } };
+  var OLD_ROOT = await pki.x509.sign(Object.assign({ subject: "root-old", subjectPublicKey: OLDK.spki }, VALID), { key: OLDK.key, name: "root-old", publicKey: OLDK.spki });
+  var NEW_ROOT = await pki.x509.sign(Object.assign({ subject: "root-new", subjectPublicKey: NEWK.spki }, VALID), { key: NEWK.key, name: "root-new", publicKey: NEWK.spki });
+  var NEW_WITH_OLD = await pki.x509.sign(Object.assign({ subject: "root-new", subjectPublicKey: NEWK.spki }, VALID), { key: OLDK.key, cert: OLD_ROOT });
+  var OLD_WITH_NEW = await pki.x509.sign(Object.assign({ subject: "root-old", subjectPublicKey: OLDK.spki }, VALID), { key: NEWK.key, cert: NEW_ROOT });
+  var rootUpd = B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_WITH_OLD))]);
   var s165 = mk([H.genpOf("rootCaKeyUpdate", rootUpd)]);
-  var r165 = await s165.session.info({ rootCaCert: H.caCert });
+  var r165 = await s165.session.info({ rootCaCert: OLD_ROOT });
   check("165a. info({rootCaCert}) accepts a rootCaKeyUpdate response (a DIFFERENT infoType, sec. 4.3.2)", r165.outcome === "answered" && r165.operation === "rootCaCert");
-  check("165b. newWithNew + newWithOld are surfaced", r165.value.newWithNew.equals(H.caCert) && r165.value.newWithOld.equals(H.signerCert) && r165.value.oldWithNew === null);
+  check("165b. newWithNew + newWithOld are surfaced", r165.value.newWithNew.equals(NEW_ROOT) && r165.value.newWithOld.equals(NEW_WITH_OLD) && r165.value.oldWithNew === null);
   var genm165 = sentRr(s165.transport, 0);
   check("165c. the genm names id-it-rootCaCert and carries the certificate being updated", genm165[0].name === "rootCaCert" && Buffer.isBuffer(genm165[0].value));
-  var allThree = B.sequence([B.raw(H.caCert), B.explicit(0, B.raw(H.signerCert)), B.explicit(1, B.raw(H.intCaCert))]);
-  var r165d = await mk([H.genpOf("rootCaKeyUpdate", allThree)]).session.info({ rootCaCert: H.caCert });
-  check("165d. the OPTIONAL oldWithNew is surfaced when the responder sends it", r165d.value.oldWithNew.equals(H.intCaCert));
-  check("166. a RootCaKeyUpdateContent omitting newWithOld -> refused (sec. 4.3.2 over the 9480 syntax)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(H.caCert)]))]).session.info({ rootCaCert: H.caCert }))));
-  var badNewWithOld = B.sequence([B.raw(H.caCert), B.explicit(0, B.raw(B.sequence([B.sequence([B.integer(1n)])])))]);
-  check("166b. a RootCaKeyUpdateContent whose newWithOld is not a certificate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", badNewWithOld)]).session.info({ rootCaCert: H.caCert }))));
+  var allThree = B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_WITH_OLD)), B.explicit(1, B.raw(OLD_WITH_NEW))]);
+  var r165d = await mk([H.genpOf("rootCaKeyUpdate", allThree)]).session.info({ rootCaCert: OLD_ROOT });
+  check("165d. the OPTIONAL oldWithNew is surfaced when the responder sends it", r165d.value.oldWithNew.equals(OLD_WITH_NEW));
+  // The relationships ARE the mechanism, so each is refused on its own. Every certificate below is
+  // valid and parses; only the link the profile names is missing.
+  check("165e. a newWithOld certifying some other key -> refused (it must carry the NEW root key)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(OLD_WITH_NEW))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // Carries the new key, but self-signed under the NEW key rather than signed by the old root, so
+  // an entity trusting only the old root cannot reach it.
+  check("165f. a newWithOld not signed by the OLD root -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_ROOT))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  check("165g. an oldWithNew certifying some other key -> refused (it must carry the OLD root key)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_WITH_OLD)), B.explicit(1, B.raw(NEW_WITH_OLD))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  check("165h. an oldWithNew not signed by the NEW root -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_WITH_OLD)), B.explicit(1, B.raw(OLD_ROOT))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // newWithNew is what the caller would install, so for a self-issued root its own signature is the
+  // only thing vouching for the name and validity it carries.
+  var brokenNewRoot = H.corruptLeafSig(NEW_ROOT);
+  check("165j. a self-issued newWithNew whose own signature is broken -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(brokenNewRoot), B.explicit(0, B.raw(NEW_WITH_OLD))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // sec. 4.3.2 extends the operation to a directly trusted NON-root certificate, whose issuer this
+  // message does not carry. Its own signature is unverifiable from here, and the new key is still
+  // authenticated by newWithOld, so the update is accepted rather than refused for a check that
+  // cannot be run.
+  // NEW_INT names int-new, carries the new key and is issued by the old root, so it serves as both
+  // the replacement certificate and the one the old root signed for it.
+  var NEW_INT = await pki.x509.sign(Object.assign({ subject: "int-new", subjectPublicKey: NEWK.spki }, VALID), { key: OLDK.key, cert: OLD_ROOT });
+  var r165k = await mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_INT), B.explicit(0, B.raw(NEW_INT))]))]).session.info({ rootCaCert: OLD_ROOT });
+  check("165k. a NON-self-issued newWithNew is accepted (its issuer is not in this message)", r165k.outcome === "answered" && r165k.value.newWithNew.equals(NEW_INT));
+  // The identity attack: a certificate the old CA legitimately issued for the new key, under some
+  // OTHER name, satisfies key equality and signature validity. Pairing it with a self-signed
+  // certificate of one's own choosing would otherwise read as the authority's own rollover.
+  var STRAY_FOR_NEW_KEY = await pki.x509.sign(Object.assign({ subject: "device-42", subjectPublicKey: NEWK.spki }, VALID), { key: OLDK.key, cert: OLD_ROOT });
+  check("165l. a newWithOld naming a DIFFERENT subject than newWithNew -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(STRAY_FOR_NEW_KEY))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // And a certificate for the new root name, carrying the new key, signed by an authority that is
+  // not the old root the request named.
+  var OTHERK = signing.makeSigner("ec-p256", { cn: "other-ca" });
+  var OTHER_ROOT = await pki.x509.sign(Object.assign({ subject: "other-ca", subjectPublicKey: OTHERK.spki }, VALID), { key: OTHERK.key, name: "other-ca", publicKey: OTHERK.spki });
+  var NEW_BY_OTHER = await pki.x509.sign(Object.assign({ subject: "root-new", subjectPublicKey: NEWK.spki }, VALID), { key: OTHERK.key, cert: OTHER_ROOT });
+  check("165m. a newWithOld signed by an authority other than the requested old root -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_BY_OTHER))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // Signed by the OLD key and naming the new root as its subject, so both the signature check and
+  // the subject check pass; only the issuer FIELD names someone else. RFC 5280 chains on that name,
+  // so a certificate that does not claim the old root as its issuer is not a link from it.
+  var MISNAMED_ISSUER = await pki.x509.sign(Object.assign({ subject: "root-new", subjectPublicKey: NEWK.spki }, VALID), { key: OLDK.key, name: "other-ca", publicKey: OLDK.spki });
+  check("165n. a newWithOld whose issuer FIELD is not the old root -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(MISNAMED_ISSUER))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  check("165i. an update answered for a DIFFERENT old root than the request named -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: NEW_ROOT }))));
+  check("166. a RootCaKeyUpdateContent omitting newWithOld -> refused (sec. 4.3.2 over the 9480 syntax)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT)]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  var badNewWithOld = B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(B.sequence([B.sequence([B.integer(1n)])])))]);
+  check("166b. a RootCaKeyUpdateContent whose newWithOld is not a certificate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", badNewWithOld)]).session.info({ rootCaCert: OLD_ROOT }))));
   // The value here is a WELL-FORMED RootCaKeyUpdateContent, so nothing but the infoType check can
   // refuse it: sec. 4.3.2 answers id-it-rootCaCert with id-it-rootCaKeyUpdate, and a response
   // echoing the request OID is a different operation's answer.
-  check("167. a response echoing the REQUEST infoType (rootCaCert) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaCert", rootUpd)]).session.info({ rootCaCert: H.caCert }))));
+  check("167. a response echoing the REQUEST infoType (rootCaCert) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaCert", rootUpd)]).session.info({ rootCaCert: OLD_ROOT }))));
 
   // ===== 168/169/170. certReqTemplate (sec. 4.3.3): the response certTemplate MUST omit publicKey,
   //                    serialNumber, signingAlg, issuerUID and subjectUID; keySpec is constrained. =====
