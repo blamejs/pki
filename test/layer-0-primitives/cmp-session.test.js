@@ -1202,6 +1202,11 @@ async function run() {
   check("170f. a conforming algId keySpec is surfaced with its algorithm resolved", r170f.value.keySpec[0].algorithmName === "ecPublicKey" && Buffer.isBuffer(r170f.value.keySpec[0].algorithmParameters));
   check("170g. a keySpec rsaKeyLen whose value is not an INTEGER -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("rsaKeyLen", B.utf8("2048")))]).session.info({ certReqTemplate: true }))));
   check("170h. a keySpec algId whose value is not a SEQUENCE -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.integer(1n)))]).session.info({ certReqTemplate: true }))));
+  // "Other than RSA" covers the whole PKCS#1 arc, so every spelling a responder could reach for is
+  // refused, not just the generic key OID.
+  check("170i. a keySpec algId naming rsassaPss -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsassaPss"))])))]).session.info({ certReqTemplate: true }))));
+  check("170j. a keySpec algId naming sha256WithRSAEncryption -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha256WithRSAEncryption")), B.nullValue()])))]).session.info({ certReqTemplate: true }))));
+  check("170k. a keySpec algId naming rsaesOaep -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsaesOaep"))])))]).session.info({ certReqTemplate: true }))));
   var rsaAlgId = B.sequence([B.oid(pki.oid.byName("rsaEncryption")), B.nullValue()]);
   check("170d. a keySpec algId naming RSA -> refused (sec. 4.3.3: MUST give an algorithm other than RSA)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", rsaAlgId))]).session.info({ certReqTemplate: true }))));
 
@@ -1259,6 +1264,11 @@ async function run() {
   check("175e. an unknown enroll key set to NULL is refused by the body arm count", await codeOf(mk([H.pkiconf()]).session.enroll({ ir: H.irRequest(CLIENT.spki).ir, irr: null })) === "cmp/bad-input");
   // caCerts and certReqTemplate send NO infoValue, so a value supplied to either would be dropped.
   check("175f. info({caCerts: <a certificate>}) -> cmp/bad-input (this genm carries no infoValue)", await codeOf(mk([H.genpOf("caCerts")]).session.info({ caCerts: H.caCert })) === "cmp/bad-input");
+  // The rootCaCert request value IS a CMPCertificate. Refusing it here keeps a caller's mistake
+  // local; sending it would consume the one-shot transaction to learn the same thing from the CA.
+  var s175i = mk([H.genpOf("rootCaKeyUpdate", rootUpd)]);
+  check("175f2. info({rootCaCert: <valid DER that is not a certificate>}) -> cmp/bad-input", await codeOf(s175i.session.info({ rootCaCert: B.nullValue() })) === "cmp/bad-input");
+  check("175f3. that refusal does not engage the transport", s175i.transport.calls.length === 0);
   check("175g. info({certReqTemplate: 'x'}) -> cmp/bad-input", await codeOf(mk([H.genpOf("certReqTemplate")]).session.info({ certReqTemplate: "x" })) === "cmp/bad-input");
   // pki.cmp.build's own rr door, reached directly rather than through the session, which resolves
   // the reason name at its own door first.
