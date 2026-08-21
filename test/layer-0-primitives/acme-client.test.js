@@ -85,6 +85,16 @@ async function testFinalize() {
   await acme2.newAccount({});
   var before = s2.calls.length;
   check("#2 a mismatched CSR identifier set is rejected", (await codeOf(acme2.finalize({ finalize: A.URLS.finalize, identifiers: [{ type: "dns", value: "evil.example" }] }, { csr: CSR }))) === "acme/csr-identifier-mismatch");
+  // #2b a CSR carrying the order's name in a SAN and an unauthorized one in its subject is a request
+  // for a name the order does not cover: a CA that carries the common name through into the issued
+  // certificate would put that name in it. Where the ISSUED certificate is read, a common name beside
+  // a SAN is not an identity and is ignored -- the two sides answer different questions, and this one
+  // is about what the request asks for.
+  var smugKp = signing.makeSigner("ec-p256", { cn: "victim.example" });
+  var smugCsr = await pki.csr.sign({ subject: "victim.example", subjectPublicKey: smugKp.spki,
+    extensionRequest: { subjectAltName: [{ dNSName: "example.org" }] } }, { key: smugKp.key });
+  check("#2b a CSR smuggling an unauthorized common name past an authorized SAN is rejected",
+    (await codeOf(acme2.finalize({ finalize: A.URLS.finalize, identifiers: [{ type: "dns", value: "example.org" }] }, { csr: smugCsr }))) === "acme/csr-identifier-mismatch");
   check("#2 the finalize gate ran before any POST to the finalize URL", s2.calls.filter(function (c, i) { return i >= before && c.url === A.URLS.finalize; }).length === 0);
 }
 
@@ -1168,6 +1178,14 @@ async function testIssuedCertificateBinding() {
   var acme11c = await withAccount(serve(badIpNoSan));
   check("#17 BD-11c a certificate whose only name is an unmappable common name is refused",
     (await codeOf(acme11c.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/unsupported-identifier-type");
+
+  // BD-11e an address in a common name is not an ip identity even spelled canonically. Address
+  // matching reads the iPAddress SAN and never falls back to the common name, so a certificate naming
+  // the ordered address only there cannot authenticate it.
+  var ipCnOnly = signing.minimalCert(mine.spki, { cn: "192.0.2.1" });
+  var acme11e = await withAccount(serve(ipCnOnly));
+  check("#17 BD-11e a canonical address in a common name alone is not an ip identity",
+    (await codeOf(acme11e.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/unsupported-identifier-type");
 
   // BD-11d two common names, no SAN: one is the order's, the other a trailing-dot spelling that a
   // hostname matcher accepts as a name this certificate covers. Leaving the second out would let the
