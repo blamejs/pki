@@ -1126,6 +1126,25 @@ async function testIssuedCertificateBinding() {
   check("#17 BD-10 a replaced traversal cannot present a name the certificate does not carry (got " + feCode + ")",
     feCode === "acme/certificate-identifier-mismatch");
 
+  // BD-11 an IP certificate carries the address in the common name AND in an iPAddress SAN, which
+  // CABF TLS BR 7.1.4.2.2 permits (a commonName may match either a dNSName or an iPAddress SAN), and
+  // the order carries it once as an ip identifier. Counting that common name as a dns name would make
+  // a correct issuance compare as two identifiers against the order's one and refuse it.
+  var ipSan = b.sequence([b.oid(pki.oid.byName("subjectAltName")),
+    b.octetString(b.sequence([b.contextPrimitive(7, Buffer.from([192, 0, 2, 1]))]))]);
+  var ipLeaf = signing.minimalCert(mine.spki, { cn: "192.0.2.1", exts: [ipSan] });
+  var acme11 = await withAccount(serve(ipLeaf));
+  var r11 = await acme11.downloadCertificate(A.URLS.certificate,
+    { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] });
+  check("#17 BD-11 an IP certificate naming the address in both CN and SAN binds to an ip order",
+    r11.certificate.equals(ipLeaf) && r11.boundToIdentifiers === true);
+  // BD-11b a common name that reads as an address but is not its canonical form maps to no order
+  // identifier, and is refused rather than normalized into one.
+  var badIpLeaf = signing.minimalCert(mine.spki, { cn: "192.0.2.01", exts: [ipSan] });
+  var acme11b = await withAccount(serve(badIpLeaf));
+  check("#17 BD-11b a non-canonical IP-literal common name is refused",
+    (await codeOf(acme11b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }))) === "acme/unsupported-identifier-type");
+
   // BD-8 bad binding input is a config error, refused before the certificate is read.
   var acme8 = await withAccount(serve(myLeaf));
   check("#17 BD-8 a non-Buffer expectedSpki is refused",
