@@ -983,19 +983,39 @@ security-only patches after the next major releases.
   client installs is bound to the order it placed by the client rather than by
   the wire. `downloadCertificate` checks the returned end-entity certificate
   against the order in both respects: it must certify the public key that order's
-  CSR asked to have certified, and its identifier set — subject common names plus
-  dNSName and iPAddress subject alternative names — must equal the order's
-  identifiers, under the same relation the outbound CSR check uses so the two
-  halves cannot disagree. At least one of the two is required by default, since a
-  caller holding only the order or only the CSR can still bind what it has; a
-  download supplying neither is refused rather than returned unchecked. The
-  result reports which of the two ran, so a binding that was not performed cannot
-  read as one that was, and neither can a waived one. An identifier that maps to
-  no certificate name — a registered ACME identifier type other than `dns` or
-  `ip`, or a `subjectAltName` that is neither a dNSName nor an iPAddress — is
-  refused rather than dropped, so the comparison never reports a set as checked
-  after leaving part of it out. The check covers whichever chain is returned, an
-  alternate chosen through `selectChain` included.
+  CSR asked to have certified, and its identifier set must equal the order's
+  identifiers. At least one of the two is required by default, since a caller
+  holding only the order or only the CSR can still bind what it has; a download
+  supplying neither is refused rather than returned unchecked. The result reports
+  which of the two ran, so a binding that was not performed cannot read as one
+  that was, and neither can a waived one. The check covers whichever chain is
+  returned, an alternate chosen through `selectChain` included.
+
+  A certificate's identifier set is its dNSName and iPAddress subject alternative
+  names; its subject common name is read only where it asserts none. Where an
+  alternative name is present the common name is not an additional identity —
+  name matching has read the alternative names and ignored the common name for
+  many years, and CABF TLS BR 7.1.4.2.2 requires any common name to appear among
+  them anyway — and an address in a common name is never an IP identity, because
+  address matching does not fall back to it. The outbound CSR check deliberately
+  parts from that and reads every common name the request carries, alternative
+  names present or not: the two sides answer different questions. The issued
+  certificate's set says what that certificate authenticates. The CSR's says what
+  the request is asking to have certified, and a CA may carry a common name
+  through into the certificate it issues, so a request naming the order's
+  identifier in an alternative name and an unauthorized one in its subject is a
+  request for a name the order does not cover.
+
+  A name that maps to no ACME order identifier is refused rather than dropped, on
+  both sides: an order identifier of a registered type other than `dns` or `ip`,
+  a `subjectAltName` that is neither a dNSName nor an iPAddress, and a subject
+  common name that is neither a dns name nor a canonical IP address. Dropping one
+  would let a set report as checked after leaving part of it out — a subject may
+  carry several common names, and dropping the unmappable one while another
+  supplies the match reports the set as bound while the certificate still names
+  something the order never covered. Names are folded with ASCII case rules
+  rather than the Unicode mapping, so a character whose Unicode lowercase is
+  ASCII is not read as the ASCII name it would fold to.
 - **ACME client transport is fail-closed on the wire (CWE-295 / CWE-319 /
   CWE-770 / CWE-294).** `pki.acme.client` drives a live directory over the same
   `pki.transport` socket choke point, with no path that disables TLS server
