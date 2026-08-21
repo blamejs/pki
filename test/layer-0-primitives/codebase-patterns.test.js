@@ -278,6 +278,7 @@ function _executableSource(src) {
   var quote = null;
   var lit = "";
   var esc = false;
+  var tpl = [];   // one brace-depth counter per open `${ }`, so nesting returns to the right level
   for (var i = 0; i < src.length; i++) {
     var ch = src[i];
     var nx = src[i + 1];
@@ -289,6 +290,16 @@ function _executableSource(src) {
     if (quote !== null) {
       if (esc) { lit += ch; esc = false; continue; }
       if (ch === "\\") { esc = true; continue; }
+      // A template interpolation RUNS. Only the literal segments around it are text, so the scan
+      // leaves literal mode here and reads `${ ... }` as the code it is.
+      if (quote === "`" && ch === "$" && nx === "{") {
+        out += quote + quote;
+        lit = ""; quote = null;
+        tpl.push(0);
+        out += " ";
+        i++;
+        continue;
+      }
       if (ch === quote) {
         out += lit === "./guard-intrinsic" ? quote + lit + quote : quote + quote;
         quote = null; lit = "";
@@ -296,6 +307,13 @@ function _executableSource(src) {
       }
       lit += ch;
       continue;
+    }
+    if (tpl.length > 0) {
+      if (ch === "{") { tpl[tpl.length - 1]++; }
+      else if (ch === "}") {
+        if (tpl[tpl.length - 1] === 0) { tpl.pop(); quote = "`"; lit = ""; out += " "; continue; }
+        tpl[tpl.length - 1]--;
+      }
     }
     if (ch === "/" && nx === "/") { while (i < src.length && src[i] !== "\n") i++; out += "\n"; continue; }
     if (ch === "/" && nx === "*") { inBlock = true; i++; continue; }
