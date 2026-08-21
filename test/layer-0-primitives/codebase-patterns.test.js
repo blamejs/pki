@@ -262,7 +262,9 @@ function _stripCommentsAndLiterals(content) {
 }
 
 // The executable text of a source file: comments removed, and every string literal emptied EXCEPT
-// one whose whole content is a module path, which is kept so a `require("...")` stays readable.
+// one whose whole content is a name the scope test asks about, which is kept so `require("...")`
+// and `guard["intrinsic"]` stay readable. A literal that merely CONTAINS such a name is still
+// emptied, which is what separates the code from a quotation of it.
 //
 // It carries block-comment and string state across lines because neither can be settled a line at a
 // time, and guessing from a leading `*` is wrong in both directions: it skips `*/ realCode()`, and
@@ -301,7 +303,7 @@ function _executableSource(src) {
         continue;
       }
       if (ch === quote) {
-        out += lit === "./guard-intrinsic" ? quote + lit + quote : quote + quote;
+        out += (lit === "./guard-intrinsic" || lit === "intrinsic") ? quote + lit + quote : quote + quote;
         quote = null; lit = "";
         continue;
       }
