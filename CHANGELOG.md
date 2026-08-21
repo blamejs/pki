@@ -4,6 +4,26 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.21 — 2026-08-21
+
+The check that holds the crypto engine to load-time captures could be satisfied around, so nine modules had taken the safe primitive at one site and were never held to it anywhere else.
+
+### Added
+
+- `guard.intrinsic.bufferEquals`, the captured byte-identity comparison the bindings above are decided with.
+
+### Changed
+
+- Taking the captures has one spelling again. The guard orchestrator no longer re-exports them, so a module reaches them by importing the module that holds them, and the check reads that off the loaded module graph rather than off the text. This is the enforcement change: a module that adopts one safe primitive is held to the rule everywhere, and no way of writing the import, or of writing something that resembles one, changes the answer.
+- The seven modules the widened check surfaced carry a declared count of remaining reads rather than an exemption. A new live read pushes a module past its figure and fails, and converting reads without lowering the figure fails too, so the number keeps naming the real count. A module reaching zero leaves the list and is held to zero.
+
+### Fixed
+
+- An OCSP response is bound to the certificate it answers for with captured byte comparisons. The CertID says the response concerns this issuer and the responder ID says this key signed it, and both were decided by a `Buffer.prototype.equals` read at call time: replaced after load it reports every hash equal, and a `good` signed by a different CA answers for the certificate under check.
+- The signer's key is matched to its certificate under a captured case fold. WebCrypto algorithm names compare case-insensitively, so the check folds both sides; dispatched live, a replaced fold reported two different algorithm names equal and a key whose algorithm does not match the certificate passed the gate that exists to catch exactly that.
+- `pki.sign` decides the RSASSA-PSS parameters, the digest tables and its key-shape tests on captured operations, so a caller who replaces one after this package loads cannot change which algorithm a signature runs under.
+- A signing key is classified by asking the value what it is rather than by `instanceof` against a global. The old test read the `Uint8Array` binding at call time, and it answered wrongly in both directions on its own terms: a real typed array from another realm was not one, and an object built on the prototype was.
+
 ## v0.5.20 — 2026-08-20
 
 Five verdicts that turned on list membership now decide it by comparison, so replacing an array method after the module loads cannot change what a certificate, a responder or a signed message is found to be.

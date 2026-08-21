@@ -261,6 +261,25 @@ function _stripCommentsAndLiterals(content) {
   return out;
 }
 
+// Does this module take the guard-intrinsic captures? Asked of the LOADED MODULE GRAPH, not of the
+// text. Node records what each module actually required, so this is the fact itself rather than a
+// reading of the source, and no way of writing the import or of hiding one changes the answer: a
+// commented-out or quoted require is not in the graph, and neither is a name that only appears in
+// prose. Deciding it lexically needed a scanner that carried comment, string, template and regex
+// state, and settling a regex against a division still wanted a real parser.
+//
+// guard-all deliberately does not re-export the captures, so a DIRECT require is the only way to
+// reach them, and a direct require is exactly what shows up here as a child.
+function _takesCaptures(absPath) {
+  var entry = require.cache[absPath];
+  if (!entry) return false;   // never loaded: it cannot have taken them
+  for (var i = 0; i < entry.children.length; i++) {
+    if (/[\\/]guard-intrinsic\.js$/.test(entry.children[i].filename)) return true;
+  }
+  return false;
+}
+
+
 // ---------------------------------------------------------------------------
 // (a) SPDX header + "use strict" on every source file
 // ---------------------------------------------------------------------------
@@ -2787,6 +2806,10 @@ function testAsn1ReaderExists() {
 
 function testGuardReadsRuntimeLive() {
   // class: guard-reads-runtime-live
+  // Load the toolkit so the module graph the scope decision reads is populated. Requiring the entry
+  // point pulls in every lib module, and a module the entry point never reaches cannot be taking
+  // the captures in anything that ships.
+  require("../../index.js");
   // A guard decides things, and it decides them with operations it reads from the runtime. Every
   // one of those is an ordinary writable property of a global, so reading it at the moment it runs
   // hands the decision to whoever last wrote it. The failures are silent and in the PASSING
@@ -2853,18 +2876,39 @@ function testGuardReadsRuntimeLive() {
   // a replacement the sentinel is a different object and every comparison against it is false.
   // A `uncurry(X.prototype.m)` capture is a call-time-free read taken at load, so it is excluded.
   var protoRe = /(?:^|[^\w.$])(Object|Buffer|Array|Function|Promise)\.prototype(?!\s*\.\s*\w+\s*\))/g;
-  // SCOPE, chosen so it needs no list to maintain. A module is IN if it imports guard-intrinsic:
-  // taking the captures is how a module opts into the discipline, and once opted in it is held to
-  // it completely rather than at the one site somebody happened to change. A module that has not
-  // opted in is out of scope and stays out until it does, so the rule extends by the same edit
-  // that would otherwise create a half-swept file. Naming the modules instead would be a judgment
-  // about which ones decide things, and the seven rounds above are what that judgment is worth.
+  // SCOPE, chosen so it needs no list to maintain. A module is IN once it takes the captures:
+  // that is how it opts into the discipline, and once opted in it is held to it completely rather
+  // than at the one site somebody happened to change. A module that has not opted in is out of
+  // scope and stays out until it does, so the rule extends by the same edit that would otherwise
+  // create a half-swept file. Naming the modules instead would be a judgment about which ones
+  // decide things, and the seven rounds above are what that judgment is worth.
+  //
+  // Taking the captures has TWO spellings, and matching only the first left the rule satisfiable
+  // around: a module that reached them through the guard orchestrator as `guard.intrinsic.<x>` got
+  // the safe primitive at the site it changed and never entered scope, so its remaining live reads
+  // were never named. Nine modules were in that state. Both spellings arm the check.
   var bad = [];
   _libFiles().forEach(function (f) {
     var rel = _relPath(f);
     if (rel === "lib/guard-intrinsic.js") return;   // where the captures are taken
     var src = fs.readFileSync(f, "utf8");
-    if (!/require\(["']\.\/guard-intrinsic["']\)/.test(src)) return;
+    // The second spelling is matched WITHOUT naming its receiver. `guard` is what every module
+    // calls the orchestrator today, and anchoring on that name would rebuild the same hole one
+    // rename away: a module binding it as anything else would reach the captures and stay outside.
+    //
+    // Both are decided from EXECUTABLE source. Read off the raw file, a `.intrinsic.` written in a
+    // comment or a documentation example enrolls a module that never touches the captures, and the
+    // gate then demands a conversion that has nothing to do with what the file does. The two
+    // spellings need different text: the require path IS a string literal, so it is matched with
+    // comments removed and literals intact, while the property access is matched with both removed.
+    // Decided from EXECUTABLE text, so neither spelling can be conjured by prose. A `.intrinsic.`
+    // in a comment or a documentation string enrolls a module that never touches the captures and
+    // the gate then demands conversions unrelated to anything the file does, while a commented-out
+    // or quoted `require` does the same. Emptying every literal except an actual module path is
+    // what separates the call from a quotation of it: `require("./guard-intrinsic")` keeps its
+    // argument, and a string reading `"require('./guard-intrinsic')"` is one literal whose content
+    // is something longer, so it collapses and takes the require wording inside it with it.
+    if (!_takesCaptures(f)) return;
     var lines = _lines(src);
     for (var i = 0; i < lines.length; i++) {
       // A `*`-led line is the continuation of a block comment. The stripper works one line at a
@@ -2911,7 +2955,47 @@ function testGuardReadsRuntimeLive() {
     }
   });
   bad = _filterMarkers(bad, "guard-reads-runtime-live");
-  _report("no module that imports guard-intrinsic reads a replaceable runtime operation at call time", bad);
+
+  // MIGRATING, a per-module budget rather than a skip list. Widening the scope above to both
+  // spellings of "takes the captures" armed nine modules at once, and their reads are being
+  // converted a module at a time. A budget is not an exemption: it names an exact number, so a NEW
+  // live read in one of these files pushes the module over its figure and fails the gate the same
+  // way a fresh one would. The number is the only thing on this list -- there is no per-site
+  // allowance, so nothing can hide behind "already dirty".
+  //
+  // It ratchets DOWN only. Converting sites without lowering the figure also fails, because a
+  // budget nobody tightens is a number that stops meaning anything, and the next reader would take
+  // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
+  var MIGRATING = {
+    "lib/path-validate.js": 197,
+    "lib/cms-sign.js": 93,
+    "lib/tsp-sign.js": 89,
+    "lib/pkcs12-build.js": 78,
+    "lib/cms-verify.js": 76,
+    "lib/cms-encrypt.js": 73,
+    "lib/cms-decrypt.js": 53,
+  };
+  var counts = {};
+  bad.forEach(function (b) { counts[b.file] = (counts[b.file] || 0) + 1; });
+  var over = [];
+  Object.keys(MIGRATING).forEach(function (f) {
+    var actual = counts[f] || 0;
+    if (actual > MIGRATING[f]) {
+      over.push({ file: f, line: 1,
+        content: "has " + actual + " live runtime reads against a declared budget of " +
+          MIGRATING[f] + " — a new one was added to a file that is mid-conversion; convert it, or " +
+          "convert an equal number of the existing reads in the same change" });
+    } else if (actual < MIGRATING[f]) {
+      over.push({ file: f, line: 1,
+        content: "has " + actual + " live runtime reads against a stale budget of " + MIGRATING[f] +
+          " — lower the figure in MIGRATING to " + actual + " (or delete the entry at zero), so the " +
+          "number keeps naming the real count" });
+    }
+  });
+  // A module with a budget reports only against that budget; everything else reports per site.
+  bad = bad.filter(function (b) { return !Object.prototype.hasOwnProperty.call(MIGRATING, b.file); })
+    .concat(over);
+  _report("no module that takes the guard-intrinsic captures reads a replaceable runtime operation at call time", bad);
 }
 
 function testEveryGuardEnforced() {
