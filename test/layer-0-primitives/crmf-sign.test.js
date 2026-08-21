@@ -337,6 +337,17 @@ async function testPopoPrivKeyArms() {
       pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPkcs8, identifier: "d",
         recipients: [{ cert: recip.cert }], archive: true } }))) === "crmf/bad-input");
 
+  // V7b -- encryptedKey is legal under keyAgreement too, and the asymmetry with agreeMAC is the
+  // specification's. RFC 4211 sec. 4.3: key-agreement POP has four methods and "the first three are
+  // identical to those presented above for key encryption keys", the first of sec. 4.2's three being
+  // "the private key can be provided to the CA/RA". Only the MAC is agreement-only. Pinned because
+  // the pairing reads like an oversight, and the parser accepts it under both arms: narrowing the
+  // builder would make the two directions disagree about one message.
+  var agrEncDer = await pki.crmf.build(spec({ type: "keyAgreement", method: "encryptedKey",
+    privateKey: kemPkcs8, identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true }));
+  check("POP encryptedKey is accepted under keyAgreement (RFC 4211 sec. 4.3)",
+    parse(agrEncDer)[0].popo.type === "keyAgreement" && parse(agrEncDer)[0].popo.method === "encryptedKey");
+
   // V9e -- one key has more than one legal SPKI. A P-256 key whose template carries the COMPRESSED
   // point is the same key as the uncompressed form publicFromPrivate derives, and the signature arm
   // already accepts such a template, so refusing it here would make one arm of the verb reject what
@@ -369,6 +380,25 @@ async function testPopoPrivKeyArms() {
   await pki.crmf.build(spec({ type: "keyEncipherment", method: "encryptedKey", privateKey: wipeKey,
     identifier: "device-42", recipients: [{ cert: recip.cert }], archive: true }));
   check("POP the caller's own private key buffer is left intact", wipeKey.equals(wipeBefore));
+
+  // V9g -- the wipe has to cover the SYNCHRONOUS refusals too. An empty recipient list is rejected
+  // after the arm has taken its own plaintext copy of the key, and cleanup attached to the promise
+  // runs on none of those paths. Counted, not asserted as a boolean: the argument boundary makes its
+  // own deep copy with identical bytes and clears that, so one cleared copy means this arm's snapshot
+  // survived and two means it did not. Observed from a child process for the reason the helper states.
+  var syncObs = require("node:child_process").spawnSync(process.execPath,
+    [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+    { encoding: "utf8", input: JSON.stringify({ op: "crmf-encryptedkey-sync-fail",
+      key: Buffer.from(kemPkcs8).toString("base64"), spki: Buffer.from(kemSpki).toString("base64") }) });
+  var syncRep = null;
+  if (!syncObs.error && syncObs.status === 0) {
+    try { syncRep = JSON.parse(String(syncObs.stdout).trim().split("\n").pop()); } catch (_e) { syncRep = null; }
+  }
+  check("POP the synchronous-refusal wipe observation ran (child exit " + syncObs.status + ")", syncRep !== null);
+  var keyB64 = Buffer.from(kemPkcs8).toString("base64");
+  var clearedCopies = syncRep ? syncRep.wiped.filter(function (w) { return w.before === keyB64; }).length : 0;
+  check("POP a synchronous refusal still clears this arm's own key copy (cleared " + clearedCopies + ")",
+    !!syncRep && syncRep.code === "crmf/bad-input" && clearedCopies >= 2);
 
   // V9d -- the arm composes the CMS producer, and that composition is invisible to the caller. A
   // malformed recipient or an algorithm CMS does not carry must still surface in this module's
