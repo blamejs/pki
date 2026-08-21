@@ -1914,6 +1914,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-ocsp.js:_validateOcspExtensions",
         "lib/schema-csrattrs.js:<top>", "lib/schema-smime.js:signingCertificateSchema",
         "lib/schema-cmc.js:<top>", "lib/schema-cmc.js:rawList", "lib/schema-crmf.js:crmfName",
+        "lib/schema-cms.js:keyIdentifierSchema",
       ],
       mode: "family-subset",
       reason: "per-format schema.seq/decode declarations + build-fn output assembly share the combinator idiom (different fields/codes each); the combinators live in the engine, nothing further to extract.",

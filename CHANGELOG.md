@@ -4,6 +4,35 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.26 — 2026-08-21
+
+Revoking a certificate and asking a certification authority what it offers now go through the same verified CMP transaction as enrollment.
+
+### Added
+
+- `session.revoke(request)` drives the RFC 9483 sec. 4.2 revocation exchange. The request names the certificate as `{ certificate }` or as `{ certDetails: { issuer, serialNumber } }`, with an optional `reason` taking a CRLReason name. It returns a terminal verdict of `revoked`, `rejected`, or `poll-timeout`, carrying the responder's `PKIStatusInfo` and any `CertId` values and CRLs the response supplied.
+- `session.info(request)` drives the four RFC 9483 sec. 4.3 support messages, one per call. `{ caCerts: true }` asks for the certification authority certificates available for chain construction. `{ rootCaCert: <cert> }` asks for a root key update and reads the `RootCaKeyUpdateContent` reply. `{ certReqTemplate: true }` asks for the requirements a future certificate request should meet, returning the template and any `keySpec` constraints. `{ crlUpdate: { issuer | dpn, thisUpdate? } }` asks for a CRL from a named source. The verdict is `answered`, `rejected`, or `poll-timeout`; `answered` reports `present` alongside `value`, since an absent response value is how each of the four says nothing is available.
+- `pki.cmp.build` accepts a structured `crlEntryDetails` on an `rr` body: `{ reason: 'keyCompromise' }` encodes the reasonCode extension the profile requires. A pre-encoded `Extensions` DER is still accepted for an entry extension outside that shape.
+- The `id-regCtrl-algId`, `id-regCtrl-rsaKeyLen`, and `id-regCtrl-altCertTemplate` object identifiers RFC 9480 sec. 2.16 adds are in the registry, so a `keySpec` control resolves to a name.
+
+### Changed
+
+- Delayed delivery is recognized for a revocation and a support message. RFC 9483 sec. 4.4 puts the `waiting` status in an `ip`, `cp`, or `kup` when answering an enrollment and in an error message when answering anything else, so an error body carrying `waiting` now drives the bounded poll loop for those two operations, with the `pollReq` referring to the whole message. An error answering an enrollment remains a rejection, which is the only shape that profile produces there.
+- One transaction per session covers all three verbs. A session that has revoked will not then enroll, because both would run under the same transactionID and nonce chain.
+
+### Security
+
+- A session revokes its own certificate. The signature over an `rr` is the proof of authorization to revoke (RFC 9483 sec. 4.2), so the certificate named in the request must be the one the session protects its messages with, compared by serial number and by the RFC 5280 sec. 7.1 canonical distinguished-name rule. A PBMAC1 session is refused outright: a shared secret establishes a bootstrapping relationship and says nothing about which certificate the holder may revoke. Revocation on behalf of another entity is a registration authority operation and is driven with `pki.cmp.build` and `pki.cmp.transfer`.
+- The reasonCode is always sent, at `unspecified(0)` when no reason is given. RFC 9483 sec. 4.2 makes `crlEntryDetails` required and says the code must be 0 when the reason is unknown or is not to be published. This is the opposite of the RFC 5280 sec. 5.3.1 rule for a CRL entry, where absence and `unspecified` carry the same meaning and the extension is omitted, so the CRL behavior is not reused here.
+- A response is held to the shape its operation defines before its content is read. An `rp` must carry exactly one status, and an accepted one must not also carry `failInfo`. A `genp` must carry exactly one `InfoTypeAndValue`, whose infoType must be the one that operation is answered with: a root key update is requested with `id-it-rootCaCert` and answered with `id-it-rootCaKeyUpdate`, so a response echoing the request identifier is a different operation's answer and is refused.
+- A `rootCaKeyUpdate` response must carry `newWithOld`. RFC 9480 marks the field OPTIONAL in the syntax and RFC 9483 sec. 4.3.2 requires it of a response, for the reason it states: an entity that trusts the old root needs that certificate to gain trust in the new one, and without it the update cannot be acted on.
+- A `certReqTemplate` response must omit `publicKey`, `serialNumber`, `signingAlg`, `issuerUID`, and `subjectUID` from its template (RFC 9483 sec. 4.3.3). A template stating a public key would direct an entity to request a certificate over a key the responder chose, which is what the `keySpec` field exists to avoid. A `keySpec` control must be `id-regCtrl-algId` carrying a non-RSA AlgorithmIdentifier or `id-regCtrl-rsaKeyLen` carrying a positive integer.
+
+### Notes
+
+- A `crlUpdate` identifies the requested CRL by exactly one of `dpn` or `issuer`, since `CRLSource` is a CHOICE. The `dpn` arm takes `fullName`; the `nameRelativeToCRLIssuer` alternative is not built, which is the line `pki.crl.sign` already draws for `issuingDistributionPoint` and `freshestCRL`.
+- The registration authority side of these operations is unchanged: `krr` and `ccr` requests and the `nested` body remain unbuildable, and a session has no way to resume a poll across a process restart.
+
 ## v0.5.25 — 2026-08-21
 
 A key that cannot sign can now prove possession, so an ML-KEM certificate request has a proof to carry instead of no option at all.

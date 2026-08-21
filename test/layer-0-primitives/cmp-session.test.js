@@ -1003,6 +1003,291 @@ async function run() {
   check("147. a MAC session accepts 936 distinct intermediates (only caPubs reserved, no signer chain) -> constructs (a signature session's 904 cap rejects far fewer)", typeof pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-147" }, trustAnchors: [H.caCert], intermediates: DISTINCT_MAC.slice(0, 936), transport: macTransport147, sleep: function () { return Promise.resolve(); } }).enroll === "function");
   check("148. a MAC session rejects 937 distinct intermediates (one over its per-flavor cap) -> cmp/bad-input at construction", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-148" }, trustAnchors: [H.caCert], intermediates: DISTINCT_MAC.slice(0, 937) }); })) === "cmp/bad-input");
 
+  // ============================================================================================
+  // Revocation (rr -> rp, RFC 9483 sec. 4.2) and the support messages (genm -> genp, sec. 4.3),
+  // both under the same one-transaction shell as enroll. Delayed delivery for these operations
+  // rides an ERROR body carrying status waiting (sec. 4.4), never an rp or a genp.
+  // ============================================================================================
+
+  var B = pki.asn1.build;
+  var OWN = pki.schema.x509.parse(CLIENT.cert);             // the session's own protection certificate
+  var OTHER = pki.schema.x509.parse(H.leafCert);            // a certificate this session did not protect with
+  // A REAL CertificateList. A revocation response and a crlUpdate answer both deliver CRLs to a
+  // caller that acts on them, so the fixture has to be the structure the operation claims: a
+  // certificate would pass a shape-only reader and hand back something no revocation check reads.
+  var REAL_CRL = await pki.crl.sign({
+    thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"),
+    crlNumber: 1n, revoked: [{ serialNumber: 42n, revocationDate: new Date("2026-01-02T00:00:00Z") }],
+  }, { key: CLIENT.key, cert: CLIENT.cert });
+  // Decode the crlEntryDetails reasonCode out of a sent rr, so the encoding claims are byte claims.
+  function sentRr(transport, i) { return pki.schema.cmp.parse(transport.calls[i].body).body.decoded; }
+  function reasonOf(revDetails) {
+    var exts = revDetails.crlEntryDetails;
+    if (!Array.isArray(exts)) return "NO-CRL-ENTRY-DETAILS";
+    for (var i = 0; i < exts.length; i++) {
+      if (exts[i].name === "reasonCode") return Number(pki.asn1.read.enumerated(pki.asn1.decode(exts[i].value)));
+    }
+    return "NO-REASON-CODE";
+  }
+
+  // ===== 149. the happy path: rr -> rp(accepted) -> outcome:revoked =====
+  var s149 = mk([H.rp(0)]);
+  var r149 = await s149.session.revoke({ certificate: CLIENT.cert });
+  check("149a. an accepted rp -> outcome:revoked", r149.outcome === "revoked");
+  check("149b. the CA's PKIStatusInfo is surfaced on the verdict", r149.status && r149.status.status.code === 0);
+  check("149c. exactly ONE request leg crossed the seam (the rr; a revocation has no confirmation handshake)", s149.transport.calls.length === 1);
+  check("149d. the verdict carries the transactionID + a transcript of both directions", Buffer.isBuffer(r149.transactionID) && r149.transcript.length === 2);
+
+  // ===== 150. the rr encoding: ONE RevDetails, issuer+serial of the named certificate, and a
+  //            crlEntryDetails reasonCode that is PRESENT at 0 (sec. 4.2 requires it; RFC 5280
+  //            sec. 5.3.1 omits unspecified(0) from a CRL entry, which is the opposite rule). =====
+  var rr150 = sentRr(s149.transport, 0);
+  check("150a. the rr carries exactly one RevDetails (sec. 4.2)", Array.isArray(rr150) && rr150.length === 1);
+  check("150b. certDetails names the certificate by serialNumber", rr150[0].certDetails.serialNumber === OWN.serialNumber);
+  check("150c. certDetails names the certificate by issuer", rr150[0].certDetails.issuer != null);
+  check("150d. crlEntryDetails carries a reasonCode of 0 when no reason was given -- PRESENT, not omitted (sec. 4.2)", reasonOf(rr150[0]) === 0);
+
+  // ===== 151. a named reason encodes as its CRLReason value =====
+  var s151 = mk([H.rp(0)]);
+  await s151.session.revoke({ certificate: CLIENT.cert, reason: "keyCompromise" });
+  check("151a. reason:keyCompromise encodes as CRLReason 1", reasonOf(sentRr(s151.transport, 0)[0]) === 1);
+  var s151b = mk([H.rp(0)]);
+  await s151b.session.revoke({ certificate: CLIENT.cert, reason: "cessationOfOperation" });
+  check("151b. reason:cessationOfOperation encodes as CRLReason 5", reasonOf(sentRr(s151b.transport, 0)[0]) === 5);
+  check("151c. an unknown reason name -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({ certificate: CLIENT.cert, reason: "notARealReason" })) === "cmp/bad-input");
+
+  // An rp MAY deliver CRLs alongside the status, and they reach the caller on the same verdict, so
+  // the rule that a support-message value must be the structure it claims holds here too.
+  var s149c = mk([H.rp(0, null, { crls: [REAL_CRL] })]);
+  var r149c = await s149c.session.revoke({ certificate: CLIENT.cert });
+  check("149e. an rp's delivered CRLs are surfaced on the verdict", r149c.outcome === "revoked" && r149c.crls.length === 1 && r149c.crls[0].equals(REAL_CRL));
+  // The verdict holds those entries to being CertificateLists through the same reader the
+  // support-message answer uses, which vector 172a2 drives. There is no vector for it HERE
+  // because this fake responder builds its messages with pki.cmp.build, and that verb already
+  // refuses a non-CRL in rp.crls (probed: cmp/bad-rev-rep, "a crls entry is not a valid CRL").
+  // Reaching it needs a peer that does not build through this toolkit, so the check on this path
+  // is a defense against exactly that and is deliberately left without a vector of its own.
+
+  // ===== 152. a rejection is a terminal VERDICT carrying the diagnostic, never a throw =====
+  var r152 = await mk([H.rp(2, ["badRequest"])]).session.revoke({ certificate: CLIENT.cert });
+  check("152. a rejection rp -> outcome:rejected with the failInfo surfaced", r152.outcome === "rejected" && r152.status.status.code === 2 && r152.status.failInfo.bits.indexOf("badRequest") !== -1);
+
+  // sec. 4.2 makes failInfo PROHIBITED under an accepted status, so a response asserting both at once
+  // is contradictory: it says the revocation succeeded and names the reason it did not.
+  check("152b. an ACCEPTED rp carrying failInfo -> refused (sec. 4.2: failInfo MUST be absent)", /^cmp\//.test(await codeOf(mk([H.rp(0, ["badRequest"])]).session.revoke({ certificate: CLIENT.cert }))));
+
+  // ===== 153. sec. 4.2: "MUST contain a sequence of one element" -- two statuses is refused =====
+  check("153. an rp carrying more than one status -> refused (sec. 4.2)", /^cmp\//.test(await codeOf(mk([H.rpMultiStatus()]).session.revoke({ certificate: CLIENT.cert }))));
+
+  // ===== 154. sec. 4.2: the rr is signed WITH the certificate being revoked, which is how the
+  //            authorization to revoke is proven. Revoking any other certificate is refused. =====
+  check("154. revoking a certificate the session did not protect with -> cmp/bad-input (sec. 4.2)", await codeOf(mk([H.rp(0)]).session.revoke({ certificate: H.leafCert })) === "cmp/bad-input");
+  check("154b. the same via an explicit certDetails naming another certificate -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({ certDetails: { issuer: OTHER.issuer.bytes, serialNumber: OTHER.serialNumber } })) === "cmp/bad-input");
+
+  // ===== 155. a MAC session has no certificate, so it cannot prove authorization to revoke one =====
+  var mac155 = H.fakeCa(pki, [H.rp(0)], { macSecret: "s3cr3t-155" });
+  var s155 = pki.cmp.session({ url: URL, mac: { secret: "s3cr3t-155" }, transport: mac155.transport });
+  check("155. a PBMAC1 session refuses revoke -> cmp/bad-input (sec. 4.2 requires signature protection with the revoked certificate)", await codeOf(s155.revoke({ certificate: CLIENT.cert })) === "cmp/bad-input");
+  // The comparison needs opts.cert to BE a certificate. A session constructed with something else
+  // fails here rather than at the first build, so the transaction is never engaged.
+  var s155b = pki.cmp.session({ url: URL, key: CLIENT.key, cert: Buffer.from([1, 2, 3]), trustAnchors: [H.caCert], transport: mk([H.rp(0)]).transport });
+  check("155b. a session whose opts.cert is not a certificate refuses revoke -> cmp/bad-input", await codeOf(s155b.revoke({ certificate: CLIENT.cert })) === "cmp/bad-input");
+
+  // ===== 156/157. the response arm and the verify-before-read ordering =====
+  check("156. an rr answered by an ip -> cmp/unexpected-arm", await codeOf(mk([H.ip(0, 0, certDer)]).session.revoke({ certificate: CLIENT.cert })) === "cmp/unexpected-arm");
+  check("157. a TAMPERED rp carrying an ACCEPTED status is refused BEFORE the status is read", await codeOf(mk([{ body: H.rp(0), tamper: true }]).session.revoke({ certificate: CLIENT.cert })) === "cmp/protection-failed");
+
+  // ===== 158/159. delayed delivery (sec. 4.4): an ERROR body with status waiting drives the poll
+  //                loop, and the pollReq refers to the whole message with certReqId -1. =====
+  var s158 = mk([H.errorWaiting(), H.pollRep(-1, 1), H.pollRep(-1, 1), H.pollRep(-1, 1)], { maxPolls: 2 });
+  var r158 = await s158.session.revoke({ certificate: CLIENT.cert });
+  check("158a. an error body with status waiting drives the poll loop -> poll-timeout at the budget", r158.outcome === "poll-timeout" && r158.polls === 2);
+  check("158b. the pollReq refers to the whole message with certReqId -1 (sec. 4.4)", sentRr(s158.transport, 1)[0].certReqId === -1n);
+  var s159 = mk([H.errorWaiting(), H.pollRep(-1, 1), H.rp(0)]);
+  var r159 = await s159.session.revoke({ certificate: CLIENT.cert });
+  check("159. polling through to the final rp -> revoked", r159.outcome === "revoked" && r159.polls === 2);
+
+  // ===== 160/161/162. one transaction per session, and the request-shape doors =====
+  var s160 = mk([H.rp(0), H.rp(0)]);
+  await s160.session.revoke({ certificate: CLIENT.cert });
+  check("160a. a SECOND revoke on a consumed session -> cmp/bad-input", await codeOf(s160.session.revoke({ certificate: CLIENT.cert })) === "cmp/bad-input");
+  check("160b. an enroll on a session already consumed by a revoke -> cmp/bad-input", await codeOf(s160.session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-input");
+  check("161. an unknown revoke request key -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({ certificate: CLIENT.cert, bogus: 1 })) === "cmp/bad-input");
+  check("162a. a revoke naming neither certificate nor certDetails -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({})) === "cmp/bad-input");
+  check("162b. a revoke naming BOTH certificate and certDetails -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({ certificate: CLIENT.cert, certDetails: { issuer: OWN.issuer.bytes, serialNumber: OWN.serialNumber } })) === "cmp/bad-input");
+  check("162c. a non-object revoke request -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke(7)) === "cmp/bad-input");
+  check("162d. a revoke request.certificate that is not a certificate -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({ certificate: Buffer.from([1, 2, 3]) })) === "cmp/bad-input");
+  // A number is neither a name string, an RDN array, nor raw Name DER, so the CertTemplate builder
+  // refuses it and the session translates that into its own code rather than leaking a crmf/ one.
+  check("162e. a certDetails whose issuer is not a name -> cmp/bad-rev-req", await codeOf(mk([H.rp(0)]).session.revoke({ certDetails: { issuer: 12345, serialNumber: 1n } })) === "cmp/bad-rev-req");
+  check("162f. a certDetails omitting serialNumber -> refused before the transport engages", /^cmp\//.test(await codeOf(mk([H.rp(0)]).session.revoke({ certDetails: { issuer: OWN.issuer.bytes } }))));
+
+  // ===== 163/164. caCerts (sec. 4.3.1): the request infoValue MUST be absent; the response
+  //                carries a sequence of certificates, or nothing when none are available. =====
+  var caCertsValue = B.sequence([B.raw(H.caCert), B.raw(H.intCaCert)]);
+  var s163 = mk([H.genpOf("caCerts", caCertsValue)]);
+  var r163 = await s163.session.info({ caCerts: true });
+  check("163a. info({caCerts}) -> outcome:answered naming the operation", r163.outcome === "answered" && r163.operation === "caCerts");
+  check("163b. the response certificates are surfaced", Array.isArray(r163.value) && r163.value.length === 2 && r163.value[0].equals(H.caCert));
+  var genm163 = sentRr(s163.transport, 0);
+  check("163c. the genm carries exactly one InfoTypeAndValue with the caCerts infoType", Array.isArray(genm163) && genm163.length === 1 && genm163[0].name === "caCerts");
+  check("163d. the request infoValue is ABSENT (sec. 4.3.1)", genm163[0].value === null);
+  // A support-message answer is a value the operator ACTS on -- a chain is built from these, a
+  // revocation decision is read out of that CRL -- so each entry has to be the structure the
+  // operation names. The CMP schema reads the slot as a raw SEQUENCE by design, which leaves this
+  // to the verb that hands the bytes back.
+  var notACert = B.sequence([B.sequence([B.integer(1n)])]);   // well-formed DER, not a Certificate
+  check("163e. a caCerts entry that is not an X.509 certificate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("caCerts", B.sequence([B.raw(notACert)]))]).session.info({ caCerts: true }))));
+  var r164 = await mk([H.genpOf("caCerts")]).session.info({ caCerts: true });
+  check("164. a caCerts response with no infoValue -> answered with present:false and a null value (sec. 4.3.1)", r164.outcome === "answered" && r164.present === false && r164.value === null);
+
+  // ===== 165/166/167. rootCaCert -> rootCaKeyUpdate (sec. 4.3.2): the two OIDs DIFFER across the
+  //                    exchange, and the profile makes newWithOld required where RFC 9480's ASN.1
+  //                    marks it OPTIONAL. =====
+  var rootUpd = B.sequence([B.raw(H.caCert), B.explicit(0, B.raw(H.signerCert))]);
+  var s165 = mk([H.genpOf("rootCaKeyUpdate", rootUpd)]);
+  var r165 = await s165.session.info({ rootCaCert: H.caCert });
+  check("165a. info({rootCaCert}) accepts a rootCaKeyUpdate response (a DIFFERENT infoType, sec. 4.3.2)", r165.outcome === "answered" && r165.operation === "rootCaCert");
+  check("165b. newWithNew + newWithOld are surfaced", r165.value.newWithNew.equals(H.caCert) && r165.value.newWithOld.equals(H.signerCert) && r165.value.oldWithNew === null);
+  var genm165 = sentRr(s165.transport, 0);
+  check("165c. the genm names id-it-rootCaCert and carries the certificate being updated", genm165[0].name === "rootCaCert" && Buffer.isBuffer(genm165[0].value));
+  var allThree = B.sequence([B.raw(H.caCert), B.explicit(0, B.raw(H.signerCert)), B.explicit(1, B.raw(H.intCaCert))]);
+  var r165d = await mk([H.genpOf("rootCaKeyUpdate", allThree)]).session.info({ rootCaCert: H.caCert });
+  check("165d. the OPTIONAL oldWithNew is surfaced when the responder sends it", r165d.value.oldWithNew.equals(H.intCaCert));
+  check("166. a RootCaKeyUpdateContent omitting newWithOld -> refused (sec. 4.3.2 over the 9480 syntax)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(H.caCert)]))]).session.info({ rootCaCert: H.caCert }))));
+  var badNewWithOld = B.sequence([B.raw(H.caCert), B.explicit(0, B.raw(B.sequence([B.sequence([B.integer(1n)])])))]);
+  check("166b. a RootCaKeyUpdateContent whose newWithOld is not a certificate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", badNewWithOld)]).session.info({ rootCaCert: H.caCert }))));
+  // The value here is a WELL-FORMED RootCaKeyUpdateContent, so nothing but the infoType check can
+  // refuse it: sec. 4.3.2 answers id-it-rootCaCert with id-it-rootCaKeyUpdate, and a response
+  // echoing the request OID is a different operation's answer.
+  check("167. a response echoing the REQUEST infoType (rootCaCert) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaCert", rootUpd)]).session.info({ rootCaCert: H.caCert }))));
+
+  // ===== 168/169/170. certReqTemplate (sec. 4.3.3): the response certTemplate MUST omit publicKey,
+  //                    serialNumber, signingAlg, issuerUID and subjectUID; keySpec is constrained. =====
+  var CT = pki.crmf.buildCertTemplate;
+  var okTemplate = B.sequence([B.raw(CT({ subject: [{ commonName: "device" }] }))]);
+  var r168ok = await mk([H.genpOf("certReqTemplate", okTemplate)]).session.info({ certReqTemplate: true });
+  check("168a. a conforming certReqTemplate response is answered with its certTemplate", r168ok.outcome === "answered" && r168ok.value.certTemplate != null && r168ok.value.keySpec === null);
+  // sec. 4.3.3 makes an EMPTY name component and a NULL-DN meaningful in a template ("the EE SHOULD
+  // fill in a value"), so a conforming response carries values the request builder would refuse to
+  // author. Both must survive this read, or the operation rejects the CA it was asked to consult.
+  var cnOid = pki.oid.byName("commonName");
+  function bareTemplate(subjectDer) { return B.sequence([B.explicit(5, subjectDer)]); }
+  function cnName(v) { return B.sequence([B.set([B.sequence([B.oid(cnOid), B.printable(v)])])]); }
+  var r168c = await mk([H.genpOf("certReqTemplate", B.sequence([B.raw(bareTemplate(cnName("")))]))]).session.info({ certReqTemplate: true });
+  check("168c. a certTemplate whose commonName is the empty string is ACCEPTED (sec. 4.3.3: the EE fills it in)", r168c.outcome === "answered" && r168c.value.certTemplate.subject.dn === "CN=");
+  var r168d = await mk([H.genpOf("certReqTemplate", B.sequence([B.raw(bareTemplate(B.sequence([])))]))]).session.info({ certReqTemplate: true });
+  check("168d. a certTemplate whose subject is the NULL-DN is ACCEPTED (sec. 4.3.3)", r168d.outcome === "answered" && r168d.value.certTemplate.subject.dn === "");
+  var withKey = B.sequence([B.raw(CT({ subject: [{ commonName: "x" }], publicKey: CLIENT.spki }))]);
+  check("168b. a certTemplate carrying publicKey -> refused (sec. 4.3.3: MUST be omitted)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", withKey)]).session.info({ certReqTemplate: true }))));
+  var withSerial = B.sequence([B.raw(CT({ subject: [{ commonName: "x" }], serialNumber: 5n }))]);
+  check("169. a certTemplate carrying serialNumber -> refused (sec. 4.3.3: MUST be omitted)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", withSerial)]).session.info({ certReqTemplate: true }))));
+  function keySpec(oidName, valueDer) { return B.sequence([B.raw(CT({ subject: [{ commonName: "x" }] })), B.sequence([B.sequence([B.oid(pki.oid.byName(oidName)), valueDer])])]); }
+  var okSpec = keySpec("rsaKeyLen", B.integer(2048n));
+  var r170ok = await mk([H.genpOf("certReqTemplate", okSpec)]).session.info({ certReqTemplate: true });
+  check("170a. a keySpec of one rsaKeyLen control is surfaced", Array.isArray(r170ok.value.keySpec) && r170ok.value.keySpec.length === 1 && r170ok.value.keySpec[0].rsaKeyLen === 2048n);
+  check("170b. a keySpec rsaKeyLen of 0 -> refused (sec. 4.3.3: MUST be a positive integer)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("rsaKeyLen", B.integer(0n)))]).session.info({ certReqTemplate: true }))));
+  check("170c. a keySpec control outside {algId, rsaKeyLen} -> refused (sec. 4.3.3)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("regToken", B.utf8("t")))]).session.info({ certReqTemplate: true }))));
+  // The same for a control the registry does not name at all, so the refusal does not depend on the
+  // OID resolving to something this toolkit happens to know.
+  var unknownCtrl = B.sequence([B.raw(CT({ subject: [{ commonName: "x" }] })), B.sequence([B.sequence([B.oid("1.3.6.1.4.1.99999.1"), B.utf8("t")])])]);
+  check("170c2. a keySpec control whose OID is not in the registry -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", unknownCtrl)]).session.info({ certReqTemplate: true }))));
+  // AlgorithmIdentifier is SEQUENCE { algorithm, parameters OPTIONAL } and nothing after it. A
+  // shape test that reads only the first child would pass a three-field SEQUENCE and hand the
+  // caller an algorithm requirement no conforming responder can have written.
+  var overlongAlgId = B.sequence([B.oid(pki.oid.byName("ecPublicKey")), B.nullValue(), B.nullValue()]);
+  check("170e. a keySpec algId with a third field -> refused (an AlgorithmIdentifier holds at most two)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", overlongAlgId))]).session.info({ certReqTemplate: true }))));
+  var ecAlgId = B.sequence([B.oid(pki.oid.byName("ecPublicKey")), B.oid(pki.oid.byName("prime256v1"))]);
+  var r170f = await mk([H.genpOf("certReqTemplate", keySpec("algId", ecAlgId))]).session.info({ certReqTemplate: true });
+  check("170f. a conforming algId keySpec is surfaced with its algorithm resolved", r170f.value.keySpec[0].algorithmName === "ecPublicKey" && Buffer.isBuffer(r170f.value.keySpec[0].algorithmParameters));
+  check("170g. a keySpec rsaKeyLen whose value is not an INTEGER -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("rsaKeyLen", B.utf8("2048")))]).session.info({ certReqTemplate: true }))));
+  check("170h. a keySpec algId whose value is not a SEQUENCE -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.integer(1n)))]).session.info({ certReqTemplate: true }))));
+  var rsaAlgId = B.sequence([B.oid(pki.oid.byName("rsaEncryption")), B.nullValue()]);
+  check("170d. a keySpec algId naming RSA -> refused (sec. 4.3.3: MUST give an algorithm other than RSA)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", rsaAlgId))]).session.info({ certReqTemplate: true }))));
+
+  // ===== 171/172. crlUpdate (sec. 4.3.4): id-it-crlStatusList out, id-it-crls back; the issuer
+  //                choice is a directoryName GeneralName, and thisUpdate is omitted when absent. =====
+  var crlsValue = B.sequence([B.raw(REAL_CRL)]);
+  var s171 = mk([H.genpOf("crls", crlsValue)]);
+  var r171 = await s171.session.info({ crlUpdate: { issuer: [{ commonName: "cmp-ca.example" }] } });
+  check("171a. info({crlUpdate}) -> answered with the returned CRL list", r171.outcome === "answered" && Array.isArray(r171.value) && r171.value.length === 1);
+  var genm171 = sentRr(s171.transport, 0);
+  check("171b. the genm names id-it-crlStatusList (the response names id-it-crls)", genm171[0].name === "crlStatusList");
+  var cs171 = pki.asn1.decode(genm171[0].value);
+  check("171c. the CRLStatusListValue is a sequence of ONE CRLStatus (sec. 4.3.4)", cs171.children.length === 1);
+  check("171d. thisUpdate is OMITTED when the EE holds no instance of the CRL (sec. 4.3.4)", cs171.children[0].children.length === 1);
+  check("171e. the source is the issuer [1] arm carrying a directoryName GeneralName", cs171.children[0].children[0].tagClass === "context" && cs171.children[0].children[0].tagNumber === 1);
+  var s172 = mk([H.genpOf("crls", crlsValue)]);
+  await s172.session.info({ crlUpdate: { issuer: [{ commonName: "cmp-ca.example" }], thisUpdate: new Date("2026-01-01T00:00:00Z") } });
+  check("172a. a supplied thisUpdate is carried in the CRLStatus", pki.asn1.decode(sentRr(s172.transport, 0)[0].value).children[0].children.length === 2);
+  // A certificate is a well-formed SEQUENCE and is not a CertificateList; answering a CRL request
+  // with one would hand back something no revocation check can read.
+  check("172a2. a crlUpdate answered with a certificate rather than a CRL -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", B.sequence([B.raw(H.caCert)]))]).session.info({ crlUpdate: { issuer: [{ commonName: "c" }] } }))));
+  check("172b. a crlUpdate naming neither dpn nor issuer -> cmp/bad-input (sec. 4.3.4)", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: {} })) === "cmp/bad-input");
+  // The dpn arm of CRLSource: an EXPLICIT [0] wrapping a DistributionPointName, whose own fullName
+  // [0] keeps the IMPLICIT tagging of the module it is imported from.
+  var s172d = mk([H.genpOf("crls", crlsValue)]);
+  await s172d.session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] } } });
+  var cs172d = pki.asn1.decode(sentRr(s172d.transport, 0)[0].value).children[0].children[0];
+  check("172d. the dpn arm is the [0] CRLSource alternative wrapping a DistributionPointName", cs172d.tagClass === "context" && cs172d.tagNumber === 0 && cs172d.children[0].tagNumber === 0);
+  check("172e. a crlUpdate.dpn without fullName -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: {} } })) === "cmp/bad-input");
+  check("172e2. a non-object crlUpdate.dpn -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: 5 } })) === "cmp/bad-input");
+  var s172j = mk([H.genpOf("crls", crlsValue)]);
+  await s172j.session.info({ crlUpdate: { dpn: { fullName: { uri: "http://ca.example/ca.crl" } } } });   // a lone GeneralName, not an array
+  check("172j. a lone fullName GeneralName is accepted as a one-element GeneralNames", pki.asn1.decode(sentRr(s172j.transport, 0)[0].value).children[0].children[0].children[0].children.length === 1);
+  check("172f. a crlUpdate.dpn.fullName that is empty -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [] } } })) === "cmp/bad-input");
+  check("172g. an unknown crlUpdate field -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: [{ commonName: "c" }], bogus: 1 } })) === "cmp/bad-input");
+  check("172h. a non-object crlUpdate -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: 5 })) === "cmp/bad-input");
+  // Delayed delivery applies to a support message too (sec. 4.4).
+  var s172i = mk([H.errorWaiting(), H.pollRep(-1, 1), H.pollRep(-1, 1), H.pollRep(-1, 1)], { maxPolls: 2 });
+  var r172i = await s172i.session.info({ caCerts: true });
+  check("172i. a support message under delayed delivery reaches poll-timeout naming its operation", r172i.outcome === "poll-timeout" && r172i.operation === "caCerts" && r172i.polls === 2);
+  check("172c. a crlUpdate naming BOTH dpn and issuer -> cmp/bad-input (CRLSource is a CHOICE)", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: [{ commonName: "c" }], dpn: { fullName: [{ uri: "http://c/c.crl" }] } } })) === "cmp/bad-input");
+
+  // ===== 173/174/175/176. the genp shape and the info request doors =====
+  check("173. a genp carrying two InfoTypeAndValue -> refused (sec. 4.3: a sequence of one)", /^cmp\//.test(await codeOf(mk([H.genpTwo("caCerts", "crls")]).session.info({ caCerts: true }))));
+  check("174. a genp answering caCerts with a DIFFERENT infoType -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ caCerts: true }))));
+  check("175a. an unknown info operation -> cmp/bad-input", await codeOf(mk([H.genpOf("caCerts")]).session.info({ notAnOperation: true })) === "cmp/bad-input");
+  check("175b. TWO info operations in one request -> cmp/bad-input", await codeOf(mk([H.genpOf("caCerts")]).session.info({ caCerts: true, certReqTemplate: true })) === "cmp/bad-input");
+  check("175c. a non-object info request -> cmp/bad-input", await codeOf(mk([H.genpOf("caCerts")]).session.info(null)) === "cmp/bad-input");
+  // A misspelling set to null must not read as an omitted field: counting only non-null keys would
+  // let { caCerts: true, caCert: null } through as a correctly written single-operation request.
+  check("175d. an unknown info key set to NULL is still refused", await codeOf(mk([H.genpOf("caCerts")]).session.info({ caCerts: true, caCert: null })) === "cmp/bad-input");
+  // The enrollment request IS the message body, so pki.cmp.build's arm count already refuses this
+  // (probed: "message.body must have exactly one arm, got 2"), which is why enroll carries no door
+  // of its own. The info request is read for a name and never reaches the builder, so it does.
+  check("175e. an unknown enroll key set to NULL is refused by the body arm count", await codeOf(mk([H.pkiconf()]).session.enroll({ ir: H.irRequest(CLIENT.spki).ir, irr: null })) === "cmp/bad-input");
+  // caCerts and certReqTemplate send NO infoValue, so a value supplied to either would be dropped.
+  check("175f. info({caCerts: <a certificate>}) -> cmp/bad-input (this genm carries no infoValue)", await codeOf(mk([H.genpOf("caCerts")]).session.info({ caCerts: H.caCert })) === "cmp/bad-input");
+  check("175g. info({certReqTemplate: 'x'}) -> cmp/bad-input", await codeOf(mk([H.genpOf("certReqTemplate")]).session.info({ certReqTemplate: "x" })) === "cmp/bad-input");
+  // pki.cmp.build's own rr door, reached directly rather than through the session, which resolves
+  // the reason name at its own door first.
+  function buildRr(rd) {
+    return pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "c" }] }, recipient: { directoryName: [] } }, body: { rr: [rd] } },
+      { key: CLIENT.key, cert: CLIENT.cert });
+  }
+  var goodDetails = { issuer: OWN.issuer.bytes, serialNumber: OWN.serialNumber };
+  check("175i. cmp.build refuses an unknown CRLReason name -> cmp/bad-rev-req", await codeOf(buildRr({ certDetails: goodDetails, crlEntryDetails: { reason: "nope" } })) === "cmp/bad-rev-req");
+  check("175j. cmp.build refuses a non-object crlEntryDetails -> cmp/bad-rev-req", await codeOf(buildRr({ certDetails: goodDetails, crlEntryDetails: 5 })) === "cmp/bad-rev-req");
+  check("175k. cmp.build refuses an unknown crlEntryDetails field -> cmp/bad-rev-req", await codeOf(buildRr({ certDetails: goodDetails, crlEntryDetails: { reason: "keyCompromise", why: 1 } })) === "cmp/bad-rev-req");
+  check("175h. an unknown RevDetails field reaches cmp.build's door -> cmp/bad-rev-req", await codeOf(Promise.resolve().then(function () {
+    return pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "c" }] }, recipient: { directoryName: [] } },
+      body: { rr: [{ certDetails: { issuer: OWN.issuer.bytes, serialNumber: OWN.serialNumber }, crlEntryDetails: { reason: "keyCompromise" }, bogus: 1 }] } },
+    { key: CLIENT.key, cert: CLIENT.cert });
+  })) === "cmp/bad-rev-req");
+  check("176. an info answered by an ip -> cmp/unexpected-arm", await codeOf(mk([H.ip(0, 0, certDer)]).session.info({ caCerts: true })) === "cmp/unexpected-arm");
+  // Residual uncovered branches in revoke() / info(), each verified rather than assumed:
+  //   * the `e.isCmpError` split in the four translating catches -- one side runs (the guards raise
+  //     CmpError), the other is the defense against a future inner call that does not.
+  //   * `t.status || null` on the two rejected verdicts -- a rejection always carries a status,
+  //     since that IS what classifies it.
+  //   * the non-CmpError catch around a support-value reader and around the AlgorithmIdentifier
+  //     reader -- both are runParse, which raises CmpError for every malformed input.
+  //   * the _checkInfoValue fallthrough, which INFO_OPS's four rows each return before.
+  var s176 = mk([H.errorBody(2, ["systemFailure"])]);
+  var r176 = await s176.session.info({ caCerts: true });
+  check("176b. a verified error body answering a genm -> outcome:rejected with its PKIStatusInfo", r176.outcome === "rejected" && r176.status.status.code === 2);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
