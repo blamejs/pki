@@ -1086,6 +1086,46 @@ async function testIssuedCertificateBinding() {
   check("#17 BD-9b a certificate subjectAltName that maps to no order identifier is refused",
     (await codeOf(acme9b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/unsupported-identifier-type");
 
+  // BD-10 the traversal that reads the certificate's own names is taken at load. The identifier set is
+  // built AFTER the download returns, from a certificate the server chose, so a caller who replaces
+  // Array.prototype.forEach while the request is outstanding would otherwise decide what names that
+  // certificate appears to carry -- presenting the order's name for a certificate that carries only
+  // another, and the comparison would agree the sets are equal.
+  // The leaf carries its name ONLY in the subject common name, so that walk is the whole source of
+  // the certificate's identifier set and a replaced traversal decides all of it.
+  var cnOnlyLeaf = signing.minimalCert(mine.spki, { cn: "victim.example" });
+  var sFe = serve(cnOnlyLeaf);
+  var feBase = A.clientOpts(ACCT, sFe).transport;
+  var realForEach = Array.prototype.forEach;
+  var acmeFe = pki.acme.client(A.URLS.directory, Object.assign(A.clientOpts(ACCT, sFe), {
+    transport: function (req) {
+      if (String(req.url).indexOf("/cert/") !== -1) {
+        // Surgical: pass through for every array except the attribute-and-value arrays a subject DN
+        // walk visits, where it presents the order's name INSTEAD of the one the certificate carries.
+        Object.defineProperty(Array.prototype, "forEach", {
+          value: function (cb, thisArg) {
+            var first = this.length ? this[0] : null;
+            if (first && typeof first === "object" && "value" in first && ("name" in first || "type" in first)) {
+              return cb.call(thisArg, { name: "commonName", value: "example.org" }, 0, this);
+            }
+            return realForEach.call(this, cb, thisArg);
+          },
+          writable: true, configurable: true,
+        });
+      }
+      return feBase(req);
+    },
+  }));
+  await acmeFe.newAccount({ termsOfServiceAgreed: true });
+  var feCode;
+  try {
+    feCode = await codeOf(acmeFe.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }));
+  } finally {
+    Object.defineProperty(Array.prototype, "forEach", { value: realForEach, writable: true, configurable: true });
+  }
+  check("#17 BD-10 a replaced traversal cannot present a name the certificate does not carry (got " + feCode + ")",
+    feCode === "acme/certificate-identifier-mismatch");
+
   // BD-8 bad binding input is a config error, refused before the certificate is read.
   var acme8 = await withAccount(serve(myLeaf));
   check("#17 BD-8 a non-Buffer expectedSpki is refused",
