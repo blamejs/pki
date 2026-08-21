@@ -1064,6 +1064,28 @@ async function testIssuedCertificateBinding() {
   check("#17 BD-8b the identifier comparison is not reachable through Object.prototype",
     (await codeOf(acmePlant.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/certificate-identifier-mismatch");
 
+  // BD-9 an identifier the comparison cannot map is REFUSED, never dropped. The ACME identifier
+  // registry (RFC 8555 sec. 9.7.7) is open, and only dns and ip map to a name a certificate carries.
+  // Dropping an unmapped one would leave the comparison answering about the identifiers it happens to
+  // understand while reporting the whole set as checked: an order for example.org plus one other type
+  // would be satisfied by a certificate naming only example.org, with boundToIdentifiers true.
+  var acme9 = await withAccount(serve(myLeaf));
+  check("#17 BD-9 an order identifier type this build cannot map is refused",
+    (await codeOf(acme9.downloadCertificate(A.URLS.certificate,
+      { expectedSpki: mine.spki, identifiers: [{ type: "dns", value: "example.org" }, { type: "device", value: "wanted-device" }] }))) === "acme/unsupported-identifier-type");
+
+  // BD-9b the same rule on the certificate's own side: a subjectAltName that maps to no order
+  // identifier -- an rfc822Name here -- is a name the set-equality comparison would otherwise never
+  // see, so a certificate additionally naming a mailbox would compare equal to an order covering only
+  // the dns name.
+  var emailSan = b.sequence([b.oid(pki.oid.byName("subjectAltName")),
+    b.octetString(b.sequence([b.contextPrimitive(2, Buffer.from("example.org", "latin1")),
+      b.contextPrimitive(1, Buffer.from("ops@example.org", "latin1"))]))]);
+  var extraNameLeaf = signing.minimalCert(mine.spki, { cn: "example.org", exts: [emailSan] });
+  var acme9b = await withAccount(serve(extraNameLeaf));
+  check("#17 BD-9b a certificate subjectAltName that maps to no order identifier is refused",
+    (await codeOf(acme9b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }))) === "acme/unsupported-identifier-type");
+
   // BD-8 bad binding input is a config error, refused before the certificate is read.
   var acme8 = await withAccount(serve(myLeaf));
   check("#17 BD-8 a non-Buffer expectedSpki is refused",

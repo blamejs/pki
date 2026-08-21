@@ -15,6 +15,7 @@ An ACME certificate download is now bound to the order that asked for it, so a c
 ### Fixed
 
 - `downloadCertificate` checks the end-entity certificate it received against the order: its subject public key must be the one this order's CSR asked to have certified (`acme/certificate-key-mismatch`), and its identifier set -- subject common names and dNSName / iPAddress subject alternative names -- must equal the order's identifiers (`acme/certificate-identifier-mismatch`). The identifier relation is the one the outbound CSR check already uses, so the two halves of the exchange cannot disagree about what matches. The binding runs on whichever chain is returned, including a chain chosen through `selectChain`.
+- An identifier that maps to no certificate name is refused as `acme/unsupported-identifier-type` rather than dropped from the comparison, on both sides of it. The ACME identifier registry is open and only `dns` and `ip` name something a certificate carries, so an order identifier of another type, or a certificate `subjectAltName` that is neither a dNSName nor an iPAddress, would otherwise be skipped while the comparison still reported the whole set as checked: an order for a name plus one other identifier was satisfied by a certificate covering only the name, and a certificate additionally naming a mailbox compared equal to an order that covered no mailbox. This applies to the outbound `finalize` check as well, which shares the same relation.
 
 ## v0.5.23 — 2026-08-20
 
