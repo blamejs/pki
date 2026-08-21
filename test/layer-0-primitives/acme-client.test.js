@@ -1265,6 +1265,140 @@ async function testIssuedCertificateBinding() {
   check("#17 BD-13b a certificate with no SAN binds on its common name",
     (await acme13b.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS })).boundToIdentifiers === true);
 
+  // BD-14 the same rule one layer out: the subjectAltName decoder yields the names the comparison
+  // reads, so its own traversal is taken at load too. A caller replacing Array.prototype.map while
+  // the request is outstanding would otherwise present a name the encoded GeneralNames does not
+  // carry -- here the order's name for a certificate that carries only another.
+  var sanFeLeaf = signing.minimalCert(mine.spki, { cn: "victim.example", exts: [sanExt("victim.example")] });
+  var sSan = serve(sanFeLeaf);
+  var sanBase = A.clientOpts(ACCT, sSan).transport;
+  var realMap = Array.prototype.map;
+  var acmeSan = pki.acme.client(A.URLS.directory, Object.assign(A.clientOpts(ACCT, sSan), {
+    transport: function (req) {
+      if (String(req.url).indexOf("/cert/") !== -1) {
+        // Surgical: pass through except for the decoded GeneralName items, where it presents the
+        // order's name in place of the one the certificate encodes.
+        Object.defineProperty(Array.prototype, "map", {
+          value: function (cb, thisArg) {
+            var first = this.length ? this[0] : null;
+            if (first && typeof first === "object" && first.value && first.value.tagNumber === 2) {
+              return [{ tagNumber: 2, value: "example.org" }].map.call(
+                [{ tagNumber: 2, value: "example.org" }], function (x) { return x; });
+            }
+            return realMap.call(this, cb, thisArg);
+          },
+          writable: true, configurable: true,
+        });
+      }
+      return sanBase(req);
+    },
+  }));
+  await acmeSan.newAccount({ termsOfServiceAgreed: true });
+  var sanCode;
+  try {
+    sanCode = await codeOf(acmeSan.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }));
+  } finally {
+    Object.defineProperty(Array.prototype, "map", { value: realMap, writable: true, configurable: true });
+  }
+  check("#17 BD-14 a replaced decoder traversal cannot present a name the certificate does not encode (got " + sanCode + ")",
+    sanCode === "acme/certificate-identifier-mismatch");
+
+  // BD-14b the traversal is one spelling of the same thing. The dNSName itself is the decoder's
+  // conversion of the encoded octets, so a replaced Buffer.prototype.toString presents whatever
+  // string it likes for a certificate that carries only another name.
+  var strFeLeaf = signing.minimalCert(mine.spki, { cn: "victim.example", exts: [sanExt("victim.example")] });
+  var sStr = serve(strFeLeaf);
+  var strBase = A.clientOpts(ACCT, sStr).transport;
+  var realBufToString = Buffer.prototype.toString;
+  var acmeStr = pki.acme.client(A.URLS.directory, Object.assign(A.clientOpts(ACCT, sStr), {
+    transport: function (req) {
+      if (String(req.url).indexOf("/cert/") !== -1) {
+        Object.defineProperty(Buffer.prototype, "toString", {
+          value: function (enc, s, e) {
+            var real = realBufToString.call(this, enc, s, e);
+            return enc === "latin1" && real === "victim.example" ? "example.org" : real;
+          },
+          writable: true, configurable: true,
+        });
+      }
+      return strBase(req);
+    },
+  }));
+  await acmeStr.newAccount({ termsOfServiceAgreed: true });
+  var strCode;
+  try {
+    strCode = await codeOf(acmeStr.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }));
+  } finally {
+    Object.defineProperty(Buffer.prototype, "toString", { value: realBufToString, writable: true, configurable: true });
+  }
+  check("#17 BD-14b a replaced string conversion cannot present a dNSName the certificate does not carry (got " + strCode + ")",
+    strCode === "acme/certificate-identifier-mismatch");
+
+  // BD-14c and the address alternative reads its octets through a copy, so a replaced Buffer.concat
+  // substitutes the order's address for the one the certificate encodes.
+  var otherIpSan = b.sequence([b.oid(pki.oid.byName("subjectAltName")),
+    b.octetString(b.sequence([b.contextPrimitive(7, Buffer.from([198, 51, 100, 7]))]))]);
+  var ipFeLeaf = signing.minimalCert(mine.spki, { cn: "198.51.100.7", exts: [otherIpSan] });
+  var sIp = serve(ipFeLeaf);
+  var ipBase = A.clientOpts(ACCT, sIp).transport;
+  var realConcat = Buffer.concat;
+  var acmeIpFe = pki.acme.client(A.URLS.directory, Object.assign(A.clientOpts(ACCT, sIp), {
+    transport: function (req) {
+      if (String(req.url).indexOf("/cert/") !== -1) {
+        Buffer.concat = function (list, total) {
+          if (list && list.length === 1 && list[0] && list[0].length === 4 && list[0][0] === 198) {
+            return realConcat.call(Buffer, [Buffer.from([192, 0, 2, 1])]);
+          }
+          return realConcat.call(Buffer, list, total);
+        };
+      }
+      return ipBase(req);
+    },
+  }));
+  await acmeIpFe.newAccount({ termsOfServiceAgreed: true });
+  var ipFeCode;
+  try {
+    ipFeCode = await codeOf(acmeIpFe.downloadCertificate(A.URLS.certificate,
+      { expectedSpki: mine.spki, identifiers: [{ type: "ip", value: "192.0.2.1" }] }));
+  } finally {
+    Buffer.concat = realConcat;
+  }
+  check("#17 BD-14c a replaced byte copy cannot present an iPAddress the certificate does not carry (got " + ipFeCode + ")",
+    ipFeCode === "acme/certificate-identifier-mismatch");
+
+  // BD-14d where there is no SAN the common name decides, and the subject is assembled by the same
+  // kind of traversal. A replaced Array.prototype.push seats a common name the certificate's own
+  // subject never encoded.
+  var cnFeLeaf = signing.minimalCert(mine.spki, { cn: "victim.example" });
+  var sCn = serve(cnFeLeaf);
+  var cnBase = A.clientOpts(ACCT, sCn).transport;
+  var realPush = Array.prototype.push;
+  var acmeCnFe = pki.acme.client(A.URLS.directory, Object.assign(A.clientOpts(ACCT, sCn), {
+    transport: function (req) {
+      if (String(req.url).indexOf("/cert/") !== -1) {
+        Object.defineProperty(Array.prototype, "push", {
+          value: function (v) {
+            if (arguments.length === 1 && v && typeof v === "object" && v.name === "commonName" && v.value === "victim.example") {
+              return realPush.call(this, { type: v.type, name: v.name, value: "example.org" });
+            }
+            return realPush.apply(this, arguments);
+          },
+          writable: true, configurable: true,
+        });
+      }
+      return cnBase(req);
+    },
+  }));
+  await acmeCnFe.newAccount({ termsOfServiceAgreed: true });
+  var cnFeCode;
+  try {
+    cnFeCode = await codeOf(acmeCnFe.downloadCertificate(A.URLS.certificate, { expectedSpki: mine.spki, identifiers: ORDER_IDS }));
+  } finally {
+    Object.defineProperty(Array.prototype, "push", { value: realPush, writable: true, configurable: true });
+  }
+  check("#17 BD-14d a replaced subject traversal cannot seat a common name the certificate does not carry (got " + cnFeCode + ")",
+    cnFeCode === "acme/certificate-identifier-mismatch");
+
   // BD-8 bad binding input is a config error, refused before the certificate is read.
   var acme8 = await withAccount(serve(myLeaf));
   check("#17 BD-8 a non-Buffer expectedSpki is refused",

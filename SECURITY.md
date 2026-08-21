@@ -188,7 +188,16 @@ security-only patches after the next major releases.
   code, a trust bit no root program granted. Those questions are asked through a
   captured operation as well. The boundary is the process: code that loads before this
   package can replace the built-ins it captures, and nothing inside a library can
-  defend against that.
+  defend against that. Two doors into that class stay shut for the same reason.
+  Each guard module freezes what it exports, because a boundary reaches its check
+  as a property of the guard object at the moment of the call and every module is
+  handed the same object, so one assignment would otherwise replace a
+  constant-time comparison, a size cap or a secret wipe everywhere at once. And a
+  table asked a question by a key the wire supplies -- which GeneralName
+  alternative a context tag selects, which string types are DisplayText, which
+  decoder an extension OID resolves to, whether a policy OID has already been
+  seen -- carries no prototype, so a name planted on `Object.prototype` cannot
+  answer for an entry nothing registered.
 - **One signature covering several encodings.** A type-3 C509 certificate is a
   re-encoding of an X.509 certificate, and the X.509 signature covers the bytes
   it rebuilds rather than the C509 bytes themselves. Where the specification

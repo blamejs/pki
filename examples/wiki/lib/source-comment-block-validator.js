@@ -169,7 +169,9 @@ function _extractExportKeys(source) {
   var pm;
   while ((pm = perPropRe.exec(source)) !== null) keys[pm[1]] = true;
 
-  var litMatch = source.match(/module\.exports\s*=\s*\{/);
+  // A module may hand its literal to Object.freeze on the way out, so the `{` is not always the
+  // next thing after the `=`. Anchoring on the bare form read a frozen module as exporting nothing.
+  var litMatch = source.match(/module\.exports\s*=\s*(?:Object\.freeze\s*\(\s*)?\{/);
   if (litMatch) {
     var openIdx = litMatch.index + litMatch[0].length - 1;
     _collectObjectKeys(source, openIdx).forEach(function (k) { keys[k] = true; });

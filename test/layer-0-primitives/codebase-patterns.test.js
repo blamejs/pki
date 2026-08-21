@@ -270,6 +270,13 @@ function _stripCommentsAndLiterals(content) {
 //
 // guard-all deliberately does not re-export the captures, so a DIRECT require is the only way to
 // reach them, and a direct require is exactly what shows up here as a child.
+// The exported object literal of a module, whether or not it is handed to Object.freeze on the way
+// out. The guard family freezes, so a pattern anchored on a bare `{` right after the `=` reads a
+// frozen module as exporting nothing -- and a meta-check that then walks an empty list reports no
+// findings while checking nothing, which is the one failure this file cannot afford. Every walk that
+// reads a module's exported names off its source shares this one definition.
+var EXPORT_LITERAL_RE = /module\.exports\s*=\s*(?:Object\.freeze\s*\(\s*)?\{([\s\S]*?)\}/;
+
 function _takesCaptures(absPath) {
   var entry = require.cache[absPath];
   if (!entry) return false;   // never loaded: it cannot have taken them
@@ -2464,7 +2471,7 @@ function testNanDateComparisonUnguarded() {
 // A sink whose caller provably pre-validates marks allow:eddsa-verify-without-loworder-gate.
 function testEddsaVerifyGate() {
   var epSrc = fs.readFileSync(path.join(LIB_ROOT, "edwards-point.js"), "utf8");
-  var epExports = (epSrc.match(/module\.exports\s*=\s*\{([^}]*)\}/) || ["", ""])[1];
+  var epExports = (epSrc.match(EXPORT_LITERAL_RE) || ["", ""])[1];
   var gateFns = (epExports.match(/([A-Za-z_$][\w$]*)\s*:/g) || []).map(function (m) { return m.replace(/\s*:\s*$/, ""); });
   if (!gateFns.length) gateFns = ["validate", "validateSpki"];               // fallback if exports move
   var gateCall = new RegExp("\\b(?:" + gateFns.join("|") + ")\\s*\\(");
@@ -2991,7 +2998,6 @@ function testGuardReadsRuntimeLive() {
     "lib/attrcert-sign.js": 91,
     "lib/tsp-sign.js": 89,
     "lib/http-digest.js": 85,
-    "lib/schema-pkix.js": 81,
     "lib/pkcs12-build.js": 78,
     "lib/ct.js": 78,
     "lib/cms-verify.js": 75,
@@ -3055,7 +3061,7 @@ function testEveryGuardEnforced() {
     var src = fs.readFileSync(f, "utf8");
     var lines = _lines(src);
     // Exported guard functions = the VALUES of module.exports = { key: fn, ... }.
-    var expBlock = src.match(/module\.exports\s*=\s*\{([\s\S]*?)\}/);
+    var expBlock = src.match(EXPORT_LITERAL_RE);
     var exported = Object.create(null);
     if (expBlock) {
       var er = /[A-Za-z_$][\w$]*\s*:\s*([A-Za-z_$][\w$]*)/g, em;
@@ -3084,6 +3090,34 @@ function testEveryGuardEnforced() {
   });
   bad = _filterMarkers(bad, "guard-without-enforcement");
   _report("every guard function declares its codebase-patterns enforcement (@enforced-by)", bad);
+}
+
+function testEveryGuardExportFrozen() {
+  // class: guard-export-writable
+  // Anti-drift META-check. A boundary reaches its guard as `guard.<family>.<fn>(...)` at the call
+  // itself, and the module registry hands every caller the same exports object, so a writable
+  // export lets one assignment replace a fail-closed check in every module at once -- the
+  // substitution the family exists to refuse, reached through the family's own front door rather
+  // than around it. This LOADS each module and asks the runtime, so it cannot be satisfied by a
+  // freeze that some later edit stops reaching; a new guard-*.js that ships writable fails here.
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var rel = _relPath(f);
+    if (!/^lib\/guard-[a-z-]+\.js$/.test(rel)) return;
+    var mod;
+    try { mod = require(f); }
+    catch (e) {
+      bad.push({ file: rel, line: 1, content: "guard module did not load: " + ((e && e.message) || e) });
+      return;
+    }
+    if (!Object.isFrozen(mod)) {
+      bad.push({ file: rel, line: 1,
+        content: "guard module exports a writable object -- wrap the literal in Object.freeze, so a " +
+          "caller who reaches the family through the registry cannot replace a check instead of passing it" });
+    }
+  });
+  bad = _filterMarkers(bad, "guard-export-writable");
+  _report("every guard module freezes its exports", bad);
 }
 
 function testValidatorShapeReinlined() {
@@ -3180,7 +3214,7 @@ function testEveryValidatorEnforced() {
     var rel = _relPath(f);
     var src = fs.readFileSync(f, "utf8");
     var lines = _lines(src);
-    var expBlock = src.match(/module\.exports\s*=\s*\{([\s\S]*?)\}/);
+    var expBlock = src.match(EXPORT_LITERAL_RE);
     var exported = Object.create(null);
     if (expBlock) {
       var er = /[A-Za-z_$][\w$]*\s*:\s*([A-Za-z_$][\w$]*)/g, em;
@@ -3569,6 +3603,7 @@ function run() {
   testAsn1ReaderExists();
   testGuardReadsRuntimeLive();
   testEveryGuardEnforced();
+  testEveryGuardExportFrozen();
   testGuardErrorFactoryNotClass();
   testValidatorShapeReinlined();
   testEveryValidatorEnforced();

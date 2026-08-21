@@ -389,29 +389,27 @@ async function run() {
   // toolkit performs it: each buffer must hold key material when handed over and be all-zero
   // afterwards. The failure chosen here is reached long before any signing, which is the window
   // a cleanup attached to the signing call alone would miss.
-  var guardAll = require("../../lib/guard-all");
-  var realZeroizeAll = guardAll.secret.zeroizeAll;
-  var wiped = [];
-  guardAll.secret.zeroizeAll = function (list) {
-    var seen = (list || []).filter(Boolean).map(function (bufr) {
-      return { buf: bufr, hadContent: bufr.some(function (x) { return x !== 0; }) };
-    });
-    var out = realZeroizeAll.apply(this, arguments);
-    wiped.push.apply(wiped, seen);
-    return out;
-  };
-  var earlyFailCode;
-  try {
-    earlyFailCode = await codeOfAsync(function () {
-      return pki.ocsp.sign({ responderID: "byName", responses: [] },
-        { cert: w.responderCertDer, key: Buffer.from(w.responderKeyPkcs8) });
-    });
-  } finally { guardAll.secret.zeroizeAll = realZeroizeAll; }
-  check("a response with no SingleResponse is refused", earlyFailCode === "ocsp/bad-input");
+  // The observation runs in a child process, because it has to be installed before the toolkit
+  // loads: the wipe goes through a fill captured at module load and the guard family freezes its
+  // exports, so a test that reached in afterwards would be doing the thing both defenses exist to
+  // refuse -- and would pass by doing it. Patching the prototype method first makes the capture the
+  // toolkit takes the recording one, which is the only honest seam left and the attacker's own.
+  var wipeObs = require("node:child_process").spawnSync(process.execPath,
+    [require("node:path").join(__dirname, "../helpers/observe-secret-wipe.js")],
+    { encoding: "utf8", input: JSON.stringify({
+      op: "ocsp-sign-early-fail",
+      cert: Buffer.from(w.responderCertDer).toString("base64"),
+      key: Buffer.from(w.responderKeyPkcs8).toString("base64"),
+    }) });
+  var wipeReport = null;
+  if (!wipeObs.error && wipeObs.status === 0) {
+    try { wipeReport = JSON.parse(String(wipeObs.stdout).trim().split("\n").pop()); } catch (_e) { wipeReport = null; }
+  }
+  check("the wipe observation ran (child exit " + wipeObs.status + ")", wipeReport !== null);
+  check("a response with no SingleResponse is refused", wipeReport && wipeReport.code === "ocsp/bad-input");
   check("the responder key copy is wiped when the failure comes before signing",
-    wiped.length > 0 && wiped.every(function (e) {
-      return e.hadContent && e.buf.every(function (x) { return x === 0; });
-    }));
+    !!wipeReport && wipeReport.wiped.length > 0 && wipeReport.wiped.some(function (e) { return e.hadContent; }) &&
+      wipeReport.wiped.every(function (e) { return e.allZeroAfter; }));
 
   check("a string certID is refused, never read as its ASCII",
     (await codeOfAsync(function () {
