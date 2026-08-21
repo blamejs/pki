@@ -4,7 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.22 — 2026-08-21
+## v0.5.23 — 2026-08-21
+
+The tables that decide which status codes, revocation reasons, trust bits and extensions this toolkit recognizes now answer from an operation taken at load, and an unsupported HTTP Digest algorithm is refused rather than read off a prototype.
+
+### Changed
+
+- Eighteen further modules -- ACME, EST, CMC, WebAuthn and its metadata reader, Certificate Transparency, trust-store ingest, TLS certificate compression, HPKE, HTTP Digest, the CRL and attribute-certificate signers, and the OCSP, CRL, attribute-certificate and shared PKIX schemas -- are held to the live-read rule, each declaring the reads it still carries as a count that can only fall.
+
+### Fixed
+
+- An HTTP Digest challenge naming an unsupported algorithm is refused with a typed error. The algorithm registry was an ordinary object, so a name matching any member of `Object.prototype` answered the supported-algorithm gate with a value the registry never held: the refusal was skipped and the call ended in an untyped `TypeError`. The registry now carries a null prototype.
+- OCSP response statuses and revocation reasons, CRL reason codes, CCADB trust bits, attribute-certificate critical extensions and object-digest types, Certificate Transparency log states, and the repeated-parameter check on an HTTP Digest challenge all decide membership through a captured operation, so replacing the runtime's own membership test after load cannot widen what they accept.
+
+## v0.5.22 — 2026-08-20
 
 The list tests that decide whether a caller's argument is refused, and which form an extension spec is in, now answer from operations taken at load rather than read when they run.
 

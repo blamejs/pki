@@ -1,0 +1,14 @@
+{
+  "version": "0.5.23",
+  "headline": "The tables that decide which status codes, revocation reasons, trust bits and extensions this toolkit recognizes now answer from an operation taken at load, and an unsupported HTTP Digest algorithm is refused rather than read off a prototype.",
+  "summary": "Asking whether a table carries a name is normally written as two property reads: the membership test itself, and the call that applies it. Both are replaceable after this package has loaded, so a caller who replaces either decides what every one of those tables admits -- an undefined OCSP response status, a reserved CRL reason, a CCADB trust bit the report never granted. Eighteen modules now ask that question through an operation captured at load, and no shipped code path asks it any other way.",
+  "sections": {
+    "Fixed": [
+      "An HTTP Digest challenge naming an unsupported algorithm is refused with a typed error. The algorithm registry was an ordinary object, so a name matching any member of `Object.prototype` answered the supported-algorithm gate with a value the registry never held: the refusal was skipped and the call ended in an untyped `TypeError`. The registry now carries a null prototype.",
+      "OCSP response statuses and revocation reasons, CRL reason codes, CCADB trust bits, attribute-certificate critical extensions and object-digest types, Certificate Transparency log states, and the repeated-parameter check on an HTTP Digest challenge all decide membership through a captured operation, so replacing the runtime's own membership test after load cannot widen what they accept."
+    ],
+    "Changed": [
+      "Eighteen further modules -- ACME, EST, CMC, WebAuthn and its metadata reader, Certificate Transparency, trust-store ingest, TLS certificate compression, HPKE, HTTP Digest, the CRL and attribute-certificate signers, and the OCSP, CRL, attribute-certificate and shared PKIX schemas -- are held to the live-read rule, each declaring the reads it still carries as a count that can only fall."
+    ]
+  }
+}

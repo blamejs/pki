@@ -505,6 +505,26 @@ function testRejectExtras() {
   // 5d. empty ResponseData.responses -> reject; responses is one-or-more (RFC 6960 §4.2.1).
   check("5d. empty responses rejected",
     parseRespCode(basicOcspResponse(basicResponse({ tbs: responseData({ responses: [] }) }))) === "ocsp/bad-responses");
+
+  // 5e. responseStatus 4 is unassigned (RFC 6960 §4.2.1 lists 0-3, 5, 6), and the
+  // whitelist that says so is the only gate on the value. A caller who replaces
+  // Object.prototype.hasOwnProperty after this module loaded must not be able to
+  // answer that membership question: the parser asks an operation it took at load,
+  // so the substitution reaches nothing and status 4 is still refused.
+  var realHasOwn = Object.prototype.hasOwnProperty;
+  Object.defineProperty(Object.prototype, "hasOwnProperty",
+    { value: function () { return true; }, writable: true, configurable: true });
+  var statusUnderSubstitution;
+  try {
+    statusUnderSubstitution = parseRespCode(b.sequence([b.enumerated(4)]));
+  } finally {
+    Object.defineProperty(Object.prototype, "hasOwnProperty",
+      { value: realHasOwn, writable: true, configurable: true });
+  }
+  check("5e. unassigned responseStatus 4 refused with hasOwnProperty replaced",
+    statusUnderSubstitution === "ocsp/bad-response-status");
+  check("5e. unassigned responseStatus 4 refused with no substitution",
+    parseRespCode(b.sequence([b.enumerated(4)])) === "ocsp/bad-response-status");
 }
 
 function run() {
