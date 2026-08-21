@@ -1,0 +1,15 @@
+{
+  "version": "0.5.22",
+  "headline": "The list tests that decide whether a caller's argument is refused, and which form an extension spec is in, now answer from operations taken at load rather than read when they run.",
+  "summary": "A door written `if (!Array.isArray(x)) throw` asks the runtime, at the moment it runs, which function that test is. Replaced after this package loaded, it reports every argument a list and the door it guards is gone; answering the other way it sends a value down a branch that reads different fields. Measured across one verify call before this release, the toolkit consulted that test 3435 times through the live global; it now consults it none.",
+  "sections": {
+    "Fixed": [
+      "The DER builder refuses a non-list of children under a captured test. Every structure this toolkit encodes passes through that door, and it was the busiest live read in the library by two orders of magnitude.",
+      "`pki.x509.sign` picks which form the caller's extension spec is in with a captured test. That choice decides which fields are read and therefore what is signed into the certificate: answering wrongly sends an object down the list arm, and the extensions it carries are never seen. The same test decides whether the spec asserts keyCertSign, which is what makes the issued certificate a CA.",
+      "The name, key-usage and GeneralNames builders refuse a non-list argument under a captured test, as do certification-path validation's own list doors."
+    ],
+    "Changed": [
+      "The DER codec, the PKIX builders and the certificate signer are held to the live-read rule, with the reads each still carries declared as a count that can only fall. Certification-path validation's declared count falls in this release as its list doors convert."
+    ]
+  }
+}
