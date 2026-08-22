@@ -1165,6 +1165,15 @@ async function run() {
   // to the verb that hands the bytes back.
   var notACert = B.sequence([B.sequence([B.integer(1n)])]);   // well-formed DER, not a Certificate
   check("163e. a caCerts entry that is not an X.509 certificate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("caCerts", B.sequence([B.raw(notACert)]))]).session.info({ caCerts: true }))));
+  // sec. 4.3.1 returns CA certificates for chain construction, so an entry that parses but is an
+  // END-ENTITY certificate (basicConstraints cA FALSE) is refused -- surfacing it hands the caller a
+  // list nothing can chain through. The same CA-capability rule the rootCaKeyUpdate certs are held to.
+  var eeSigner = signing.makeSigner("ec-p256", { cn: "leaf-not-a-ca" });
+  var EE_NOT_CA = await pki.x509.sign({ subject: "leaf-not-a-ca", subjectPublicKey: eeSigner.spki,
+    notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2036-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: false }, keyUsage: ["digitalSignature"] } },
+    { key: eeSigner.key, name: "leaf-not-a-ca", publicKey: eeSigner.spki });
+  check("163f. a caCerts entry that parses but is an END-ENTITY certificate -> refused (sec. 4.3.1 returns CA certificates)", /^cmp\//.test(await codeOf(mk([H.genpOf("caCerts", B.sequence([B.raw(H.caCert), B.raw(EE_NOT_CA)]))]).session.info({ caCerts: true }))));
   var r164 = await mk([H.genpOf("caCerts")]).session.info({ caCerts: true });
   check("164. a caCerts response with no infoValue -> answered with present:false and a null value (sec. 4.3.1)", r164.outcome === "answered" && r164.present === false && r164.value === null);
 
