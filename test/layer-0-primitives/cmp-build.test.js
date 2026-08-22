@@ -18,6 +18,7 @@ var makeSigner = signing.makeSigner;
 var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
 var nodeCrypto = require("node:crypto");
+var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -287,6 +288,17 @@ async function run() {
   Object.defineProperty(reasonSpec, "reason", { enumerable: true, get: function () { reasonReads += 1; return reasonReads === 1 ? "keyCompromise" : "cessationOfOperation"; } });
   var getterReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: reasonSpec }] } }, SIG)).bodyBytes;
   check("21bb5. a crlEntryDetails.reason getter's later values never reach the encoder (entry deep-copy)", getterReasonBody.equals(refReasonBody) && reasonReads === 1);
+  // buildCrlStatusList composes a crlUpdate genm body straight from the caller's request: pki.cmp.session
+  // hands it the request with no entry deep-copy, so the issuer it puts on the wire and the issuer it binds
+  // the response to (the returned issuerName) must come from ONE read of the caller's field. An issuer whose
+  // attributes are accessors must be encoded once: re-encoding it for the wire could ship a CRLSource naming
+  // one CA while the answer is held to another, so a CRL from the bound CA could satisfy a request the wire
+  // named a different CA for. This RDN's commonName reads "CA-A" first and "CA-B" after; the on-wire source
+  // must carry the same encoded Name as issuerName (CA-A), and the field must be read exactly once.
+  var issuerReads = 0, getterRdn = {};
+  Object.defineProperty(getterRdn, "commonName", { enumerable: true, get: function () { issuerReads += 1; return issuerReads === 1 ? "CA-A" : "CA-B"; } });
+  var crlStatus = cmpBuild.buildCrlStatusList({ issuer: [getterRdn] });
+  check("21bb6. a crlUpdate issuer getter's later value never reaches the wire (on-wire source == bound issuerName)", crlStatus.der.includes(crlStatus.issuerName) && issuerReads === 1);
   check("21cc. PBMAC1 with a random (unsupplied) salt round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
 
   // ---- CA / responder-side arms (RFC 9810 sec. 5.3) ----
