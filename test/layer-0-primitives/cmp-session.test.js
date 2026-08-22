@@ -1342,6 +1342,14 @@ async function run() {
   check("170m2. a keySpec algId naming sha1WithRSAEncryption (unregistered, under the PKCS#1 arc) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.5")])))]).session.info({ certReqTemplate: true }))));
   check("170m3. a keySpec algId naming md5WithRSAEncryption (unregistered PKCS#1) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.4")])))]).session.info({ certReqTemplate: true }))));
   check("170m4. a keySpec algId naming sha224WithRSAEncryption (unregistered PKCS#1) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.14")])))]).session.info({ certReqTemplate: true }))));
+  // RSA also sits off PKCS#1 on arcs shared with non-RSA algorithms, where no prefix isolates it, so
+  // those OIDs are listed by name: the NIST RSASSA-PKCS1-v1_5-with-SHA-3 set (its arc holds ML-DSA too)
+  // and the RFC 8692 RSASSA-PSS-with-SHAKE pair. Each must still be refused.
+  check("170m5. a keySpec algId naming id-rsassa-pkcs1-v1_5-with-sha3-256 -> refused (NIST arc, shared with ML-DSA)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-rsassa-pkcs1-v1_5-with-sha3-256"))])))]).session.info({ certReqTemplate: true }))));
+  check("170m6. a keySpec algId naming id-RSASSA-PSS-SHAKE256 -> refused (RFC 8692, PKIX arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-RSASSA-PSS-SHAKE256"))])))]).session.info({ certReqTemplate: true }))));
+  // A NIST-arc NON-RSA neighbor (ML-DSA-65) on the SAME arc must still be SURFACED -- the arc is shared,
+  // so the explicit RSA list must not spill onto its siblings.
+  check("170m7. a keySpec algId naming id-ml-dsa-65 (NIST arc, non-RSA) is still surfaced", (await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-ml-dsa-65"))])))]).session.info({ certReqTemplate: true })).value.keySpec[0].algorithmName === "id-ml-dsa-65");
   // An algorithm the registry cannot name is SURFACED, not refused: RFC 9480 sec. 2.16 holds the algId
   // to one rule -- other than RSA -- and the keySpec offers one control per algorithm the CA supports,
   // so the entity can pick a supported one. Refusing an unrecognized offer would fail the whole
