@@ -1222,6 +1222,25 @@ async function run() {
   // only thing vouching for the name and validity it carries.
   var brokenNewRoot = H.corruptLeafSig(NEW_ROOT);
   check("165j. a self-issued newWithNew whose own signature is broken -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(brokenNewRoot), B.explicit(0, B.raw(NEW_WITH_OLD))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // A rollover signature is a BIT STRING; a valid one is octet-aligned (no unused bits). A newWithOld
+  // whose signature declares an unused (zero) bit still parses and its octets still verify, but the path
+  // verifier refuses this shape before the engine (guard.crypto.isOctetAligned) -- so the rollover
+  // verifier must too. Built by re-signing until the signature ends in a zero bit (so declaring one
+  // unused bit stays valid DER), then declaring that bit unused via surgery on the signature BIT STRING.
+  var nonAlignedNwo = null;
+  for (var oaTry = 0; oaTry < 60 && nonAlignedNwo === null; oaTry++) {
+    var oaCand = await pki.x509.sign(Object.assign({ subject: "root-new", subjectPublicKey: NEWK.spki }, VALID), { key: OLDK.key, cert: OLD_ROOT });
+    var oaSig = pki.asn1.read.bitString(pki.asn1.decode(oaCand).children[2]).bytes;
+    if ((oaSig[oaSig.length - 1] & 1) === 0) {
+      nonAlignedNwo = DS.patch(oaCand, function (node, path) {
+        if (path.length === 1 && path[0].index === 2 && node.tagClass === "universal" && node.tagNumber === pki.asn1.TAGS.BIT_STRING) {
+          return B.bitString(oaSig, 1);   // same octets, one unused (zero) bit -> not octet-aligned
+        }
+        return undefined;
+      });
+    }
+  }
+  check("165s. a newWithOld whose signature declares an unused (zero) bit -> refused (not octet-aligned; the path verifier refuses this shape)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(nonAlignedNwo))]))]).session.info({ rootCaCert: OLD_ROOT }))));
   // sec. 4.3.2 extends the operation to a directly trusted NON-root certificate, whose issuer this
   // message does not carry. Its own signature is unverifiable from here, and the new key is still
   // authenticated by newWithOld, so the update is accepted rather than refused for a check that
