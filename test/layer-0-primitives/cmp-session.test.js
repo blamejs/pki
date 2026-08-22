@@ -1141,6 +1141,16 @@ async function run() {
   var s159 = mk([H.errorWaiting(), H.pollRep(-1, 1), H.rp(0)]);
   var r159 = await s159.session.revoke({ certificate: CLIENT.cert });
   check("159. polling through to the final rp -> revoked", r159.outcome === "revoked" && r159.polls === 2);
+  // sec. 4.2/4.4: an error message answering a revoke/info is a rejection (status rejection(2)) or, for
+  // delayed delivery, waiting(3) with no failInfo. accepted(0), grantedWithMods(1), or a status in 4..6 is
+  // malformed for an error and is refused, not surfaced as a trusted "rejected" verdict whose PKIStatusInfo
+  // contradicts it -- the same call the rp classifier makes for an unsupported status. A waiting error
+  // carrying failInfo is likewise refused (a wait is not a failure). status-2 rejection and status-3
+  // waiting-without-failInfo (tests 152/158a/159) keep their meaning.
+  check("159b. an error status accepted(0) answering a revoke -> refused, not a rejected verdict", await codeOf(mk([H.errorBody(0)]).session.revoke({ certificate: CLIENT.cert })) === "cmp/bad-error");
+  check("159c. an error status grantedWithMods(1) -> refused", await codeOf(mk([H.errorBody(1)]).session.revoke({ certificate: CLIENT.cert })) === "cmp/bad-error");
+  check("159d. an error status revocationNotification(5) -> refused", await codeOf(mk([H.errorBody(5)]).session.revoke({ certificate: CLIENT.cert })) === "cmp/bad-error");
+  check("159e. a waiting(3) error carrying failInfo -> refused (sec. 4.4 forbids failInfo on waiting)", await codeOf(mk([H.errorBody(3, ["badRequest"])]).session.revoke({ certificate: CLIENT.cert })) === "cmp/bad-error");
 
   // ===== 160/161/162. one transaction per session, and the request-shape doors =====
   var s160 = mk([H.rp(0), H.rp(0)]);

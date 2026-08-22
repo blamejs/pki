@@ -10,7 +10,7 @@
       "The `id-regCtrl-algId`, `id-regCtrl-rsaKeyLen`, and `id-regCtrl-altCertTemplate` object identifiers RFC 9480 sec. 2.16 adds are in the registry, so a `keySpec` control resolves to a name."
     ],
     "Changed": [
-      "Delayed delivery is recognized for a revocation and a support message. RFC 9483 sec. 4.4 puts the `waiting` status in an `ip`, `cp`, or `kup` when answering an enrollment and in an error message when answering anything else, so an error body carrying `waiting` now drives the bounded poll loop for those two operations, with the `pollReq` referring to the whole message. An error answering an enrollment remains a rejection, which is the only shape that profile produces there.",
+      "Delayed delivery is recognized for a revocation and a support message. RFC 9483 sec. 4.4 puts the `waiting` status in an `ip`, `cp`, or `kup` when answering an enrollment and in an error message when answering anything else, so an error body carrying `waiting` now drives the bounded poll loop for those two operations, with the `pollReq` referring to the whole message. An error answering an enrollment remains a rejection, which is the only shape that profile produces there. An error message that is not delayed delivery must state the rejection status: a `waiting` carrying `failInfo`, or an error naming `accepted`, `grantedWithMods`, or another non-rejection status, is refused as malformed rather than surfaced as a trusted rejection verdict its own `PKIStatusInfo` contradicts.",
       "One transaction per session covers all three verbs. A session that has revoked will not then enroll, because both would run under the same transactionID and nonce chain."
     ],
     "Security": [
