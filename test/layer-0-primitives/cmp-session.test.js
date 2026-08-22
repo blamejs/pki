@@ -14,6 +14,25 @@ var pki = helpers.pki;
 var check = helpers.check;
 var H = require("../helpers/cmp-session-transport");
 var signing = require("../helpers/signing");
+var DS = require("../helpers/der-surgery");
+var crypto = require("node:crypto");
+
+// Drop the `critical` BOOLEAN off the Extension whose extnID is `oidName`, re-lengthing every
+// enclosing TLV. It forges the non-conformant cert/CRL a hostile responder could send but our own
+// builders refuse to emit: a CA certificate's basicConstraints (x509.sign) and a CRL's
+// issuingDistributionPoint (crl.sign) are both enforced-critical at build time.
+function _dropExtCritical(der, oidName) {
+  var oidDer = Buffer.from(pki.asn1.build.oid(pki.oid.byName(oidName)));
+  return DS.patch(der, function (node) {
+    if (node.constructed && node.tagClass === "universal" && node.tagNumber === pki.asn1.TAGS.SEQUENCE &&
+        node.children.length === 3 && node.children[0].tagClass === "universal" &&
+        node.children[0].tagNumber === pki.asn1.TAGS.OBJECT_IDENTIFIER &&
+        Buffer.from(node.children[0].bytes).equals(oidDer)) {
+      return pki.asn1.build.sequence([DS.reencode(node.children[0]), DS.reencode(node.children[2])]);
+    }
+    return undefined;
+  });
+}
 
 var CLIENT = signing.makeSigner("ec-p256", { cn: "client" });
 var URL = "https://ca.example/cmp";
@@ -1208,6 +1227,18 @@ async function run() {
     notBefore: VALID.notBefore, notAfter: VALID.notAfter,
     extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: OLDK.key, cert: OLD_ROOT });
   check("165p. a newWithOld whose keyUsage withholds keyCertSign -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(CA_NO_CERTSIGN))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // A CA certificate MUST mark basicConstraints critical (RFC 5280 sec. 4.2.1.9): a relying party
+  // that skips extensions it does not recognize would not see the cA bit. The path validator refuses
+  // a non-critical cA:TRUE, and a certificate this update transfers CA authority to is held to the
+  // same bar. Everything else about this newWithOld is valid -- it carries the new key, names root-new
+  // and is signed by the old root -- so only the criticality can refuse it. x509.sign will not emit a
+  // non-critical CA basicConstraints, so the flag is dropped off a valid rollover and the modified
+  // tbsCertificate re-signed with the old root key, keeping the signature _assertSignedBy checks valid.
+  var flippedBc = _dropExtCritical(NEW_WITH_OLD, "basicConstraints");
+  var flippedBcNode = pki.asn1.decode(flippedBc), flippedBcTbs = DS.reencode(flippedBcNode.children[0]);
+  var CA_NONCRIT_BC = B.sequence([B.raw(flippedBcTbs), DS.reencode(flippedBcNode.children[1]),
+    B.bitString(crypto.sign("sha256", flippedBcTbs, OLDK.keyObject), 0)]);
+  check("165r. a newWithOld whose basicConstraints is non-critical -> refused (RFC 5280 sec. 4.2.1.9)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(CA_NONCRIT_BC))]))]).session.info({ rootCaCert: OLD_ROOT }))));
   // The authority check reads the two extensions by OID. pki.oid.register replaces a display name,
   // so a check asking whether an extension is NAMED basicConstraints would read a present one as
   // absent after a rename and refuse every valid update.
@@ -1356,6 +1387,14 @@ async function run() {
   // reference that lists only that one, and demanding all would reject the point's own CRL.
   var r172a10 = await mk([H.genpOf("crls", shardAsked)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_OTHER }, { uri: DP_ASKED }] }, issuer: CRL_ISSUER } });
   check("172a10. a request naming several names corresponds when ONE of them matches", r172a10.outcome === "answered");
+  // sec. 5.2.5 marks issuingDistributionPoint critical, and the path validator will not build
+  // distribution-point coverage from a non-critical one -- a relying party may ignore it. A crlUpdate
+  // answer is held to the same line: a scope a verifier could ignore cannot bind the CRL to the point
+  // the request named. crl.sign refuses to EMIT a non-critical IDP, so the flag is dropped off a valid
+  // shard; the CRL's own signature over tbsCertList is not verified on this path (the CMP message
+  // protection already authenticated the response), so it does not need re-signing.
+  var nonCritIdpCrl = _dropExtCritical(await shardCrl(DP_ASKED), "issuingDistributionPoint");
+  check("172a12. a CRL whose issuingDistributionPoint is non-critical -> refused (RFC 5280 sec. 5.2.5)", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", B.sequence([B.raw(nonCritIdpCrl)]))]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } }))));
   // The scan reads the FIRST issuingDistributionPoint, which is safe only because a CertificateList
   // carrying the extension twice is refused before any of it is read. The fixture duplicates the
   // scope that WOULD correspond, so a route that reached the second copy would answer rather than
