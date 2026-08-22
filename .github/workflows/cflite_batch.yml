@@ -44,6 +44,7 @@ jobs:
           - crmf-parse
           - pkcs12-parse
           - cmp-parse
+          - cmp-support-value
           - cmc-parse
           - ct-parse
           - ct-verify

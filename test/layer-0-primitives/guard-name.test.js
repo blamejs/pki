@@ -166,7 +166,79 @@ function run() {
   testControlByteReject();
   testRenderEscaping();
   testEmailEqual();
+  testDpnCorresponds();
   testNotCallerReplaceable();
+}
+
+// RFC 5280 sec. 6.3.3(b)(2)(i) correspondence, whose comparison key sec. 5.2.5 pins to the
+// identical encoding. Two properties carry the rule and pull in opposite directions: sharing ONE
+// name is enough (a point published under several names would otherwise reject its own CRL), and
+// the shared name must be the same BYTES (a canonical comparison would accept a CRL scoped to a
+// point the reference never named). The third is that a form this comparison cannot decide answers
+// no rather than guessing.
+function testDpnCorresponds() {
+  var eq = name.dpnCorresponds;
+  function full() { var n = []; for (var i = 0; i < arguments.length; i++) n.push(Buffer.from(arguments[i], "utf8")); return { kind: "fullName", names: n }; }
+  function rel(s) { return { kind: "rdn", bytes: Buffer.from(s, "utf8") }; }
+  check("one name in common corresponds", eq(full("a", "b"), full("c", "b"), E, "x/d", "dp") === true);
+  check("no name in common does not correspond", eq(full("a"), full("b"), E, "x/d", "dp") === false);
+  check("a single shared name is enough, not whole-set equality", eq(full("a"), full("a", "b", "c"), E, "x/d", "dp") === true);
+  // The bytes decide. A name that differs only in its encoding is a different distribution point
+  // here, which is the opposite of the sec. 7.1 rule dnEqual applies to a DN.
+  check("a name differing only in case does NOT correspond", eq(full("Point"), full("point"), E, "x/d", "dp") === false);
+  check("a name differing by whitespace does NOT correspond", eq(full("a b"), full("a  b"), E, "x/d", "dp") === false);
+  check("an empty name list corresponds with nothing", eq(full(), full("a"), E, "x/d", "dp") === false);
+  check("identical nameRelativeToCRLIssuer bytes correspond", eq(rel("ou=1"), rel("ou=1"), E, "x/d", "dp") === true);
+  check("different nameRelativeToCRLIssuer bytes do not", eq(rel("ou=1"), rel("ou=2"), E, "x/d", "dp") === false);
+  check("mixed forms never correspond", eq(full("a"), rel("a"), E, "x/d", "dp") === false);
+
+  // A comparison handed the wrong shape refuses at the call site. Answering false would read as a
+  // clean refusal of a CRL while nothing was compared, which is the failure dnEqual's own shape
+  // check exists to prevent.
+  check("a missing comparand refuses", codeOf(function () { eq(null, full("a"), E, "x/d", "dp"); }) === "x/d");
+  check("an unknown kind refuses", codeOf(function () { eq({ kind: "other", names: [] }, full("a"), E, "x/d", "dp"); }) === "x/d");
+  check("a fullName with no names array refuses", codeOf(function () { eq({ kind: "fullName" }, full("a"), E, "x/d", "dp"); }) === "x/d");
+  check("a sparse names array refuses", codeOf(function () { var s = full("a"); s.names[3] = Buffer.from("b"); delete s.names[1]; eq(s, full("a"), E, "x/d", "dp"); }) === "x/d");
+  // A name that is not bytes cannot be compared as bytes. An object supplying its own `equals` or
+  // `length` would be answering the question asked of it.
+  check("a non-buffer name refuses", codeOf(function () { eq({ kind: "fullName", names: [{ equals: function () { return true; } }] }, full("a"), E, "x/d", "dp"); }) === "x/d");
+  check("an rdn form with no bytes refuses", codeOf(function () { eq({ kind: "rdn" }, rel("a"), E, "x/d", "dp"); }) === "x/d");
+
+  // A field read twice is two values: an accessor can present the name that passes the shape check
+  // and a different one to the comparison, so the bytes that decided the answer would be bytes
+  // nothing validated. Each field is taken from its own property descriptor, once, which refuses
+  // the accessor outright rather than racing it.
+  var flip = 0;
+  var moving = { get kind() { return "fullName"; }, get names() { flip += 1; return [Buffer.from(flip === 1 ? "checked" : "swapped", "utf8")]; } };
+  check("an accessor-backed comparand refuses rather than being read twice",
+    codeOf(function () { eq(moving, full("swapped"), E, "x/d", "dp"); }) === "x/d");
+  check("the refused accessor was never invoked", flip === 0);
+  check("an accessor-backed names element refuses", codeOf(function () {
+    var arr = []; Object.defineProperty(arr, 0, { get: function () { return Buffer.from("a"); }, enumerable: true });
+    eq({ kind: "fullName", names: arr }, full("a"), E, "x/d", "dp");
+  }) === "x/d");
+  // An inherited kind, names or bytes is a shape the decoder never produces: the fields are its own.
+  check("an inherited kind refuses", codeOf(function () { eq(Object.create({ kind: "fullName", names: [Buffer.from("a")] }), full("a"), E, "x/d", "dp"); }) === "x/d");
+  check("an inherited names refuses", codeOf(function () { eq(Object.create({ names: [Buffer.from("a")] }, { kind: { value: "fullName" } }), full("a"), E, "x/d", "dp"); }) === "x/d");
+  check("an inherited bytes refuses", codeOf(function () { eq(Object.create({ bytes: Buffer.from("a") }, { kind: { value: "rdn" } }), rel("a"), E, "x/d", "dp"); }) === "x/d");
+  check("an inherited names ELEMENT refuses rather than being taken off Array.prototype", codeOf(function () {
+    var arr = [Buffer.from("a")]; arr.length = 2;
+    try { Object.defineProperty(Array.prototype, "1", { value: Buffer.from("b"), configurable: true });
+      eq({ kind: "fullName", names: arr }, full("b"), E, "x/d", "dp");
+    } finally { delete Array.prototype[1]; }
+  }) === "x/d");
+  // A Proxy answers the own-descriptor query and the ordinary read from different places. Taking
+  // the value out of the descriptor leaves one answer, so the two cannot disagree.
+  check("a Proxy whose descriptor and read disagree cannot smuggle an inherited value", (function () {
+    var target = Object.create({ kind: "rdn", bytes: Buffer.from("a", "utf8") });
+    var lying = new Proxy(target, {
+      getOwnPropertyDescriptor: function (t, k) { return { value: t[k], writable: true, enumerable: true, configurable: true }; },
+    });
+    // Either it refuses, or it answers from the value the descriptor reported, which is "a" -- so a
+    // comparison against "b" is false. What it must never do is report a match.
+    try { return eq(lying, rel("b"), E, "x/d", "dp") === false; }
+    catch (e) { return e.code === "x/d"; }
+  })());
 }
 
 // RFC 5280 sec. 7.5 decides the match; RFC 8398 sec. 5 decides what may not be

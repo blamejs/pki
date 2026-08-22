@@ -18,6 +18,7 @@ var makeSigner = signing.makeSigner;
 var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
 var nodeCrypto = require("node:crypto");
+var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -145,6 +146,14 @@ async function run() {
   check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
   var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");
+  // A pre-encoded certDetails must survive every byte-source form the byte guard accepts. As an
+  // ArrayBuffer or DataView a narrowed check would miss it and demand the { issuer, serialNumber } it
+  // does not carry. bodyBytes is the protected body encoding, deterministic for equal input (unlike the
+  // randomized ECDSA protection), so equal bodyBytes proves the certDetails was preserved.
+  var cdBuf = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).bodyBytes;
+  var tplAb = tplDer.buffer.slice(tplDer.byteOffset, tplDer.byteOffset + tplDer.byteLength);
+  check("14c. certDetails as an ArrayBuffer is accepted as a pre-encoded CertTemplate", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplAb }] } }, SIG)).bodyBytes).equals(cdBuf));
+  check("14d. certDetails as a DataView is accepted as a pre-encoded CertTemplate", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: new DataView(tplAb) }] } }, SIG)).bodyBytes).equals(cdBuf));
   // header key-identifier optionals + a genm id-it carrying a pre-encoded infoValue + full cr/kur round-trips.
   var kids = await pki.cmp.build({ header: Object.assign({ senderKID: Buffer.alloc(8, 1), recipKID: Buffer.alloc(8, 2), messageTime: new Date("2026-01-01T00:00:00Z"), freeText: ["hello"] }, HDR), body: irMsg.body }, SIG);
   var mk = parse(kids);
@@ -262,7 +271,48 @@ async function run() {
   // an rr carrying crlEntryDetails (a pre-encoded Extensions DER) + a random-salt PBMAC1 (no salt supplied).
   var crlExts = asn1.build.sequence([asn1.build.sequence([asn1.build.oid("2.5.29.21"), asn1.build.octetString(Buffer.from("0a0101", "hex"))])]);   // Extensions { reasonCode keyCompromise }
   check("21bb. rr with crlEntryDetails round-trips", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).body.arm === "rr");
+  // The pre-encoded crlEntryDetails (reasonCode keyCompromise) must survive every byte-source form. As
+  // an ArrayBuffer or DataView it would otherwise fall through as a { reason }-less object and be
+  // silently replaced by a generated unspecified(0) reasonCode -- a different revocation reason than the
+  // caller encoded. Equal bodyBytes proves the Extensions survived unchanged.
+  var ceBuf = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).bodyBytes;
+  var crlExtsAb = crlExts.buffer.slice(crlExts.byteOffset, crlExts.byteOffset + crlExts.byteLength);
+  check("21bb2. crlEntryDetails as an ArrayBuffer preserves the caller's Extensions, not a generated unspecified(0)", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExtsAb }] } }, SIG)).bodyBytes).equals(ceBuf));
+  check("21bb3. crlEntryDetails as a DataView preserves the caller's Extensions", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new DataView(crlExtsAb) }] } }, SIG)).bodyBytes).equals(ceBuf));
+  // A crlEntryDetails.reason getter cannot make the encoded reason differ from the validated one: build()
+  // deep-copies the caller's message at entry, so a getter is invoked exactly once and its LATER values
+  // never reach the encoder. This getter returns keyCompromise on the first read and cessationOfOperation
+  // on every read after; the built message must still encode keyCompromise, matching a plain { reason }.
+  var refReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: { reason: "keyCompromise" } }] } }, SIG)).bodyBytes;
+  var reasonReads = 0, reasonSpec = {};
+  Object.defineProperty(reasonSpec, "reason", { enumerable: true, get: function () { reasonReads += 1; return reasonReads === 1 ? "keyCompromise" : "cessationOfOperation"; } });
+  var getterReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: reasonSpec }] } }, SIG)).bodyBytes;
+  check("21bb5. a crlEntryDetails.reason getter's later values never reach the encoder (entry deep-copy)", getterReasonBody.equals(refReasonBody) && reasonReads === 1);
+  // crlEntryDetails is { reason } | pre-encoded Extensions DER. A value outside that union that is neither a
+  // byte source nor a plain record -- an empty array, or an exotic like a Date -- must be refused, not read
+  // as a keyless record: the fallback would find no `reason` and emit a generated unspecified(0) reasonCode,
+  // turning a malformed input into a real revocation request. An empty PLAIN record stays valid (unspecified).
+  check("21bb7. an array crlEntryDetails is refused, not defaulted to unspecified(0)", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: [] }] } }, SIG)) === "cmp/bad-rev-req");
+  check("21bb8. a non-record (Date) crlEntryDetails is refused", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new Date() }] } }, SIG)) === "cmp/bad-rev-req");
+  check("21bb9. an empty plain-record crlEntryDetails stays valid (unspecified(0))", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: {} }] } }, SIG)).body.arm === "rr");
+  // buildCrlStatusList composes a crlUpdate genm body straight from the caller's request: pki.cmp.session
+  // hands it the request with no entry deep-copy, so the issuer it puts on the wire and the issuer it binds
+  // the response to (the returned issuerName) must come from ONE read of the caller's field. An issuer whose
+  // attributes are accessors must be encoded once: re-encoding it for the wire could ship a CRLSource naming
+  // one CA while the answer is held to another, so a CRL from the bound CA could satisfy a request the wire
+  // named a different CA for. This RDN's commonName reads "CA-A" first and "CA-B" after; the on-wire source
+  // must carry the same encoded Name as issuerName (CA-A), and the field must be read exactly once.
+  var issuerReads = 0, getterRdn = {};
+  Object.defineProperty(getterRdn, "commonName", { enumerable: true, get: function () { issuerReads += 1; return issuerReads === 1 ? "CA-A" : "CA-B"; } });
+  var crlStatus = cmpBuild.buildCrlStatusList({ issuer: [getterRdn] });
+  check("21bb6. a crlUpdate issuer getter's later value never reaches the wire (on-wire source == bound issuerName)", crlStatus.der.includes(crlStatus.issuerName) && issuerReads === 1);
   check("21cc. PBMAC1 with a random (unsupplied) salt round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
+  // opts.mac.prf defaults only when absent. A supplied falsy value ("", false, 0) is not a PRF name and must
+  // be refused, not silently encoded as HMAC-SHA-256: `m.prf || "SHA-256"` would have defaulted it. An
+  // explicitly named PRF still round-trips.
+  check("21cc2. an empty-string opts.mac.prf is refused, not defaulted to SHA-256", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "pw", prf: "", iterationCount: 1000 } })) === "cmp/bad-input");
+  check("21cc3. a false opts.mac.prf is refused", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "pw", prf: false, iterationCount: 1000 } })) === "cmp/bad-input");
+  check("21cc4. an explicit SHA-384 opts.mac.prf round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", prf: "SHA-384", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
 
   // ---- CA / responder-side arms (RFC 9810 sec. 5.3) ----
   var CERT = s.cert;

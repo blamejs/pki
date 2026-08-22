@@ -477,6 +477,29 @@ function pkiconf() { return { pkiconf: null }; }
 function genp() { return { genp: [] }; }   // a general response -- an unexpected arm in an enrollment transaction
 function errorBody(statusCode, failInfo) { return { error: { pKIStatusInfo: { status: statusCode, failInfo: failInfo || ["badRequest"], statusString: ["error"] } } }; }
 
+// ---- revocation + support-message response arms (RFC 9483 sec. 4.2 / 4.3 / 4.4) ----
+
+// RevRepContent: a single PKIStatusInfo, which is what sec. 4.2 requires of an rp answering an rr.
+// failInfo rides only a rejection, since sec. 4.2 makes it PROHIBITED under an accepted status.
+function rp(statusCode, failInfo, extra) {
+  var si = { status: statusCode, statusString: ["rev"] };
+  if (failInfo) si.failInfo = failInfo;
+  return { rp: Object.assign({ status: [si] }, extra || {}) };
+}
+// An rp carrying MORE than the one status sec. 4.2 allows.
+function rpMultiStatus() { return { rp: { status: [{ status: 0 }, { status: 0 }] } }; }
+// Delayed delivery for a non-enrollment operation is an ERROR body carrying status waiting(3),
+// never an rp/genp (sec. 4.4: "for responses to other request message types in an error message").
+function errorWaiting() { return { error: { pKIStatusInfo: { status: 3, statusString: ["queued upstream"] } } }; }
+// A genp carrying one InfoTypeAndValue; infoValue is a pre-encoded DER TLV or omitted.
+function genpOf(infoType, infoValueDer) {
+  var itav = { infoType: infoType };
+  if (infoValueDer != null) itav.infoValue = infoValueDer;
+  return { genp: [itav] };
+}
+// A genp carrying two InfoTypeAndValue, which sec. 4.3 forbids ("a sequence of one element").
+function genpTwo(a, b2) { return { genp: [{ infoType: a }, { infoType: b2 }] }; }
+
 // An enrollment request spec (an ir) whose template publicKey is the ENROLLING key -- it MUST equal the
 // signature-protection key so the CRMF proof-of-possession (which defaults to the protection key) verifies.
 // An optional certReqId sets the CRMF request id the session must echo in pollReq / certConf (RFC 4211).
@@ -489,6 +512,7 @@ function irRequest(spki, certReqId, key) {
 
 module.exports = {
   init: init, fakeCa: fakeCa, caCert: null, leafCert: null, intCaCert: null, signerCert: null, deepSignerCert: null, deepSignerSki: null, sanSignerACert: null, sanSignerAKey: null, sanSignerBCert: null,
-  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
+  ip: ip, cp: cp, kup: kup, ipRejected: ipRejected, ipEmpty: ipEmpty, pollRep: pollRep, pkiconf: pkiconf, genp: genp, errorBody: errorBody, irRequest: irRequest,
+  rp: rp, rpMultiStatus: rpMultiStatus, errorWaiting: errorWaiting, genpOf: genpOf, genpTwo: genpTwo, makeEd25519Cert: makeEd25519Cert, makePssCert: makePssCert, makeUnknownSigAlgCert: makeUnknownSigAlgCert, makeRegisteredNonSigCert: makeRegisteredNonSigCert, makeCompositeSigOidCert: makeCompositeSigOidCert, corruptLeafSig: corruptLeafSig, makeSignerIssuedLeaf: makeSignerIssuedLeaf, makeIntSignedLeaf: makeIntSignedLeaf, makeCaSignedLeaf: makeCaSignedLeaf, makeCurveSwappedLeaf: makeCurveSwappedLeaf, makeMalformedRsaParamCert: makeMalformedRsaParamCert, makePssIndeterminateCert: makePssIndeterminateCert, makePssExplicitUnknownHashCert: makePssExplicitUnknownHashCert, manyDistinctCerts: manyDistinctCerts, stripSpkiParams: stripSpkiParams,
   IMPLICIT_CONFIRM_GI: [{ infoType: "implicitConfirm" }],
 };
