@@ -89,6 +89,11 @@ async function run() {
   var s5 = mk([H.errorBody(2, ["systemFailure"])]);
   var r5 = await s5.session.enroll(H.irRequest(CLIENT.spki));
   check("5. a verified error body -> outcome:rejected with its PKIStatusInfo", r5.outcome === "rejected" && r5.status && r5.status.status.code === 2);
+  // sec. 4.4 places enrollment waiting in an ip/cp/kup, never an error message, so a waiting ERROR
+  // answering an enrollment is off-profile and refused -- not coerced to a rejected verdict whose own
+  // status name reads "waiting". A waiting error carrying failInfo is refused too.
+  check("5b. a waiting ERROR answering an enrollment -> refused, not a contradictory rejected verdict", await codeOf(mk([H.errorWaiting()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-error");
+  check("5c. a waiting enrollment error carrying failInfo -> refused", await codeOf(mk([H.errorBody(3, ["badRequest"])]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-error");
 
   // ===== 6. poll-timeout: waiting that never resolves -> terminal poll-timeout verdict =====
   var s6 = mk([H.ip(0, 3), H.pollRep(0, 1), H.pollRep(0, 1), H.pollRep(0, 1)], { maxPolls: 2 });
