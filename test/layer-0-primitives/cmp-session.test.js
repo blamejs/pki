@@ -1482,6 +1482,12 @@ async function run() {
   check("172a3. a CRL from an issuer other than the one the request named -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: [{ commonName: "some-other-ca" }] } }))));
   check("172a4. a CRL no newer than the supplied thisUpdate -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: new Date("2026-06-01T00:00:00Z") } }))));
   check("172a5. a CRL exactly AT the supplied thisUpdate is not more recent -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: new Date("2026-01-01T00:00:00Z") } }))));
+  // sec. 4.3.4: the response represents the LATEST CRL from the single source the request named -- exactly
+  // one. The id-it-crls list is SIZE (1..MAX), so a responder could return several valid CRLs from that
+  // issuer; accepting them all would surface an older CRL beside the latest and let a caller act on a stale
+  // value[0]. A multi-CRL response to this single-source query is refused. (Both entries here are the same
+  // valid CRL from the named issuer, so only the one-per-query rule -- not issuer/freshness -- can reject.)
+  check("172a5b. a crlUpdate response carrying TWO CRLs is refused (a single-source query answers with exactly one)", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", B.sequence([B.raw(REAL_CRL), B.raw(REAL_CRL)]))]).session.info({ crlUpdate: { issuer: CRL_ISSUER } }))));
   // The comparison happens after the transport round-trip, so the instant is taken when the request
   // is built. A caller still holding that Date must not be able to move the bar under the answer.
   var movingDate = new Date("2026-06-01T00:00:00Z");
@@ -1519,6 +1525,16 @@ async function run() {
   // protection already authenticated the response), so it does not need re-signing.
   var nonCritIdpCrl = _dropExtCritical(await shardCrl(DP_ASKED), "issuingDistributionPoint");
   check("172a12. a CRL whose issuingDistributionPoint is non-critical -> refused (RFC 5280 sec. 5.2.5)", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", B.sequence([B.raw(nonCritIdpCrl)]))]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } }))));
+  // A dpn request always carries an issuer (172a6 refuses a dpn alone), so the issuer binding applies even
+  // to a complete CRL that states no scope: a no-issuingDistributionPoint CRL from an issuer OTHER than the
+  // one named is refused, and cannot be installed as the answer to the requested point. REAL_CRL states no
+  // IDP and is issued by CN=client, so naming a different issuer exercises exactly that path.
+  check("172a13. a dpn request + a complete (no-IDP) CRL from the WRONG issuer -> refused (the issuer binds a dpn request too)", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: [{ commonName: "some-other-ca" }] } }))));
+  // A complete CRL (no IDP) from the CORRECT issuer answers a dpn request: RFC 5280 sec. 5.2.5 makes a
+  // scopeless CRL the issuer's whole population, which covers any one distribution point of it, so it is a
+  // valid -- superset -- answer to the point that was named.
+  var r172a14 = await mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } });
+  check("172a14. a dpn request + a complete (no-IDP) CRL from the correct issuer -> answered (a complete list covers the point, RFC 5280 sec. 5.2.5)", r172a14.outcome === "answered" && r172a14.value.length === 1);
   // The scan reads the FIRST issuingDistributionPoint, which is safe only because a CertificateList
   // carrying the extension twice is refused before any of it is read. The fixture duplicates the
   // scope that WOULD correspond, so a route that reached the second copy would answer rather than
