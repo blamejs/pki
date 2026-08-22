@@ -1386,6 +1386,7 @@ async function run() {
   // whole family, not just the one OID the arc prefix was derived from.
   check("170m10. a keySpec algId naming rsaSignatureWithripemd160 (TeleTrusT) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsaSignatureWithripemd160"))])))]).session.info({ certReqTemplate: true }))));
   check("170m11. a keySpec algId naming an UNREGISTERED TeleTrusT rsaSignature sibling (1.3.36.3.3.1.1) -> refused (arc-matched)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.3.1.1")])))]).session.info({ certReqTemplate: true }))));
+  check("170m12. a keySpec algId naming the X.509 directory rsa OID (2.5.8.1.1) -> refused (distinct from PKCS#1)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsa"))])))]).session.info({ certReqTemplate: true }))));
   // An algorithm the registry cannot name is SURFACED, not refused: RFC 9480 sec. 2.16 holds the algId
   // to one rule -- other than RSA -- and the keySpec offers one control per algorithm the CA supports,
   // so the entity can pick a supported one. Refusing an unrecognized offer would fail the whole
@@ -1572,6 +1573,11 @@ async function run() {
   catch (e) { e175f5 = e; }
   check("175f5. an already-parsed certificate is refused, and the message says it keeps no source DER", e175f5 && e175f5.code === "cmp/bad-input" && /keeps no source DER/.test(e175f5.message));
   check("175f6. a string that is not PEM -> cmp/bad-input", await codeOf(mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: "not a pem block" })) === "cmp/bad-input");
+  // sec. 4.3.2: rootCaCert names the CURRENT root, a CA. An end-entity certificate is refused at the
+  // door -- before the one-shot transaction -- because the response path verifies the rollover against
+  // this certificate's key, so a non-CA here would let a cross-certificate read as a root rollover.
+  check("175f7. info({rootCaCert: <an end-entity certificate>}) -> cmp/bad-input (the current root must be a CA)", await codeOf(mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: EE_NOT_CA })) === "cmp/bad-input");
+  check("175f8. that refusal does not engage the transport (it is caught before the request is sent)", (function () { var s = mk([H.genpOf("rootCaKeyUpdate", rootUpd)]); return s.session.info({ rootCaCert: EE_NOT_CA }).then(function () { return false; }, function () { return s.transport.calls.length === 0; }); })());
   // The keySpec algId is held to one rule -- other than RSA (RFC 9480 sec. 2.16) -- so a registered
   // non-RSA algorithm that is not a public-key type (a digest like sha256) is SURFACED, not refused:
   // the caller weighs whether the offer is a key type it can generate. Refusing it would need the
