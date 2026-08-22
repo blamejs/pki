@@ -1350,6 +1350,10 @@ async function run() {
   // A NIST-arc NON-RSA neighbor (ML-DSA-65) on the SAME arc must still be SURFACED -- the arc is shared,
   // so the explicit RSA list must not spill onto its siblings.
   check("170m7. a keySpec algId naming id-ml-dsa-65 (NIST arc, non-RSA) is still surfaced", (await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-ml-dsa-65"))])))]).session.info({ certReqTemplate: true })).value.keySpec[0].algorithmName === "id-ml-dsa-65");
+  // The legacy OIW RSA-with-hash signatures (id-secsig arc, shared with DSA and the SHA-1 hash) are RSA
+  // too and must be refused.
+  check("170m8. a keySpec algId naming the OIW sha1WithRSASignature (1.3.14.3.2.29) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha1WithRSASignature"))])))]).session.info({ certReqTemplate: true }))));
+  check("170m9. a keySpec algId naming the OIW md2WithRSASignature -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("md2WithRSASignature"))])))]).session.info({ certReqTemplate: true }))));
   // An algorithm the registry cannot name is SURFACED, not refused: RFC 9480 sec. 2.16 holds the algId
   // to one rule -- other than RSA -- and the keySpec offers one control per algorithm the CA supports,
   // so the entity can pick a supported one. Refusing an unrecognized offer would fail the whole
