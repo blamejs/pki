@@ -288,6 +288,13 @@ async function run() {
   Object.defineProperty(reasonSpec, "reason", { enumerable: true, get: function () { reasonReads += 1; return reasonReads === 1 ? "keyCompromise" : "cessationOfOperation"; } });
   var getterReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: reasonSpec }] } }, SIG)).bodyBytes;
   check("21bb5. a crlEntryDetails.reason getter's later values never reach the encoder (entry deep-copy)", getterReasonBody.equals(refReasonBody) && reasonReads === 1);
+  // crlEntryDetails is { reason } | pre-encoded Extensions DER. A value outside that union that is neither a
+  // byte source nor a plain record -- an empty array, or an exotic like a Date -- must be refused, not read
+  // as a keyless record: the fallback would find no `reason` and emit a generated unspecified(0) reasonCode,
+  // turning a malformed input into a real revocation request. An empty PLAIN record stays valid (unspecified).
+  check("21bb7. an array crlEntryDetails is refused, not defaulted to unspecified(0)", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: [] }] } }, SIG)) === "cmp/bad-rev-req");
+  check("21bb8. a non-record (Date) crlEntryDetails is refused", await codeOf(pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new Date() }] } }, SIG)) === "cmp/bad-rev-req");
+  check("21bb9. an empty plain-record crlEntryDetails stays valid (unspecified(0))", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: {} }] } }, SIG)).body.arm === "rr");
   // buildCrlStatusList composes a crlUpdate genm body straight from the caller's request: pki.cmp.session
   // hands it the request with no entry deep-copy, so the issuer it puts on the wire and the issuer it binds
   // the response to (the returned issuerName) must come from ONE read of the caller's field. An issuer whose
