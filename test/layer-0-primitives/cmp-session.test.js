@@ -162,6 +162,17 @@ async function run() {
   check("18a. session() with no args -> cmp/bad-input (a missing url)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session(); })) === "cmp/bad-input");
   check("18b. session(<Buffer>) -> cmp/bad-input (opts must be an object)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session(Buffer.alloc(4)); })) === "cmp/bad-input");
   check("18c. signature protection with key but no cert -> cmp/bad-input (BOTH required)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key }); })) === "cmp/bad-input");
+  // The session entry points require a PLAIN record, not merely a typeof-object: an array or an exotic
+  // (Date/Map) that carries the right property names would otherwise pass the object gate and read as a
+  // keyless record -- session() building a working session from an array whose option props were
+  // hand-assigned, a request verb driving a transaction from one. guard.identifier.assertPlainRecord
+  // refuses that shape at each door.
+  var arrOpts = []; arrOpts.url = URL; arrOpts.key = CLIENT.key; arrOpts.cert = CLIENT.cert; arrOpts.trustAnchors = [H.caCert];
+  check("18d. session(<array carrying option props>) -> cmp/bad-input (an array is not a plain options record)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session(arrOpts); })) === "cmp/bad-input");
+  check("18e. session(<Date>) -> cmp/bad-input (an exotic is not a plain options record)", await codeOf(Promise.resolve().then(function () { return pki.cmp.session(new Date()); })) === "cmp/bad-input");
+  check("18f. an array enroll request (arm prop assigned) -> cmp/bad-input", await codeOf((function () { var a = []; a.ir = {}; return mk([H.pkiconf()]).session.enroll(a); })()) === "cmp/bad-input");
+  check("18g. an array revoke request (certificate prop assigned) -> cmp/bad-input", await codeOf((function () { var a = []; a.certificate = CLIENT.cert; return mk([H.pkiconf()]).session.revoke(a); })()) === "cmp/bad-input");
+  check("18h. an array info request (caCerts prop assigned) -> cmp/bad-input", await codeOf((function () { var a = []; a.caCerts = true; return mk([H.pkiconf()]).session.info(a); })()) === "cmp/bad-input");
 
   // ===== 19. a malformed signer cert still CONSTRUCTS (the derived sender falls back to a NULL-DN) =====
   check("19. a signature session with an unparseable cert constructs (sender defaults to a NULL-DN)", typeof pki.cmp.session({ url: URL, key: CLIENT.key, cert: Buffer.from("not a certificate"), trustAnchors: [H.caCert], transport: mk([H.pkiconf()]).transport }).enroll === "function");

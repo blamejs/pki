@@ -536,6 +536,22 @@ function testKnownKeys() {
   check("while a verb called with no options gets a bag inheriting nothing",
         Object.getPrototypeOf(identifier.optionsObject(undefined, E, "x/bad", "opts")) === null &&
         Object.getPrototypeOf(identifier.optionsObject(null, E, "x/bad", "opts")) === null);
+  // assertPlainRecord: a plain data record is accepted, anything else refused. It exists because the
+  // typeof-object gate a caller writes lets an array or an exotic through, where it reads as a keyless
+  // record; assertKnownKeys and optionsObject both accept an empty array, so the record check is its own
+  // door. Object.prototype and a null prototype are the only accepted shapes.
+  function plainOf(v) { return codeOf(function () { identifier.assertPlainRecord(v, E, "x/bad", "spec"); }); }
+  check("assertPlainRecord accepts a plain {}", plainOf({}) === "NO-THROW");
+  check("assertPlainRecord accepts a null-prototype record", plainOf(Object.create(null)) === "NO-THROW");
+  check("assertPlainRecord refuses an empty array", plainOf([]) === "x/bad");
+  check("assertPlainRecord refuses an array carrying named props", plainOf((function () { var a = []; a.url = "u"; return a; })()) === "x/bad");
+  check("assertPlainRecord refuses a Date", plainOf(new Date()) === "x/bad");
+  check("assertPlainRecord refuses a Map", plainOf(new Map()) === "x/bad");
+  check("assertPlainRecord refuses null", plainOf(null) === "x/bad");
+  check("assertPlainRecord refuses a Buffer", plainOf(Buffer.alloc(2)) === "x/bad");
+  check("assertPlainRecord refuses a primitive", plainOf(42) === "x/bad");
+  check("assertPlainRecord refuses a Proxy (reported keys need not match what it answers)",
+        plainOf(new Proxy({}, { get: function () { return 1; } })) === "x/bad");
   // An option supplied through an accessor is refused. A getter answers afresh on every read, so
   // the value the check saw says nothing about the one the verb uses, and a name checked once can
   // be joined by another the next time it runs. Each of the shapes below reached a verb.
