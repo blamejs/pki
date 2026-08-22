@@ -145,6 +145,14 @@ async function run() {
   check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
   var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");
+  // A pre-encoded certDetails must survive every byte-source form the byte guard accepts. As an
+  // ArrayBuffer or DataView a narrowed check would miss it and demand the { issuer, serialNumber } it
+  // does not carry. bodyBytes is the protected body encoding, deterministic for equal input (unlike the
+  // randomized ECDSA protection), so equal bodyBytes proves the certDetails was preserved.
+  var cdBuf = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).bodyBytes;
+  var tplAb = tplDer.buffer.slice(tplDer.byteOffset, tplDer.byteOffset + tplDer.byteLength);
+  check("14c. certDetails as an ArrayBuffer is accepted as a pre-encoded CertTemplate", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplAb }] } }, SIG)).bodyBytes).equals(cdBuf));
+  check("14d. certDetails as a DataView is accepted as a pre-encoded CertTemplate", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: new DataView(tplAb) }] } }, SIG)).bodyBytes).equals(cdBuf));
   // header key-identifier optionals + a genm id-it carrying a pre-encoded infoValue + full cr/kur round-trips.
   var kids = await pki.cmp.build({ header: Object.assign({ senderKID: Buffer.alloc(8, 1), recipKID: Buffer.alloc(8, 2), messageTime: new Date("2026-01-01T00:00:00Z"), freeText: ["hello"] }, HDR), body: irMsg.body }, SIG);
   var mk = parse(kids);
@@ -262,6 +270,14 @@ async function run() {
   // an rr carrying crlEntryDetails (a pre-encoded Extensions DER) + a random-salt PBMAC1 (no salt supplied).
   var crlExts = asn1.build.sequence([asn1.build.sequence([asn1.build.oid("2.5.29.21"), asn1.build.octetString(Buffer.from("0a0101", "hex"))])]);   // Extensions { reasonCode keyCompromise }
   check("21bb. rr with crlEntryDetails round-trips", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).body.arm === "rr");
+  // The pre-encoded crlEntryDetails (reasonCode keyCompromise) must survive every byte-source form. As
+  // an ArrayBuffer or DataView it would otherwise fall through as a { reason }-less object and be
+  // silently replaced by a generated unspecified(0) reasonCode -- a different revocation reason than the
+  // caller encoded. Equal bodyBytes proves the Extensions survived unchanged.
+  var ceBuf = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExts }] } }, SIG)).bodyBytes;
+  var crlExtsAb = crlExts.buffer.slice(crlExts.byteOffset, crlExts.byteOffset + crlExts.byteLength);
+  check("21bb2. crlEntryDetails as an ArrayBuffer preserves the caller's Extensions, not a generated unspecified(0)", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExtsAb }] } }, SIG)).bodyBytes).equals(ceBuf));
+  check("21bb3. crlEntryDetails as a DataView preserves the caller's Extensions", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new DataView(crlExtsAb) }] } }, SIG)).bodyBytes).equals(ceBuf));
   check("21cc. PBMAC1 with a random (unsupplied) salt round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
 
   // ---- CA / responder-side arms (RFC 9810 sec. 5.3) ----
