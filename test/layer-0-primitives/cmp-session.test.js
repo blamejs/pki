@@ -1318,6 +1318,15 @@ async function run() {
   var ecAlgId = B.sequence([B.oid(pki.oid.byName("ecPublicKey")), B.oid(pki.oid.byName("prime256v1"))]);
   var r170f = await mk([H.genpOf("certReqTemplate", keySpec("algId", ecAlgId))]).session.info({ certReqTemplate: true });
   check("170f. a conforming algId keySpec is surfaced with its algorithm resolved", r170f.value.keySpec[0].algorithmName === "ecPublicKey" && Buffer.isBuffer(r170f.value.keySpec[0].algorithmParameters));
+  // The stateful hash-based public keys (RFC 9802) are non-RSA public-key algorithms an entity can be
+  // asked to generate, so a conforming template requiring one is surfaced, not rejected. Params are
+  // absent for these, so only the resolved name is asserted.
+  var rHbsHss = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-alg-hss-lms-hashsig"))])))]).session.info({ certReqTemplate: true });
+  check("170s. a keySpec algId naming id-alg-hss-lms-hashsig is surfaced (RFC 9802 stateful HBS)", rHbsHss.value.keySpec[0].algorithmName === "id-alg-hss-lms-hashsig");
+  var rHbsXmss = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-alg-xmss-hashsig"))])))]).session.info({ certReqTemplate: true });
+  check("170t. a keySpec algId naming id-alg-xmss-hashsig is surfaced", rHbsXmss.value.keySpec[0].algorithmName === "id-alg-xmss-hashsig");
+  var rHbsXmssmt = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-alg-xmssmt-hashsig"))])))]).session.info({ certReqTemplate: true });
+  check("170u. a keySpec algId naming id-alg-xmssmt-hashsig is surfaced", rHbsXmssmt.value.keySpec[0].algorithmName === "id-alg-xmssmt-hashsig");
   check("170g. a keySpec rsaKeyLen whose value is not an INTEGER -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("rsaKeyLen", B.utf8("2048")))]).session.info({ certReqTemplate: true }))));
   check("170h. a keySpec algId whose value is not a SEQUENCE -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.integer(1n)))]).session.info({ certReqTemplate: true }))));
   // "Other than RSA" covers the whole PKCS#1 arc, so every spelling a responder could reach for is
@@ -1327,9 +1336,21 @@ async function run() {
   // RSA is registered on three arcs, so an arc test is not the rule. These two sit outside PKCS#1.
   check("170l. a keySpec algId naming id-rsa-kem -> refused (RSA off the PKCS#1 arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-rsa-kem"))])))]).session.info({ certReqTemplate: true }))));
   check("170m. a keySpec algId naming id-kem-rsa -> refused (RSA on the ISO arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-kem-rsa"))])))]).session.info({ certReqTemplate: true }))));
-  // An algorithm the registry cannot name is refused too: it can be neither acted on as a key
-  // requirement nor ruled out as RSA, and guessing either way would be a verdict about nothing.
-  check("170n. a keySpec algId the registry does not name -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.6.1.4.1.99999.7")])))]).session.info({ certReqTemplate: true }))));
+  // An algorithm the registry cannot name is SURFACED, not refused: RFC 9480 sec. 2.16 holds the algId
+  // to one rule -- other than RSA -- and the keySpec offers one control per algorithm the CA supports,
+  // so the entity can pick a supported one. Refusing an unrecognized offer would fail the whole
+  // exchange and drop the algorithms alongside it. It surfaces with its raw OID and a null name.
+  var r170n = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.6.1.4.1.99999.7")])))]).session.info({ certReqTemplate: true });
+  check("170n. a keySpec algId the registry does not name is surfaced with a null name (RFC 9480 sec. 2.16)", r170n.outcome === "answered" && r170n.value.keySpec[0].algorithm === "1.3.6.1.4.1.99999.7" && r170n.value.keySpec[0].algorithmName === null);
+  // The multi-offer model (RFC 9483 sec. 4.3.3: "one AttributeTypeAndValue per supported algorithm"):
+  // a keySpec offering a KNOWN non-RSA algorithm alongside an unrecognized one surfaces BOTH, so the
+  // entity can pick the one it supports. One unrecognized offer must not fail the whole exchange.
+  var multiKeySpec = B.sequence([B.raw(CT({ subject: [{ commonName: "x" }] })), B.sequence([
+    B.sequence([B.oid(pki.oid.byName("algId")), B.sequence([B.oid(pki.oid.byName("id-ml-dsa-65"))])]),
+    B.sequence([B.oid(pki.oid.byName("algId")), B.sequence([B.oid("1.3.6.1.4.1.99999.7")])]),
+  ])]);
+  var r170v = await mk([H.genpOf("certReqTemplate", multiKeySpec)]).session.info({ certReqTemplate: true });
+  check("170v. a keySpec offering ML-DSA-65 AND an unrecognized OID surfaces BOTH, not refuses the exchange", r170v.outcome === "answered" && r170v.value.keySpec.length === 2 && r170v.value.keySpec[0].algorithmName === "id-ml-dsa-65" && r170v.value.keySpec[1].algorithmName === null && r170v.value.keySpec[1].algorithm === "1.3.6.1.4.1.99999.7");
   // pki.oid.register overrides an OID's forward display name, so a check that asked whether the
   // NAME said RSA would answer no for a renamed rsaEncryption while the algorithm was unchanged.
   // The identifiers are read at load, which is before any caller can re-register one.
@@ -1501,9 +1522,13 @@ async function run() {
   catch (e) { e175f5 = e; }
   check("175f5. an already-parsed certificate is refused, and the message says it keeps no source DER", e175f5 && e175f5.code === "cmp/bad-input" && /keeps no source DER/.test(e175f5.message));
   check("175f6. a string that is not PEM -> cmp/bad-input", await codeOf(mk([H.genpOf("rootCaKeyUpdate", rootUpd)]).session.info({ rootCaCert: "not a pem block" })) === "cmp/bad-input");
-  // The keySpec algId names a public-key algorithm an entity can generate; a registered digest or
-  // cipher is neither RSA nor a key algorithm, and a requirement to generate one cannot be acted on.
-  check("170p. a keySpec algId naming a digest (sha256) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha256"))])))]).session.info({ certReqTemplate: true }))));
+  // The keySpec algId is held to one rule -- other than RSA (RFC 9480 sec. 2.16) -- so a registered
+  // non-RSA algorithm that is not a public-key type (a digest like sha256) is SURFACED, not refused:
+  // the caller weighs whether the offer is a key type it can generate. Refusing it would need the
+  // drift-prone key-algorithm allowlist this design replaced, the one that wrongly refused conforming
+  // non-RSA public keys it did not happen to list.
+  var r170digest = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha256"))])))]).session.info({ certReqTemplate: true });
+  check("170p. a keySpec algId naming a digest (sha256) is surfaced, not refused (only RSA is excluded)", r170digest.outcome === "answered" && r170digest.value.keySpec[0].algorithmName === "sha256");
   var r170q = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-ml-dsa-65"))])))]).session.info({ certReqTemplate: true });
   check("170q. a keySpec algId naming ML-DSA-65 is accepted", r170q.value.keySpec[0].algorithmName === "id-ml-dsa-65");
   check("175g. info({certReqTemplate: 'x'}) -> cmp/bad-input", await codeOf(mk([H.genpOf("certReqTemplate")]).session.info({ certReqTemplate: "x" })) === "cmp/bad-input");
