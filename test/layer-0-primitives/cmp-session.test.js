@@ -1381,6 +1381,11 @@ async function run() {
   // too and must be refused.
   check("170m8. a keySpec algId naming the OIW sha1WithRSASignature (1.3.14.3.2.29) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha1WithRSASignature"))])))]).session.info({ certReqTemplate: true }))));
   check("170m9. a keySpec algId naming the OIW md2WithRSASignature -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("md2WithRSASignature"))])))]).session.info({ certReqTemplate: true }))));
+  // The TeleTrusT rsaSignature arc (1.3.36.3.3.1) is RSA-dedicated, so it is prefix-matched: a named
+  // member and an UNREGISTERED sibling on the same arc are both refused, proving the match catches the
+  // whole family, not just the one OID the arc prefix was derived from.
+  check("170m10. a keySpec algId naming rsaSignatureWithripemd160 (TeleTrusT) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsaSignatureWithripemd160"))])))]).session.info({ certReqTemplate: true }))));
+  check("170m11. a keySpec algId naming an UNREGISTERED TeleTrusT rsaSignature sibling (1.3.36.3.3.1.1) -> refused (arc-matched)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.3.1.1")])))]).session.info({ certReqTemplate: true }))));
   // An algorithm the registry cannot name is SURFACED, not refused: RFC 9480 sec. 2.16 holds the algId
   // to one rule -- other than RSA -- and the keySpec offers one control per algorithm the CA supports,
   // so the entity can pick a supported one. Refusing an unrecognized offer would fail the whole

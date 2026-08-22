@@ -75,7 +75,7 @@
   "lib/mime.js": "2026-08-17",
   "lib/ocsp-verify.js": "2026-08-20",
   "lib/ocsp.js": "2026-08-20",
-  "lib/oid.js": "2026-08-21",
+  "lib/oid.js": "2026-08-22",
   "lib/path-validate.js": "2026-08-21",
   "lib/pbes2.js": "2026-08-20",
   "lib/pkcs12-build.js": "2026-08-20",
