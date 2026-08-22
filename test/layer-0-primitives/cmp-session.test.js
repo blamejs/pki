@@ -1393,6 +1393,37 @@ async function run() {
   // under it still reaches the caller (unregistered here, so its algorithmName is null).
   var r170oiwDsa = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.14.3.2.13")])))]).session.info({ certReqTemplate: true });
   check("170m16. a keySpec algId naming a non-RSA OIW sibling (dsaWithSHA) is surfaced, not refused", r170oiwDsa.outcome === "answered" && r170oiwDsa.value.keySpec[0].algorithmName === null);
+  // A frozen conformance corpus of every RSA algorithm identifier the standard object tables name, across
+  // the RSA-dedicated arcs (PKCS#1, TeleTrusT -- prefix-matched, so the whole family incl. unregistered
+  // siblings) and the mixed arcs where RSA shares space with non-RSA algorithms (OIW Secsig, NIST
+  // signature, PKIX, X.500 directory -- each member named). A keySpec algId naming any of them states an
+  // RSA requirement that RFC 9483 sec. 4.3.3 forbids, so each MUST be refused. Frozen here so a newly
+  // standardized RSA OID the classifier misses fails this test rather than reaching a responder unrefused.
+  var RSA_OID_CORPUS = [
+    "1.2.840.113549.1.1.1", "1.2.840.113549.1.1.2", "1.2.840.113549.1.1.3", "1.2.840.113549.1.1.4",
+    "1.2.840.113549.1.1.5", "1.2.840.113549.1.1.6", "1.2.840.113549.1.1.7", "1.2.840.113549.1.1.10",
+    "1.2.840.113549.1.1.11", "1.2.840.113549.1.1.12", "1.2.840.113549.1.1.13", "1.2.840.113549.1.1.14",
+    "1.2.840.113549.1.1.15", "1.2.840.113549.1.1.16",
+    "1.3.14.3.2.2", "1.3.14.3.2.3", "1.3.14.3.2.4", "1.3.14.3.2.11", "1.3.14.3.2.14", "1.3.14.3.2.15",
+    "1.3.14.3.2.22", "1.3.14.3.2.24", "1.3.14.3.2.25", "1.3.14.3.2.29",
+    "2.16.840.1.101.3.4.3.13", "2.16.840.1.101.3.4.3.14", "2.16.840.1.101.3.4.3.15", "2.16.840.1.101.3.4.3.16",
+    "2.5.8.1.1", "2.5.8.3.1", "2.5.8.3.100", "1.3.36.3.3.1.2",
+    "1.3.6.1.5.5.7.6.30", "1.3.6.1.5.5.7.6.31",
+  ];
+  var rsaCorpusResults = await Promise.all(RSA_OID_CORPUS.map(function (od) {
+    return codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(od)])))]).session.info({ certReqTemplate: true })).then(function (code) { return { od: od, code: code }; });
+  }));
+  var rsaMisses = rsaCorpusResults.filter(function (r) { return !/^cmp\//.test(r.code || ""); }).map(function (r) { return r.od + "(" + r.code + ")"; });
+  check("170m17. every standardized RSA algorithm OID (across all arcs) is refused in a keySpec algId -- misses: [" + rsaMisses.join(", ") + "]", rsaMisses.length === 0);
+  // The corpus above is only meaningful if non-RSA algorithms on the SAME mixed arcs are NOT refused:
+  // a classifier that refused everything would pass 170m17 while breaking a legitimate keySpec. Each of
+  // these is surfaced (answered), so the refusals above are RSA-specific, not blanket.
+  var NONRSA_OID_CONTROLS = ["1.3.14.3.2.13", "1.3.14.3.2.26", "1.2.840.10045.4.3.2", "2.16.840.1.101.3.4.3.18", "1.3.101.112"];
+  var nonRsaResults = await Promise.all(NONRSA_OID_CONTROLS.map(function (od) {
+    return mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(od)])))]).session.info({ certReqTemplate: true }).then(function (r) { return { od: od, outcome: r.outcome }; }, function () { return { od: od, outcome: "THREW" }; });
+  }));
+  var nonRsaWrong = nonRsaResults.filter(function (r) { return r.outcome !== "answered"; }).map(function (r) { return r.od + "(" + r.outcome + ")"; });
+  check("170m18. non-RSA algorithms on the shared arcs are surfaced, not refused -- wrong: [" + nonRsaWrong.join(", ") + "]", nonRsaWrong.length === 0);
   // The TeleTrusT rsaSignature arc (1.3.36.3.3.1) is RSA-dedicated, so it is prefix-matched: a named
   // member and an UNREGISTERED sibling on the same arc are both refused, proving the match catches the
   // whole family, not just the one OID the arc prefix was derived from.
