@@ -1336,6 +1336,12 @@ async function run() {
   // RSA is registered on three arcs, so an arc test is not the rule. These two sit outside PKCS#1.
   check("170l. a keySpec algId naming id-rsa-kem -> refused (RSA off the PKCS#1 arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-rsa-kem"))])))]).session.info({ certReqTemplate: true }))));
   check("170m. a keySpec algId naming id-kem-rsa -> refused (RSA on the ISO arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("id-kem-rsa"))])))]).session.info({ certReqTemplate: true }))));
+  // "Other than RSA" is decided by OID FAMILY: every OID under the PKCS#1 arc is RSA, so a standardized
+  // member this registry has not named is refused with the ones it has. These OIDs (sha1/md5/sha224
+  // WithRSAEncryption) are not registered here, so they exercise the arc classifier, not a hand-list.
+  check("170m2. a keySpec algId naming sha1WithRSAEncryption (unregistered, under the PKCS#1 arc) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.5")])))]).session.info({ certReqTemplate: true }))));
+  check("170m3. a keySpec algId naming md5WithRSAEncryption (unregistered PKCS#1) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.4")])))]).session.info({ certReqTemplate: true }))));
+  check("170m4. a keySpec algId naming sha224WithRSAEncryption (unregistered PKCS#1) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.2.840.113549.1.1.14")])))]).session.info({ certReqTemplate: true }))));
   // An algorithm the registry cannot name is SURFACED, not refused: RFC 9480 sec. 2.16 holds the algId
   // to one rule -- other than RSA -- and the keySpec offers one control per algorithm the CA supports,
   // so the entity can pick a supported one. Refusing an unrecognized offer would fail the whole
