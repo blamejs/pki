@@ -1446,7 +1446,12 @@ async function run() {
   // The corpus above is only meaningful if non-RSA algorithms on the SAME mixed arcs are NOT refused:
   // a classifier that refused everything would pass 170m17 while breaking a legitimate keySpec. Each of
   // these is surfaced (answered), so the refusals above are RSA-specific, not blanket.
-  var NONRSA_OID_CONTROLS = ["1.3.14.3.2.13", "1.3.14.3.2.26", "1.2.840.10045.4.3.2", "2.16.840.1.101.3.4.3.18", "1.3.101.112"];
+  // mgf1 (1.2.840.113549.1.1.8) and pSpecified (.9) sit UNDER the prefix-matched PKCS#1 arc but are not RSA
+  // algorithms (a mask-generation function and the OAEP label source), so they must be surfaced, not swept
+  // in by the prefix -- the RSA_ARC_EXCLUDE carve-out. Listed here among the non-RSA controls that a keySpec
+  // algId surfaces rather than refuses.
+  var NONRSA_OID_CONTROLS = ["1.3.14.3.2.13", "1.3.14.3.2.26", "1.2.840.10045.4.3.2", "2.16.840.1.101.3.4.3.18", "1.3.101.112",
+    "1.2.840.113549.1.1.8", "1.2.840.113549.1.1.9"];
   var nonRsaResults = await Promise.all(NONRSA_OID_CONTROLS.map(function (od) {
     return mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(od)])))]).session.info({ certReqTemplate: true }).then(function (r) { return { od: od, outcome: r.outcome }; }, function () { return { od: od, outcome: "THREW" }; });
   }));
