@@ -543,6 +543,14 @@ function testKnownKeys() {
   function plainOf(v) { return codeOf(function () { identifier.assertPlainRecord(v, E, "x/bad", "spec"); }); }
   check("assertPlainRecord accepts a plain {}", plainOf({}) === "NO-THROW");
   check("assertPlainRecord accepts a null-prototype record", plainOf(Object.create(null)) === "NO-THROW");
+  // The prototype is not consulted, so a record built by a caller's own class or in another realm is
+  // accepted -- it holds its fields as own enumerable properties like any record. Only the value's KIND
+  // (array / built-in exotic / Proxy), read by identity, is refused, so a cross-realm exotic is still
+  // caught where an instanceof would miss it.
+  check("assertPlainRecord accepts a caller's class instance carrying fields", plainOf((function () { function Opts() { this.url = 1; } return new Opts(); })()) === "NO-THROW");
+  check("assertPlainRecord accepts a cross-realm plain object", plainOf(vm.runInNewContext("({ url: 1 })")) === "NO-THROW");
+  check("assertPlainRecord refuses a cross-realm array", plainOf(vm.runInNewContext("[]")) === "x/bad");
+  check("assertPlainRecord refuses a cross-realm Date", plainOf(vm.runInNewContext("new Date()")) === "x/bad");
   check("assertPlainRecord refuses an empty array", plainOf([]) === "x/bad");
   check("assertPlainRecord refuses an array carrying named props", plainOf((function () { var a = []; a.url = "u"; return a; })()) === "x/bad");
   check("assertPlainRecord refuses a Date", plainOf(new Date()) === "x/bad");
