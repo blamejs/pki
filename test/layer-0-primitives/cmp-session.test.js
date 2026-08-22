@@ -1055,6 +1055,14 @@ async function run() {
   await s151b.session.revoke({ certificate: CLIENT.cert, reason: "cessationOfOperation" });
   check("151b. reason:cessationOfOperation encodes as CRLReason 5", reasonOf(sentRr(s151b.transport, 0)[0]) === 5);
   check("151c. an unknown reason name -> cmp/bad-input", await codeOf(mk([H.rp(0)]).session.revoke({ certificate: CLIENT.cert, reason: "notARealReason" })) === "cmp/bad-input");
+  // A caller field can be an accessor, so a field read twice is two values: the one the checks saw
+  // and the one the message carries. The request is reduced at the door, so what goes on the wire
+  // is what was checked.
+  var flip151 = 0, moving151 = { certificate: CLIENT.cert };
+  Object.defineProperty(moving151, "reason", { enumerable: true, get: function () { flip151 += 1; return flip151 === 1 ? "keyCompromise" : "cessationOfOperation"; } });
+  var s151d = mk([H.rp(0)]);
+  await s151d.session.revoke(moving151);
+  check("151d. a reason accessor cannot put a different CRLReason on the wire than the one checked", reasonOf(sentRr(s151d.transport, 0)[0]) === 1);
 
   // An rp MAY deliver CRLs alongside the status, and they reach the caller on the same verdict, so
   // the rule that a support-message value must be the structure it claims holds here too.
@@ -1190,6 +1198,26 @@ async function run() {
   // The identity attack: a certificate the old CA legitimately issued for the new key, under some
   // OTHER name, satisfies key equality and signature validity. Pairing it with a self-signed
   // certificate of one's own choosing would otherwise read as the authority's own rollover.
+  // The same names, the same key and a valid old-root signature, but issued as an end entity. It
+  // cannot sign anything, so the authority this update claims to move would not arrive.
+  // No keyUsage at all, so only the basicConstraints half can refuse it.
+  var EE_FOR_NEW_KEY = await pki.x509.sign({ subject: "root-new", subjectPublicKey: NEWK.spki,
+    notBefore: VALID.notBefore, notAfter: VALID.notAfter }, { key: OLDK.key, cert: OLD_ROOT });
+  check("165o. a newWithOld issued as an END ENTITY -> refused (the update moves CA authority)", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(EE_FOR_NEW_KEY))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  var CA_NO_CERTSIGN = await pki.x509.sign({ subject: "root-new", subjectPublicKey: NEWK.spki,
+    notBefore: VALID.notBefore, notAfter: VALID.notAfter,
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["cRLSign"] } }, { key: OLDK.key, cert: OLD_ROOT });
+  check("165p. a newWithOld whose keyUsage withholds keyCertSign -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(CA_NO_CERTSIGN))]))]).session.info({ rootCaCert: OLD_ROOT }))));
+  // The authority check reads the two extensions by OID. pki.oid.register replaces a display name,
+  // so a check asking whether an extension is NAMED basicConstraints would read a present one as
+  // absent after a rename and refuse every valid update.
+  var bcOid = pki.oid.byName("basicConstraints"), kuOid = pki.oid.byName("keyUsage");
+  pki.oid.register(bcOid, "renamed-basic-constraints");
+  pki.oid.register(kuOid, "renamed-key-usage");
+  try {
+    var r165q = await mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(NEW_WITH_OLD))]))]).session.info({ rootCaCert: OLD_ROOT });
+    check("165q. a rollover is accepted even when basicConstraints and keyUsage are renamed via pki.oid.register", r165q.outcome === "answered");
+  } finally { pki.oid.register(bcOid, "basicConstraints"); pki.oid.register(kuOid, "keyUsage"); }
   var STRAY_FOR_NEW_KEY = await pki.x509.sign(Object.assign({ subject: "device-42", subjectPublicKey: NEWK.spki }, VALID), { key: OLDK.key, cert: OLD_ROOT });
   check("165l. a newWithOld naming a DIFFERENT subject than newWithNew -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("rootCaKeyUpdate", B.sequence([B.raw(NEW_ROOT), B.explicit(0, B.raw(STRAY_FOR_NEW_KEY))]))]).session.info({ rootCaCert: OLD_ROOT }))));
   // And a certificate for the new root name, carrying the new key, signed by an authority that is
@@ -1304,30 +1332,96 @@ async function run() {
   var movingDate = new Date("2026-06-01T00:00:00Z");
   var s172a7 = mk([function () { movingDate.setUTCFullYear(2020); return H.genpOf("crls", crlsValue); }]);
   check("172a7. a caller mutating the thisUpdate Date mid-transaction does not move the freshness bar", /^cmp\//.test(await codeOf(s172a7.session.info({ crlUpdate: { issuer: CRL_ISSUER, thisUpdate: movingDate } }))));
-  // The dpn arm names a pointer the responder resolves internally, and a CertificateList need not
-  // say which point it came from, so there is nothing to bind it against; freshness still applies.
-  var r172a6 = await mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] } } });
-  check("172a6. a dpn request is not bound by issuer name (nothing in the response names the point)", r172a6.outcome === "answered" && r172a6.value.length === 1);
+  // A dpn is a pointer the responder resolves internally, and a CRL claiming to be its issuer's
+  // COMPLETE list states no scope at all (RFC 5280 sec. 5.2.5), so a dpn on its own leaves nothing
+  // to hold the answer to. The issuer is required with it, and an unbound request is refused here
+  // rather than answered with a CRL from a CA nobody named.
+  check("172a6. a crlUpdate naming a dpn and no issuer -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] } } })) === "cmp/bad-input");
+  // A CRL that DOES say which point it speaks for is held to the one that was asked for. sec. 4.3.4
+  // points at exactly that field for where a distribution point name comes from, and sec. 5.2.5
+  // pins the comparison to the identical encoding.
+  var DP_ASKED = "http://ca.example/shard-1.crl", DP_OTHER = "http://ca.example/shard-2.crl";
+  async function shardCrl(uri) {
+    return pki.crl.sign({
+      thisUpdate: new Date("2026-01-01T00:00:00Z"), nextUpdate: new Date("2026-02-01T00:00:00Z"), crlNumber: 2n,
+      extensions: { issuingDistributionPoint: { fullName: [{ uniformResourceIdentifier: uri }] } },
+    }, { key: CLIENT.key, cert: CLIENT.cert });
+  }
+  var shardAsked = B.sequence([B.raw(await shardCrl(DP_ASKED))]);
+  var shardOther = B.sequence([B.raw(await shardCrl(DP_OTHER))]);
+  var r172a8 = await mk([H.genpOf("crls", shardAsked)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } });
+  check("172a8. a CRL scoped to the requested distribution point -> answered", r172a8.outcome === "answered" && r172a8.value.length === 1);
+  check("172a9. a CRL scoped to a DIFFERENT distribution point -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", shardOther)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } }))));
+  // One name in common is the rule: a point published under several names shares one of them with a
+  // reference that lists only that one, and demanding all would reject the point's own CRL.
+  var r172a10 = await mk([H.genpOf("crls", shardAsked)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_OTHER }, { uri: DP_ASKED }] }, issuer: CRL_ISSUER } });
+  check("172a10. a request naming several names corresponds when ONE of them matches", r172a10.outcome === "answered");
+  // The scan reads the FIRST issuingDistributionPoint, which is safe only because a CertificateList
+  // carrying the extension twice is refused before any of it is read. The fixture duplicates the
+  // scope that WOULD correspond, so a route that reached the second copy would answer rather than
+  // refuse, and this fails the day the parser stops refusing a duplicate extension.
+  var dupIdpCrl = (function (der) {
+    var node = pki.asn1.decode(der), tbs = node.children[0], out = [], idpOid = pki.oid.byName("issuingDistributionPoint");
+    for (var i = 0; i < tbs.children.length; i++) {
+      var c = tbs.children[i];
+      if (c.tagClass !== "context" || c.tagNumber !== 0) { out.push(B.raw(c.bytes)); continue; }
+      var exts = c.children[0], kept = [], dup = null;
+      for (var j = 0; j < exts.children.length; j++) {
+        kept.push(B.raw(exts.children[j].bytes));
+        if (pki.asn1.read.oid(exts.children[j].children[0]) === idpOid) dup = exts.children[j].bytes;
+      }
+      kept.push(B.raw(dup));
+      out.push(B.explicit(0, B.sequence(kept)));
+    }
+    return B.sequence([B.raw(B.sequence(out)), B.raw(node.children[1].bytes), B.raw(node.children[2].bytes)]);
+  })(await shardCrl(DP_ASKED));
+  var e172a11 = await (async function () {
+    try { await mk([H.genpOf("crls", B.sequence([B.raw(dupIdpCrl)]))]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } }); return null; }
+    catch (e) { return e; }
+  })();
+  check("172a11. a CRL carrying issuingDistributionPoint twice is refused as a CertificateList", e172a11 !== null && e172a11.code === "cmp/bad-info-value" && /CertificateList/.test(e172a11.message));
   check("172b. a crlUpdate naming neither dpn nor issuer -> cmp/bad-input (sec. 4.3.4)", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: {} })) === "cmp/bad-input");
   // The dpn arm of CRLSource: an EXPLICIT [0] wrapping a DistributionPointName, whose own fullName
   // [0] keeps the IMPLICIT tagging of the module it is imported from.
   var s172d = mk([H.genpOf("crls", crlsValue)]);
-  await s172d.session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] } } });
+  await s172d.session.info({ crlUpdate: { dpn: { fullName: [{ uri: "http://ca.example/ca.crl" }] }, issuer: CRL_ISSUER } });
   var cs172d = pki.asn1.decode(sentRr(s172d.transport, 0)[0].value).children[0].children[0];
   check("172d. the dpn arm is the [0] CRLSource alternative wrapping a DistributionPointName", cs172d.tagClass === "context" && cs172d.tagNumber === 0 && cs172d.children[0].tagNumber === 0);
-  check("172e. a crlUpdate.dpn without fullName -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: {} } })) === "cmp/bad-input");
-  check("172e2. a non-object crlUpdate.dpn -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: 5 } })) === "cmp/bad-input");
+  check("172e. a crlUpdate.dpn without fullName -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: {}, issuer: CRL_ISSUER } })) === "cmp/bad-input");
+  check("172e2. a non-object crlUpdate.dpn -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: 5, issuer: CRL_ISSUER } })) === "cmp/bad-input");
   var s172j = mk([H.genpOf("crls", crlsValue)]);
-  await s172j.session.info({ crlUpdate: { dpn: { fullName: { uri: "http://ca.example/ca.crl" } } } });   // a lone GeneralName, not an array
+  await s172j.session.info({ crlUpdate: { dpn: { fullName: { uri: "http://ca.example/ca.crl" } }, issuer: CRL_ISSUER } });   // a lone GeneralName, not an array
   check("172j. a lone fullName GeneralName is accepted as a one-element GeneralNames", pki.asn1.decode(sentRr(s172j.transport, 0)[0].value).children[0].children[0].children[0].children.length === 1);
-  check("172f. a crlUpdate.dpn.fullName that is empty -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [] } } })) === "cmp/bad-input");
+  check("172f. a crlUpdate.dpn.fullName that is empty -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [] }, issuer: CRL_ISSUER } })) === "cmp/bad-input");
   check("172g. an unknown crlUpdate field -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: [{ commonName: "c" }], bogus: 1 } })) === "cmp/bad-input");
   check("172h. a non-object crlUpdate -> cmp/bad-input", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: 5 })) === "cmp/bad-input");
   // Delayed delivery applies to a support message too (sec. 4.4).
   var s172i = mk([H.errorWaiting(), H.pollRep(-1, 1), H.pollRep(-1, 1), H.pollRep(-1, 1)], { maxPolls: 2 });
   var r172i = await s172i.session.info({ caCerts: true });
   check("172i. a support message under delayed delivery reaches poll-timeout naming its operation", r172i.outcome === "poll-timeout" && r172i.operation === "caCerts" && r172i.polls === 2);
-  check("172c. a crlUpdate naming BOTH dpn and issuer -> cmp/bad-input (CRLSource is a CHOICE)", await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { issuer: [{ commonName: "c" }], dpn: { fullName: [{ uri: "http://c/c.crl" }] } } })) === "cmp/bad-input");
+  // CRLSource is a CHOICE, so one alternative goes on the wire, and sec. 4.3.4 settles which: the
+  // dpn "if the CRL distribution point name is available". A caller with both keeps the issuer as
+  // the CA whose CRL they will accept, which is what binds an answer a dpn alone cannot bind.
+  var s172c = mk([H.genpOf("crls", shardAsked)]);
+  var r172c = await s172c.session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } });
+  var cs172c = pki.asn1.decode(sentRr(s172c.transport, 0)[0].value).children[0].children[0];
+  check("172c. a crlUpdate naming BOTH sends the dpn arm and is answered", r172c.outcome === "answered" && cs172c.tagClass === "context" && cs172c.tagNumber === 0);
+  check("172c2. a complete CRL from a CA the request did not name -> refused once an issuer is named", /^cmp\//.test(await codeOf(mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: [{ commonName: "some-other-ca" }] } }))));
+  var r172c3 = await mk([H.genpOf("crls", crlsValue)]).session.info({ crlUpdate: { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } });
+  check("172c3. a complete CRL from the named CA answers a dpn request", r172c3.outcome === "answered" && r172c3.value.length === 1);
+  // The same reduce-at-the-door rule on the operation itself: an accessor that names both on the
+  // read the arm count is taken over, and only an issuer on the next, must not get a request on the
+  // wire that no check ever saw.
+  var flip172 = 0, moving172 = {};
+  Object.defineProperty(moving172, "crlUpdate", { enumerable: true, get: function () {
+    flip172 += 1;
+    return flip172 === 1 ? { dpn: { fullName: [{ uri: DP_ASKED }] }, issuer: CRL_ISSUER } : { issuer: [{ commonName: "some-other-ca" }] };
+  } });
+  var s172k = mk([H.genpOf("crls", shardAsked)]);
+  var r172k = await s172k.session.info(moving172);
+  var cs172k = pki.asn1.decode(sentRr(s172k.transport, 0)[0].value).children[0].children[0];
+  check("172k. an operation accessor cannot change the request between the arm count and the encoding",
+    r172k.outcome === "answered" && cs172k.tagClass === "context" && cs172k.tagNumber === 0);
 
   // ===== 173/174/175/176. the genp shape and the info request doors =====
   check("173. a genp carrying two InfoTypeAndValue -> refused (sec. 4.3: a sequence of one)", /^cmp\//.test(await codeOf(mk([H.genpTwo("caCerts", "crls")]).session.info({ caCerts: true }))));

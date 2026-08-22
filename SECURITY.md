@@ -978,6 +978,15 @@ security-only patches after the next major releases.
   update are parsed as X.509 certificates, and a CRL delivered by either a
   revocation response or a CRL request is parsed as a `CertificateList`, so a
   responder cannot answer with any well-formed SEQUENCE and have it read as one.
+  A CRL request is also bound to the source it named (§4.3.4 returns the latest
+  CRL from the referenced source, not any CRL): by the §7.1 canonical rule when
+  it named an issuer, and against the CRL's own `issuingDistributionPoint` when
+  it named a distribution point, under the RFC 5280 §6.3.3 correspondence rule
+  the path validator applies to a shard CRL. A CRL stating no scope is claiming
+  to be its issuer's complete list, which a distribution point cannot bind, so
+  the issuer is required alongside one: the message carries the distribution
+  point, since only one `CRLSource` alternative can go on the wire, and the
+  issuer names the CA whose CRL the caller will accept.
   A root CA key update is held to more than that, because its three certificates
   are only useful in the relationships §4.3.2 names: `newWithOld` must carry the
   new root key, name the same subject as `newWithNew`, and be issued and signed
@@ -987,8 +996,12 @@ security-only patches after the next major releases.
   an ordinary certificate for the new key satisfies key equality and signature
   validity, and its holder could pair it with a self-signed certificate of their
   own choosing and have the result read as the authority's rollover — so the
-  names are bound too, under the RFC 5280 §7.1 canonical comparison. The
-  signatures are checked by the same certification-path engine that verifies a
+  names are bound too, under the RFC 5280 §7.1 canonical comparison. Each of the
+  three must also hold the authority the update transfers: `basicConstraints`
+  with `cA` TRUE, and a `keyUsage`, where one is present, that allows
+  `keyCertSign`. An ordinary end-entity certificate for the same subject and key
+  clears the name, key, and signature rules while being able to certify nothing.
+  The signatures are checked by the same certification-path engine that verifies a
   message's protection, so a responder cannot deliver three unrelated
   certificates and have the update reported as one an entity can act on.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
