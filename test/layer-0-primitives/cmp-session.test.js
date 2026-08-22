@@ -1381,6 +1381,18 @@ async function run() {
   // too and must be refused.
   check("170m8. a keySpec algId naming the OIW sha1WithRSASignature (1.3.14.3.2.29) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("sha1WithRSASignature"))])))]).session.info({ certReqTemplate: true }))));
   check("170m9. a keySpec algId naming the OIW md2WithRSASignature -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("md2WithRSASignature"))])))]).session.info({ certReqTemplate: true }))));
+  // The OIW Secsig arc (1.3.14.3.2) is shared with DES, DSA, and the hashes, so no prefix isolates RSA:
+  // every RSA member standardized under it is named and refused individually. md5WithRSA (.3),
+  // rsaSignature (.11, the ISO 9796 scheme), and shaWithRSAEncryption (.15) are the members beyond the
+  // md2/md5/sha1-WithRSASignature set.
+  check("170m13. a keySpec algId naming the OIW md5WithRSA (1.3.14.3.2.3) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("md5WithRSA"))])))]).session.info({ certReqTemplate: true }))));
+  check("170m14. a keySpec algId naming the OIW rsaSignature (1.3.14.3.2.11) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("rsaSignature"))])))]).session.info({ certReqTemplate: true }))));
+  check("170m15. a keySpec algId naming the OIW shaWithRSAEncryption (1.3.14.3.2.15) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(pki.oid.byName("shaWithRSAEncryption")), B.nullValue()])))]).session.info({ certReqTemplate: true }))));
+  // Precision: a NON-RSA OIW sibling on the same shared arc (dsaWithSHA, 1.3.14.3.2.13) is SURFACED, not
+  // refused -- the arc is enumerated by RSA member, not rejected wholesale, so a legitimate non-RSA algId
+  // under it still reaches the caller (unregistered here, so its algorithmName is null).
+  var r170oiwDsa = await mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.14.3.2.13")])))]).session.info({ certReqTemplate: true });
+  check("170m16. a keySpec algId naming a non-RSA OIW sibling (dsaWithSHA) is surfaced, not refused", r170oiwDsa.outcome === "answered" && r170oiwDsa.value.keySpec[0].algorithmName === null);
   // The TeleTrusT rsaSignature arc (1.3.36.3.3.1) is RSA-dedicated, so it is prefix-matched: a named
   // member and an UNREGISTERED sibling on the same arc are both refused, proving the match catches the
   // whole family, not just the one OID the arc prefix was derived from.
