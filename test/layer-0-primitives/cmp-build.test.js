@@ -307,6 +307,12 @@ async function run() {
   var crlStatus = cmpBuild.buildCrlStatusList({ issuer: [getterRdn] });
   check("21bb6. a crlUpdate issuer getter's later value never reaches the wire (on-wire source == bound issuerName)", crlStatus.der.includes(crlStatus.issuerName) && issuerReads === 1);
   check("21cc. PBMAC1 with a random (unsupplied) salt round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
+  // opts.mac.prf defaults only when absent. A supplied falsy value ("", false, 0) is not a PRF name and must
+  // be refused, not silently encoded as HMAC-SHA-256: `m.prf || "SHA-256"` would have defaulted it. An
+  // explicitly named PRF still round-trips.
+  check("21cc2. an empty-string opts.mac.prf is refused, not defaulted to SHA-256", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "pw", prf: "", iterationCount: 1000 } })) === "cmp/bad-input");
+  check("21cc3. a false opts.mac.prf is refused", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "pw", prf: false, iterationCount: 1000 } })) === "cmp/bad-input");
+  check("21cc4. an explicit SHA-384 opts.mac.prf round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", prf: "SHA-384", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
 
   // ---- CA / responder-side arms (RFC 9810 sec. 5.3) ----
   var CERT = s.cert;
