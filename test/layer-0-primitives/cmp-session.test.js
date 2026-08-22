@@ -1088,6 +1088,14 @@ async function run() {
   var s149c = mk([H.rp(0, null, { crls: [REAL_CRL] })]);
   var r149c = await s149c.session.revoke({ certificate: CLIENT.cert });
   check("149e. an rp's delivered CRLs are surfaced on the verdict", r149c.outcome === "revoked" && r149c.crls.length === 1 && r149c.crls[0].equals(REAL_CRL));
+  // sec. 4.2: an rp MAY name the certificates it revoked in revCerts. This session revokes exactly its
+  // own certificate, so a verified verdict must not report an UNRELATED certificate as revoked: revCerts
+  // is bound to the certificate the request named -- exactly one entry, its issuer + serialNumber equal.
+  var clientRevId = { issuer: { directoryName: [{ commonName: "client" }] }, serialNumber: pki.schema.x509.parse(CLIENT.cert).serialNumber };
+  check("149f. an rp whose revCerts names a DIFFERENT issuer/serial -> refused (an unrelated cert must not read as revoked)", /^cmp\//.test(await codeOf(mk([H.rp(0, null, { revCerts: [{ issuer: { directoryName: [{ commonName: "some-other-ca" }] }, serialNumber: 999n }] })]).session.revoke({ certificate: CLIENT.cert }))));
+  check("149g. an rp carrying MORE than one revCerts entry -> refused (this session revokes exactly one)", /^cmp\//.test(await codeOf(mk([H.rp(0, null, { revCerts: [clientRevId, clientRevId] })]).session.revoke({ certificate: CLIENT.cert }))));
+  var r149h = await mk([H.rp(0, null, { revCerts: [clientRevId] })]).session.revoke({ certificate: CLIENT.cert });
+  check("149h. an rp whose single revCerts names THIS certificate -> revoked, surfaced", r149h.outcome === "revoked" && Array.isArray(r149h.revokedCerts) && r149h.revokedCerts.length === 1);
   // The verdict holds those entries to being CertificateLists through the same reader the
   // support-message answer uses, which vector 172a2 drives. There is no vector for it HERE
   // because this fake responder builds its messages with pki.cmp.build, and that verb already

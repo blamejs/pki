@@ -278,6 +278,15 @@ async function run() {
   var crlExtsAb = crlExts.buffer.slice(crlExts.byteOffset, crlExts.byteOffset + crlExts.byteLength);
   check("21bb2. crlEntryDetails as an ArrayBuffer preserves the caller's Extensions, not a generated unspecified(0)", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: crlExtsAb }] } }, SIG)).bodyBytes).equals(ceBuf));
   check("21bb3. crlEntryDetails as a DataView preserves the caller's Extensions", (parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: new DataView(crlExtsAb) }] } }, SIG)).bodyBytes).equals(ceBuf));
+  // A crlEntryDetails.reason getter cannot make the encoded reason differ from the validated one: build()
+  // deep-copies the caller's message at entry, so a getter is invoked exactly once and its LATER values
+  // never reach the encoder. This getter returns keyCompromise on the first read and cessationOfOperation
+  // on every read after; the built message must still encode keyCompromise, matching a plain { reason }.
+  var refReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: { reason: "keyCompromise" } }] } }, SIG)).bodyBytes;
+  var reasonReads = 0, reasonSpec = {};
+  Object.defineProperty(reasonSpec, "reason", { enumerable: true, get: function () { reasonReads += 1; return reasonReads === 1 ? "keyCompromise" : "cessationOfOperation"; } });
+  var getterReasonBody = parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n }, crlEntryDetails: reasonSpec }] } }, SIG)).bodyBytes;
+  check("21bb5. a crlEntryDetails.reason getter's later values never reach the encoder (entry deep-copy)", getterReasonBody.equals(refReasonBody) && reasonReads === 1);
   check("21cc. PBMAC1 with a random (unsupplied) salt round-trips", parse(await pki.cmp.build(macMsg, { mac: { secret: "pw", iterationCount: 1000 } })).header.protectionAlg.name === "pbmac1");
 
   // ---- CA / responder-side arms (RFC 9810 sec. 5.3) ----
