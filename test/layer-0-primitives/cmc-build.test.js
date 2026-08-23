@@ -391,6 +391,17 @@ async function run() {
   check("C3b. the orm arm is emitted with its type and raw value",
     op.requests[0].arm === "orm" && op.requests[0].requestMessageType === "1.3.6.1.4.1.99999.7");
 
+  // C3c: an orm arm is { type, value } -- a request missing either field is refused at build time
+  // rather than emitted as a malformed request message a server cannot read (RFC 6402 sec. 2.5).
+  check("C3c. an orm request missing its value is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ orm: { type: "1.3.6.1.4.1.99999.7" } }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+  check("C3c. an orm request missing its type is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ orm: { value: b.octetString(Buffer.from([1, 2, 3])) } }] }, { cert: s.cert, key: s.key });
+    })) === "cmc/bad-input");
+
   // ---- control placement (RFC 6402 sec. 2.6) ----------------------------
   check("E8b. a responseBody control asked for in a PKIData is refused at build time",
     (await acode(function () {

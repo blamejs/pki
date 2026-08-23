@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.27 — 2026-08-23
+## v0.5.28 — 2026-08-23
+
+Importing the toolkit is now silent, and a key's WebCrypto algorithm can no longer change under a signature once the key has been created.
+
+### Changed
+
+- `require("@blamejs/pki")` no longer prints Node experimental-feature warnings on load. The engine's typed-array scan reads each global's property descriptor and uses only a data value, so it never touches a host's lazy accessor (Node's `localStorage` and `WASI` emit an `ExperimentalWarning` the moment they are read). Recognition of the concrete typed-array kinds -- the reason for the scan -- is unchanged, since those are ordinary data properties.
+
+### Security
+
+- A `CryptoKey`'s `algorithm` is immutable once the key is created: the property is non-writable so it cannot be replaced, and its value is frozen so its fields cannot be changed. This engine reads `key.algorithm.hash` at sign time, and a mutable algorithm let the hash checked against a JWS `alg` (an `RS256` header signs under SHA-256) be rewritten between that check and the signature -- by swapping the whole object or a field of it, including from a microtask during the signing await -- producing a JWS whose signature does not match the algorithm its header advertises. The frozen value is a copy, so a caller's own `importKey` parameters object is left untouched. A key adopted from another WebCrypto implementation is re-imported from its own algorithm; the keys this engine mints, which is what the enrollment builders sign with, carry the immutable one.
+
+## v0.5.27 — 2026-08-22
 
 A mistyped option passed to pki.trust.anchor or the pki.acme.client constructor is now refused, naming it, instead of being read as absent and silently defaulted.
 
