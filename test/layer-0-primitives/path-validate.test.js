@@ -663,6 +663,22 @@ async function testAcceptChains() {
   var rFlipName74 = await run([direct], { time: T2027, trustAnchor: flipNameAnchor74 });
   check("#74 the anchor name.rdns is materialized once: a stateful getter cannot hand chaining a DN other than the one shape-checked",
     rFlipName74.valid === true && rdnsReads74 === 1);
+  // A tuple whose name exposes rdns through its PROTOTYPE (Object.create, or a class prototype getter) is a
+  // valid tuple -- the contract does not require rdns to be an own property. Normalization reads rdns through
+  // the chain, so an inherited rdns is not dropped by the own-key walk (which would wrongly reject the anchor).
+  var inheritedRdnsAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    name: Object.create({ rdns: rootCert74.subject.rdns }) };
+  check("#74 a tuple whose name.rdns is inherited (Object.create) is accepted, not dropped by the own-key walk",
+    (await run([direct], { time: T2027, trustAnchor: inheritedRdnsAnchor74 })).valid === true);
+  // A caller getter that runs AFTER the constraint maps are read (algorithm.oid runs after purposes) cannot
+  // mutate them: purposes/distrustAfter are snapshot, so flipping a denied purpose to allowed via a later
+  // getter does not reach validation -- the deny the anchor declared stays enforced.
+  var denyMap74 = { serverAuth: false };
+  var mutatingOidAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    purposes: denyMap74, algorithm: { get oid() { denyMap74.serverAuth = true; return "1.3.101.112"; } } };
+  var rMutate74 = await run([direct], { time: T2027, trustAnchor: mutatingOidAnchor74, checkPurpose: "serverAuth" });
+  check("#74 a later caller getter cannot mutate the snapshot purposes map to bypass a denied purpose",
+    rMutate74.valid === false && failCodes(rMutate74).indexOf("path/purpose-not-trusted") !== -1);
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
@@ -3325,6 +3341,15 @@ async function testTrustAnchorConstraints() {
   var rToc = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" });
   check("#74 an inconsistent distrustAfter accessor cannot bypass the distrust control (materialized on one read)",
     rToc.valid === false && failCodes(rToc).indexOf("path/distrusted-after") !== -1);
+  // A distrustAfter Date VALUE is snapshot by value: a later caller getter (algorithm.oid) that setTime()s the
+  // caller's own Date to the future cannot move the distrust cutoff after the map was captured. The original
+  // cutoff still distrusts a leaf issued after it -- the snapshot holds a private copy the caller cannot move.
+  var mutCutoff74 = new Date(D.getTime());
+  var setTimeAnchor74 = withMeta({ distrustAfter: { serverAuth: mutCutoff74 } });
+  setTimeAnchor74.algorithm = { get oid() { mutCutoff74.setTime(new Date("2030-01-01T00:00:00Z").getTime()); return anchor.algorithm; } };
+  var rSetTime74 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: setTimeAnchor74, checkPurpose: "serverAuth" });
+  check("#74 a snapshot distrustAfter Date cannot be moved by a later setTime getter (cutoff stays; a leaf after it is distrusted)",
+    rSetTime74.valid === false && failCodes(rSetTime74).indexOf("path/distrusted-after") !== -1);
   // The purpose-scoped-metadata guard -- which refuses an anchor carrying purpose metadata when no
   // checkPurpose selects one -- reads the SAME value it enforces: an always-restriction accessor is refused
   // exactly like the data form, so a restriction cannot be hidden from the guard behind a getter.
