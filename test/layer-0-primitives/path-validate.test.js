@@ -534,6 +534,12 @@ async function testAcceptChains() {
   catch (e) { lyingRes74 = { threw: (e && e.code) || "throw" }; }
   check("#74 a lying publicKey getter (matching SPKI to the check, real signer to the bind) cannot force valid:true (TOCTOU pinned)",
     lyingRes74.valid !== true);
+  // A publicKey that decodes to an AlgorithmIdentifier but omits the required key BIT STRING is a
+  // structurally-incomplete SPKI: it must fail closed at the anchor door with path/bad-input, not slip
+  // through the OID read to a soft valid:false when key import later rejects it (3007300506032b6570 =
+  // SEQUENCE { SEQUENCE { OID ed25519 } } with no subjectPublicKey).
+  check("#74 a structurally-incomplete trustAnchor SPKI (AlgorithmIdentifier, no key BIT STRING) is refused at entry",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: Buffer.from("3007300506032b6570", "hex"), algorithm: "1.3.101.112" } }))) === "path/bad-input");
   check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
     typeof pki.path.anchorFromCert === "function" &&
     (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);

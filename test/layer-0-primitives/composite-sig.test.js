@@ -112,9 +112,14 @@ async function run() {
   // A key body shorter than the fixed ML-DSA component (1952 for ML-DSA-65).
   check("composite: anchor SPKI shorter than the ML-DSA component fails closed",
     (await sigWithAnchor(b.sequence([algSeq, b.bitString(Buffer.alloc(100), 0)]))) === false);
-  // A subjectPublicKey that is not a BIT STRING (an OCTET STRING) -- the decode throws.
-  check("composite: anchor SPKI whose key is not a BIT STRING fails closed",
-    (await sigWithAnchor(b.sequence([algSeq, b.octetString(Buffer.alloc(2100))]))) === false);
+  // A subjectPublicKey that is not a BIT STRING (an OCTET STRING) is a structurally-malformed SPKI:
+  // the anchor is now refused at ENTRY with path/bad-input, rather than bound and failed closed to a
+  // soft verdict when the key body is read at verify time.
+  var octetAnchorCode;
+  try { await pki.path.validate([mleaf], { time: T, trustAnchor: anchorSpki(b.sequence([algSeq, b.octetString(Buffer.alloc(2100))])) }); octetAnchorCode = "NO-THROW"; }
+  catch (e) { octetAnchorCode = e.code; }
+  check("composite: anchor SPKI whose key is not a BIT STRING is refused at entry (path/bad-input)",
+    octetAnchorCode === "path/bad-input");
 
   // 5. Composite keyUsage gate (draft sec. 5.2): a composite-keyed cert's keyUsage MUST be
   //    signature-only. Mutate a KAT cert's keyUsage bits in place (same length preserves the
