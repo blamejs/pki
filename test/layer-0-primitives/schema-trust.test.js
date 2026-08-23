@@ -481,6 +481,15 @@ async function testCsvHeaderKeyed() {
   check("T15: Y-M-D with dashes parses to the same end-of-day instant",
     a15b.distrustAfter.serverAuth.getTime() === Date.UTC(2027, 5, 1, 23, 59, 59));
 
+  // T15: a date matching the Y-M-D shape but naming an impossible instant (a rolled-over month or
+  // day) is rejected by the strict time reader the synthesized GeneralizedTime routes through, not
+  // clamped to a nearby real date -- the distrust boundary must be the date CCADB wrote or nothing.
+  ["2027-13-01", "2027-06-31"].forEach(function (bogus) {
+    var badDate = csvOf([CSV_HEADER, ["Test Root A", q("Websites"), bogus, "", q(pemA)]]);
+    check("T15: an impossible calendar date " + JSON.stringify(bogus) + " -> trust/bad-csv",
+      codeOf(function () { pki.trust.parseCcadbCsv(badDate); }) === "trust/bad-csv");
+  });
+
   // T16: each missing REQUIRED column fails closed.
   ["Common Name or Certificate Name", "Trust Bits", "Distrust for TLS After Date", "Distrust for S/MIME After Date", "PEM Info"].forEach(function (drop) {
     var idx = CSV_HEADER.indexOf(drop);
@@ -692,6 +701,11 @@ async function testRealCertdataSlice() {
     codeOf(function () { pki.trust.anchor(entryA, { purpose: "wormholes" }); }) === "trust/bad-input");
   check("T27: anchor() rejects a non-entry input",
     codeOf(function () { pki.trust.anchor(null); }) === "trust/bad-input");
+  // A near-miss option name (the plural `purposes`, a sibling's spelling) must be refused, not swallowed:
+  // reading opts.purpose while ignoring an unknown key would hand back the anchor with NO purpose
+  // restriction rather than an error naming the option the caller meant.
+  check("T27: anchor() rejects an unknown option (the plural `purposes` typo)",
+    codeOf(function () { pki.trust.anchor(entryA, { purposes: "serverAuth" }); }) === "trust/bad-input");
   // A trust anchor IS the pair (name, key) -- RFC 5280 sec. 6.1.1 -- so both halves are one fact
   // about one certificate, and the store derived them from one. Reading them back off the entry let
   // a rebuilt copy carry the store's NAME and its per-purpose trust metadata onto a key the store

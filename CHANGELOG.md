@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.27 — 2026-08-23
+
+A mistyped option passed to pki.trust.anchor or the pki.acme.client constructor is now refused, naming it, instead of being read as absent and silently defaulted.
+
+### Changed
+
+- `pki.trust.anchor(entry, opts)` rejects an option it does not recognize, naming it, instead of ignoring it and applying the default. The one option it reads is `purpose`.
+- The `pki.acme.client(directoryUrl, opts)` constructor rejects an unrecognized option the same way. The options it reads are `accountKey`, `accountJwk`, `alg`, `transport`, `tls`, `timeout`, `maxResponseBytes`, `maxRedirects`, `maxNonceRetries`, `maxPolls`, `maxTotalWait`, `sleep`, and `clock`; each method the client returns validates its own per-call options separately.
+
+### Security
+
+- An unrecognized option is a fail-closed error rather than a silent default. The prior behavior meant a security-relevant option -- a shorter redirect budget, a specific trust purpose -- that was misspelled took no effect and raised no error, so a caller could believe a stricter setting was in force when the default was.
+
 ## v0.5.26 — 2026-08-22
 
 Revoking a certificate and asking a certification authority what it offers now go through the same verified CMP transaction as enrollment.

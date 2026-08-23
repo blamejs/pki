@@ -746,6 +746,23 @@ async function run() {
         { key: s.key, spki: s.spki, keyIdentifier: Buffer.alloc(20, 0xcd) });
     })) === "cmc/bad-signer");
 
+  // A key-only signer (no certificate, an spki present) must NAME the request's Subject Key
+  // Identifier as bytes and CARRY its own spki as bytes: the SignerInfo it produces is resolved by
+  // a CA against those exact fields, so a missing or non-byte identifier, or a non-byte spki, is a
+  // signed request no CA can act on and is refused at build time (sec. 3.2), not emitted.
+  check("F14i. a key-only signer that names no Subject Key Identifier is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrWithSki }] }, { key: s.key, spki: s.spki });
+    })) === "cmc/bad-signer");
+  check("F14j. a key-only signer whose keyIdentifier is not DER bytes is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrWithSki }] }, { key: s.key, spki: s.spki, keyIdentifier: "ab" });
+    })) === "cmc/bad-signer");
+  check("F14k. a key-only signer whose spki is not DER bytes is refused",
+    (await acode(function () {
+      return pki.cmc.build({ requests: [{ tcr: csrWithSki }] }, { key: s.key, spki: "notbytes", keyIdentifier: ski });
+    })) === "cmc/bad-signer");
+
   // F14h -- the identifier says WHICH request; the KEY is what makes the claim
   // true. A Subject Key Identifier is caller-chosen, so a signer holding one key
   // can name the identifier of a request asking to certify a different one. The
