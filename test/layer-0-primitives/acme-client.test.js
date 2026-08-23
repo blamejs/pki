@@ -51,6 +51,8 @@ async function testHappyFlow() {
   var chal = await acme.respondToChallenge(authz.challenges[0].url);
   check("#1 respondToChallenge posts to the challenge URL", chal.status === "processing");
   var readyOrder = await acme.pollOrder(ord.url, { onRetryAfter: function () {} });
+  check("#7g pollOrder refuses an unrecognized budget option",
+    (await codeOf(acme.pollOrder(ord.url, { onRetryAfterz: function () {} }))) === "acme/bad-input");
   check("#1 pollOrder returns when the order is ready to finalize", readyOrder.status === "ready");
   var finalized = await acme.finalize(readyOrder, { csr: CSR });
   check("#1 finalize submits the CSR", finalized.status === "processing" || finalized.status === "valid");
@@ -60,6 +62,8 @@ async function testHappyFlow() {
   // own identifiers. This is the one download in the suite driven end to end from a finalize, so it
   // is the one that must reach the certificate through the check rather than around it.
   var dl = await acme.downloadCertificate(valid.certificate, { expectedSpki: CSR_SPKI, identifiers: valid.identifiers, requireBinding: true });
+  check("#8g downloadCertificate refuses an unrecognized option",
+    (await codeOf(acme.downloadCertificate(valid.certificate, { expectedSpki: CSR_SPKI, requireBindings: true }))) === "acme/bad-input");
   check("#1 downloadCertificate returns the leaf + chain", Buffer.isBuffer(dl.certificate) && Array.isArray(dl.chain));
   check("#1 downloadCertificate reports both bindings as checked", dl.boundToKey === true && dl.boundToIdentifiers === true);
   // every post-account POST is kid-signed with the captured account URL; each carries its own nonce.
@@ -199,6 +203,12 @@ async function testRemainingVerbs() {
   var neu = await A.makeAccount();
   await acme.keyChange({ newKey: neu.key, newJwk: neu.jwk, newAlg: "ES256" });
   await acme.revokeCert({ certificate: revCert });   // a subsequent request must still succeed under the new key
+  // #8g: a per-method bag refuses a near-miss option the same way the constructor does, rather than
+  // reading it as undefined and silently defaulting -- covering the reject-preserving contract of each.
+  check("#8g revokeCert refuses an unrecognized option (a near-miss for reason)",
+    (await codeOf(acme.revokeCert({ certificate: revCert, reasons: 1 }))) === "acme/bad-input");
+  check("#8g keyChange refuses an unrecognized option",
+    (await codeOf(acme.keyChange({ newKey: neu.key, newJwk: neu.jwk, newAlg: "ES256", newKeyz: 1 }))) === "acme/bad-input");
   var kcPost = s.calls.filter(function (c) { return c.url === A.URLS.keyChange; })[0];
   check("#8 keyChange posted a nested JWS to keyChange", kcPost && kcPost.method === "POST");
   // a finalize CSR whose public key IS the account key is rejected (RFC 8555 sec. 11.1). Use a FRESH
@@ -398,6 +408,8 @@ async function testReviewHardening() {
   var evilKp = signing.makeSigner("ec-p256", { cn: "evil.example" });
   var evilCsr = await pki.csr.sign({ subject: "evil.example", subjectPublicKey: evilKp.spki, extensionRequest: { subjectAltName: [{ dNSName: "evil.example" }] } }, { key: evilKp.key });
   check("#12 a caller identifier override cannot bypass the order binding", (await codeOf(acmeFb.finalize(ordFb.order, { csr: evilCsr, identifiers: [{ type: "dns", value: "evil.example" }] }))) === "acme/csr-identifier-mismatch");
+  check("#12g finalize refuses an unrecognized option",
+    (await codeOf(acmeFb.finalize(ordFb.order, { csr: evilCsr, csrs: 1 }))) === "acme/bad-input");
 
   // (d) newAccount validates the account object BEFORE committing the kid: a malformed account fails
   // closed and no authenticated operation proceeds.
@@ -813,6 +825,8 @@ async function testRenewalWindow() {
   // RW-1 a uniform-random instant IN the window; renewNow false; the fetch is the unauthenticated GET.
   var s1 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
   var r1 = await clientAt(s1, T).renewalWindow(certDer, { random: function () { return 0.5; } });
+  check("#15g renewalWindow refuses an unrecognized option",
+    (await codeOf(clientAt(s1, T).renewalWindow(certDer, { randoms: function () { return 0.5; } }))) === "acme/bad-input");
   check("#15 RW-1 selects the window midpoint, renewNow false", Date.parse(r1.selectedTime) === T + 15 * DAY && r1.renewNow === false);
   var ri1 = s1.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/renewal-info") === 0; })[0];
   check("#15 RW-1 the ARI fetch is the unauthenticated GET (no JWS body)", ri1 && ri1.method === "GET" && (ri1.body == null || ri1.body === ""));

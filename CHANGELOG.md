@@ -4,7 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.28 — 2026-08-23
+## v0.5.29 — 2026-08-23
+
+pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdict against it, and accepts a parsed certificate directly.
+
+### Added
+
+- `pki.path.anchorFromCert(cert)` turns a parsed certificate into the `{ name, publicKey, algorithm }` trust-anchor tuple `pki.path.validate` and `pki.path.build` consume, so a root can be pinned from its certificate without hand-building the tuple. `pki.path.validate` and `pki.path.build` also accept a parsed certificate passed directly as the anchor.
+
+### Changed
+
+- The ACME client's per-request methods refuse an unrecognized option instead of reading it as absent and applying a default: `finalize`, `pollOrder` / `pollAuthorization`, `downloadCertificate`, `revokeCert`, `keyChange`, and `renewalWindow`. A mistyped option name is now an `acme/bad-input` error rather than a silently ignored setting, matching the client constructor and the rest of the toolkit's option-taking verbs.
+
+### Security
+
+- `pki.path.validate` refuses a malformed `opts.trustAnchor` with `path/bad-input` at entry, rather than seeding the path from it and returning a soft verdict. An anchor tuple missing its `algorithm` could previously make the path validate and return `valid: true` -- a self-describing key algorithm filled the gap the absent field left -- so a caller who passed a mis-shaped anchor received a verdict that did not answer the question they asked. The anchor is now normalized and shape-checked at the door, the same way `pki.path.build` already treated its `trustAnchors`.
+
+## v0.5.28 — 2026-08-22
 
 Importing the toolkit is now silent, and a key's WebCrypto algorithm can no longer change under a signature once the key has been created.
 

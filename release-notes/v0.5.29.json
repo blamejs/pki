@@ -1,0 +1,16 @@
+{
+  "version": "0.5.29",
+  "headline": "pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdict against it, and accepts a parsed certificate directly.",
+  "summary": "`pki.path.validate` seeds the certification path from `opts.trustAnchor`. It read that anchor's fields directly, so an anchor that was not a well-formed tuple never failed at the door: it seeded an undefined working key and algorithm, and the path then failed on a downstream check -- or, for a self-describing key such as an Ed25519 SubjectPublicKeyInfo, the undefined algorithm never bit and the path could validate, returning `valid: true` against an anchor the caller never correctly supplied. `pki.path.build` already normalized its `trustAnchors` through one shared step that converts a certificate to the anchor tuple and rejects a malformed one; `validate` now uses the same step, so a bad anchor is a `path/bad-input` refusal at entry and a parsed certificate can be pinned directly. Separately, the ACME client's per-request methods now refuse an unrecognized option instead of reading it as absent.",
+  "sections": {
+    "Security": [
+      "`pki.path.validate` refuses a malformed `opts.trustAnchor` with `path/bad-input` at entry, rather than seeding the path from it and returning a soft verdict. An anchor tuple missing its `algorithm` could previously make the path validate and return `valid: true` -- a self-describing key algorithm filled the gap the absent field left -- so a caller who passed a mis-shaped anchor received a verdict that did not answer the question they asked. The anchor is now normalized and shape-checked at the door, the same way `pki.path.build` already treated its `trustAnchors`."
+    ],
+    "Added": [
+      "`pki.path.anchorFromCert(cert)` turns a parsed certificate into the `{ name, publicKey, algorithm }` trust-anchor tuple `pki.path.validate` and `pki.path.build` consume, so a root can be pinned from its certificate without hand-building the tuple. `pki.path.validate` and `pki.path.build` also accept a parsed certificate passed directly as the anchor."
+    ],
+    "Changed": [
+      "The ACME client's per-request methods refuse an unrecognized option instead of reading it as absent and applying a default: `finalize`, `pollOrder` / `pollAuthorization`, `downloadCertificate`, `revokeCert`, `keyChange`, and `renewalWindow`. A mistyped option name is now an `acme/bad-input` error rather than a silently ignored setting, matching the client constructor and the rest of the toolkit's option-taking verbs."
+    ]
+  }
+}

@@ -496,6 +496,22 @@ async function testAcceptChains() {
   var res1 = await run([direct], { time: T2027, trustAnchor: anchor });
   check("good 1-cert chain validates", res1.valid === true);
 
+  // #74: a parsed root CERTIFICATE works as opts.trustAnchor (normalized to a tuple), and a mis-shaped
+  // anchor is refused with path/bad-input instead of a soft verdict -- a tuple missing `algorithm`
+  // previously validated the path (fail-OPEN) because a self-describing SPKI masked the undefined value.
+  var rootCert74 = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+  check("#74 a parsed root certificate is accepted as opts.trustAnchor",
+    (await run([direct], { time: T2027, trustAnchor: rootCert74 })).valid === true);
+  check("#74 a malformed trustAnchor tuple is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: "nope", algorithm: 1234 } }))) === "path/bad-input");
+  check("#74 a trustAnchor tuple missing algorithm is refused (was a fail-open valid:true)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose algorithm is an object with no OID is refused (self-describing SPKI would else mask it)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: {} } }))) === "path/bad-input");
+  check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
+    typeof pki.path.anchorFromCert === "function" &&
+    (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);
+
   // ECDSA-P256 chain (exercises the DER->P1363 verify-bridge shim).
   var anchorEc = await mkAnchor("p256", "EcRoot");
   var leafEc = await mkCert({ subject: "EcLeaf", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf" });

@@ -106,7 +106,7 @@ async function run() {
   }
   async function ourVerdict(crlDers) {
     return pki.path.validate([derOf(leafPem)], {
-      time: T, trustAnchor: { name: caCert.subject, publicKey: caCert.subjectPublicKeyInfo.bytes },
+      time: T, trustAnchor: caCert,
       revocationChecker: pki.path.crlChecker(crlDers),
     });
   }
