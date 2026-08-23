@@ -534,6 +534,19 @@ async function testAcceptChains() {
   catch (e) { lyingRes74 = { threw: (e && e.code) || "throw" }; }
   check("#74 a lying publicKey getter (matching SPKI to the check, real signer to the bind) cannot force valid:true (TOCTOU pinned)",
     lyingRes74.valid !== true);
+  // Normalization must not re-read the publicKey accessor after snapshotting it: the flatten copy skips the
+  // overridden fields (publicKey/algorithm/parameters), so an accessor-backed anchor is not read again for a
+  // value that is immediately replaced. toAnchor reads publicKey 3x before the copy (truthiness,
+  // Buffer.isBuffer, snapshot); a getter that throws on a 4th read still validates.
+  var pkReadCount = 0;
+  var accessorAnchor = {
+    name: rootCert74.subject, algorithm: "1.3.101.112",
+    get publicKey() { pkReadCount++; if (pkReadCount > 3) throw new Error("publicKey re-read after snapshot"); return rootCert74.subjectPublicKeyInfo.bytes; },
+  };
+  var rAccessor;
+  try { rAccessor = await run([direct], { time: T2027, trustAnchor: accessorAnchor }); } catch (e) { rAccessor = { threw: (e && e.message) || "throw" }; }
+  check("#74 the flatten copy does not re-read an overridden accessor field (publicKey) after snapshotting it",
+    rAccessor.valid === true);
   // A publicKey that decodes to an AlgorithmIdentifier but omits the required key BIT STRING is a
   // structurally-incomplete SPKI: it must fail closed at the anchor door with path/bad-input, not slip
   // through the OID read to a soft valid:false when key import later rejects it (3007300506032b6570 =
@@ -543,6 +556,53 @@ async function testAcceptChains() {
   check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
     typeof pki.path.anchorFromCert === "function" &&
     (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);
+  // The normalized anchor is a SELF-CONTAINED tuple: cloning it (Object.assign / spread / JSON) keeps every
+  // field as its own property, so a caller can round-trip and reuse it. An anchor that only inherited its
+  // name/metadata would lose them on Object.assign and be rejected as malformed on re-use.
+  var normAnchor = pki.path.anchorFromCert({ name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" });
+  var clonedAnchor = Object.assign({}, normAnchor);
+  check("#74 a normalized anchor tuple is self-contained: an Object.assign clone keeps its name and re-validates",
+    clonedAnchor.name !== undefined && Buffer.isBuffer(clonedAnchor.publicKey) &&
+    (await run([direct], { time: T2027, trustAnchor: clonedAnchor })).valid === true);
+  // anchorFromCert's documented output carries subjectDer; re-normalizing its result (a ready tuple) through
+  // anchorFromCert again keeps it -- the conversion is idempotent, not lossy. A dropped subjectDer would make
+  // the twice-normalized anchor a different shape than the once-normalized one, and the trust store keys its
+  // dedup on subjectDer, so losing it on re-normalization would break a legitimate round-trip.
+  var afcOnce = pki.path.anchorFromCert(rootCert74);
+  var afcTwice = pki.path.anchorFromCert(afcOnce);
+  check("#74 anchorFromCert is idempotent: re-normalizing its result preserves the documented subjectDer",
+    Buffer.isBuffer(afcOnce.subjectDer) && Buffer.isBuffer(afcTwice.subjectDer) &&
+    afcTwice.subjectDer.equals(afcOnce.subjectDer) &&
+    (await run([direct], { time: T2027, trustAnchor: afcTwice })).valid === true);
+  // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
+  // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
+  // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
+  // validation consumes. With the own-data-property copy the injection is inert and the path validates.
+  var protoAnchor = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  Object.defineProperty(protoAnchor, "__proto__", { value: { purposes: { serverAuth: false } }, enumerable: true, configurable: true, writable: true });
+  var rProto = await run([direct], { time: T2027, trustAnchor: protoAnchor, checkPurpose: "serverAuth" });
+  check("#74 an own __proto__ field cannot repoint the normalized anchor's prototype (no injected purpose restriction)",
+    rProto.valid === true);
+  // Cloning the NORMALIZED anchor must not repoint the clone's prototype either: the __proto__ field is
+  // copied non-enumerable, so an Object.assign / spread / JSON clone skips it and cannot invoke the clone's
+  // __proto__ setter to inherit the attacker's purposes restriction.
+  var normProto = pki.path.anchorFromCert(protoAnchor);
+  var clonedProto = Object.assign({}, normProto);
+  var rClonedProto = await run([direct], { time: T2027, trustAnchor: clonedProto, checkPurpose: "serverAuth" });
+  check("#74 cloning a normalized anchor that carried a __proto__ field does not repoint the clone's prototype",
+    rClonedProto.valid === true);
+  // An anchor whose fields are reached through its prototype (Object.create(baseAnchor)) must keep them: the
+  // normalization walks the prototype chain, so name and purpose/distrustAfter restrictions are preserved
+  // rather than dropped (which would reject a valid anchor, or silently weaken its trust restrictions).
+  var baseAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var inheritedAnchor74 = Object.create(baseAnchor74);
+  check("#74 an anchor whose name/fields are inherited (Object.create) keeps them and validates",
+    (await run([direct], { time: T2027, trustAnchor: inheritedAnchor74 })).valid === true);
+  // and an inherited purpose RESTRICTION is still enforced, not lost by flattening (fail-open guard).
+  var baseRestricted74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } };
+  var rInheritedRestrict = await run([direct], { time: T2027, trustAnchor: Object.create(baseRestricted74), checkPurpose: "serverAuth" });
+  check("#74 an inherited anchor purpose restriction survives flattening (serverAuth denied -> not valid)",
+    rInheritedRestrict.valid === false && failCodes(rInheritedRestrict).indexOf("path/purpose-not-trusted") !== -1);
 
   // ECDSA-P256 chain (exercises the DER->P1363 verify-bridge shim).
   var anchorEc = await mkAnchor("p256", "EcRoot");
@@ -3161,6 +3221,41 @@ async function testTrustAnchorConstraints() {
   var taOk = withMeta({ purposes: { serverAuth: true, emailProtection: false, codeSigning: false }, distrustAfter: { serverAuth: D } });
   var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taOk, checkPurpose: "serverAuth" });
   check("T23 delegator + before D -> valid", r23.valid === true);
+  // A trust-anchor constraint field read more than once during validation must not be left a live caller
+  // accessor on the normalized anchor: assertAnchorConstraints gates on distrustAfter (a truthy test, then a
+  // hasOwn test) and then reads its value, so a getter answering the gates with a restriction and the value
+  // read with {} would drop the distrust control and validate a leaf issued past the operator's distrust
+  // date. Normalization materializes the field to data on ONE read, so whatever it resolves to is enforced
+  // consistently -- the accessor cannot answer the gates and the value differently.
+  var taTocDistrust = withMeta({});
+  var dnReads = 0;
+  Object.defineProperty(taTocDistrust, "distrustAfter", {
+    enumerable: true, configurable: true,
+    get: function () { dnReads++; return dnReads <= 2 ? { serverAuth: D } : {}; }
+  });
+  var rToc = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" });
+  check("#74 an inconsistent distrustAfter accessor cannot bypass the distrust control (materialized on one read)",
+    rToc.valid === false && failCodes(rToc).indexOf("path/distrusted-after") !== -1);
+  // The purpose-scoped-metadata guard -- which refuses an anchor carrying purpose metadata when no
+  // checkPurpose selects one -- reads the SAME value it enforces: an always-restriction accessor is refused
+  // exactly like the data form, so a restriction cannot be hidden from the guard behind a getter.
+  var taGetterRestrict = withMeta({});
+  Object.defineProperty(taGetterRestrict, "purposes", {
+    enumerable: true, configurable: true, get: function () { return { serverAuth: false }; }
+  });
+  check("#74 an always-restriction purposes accessor is refused without checkPurpose (guard reads what it enforces)",
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taGetterRestrict }))) === "path/bad-input");
+  // A field OUTSIDE the anchor contract is never read during normalization or validation: an unrelated
+  // caller accessor (here one that throws) is dropped, so a valid anchor still validates and the getter is
+  // never spent -- normalization consumes only the contract fields it will bind.
+  var taUnrelated = withMeta({});
+  var unrelReads = 0;
+  Object.defineProperty(taUnrelated, "customTag", {
+    enumerable: true, configurable: true, get: function () { unrelReads++; throw new Error("unrelated anchor accessor evaluated"); }
+  });
+  var rUnrel = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taUnrelated });
+  check("#74 an unrelated anchor accessor is never evaluated during validate (dropped, not read)",
+    rUnrel.valid === true && unrelReads === 0);
   // T24 -- bare anchor (no metadata), no checkPurpose -> identical to today (valid, no new checks).
   var r24 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
   check("T24 bare anchor preserved -> valid", r24.valid === true && failCodes(r24).indexOf("path/distrusted-after") === -1 && failCodes(r24).indexOf("path/purpose-not-trusted") === -1);
