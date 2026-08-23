@@ -679,6 +679,23 @@ async function testAcceptChains() {
   var rMutate74 = await run([direct], { time: T2027, trustAnchor: mutatingOidAnchor74, checkPurpose: "serverAuth" });
   check("#74 a later caller getter cannot mutate the snapshot purposes map to bypass a denied purpose",
     rMutate74.valid === false && failCodes(rMutate74).indexOf("path/purpose-not-trusted") !== -1);
+  // The anchor publicKey is pinned (snapshot) BEFORE the algorithm.oid getter runs, so a getter that
+  // overwrites the caller's key Buffer after the tuple is read cannot change which key is bound. The snapshot
+  // holds the bytes read at the discriminator; validation binds the key the caller supplied, and the leaf
+  // signed by that original key still validates -- a getter zeroing the Buffer would otherwise leave the
+  // snapshot (taken later) unable to decode, or bind a key the caller swapped in.
+  var origSpki74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var pkSwapAnchor74 = { name: rootCert74.subject, publicKey: origSpki74,
+    algorithm: { get oid() { origSpki74.fill(0); return "1.3.101.112"; } } };
+  check("#74 the anchor publicKey is pinned before algorithm.oid runs: a getter overwriting the key Buffer cannot change the bound key",
+    (await run([direct], { time: T2027, trustAnchor: pkSwapAnchor74 })).valid === true);
+  // Same, for a name getter that runs during tuple discrimination: publicKey is read FIRST and pinned before
+  // the name accessor is invoked, so a name getter overwriting the key Buffer cannot swap the bound key.
+  var origSpki2_74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var nameSwapAnchor74 = { publicKey: origSpki2_74, algorithm: "1.3.101.112",
+    get name() { origSpki2_74.fill(0); return rootCert74.subject; } };
+  check("#74 the anchor publicKey is pinned before the name accessor runs: a name getter overwriting the key Buffer cannot change the bound key",
+    (await run([direct], { time: T2027, trustAnchor: nameSwapAnchor74 })).valid === true);
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
