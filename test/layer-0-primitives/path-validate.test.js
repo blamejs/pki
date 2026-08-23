@@ -508,6 +508,10 @@ async function testAcceptChains() {
     (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes } }))) === "path/bad-input");
   check("#74 a trustAnchor whose algorithm is an object with no OID is refused (self-describing SPKI would else mask it)",
     (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: {} } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose algorithm is a non-canonical OID string is refused (built-in verify reads the SPKI, not this)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "not-an-oid" } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose algorithm object carries a non-canonical OID is refused",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: { oid: "not-an-oid" } } }))) === "path/bad-input");
   check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
     typeof pki.path.anchorFromCert === "function" &&
     (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);

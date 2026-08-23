@@ -207,6 +207,11 @@ async function testRemainingVerbs() {
   // reading it as undefined and silently defaulting -- covering the reject-preserving contract of each.
   check("#8g revokeCert refuses an unrecognized option (a near-miss for reason)",
     (await codeOf(acme.revokeCert({ certificate: revCert, reasons: 1 }))) === "acme/bad-input");
+  // A recognized-key getter that grows a misspelled key WHEN READ must not slip past the per-method gate:
+  // the bag is settled (read-all, then re-checked) before use, so a bag that rewrites itself is refused
+  // rather than carrying the unchecked key into the request. Without settling, reason() fires only later.
+  check("#8g revokeCert refuses a bag whose reason getter grows a key mid-read",
+    (await codeOf(acme.revokeCert({ certificate: revCert, get reason() { this.reasonz = 1; return 4; } }))) === "acme/bad-input");
   check("#8g keyChange refuses an unrecognized option",
     (await codeOf(acme.keyChange({ newKey: neu.key, newJwk: neu.jwk, newAlg: "ES256", newKeyz: 1 }))) === "acme/bad-input");
   var kcPost = s.calls.filter(function (c) { return c.url === A.URLS.keyChange; })[0];
