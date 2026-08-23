@@ -574,6 +574,65 @@ async function testAcceptChains() {
     Buffer.isBuffer(afcOnce.subjectDer) && Buffer.isBuffer(afcTwice.subjectDer) &&
     afcTwice.subjectDer.equals(afcOnce.subjectDer) &&
     (await run([direct], { time: T2027, trustAnchor: afcTwice })).valid === true);
+  // A tuple anchor's own DATA fields beyond the key/metadata contract -- a trust store's label and
+  // mozillaCaPolicy, or any caller data -- survive normalization without an allowlist, so build's returned
+  // result.trustAnchor still identifies which named store entry was selected. Only unrelated ACCESSORS are
+  // dropped (proven separately). A whitelist copy would silently drop these.
+  var labeledAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", label: "Test Root CA", mozillaCaPolicy: { serverAuth: true } };
+  var buildLabeled74 = await pki.path.build(direct, { time: T2027, trustAnchors: [labeledAnchor74] });
+  check("#74 a tuple anchor's documented data fields (label, mozillaCaPolicy) survive normalization on build's result.trustAnchor",
+    buildLabeled74.valid === true && buildLabeled74.trustAnchor.label === "Test Root CA" &&
+    !!buildLabeled74.trustAnchor.mozillaCaPolicy && buildLabeled74.trustAnchor.mozillaCaPolicy.serverAuth === true);
+  // A tuple whose name / publicKey / algorithm is a THROWING accessor is a malformed anchor: the tuple
+  // discriminator reads them under try/catch, so validate refuses with the documented path/bad-input rather
+  // than leaking the getter's raw exception past the typed guards. Same for a throwing algorithm.oid getter.
+  var throwName74 = { get name() { throw new Error("boom-name"); },
+    publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  check("#74 a trustAnchor with a throwing name accessor is refused with path/bad-input, not a raw throw",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwName74 }))) === "path/bad-input");
+  var throwAlgOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: { get oid() { throw new Error("boom-oid"); } } };
+  check("#74 a trustAnchor with a throwing algorithm.oid accessor is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwAlgOid74 }))) === "path/bad-input");
+  // Normalization must not traverse the caller's prototype chain: a Proxy anchor whose getPrototypeOf trap
+  // returned a cycle would otherwise drive an unbounded walk (a DoS). The trap is invoked at most once -- by
+  // the tuple-vs-Buffer type check -- and NEVER by a chain walk during normalization, so a hostile chain
+  // cannot loop. A prior version walked entry's prototype chain and invoked getPrototypeOf a second time.
+  var protoReads74 = 0;
+  var proxyAnchor74 = new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" },
+    { getPrototypeOf: function (t) { protoReads74++; return Object.getPrototypeOf(t); } });
+  var rProxy74 = await run([direct], { time: T2027, trustAnchor: proxyAnchor74 });
+  check("#74 normalization does not walk the anchor's prototype chain (getPrototypeOf invoked at most once, by the type check)",
+    rProxy74.valid === true && protoReads74 <= 1);
+  // A caller's NON-enumerable own data field keeps its value but stays non-enumerable on the normalized
+  // anchor: normalization must not promote hidden caller state into public result data (Object.keys / spread
+  // / JSON). Copying every field enumerable:true would expose it.
+  var hiddenAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  Object.defineProperty(hiddenAnchor74, "internalSecret", { value: "hidden", enumerable: false, configurable: true, writable: true });
+  var buildHidden74 = await pki.path.build(direct, { time: T2027, trustAnchors: [hiddenAnchor74] });
+  check("#74 a non-enumerable caller data field is not promoted to enumerable on the normalized anchor (not leaked via Object.keys)",
+    buildHidden74.valid === true && Object.keys(buildHidden74.trustAnchor).indexOf("internalSecret") === -1);
+  // A Proxy anchor whose ownKeys trap throws (or a revoked proxy) is a malformed anchor: the own-property
+  // reflection runs under try/catch, so validate refuses with the documented path/bad-input rather than
+  // leaking the trap's raw exception.
+  var throwOwnKeys74 = new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" },
+    { ownKeys: function () { throw new Error("ownKeys-boom"); } });
+  check("#74 a trustAnchor Proxy whose ownKeys trap throws is refused with path/bad-input, not a raw throw",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwOwnKeys74 }))) === "path/bad-input");
+  // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
+  // stateful getter that returns the key on its first read but would throw on a later read still validates,
+  // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
+  var pkPinReads74 = 0;
+  var pinnedPk74 = { name: rootCert74.subject, algorithm: "1.3.101.112",
+    get publicKey() { pkPinReads74++; if (pkPinReads74 >= 2) throw new Error("pk-reread"); return rootCert74.subjectPublicKeyInfo.bytes; } };
+  var pinnedPkResult74;
+  try { pinnedPkResult74 = (await run([direct], { time: T2027, trustAnchor: pinnedPk74 })).valid === true ? "valid" : "invalid"; }
+  catch (e) { pinnedPkResult74 = "threw:" + (e.code || e.name); }
+  check("#74 the anchor publicKey is read once (pinned): a getter that would throw on a later read still validates, no raw leak",
+    pinnedPkResult74 === "valid" && pkPinReads74 === 1);
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
