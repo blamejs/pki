@@ -1387,8 +1387,10 @@ async function testLeafRulesAndParams() {
   var synAnchorName = pki.schema.x509.parse(await mkCert({ subject: "SynRoot", issuer: "SynRoot", signWith: "ed25519" })).subject;
   // The anchor's publicKey SPKI must self-describe SYN_ALG so its declared algorithm matches it (the
   // recordingVerifier never checks the key, so a synthetic SPKI is enough to drive the sec. 6.1.4 seam).
-  var synAnchorSpki = b.sequence([b.sequence([b.oid(SYN_ALG)]), b.bitString(Buffer.from([0x04, 0x00]), 0)]);
-  var synAnchor = { name: synAnchorName, publicKey: synAnchorSpki, algorithm: SYN_ALG, parameters: PARAMS };
+  // The anchor's parameters are DERIVED from its SPKI's AlgorithmIdentifier (never a declared field), so
+  // the synthetic SPKI must carry PARAMS there for the sec. 6.1.4 inherit-vs-clear seam below to see them.
+  var synAnchorSpki = b.sequence([b.sequence([b.oid(SYN_ALG), b.raw(PARAMS)]), b.bitString(Buffer.from([0x04, 0x00]), 0)]);
+  var synAnchor = { name: synAnchorName, publicKey: synAnchorSpki, algorithm: SYN_ALG };
 
   var certSame = await mkCert({ subject: "Same", issuer: "SynRoot", signWith: "ed25519", spki: synSpkiSame, extensions: caExts() });
   var certUnder = await mkCert({ subject: "UnderSame", issuer: "Same", signWith: "ed25519", subjectKeys: "ed25519leaf" });
@@ -2499,6 +2501,15 @@ async function testRfc5280ConformanceMusts() {
   var frozenObjForm = Object.freeze({ name: ecAnchorParams.name, publicKey: p256spki, algorithm: Object.freeze({ oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) }) });
   var resFrozen = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: frozenObjForm });
   check("#74 a frozen object-form EC anchor still normalizes and inherits curve params", resFrozen.valid === true);
+  // The anchor's parameters are DERIVED from its publicKey SPKI, never a declared field: an object-form
+  // anchor declaring a WRONG curve (P-384 params on a P-256 key) must not promote that curve into the
+  // working state. The same-curve child that omits its params still inherits the anchor's REAL P-256 curve
+  // and validates; the wrong declared P-384 would otherwise be spliced onto the P-256 key and break it --
+  // and, worse, would let an actual P-384 child inherit P-384 and validate a chain RFC 5280 inheritance
+  // from the real params rejects.
+  var ecAnchorWrongParams = { name: ecAnchorParams.name, publicKey: p256spki, algorithm: { oid: ecKeyAlgOid, parameters: pki.asn1.build.oid("1.3.132.0.34") } };
+  var resWrongParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorWrongParams });
+  check("#74 a wrong declared anchor curve is ignored; the SPKI's real curve seeds child parameter inheritance", resWrongParams.valid === true);
 
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
