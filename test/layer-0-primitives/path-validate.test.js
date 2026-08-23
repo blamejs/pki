@@ -633,6 +633,26 @@ async function testAcceptChains() {
   catch (e) { pinnedPkResult74 = "threw:" + (e.code || e.name); }
   check("#74 the anchor publicKey is read once (pinned): a getter that would throw on a later read still validates, no raw leak",
     pinnedPkResult74 === "valid" && pkPinReads74 === 1);
+  // Nested anchor accessors are read once under the typed-error guard: a throwing name.rdns getter is refused
+  // with path/bad-input (not a raw throw), and a stateful algorithm.oid getter that answers the type probe
+  // with a string but the value with a Symbol cannot leave algStr a Symbol and throw a raw TypeError.
+  var throwRdns74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    name: { get rdns() { throw new Error("rdns-boom"); } } };
+  check("#74 a throwing name.rdns accessor is refused with path/bad-input, not a raw throw",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwRdns74 }))) === "path/bad-input");
+  var algOidReads74 = 0;
+  var statefulOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: { get oid() { algOidReads74++; return algOidReads74 === 1 ? "not-a-canonical-oid" : Symbol("oid"); } } };
+  check("#74 a stateful algorithm.oid accessor (string on the type probe, Symbol on the value) is refused with path/bad-input, not a raw TypeError",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 1);
+  // An own SYMBOL-keyed data field survives normalization like a string data field: a store's own symbol
+  // bookkeeping round-trips onto build's result.trustAnchor. A getOwnPropertyNames-only copy would drop it.
+  var SYM74 = Symbol("storeTag");
+  var symAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  symAnchor74[SYM74] = "symbol-metadata";
+  var buildSym74 = await pki.path.build(direct, { time: T2027, trustAnchors: [symAnchor74] });
+  check("#74 an own symbol-keyed anchor data field survives normalization onto result.trustAnchor",
+    buildSym74.valid === true && buildSym74.trustAnchor[SYM74] === "symbol-metadata");
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
