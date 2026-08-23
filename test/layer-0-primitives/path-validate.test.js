@@ -2456,6 +2456,18 @@ async function testRfc5280ConformanceMusts() {
   var leafNoParams = await mkCert({ subject: "NoParamsLeaf", issuer: "NoParamsInter", signWith: "p256i", subjectKeys: "ed25519leaf" });
   var resNoParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorParams });
   check("EC cert inheriting its curve parameters verifies (params spliced)", resNoParams.valid === true);
+  // The object algorithm form { oid, parameters } normalizes to the same flat shape: workingPublicKeyAlgorithm
+  // seeds from the string OID (not an object, which would never match the child's keyAlg.oid and would clear
+  // the inherited params) and the nested parameters surface at anchor.parameters, so inheritance still holds.
+  var ecAnchorObjForm = { name: ecAnchorParams.name, publicKey: p256spki, algorithm: { oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) } };
+  var resObjForm = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorObjForm });
+  check("#74 an object-form EC anchor { oid, parameters } inherits curve params like the flat form", resObjForm.valid === true);
+  // A FROZEN object-form anchor still normalizes: the OID override is defined as an OWN property, so an
+  // inherited non-writable/accessor `algorithm` descriptor cannot block it (a plain assignment would throw
+  // in strict mode or silently leave the object algorithm in place, breaking EC parameter inheritance).
+  var frozenObjForm = Object.freeze({ name: ecAnchorParams.name, publicKey: p256spki, algorithm: Object.freeze({ oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) }) });
+  var resFrozen = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: frozenObjForm });
+  check("#74 a frozen object-form EC anchor still normalizes and inherits curve params", resFrozen.valid === true);
 
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
@@ -3082,6 +3094,14 @@ async function testTrustAnchorConstraints() {
   var taNot = withMeta({ purposes: { serverAuth: false, emailProtection: false, codeSigning: false } });
   var r22 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taNot, checkPurpose: "serverAuth" });
   check("T22 purpose not trusted -> path/purpose-not-trusted", r22.valid === false && failCodes(r22).indexOf("path/purpose-not-trusted") !== -1);
+  // Constraint metadata that is NON-ENUMERABLE on an object-form-algorithm anchor must survive
+  // normalization: the flat copy inherits from the entry, so a purpose restriction the validator reads
+  // through normal property access is still enforced rather than silently dropped (a fail-open).
+  var taObjAlgHidden = withMeta({ algorithm: { oid: anchor.algorithm } });
+  Object.defineProperty(taObjAlgHidden, "purposes", { value: { serverAuth: false }, enumerable: false, configurable: true });
+  var rHidden = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taObjAlgHidden, checkPurpose: "serverAuth" });
+  check("#74 a non-enumerable anchor purposes map survives object-form-algorithm normalization",
+    rHidden.valid === false && failCodes(rHidden).indexOf("path/purpose-not-trusted") !== -1);
   // The purposes map is the operator's restriction, so it must answer from its OWN entries: a name
   // planted on Object.prototype would otherwise grant the purpose on every anchor that omits it.
   var taOmits = withMeta({ purposes: { emailProtection: false } });
