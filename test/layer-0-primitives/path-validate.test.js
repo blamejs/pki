@@ -653,6 +653,16 @@ async function testAcceptChains() {
   var buildSym74 = await pki.path.build(direct, { time: T2027, trustAnchors: [symAnchor74] });
   check("#74 an own symbol-keyed anchor data field survives normalization onto result.trustAnchor",
     buildSym74.valid === true && buildSym74.trustAnchor[SYM74] === "symbol-metadata");
+  // The anchor name is MATERIALIZED once: name.rdns is read a single time at normalization and stored as
+  // data, so a stateful rdns accessor cannot answer the shape check with the checked DN and hand name
+  // chaining (which re-reads workingIssuerName.rdns) a different issuer DN. With the checked DN on the one
+  // read, the anchor validates consistently; the shallow-reference copy read the getter again at chaining.
+  var rdnsReads74 = 0;
+  var flipNameAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    name: { get rdns() { rdnsReads74++; return rdnsReads74 === 1 ? rootCert74.subject.rdns : []; } } };
+  var rFlipName74 = await run([direct], { time: T2027, trustAnchor: flipNameAnchor74 });
+  check("#74 the anchor name.rdns is materialized once: a stateful getter cannot hand chaining a DN other than the one shape-checked",
+    rFlipName74.valid === true && rdnsReads74 === 1);
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
