@@ -455,7 +455,10 @@ async function mkAnchor(algKey, name) {
   return {
     name: pki.schema.x509.parse(await mkCert({ subject: name || "Anchor", issuer: name || "Anchor", signWith: algKey || "ed25519" })).subject,
     publicKey: k.spki,
-    algorithm: ALG[algKey || "ed25519"].sigOid,
+    // The anchor `algorithm` is the KEY algorithm the SPKI self-describes (RFC 5280 sec. 6.1.4
+    // workingPublicKeyAlgorithm), NOT the signature OID -- for EC the two differ (ecPublicKey vs
+    // ecdsaWithSHA256). Derive it from the SPKI so it matches, as pki.path.validate now requires.
+    algorithm: pki.asn1.read.oid(pki.asn1.decode(k.spki).children[0].children[0]),
   };
 }
 
@@ -512,6 +515,25 @@ async function testAcceptChains() {
     (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "not-an-oid" } }))) === "path/bad-input");
   check("#74 a trustAnchor whose algorithm object carries a non-canonical OID is refused",
     (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: { oid: "not-an-oid" } } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose declared algorithm is canonical but DISAGREES with its publicKey SPKI is refused (declared must equal the SPKI key algorithm)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.2.840.113549.1.1.1" } }))) === "path/bad-input");
+  // TOCTOU: a caller publicKey getter must not answer the declared-vs-SPKI check with one key and hand
+  // verification another. toAnchor pins publicKey once and the anchor it returns carries that pinned copy,
+  // so a getter returning a matching EC SPKI to the check and the real Ed25519 signer to the key-binding
+  // cannot force valid:true -- the check bytes ARE the bound bytes.
+  var ecSpki74 = (await ensureKeys("p256")).spki;
+  var ecOid74 = pki.asn1.read.oid(pki.asn1.decode(ecSpki74).children[0].children[0]);
+  var pkReads74 = 0;
+  var lyingAnchor74 = {
+    name: rootCert74.subject,
+    algorithm: ecOid74,   // declares ecPublicKey, matching the EC SPKI the check reads
+    get publicKey() { pkReads74++; return pkReads74 <= 3 ? ecSpki74 : rootCert74.subjectPublicKeyInfo.bytes; },
+  };
+  var lyingRes74;
+  try { lyingRes74 = await run([direct], { time: T2027, trustAnchor: lyingAnchor74 }); }
+  catch (e) { lyingRes74 = { threw: (e && e.code) || "throw" }; }
+  check("#74 a lying publicKey getter (matching SPKI to the check, real signer to the bind) cannot force valid:true (TOCTOU pinned)",
+    lyingRes74.valid !== true);
   check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
     typeof pki.path.anchorFromCert === "function" &&
     (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);
@@ -1357,7 +1379,10 @@ async function testLeafRulesAndParams() {
     },
   };
   var synAnchorName = pki.schema.x509.parse(await mkCert({ subject: "SynRoot", issuer: "SynRoot", signWith: "ed25519" })).subject;
-  var synAnchor = { name: synAnchorName, publicKey: (await ensureKeys("ed25519")).spki, algorithm: SYN_ALG, parameters: PARAMS };
+  // The anchor's publicKey SPKI must self-describe SYN_ALG so its declared algorithm matches it (the
+  // recordingVerifier never checks the key, so a synthetic SPKI is enough to drive the sec. 6.1.4 seam).
+  var synAnchorSpki = b.sequence([b.sequence([b.oid(SYN_ALG)]), b.bitString(Buffer.from([0x04, 0x00]), 0)]);
+  var synAnchor = { name: synAnchorName, publicKey: synAnchorSpki, algorithm: SYN_ALG, parameters: PARAMS };
 
   var certSame = await mkCert({ subject: "Same", issuer: "SynRoot", signWith: "ed25519", spki: synSpkiSame, extensions: caExts() });
   var certUnder = await mkCert({ subject: "UnderSame", issuer: "Same", signWith: "ed25519", subjectKeys: "ed25519leaf" });
@@ -3819,7 +3844,7 @@ async function testCoverageEdges() {
     "239+252 PSS trailerField != 1": { code: UA },
     "267 RSA PKCS1 with absent params": { code: UA },
     "268 Ed25519 with present params": { throw: "x509/bad-algorithm-parameters" },
-    "284 malformed issuer SPKI for a sameKeyOid alg": { code: "path/algorithm-mismatch" },
+    "284 malformed issuer SPKI for a sameKeyOid alg": { throw: "path/bad-input" },
     "298 ECDSA signature not a DER SEQUENCE": { code: BADSIG },
     "299 ECDSA signature not two INTEGERs": { code: BADSIG },
     "401+544 rfc822 SAN without '@' vs host constraint": { code: NCU },

@@ -19,6 +19,7 @@ pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdi
 ### Security
 
 - `pki.path.validate` refuses a malformed `opts.trustAnchor` with `path/bad-input` at entry, rather than seeding the path from it and returning a soft verdict. An anchor tuple missing its `algorithm` could previously make the path validate and return `valid: true` -- a self-describing key algorithm filled the gap the absent field left -- so a caller who passed a mis-shaped anchor received a verdict that did not answer the question they asked. The anchor is now normalized and shape-checked at the door, the same way `pki.path.build` already treated its `trustAnchors`.
+- `pki.path.validate` and `pki.path.build` also refuse a trust anchor whose declared `algorithm` does not match the algorithm of its `publicKey`. Path verification derives the key algorithm from the anchor's SubjectPublicKeyInfo, so an anchor that named a different or unrelated algorithm than the key it carried was previously accepted and validated against the real key; a declared algorithm inconsistent with the key is now a `path/bad-input` refusal at entry.
 
 ## v0.5.28 — 2026-08-22
 
