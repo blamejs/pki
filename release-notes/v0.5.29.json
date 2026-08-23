@@ -11,6 +11,7 @@
       "`pki.path.anchorFromCert(cert)` turns a parsed certificate into the `{ name, publicKey, algorithm }` trust-anchor tuple `pki.path.validate` and `pki.path.build` consume, so a root can be pinned from its certificate without hand-building the tuple. `pki.path.validate` and `pki.path.build` also accept a parsed certificate passed directly as the anchor."
     ],
     "Changed": [
+      "A normalized trust anchor -- what `pki.path.anchorFromCert` returns and what `pki.path.build` reports as `result.trustAnchor` -- carries a defined set of fields: `name`, `publicKey`, `algorithm`, and `parameters`, plus `purposes`, `distrustAfter`, `subjectDer`, `label`, and `mozillaCaPolicy` when the source supplies them (the fields `pki.trust.parseCertdata` emits). These survive normalization, so a pinned trust-store entry round-trips; a field attached outside that set is not carried onto the anchor.",
       "The ACME client's per-request methods refuse an unrecognized option instead of reading it as absent and applying a default: `finalize`, `pollOrder` / `pollAuthorization`, `downloadCertificate`, `revokeCert`, `keyChange`, and `renewalWindow`. A mistyped option name is now an `acme/bad-input` error rather than a silently ignored setting, matching the client constructor and the rest of the toolkit's option-taking verbs."
     ]
   }

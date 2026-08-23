@@ -574,10 +574,10 @@ async function testAcceptChains() {
     Buffer.isBuffer(afcOnce.subjectDer) && Buffer.isBuffer(afcTwice.subjectDer) &&
     afcTwice.subjectDer.equals(afcOnce.subjectDer) &&
     (await run([direct], { time: T2027, trustAnchor: afcTwice })).valid === true);
-  // A tuple anchor's own DATA fields beyond the key/metadata contract -- a trust store's label and
-  // mozillaCaPolicy, or any caller data -- survive normalization without an allowlist, so build's returned
-  // result.trustAnchor still identifies which named store entry was selected. Only unrelated ACCESSORS are
-  // dropped (proven separately). A whitelist copy would silently drop these.
+  // A tuple anchor's documented trust-store identity fields -- label and mozillaCaPolicy, part of the closed
+  // anchor field set pki.trust.parseCertdata emits -- survive normalization, so build's returned
+  // result.trustAnchor still identifies which named store entry was selected. A field OUTSIDE the closed set
+  // is not carried (proven separately).
   var labeledAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", label: "Test Root CA", mozillaCaPolicy: { serverAuth: true } };
   var buildLabeled74 = await pki.path.build(direct, { time: T2027, trustAnchors: [labeledAnchor74] });
@@ -606,22 +606,26 @@ async function testAcceptChains() {
   var rProxy74 = await run([direct], { time: T2027, trustAnchor: proxyAnchor74 });
   check("#74 normalization does not walk the anchor's prototype chain (getPrototypeOf invoked at most once, by the type check)",
     rProxy74.valid === true && protoReads74 <= 1);
-  // A caller's NON-enumerable own data field keeps its value but stays non-enumerable on the normalized
-  // anchor: normalization must not promote hidden caller state into public result data (Object.keys / spread
-  // / JSON). Copying every field enumerable:true would expose it.
+  // A caller field OUTSIDE the closed anchor set is not carried onto the normalized anchor -- neither as
+  // enumerable data nor as hidden non-enumerable state. A non-enumerable "internalSecret" is dropped entirely,
+  // so it can never leak via Object.keys / spread / JSON nor ride along as hidden state.
   var hiddenAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
   Object.defineProperty(hiddenAnchor74, "internalSecret", { value: "hidden", enumerable: false, configurable: true, writable: true });
   var buildHidden74 = await pki.path.build(direct, { time: T2027, trustAnchors: [hiddenAnchor74] });
-  check("#74 a non-enumerable caller data field is not promoted to enumerable on the normalized anchor (not leaked via Object.keys)",
-    buildHidden74.valid === true && Object.keys(buildHidden74.trustAnchor).indexOf("internalSecret") === -1);
-  // A Proxy anchor whose ownKeys trap throws (or a revoked proxy) is a malformed anchor: the own-property
-  // reflection runs under try/catch, so validate refuses with the documented path/bad-input rather than
-  // leaking the trap's raw exception.
+  check("#74 a caller field outside the closed anchor set (non-enumerable) is dropped, not carried onto the normalized anchor",
+    buildHidden74.valid === true && Object.keys(buildHidden74.trustAnchor).indexOf("internalSecret") === -1 &&
+    buildHidden74.trustAnchor.internalSecret === undefined);
+  // A Proxy anchor is normalized by reading its closed field set through the `get` trap ONCE per field -- its
+  // own shape is never enumerated. A hostile ownKeys trap is therefore never invoked: an anchor whose ownKeys
+  // throws (which the old enumerating normalizer refused) now validates, because normalization does not ask
+  // the Proxy to describe itself. (A get trap that THROWS is still a malformed anchor -> path/bad-input,
+  // covered by the throwing-accessor vectors above.)
+  var ownKeysCalled74 = false;
   var throwOwnKeys74 = new Proxy(
     { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" },
-    { ownKeys: function () { throw new Error("ownKeys-boom"); } });
-  check("#74 a trustAnchor Proxy whose ownKeys trap throws is refused with path/bad-input, not a raw throw",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: throwOwnKeys74 }))) === "path/bad-input");
+    { ownKeys: function () { ownKeysCalled74 = true; throw new Error("ownKeys-boom"); } });
+  check("#74 a Proxy anchor validates by reading its fields once (its ownKeys trap is never invoked, so a throwing ownKeys does not matter)",
+    (await run([direct], { time: T2027, trustAnchor: throwOwnKeys74 })).valid === true && ownKeysCalled74 === false);
   // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
   // stateful getter that returns the key on its first read but would throw on a later read still validates,
   // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
@@ -645,14 +649,31 @@ async function testAcceptChains() {
     algorithm: { get oid() { algOidReads74++; return algOidReads74 === 1 ? "not-a-canonical-oid" : Symbol("oid"); } } };
   check("#74 a stateful algorithm.oid accessor (string on the type probe, Symbol on the value) is refused with path/bad-input, not a raw TypeError",
     (await codeOf(run([direct], { time: T2027, trustAnchor: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 1);
-  // An own SYMBOL-keyed data field survives normalization like a string data field: a store's own symbol
-  // bookkeeping round-trips onto build's result.trustAnchor. A getOwnPropertyNames-only copy would drop it.
+  // A symbol-keyed field is OUTSIDE the closed anchor set (whose members are all string-named) and is dropped:
+  // the normalized anchor carries only the defined shape, never a caller's arbitrary symbol bookkeeping.
   var SYM74 = Symbol("storeTag");
   var symAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
   symAnchor74[SYM74] = "symbol-metadata";
   var buildSym74 = await pki.path.build(direct, { time: T2027, trustAnchors: [symAnchor74] });
-  check("#74 an own symbol-keyed anchor data field survives normalization onto result.trustAnchor",
-    buildSym74.valid === true && buildSym74.trustAnchor[SYM74] === "symbol-metadata");
+  check("#74 a symbol-keyed caller field is dropped: the normalized anchor carries only the closed string-named set",
+    buildSym74.valid === true && buildSym74.trustAnchor[SYM74] === undefined);
+  // An unknown string-keyed DATA field the caller stapled on is OUTSIDE the closed set and is dropped: the
+  // normalized anchor has a defined shape, not an arbitrary passthrough. (The prior normalizer copied every
+  // own data field, so it kept these -- this is the deliberate contract change.)
+  var extraAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", customField: "operator-note", anotherOne: 42 };
+  var buildExtra74 = await pki.path.build(direct, { time: T2027, trustAnchors: [extraAnchor74] });
+  check("#74 an unknown string-keyed caller field is dropped from the normalized anchor (closed shape, not passthrough)",
+    buildExtra74.valid === true && buildExtra74.trustAnchor.customField === undefined && buildExtra74.trustAnchor.anotherOne === undefined);
+  // The closed set is read field-by-field, never enumerated, so an unrelated caller GETTER outside the set is
+  // never evaluated: its side effect does not fire during normalization and the field does not appear on the
+  // anchor.
+  var unrelatedGetterRan74 = false;
+  var getterAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  Object.defineProperty(getterAnchor74, "sideEffect", { enumerable: true, configurable: true, get: function () { unrelatedGetterRan74 = true; return "evaluated"; } });
+  var buildGetter74 = await pki.path.build(direct, { time: T2027, trustAnchors: [getterAnchor74] });
+  check("#74 an unrelated caller getter outside the closed set is never evaluated during normalization",
+    buildGetter74.valid === true && unrelatedGetterRan74 === false && buildGetter74.trustAnchor.sideEffect === undefined);
   // The anchor name is MATERIALIZED once: name.rdns is read a single time at normalization and stored as
   // data, so a stateful rdns accessor cannot answer the shape check with the checked DN and hand name
   // chaining (which re-reads workingIssuerName.rdns) a different issuer DN. With the checked DN on the one
@@ -664,8 +685,8 @@ async function testAcceptChains() {
   check("#74 the anchor name.rdns is materialized once: a stateful getter cannot hand chaining a DN other than the one shape-checked",
     rFlipName74.valid === true && rdnsReads74 === 1);
   // A tuple whose name exposes rdns through its PROTOTYPE (Object.create, or a class prototype getter) is a
-  // valid tuple -- the contract does not require rdns to be an own property. Normalization reads rdns through
-  // the chain, so an inherited rdns is not dropped by the own-key walk (which would wrongly reject the anchor).
+  // valid tuple -- the contract does not require rdns to be an own property. Normalization reads name.rdns by
+  // property access, which follows the chain, so an inherited rdns is kept, not dropped.
   var inheritedRdnsAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     name: Object.create({ rdns: rootCert74.subject.rdns }) };
   check("#74 a tuple whose name.rdns is inherited (Object.create) is accepted, not dropped by the own-key walk",
@@ -696,6 +717,25 @@ async function testAcceptChains() {
     get name() { origSpki2_74.fill(0); return rootCert74.subject; } };
   check("#74 the anchor publicKey is pinned before the name accessor runs: a name getter overwriting the key Buffer cannot change the bound key",
     (await run([direct], { time: T2027, trustAnchor: nameSwapAnchor74 })).valid === true);
+  // A TOP-LEVEL algorithm accessor (not the nested .oid) runs after publicKey; its getter must not mutate a
+  // constraint map before it is snapshot. purposes/distrustAfter are snapshot in the discriminator BEFORE the
+  // algorithm accessor is read, so a get algorithm() that flips a denied purpose does not reach validation.
+  var denyMap2_74 = { serverAuth: false };
+  var topAlgMutateAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    purposes: denyMap2_74, get algorithm() { denyMap2_74.serverAuth = true; return "1.3.101.112"; } };
+  var rTopAlg74 = await run([direct], { time: T2027, trustAnchor: topAlgMutateAnchor74, checkPurpose: "serverAuth" });
+  check("#74 a top-level algorithm getter cannot mutate the snapshot purposes map to bypass a denied purpose",
+    rTopAlg74.valid === false && failCodes(rTopAlg74).indexOf("path/purpose-not-trusted") !== -1);
+  // A CERTIFICATE anchor (subject / subjectPublicKeyInfo, not the tuple's name / publicKey / algorithm) must
+  // not have its unrelated purposes / distrustAfter accessors read: the tuple metadata reads run only when the
+  // discriminator (name / publicKey / algorithm) is satisfied, and those read undefined for a cert, so a cert
+  // carrying a throwing purposes getter is not a tuple and is still accepted by coerceCert, not refused.
+  Object.defineProperty(rootCert74, "purposes", { get: function () { throw new Error("cert-purposes-boom"); }, configurable: true });
+  var certGetterOk74;
+  try { certGetterOk74 = (await run([direct], { time: T2027, trustAnchor: rootCert74 })).valid === true; }
+  finally { delete rootCert74.purposes; }
+  check("#74 a certificate anchor with an unrelated throwing purposes getter is still accepted (tuple metadata not read from a cert)",
+    certGetterOk74 === true);
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
@@ -714,8 +754,9 @@ async function testAcceptChains() {
   check("#74 cloning a normalized anchor that carried a __proto__ field does not repoint the clone's prototype",
     rClonedProto.valid === true);
   // An anchor whose fields are reached through its prototype (Object.create(baseAnchor)) must keep them: the
-  // normalization walks the prototype chain, so name and purpose/distrustAfter restrictions are preserved
-  // rather than dropped (which would reject a valid anchor, or silently weaken its trust restrictions).
+  // normalization reads each field by property access, which follows the prototype chain, so name and
+  // purpose/distrustAfter restrictions are preserved rather than dropped (which would reject a valid anchor,
+  // or silently weaken its trust restrictions).
   var baseAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
   var inheritedAnchor74 = Object.create(baseAnchor74);
   check("#74 an anchor whose name/fields are inherited (Object.create) keeps them and validates",
