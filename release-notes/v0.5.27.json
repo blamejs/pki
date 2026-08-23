@@ -1,0 +1,14 @@
+{
+  "version": "0.5.27",
+  "headline": "A mistyped option passed to pki.trust.anchor or the pki.acme.client constructor is now refused, naming it, instead of being read as absent and silently defaulted.",
+  "summary": "Both entry points settled their options argument with `opts || {}` and then read each option by name, so a name they did not recognize -- a `purposes` written for `purpose`, a `maxRedirect` for `maxRedirects` -- was read as absent and the default taken, with nothing reported. A caller who asked for a stricter behavior through a misspelled option got the looser one and no error. Each now rejects an unrecognized option the way the toolkit's other option-taking verbs already do: the recognized set is unchanged, and a name outside it is an error rather than a silent default.",
+  "sections": {
+    "Changed": [
+      "`pki.trust.anchor(entry, opts)` rejects an option it does not recognize, naming it, instead of ignoring it and applying the default. The one option it reads is `purpose`.",
+      "The `pki.acme.client(directoryUrl, opts)` constructor rejects an unrecognized option the same way. The options it reads are `accountKey`, `accountJwk`, `alg`, `transport`, `tls`, `timeout`, `maxResponseBytes`, `maxRedirects`, `maxNonceRetries`, `maxPolls`, `maxTotalWait`, `sleep`, and `clock`; each method the client returns validates its own per-call options separately."
+    ],
+    "Security": [
+      "An unrecognized option is a fail-closed error rather than a silent default. The prior behavior meant a security-relevant option -- a shorter redirect budget, a specific trust purpose -- that was misspelled took no effect and raised no error, so a caller could believe a stricter setting was in force when the default was."
+    ]
+  }
+}

@@ -98,6 +98,20 @@ stopwords = [
 ]
 
 [[allowlists]]
+description = "RSA algorithm registry names that trip generic-api-key entropy"
+# The CMP keySpec RSA-family classifier (lib/cmp-session.js) enumerates the
+# standard RSA algorithm identifiers by their registry name so "other than RSA"
+# is decided from the OID registry rather than a literal. One of those camelCase
+# names, `md2WithRSASignature`, scores above the generic-api-key entropy
+# threshold (long, no separators) and is reported as the "secret". It is a public
+# OID name resolved through pki.oid, never a credential. Same false-positive class
+# as the KEM camelCase identifiers above; suppressed by literal string match so a
+# later edit that shifts its line still clears.
+stopwords = [
+  "md2WithRSASignature",
+]
+
+[[allowlists]]
 description = "Pre-config-landing commits (audited manually) + their fingerprints"
 # Commits made before this config landed predate the secret-scan gate
 # and were already audited manually. Pinning the SHA prevents the new

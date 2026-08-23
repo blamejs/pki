@@ -159,13 +159,18 @@ async function testFailClosedGates() {
   }))) === "acme/no-trust-anchors");
   var anchored = pki.acme.client(A.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", tls: { anchors: [ACCT.spki] } });
   check("#6 the default transport constructs with an explicit anchor", typeof anchored.newAccount === "function");
+  // a near-miss client option (the dropped-letter typo maxRedirect for maxRedirects) is refused with a message
+  // naming it, not read as undefined and silently defaulted -- a swallowed typo would change redirect behavior.
+  check("#6 an unknown client option is refused, not silently swallowed", (await codeOf(Promise.resolve().then(function () {
+    return pki.acme.client(A.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", tls: { anchors: [ACCT.spki] }, maxRedirect: 0 });
+  }))) === "acme/bad-input");
 }
 
 // ---- 7 poll Retry-After surfaced (never slept in real time), then exhausted --
 async function testPolling() {
   var seen = [];
   var s = A.acmeServer({ orderStates: ["processing", "processing", "valid"] });
-  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s, { now: 0 }));
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s));
   await acme.newAccount({});
   await acme.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] });
   var ord = await acme.pollOrder(A.URLS.order, { onRetryAfter: function (d) { seen.push(d); } });
@@ -212,7 +217,7 @@ async function testRenewalInfo() {
   var aki = require("node:crypto").createHash("sha1").update("issuer-key").digest();
   var certDer = signing.makeSigner("ec-p256", { cn: "renew.example", serial: 0x2a, exts: [akiExt(aki)] }).cert;
   var s = A.acmeServer({});
-  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s, { now: 0 }));
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s));
   var ri = await acme.renewalInfo(certDer);
   check("#9 renewalInfo returns the validated window", ri.renewalInfo && ri.renewalInfo.suggestedWindow);
   var riReq = s.calls.filter(function (c) { return c.url.indexOf(A.URLS.renewalInfo) === 0; })[0];
