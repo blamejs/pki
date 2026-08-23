@@ -1,0 +1,13 @@
+{
+  "version": "0.5.28",
+  "headline": "Importing the toolkit is now silent, and a key's WebCrypto algorithm can no longer change under a signature once the key has been created.",
+  "summary": "Two hardening changes to the crypto engine. On load, the module identifies every concrete typed-array kind the runtime provides by scanning the global object; it read each global by value, which invoked the lazy accessors Node exposes for `localStorage` and `WASI` and printed an experimental-feature warning on stderr for every `require`. It now reads each global's property DESCRIPTOR and takes only a plain data value, so an accessor global is recognized and skipped without ever being invoked -- the import is silent. Separately, a `CryptoKey`'s `algorithm` was a live object a caller still held a reference to; this engine reads `key.algorithm.hash` at the moment it signs, so the hash a signature was computed under could be changed after it had been checked against a JWS header algorithm. A `CryptoKey`'s `algorithm` is now frozen when the key is created, matching the W3C WebCrypto contract that its `[[algorithm]]` is immutable.",
+  "sections": {
+    "Changed": [
+      "`require(\"@blamejs/pki\")` no longer prints Node experimental-feature warnings on load. The engine's typed-array scan reads each global's property descriptor and uses only a data value, so it never touches a host's lazy accessor (Node's `localStorage` and `WASI` emit an `ExperimentalWarning` the moment they are read). Recognition of the concrete typed-array kinds -- the reason for the scan -- is unchanged, since those are ordinary data properties."
+    ],
+    "Security": [
+      "A `CryptoKey`'s `algorithm` is immutable once the key is created: the property is non-writable so it cannot be replaced, and its value is frozen so its fields cannot be changed. This engine reads `key.algorithm.hash` at sign time, and a mutable algorithm let the hash checked against a JWS `alg` (an `RS256` header signs under SHA-256) be rewritten between that check and the signature -- by swapping the whole object or a field of it, including from a microtask during the signing await -- producing a JWS whose signature does not match the algorithm its header advertises. The frozen value is a copy, so a caller's own `importKey` parameters object is left untouched. A key adopted from another WebCrypto implementation is re-imported from its own algorithm; the keys this engine mints, which is what the enrollment builders sign with, carry the immutable one."
+    ]
+  }
+}

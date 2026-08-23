@@ -139,6 +139,29 @@ async function testClassicalSign() {
   var pkcs1Spki = Buffer.from(await subtle.exportKey("spki", pkcs1.kp.publicKey));
   var imp120 = await subtle.importKey("spki", pkcs1Spki, { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" }, true, ["verify"]);
   check("#120 importKey RSASSA-PKCS1-v1_5 emits the standard-cased algorithm.name", imp120.algorithm.name === "RSASSA-PKCS1-v1_5");
+
+  // #61 key-attribute-reread: a CryptoKey's algorithm is FROZEN, so a caller cannot change the hash a
+  // signature is computed under after the key is minted. This engine reads key.algorithm.hash live when
+  // it signs, so a mutable one would let the hash validated against a header algorithm differ from the
+  // hash the signature is then computed under -- a validate-then-act mismatch. A W3C CryptoKey's
+  // [[algorithm]] is immutable for this reason; a COPY is frozen so the caller's params object is not.
+  var frozenKey = pkcs1.kp.privateKey;
+  var hashName = function (a) { return typeof a.hash === "string" ? a.hash : (a.hash && a.hash.name); };
+  check("#61 key.algorithm is frozen", Object.isFrozen(frozenKey.algorithm));
+  var hashBefore = hashName(frozenKey.algorithm);
+  check("#61 the RSASSA key's bound hash is SHA-256", hashBefore === "SHA-256");
+  try { frozenKey.algorithm.hash = "SHA-512"; } catch (_e) { /* frozen algorithm: TypeError under strict mode */ }
+  try { if (frozenKey.algorithm.hash && typeof frozenKey.algorithm.hash === "object") frozenKey.algorithm.hash.name = "SHA-512"; } catch (_e) { /* frozen hash */ }
+  check("#61 mutating key.algorithm.hash is inert (the bound hash is unchanged)", hashName(frozenKey.algorithm) === "SHA-256");
+  // The PROPERTY must be non-writable too: freezing only the object still lets a caller SWAP it whole
+  // (key.algorithm = {...}) from a microtask during a signing await, recreating the mismatch. Defined
+  // non-writable, the assignment is inert (silent in sloppy mode, a TypeError under strict), so the
+  // bound hash still holds -- and the property cannot be redefined either (non-configurable).
+  try { frozenKey.algorithm = { name: "RSASSA-PKCS1-v1_5", hash: { name: "SHA-512" } }; } catch (_e) { /* non-writable */ }
+  check("#61 replacing key.algorithm wholesale is inert (the property is non-writable)", hashName(frozenKey.algorithm) === "SHA-256");
+  check("#61 key.algorithm cannot be redefined (non-configurable)",
+        !Object.getOwnPropertyDescriptor(frozenKey, "algorithm").configurable);
+  check("#61 an imported key's algorithm is frozen too", Object.isFrozen(imp120.algorithm));
 }
 
 async function testPqcSign() {

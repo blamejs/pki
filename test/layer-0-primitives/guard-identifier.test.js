@@ -801,6 +801,25 @@ function testKnownKeys() {
 // actually reaches an operator: guard-identifier snapshots Object.prototype as it loads, so a
 // name already there is inside the snapshot and no later comparison can call it foreign. The
 // plant has to precede the require, so it runs in a child.
+// #73: importing the package must not INVOKE a global's accessor. The typed-array scan reads each
+// global's descriptor and takes only a data value, so a host's lazy or warning-emitting accessor is
+// never touched -- Node exposes `localStorage` and `WASI` as lazy accessors that print an
+// ExperimentalWarning the moment they are read, so a plain `globalThis[name]` read printed that warning
+// on every import. The probe installs an accessor before load and confirms the scan never invokes it.
+function testGlobalScanNoAccessor() {
+  var script = [
+    'Object.defineProperty(globalThis, "__pkiGlobalProbe__", { configurable: true,',
+    '  get: function () { globalThis.__pkiProbeHit__ = true; return function () {}; } });',
+    'require(process.argv[1]);',
+    'process.stdout.write(globalThis.__pkiProbeHit__ ? "INVOKED" : "clean");',
+  ].join("\n");
+  var r = spawnSync(process.execPath, ["-e", script, INDEX], { encoding: "utf8" });
+  check("#73 the global scan ran the import to completion", !r.error && r.status === 0);
+  check("#73 importing does not invoke a global accessor getter", r.stdout === "clean");
+  check("#73 importing emits no localStorage ExperimentalWarning",
+        !/ExperimentalWarning:\s*localStorage/.test(r.stderr || ""));
+}
+
 function testPollutionPlantedBeforeLoad() {
   var script = [
     'Object.defineProperty(Object.prototype, "password", { value: "pw", writable: true, configurable: true });',
@@ -914,6 +933,7 @@ async function run() {
   testBoundsWaived();
   testKnownKeys();
   testPollutionPlantedBeforeLoad();
+  testGlobalScanNoAccessor();
   await testConsumersFailClosed();
 }
 
