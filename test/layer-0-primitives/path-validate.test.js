@@ -766,6 +766,60 @@ async function testAcceptChains() {
   var rInheritedRestrict = await run([direct], { time: T2027, trustAnchor: Object.create(baseRestricted74), checkPurpose: "serverAuth" });
   check("#74 an inherited anchor purpose restriction survives flattening (serverAuth denied -> not valid)",
     rInheritedRestrict.valid === false && failCodes(rInheritedRestrict).indexOf("path/purpose-not-trusted") !== -1);
+  // A parsed CERTIFICATE is recognized by its PROVENANCE (guard.parsed.isRecorded, a getter-free WeakMap
+  // lookup) BEFORE the tuple discriminator, which reads name/publicKey/algorithm by property access. So a
+  // polluted Object.prototype supplying those three cannot reclassify a real certificate as a tuple and bind
+  // the INHERITED (attacker) key: the cert routes to coerceCert and binds its OWN key. Object.prototype is
+  // polluted, then restored in a finally so the pollution cannot leak to another test.
+  var attackerRoot74 = pki.schema.x509.parse(await mkCert({ subject: "Attacker", issuer: "Attacker", signWith: "ed25519leaf", subjectKeys: "ed25519leaf" }));
+  var pollutedOk74;
+  try {
+    Object.prototype.name = attackerRoot74.subject;
+    Object.prototype.publicKey = attackerRoot74.subjectPublicKeyInfo.bytes;
+    Object.prototype.algorithm = attackerRoot74.subjectPublicKeyInfo.algorithm.oid;
+    var polAnchor74 = pki.path.anchorFromCert(rootCert74);
+    pollutedOk74 = Buffer.isBuffer(polAnchor74.publicKey) &&
+      polAnchor74.publicKey.equals(rootCert74.subjectPublicKeyInfo.bytes) &&
+      !polAnchor74.publicKey.equals(attackerRoot74.subjectPublicKeyInfo.bytes);
+  } finally {
+    delete Object.prototype.name; delete Object.prototype.publicKey; delete Object.prototype.algorithm;
+  }
+  check("#74 a certificate is recognized before inherited tuple fields: a polluted Object.prototype cannot bind the attacker key",
+    pollutedOk74 === true);
+  // Certificate recognition is a getter-free provenance lookup, so publicKey is the FIRST property read on a
+  // tuple: no certificate-structural probe (which would read tbsBytes / subject / ...) runs a tuple-controlled
+  // getter before the key is pinned. A polluted Object.prototype.tbsBytes getter that zeros the caller's key
+  // Buffer therefore cannot reach the key before it is captured -- the anchor binds the ORIGINAL key bytes.
+  var origKey74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var tbsPinOk74;
+  try {
+    Object.defineProperty(Object.prototype, "tbsBytes", { get: function () { origKey74.fill(0); return Buffer.alloc(4); }, configurable: true });
+    var r3anchor74 = null;
+    try { r3anchor74 = pki.path.anchorFromCert({ name: rootCert74.subject, publicKey: origKey74, algorithm: "1.3.101.112" }); } catch (_e) { r3anchor74 = null; }
+    tbsPinOk74 = !!r3anchor74 && Buffer.isBuffer(r3anchor74.publicKey) && r3anchor74.publicKey.equals(rootCert74.subjectPublicKeyInfo.bytes);
+  } finally {
+    delete Object.prototype.tbsBytes;
+  }
+  check("#74 the anchor publicKey is pinned before any certificate-recognition read: a polluted tbsBytes getter cannot zero the bound key",
+    tbsPinOk74 === true);
+  // The anchor name.rdns is DEEP-copied: mutating a caller's nested RDN attribute after normalization (a
+  // read-after-await hazard while an async validate awaits signature verification) must not change the
+  // normalized anchor's issuer DN. A shallow arraySlice would share the nested attribute record.
+  var deepName74 = { rdns: [ [ { type: "2.5.4.3", value: "DeepCN" } ] ], bytes: rootCert74.subject.bytes };
+  var deepTuple74 = { name: deepName74, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var deepAnchor74 = pki.path.anchorFromCert(deepTuple74);
+  deepName74.rdns[0][0].value = "TamperedCN";
+  check("#74 the anchor name.rdns is deep-copied: mutating a caller's nested RDN does not change the normalized anchor DN",
+    deepAnchor74.name.rdns[0][0].value === "DeepCN");
+  // A tuple whose name.rdns attribute value is reached through the PROTOTYPE (or an accessor) is preserved: the
+  // anchor API accepts an inherited name.rdns, so the deep copy must snapshot the consumed type/value via
+  // property access rather than drop an attribute reached through the chain (which would leave an incomplete DN
+  // and fail name chaining).
+  var inhName74 = { rdns: [ [ Object.create({ type: "2.5.4.3", value: "InheritedCN" }) ] ], bytes: rootCert74.subject.bytes };
+  var inhTuple74 = { name: inhName74, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var inhAnchor74 = pki.path.anchorFromCert(inhTuple74);
+  check("#74 an inherited (or accessor) DN attribute value is preserved in the deep copy, not dropped",
+    inhAnchor74.name.rdns[0][0].value === "InheritedCN" && inhAnchor74.name.rdns[0][0].type === "2.5.4.3");
 
   // ECDSA-P256 chain (exercises the DER->P1363 verify-bridge shim).
   var anchorEc = await mkAnchor("p256", "EcRoot");
