@@ -791,6 +791,22 @@ async function testAcceptChains() {
   var normCert74 = pki.path.anchorFromCert(rootCert74);
   check("#74 a certificate-derived anchor is also an ordinary object",
     Object.getPrototypeOf(normCert74) === Object.prototype && typeof normCert74.hasOwnProperty === "function");
+  // The materialized anchor name preserves the parsed Name's dn (the rendered DN string used to display /
+  // identify the selected root), so a cert-derived or pki.trust name round-trips its full { rdns, dn, bytes }
+  // shape and a double anchorFromCert keeps the same shape rather than dropping dn on the second conversion.
+  check("#74 a cert-derived anchor name keeps its dn (full parsed Name shape preserved)",
+    typeof normCert74.name.dn === "string" && normCert74.name.dn === rootCert74.subject.dn);
+  var dnRoundTrip74 = pki.path.anchorFromCert(normCert74);
+  check("#74 anchorFromCert(anchorFromCert(cert)) preserves the name dn (stable shape, not dropped on the second conversion)",
+    dnRoundTrip74.name.dn === rootCert74.subject.dn);
+  // A non-string dn (e.g., an object whose toString could run coercion code in a display consumer) is NOT
+  // carried: only a rendered STRING dn is preserved, and identity never uses dn (name chaining compares
+  // rdns / bytes DER), so dropping it changes no validation outcome.
+  var objDnTuple74 = { name: { rdns: rootCert74.subject.rdns, dn: { toString: function () { return "SPOOFED"; } } },
+    publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var objDnAnchor74 = pki.path.anchorFromCert(objDnTuple74);
+  check("#74 a non-string (object) name.dn is dropped from the normalized anchor, not carried",
+    objDnAnchor74.name.dn === undefined && Array.isArray(objDnAnchor74.name.rdns));
   // A null-prototype object carrying an entry, used as the map's PARENT, is refused: the entry is inherited and
   // would be dropped, yet the parent is top-of-chain so a naive chain-depth test would pass it. The plain-object
   // test requires the top prototype to carry no enumerable own entries.
