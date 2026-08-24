@@ -768,6 +768,29 @@ async function testAcceptChains() {
     name: { get rdns() { xmutReads74++; xmutAlg74.oid = "1.3.101.112"; return rootCert74.subject.rdns; } } };
   check("#74 a name.rdns getter cannot rewrite algorithm.oid: the accessor is refused before it runs (getter never invoked)",
     (await codeOf(run([direct], { time: T2027, trustAnchor: xmutAnchor74 }))) === "path/bad-input" && xmutReads74 === 0 && xmutAlg74.oid === "1.2.840.113549.1.1.1");
+  // The name shape check reads the materialized name's OWN rdns (hasOwn-gated), so it resolves only its own data.
+  // Tested through anchorFromCert (normalization alone, so no incidental deep-validation effect of the global
+  // pollution): with Object.prototype.rdns polluted with an issuer RDN array, a name with no own rdns must be
+  // REFUSED, not accepted on the inherited array as a malformed anchor whose name was never supplied.
+  var noRdnsName74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", name: {} };
+  var pollAnchorCode74;
+  Object.prototype.rdns = rootCert74.subject.rdns;
+  try {
+    try { pki.path.anchorFromCert(noRdnsName74); pollAnchorCode74 = "accepted"; }
+    catch (ePoll) { pollAnchorCode74 = ePoll && ePoll.code; }
+  } finally { delete Object.prototype.rdns; }
+  check("#74 anchorFromCert refuses a name with no own rdns even under Object.prototype.rdns pollution (own-property shape check)",
+    pollAnchorCode74 === "path/bad-input");
+  // The public anchorFromCert return is an ORDINARY object (Object.prototype), so caller operations such as
+  // hasOwnProperty and deepStrictEqual keep working. The prototype-pollution defense reads the anchor's fields by
+  // OWN property (the hasOwn gates in _hasPurposeScopedMetadata / assertAnchorConstraints and the name shape
+  // check), NOT by changing the return type.
+  var normTuple74 = pki.path.anchorFromCert({ name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" });
+  check("#74 anchorFromCert returns an ordinary object (Object.prototype methods inherited; public return type preserved)",
+    Object.getPrototypeOf(normTuple74) === Object.prototype && typeof normTuple74.hasOwnProperty === "function");
+  var normCert74 = pki.path.anchorFromCert(rootCert74);
+  check("#74 a certificate-derived anchor is also an ordinary object",
+    Object.getPrototypeOf(normCert74) === Object.prototype && typeof normCert74.hasOwnProperty === "function");
   // A null-prototype object carrying an entry, used as the map's PARENT, is refused: the entry is inherited and
   // would be dropped, yet the parent is top-of-chain so a naive chain-depth test would pass it. The plain-object
   // test requires the top prototype to carry no enumerable own entries.
