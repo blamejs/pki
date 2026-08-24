@@ -601,11 +601,12 @@ security-only patches after the next major releases.
   omits its own. A parsed certificate is recognized as a certificate before any
   tuple field is read, so a value reached through `Object.prototype` cannot
   reclassify it as a hand-built tuple and bind a substituted key. An anchor
-  supplied as a `Proxy` is refused: its reflection traps could answer a field
+  supplied as a `Proxy` — or one whose `purposes` or `distrustAfter` constraint
+  map is a `Proxy` — is refused: reflection traps could answer a field
   inconsistently or report a field absent while forwarding the rest, hiding a
-  `purposes` or `distrustAfter` restriction the caller attached. A plain tuple, a
-  parsed certificate, or an object inheriting from one is the normal, unaffected
-  form.
+  restriction the caller attached. A plain tuple, a parsed certificate, or an
+  object inheriting from one, with plain-object constraint maps, is the normal,
+  unaffected form.
 - **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
   authoritative only when an authorized responder signed it: the issuing CA
   directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in its

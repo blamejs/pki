@@ -633,6 +633,22 @@ async function testAcceptChains() {
       has: function (t, k) { return k === "purposes" ? false : (k in t); } });
   check("#74 a Proxy anchor that hides a purposes restriction via its descriptor/has traps is refused, not read",
     (await codeOf(run([direct], { time: T2027, trustAnchor: hidePurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A constraint MAP (purposes / distrustAfter) nested inside an otherwise-plain anchor and supplied as a Proxy
+  // is refused too: its ownKeys trap could return an empty key list, dropping the restriction the caller
+  // attached. A Proxy distrustAfter over { serverAuth: <past date> } that reports no keys would snapshot to an
+  // empty map and omit the expired cutoff; it is refused at capture before it is reflected over.
+  var proxyDistrust74 = new Proxy(
+    { serverAuth: new Date("2000-01-01T00:00:00Z") },
+    { ownKeys: function () { return []; }, getOwnPropertyDescriptor: function () { return undefined; } });
+  var distrustProxyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: proxyDistrust74 };
+  check("#74 a Proxy distrustAfter constraint map is refused with path/bad-input (its ownKeys trap cannot hide the cutoff)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: distrustProxyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var proxyPurposes74 = new Proxy({ serverAuth: false }, { ownKeys: function () { return []; } });
+  var purposesProxyMapAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: proxyPurposes74 };
+  check("#74 a Proxy purposes constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: purposesProxyMapAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
   // stateful getter that returns the key on its first read but would throw on a later read still validates,
   // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
