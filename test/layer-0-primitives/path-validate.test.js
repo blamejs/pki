@@ -717,6 +717,19 @@ async function testAcceptChains() {
     get name() { origSpki2_74.fill(0); return rootCert74.subject; } };
   check("#74 the anchor publicKey is pinned before the name accessor runs: a name getter overwriting the key Buffer cannot change the bound key",
     (await run([direct], { time: T2027, trustAnchor: nameSwapAnchor74 })).valid === true);
+  // The optional identity metadata (subjectDer / label / mozillaCaPolicy) is captured from its own DATA
+  // descriptor, so an accessor identity field is NEVER invoked: a subjectDer getter that overwrites the
+  // caller's key Buffer cannot run before the key is pinned and swap the bound key. The anchor binds the
+  // original key (the accessor subjectDer is dropped, being non-validation metadata).
+  var origKeyId74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var idGetterRan74 = false;
+  var idAccessorAnchor74 = { name: rootCert74.subject, publicKey: origKeyId74, algorithm: "1.3.101.112",
+    get subjectDer() { idGetterRan74 = true; origKeyId74.fill(0); return Buffer.alloc(4); } };
+  var idAccessorOk74;
+  try { idAccessorOk74 = (await run([direct], { time: T2027, trustAnchor: idAccessorAnchor74 })).valid === true; }
+  catch (_e3) { idAccessorOk74 = false; }
+  check("#74 an accessor identity field is captured by descriptor, not invoked: its getter cannot overwrite the pinned key",
+    idAccessorOk74 === true && idGetterRan74 === false);
   // A TOP-LEVEL algorithm accessor (not the nested .oid) runs after publicKey; its getter must not mutate a
   // constraint map before it is snapshot. purposes/distrustAfter are snapshot in the discriminator BEFORE the
   // algorithm accessor is read, so a get algorithm() that flips a denied purpose does not reach validation.
