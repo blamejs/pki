@@ -820,6 +820,21 @@ async function testAcceptChains() {
   var inhAnchor74 = pki.path.anchorFromCert(inhTuple74);
   check("#74 an inherited (or accessor) DN attribute value is preserved in the deep copy, not dropped",
     inhAnchor74.name.rdns[0][0].value === "InheritedCN" && inhAnchor74.name.rdns[0][0].type === "2.5.4.3");
+  // A SPARSE anchor rdns must stay sparse: the deep copy copies only OWN indexed elements, so a hole is not
+  // filled from a polluted Array.prototype[i] slot (a slice reads inherited indices). Otherwise a name reached
+  // through prototype pollution would fill the hole guard.name.dnEqual rejects and pass chaining. Array.prototype
+  // is polluted, then restored in a finally so it cannot leak to another test.
+  var sparseRdns74 = []; sparseRdns74.length = 1;   // one hole at index 0
+  var sparseHolePreserved74;
+  try {
+    Array.prototype[0] = [ { type: "2.5.4.3", value: "PollutedCN" } ];
+    var sparseAnchor74 = pki.path.anchorFromCert({ name: { rdns: sparseRdns74 }, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" });
+    sparseHolePreserved74 = !Object.prototype.hasOwnProperty.call(sparseAnchor74.name.rdns, 0);
+  } finally {
+    delete Array.prototype[0];
+  }
+  check("#74 a sparse anchor rdns is copied hole-preserving: a polluted Array.prototype slot does not fill the hole",
+    sparseHolePreserved74 === true);
 
   // ECDSA-P256 chain (exercises the DER->P1363 verify-bridge shim).
   var anchorEc = await mkAnchor("p256", "EcRoot");
