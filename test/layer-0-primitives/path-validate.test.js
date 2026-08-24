@@ -649,6 +649,124 @@ async function testAcceptChains() {
     algorithm: "1.3.101.112", purposes: proxyPurposes74 };
   check("#74 a Proxy purposes constraint map is refused with path/bad-input",
     (await codeOf(run([direct], { time: T2027, trustAnchor: purposesProxyMapAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A constraint map whose restriction is reached through the prototype -- Object.create({ serverAuth: <past
+  // date> }) -- is refused, not silently dropped: getOwnPropertyNames reads only own keys, so an inherited entry
+  // would normalize to an empty map and omit the cutoff. The map must be a plain object (or null-prototype).
+  var inheritedDistrust74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: Object.create({ serverAuth: new Date("2000-01-01T00:00:00Z") }) };
+  check("#74 a distrustAfter map with a prototype-reached entry is refused with path/bad-input (not dropped to empty)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var inheritedPurposes74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: Object.create({ serverAuth: false }) };
+  check("#74 a purposes map with a prototype-reached entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A null-prototype constraint map is plain data and is accepted (a distrust cutoff BEFORE the check time
+  // distrusts a leaf issued after it; here the anchor itself validates, proving the map was read, not refused).
+  var nullProtoPurposes74 = Object.create(null); nullProtoPurposes74.serverAuth = true;
+  var nullProtoAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: nullProtoPurposes74 };
+  check("#74 a null-prototype constraint map is plain data and is accepted",
+    (await run([direct], { time: T2027, trustAnchor: nullProtoAnchor74, checkPurpose: "serverAuth" })).valid === true);
+  // A constraint map built in ANOTHER realm (vm context) has that realm's Object.prototype, not this one's, so
+  // the identity test refuses it fail-closed. This is deliberate: a hostile object can mimic every STRUCTURAL
+  // signal of a genuine Object.prototype (a non-enumerable data entry looks like a built-in), so only identity
+  // is a sound plain-object test for a security-critical input. The operator passes a same-realm plain object.
+  var crossRealmPurposes74 = require("vm").runInNewContext("({ serverAuth: true })");
+  var crossRealmAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: crossRealmPurposes74 };
+  check("#74 a constraint map from another realm (vm context) is refused fail-closed with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: crossRealmAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A restriction defined NON-ENUMERABLY on a custom prototype is refused too: the identity test refuses any
+  // non-plain prototype regardless of how its entries are defined, so a non-enumerable serverAuth cannot slip
+  // through looking like a built-in.
+  var nonEnumProto74 = Object.create(Object.defineProperty(Object.create(null), "serverAuth", { value: new Date("2000-01-01T00:00:00Z"), enumerable: false }));
+  var nonEnumAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: nonEnumProto74 };
+  check("#74 a non-enumerable restriction on a custom prototype is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: nonEnumAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A restriction defined as a NON-ENUMERABLE OWN entry on an otherwise-plain map must still be seen: the map is
+  // materialized enumerable and the purpose-scoped-metadata gate counts own names (not Object.keys). With no
+  // checkPurpose the anchor is refused (metadata present), not validated as though it carried none.
+  var nonEnumEntryPurposes74 = {};
+  Object.defineProperty(nonEnumEntryPurposes74, "serverAuth", { value: false, enumerable: false, configurable: true, writable: true });
+  var nonEnumEntryAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: nonEnumEntryPurposes74 };
+  check("#74 a non-enumerable own purposes entry still triggers the checkPurpose-required gate (not silently dropped)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: nonEnumEntryAnchor74 }))) === "path/bad-input");
+  var rNonEnumApplied74 = await run([direct], { time: T2027, trustAnchor: nonEnumEntryAnchor74, checkPurpose: "serverAuth" });
+  check("#74 a non-enumerable own purposes restriction is applied under checkPurpose (purpose not trusted)",
+    rNonEnumApplied74.valid === false && failCodes(rNonEnumApplied74).indexOf("path/purpose-not-trusted") !== -1);
+  // A symbol-keyed constraint entry is refused: getOwnPropertyNames omits symbols, so it would be dropped from
+  // the snapshot and, keyed by no OID-name purpose, never applied. Refuse rather than silently drop.
+  var symKeyPurposes74 = {};
+  symKeyPurposes74[Symbol("serverAuth")] = false;
+  var symKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: symKeyPurposes74 };
+  check("#74 a symbol-keyed constraint map entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: symKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An own __proto__ DATA entry on the map is refused: the snapshot skips __proto__ to avoid polluting the fresh
+  // map, so it would be silently dropped. (defineProperty makes a data property named __proto__ without changing
+  // the object's prototype, so the map is still plain -- the entry is the concern.)
+  var protoKeyPurposes74 = {};
+  Object.defineProperty(protoKeyPurposes74, "__proto__", { value: false, enumerable: true, configurable: true, writable: true });
+  var protoKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: protoKeyPurposes74 };
+  check("#74 an own __proto__ data entry on a constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: protoKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A constraint map that is not a plain object -- a primitive, a Buffer, or an array -- carries no
+  // purpose -> value restriction and is refused, not passed through as an unusable value that applies nothing.
+  var primPurposesAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: "serverAuth" };
+  check("#74 a primitive (string) constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: primPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var bufDistrustAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: Buffer.from([1, 2, 3]) };
+  check("#74 a Buffer constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: bufDistrustAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var arrPurposesAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: [false] };
+  check("#74 an array constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: arrPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A parsed-certificate anchor with per-purpose constraints ATTACHED to it is refused: the certificate branch
+  // carries no purposes / distrustAfter, so attaching them would silently drop the restriction and validate a
+  // path the caller meant to forbid. Constraints belong on a { name, publicKey, algorithm, ... } tuple.
+  var certForAttach74 = pki.schema.x509.parse(await mkCert({ subject: "AttachRoot", issuer: "AttachRoot", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+  certForAttach74.purposes = { serverAuth: false };
+  check("#74 a parsed-certificate anchor with attached purposes is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: certForAttach74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var certForAttachD74 = pki.schema.x509.parse(await mkCert({ subject: "AttachRootD", issuer: "AttachRootD", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+  certForAttachD74.distrustAfter = { serverAuth: new Date("2000-01-01T00:00:00Z") };
+  check("#74 a parsed-certificate anchor with attached distrustAfter is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: certForAttachD74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An INHERITED distrustAfter on a CERTIFICATE anchor (reached through the prototype, e.g. a polluted
+  // Object.prototype) is refused: the cert branch's `in` check follows the chain, matching the tuple branch's
+  // inherited-field refusal, rather than reading it by hasOwn (own-only) and letting the branch drop it.
+  var certInheritCode74;
+  Object.prototype.distrustAfter = { serverAuth: new Date("2000-01-01T00:00:00Z") };
+  try { certInheritCode74 = await codeOf(run([direct], { time: T2027, trustAnchor: rootCert74, checkPurpose: "serverAuth" })); }
+  finally { delete Object.prototype.distrustAfter; }
+  check("#74 a certificate anchor with an inherited distrustAfter (polluted Object.prototype) is refused",
+    certInheritCode74 === "path/bad-input");
+  // A null-prototype object carrying an entry, used as the map's PARENT, is refused: the entry is inherited and
+  // would be dropped, yet the parent is top-of-chain so a naive chain-depth test would pass it. The plain-object
+  // test requires the top prototype to carry no enumerable own entries.
+  var nullParentWithEntry74 = Object.create(Object.assign(Object.create(null), { serverAuth: new Date("2000-01-01T00:00:00Z") }));
+  var nullParentDistrust74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: nullParentWithEntry74 };
+  check("#74 a constraint map whose null-prototype parent carries an entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: nullParentDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A map whose PROTOTYPE is a Proxy is refused before that Proxy's traps can run. The prototype here carries a
+  // serverAuth restriction but its traps report a null prototype and no keys -- so a check that reflected on it
+  // instead of refusing it up front would see a top-of-chain, entry-free prototype, accept the map, and drop the
+  // inherited restriction. Only the map itself was checked for Proxy at capture; the prototype must be too.
+  var hidingProto74 = new Proxy({ serverAuth: false },
+    { getPrototypeOf: function () { return null; }, ownKeys: function () { return []; },
+      getOwnPropertyDescriptor: function () { return undefined; } });
+  var proxyProtoMap74 = Object.create(hidingProto74);
+  var proxyProtoAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: proxyProtoMap74 };
+  check("#74 a constraint map with a Proxy prototype is refused with path/bad-input (its traps never run)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: proxyProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
   // stateful getter that returns the key on its first read but would throw on a later read still validates,
   // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
@@ -785,16 +903,17 @@ async function testAcceptChains() {
     purposes: Object.defineProperty({}, "serverAuth", { get: function () { return true; }, enumerable: true, configurable: true }) };
   check("#74 an accessor-backed constraint-map entry is refused with path/bad-input",
     (await codeOf(run([direct], { time: T2027, trustAnchor: accessorEntry74, checkPurpose: "serverAuth" }))) === "path/bad-input");
-  // A CERTIFICATE anchor (subject / subjectPublicKeyInfo, not the tuple's name / publicKey / algorithm) must
-  // not have its unrelated purposes / distrustAfter accessors read: the tuple metadata reads run only when the
-  // discriminator (name / publicKey / algorithm) is satisfied, and those read undefined for a cert, so a cert
-  // carrying a throwing purposes getter is not a tuple and is still accepted by coerceCert, not refused.
-  Object.defineProperty(rootCert74, "purposes", { get: function () { throw new Error("cert-purposes-boom"); }, configurable: true });
-  var certGetterOk74;
-  try { certGetterOk74 = (await run([direct], { time: T2027, trustAnchor: rootCert74 })).valid === true; }
+  // A CERTIFICATE anchor must not carry per-purpose constraints: the certificate branch produces no purposes /
+  // distrustAfter, so attaching them to a parsed certificate would silently drop the restriction. Such a cert is
+  // REFUSED -- by own-property EXISTENCE (hasOwn), which never invokes the property, so even a throwing purposes
+  // getter is refused without being read. Constraints belong on a { name, publicKey, algorithm, ... } tuple.
+  var certPurposesGetterInvoked74 = false;
+  Object.defineProperty(rootCert74, "purposes", { get: function () { certPurposesGetterInvoked74 = true; throw new Error("cert-purposes-boom"); }, configurable: true });
+  var certAttachCode74;
+  try { certAttachCode74 = await codeOf(run([direct], { time: T2027, trustAnchor: rootCert74 })); }
   finally { delete rootCert74.purposes; }
-  check("#74 a certificate anchor with an unrelated throwing purposes getter is still accepted (tuple metadata not read from a cert)",
-    certGetterOk74 === true);
+  check("#74 a certificate anchor carrying purposes is refused by existence, without invoking its getter",
+    certAttachCode74 === "path/bad-input" && certPurposesGetterInvoked74 === false);
   // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
   // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
   // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
