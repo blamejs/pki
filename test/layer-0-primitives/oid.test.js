@@ -58,6 +58,20 @@ function testRegister() {
   // A member whose derived OID has fewer than 2 arcs can never round-trip
   // through name()/has()/toDER() (all require >= 2 arcs) — reject at register.
   check("registerFamily rejects a one-arc member", code(function () { pki.oid.registerFamily([2], { loneArc: [] }); }) === "oid/bad-input");
+  // The base and members arguments are validated before any member is assembled: a base that is not a
+  // non-empty arc array, and a members that is not an object, each fail at entry rather than deriving a
+  // malformed OID or reading properties off a non-object.
+  check("registerFamily rejects a non-array base", code(function () { pki.oid.registerFamily("1.3.6", { x: 1 }); }) === "oid/bad-input");
+  check("registerFamily rejects an empty base", code(function () { pki.oid.registerFamily([], { x: 1 }); }) === "oid/bad-input");
+  check("registerFamily rejects a base with a non-arc component", code(function () { pki.oid.registerFamily([1, -3], { x: 1 }); }) === "oid/bad-input");
+  check("registerFamily rejects a null members", code(function () { pki.oid.registerFamily([1, 3, 6], null); }) === "oid/bad-input");
+  check("registerFamily rejects a non-object members", code(function () { pki.oid.registerFamily([1, 3, 6], 42); }) === "oid/bad-input");
+  // all() dumps the whole registry as a dotted -> name map, and hands back a COPY: mutating the returned
+  // object must not reach the registry, so a caller cannot poison a later name() lookup through it.
+  var dump = pki.oid.all();
+  check("all() returns the registry map including a known entry", dump && dump["1.2.840.113549.1.1.1"] === "rsaEncryption");
+  dump["1.2.840.113549.1.1.1"] = "POISONED";
+  check("all() hands back a copy -- mutating it does not corrupt the registry", pki.oid.name("1.2.840.113549.1.1.1") === "rsaEncryption");
 }
 
 function testArcs() {

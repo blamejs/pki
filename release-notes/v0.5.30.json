@@ -1,0 +1,10 @@
+{
+  "version": "0.5.30",
+  "headline": "A CMP certReqTemplate keySpec that names an ISO/IEC 9796-2 RSA signature scheme is now refused, instead of being surfaced to the caller as a non-RSA algorithm requirement.",
+  "summary": "RFC 9483 sec. 4.3.3 states an RSA key requirement in a certReqTemplate keySpec with id-regCtrl-rsaKeyLen; an id-regCtrl-algId element MUST name an algorithm other than RSA. `pki.cmp.session` decides whether an algId names RSA by OID family, not a fixed list, so a standardized RSA identifier the registry has not named is still classified from the arc it sits under. The ISO/IEC 9796-2 RSA signatures giving message recovery are registered on the TeleTrusT signatureScheme arc (1.3.36.3.4), which the toolkit did not carry, so a keySpec algId naming one was classified as non-RSA and surfaced to the caller as an accepted algorithm requirement. Those arcs are now recognized, so such a keySpec is refused with `cmp/bad-info-value`, matching the treatment of every other RSA family.",
+  "sections": {
+    "Security": [
+      "`pki.cmp.session` refuses a certReqTemplate keySpec whose `id-regCtrl-algId` names an ISO/IEC 9796-2 RSA signature-with-message-recovery scheme, with `cmp/bad-info-value`, rather than surfacing it to the caller as a non-RSA algorithm requirement. RFC 9483 sec. 4.3.3 reserves an RSA key requirement for `id-regCtrl-rsaKeyLen`; the 9796-2 schemes are RSA, so a keySpec naming one is now rejected the same way an rsaEncryption or RSASSA-PSS algId already was. The classifier recognizes the deterministic (1.3.36.3.4.2) and randomized (1.3.36.3.4.3) sub-arcs by prefix -- so a hash variant registered later is caught without being listed -- and ISO/IEC 9796-1 (1.3.36.3.4.1) on the same registrant arc. The generic signatureScheme parent (1.3.36.3.4) and the sibling authentication arc (1.3.36.3.5, whose children include ECC) are not treated as RSA, so a non-RSA algorithm under either is still surfaced. Recognizing these OIDs classifies a keySpec requirement; it is not a claim that the toolkit produces or verifies a 9796-2 signature."
+    ]
+  }
+}
