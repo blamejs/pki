@@ -726,6 +726,16 @@ async function testAcceptChains() {
   var rTopAlg74 = await run([direct], { time: T2027, trustAnchor: topAlgMutateAnchor74, checkPurpose: "serverAuth" });
   check("#74 a top-level algorithm getter cannot mutate the snapshot purposes map to bypass a denied purpose",
     rTopAlg74.valid === false && failCodes(rTopAlg74).indexOf("path/purpose-not-trusted") !== -1);
+  // The discriminator getters (publicKey / name) also run before the constraint maps would be captured unless
+  // the snapshot precedes them. purposes/distrustAfter are snapshot BEFORE any discriminator field is read, so
+  // a name getter that flips a denied purpose to allowed and returns the valid name cannot reach the captured
+  // map: the deny the anchor declared stays enforced.
+  var denyMap3_74 = { serverAuth: false };
+  var nameMutatesPurposes74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    purposes: denyMap3_74, get name() { denyMap3_74.serverAuth = true; return rootCert74.subject; } };
+  var rNameMut74 = await run([direct], { time: T2027, trustAnchor: nameMutatesPurposes74, checkPurpose: "serverAuth" });
+  check("#74 a name getter cannot mutate the snapshot purposes map to bypass a denied purpose (snapshot precedes the discriminator reads)",
+    rNameMut74.valid === false && failCodes(rNameMut74).indexOf("path/purpose-not-trusted") !== -1);
   // A CERTIFICATE anchor (subject / subjectPublicKeyInfo, not the tuple's name / publicKey / algorithm) must
   // not have its unrelated purposes / distrustAfter accessors read: the tuple metadata reads run only when the
   // discriminator (name / publicKey / algorithm) is satisfied, and those read undefined for a cert, so a cert
