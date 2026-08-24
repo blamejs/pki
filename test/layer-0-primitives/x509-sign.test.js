@@ -503,6 +503,7 @@ async function testGeneralNameForms() {
   check("Half B: bare '192.0.2.1' -> iPAddress [7]", sanForms(await pki.x509.sign(base(["192.0.2.1"]), { key: s.key })) === "7");
   check("Half B: bare '2001:db8::1' -> iPAddress [7]", sanForms(await pki.x509.sign(base(["2001:db8::1"]), { key: s.key })) === "7");
   check("Half B: bare 'https://example.com/x' -> URI [6]", sanForms(await pki.x509.sign(base(["https://example.com/x"]), { key: s.key })) === "6");
+  check("Half B: 'https://h/p?q=1#f' (query+fragment) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h/p?q=1#f"]), { key: s.key })) === "6");
   check("Half B: 'https://user@host/x' -> URI [6] (userinfo not read as email)", sanForms(await pki.x509.sign(base(["https://user@host/x"]), { key: s.key })) === "6");
   check("Half B: underscore label '_acme-challenge.example.com' -> dNSName [2]", sanForms(await pki.x509.sign(base(["_acme-challenge.example.com"]), { key: s.key })) === "2");
   check("Half B: mixed shorthand + object form -> [dNSName, dNSName, iPAddress]", sanForms(await pki.x509.sign(base(["example.com", { dNSName: "b.example" }, "10.0.0.1"]), { key: s.key })) === "2,2,7");
@@ -510,6 +511,35 @@ async function testGeneralNameForms() {
   check("Half B: 'example.com:8080' host:port -> throws", await codeOf(pki.x509.sign(base(["example.com:8080"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'urn:oid:1.2.3' (opaque, no //) -> throws", await codeOf(pki.x509.sign(base(["urn:oid:1.2.3"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'mailto:x@y.com' (scheme, no //) -> throws", await codeOf(pki.x509.sign(base(["mailto:x@y.com"]), { key: s.key })) === "x509/bad-input");
+  // A string that merely starts with scheme:// but has an empty or space-carrying authority is a MALFORMED
+  // URI, not a URI shorthand -- fail-closed (the object form accepts an unusual value).
+  check("Half B: 'https://' (empty authority) -> throws", await codeOf(pki.x509.sign(base(["https://"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://not a uri' (space in authority) -> throws", await codeOf(pki.x509.sign(base(["https://not a uri"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https:///path' (empty authority before /) -> throws", await codeOf(pki.x509.sign(base(["https:///path"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://?query' (empty authority before ?) -> throws", await codeOf(pki.x509.sign(base(["https://?query"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://#frag' (empty authority before #) -> throws", await codeOf(pki.x509.sign(base(["https://#frag"]), { key: s.key })) === "x509/bad-input");
+  // A URI-shaped string that carries a character outside the RFC 3986 grammar -- a bare "%" not starting a
+  // "%HEXHEX" triplet, or a byte like "^" that is neither unreserved, reserved, nor percent-encoded -- is
+  // not a valid URI, so it is refused rather than classified as one (the object form accepts an odd value).
+  check("Half B: 'https://%' (bare percent, not %HEXHEX) -> throws", await codeOf(pki.x509.sign(base(["https://%"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://%zz' (invalid percent-encoding) -> throws", await codeOf(pki.x509.sign(base(["https://%zz"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://a^b' (caret is not a URI character) -> throws", await codeOf(pki.x509.sign(base(["https://a^b"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://h/%2f?a=1' (valid percent-encoding) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h/%2f?a=1"]), { key: s.key })) === "6");
+  // The bracket characters that delimit an IPv6-literal host are the only URI bytes whose validity is
+  // structural (a "[" needs a matching "]"), which a form classifier does not parse -- so they are not
+  // accepted as a shorthand and an IPv6-literal-host URL uses the object form { uniformResourceIdentifier }.
+  check("Half B: 'https://[' (unbalanced IP-literal bracket) -> throws", await codeOf(pki.x509.sign(base(["https://["]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://[::1]/p' (IPv6-literal host, structural) -> throws (object form is the escape)", await codeOf(pki.x509.sign(base(["https://[::1]/p"]), { key: s.key })) === "x509/bad-input");
+  // A control byte in an email local part is malformed -> refused (same fail-closed rule as the URI form).
+  check("Half B: an rfc822Name local part with a control byte -> throws", await codeOf(pki.x509.sign(base(["a" + String.fromCharCode(1) + "b@example.com"]), { key: s.key })) === "x509/bad-input");
+  // The local part is an unquoted RFC 5321 dot-atom: atext runs joined by SINGLE dots. Consecutive,
+  // leading, or trailing dots, and a non-atext byte, are malformed -> refused (the object form is the
+  // escape for a quoted-string local part). A single valid dot-atom still classifies as an rfc822Name.
+  check("Half B: 'a..b@example.com' (consecutive dots) -> throws", await codeOf(pki.x509.sign(base(["a..b@example.com"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: '.a@example.com' (leading dot) -> throws", await codeOf(pki.x509.sign(base([".a@example.com"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'a.@example.com' (trailing dot) -> throws", await codeOf(pki.x509.sign(base(["a.@example.com"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'a<b@example.com' (non-atext byte) -> throws", await codeOf(pki.x509.sign(base(["a<b@example.com"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'user.name+tag@example.com' (valid dot-atom) -> rfc822Name [1]", sanForms(await pki.x509.sign(base(["user.name+tag@example.com"]), { key: s.key })) === "1");
   check("Half B: '' empty bare string -> throws", await codeOf(pki.x509.sign(base([""]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'foo@bar' bare-label domain -> throws", await codeOf(pki.x509.sign(base(["foo@bar"]), { key: s.key })) === "x509/bad-input");
   // An IPv4-SHAPED string that is not a valid address is ambiguous (an invalid IP vs an all-numeric name),
@@ -517,6 +547,16 @@ async function testGeneralNameForms() {
   check("Half B: '999.999.999.999' malformed IPv4 -> throws (not guessed as dNSName)", await codeOf(pki.x509.sign(base(["999.999.999.999"]), { key: s.key })) === "x509/bad-input");
   check("Half B: '1.2.3.4.5' (5 numeric groups) -> throws (IPv4-shaped, invalid)", await codeOf(pki.x509.sign(base(["1.2.3.4.5"]), { key: s.key })) === "x509/bad-input");
   check("Half B: '256.1.1.1' (octet out of range) -> throws (IPv4-shaped, invalid)", await codeOf(pki.x509.sign(base(["256.1.1.1"]), { key: s.key })) === "x509/bad-input");
+  // The form decision captures packIpLiteral at load, so reassigning the exported ipUtils.packIpLiteral
+  // cannot steer a hostname into an iPAddress -- example.com stays dNSName even when packIpLiteral is
+  // replaced to force every string to an address.
+  var _ipUtils = require("../../lib/ip-utils");
+  var _origPack = _ipUtils.packIpLiteral;
+  _ipUtils.packIpLiteral = function () { return Buffer.from([1, 2, 3, 4]); };
+  var _immForms;
+  try { _immForms = sanForms(await pki.x509.sign(base(["example.com"]), { key: s.key })); }
+  finally { _ipUtils.packIpLiteral = _origPack; }
+  check("Half B immunity: hostname stays dNSName [2] when ipUtils.packIpLiteral is reassigned (captured at load)", _immForms === "2");
 }
 
 async function testCryptoKeySigningKey() {

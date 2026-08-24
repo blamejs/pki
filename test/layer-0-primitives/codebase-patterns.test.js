@@ -1806,9 +1806,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-attrcert.js:<top>", "lib/tls-cert-compress.js:<top>",
         "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>",
+        "lib/ip-utils.js:<top>", "lib/guard-encoding.js:_alphabet",
       ],
       mode: "family-subset",
-      reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
+      reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
     },
     {
       // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
@@ -3014,7 +3015,7 @@ function testGuardReadsRuntimeLive() {
     "lib/cms-encrypt.js": 73,
     "lib/crl-sign.js": 72,
     "lib/cmc-build.js": 64,
-    "lib/pki-build.js": 56,
+    "lib/pki-build.js": 55,
     "lib/hpke.js": 54,
     "lib/cms-decrypt.js": 53,
     "lib/cmc-verify.js": 39,

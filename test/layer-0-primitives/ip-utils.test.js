@@ -54,25 +54,28 @@ function run() {
   check("isIpLiteral rejects a colon non-address", ip.isIpLiteral("api:443") === false);
 
   // --- immune to runtime prototype replacement (packIpLiteral gates a GeneralName form decision) ---
-  // Replace the regex-matching protocol AFTER load -- RegExp.prototype.exec and the [Symbol.match] hook
-  // (fabricating a dual-stack IPv6 match for a hostname), plus test/split -- and confirm the captured
-  // builtin exec ignores every swap, so a hostname still packs to null rather than an attacker-forced
-  // iPAddress. This is the RegExp-protocol-hook exploit the captured-intrinsic hardening exists to stop.
-  var _oT = RegExp.prototype.test, _oS = String.prototype.split;
-  var _oE = RegExp.prototype.exec, _oM = RegExp.prototype[Symbol.match];
-  var _forge = function () { return ["x", ":", "1.2.3.4"]; };
-  RegExp.prototype.test = function () { return true; };
+  // The parser uses no regex; it reads bytes through captured String primitives. Replace those primitives
+  // AFTER load -- charCodeAt (forge every byte as the digit "1"), split (forge four octets), indexOf, slice,
+  // lastIndexOf -- and confirm the captured references ignore every swap, so a hostname still packs to null
+  // rather than an attacker-forced iPAddress. This is the prototype-steering the captured intrinsics stop.
+  var _oCC = String.prototype.charCodeAt, _oSp = String.prototype.split, _oIn = String.prototype.indexOf;
+  var _oSl = String.prototype.slice, _oLI = String.prototype.lastIndexOf;
+  String.prototype.charCodeAt = function () { return 49; };            // "1" -- every byte would read as a digit
   String.prototype.split = function () { return ["1", "2", "3", "4"]; };
-  RegExp.prototype.exec = _forge;
-  RegExp.prototype[Symbol.match] = _forge;
+  String.prototype.indexOf = function () { return -1; };
+  String.prototype.slice = function () { return "1"; };
+  String.prototype.lastIndexOf = function () { return -1; };
   var _attackPack, _attackV4;
   try { _attackPack = ip.packIpLiteral("example.com"); _attackV4 = ip.isIPv4("example.com"); }
   finally {
-    RegExp.prototype.test = _oT; String.prototype.split = _oS;
-    RegExp.prototype.exec = _oE; RegExp.prototype[Symbol.match] = _oM;
+    String.prototype.charCodeAt = _oCC; String.prototype.split = _oSp; String.prototype.indexOf = _oIn;
+    String.prototype.slice = _oSl; String.prototype.lastIndexOf = _oLI;
   }
-  check("packIpLiteral is immune to RegExp.exec / [Symbol.match] / test / split replacement", _attackPack === null);
-  check("isIPv4 is immune to RegExp-matching-protocol replacement", _attackV4 === false);
+  check("packIpLiteral is immune to String-primitive (charCodeAt/split/indexOf/slice/lastIndexOf) replacement", _attackPack === null);
+  check("isIPv4 is immune to String-primitive replacement", _attackV4 === false);
+  // No form-matching regex exists or is exported: the parser reads bytes with captured primitives, so there
+  // is no RegExp handle a caller could mutate in place via RegExp.prototype.compile to steer the decision.
+  check("no form-matching regex is exported", ip.IPV4_RE === undefined && ip.DUAL_RE === undefined && ip.HEXGROUP_RE === undefined);
 
   // --- parity with node:net.isIP across the vector set ---
   var vectors = ["192.0.2.1", "999.999.999.999", "256.1.1.1", "api:443", "::1", "2001:db8::1",
