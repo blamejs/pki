@@ -487,6 +487,60 @@ async function testGeneralNameForms() {
   check("iPAddress IPv6 string packs to the same 16 octets as the Buffer form", Buffer.compare(sanValue(ipStr6), sanValue(ipBuf6)) === 0);
   check("invalid iPAddress string -> throws", await codeOf(pki.x509.sign(base([{ iPAddress: "not.an.ip" }]), { key: s.key })) === "x509/bad-input");
   check("out-of-range iPAddress octet string -> throws", await codeOf(pki.x509.sign(base([{ iPAddress: "999.0.0.1" }]), { key: s.key })) === "x509/bad-input");
+
+  // #75 Half B -- a bare STRING SAN entry is classified fail-closed into its GeneralName form. Context
+  // tag map: rfc822Name=1, dNSName=2, uniformResourceIdentifier=6, iPAddress=7. sanForms decodes the
+  // SAN SEQUENCE and reports each entry's context tag, so the assertion is on the emitted wire form.
+  function sanForms(der) {
+    var node = asn1.decode(sanValue(der));
+    if (node.tagClass === "universal" && node.tagNumber === 4) node = asn1.decode(node.content);
+    return node.children.map(function (c) { return c.tagNumber; }).join(",");
+  }
+  check("Half B: bare 'example.com' -> dNSName [2]", sanForms(await pki.x509.sign(base(["example.com"]), { key: s.key })) === "2");
+  check("Half B: bare '*.example.com' wildcard -> dNSName [2]", sanForms(await pki.x509.sign(base(["*.example.com"]), { key: s.key })) === "2");
+  check("Half B: bare 'localhost' single label -> dNSName [2]", sanForms(await pki.x509.sign(base(["localhost"]), { key: s.key })) === "2");
+  check("Half B: bare 'user@example.com' -> rfc822Name [1]", sanForms(await pki.x509.sign(base(["user@example.com"]), { key: s.key })) === "1");
+  check("Half B: bare '192.0.2.1' -> iPAddress [7]", sanForms(await pki.x509.sign(base(["192.0.2.1"]), { key: s.key })) === "7");
+  check("Half B: bare '2001:db8::1' -> iPAddress [7]", sanForms(await pki.x509.sign(base(["2001:db8::1"]), { key: s.key })) === "7");
+  check("Half B: bare 'https://example.com/x' -> URI [6]", sanForms(await pki.x509.sign(base(["https://example.com/x"]), { key: s.key })) === "6");
+  check("Half B: 'https://user@host/x' -> URI [6] (userinfo not read as email)", sanForms(await pki.x509.sign(base(["https://user@host/x"]), { key: s.key })) === "6");
+  check("Half B: underscore label '_acme-challenge.example.com' -> dNSName [2]", sanForms(await pki.x509.sign(base(["_acme-challenge.example.com"]), { key: s.key })) === "2");
+  check("Half B: mixed shorthand + object form -> [dNSName, dNSName, iPAddress]", sanForms(await pki.x509.sign(base(["example.com", { dNSName: "b.example" }, "10.0.0.1"]), { key: s.key })) === "2,2,7");
+  // unclassifiable / ambiguous -> throws (fail-closed; the object form is the escape)
+  check("Half B: 'example.com:8080' host:port -> throws", await codeOf(pki.x509.sign(base(["example.com:8080"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'urn:oid:1.2.3' (opaque, no //) -> throws", await codeOf(pki.x509.sign(base(["urn:oid:1.2.3"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'mailto:x@y.com' (scheme, no //) -> throws", await codeOf(pki.x509.sign(base(["mailto:x@y.com"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: '' empty bare string -> throws", await codeOf(pki.x509.sign(base([""]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'foo@bar' bare-label domain -> throws", await codeOf(pki.x509.sign(base(["foo@bar"]), { key: s.key })) === "x509/bad-input");
+  // An IPv4-SHAPED string that is not a valid address is ambiguous (an invalid IP vs an all-numeric name),
+  // so it throws rather than being silently guessed as a dNSName -- the object form is the escape.
+  check("Half B: '999.999.999.999' malformed IPv4 -> throws (not guessed as dNSName)", await codeOf(pki.x509.sign(base(["999.999.999.999"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: '1.2.3.4.5' (5 numeric groups) -> throws (IPv4-shaped, invalid)", await codeOf(pki.x509.sign(base(["1.2.3.4.5"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: '256.1.1.1' (octet out of range) -> throws (IPv4-shaped, invalid)", await codeOf(pki.x509.sign(base(["256.1.1.1"]), { key: s.key })) === "x509/bad-input");
+}
+
+async function testCryptoKeySigningKey() {
+  // #75 Half A -- a WebCrypto CryptoKey (from pki.key.generate) is accepted as the signing key directly,
+  // without exporting to PKCS#8 first. The capability already worked through signScheme._importKey; these
+  // pin it (the advertised-untested closure) and pin the PRECISE refusals the hardened _importKey gives.
+  var kp = await pki.key.generate("Ed25519");
+  var spki = await pki.key.export(kp.publicKey);
+  var certDer = await pki.x509.sign({ subject: "ck-leaf", subjectPublicKey: spki, notBefore: NB, notAfter: NA }, { key: kp.privateKey });
+  check("Half A: x509.sign accepts a WebCrypto CryptoKey private key", pki.schema.x509.parse(certDer).subject.dn === "CN=ck-leaf");
+  // uniformity: the same CryptoKey signs through csr.sign (the shared _importKey home, not per-verb).
+  var csrDer = await pki.csr.sign({ subject: "ck-csr", subjectPublicKey: spki }, { key: kp.privateKey });
+  check("Half A: csr.sign accepts a WebCrypto CryptoKey private key", pki.schema.csr.parse(csrDer).subject.dn === "CN=ck-csr");
+  // refusal: a PUBLIC CryptoKey cannot sign -- refused precisely by type, not the generic byte message.
+  check("Half A: a public CryptoKey is refused, naming the wrong type", await (async function () {
+    try { await pki.x509.sign({ subject: "x", subjectPublicKey: spki, notBefore: NB, notAfter: NA }, { key: kp.publicKey }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /type "public"/.test(e.message) && /private key/.test(e.message); }
+  })());
+  // refusal: a node:crypto KeyObject is not a WebCrypto CryptoKey -- refused precisely, naming it.
+  var ko = require("crypto").generateKeyPairSync("ed25519").privateKey;
+  check("Half A: a node KeyObject is refused, naming it not a CryptoKey", await (async function () {
+    try { await pki.x509.sign({ subject: "x", subjectPublicKey: spki, notBefore: NB, notAfter: NA }, { key: ko }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /KeyObject/.test(e.message); }
+  })());
 }
 
 async function testInputForms() {
@@ -651,8 +705,10 @@ async function testSharedBuilderRejects() {
     await codeOf(sign({ subject: [{ countryName: "USA" }] })) === "x509/bad-name");
 
   // ---- GeneralName specs (subjectAltName) ----
-  check("a GeneralName that is not an object -> x509/bad-input",
-    await codeOf(sign({ extensions: { subjectAltName: ["host.example"] } })) === "x509/bad-input");
+  // A bare string is now the #75 shorthand (classified into its form -- see testGeneralNameForms); a
+  // non-object, non-string value (a number here) is still rejected as a mis-shaped GeneralName.
+  check("a GeneralName that is neither an object nor a string -> x509/bad-input",
+    await codeOf(sign({ extensions: { subjectAltName: [123] } })) === "x509/bad-input");
   check("a GeneralName given as a Buffer -> x509/bad-input",
     await codeOf(sign({ extensions: { subjectAltName: [Buffer.from([1])] } })) === "x509/bad-input");
   check("a GeneralName with two forms at once -> x509/bad-input",
@@ -844,6 +900,7 @@ async function main() {
   await testCaCrossField();
   await testExtensionSurface();
   await testGeneralNameForms();
+  await testCryptoKeySigningKey();
   await testDottedOidPurposes();
   await testInputForms();
   await testCoverageEdges();

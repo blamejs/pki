@@ -310,6 +310,17 @@ security-only patches after the next major releases.
   internal property escape from inside the crypto library, and neither ever
   substitutes a different key: a key created non-extractable is reachable by no
   other implementation, and is refused with that as the reason.
+- **Signing-key form and bare-name classification are fail-closed.** Every
+  signing verb routes its key through one import gate. A WebCrypto `CryptoKey`
+  is detected structurally, not by an `instanceof` a cross-realm or
+  separately-installed copy would fail, and a public or secret `CryptoKey`, or a
+  `node:crypto` KeyObject rather than a WebCrypto `CryptoKey`, is refused with a
+  typed fault naming the specific problem rather than a generic one — none of
+  these can reach the signer. A `subjectAltName`, or any `GeneralName`, supplied
+  as a bare string is classified into exactly one form only when it is
+  unambiguous: a string that could be read as more than one form, or as none, is
+  refused with a typed `bad-input` rather than guessed into a name the caller did
+  not intend, and the explicit object form is always the escape.
 - **WebCrypto import algorithm confusion and raw cipher faults.**
   `pki.webcrypto` derives an imported asymmetric key's type from the key material
   rather than the caller's claim, so an RSA key imported under an Ed25519,
