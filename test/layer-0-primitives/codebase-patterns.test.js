@@ -546,18 +546,6 @@ function _matchingBrace(text, from) {
   return text.length;
 }
 
-// Neutralize the braces a REGEX literal can carry into a catch body once strings and comments are
-// stripped -- the only remaining brace-imbalance source. Length-preserving (each brace -> a space), so
-// every index and line the scan reports stays exact. A balanced quantifier `{n,m}` is left alone (it
-// does not unbalance the count); this defuses only a LONE brace -- a stray `/[}]/` char class or an
-// escaped `/\}/` -- which would otherwise close the scanned body EARLY (an undershoot that MISSES a
-// fail-open) or, for a lone `{`, run the scan past the real close.
-function _neutralizeRegexBraces(text) {
-  return text
-    .replace(/\[(?:[^\]\n\\]|\\.)*\]/g, function (m) { return m.replace(/[{}]/g, " "); })
-    .replace(/\\[{}]/g, function (m) { return m.charAt(0) + " "; });
-}
-
 function testNoFailOpenVerify() {
   // class: fail-open-verify
   // A verify / parse / validate routine that swallows an error and then
@@ -575,15 +563,18 @@ function testNoFailOpenVerify() {
   // this catch's. Both forms are now bounded by the same rule, and the single-line catch is still
   // read, because it is the block that is found rather than a line shape.
   //
-  // Comments and string literals are stripped first, so a docstring example or a quoted message
-  // never trips the gate. Regex literals are NOT stripped whole (the walk deliberately leaves them, so
-  // a `@guard-shape` can still match a `/.../` literal elsewhere), but the braces a regex can carry --
-  // an escaped `/\}/` or a char-class `/[}]/` -- are neutralized for THIS brace scan by
-  // _neutralizeRegexBraces. Without that, a lone `}` closes the body early (an undershoot that MISSES a
-  // real fail-open) and a lone `{` runs past the real close; a balanced quantifier `{n,m}` never
-  // unbalanced it and is left alone. If a scan still cannot balance, _matchingBrace falls back to the
-  // rest of the file rather than to nothing, because a detector that goes quiet on input it cannot
-  // parse is the failure this class exists to prevent.
+  // Comments and string literals are stripped first, so a docstring example or a quoted message never
+  // trips the gate. Regex literals are NOT stripped (the walk deliberately leaves them, so a
+  // `@guard-shape` can still match a `/.../` literal elsewhere), and deciding a regex literal from a
+  // division needs a real parser this walk does not carry. A LONE brace a regex could hold -- an escaped
+  // `/\}/` or a char-class `/[}]/` -- would therefore unbalance the count: a lone `}` closes the scanned
+  // body early (an undershoot that could MISS a fail-open), a lone `{` runs the scan to the file end
+  // (a loud overshoot). No lib file carries such a regex today, and a heuristic that blanks those braces
+  // is not safe -- it also blanks an array literal's braces (`[function(){...}]`), erasing a real
+  // `catch (...) {` opener -- so the scan is left exact and this precondition is documented instead of
+  // approximated. If a scan cannot balance, _matchingBrace falls back to the rest of the file rather
+  // than to nothing, because a detector that goes quiet on input it cannot parse is the failure this
+  // class exists to prevent.
   var VERDICT = new RegExp("\\breturn\\s+(?:(?:true|1|valid|verified|isValid|ok)\\b" +
     "|\\{[^}]*\\b(?:valid|verified|ok|allowed|trusted)\\s*:\\s*true)");
   var CATCH_OPENER = /catch\s*\([^)]*\)\s*\{/g;
@@ -593,7 +584,7 @@ function testNoFailOpenVerify() {
     var content;
     try { content = fs.readFileSync(files[i], "utf8"); }
     catch (_e) { continue; }
-    var subject = _neutralizeRegexBraces(_stripCommentsAndLiterals(content));
+    var subject = _stripCommentsAndLiterals(content);
     CATCH_OPENER.lastIndex = 0;
     var opener;
     while ((opener = CATCH_OPENER.exec(subject)) !== null) {

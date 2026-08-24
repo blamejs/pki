@@ -53,6 +53,27 @@ function run() {
   check("isIpLiteral rejects a hostname", ip.isIpLiteral("example.com") === false);
   check("isIpLiteral rejects a colon non-address", ip.isIpLiteral("api:443") === false);
 
+  // --- immune to runtime prototype replacement (packIpLiteral gates a GeneralName form decision) ---
+  // Replace the regex-matching protocol AFTER load -- RegExp.prototype.exec and the [Symbol.match] hook
+  // (fabricating a dual-stack IPv6 match for a hostname), plus test/split -- and confirm the captured
+  // builtin exec ignores every swap, so a hostname still packs to null rather than an attacker-forced
+  // iPAddress. This is the RegExp-protocol-hook exploit the captured-intrinsic hardening exists to stop.
+  var _oT = RegExp.prototype.test, _oS = String.prototype.split;
+  var _oE = RegExp.prototype.exec, _oM = RegExp.prototype[Symbol.match];
+  var _forge = function () { return ["x", ":", "1.2.3.4"]; };
+  RegExp.prototype.test = function () { return true; };
+  String.prototype.split = function () { return ["1", "2", "3", "4"]; };
+  RegExp.prototype.exec = _forge;
+  RegExp.prototype[Symbol.match] = _forge;
+  var _attackPack, _attackV4;
+  try { _attackPack = ip.packIpLiteral("example.com"); _attackV4 = ip.isIPv4("example.com"); }
+  finally {
+    RegExp.prototype.test = _oT; String.prototype.split = _oS;
+    RegExp.prototype.exec = _oE; RegExp.prototype[Symbol.match] = _oM;
+  }
+  check("packIpLiteral is immune to RegExp.exec / [Symbol.match] / test / split replacement", _attackPack === null);
+  check("isIPv4 is immune to RegExp-matching-protocol replacement", _attackV4 === false);
+
   // --- parity with node:net.isIP across the vector set ---
   var vectors = ["192.0.2.1", "999.999.999.999", "256.1.1.1", "api:443", "::1", "2001:db8::1",
     "fe80::1", "::ffff:192.0.2.1", "example.com", "1.2.3", "1.2.3.4.5", "gggg::1", ":::1",
