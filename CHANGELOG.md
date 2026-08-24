@@ -4,7 +4,7 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.29 — 2026-08-23
+## v0.5.29 — 2026-08-24
 
 pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdict against it, and accepts a parsed certificate directly.
 
@@ -14,12 +14,16 @@ pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdi
 
 ### Changed
 
+- A normalized trust anchor -- what `pki.path.anchorFromCert` returns and what `pki.path.build` reports as `result.trustAnchor` -- carries a defined set of fields: `name`, `publicKey`, `algorithm`, and `parameters`, plus `purposes`, `distrustAfter`, `subjectDer`, `label`, and `mozillaCaPolicy` when the source supplies them (the fields `pki.trust.parseCertdata` emits). These survive normalization, so a pinned trust-store entry round-trips; a field attached outside that set is not carried onto the anchor.
+- A trust anchor's `purposes` and `distrustAfter` constraint maps must be plain own data properties. A map -- or one of its entries -- supplied as a getter, or reached through the object's prototype rather than as an own property, is refused with `path/bad-input` rather than read, so a getter cannot answer a purpose or distrust check inconsistently and a restriction is never silently dropped. The `{ purposes, distrustAfter }` shape `pki.trust.parseCertdata` emits and a hand-built one are the normal, unaffected form.
 - The ACME client's per-request methods refuse an unrecognized option instead of reading it as absent and applying a default: `finalize`, `pollOrder` / `pollAuthorization`, `downloadCertificate`, `revokeCert`, `keyChange`, and `renewalWindow`. A mistyped option name is now an `acme/bad-input` error rather than a silently ignored setting, matching the client constructor and the rest of the toolkit's option-taking verbs.
 
 ### Security
 
 - `pki.path.validate` refuses a malformed `opts.trustAnchor` with `path/bad-input` at entry, rather than seeding the path from it and returning a soft verdict. An anchor tuple missing its `algorithm` could previously make the path validate and return `valid: true` -- a self-describing key algorithm filled the gap the absent field left -- so a caller who passed a mis-shaped anchor received a verdict that did not answer the question they asked. The anchor is now normalized and shape-checked at the door, the same way `pki.path.build` already treated its `trustAnchors`.
 - `pki.path.validate` and `pki.path.build` also refuse a trust anchor whose declared `algorithm` does not match the algorithm of its `publicKey`, and take the key's algorithm parameters from that SubjectPublicKeyInfo rather than a declared `parameters` field. An anchor that named a different or unrelated algorithm than the key it carried was previously accepted and validated against the real key; a declared algorithm inconsistent with the key is now a `path/bad-input` refusal at entry. And because the key's own parameters are authoritative, a declared curve that disagreed with the key can no longer be promoted and inherited by an intermediate certificate that omits its own parameters -- which could otherwise validate a chain RFC 5280 parameter inheritance from the real key should reject.
+- A trust anchor passed as a parsed certificate is recognized as a certificate before any tuple field is read, so a value reached through the object's prototype -- such as a polluted `Object.prototype` supplying `name`, `publicKey`, and `algorithm` -- cannot reclassify the certificate as a hand-built tuple and bind a substituted key. The certificate's own key is always the one used.
+- A trust anchor supplied as a `Proxy` is refused with `path/bad-input`. A `Proxy`'s traps can answer a field read differently on successive lookups or report a field absent while forwarding the rest, so no field-by-field normalization can trust it to describe itself -- a `Proxy` could report `purposes` absent while carrying the other fields and drop a `{ serverAuth: false }` restriction the caller attached, validating a path the anchor forbids. A normal anchor -- a plain tuple, a parsed certificate, or an object inheriting from one -- is not a `Proxy` and is unaffected.
 
 ## v0.5.28 — 2026-08-22
 

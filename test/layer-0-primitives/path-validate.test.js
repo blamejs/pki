@@ -595,17 +595,23 @@ async function testAcceptChains() {
     algorithm: { get oid() { throw new Error("boom-oid"); } } };
   check("#74 a trustAnchor with a throwing algorithm.oid accessor is refused with path/bad-input",
     (await codeOf(run([direct], { time: T2027, trustAnchor: throwAlgOid74 }))) === "path/bad-input");
-  // Normalization must not traverse the caller's prototype chain: a Proxy anchor whose getPrototypeOf trap
-  // returned a cycle would otherwise drive an unbounded walk (a DoS). The trap is invoked at most once -- by
-  // the tuple-vs-Buffer type check -- and NEVER by a chain walk during normalization, so a hostile chain
-  // cannot loop. A prior version walked entry's prototype chain and invoked getPrototypeOf a second time.
-  var protoReads74 = 0;
+  // A Proxy anchor is refused at the door with path/bad-input, before any field is read. A Proxy's traps can
+  // answer the same read with different values on successive lookups, or report a field absent while forwarding
+  // its siblings, so no field-by-field normalization can trust a Proxy to describe itself honestly. A
+  // legitimate anchor is a plain tuple, a parsed certificate, or an Object.create(base) inheriting from one --
+  // none is a Proxy -- so refusing it costs no real use and removes the whole class of trap-driven anchor forgery.
+  var trapReads74 = 0;
   var proxyAnchor74 = new Proxy(
     { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" },
-    { getPrototypeOf: function (t) { protoReads74++; return Object.getPrototypeOf(t); } });
-  var rProxy74 = await run([direct], { time: T2027, trustAnchor: proxyAnchor74 });
-  check("#74 normalization does not walk the anchor's prototype chain (getPrototypeOf invoked at most once, by the type check)",
-    rProxy74.valid === true && protoReads74 <= 1);
+    { get: function (t, k, r) { trapReads74++; return Reflect.get(t, k, r); },
+      getOwnPropertyDescriptor: function (t, k) { trapReads74++; return Object.getOwnPropertyDescriptor(t, k); } });
+  check("#74 a Proxy trustAnchor is refused at the door with path/bad-input, before any field is read",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: proxyAnchor74 }))) === "path/bad-input" && trapReads74 === 0);
+  // A Proxy whose target is a FUNCTION (typeof "function", not "object") is refused too: the door check tests
+  // the Proxy internal slot, not the target's typeof, so a callable-target Proxy cannot slip past into a field read.
+  var fnProxyAnchor74 = new Proxy(function () {}, { get: function () { return "1.3.101.112"; } });
+  check("#74 a Proxy over a function target is also refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: fnProxyAnchor74 }))) === "path/bad-input");
   // A caller field OUTSIDE the closed anchor set is not carried onto the normalized anchor -- neither as
   // enumerable data nor as hidden non-enumerable state. A non-enumerable "internalSecret" is dropped entirely,
   // so it can never leak via Object.keys / spread / JSON nor ride along as hidden state.
@@ -615,17 +621,18 @@ async function testAcceptChains() {
   check("#74 a caller field outside the closed anchor set (non-enumerable) is dropped, not carried onto the normalized anchor",
     buildHidden74.valid === true && Object.keys(buildHidden74.trustAnchor).indexOf("internalSecret") === -1 &&
     buildHidden74.trustAnchor.internalSecret === undefined);
-  // A Proxy anchor is normalized by reading its closed field set through the `get` trap ONCE per field -- its
-  // own shape is never enumerated. A hostile ownKeys trap is therefore never invoked: an anchor whose ownKeys
-  // throws (which the old enumerating normalizer refused) now validates, because normalization does not ask
-  // the Proxy to describe itself. (A get trap that THROWS is still a malformed anchor -> path/bad-input,
-  // covered by the throwing-accessor vectors above.)
-  var ownKeysCalled74 = false;
-  var throwOwnKeys74 = new Proxy(
-    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" },
-    { ownKeys: function () { ownKeysCalled74 = true; throw new Error("ownKeys-boom"); } });
-  check("#74 a Proxy anchor validates by reading its fields once (its ownKeys trap is never invoked, so a throwing ownKeys does not matter)",
-    (await run([direct], { time: T2027, trustAnchor: throwOwnKeys74 })).valid === true && ownKeysCalled74 === false);
+  // A Proxy anchor that reports `purposes` absent -- its getOwnPropertyDescriptor / has traps return
+  // undefined / false for that one key while forwarding name / publicKey / algorithm -- would, if the
+  // constraint maps were captured by reflection, drop the operator's { serverAuth: false } restriction and
+  // validate a serverAuth path the anchor forbids. Refusing the Proxy at the door closes it: the descriptor
+  // traps are never consulted, so the restriction cannot be hidden.
+  var hidePurposes74 = new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+      purposes: { serverAuth: false } },
+    { getOwnPropertyDescriptor: function (t, k) { return k === "purposes" ? undefined : Object.getOwnPropertyDescriptor(t, k); },
+      has: function (t, k) { return k === "purposes" ? false : (k in t); } });
+  check("#74 a Proxy anchor that hides a purposes restriction via its descriptor/has traps is refused, not read",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: hidePurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
   // stateful getter that returns the key on its first read but would throw on a later read still validates,
   // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
