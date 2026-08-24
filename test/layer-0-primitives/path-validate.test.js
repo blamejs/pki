@@ -705,10 +705,11 @@ async function testAcceptChains() {
   check("#74 a symbol-keyed constraint map entry is refused with path/bad-input",
     (await codeOf(run([direct], { time: T2027, trustAnchor: symKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // An own __proto__ DATA entry on the map is refused: the snapshot skips __proto__ to avoid polluting the fresh
-  // map, so it would be silently dropped. (defineProperty makes a data property named __proto__ without changing
-  // the object's prototype, so the map is still plain -- the entry is the concern.)
+  // map, so it would be silently dropped. (defineProperty makes a data property NAMED __proto__ without changing
+  // the object's prototype, so the map stays plain -- the presence of the entry is the concern, its value is
+  // irrelevant, so a plain object is used to keep the intent unambiguous.)
   var protoKeyPurposes74 = {};
-  Object.defineProperty(protoKeyPurposes74, "__proto__", { value: false, enumerable: true, configurable: true, writable: true });
+  Object.defineProperty(protoKeyPurposes74, "__proto__", { value: { note: "own data entry, not a prototype" }, enumerable: true, configurable: true, writable: true });
   var protoKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: protoKeyPurposes74 };
   check("#74 an own __proto__ data entry on a constraint map is refused with path/bad-input",
@@ -747,6 +748,15 @@ async function testAcceptChains() {
   finally { delete Object.prototype.distrustAfter; }
   check("#74 a certificate anchor with an inherited distrustAfter (polluted Object.prototype) is refused",
     certInheritCode74 === "path/bad-input");
+  // An anchor that INHERITS from a Proxy is refused: the anchor object itself is not a Proxy (it passes the door
+  // isProxy check), but its prototype is, and the inherited-field reads (the `in` tests and property accesses)
+  // would run the Proxy's traps -- a `has` trap hiding purposes while a `get` trap still supplies name /
+  // publicKey / algorithm drops the restriction. The prototype-chain walk refuses any Proxy in the chain.
+  var hidingProtoAnchor74 = Object.create(new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } },
+    { has: function (t, k) { return (k === "purposes" || k === "distrustAfter") ? false : (k in t); } }));
+  check("#74 an anchor inheriting from a Proxy is refused with path/bad-input (Proxy in the prototype chain)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: hidingProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A null-prototype object carrying an entry, used as the map's PARENT, is refused: the entry is inherited and
   // would be dropped, yet the parent is top-of-chain so a naive chain-depth test would pass it. The plain-object
   // test requires the top prototype to carry no enumerable own entries.
