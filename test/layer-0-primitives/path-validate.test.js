@@ -455,7 +455,10 @@ async function mkAnchor(algKey, name) {
   return {
     name: pki.schema.x509.parse(await mkCert({ subject: name || "Anchor", issuer: name || "Anchor", signWith: algKey || "ed25519" })).subject,
     publicKey: k.spki,
-    algorithm: ALG[algKey || "ed25519"].sigOid,
+    // The anchor `algorithm` is the KEY algorithm the SPKI self-describes (RFC 5280 sec. 6.1.4
+    // workingPublicKeyAlgorithm), NOT the signature OID -- for EC the two differ (ecPublicKey vs
+    // ecdsaWithSHA256). Derive it from the SPKI so it matches, as pki.path.validate now requires.
+    algorithm: pki.asn1.read.oid(pki.asn1.decode(k.spki).children[0].children[0]),
   };
 }
 
@@ -495,6 +498,579 @@ async function testAcceptChains() {
   var direct = await mkCert({ subject: "Direct", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   var res1 = await run([direct], { time: T2027, trustAnchor: anchor });
   check("good 1-cert chain validates", res1.valid === true);
+
+  // #74: a parsed root CERTIFICATE works as opts.trustAnchor (normalized to a tuple), and a mis-shaped
+  // anchor is refused with path/bad-input instead of a soft verdict -- a tuple missing `algorithm`
+  // previously validated the path (fail-OPEN) because a self-describing SPKI masked the undefined value.
+  var rootCert74 = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+  check("#74 a parsed root certificate is accepted as opts.trustAnchor",
+    (await run([direct], { time: T2027, trustAnchor: rootCert74 })).valid === true);
+  check("#74 a malformed trustAnchor tuple is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: "nope", algorithm: 1234 } }))) === "path/bad-input");
+  check("#74 a trustAnchor tuple missing algorithm is refused (was a fail-open valid:true)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose algorithm is an object with no OID is refused (self-describing SPKI would else mask it)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: {} } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose algorithm is a non-canonical OID string is refused (built-in verify reads the SPKI, not this)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "not-an-oid" } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose algorithm object carries a non-canonical OID is refused",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: { oid: "not-an-oid" } } }))) === "path/bad-input");
+  check("#74 a trustAnchor whose declared algorithm is canonical but DISAGREES with its publicKey SPKI is refused (declared must equal the SPKI key algorithm)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.2.840.113549.1.1.1" } }))) === "path/bad-input");
+  // TOCTOU: a caller publicKey getter must not answer the declared-vs-SPKI check with one key and hand
+  // verification another. toAnchor pins publicKey once and the anchor it returns carries that pinned copy,
+  // so a getter returning a matching EC SPKI to the check and the real Ed25519 signer to the key-binding
+  // cannot force valid:true -- the check bytes ARE the bound bytes.
+  var ecSpki74 = (await ensureKeys("p256")).spki;
+  var ecOid74 = pki.asn1.read.oid(pki.asn1.decode(ecSpki74).children[0].children[0]);
+  var pkReads74 = 0;
+  var lyingAnchor74 = {
+    name: rootCert74.subject,
+    algorithm: ecOid74,   // declares ecPublicKey, matching the EC SPKI the check reads
+    get publicKey() { pkReads74++; return pkReads74 <= 3 ? ecSpki74 : rootCert74.subjectPublicKeyInfo.bytes; },
+  };
+  var lyingRes74;
+  try { lyingRes74 = await run([direct], { time: T2027, trustAnchor: lyingAnchor74 }); }
+  catch (e) { lyingRes74 = { threw: (e && e.code) || "throw" }; }
+  check("#74 a lying publicKey getter (matching SPKI to the check, real signer to the bind) cannot force valid:true (TOCTOU pinned)",
+    lyingRes74.valid !== true);
+  // Normalization must not re-read the publicKey accessor after snapshotting it: the flatten copy skips the
+  // overridden fields (publicKey/algorithm/parameters), so an accessor-backed anchor is not read again for a
+  // value that is immediately replaced. toAnchor reads publicKey 3x before the copy (truthiness,
+  // Buffer.isBuffer, snapshot); a getter that throws on a 4th read still validates.
+  var pkReadCount = 0;
+  var accessorAnchor = {
+    name: rootCert74.subject, algorithm: "1.3.101.112",
+    get publicKey() { pkReadCount++; if (pkReadCount > 3) throw new Error("publicKey re-read after snapshot"); return rootCert74.subjectPublicKeyInfo.bytes; },
+  };
+  var rAccessor;
+  try { rAccessor = await run([direct], { time: T2027, trustAnchor: accessorAnchor }); } catch (e) { rAccessor = { threw: (e && e.message) || "throw" }; }
+  check("#74 the flatten copy does not re-read an overridden accessor field (publicKey) after snapshotting it",
+    rAccessor.valid === true);
+  // A publicKey that decodes to an AlgorithmIdentifier but omits the required key BIT STRING is a
+  // structurally-incomplete SPKI: it must fail closed at the anchor door with path/bad-input, not slip
+  // through the OID read to a soft valid:false when key import later rejects it (3007300506032b6570 =
+  // SEQUENCE { SEQUENCE { OID ed25519 } } with no subjectPublicKey).
+  check("#74 a structurally-incomplete trustAnchor SPKI (AlgorithmIdentifier, no key BIT STRING) is refused at entry",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: Buffer.from("3007300506032b6570", "hex"), algorithm: "1.3.101.112" } }))) === "path/bad-input");
+  check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
+    typeof pki.path.anchorFromCert === "function" &&
+    (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);
+  // The normalized anchor is a SELF-CONTAINED tuple: cloning it (Object.assign / spread / JSON) keeps every
+  // field as its own property, so a caller can round-trip and reuse it. An anchor that only inherited its
+  // name/metadata would lose them on Object.assign and be rejected as malformed on re-use.
+  var normAnchor = pki.path.anchorFromCert({ name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" });
+  var clonedAnchor = Object.assign({}, normAnchor);
+  check("#74 a normalized anchor tuple is self-contained: an Object.assign clone keeps its name and re-validates",
+    clonedAnchor.name !== undefined && Buffer.isBuffer(clonedAnchor.publicKey) &&
+    (await run([direct], { time: T2027, trustAnchor: clonedAnchor })).valid === true);
+  // anchorFromCert's documented output carries subjectDer; re-normalizing its result (a ready tuple) through
+  // anchorFromCert again keeps it -- the conversion is idempotent, not lossy. A dropped subjectDer would make
+  // the twice-normalized anchor a different shape than the once-normalized one, and the trust store keys its
+  // dedup on subjectDer, so losing it on re-normalization would break a legitimate round-trip.
+  var afcOnce = pki.path.anchorFromCert(rootCert74);
+  var afcTwice = pki.path.anchorFromCert(afcOnce);
+  check("#74 anchorFromCert is idempotent: re-normalizing its result preserves the documented subjectDer",
+    Buffer.isBuffer(afcOnce.subjectDer) && Buffer.isBuffer(afcTwice.subjectDer) &&
+    afcTwice.subjectDer.equals(afcOnce.subjectDer) &&
+    (await run([direct], { time: T2027, trustAnchor: afcTwice })).valid === true);
+  // A tuple anchor's documented trust-store identity fields -- label and mozillaCaPolicy, part of the closed
+  // anchor field set pki.trust.parseCertdata emits -- survive normalization, so build's returned
+  // result.trustAnchor still identifies which named store entry was selected. A field OUTSIDE the closed set
+  // is not carried (proven separately).
+  var labeledAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", label: "Test Root CA", mozillaCaPolicy: { serverAuth: true } };
+  var buildLabeled74 = await pki.path.build(direct, { time: T2027, trustAnchors: [labeledAnchor74] });
+  check("#74 a tuple anchor's documented data fields (label, mozillaCaPolicy) survive normalization on build's result.trustAnchor",
+    buildLabeled74.valid === true && buildLabeled74.trustAnchor.label === "Test Root CA" &&
+    !!buildLabeled74.trustAnchor.mozillaCaPolicy && buildLabeled74.trustAnchor.mozillaCaPolicy.serverAuth === true);
+  // A tuple whose name / publicKey / algorithm is a THROWING accessor is a malformed anchor: the tuple
+  // discriminator reads them under try/catch, so validate refuses with the documented path/bad-input rather
+  // than leaking the getter's raw exception past the typed guards. Same for a throwing algorithm.oid getter.
+  var throwName74 = { get name() { throw new Error("boom-name"); },
+    publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  check("#74 a trustAnchor with a throwing name accessor is refused with path/bad-input, not a raw throw",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwName74 }))) === "path/bad-input");
+  var throwAlgOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: { get oid() { throw new Error("boom-oid"); } } };
+  check("#74 a trustAnchor with a throwing algorithm.oid accessor is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwAlgOid74 }))) === "path/bad-input");
+  // A Proxy anchor is refused at the door with path/bad-input, before any field is read. A Proxy's traps can
+  // answer the same read with different values on successive lookups, or report a field absent while forwarding
+  // its siblings, so no field-by-field normalization can trust a Proxy to describe itself honestly. A
+  // legitimate anchor is a plain tuple, a parsed certificate, or an Object.create(base) inheriting from one --
+  // none is a Proxy -- so refusing it costs no real use and removes the whole class of trap-driven anchor forgery.
+  var trapReads74 = 0;
+  var proxyAnchor74 = new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" },
+    { get: function (t, k, r) { trapReads74++; return Reflect.get(t, k, r); },
+      getOwnPropertyDescriptor: function (t, k) { trapReads74++; return Object.getOwnPropertyDescriptor(t, k); } });
+  check("#74 a Proxy trustAnchor is refused at the door with path/bad-input, before any field is read",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: proxyAnchor74 }))) === "path/bad-input" && trapReads74 === 0);
+  // A Proxy whose target is a FUNCTION (typeof "function", not "object") is refused too: the door check tests
+  // the Proxy internal slot, not the target's typeof, so a callable-target Proxy cannot slip past into a field read.
+  var fnProxyAnchor74 = new Proxy(function () {}, { get: function () { return "1.3.101.112"; } });
+  check("#74 a Proxy over a function target is also refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: fnProxyAnchor74 }))) === "path/bad-input");
+  // A caller field OUTSIDE the closed anchor set is not carried onto the normalized anchor -- neither as
+  // enumerable data nor as hidden non-enumerable state. A non-enumerable "internalSecret" is dropped entirely,
+  // so it can never leak via Object.keys / spread / JSON nor ride along as hidden state.
+  var hiddenAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  Object.defineProperty(hiddenAnchor74, "internalSecret", { value: "hidden", enumerable: false, configurable: true, writable: true });
+  var buildHidden74 = await pki.path.build(direct, { time: T2027, trustAnchors: [hiddenAnchor74] });
+  check("#74 a caller field outside the closed anchor set (non-enumerable) is dropped, not carried onto the normalized anchor",
+    buildHidden74.valid === true && Object.keys(buildHidden74.trustAnchor).indexOf("internalSecret") === -1 &&
+    buildHidden74.trustAnchor.internalSecret === undefined);
+  // A Proxy anchor that reports `purposes` absent -- its getOwnPropertyDescriptor / has traps return
+  // undefined / false for that one key while forwarding name / publicKey / algorithm -- would, if the
+  // constraint maps were captured by reflection, drop the operator's { serverAuth: false } restriction and
+  // validate a serverAuth path the anchor forbids. Refusing the Proxy at the door closes it: the descriptor
+  // traps are never consulted, so the restriction cannot be hidden.
+  var hidePurposes74 = new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+      purposes: { serverAuth: false } },
+    { getOwnPropertyDescriptor: function (t, k) { return k === "purposes" ? undefined : Object.getOwnPropertyDescriptor(t, k); },
+      has: function (t, k) { return k === "purposes" ? false : (k in t); } });
+  check("#74 a Proxy anchor that hides a purposes restriction via its descriptor/has traps is refused, not read",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: hidePurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A constraint MAP (purposes / distrustAfter) nested inside an otherwise-plain anchor and supplied as a Proxy
+  // is refused too: its ownKeys trap could return an empty key list, dropping the restriction the caller
+  // attached. A Proxy distrustAfter over { serverAuth: <past date> } that reports no keys would snapshot to an
+  // empty map and omit the expired cutoff; it is refused at capture before it is reflected over.
+  var proxyDistrust74 = new Proxy(
+    { serverAuth: new Date("2000-01-01T00:00:00Z") },
+    { ownKeys: function () { return []; }, getOwnPropertyDescriptor: function () { return undefined; } });
+  var distrustProxyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: proxyDistrust74 };
+  check("#74 a Proxy distrustAfter constraint map is refused with path/bad-input (its ownKeys trap cannot hide the cutoff)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: distrustProxyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var proxyPurposes74 = new Proxy({ serverAuth: false }, { ownKeys: function () { return []; } });
+  var purposesProxyMapAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: proxyPurposes74 };
+  check("#74 a Proxy purposes constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: purposesProxyMapAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A constraint map whose restriction is reached through the prototype -- Object.create({ serverAuth: <past
+  // date> }) -- is refused, not silently dropped: getOwnPropertyNames reads only own keys, so an inherited entry
+  // would normalize to an empty map and omit the cutoff. The map must be a plain object (or null-prototype).
+  var inheritedDistrust74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: Object.create({ serverAuth: new Date("2000-01-01T00:00:00Z") }) };
+  check("#74 a distrustAfter map with a prototype-reached entry is refused with path/bad-input (not dropped to empty)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var inheritedPurposes74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: Object.create({ serverAuth: false }) };
+  check("#74 a purposes map with a prototype-reached entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A null-prototype constraint map is plain data and is accepted (a distrust cutoff BEFORE the check time
+  // distrusts a leaf issued after it; here the anchor itself validates, proving the map was read, not refused).
+  var nullProtoPurposes74 = Object.create(null); nullProtoPurposes74.serverAuth = true;
+  var nullProtoAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: nullProtoPurposes74 };
+  check("#74 a null-prototype constraint map is plain data and is accepted",
+    (await run([direct], { time: T2027, trustAnchor: nullProtoAnchor74, checkPurpose: "serverAuth" })).valid === true);
+  // A constraint map built in ANOTHER realm (vm context) has that realm's Object.prototype, not this one's, so
+  // the identity test refuses it fail-closed. This is deliberate: a hostile object can mimic every STRUCTURAL
+  // signal of a genuine Object.prototype (a non-enumerable data entry looks like a built-in), so only identity
+  // is a sound plain-object test for a security-critical input. The operator passes a same-realm plain object.
+  var crossRealmPurposes74 = require("vm").runInNewContext("({ serverAuth: true })");
+  var crossRealmAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: crossRealmPurposes74 };
+  check("#74 a constraint map from another realm (vm context) is refused fail-closed with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: crossRealmAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A restriction defined NON-ENUMERABLY on a custom prototype is refused too: the identity test refuses any
+  // non-plain prototype regardless of how its entries are defined, so a non-enumerable serverAuth cannot slip
+  // through looking like a built-in.
+  var nonEnumProto74 = Object.create(Object.defineProperty(Object.create(null), "serverAuth", { value: new Date("2000-01-01T00:00:00Z"), enumerable: false }));
+  var nonEnumAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: nonEnumProto74 };
+  check("#74 a non-enumerable restriction on a custom prototype is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: nonEnumAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A restriction defined as a NON-ENUMERABLE OWN entry on an otherwise-plain map must still be seen: the map is
+  // materialized enumerable and the purpose-scoped-metadata gate counts own names (not Object.keys). With no
+  // checkPurpose the anchor is refused (metadata present), not validated as though it carried none.
+  var nonEnumEntryPurposes74 = {};
+  Object.defineProperty(nonEnumEntryPurposes74, "serverAuth", { value: false, enumerable: false, configurable: true, writable: true });
+  var nonEnumEntryAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: nonEnumEntryPurposes74 };
+  check("#74 a non-enumerable own purposes entry still triggers the checkPurpose-required gate (not silently dropped)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: nonEnumEntryAnchor74 }))) === "path/bad-input");
+  var rNonEnumApplied74 = await run([direct], { time: T2027, trustAnchor: nonEnumEntryAnchor74, checkPurpose: "serverAuth" });
+  check("#74 a non-enumerable own purposes restriction is applied under checkPurpose (purpose not trusted)",
+    rNonEnumApplied74.valid === false && failCodes(rNonEnumApplied74).indexOf("path/purpose-not-trusted") !== -1);
+  // A symbol-keyed constraint entry is refused: getOwnPropertyNames omits symbols, so it would be dropped from
+  // the snapshot and, keyed by no OID-name purpose, never applied. Refuse rather than silently drop.
+  var symKeyPurposes74 = {};
+  symKeyPurposes74[Symbol("serverAuth")] = false;
+  var symKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: symKeyPurposes74 };
+  check("#74 a symbol-keyed constraint map entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: symKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An own __proto__ DATA entry on the map is refused: the snapshot skips __proto__ to avoid polluting the fresh
+  // map, so it would be silently dropped. (defineProperty makes a data property NAMED __proto__ without changing
+  // the object's prototype, so the map stays plain -- the presence of the entry is the concern, its value is
+  // irrelevant, so a plain object is used to keep the intent unambiguous.)
+  var protoKeyPurposes74 = {};
+  Object.defineProperty(protoKeyPurposes74, "__proto__", { value: { note: "own data entry, not a prototype" }, enumerable: true, configurable: true, writable: true });
+  var protoKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: protoKeyPurposes74 };
+  check("#74 an own __proto__ data entry on a constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: protoKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A constraint map that is not a plain object -- a primitive, a Buffer, or an array -- carries no
+  // purpose -> value restriction and is refused, not passed through as an unusable value that applies nothing.
+  var primPurposesAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: "serverAuth" };
+  check("#74 a primitive (string) constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: primPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var bufDistrustAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: Buffer.from([1, 2, 3]) };
+  check("#74 a Buffer constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: bufDistrustAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var arrPurposesAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: [false] };
+  check("#74 an array constraint map is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: arrPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A parsed-certificate anchor with per-purpose constraints ATTACHED to it is refused: the certificate branch
+  // carries no purposes / distrustAfter, so attaching them would silently drop the restriction and validate a
+  // path the caller meant to forbid. Constraints belong on a { name, publicKey, algorithm, ... } tuple.
+  var certForAttach74 = pki.schema.x509.parse(await mkCert({ subject: "AttachRoot", issuer: "AttachRoot", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+  certForAttach74.purposes = { serverAuth: false };
+  check("#74 a parsed-certificate anchor with attached purposes is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: certForAttach74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  var certForAttachD74 = pki.schema.x509.parse(await mkCert({ subject: "AttachRootD", issuer: "AttachRootD", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
+  certForAttachD74.distrustAfter = { serverAuth: new Date("2000-01-01T00:00:00Z") };
+  check("#74 a parsed-certificate anchor with attached distrustAfter is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: certForAttachD74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An INHERITED distrustAfter on a CERTIFICATE anchor (reached through the prototype, e.g. a polluted
+  // Object.prototype) is refused: the cert branch's `in` check follows the chain, matching the tuple branch's
+  // inherited-field refusal, rather than reading it by hasOwn (own-only) and letting the branch drop it.
+  var certInheritCode74;
+  Object.prototype.distrustAfter = { serverAuth: new Date("2000-01-01T00:00:00Z") };
+  try { certInheritCode74 = await codeOf(run([direct], { time: T2027, trustAnchor: rootCert74, checkPurpose: "serverAuth" })); }
+  finally { delete Object.prototype.distrustAfter; }
+  check("#74 a certificate anchor with an inherited distrustAfter (polluted Object.prototype) is refused",
+    certInheritCode74 === "path/bad-input");
+  // An anchor that INHERITS from a Proxy is refused: the anchor object itself is not a Proxy (it passes the door
+  // isProxy check), but its prototype is, and the inherited-field reads (the `in` tests and property accesses)
+  // would run the Proxy's traps -- a `has` trap hiding purposes while a `get` trap still supplies name /
+  // publicKey / algorithm drops the restriction. The prototype-chain walk refuses any Proxy in the chain.
+  var hidingProtoAnchor74 = Object.create(new Proxy(
+    { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } },
+    { has: function (t, k) { return (k === "purposes" || k === "distrustAfter") ? false : (k in t); } }));
+  check("#74 an anchor inheriting from a Proxy is refused with path/bad-input (Proxy in the prototype chain)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: hidingProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // Direct cross-mutation regression: a name.rdns getter that would rewrite a WRONG object-form algorithm.oid to
+  // the SPKI's real one is refused BEFORE it runs (name.rdns is an accessor, captured getter-free), so the
+  // declared-algorithm mismatch refusal cannot be bypassed. Both nested fields are captured from own data
+  // descriptors, so neither accessor can mutate the other -- no read order is relied on.
+  var xmutAlg74 = { oid: "1.2.840.113549.1.1.1" };  // rsaEncryption -- wrong for the Ed25519 anchor key
+  var xmutReads74 = 0;
+  var xmutAnchor74 = {
+    publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: xmutAlg74,
+    name: { get rdns() { xmutReads74++; xmutAlg74.oid = "1.3.101.112"; return rootCert74.subject.rdns; } } };
+  check("#74 a name.rdns getter cannot rewrite algorithm.oid: the accessor is refused before it runs (getter never invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: xmutAnchor74 }))) === "path/bad-input" && xmutReads74 === 0 && xmutAlg74.oid === "1.2.840.113549.1.1.1");
+  // The name shape check reads the materialized name's OWN rdns (hasOwn-gated), so it resolves only its own data.
+  // Tested through anchorFromCert (normalization alone, so no incidental deep-validation effect of the global
+  // pollution): with Object.prototype.rdns polluted with an issuer RDN array, a name with no own rdns must be
+  // REFUSED, not accepted on the inherited array as a malformed anchor whose name was never supplied.
+  var noRdnsName74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", name: {} };
+  var pollAnchorCode74;
+  Object.prototype.rdns = rootCert74.subject.rdns;
+  try {
+    try { pki.path.anchorFromCert(noRdnsName74); pollAnchorCode74 = "accepted"; }
+    catch (ePoll) { pollAnchorCode74 = ePoll && ePoll.code; }
+  } finally { delete Object.prototype.rdns; }
+  check("#74 anchorFromCert refuses a name with no own rdns even under Object.prototype.rdns pollution (own-property shape check)",
+    pollAnchorCode74 === "path/bad-input");
+  // The public anchorFromCert return is an ORDINARY object (Object.prototype), so caller operations such as
+  // hasOwnProperty and deepStrictEqual keep working. The prototype-pollution defense reads the anchor's fields by
+  // OWN property (the hasOwn gates in _hasPurposeScopedMetadata / assertAnchorConstraints and the name shape
+  // check), NOT by changing the return type.
+  var normTuple74 = pki.path.anchorFromCert({ name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" });
+  check("#74 anchorFromCert returns an ordinary object (Object.prototype methods inherited; public return type preserved)",
+    Object.getPrototypeOf(normTuple74) === Object.prototype && typeof normTuple74.hasOwnProperty === "function");
+  var normCert74 = pki.path.anchorFromCert(rootCert74);
+  check("#74 a certificate-derived anchor is also an ordinary object",
+    Object.getPrototypeOf(normCert74) === Object.prototype && typeof normCert74.hasOwnProperty === "function");
+  // The materialized anchor name preserves the parsed Name's dn (the rendered DN string used to display /
+  // identify the selected root), so a cert-derived or pki.trust name round-trips its full { rdns, dn, bytes }
+  // shape and a double anchorFromCert keeps the same shape rather than dropping dn on the second conversion.
+  check("#74 a cert-derived anchor name keeps its dn (full parsed Name shape preserved)",
+    typeof normCert74.name.dn === "string" && normCert74.name.dn === rootCert74.subject.dn);
+  var dnRoundTrip74 = pki.path.anchorFromCert(normCert74);
+  check("#74 anchorFromCert(anchorFromCert(cert)) preserves the name dn (stable shape, not dropped on the second conversion)",
+    dnRoundTrip74.name.dn === rootCert74.subject.dn);
+  // A non-string dn (e.g., an object whose toString could run coercion code in a display consumer) is NOT
+  // carried: only a rendered STRING dn is preserved, and identity never uses dn (name chaining compares
+  // rdns / bytes DER), so dropping it changes no validation outcome.
+  var objDnTuple74 = { name: { rdns: rootCert74.subject.rdns, dn: { toString: function () { return "SPOOFED"; } } },
+    publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var objDnAnchor74 = pki.path.anchorFromCert(objDnTuple74);
+  check("#74 a non-string (object) name.dn is dropped from the normalized anchor, not carried",
+    objDnAnchor74.name.dn === undefined && Array.isArray(objDnAnchor74.name.rdns));
+  // A null-prototype object carrying an entry, used as the map's PARENT, is refused: the entry is inherited and
+  // would be dropped, yet the parent is top-of-chain so a naive chain-depth test would pass it. The plain-object
+  // test requires the top prototype to carry no enumerable own entries.
+  var nullParentWithEntry74 = Object.create(Object.assign(Object.create(null), { serverAuth: new Date("2000-01-01T00:00:00Z") }));
+  var nullParentDistrust74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", distrustAfter: nullParentWithEntry74 };
+  check("#74 a constraint map whose null-prototype parent carries an entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: nullParentDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A map whose PROTOTYPE is a Proxy is refused before that Proxy's traps can run. The prototype here carries a
+  // serverAuth restriction but its traps report a null prototype and no keys -- so a check that reflected on it
+  // instead of refusing it up front would see a top-of-chain, entry-free prototype, accept the map, and drop the
+  // inherited restriction. Only the map itself was checked for Proxy at capture; the prototype must be too.
+  var hidingProto74 = new Proxy({ serverAuth: false },
+    { getPrototypeOf: function () { return null; }, ownKeys: function () { return []; },
+      getOwnPropertyDescriptor: function () { return undefined; } });
+  var proxyProtoMap74 = Object.create(hidingProto74);
+  var proxyProtoAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", purposes: proxyProtoMap74 };
+  check("#74 a constraint map with a Proxy prototype is refused with path/bad-input (its traps never run)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: proxyProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
+  // stateful getter that returns the key on its first read but would throw on a later read still validates,
+  // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
+  var pkPinReads74 = 0;
+  var pinnedPk74 = { name: rootCert74.subject, algorithm: "1.3.101.112",
+    get publicKey() { pkPinReads74++; if (pkPinReads74 >= 2) throw new Error("pk-reread"); return rootCert74.subjectPublicKeyInfo.bytes; } };
+  var pinnedPkResult74;
+  try { pinnedPkResult74 = (await run([direct], { time: T2027, trustAnchor: pinnedPk74 })).valid === true ? "valid" : "invalid"; }
+  catch (e) { pinnedPkResult74 = "threw:" + (e.code || e.name); }
+  check("#74 the anchor publicKey is read once (pinned): a getter that would throw on a later read still validates, no raw leak",
+    pinnedPkResult74 === "valid" && pkPinReads74 === 1);
+  // Nested anchor accessors are read once under the typed-error guard: a throwing name.rdns getter is refused
+  // with path/bad-input (not a raw throw), and a stateful algorithm.oid getter that answers the type probe
+  // with a string but the value with a Symbol cannot leave algStr a Symbol and throw a raw TypeError.
+  var throwRdns74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    name: { get rdns() { throw new Error("rdns-boom"); } } };
+  check("#74 a throwing name.rdns accessor is refused with path/bad-input, not a raw throw",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: throwRdns74 }))) === "path/bad-input");
+  var algOidReads74 = 0;
+  var statefulOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: { get oid() { algOidReads74++; return algOidReads74 === 1 ? "not-a-canonical-oid" : Symbol("oid"); } } };
+  check("#74 an accessor algorithm.oid is refused with path/bad-input and its getter is never invoked (captured by descriptor)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 0);
+  // A symbol-keyed field is OUTSIDE the closed anchor set (whose members are all string-named) and is dropped:
+  // the normalized anchor carries only the defined shape, never a caller's arbitrary symbol bookkeeping.
+  var SYM74 = Symbol("storeTag");
+  var symAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  symAnchor74[SYM74] = "symbol-metadata";
+  var buildSym74 = await pki.path.build(direct, { time: T2027, trustAnchors: [symAnchor74] });
+  check("#74 a symbol-keyed caller field is dropped: the normalized anchor carries only the closed string-named set",
+    buildSym74.valid === true && buildSym74.trustAnchor[SYM74] === undefined);
+  // An unknown string-keyed DATA field the caller stapled on is OUTSIDE the closed set and is dropped: the
+  // normalized anchor has a defined shape, not an arbitrary passthrough. (The prior normalizer copied every
+  // own data field, so it kept these -- this is the deliberate contract change.)
+  var extraAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    algorithm: "1.3.101.112", customField: "operator-note", anotherOne: 42 };
+  var buildExtra74 = await pki.path.build(direct, { time: T2027, trustAnchors: [extraAnchor74] });
+  check("#74 an unknown string-keyed caller field is dropped from the normalized anchor (closed shape, not passthrough)",
+    buildExtra74.valid === true && buildExtra74.trustAnchor.customField === undefined && buildExtra74.trustAnchor.anotherOne === undefined);
+  // The closed set is read field-by-field, never enumerated, so an unrelated caller GETTER outside the set is
+  // never evaluated: its side effect does not fire during normalization and the field does not appear on the
+  // anchor.
+  var unrelatedGetterRan74 = false;
+  var getterAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  Object.defineProperty(getterAnchor74, "sideEffect", { enumerable: true, configurable: true, get: function () { unrelatedGetterRan74 = true; return "evaluated"; } });
+  var buildGetter74 = await pki.path.build(direct, { time: T2027, trustAnchors: [getterAnchor74] });
+  check("#74 an unrelated caller getter outside the closed set is never evaluated during normalization",
+    buildGetter74.valid === true && unrelatedGetterRan74 === false && buildGetter74.trustAnchor.sideEffect === undefined);
+  // An accessor name.rdns is refused: it is captured from its own data descriptor, so a stateful rdns getter
+  // is never invoked (it cannot answer the shape check with one DN and hand name chaining another, and it cannot
+  // mutate a sibling field such as algorithm.oid before that is captured). A plain { rdns, bytes } name is the
+  // normal, unaffected form.
+  var rdnsReads74 = 0;
+  var flipNameAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    name: { get rdns() { rdnsReads74++; return rdnsReads74 === 1 ? rootCert74.subject.rdns : []; } } };
+  check("#74 an accessor name.rdns is refused with path/bad-input and its getter is never invoked (captured by descriptor)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: flipNameAnchor74 }))) === "path/bad-input" && rdnsReads74 === 0);
+  // A tuple whose name.rdns is reached through the PROTOTYPE (Object.create) is refused too: name.rdns must be an
+  // OWN data property, captured getter-free, so an inherited definition -- which could be a prototype accessor
+  // running caller code -- cannot slip through. A plain own { rdns, bytes } name is the normal form.
+  var inheritedRdnsAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    name: Object.create({ rdns: rootCert74.subject.rdns }) };
+  check("#74 a tuple whose name.rdns is inherited (Object.create) is refused with path/bad-input (own data property required)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedRdnsAnchor74 }))) === "path/bad-input");
+  // An accessor algorithm.oid is refused before its getter runs, so a getter that would flip a denied purpose
+  // in the snapshot maps never executes: the deny the anchor declared cannot be bypassed. (denyMap74 is left
+  // unmutated because the getter is never invoked.)
+  var denyMap74 = { serverAuth: false };
+  var mutatingOidAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    purposes: denyMap74, algorithm: { get oid() { denyMap74.serverAuth = true; return "1.3.101.112"; } } };
+  check("#74 an accessor algorithm.oid is refused before it can flip a denied purpose (getter never invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: mutatingOidAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && denyMap74.serverAuth === false);
+  // An accessor algorithm.oid is refused before its getter runs, so a getter that would overwrite the caller's
+  // key Buffer never executes: the key is not zeroed and the anchor is refused for the accessor, not validated.
+  var origSpki74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var pkSwapAnchor74 = { name: rootCert74.subject, publicKey: origSpki74,
+    algorithm: { get oid() { origSpki74.fill(0); return "1.3.101.112"; } } };
+  check("#74 an accessor algorithm.oid is refused before its getter can overwrite the key Buffer (getter never invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: pkSwapAnchor74 }))) === "path/bad-input" && origSpki74.some(function (b) { return b !== 0; }));
+  // Same, for a name getter that runs during tuple discrimination: publicKey is read FIRST and pinned before
+  // the name accessor is invoked, so a name getter overwriting the key Buffer cannot swap the bound key.
+  var origSpki2_74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var nameSwapAnchor74 = { publicKey: origSpki2_74, algorithm: "1.3.101.112",
+    get name() { origSpki2_74.fill(0); return rootCert74.subject; } };
+  check("#74 the anchor publicKey is pinned before the name accessor runs: a name getter overwriting the key Buffer cannot change the bound key",
+    (await run([direct], { time: T2027, trustAnchor: nameSwapAnchor74 })).valid === true);
+  // The optional identity metadata (subjectDer / label / mozillaCaPolicy) is captured from its own DATA
+  // descriptor, so an accessor identity field is NEVER invoked: a subjectDer getter that overwrites the
+  // caller's key Buffer cannot run before the key is pinned and swap the bound key. The anchor binds the
+  // original key (the accessor subjectDer is dropped, being non-validation metadata).
+  var origKeyId74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var idGetterRan74 = false;
+  var idAccessorAnchor74 = { name: rootCert74.subject, publicKey: origKeyId74, algorithm: "1.3.101.112",
+    get subjectDer() { idGetterRan74 = true; origKeyId74.fill(0); return Buffer.alloc(4); } };
+  var idAccessorOk74;
+  try { idAccessorOk74 = (await run([direct], { time: T2027, trustAnchor: idAccessorAnchor74 })).valid === true; }
+  catch (_e3) { idAccessorOk74 = false; }
+  check("#74 an accessor identity field is captured by descriptor, not invoked: its getter cannot overwrite the pinned key",
+    idAccessorOk74 === true && idGetterRan74 === false);
+  // A TOP-LEVEL algorithm accessor (not the nested .oid) runs after publicKey; its getter must not mutate a
+  // constraint map before it is snapshot. purposes/distrustAfter are snapshot in the discriminator BEFORE the
+  // algorithm accessor is read, so a get algorithm() that flips a denied purpose does not reach validation.
+  var denyMap2_74 = { serverAuth: false };
+  var topAlgMutateAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
+    purposes: denyMap2_74, get algorithm() { denyMap2_74.serverAuth = true; return "1.3.101.112"; } };
+  var rTopAlg74 = await run([direct], { time: T2027, trustAnchor: topAlgMutateAnchor74, checkPurpose: "serverAuth" });
+  check("#74 a top-level algorithm getter cannot mutate the snapshot purposes map to bypass a denied purpose",
+    rTopAlg74.valid === false && failCodes(rTopAlg74).indexOf("path/purpose-not-trusted") !== -1);
+  // The discriminator getters (publicKey / name) also run before the constraint maps would be captured unless
+  // the snapshot precedes them. purposes/distrustAfter are snapshot BEFORE any discriminator field is read, so
+  // a name getter that flips a denied purpose to allowed and returns the valid name cannot reach the captured
+  // map: the deny the anchor declared stays enforced.
+  var denyMap3_74 = { serverAuth: false };
+  var nameMutatesPurposes74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    purposes: denyMap3_74, get name() { denyMap3_74.serverAuth = true; return rootCert74.subject; } };
+  var rNameMut74 = await run([direct], { time: T2027, trustAnchor: nameMutatesPurposes74, checkPurpose: "serverAuth" });
+  check("#74 a name getter cannot mutate the snapshot purposes map to bypass a denied purpose (snapshot precedes the discriminator reads)",
+    rNameMut74.valid === false && failCodes(rNameMut74).indexOf("path/purpose-not-trusted") !== -1);
+  // A constraint map is captured from its own DATA descriptor, never by property access, so an accessor-backed
+  // map -- a `get purposes()` whose getter could mutate the sibling distrustAfter map when read -- is REFUSED
+  // with path/bad-input and its getter is never invoked.
+  var accessorPurposes74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    get purposes() { return { serverAuth: true }; } };
+  check("#74 an accessor-backed purposes map is refused with path/bad-input (captured by descriptor, getter not invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: accessorPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An accessor-backed constraint-map ENTRY (a `get serverAuth()`) is refused too: entries are read from their
+  // data descriptors, so an entry getter is never invoked.
+  var accessorEntry74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    purposes: Object.defineProperty({}, "serverAuth", { get: function () { return true; }, enumerable: true, configurable: true }) };
+  check("#74 an accessor-backed constraint-map entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: accessorEntry74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A CERTIFICATE anchor must not carry per-purpose constraints: the certificate branch produces no purposes /
+  // distrustAfter, so attaching them to a parsed certificate would silently drop the restriction. Such a cert is
+  // REFUSED -- by own-property EXISTENCE (hasOwn), which never invokes the property, so even a throwing purposes
+  // getter is refused without being read. Constraints belong on a { name, publicKey, algorithm, ... } tuple.
+  var certPurposesGetterInvoked74 = false;
+  Object.defineProperty(rootCert74, "purposes", { get: function () { certPurposesGetterInvoked74 = true; throw new Error("cert-purposes-boom"); }, configurable: true });
+  var certAttachCode74;
+  try { certAttachCode74 = await codeOf(run([direct], { time: T2027, trustAnchor: rootCert74 })); }
+  finally { delete rootCert74.purposes; }
+  check("#74 a certificate anchor carrying purposes is refused by existence, without invoking its getter",
+    certAttachCode74 === "path/bad-input" && certPurposesGetterInvoked74 === false);
+  // A tuple carrying an own `__proto__` field (a JSON.parse product) must not repoint the normalized
+  // anchor's prototype: copying with a plain `flat[name] =` would invoke Object.prototype's __proto__
+  // setter and let an attacker inject inherited purposes (here a serverAuth:false restriction) that
+  // validation consumes. With the own-data-property copy the injection is inert and the path validates.
+  var protoAnchor = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  Object.defineProperty(protoAnchor, "__proto__", { value: { purposes: { serverAuth: false } }, enumerable: true, configurable: true, writable: true });
+  var rProto = await run([direct], { time: T2027, trustAnchor: protoAnchor, checkPurpose: "serverAuth" });
+  check("#74 an own __proto__ field cannot repoint the normalized anchor's prototype (no injected purpose restriction)",
+    rProto.valid === true);
+  // Cloning the NORMALIZED anchor must not repoint the clone's prototype either: the __proto__ field is
+  // copied non-enumerable, so an Object.assign / spread / JSON clone skips it and cannot invoke the clone's
+  // __proto__ setter to inherit the attacker's purposes restriction.
+  var normProto = pki.path.anchorFromCert(protoAnchor);
+  var clonedProto = Object.assign({}, normProto);
+  var rClonedProto = await run([direct], { time: T2027, trustAnchor: clonedProto, checkPurpose: "serverAuth" });
+  check("#74 cloning a normalized anchor that carried a __proto__ field does not repoint the clone's prototype",
+    rClonedProto.valid === true);
+  // An anchor whose fields are reached through its prototype (Object.create(baseAnchor)) must keep them: the
+  // normalization reads each field by property access, which follows the prototype chain, so name and
+  // purpose/distrustAfter restrictions are preserved rather than dropped (which would reject a valid anchor,
+  // or silently weaken its trust restrictions).
+  var baseAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var inheritedAnchor74 = Object.create(baseAnchor74);
+  check("#74 an anchor whose name/fields are inherited (Object.create) keeps them and validates",
+    (await run([direct], { time: T2027, trustAnchor: inheritedAnchor74 })).valid === true);
+  // An inherited constraint map (purposes / distrustAfter reached through the prototype, not an own property)
+  // is REFUSED with path/bad-input, not enforced: a constraint map must be an own data property so it is
+  // captured from its descriptor without invoking a getter (a `get purposes()` could mutate the sibling map).
+  // Refusing -- rather than silently dropping an inherited map -- means a restriction is never lost to a
+  // fail-open.
+  var baseRestricted74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } };
+  check("#74 an inherited anchor constraint map is refused with path/bad-input (must be an own data property)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: Object.create(baseRestricted74), checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // A parsed CERTIFICATE is recognized by its PROVENANCE (guard.parsed.isRecorded, a getter-free WeakMap
+  // lookup) BEFORE the tuple discriminator, which reads name/publicKey/algorithm by property access. So a
+  // polluted Object.prototype supplying those three cannot reclassify a real certificate as a tuple and bind
+  // the INHERITED (attacker) key: the cert routes to coerceCert and binds its OWN key. Object.prototype is
+  // polluted, then restored in a finally so the pollution cannot leak to another test.
+  var attackerRoot74 = pki.schema.x509.parse(await mkCert({ subject: "Attacker", issuer: "Attacker", signWith: "ed25519leaf", subjectKeys: "ed25519leaf" }));
+  var pollutedOk74;
+  try {
+    Object.prototype.name = attackerRoot74.subject;
+    Object.prototype.publicKey = attackerRoot74.subjectPublicKeyInfo.bytes;
+    Object.prototype.algorithm = attackerRoot74.subjectPublicKeyInfo.algorithm.oid;
+    var polAnchor74 = pki.path.anchorFromCert(rootCert74);
+    pollutedOk74 = Buffer.isBuffer(polAnchor74.publicKey) &&
+      polAnchor74.publicKey.equals(rootCert74.subjectPublicKeyInfo.bytes) &&
+      !polAnchor74.publicKey.equals(attackerRoot74.subjectPublicKeyInfo.bytes);
+  } finally {
+    delete Object.prototype.name; delete Object.prototype.publicKey; delete Object.prototype.algorithm;
+  }
+  check("#74 a certificate is recognized before inherited tuple fields: a polluted Object.prototype cannot bind the attacker key",
+    pollutedOk74 === true);
+  // Certificate recognition is a getter-free provenance lookup, so publicKey is the FIRST property read on a
+  // tuple: no certificate-structural probe (which would read tbsBytes / subject / ...) runs a tuple-controlled
+  // getter before the key is pinned. A polluted Object.prototype.tbsBytes getter that zeros the caller's key
+  // Buffer therefore cannot reach the key before it is captured -- the anchor binds the ORIGINAL key bytes.
+  var origKey74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
+  var tbsPinOk74;
+  try {
+    Object.defineProperty(Object.prototype, "tbsBytes", { get: function () { origKey74.fill(0); return Buffer.alloc(4); }, configurable: true });
+    var r3anchor74 = null;
+    try { r3anchor74 = pki.path.anchorFromCert({ name: rootCert74.subject, publicKey: origKey74, algorithm: "1.3.101.112" }); } catch (_e) { r3anchor74 = null; }
+    tbsPinOk74 = !!r3anchor74 && Buffer.isBuffer(r3anchor74.publicKey) && r3anchor74.publicKey.equals(rootCert74.subjectPublicKeyInfo.bytes);
+  } finally {
+    delete Object.prototype.tbsBytes;
+  }
+  check("#74 the anchor publicKey is pinned before any certificate-recognition read: a polluted tbsBytes getter cannot zero the bound key",
+    tbsPinOk74 === true);
+  // The anchor name.rdns is DEEP-copied: mutating a caller's nested RDN attribute after normalization (a
+  // read-after-await hazard while an async validate awaits signature verification) must not change the
+  // normalized anchor's issuer DN. A shallow arraySlice would share the nested attribute record.
+  var deepName74 = { rdns: [ [ { type: "2.5.4.3", value: "DeepCN" } ] ], bytes: rootCert74.subject.bytes };
+  var deepTuple74 = { name: deepName74, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var deepAnchor74 = pki.path.anchorFromCert(deepTuple74);
+  deepName74.rdns[0][0].value = "TamperedCN";
+  check("#74 the anchor name.rdns is deep-copied: mutating a caller's nested RDN does not change the normalized anchor DN",
+    deepAnchor74.name.rdns[0][0].value === "DeepCN");
+  // A tuple whose name.rdns attribute value is reached through the PROTOTYPE (or an accessor) is preserved: the
+  // anchor API accepts an inherited name.rdns, so the deep copy must snapshot the consumed type/value via
+  // property access rather than drop an attribute reached through the chain (which would leave an incomplete DN
+  // and fail name chaining).
+  var inhName74 = { rdns: [ [ Object.create({ type: "2.5.4.3", value: "InheritedCN" }) ] ], bytes: rootCert74.subject.bytes };
+  var inhTuple74 = { name: inhName74, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
+  var inhAnchor74 = pki.path.anchorFromCert(inhTuple74);
+  check("#74 an inherited (or accessor) DN attribute value is preserved in the deep copy, not dropped",
+    inhAnchor74.name.rdns[0][0].value === "InheritedCN" && inhAnchor74.name.rdns[0][0].type === "2.5.4.3");
+  // A SPARSE anchor rdns must stay sparse: the deep copy copies only OWN indexed elements, so a hole is not
+  // filled from a polluted Array.prototype[i] slot (a slice reads inherited indices). Otherwise a name reached
+  // through prototype pollution would fill the hole guard.name.dnEqual rejects and pass chaining. Array.prototype
+  // is polluted, then restored in a finally so it cannot leak to another test.
+  var sparseRdns74 = []; sparseRdns74.length = 1;   // one hole at index 0
+  var sparseHolePreserved74;
+  try {
+    Array.prototype[0] = [ { type: "2.5.4.3", value: "PollutedCN" } ];
+    var sparseAnchor74 = pki.path.anchorFromCert({ name: { rdns: sparseRdns74 }, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" });
+    sparseHolePreserved74 = !Object.prototype.hasOwnProperty.call(sparseAnchor74.name.rdns, 0);
+  } finally {
+    delete Array.prototype[0];
+  }
+  check("#74 a sparse anchor rdns is copied hole-preserving: a polluted Array.prototype slot does not fill the hole",
+    sparseHolePreserved74 === true);
 
   // ECDSA-P256 chain (exercises the DER->P1363 verify-bridge shim).
   var anchorEc = await mkAnchor("p256", "EcRoot");
@@ -1337,7 +1913,12 @@ async function testLeafRulesAndParams() {
     },
   };
   var synAnchorName = pki.schema.x509.parse(await mkCert({ subject: "SynRoot", issuer: "SynRoot", signWith: "ed25519" })).subject;
-  var synAnchor = { name: synAnchorName, publicKey: (await ensureKeys("ed25519")).spki, algorithm: SYN_ALG, parameters: PARAMS };
+  // The anchor's publicKey SPKI must self-describe SYN_ALG so its declared algorithm matches it (the
+  // recordingVerifier never checks the key, so a synthetic SPKI is enough to drive the sec. 6.1.4 seam).
+  // The anchor's parameters are DERIVED from its SPKI's AlgorithmIdentifier (never a declared field), so
+  // the synthetic SPKI must carry PARAMS there for the sec. 6.1.4 inherit-vs-clear seam below to see them.
+  var synAnchorSpki = b.sequence([b.sequence([b.oid(SYN_ALG), b.raw(PARAMS)]), b.bitString(Buffer.from([0x04, 0x00]), 0)]);
+  var synAnchor = { name: synAnchorName, publicKey: synAnchorSpki, algorithm: SYN_ALG };
 
   var certSame = await mkCert({ subject: "Same", issuer: "SynRoot", signWith: "ed25519", spki: synSpkiSame, extensions: caExts() });
   var certUnder = await mkCert({ subject: "UnderSame", issuer: "Same", signWith: "ed25519", subjectKeys: "ed25519leaf" });
@@ -2436,6 +3017,27 @@ async function testRfc5280ConformanceMusts() {
   var leafNoParams = await mkCert({ subject: "NoParamsLeaf", issuer: "NoParamsInter", signWith: "p256i", subjectKeys: "ed25519leaf" });
   var resNoParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorParams });
   check("EC cert inheriting its curve parameters verifies (params spliced)", resNoParams.valid === true);
+  // The object algorithm form { oid, parameters } normalizes to the same flat shape: workingPublicKeyAlgorithm
+  // seeds from the string OID (not an object, which would never match the child's keyAlg.oid and would clear
+  // the inherited params) and the nested parameters surface at anchor.parameters, so inheritance still holds.
+  var ecAnchorObjForm = { name: ecAnchorParams.name, publicKey: p256spki, algorithm: { oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) } };
+  var resObjForm = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorObjForm });
+  check("#74 an object-form EC anchor { oid, parameters } inherits curve params like the flat form", resObjForm.valid === true);
+  // A FROZEN object-form anchor still normalizes: the OID override is defined as an OWN property, so an
+  // inherited non-writable/accessor `algorithm` descriptor cannot block it (a plain assignment would throw
+  // in strict mode or silently leave the object algorithm in place, breaking EC parameter inheritance).
+  var frozenObjForm = Object.freeze({ name: ecAnchorParams.name, publicKey: p256spki, algorithm: Object.freeze({ oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) }) });
+  var resFrozen = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: frozenObjForm });
+  check("#74 a frozen object-form EC anchor still normalizes and inherits curve params", resFrozen.valid === true);
+  // The anchor's parameters are DERIVED from its publicKey SPKI, never a declared field: an object-form
+  // anchor declaring a WRONG curve (P-384 params on a P-256 key) must not promote that curve into the
+  // working state. The same-curve child that omits its params still inherits the anchor's REAL P-256 curve
+  // and validates; the wrong declared P-384 would otherwise be spliced onto the P-256 key and break it --
+  // and, worse, would let an actual P-384 child inherit P-384 and validate a chain RFC 5280 inheritance
+  // from the real params rejects.
+  var ecAnchorWrongParams = { name: ecAnchorParams.name, publicKey: p256spki, algorithm: { oid: ecKeyAlgOid, parameters: pki.asn1.build.oid("1.3.132.0.34") } };
+  var resWrongParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorWrongParams });
+  check("#74 a wrong declared anchor curve is ignored; the SPKI's real curve seeds child parameter inheritance", resWrongParams.valid === true);
 
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
@@ -3062,6 +3664,14 @@ async function testTrustAnchorConstraints() {
   var taNot = withMeta({ purposes: { serverAuth: false, emailProtection: false, codeSigning: false } });
   var r22 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taNot, checkPurpose: "serverAuth" });
   check("T22 purpose not trusted -> path/purpose-not-trusted", r22.valid === false && failCodes(r22).indexOf("path/purpose-not-trusted") !== -1);
+  // Constraint metadata that is NON-ENUMERABLE on an object-form-algorithm anchor must survive
+  // normalization: the flat copy inherits from the entry, so a purpose restriction the validator reads
+  // through normal property access is still enforced rather than silently dropped (a fail-open).
+  var taObjAlgHidden = withMeta({ algorithm: { oid: anchor.algorithm } });
+  Object.defineProperty(taObjAlgHidden, "purposes", { value: { serverAuth: false }, enumerable: false, configurable: true });
+  var rHidden = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taObjAlgHidden, checkPurpose: "serverAuth" });
+  check("#74 a non-enumerable anchor purposes map survives object-form-algorithm normalization",
+    rHidden.valid === false && failCodes(rHidden).indexOf("path/purpose-not-trusted") !== -1);
   // The purposes map is the operator's restriction, so it must answer from its OWN entries: a name
   // planted on Object.prototype would otherwise grant the purpose on every anchor that omits it.
   var taOmits = withMeta({ purposes: { emailProtection: false } });
@@ -3079,6 +3689,45 @@ async function testTrustAnchorConstraints() {
   var taOk = withMeta({ purposes: { serverAuth: true, emailProtection: false, codeSigning: false }, distrustAfter: { serverAuth: D } });
   var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taOk, checkPurpose: "serverAuth" });
   check("T23 delegator + before D -> valid", r23.valid === true);
+  // A distrustAfter that is an ACCESSOR (a getter) is REFUSED with path/bad-input, not materialized: a
+  // constraint map must be an own DATA property so it is captured from its descriptor without invoking the
+  // getter -- a getter could answer the gates with a restriction and the value read with {}, dropping the
+  // distrust control, or mutate the sibling map when read. The distrusted leaf is still not accepted, now via
+  // a fail-closed refusal at the anchor door rather than a soft distrusted-after verdict.
+  var taTocDistrust = withMeta({});
+  Object.defineProperty(taTocDistrust, "distrustAfter", {
+    enumerable: true, configurable: true, get: function () { return { serverAuth: D }; }
+  });
+  check("#74 an accessor-backed distrustAfter is refused with path/bad-input (constraint maps must be own data)",
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An accessor algorithm.oid is refused before its getter runs, so a getter that would setTime() the caller's
+  // own distrust Date to the future never executes: the anchor is refused for the accessor and the cutoff Date
+  // is never moved.
+  var mutCutoff74 = new Date(D.getTime());
+  var setTimeAnchor74 = withMeta({ distrustAfter: { serverAuth: mutCutoff74 } });
+  setTimeAnchor74.algorithm = { get oid() { mutCutoff74.setTime(new Date("2030-01-01T00:00:00Z").getTime()); return anchor.algorithm; } };
+  check("#74 an accessor algorithm.oid is refused before its getter can setTime the caller's distrust Date (getter never invoked)",
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: setTimeAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && mutCutoff74.getTime() === D.getTime());
+  // The purpose-scoped-metadata guard -- which refuses an anchor carrying purpose metadata when no
+  // checkPurpose selects one -- reads the SAME value it enforces: an always-restriction accessor is refused
+  // exactly like the data form, so a restriction cannot be hidden from the guard behind a getter.
+  var taGetterRestrict = withMeta({});
+  Object.defineProperty(taGetterRestrict, "purposes", {
+    enumerable: true, configurable: true, get: function () { return { serverAuth: false }; }
+  });
+  check("#74 an always-restriction purposes accessor is refused without checkPurpose (guard reads what it enforces)",
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taGetterRestrict }))) === "path/bad-input");
+  // A field OUTSIDE the anchor contract is never read during normalization or validation: an unrelated
+  // caller accessor (here one that throws) is dropped, so a valid anchor still validates and the getter is
+  // never spent -- normalization consumes only the contract fields it will bind.
+  var taUnrelated = withMeta({});
+  var unrelReads = 0;
+  Object.defineProperty(taUnrelated, "customTag", {
+    enumerable: true, configurable: true, get: function () { unrelReads++; throw new Error("unrelated anchor accessor evaluated"); }
+  });
+  var rUnrel = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taUnrelated });
+  check("#74 an unrelated anchor accessor is never evaluated during validate (dropped, not read)",
+    rUnrel.valid === true && unrelReads === 0);
   // T24 -- bare anchor (no metadata), no checkPurpose -> identical to today (valid, no new checks).
   var r24 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
   check("T24 bare anchor preserved -> valid", r24.valid === true && failCodes(r24).indexOf("path/distrusted-after") === -1 && failCodes(r24).indexOf("path/purpose-not-trusted") === -1);
@@ -3779,7 +4428,7 @@ async function testCoverageEdges() {
     "239+252 PSS trailerField != 1": { code: UA },
     "267 RSA PKCS1 with absent params": { code: UA },
     "268 Ed25519 with present params": { throw: "x509/bad-algorithm-parameters" },
-    "284 malformed issuer SPKI for a sameKeyOid alg": { code: "path/algorithm-mismatch" },
+    "284 malformed issuer SPKI for a sameKeyOid alg": { throw: "path/bad-input" },
     "298 ECDSA signature not a DER SEQUENCE": { code: BADSIG },
     "299 ECDSA signature not two INTEGERs": { code: BADSIG },
     "401+544 rfc822 SAN without '@' vs host constraint": { code: NCU },

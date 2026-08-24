@@ -588,6 +588,25 @@ security-only patches after the next major releases.
   cannot be told from a replayed copy. Told no instant it answers structurally
   and says so, and a serial's absence then means it is not on that list rather
   than that the certificate is unrevoked.
+- **Malformed or hostile trust-anchor objects.** `pki.path.validate` seeds the
+  certification path from `opts.trustAnchor`, passed as a `{ name, publicKey,
+  algorithm }` tuple or a parsed certificate. The anchor is normalized and
+  shape-checked at the door: a tuple missing a field, or one whose declared
+  `algorithm` disagrees with its `publicKey`, is refused with `path/bad-input`
+  rather than seeding an undefined working key that a self-describing key
+  algorithm could still validate against — a soft verdict answering a different
+  question than the caller asked. The key's own SubjectPublicKeyInfo is
+  authoritative for its algorithm and parameters, so a declared curve that
+  disagrees with the key cannot be promoted and inherited by an intermediate that
+  omits its own. A parsed certificate is recognized as a certificate before any
+  tuple field is read, so a value reached through `Object.prototype` cannot
+  reclassify it as a hand-built tuple and bind a substituted key. An anchor
+  supplied as a `Proxy` — or one whose `purposes` or `distrustAfter` constraint
+  map is a `Proxy` — is refused: reflection traps could answer a field
+  inconsistently or report a field absent while forwarding the rest, hiding a
+  restriction the caller attached. A plain tuple, a parsed certificate, or an
+  object inheriting from one, with plain-object constraint maps, is the normal,
+  unaffected form.
 - **OCSP response forgery.** `pki.path.ocspChecker` treats a response as
   authoritative only when an authorized responder signed it: the issuing CA
   directly, or a certificate that same CA issued bearing id-kp-OCSPSigning in its
