@@ -13,6 +13,7 @@
     ],
     "Changed": [
       "A normalized trust anchor -- what `pki.path.anchorFromCert` returns and what `pki.path.build` reports as `result.trustAnchor` -- carries a defined set of fields: `name`, `publicKey`, `algorithm`, and `parameters`, plus `purposes`, `distrustAfter`, `subjectDer`, `label`, and `mozillaCaPolicy` when the source supplies them (the fields `pki.trust.parseCertdata` emits). These survive normalization, so a pinned trust-store entry round-trips; a field attached outside that set is not carried onto the anchor.",
+      "A trust anchor's `purposes` and `distrustAfter` constraint maps must be plain own data properties. A map -- or one of its entries -- supplied as a getter, or reached through the object's prototype rather than as an own property, is refused with `path/bad-input` rather than read, so a getter cannot answer a purpose or distrust check inconsistently and a restriction is never silently dropped. The `{ purposes, distrustAfter }` shape `pki.trust.parseCertdata` emits and a hand-built one are the normal, unaffected form.",
       "The ACME client's per-request methods refuse an unrecognized option instead of reading it as absent and applying a default: `finalize`, `pollOrder` / `pollAuthorization`, `downloadCertificate`, `revokeCert`, `keyChange`, and `renewalWindow`. A mistyped option name is now an `acme/bad-input` error rather than a silently ignored setting, matching the client constructor and the rest of the toolkit's option-taking verbs."
     ]
   }

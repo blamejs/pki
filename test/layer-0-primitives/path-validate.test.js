@@ -736,6 +736,19 @@ async function testAcceptChains() {
   var rNameMut74 = await run([direct], { time: T2027, trustAnchor: nameMutatesPurposes74, checkPurpose: "serverAuth" });
   check("#74 a name getter cannot mutate the snapshot purposes map to bypass a denied purpose (snapshot precedes the discriminator reads)",
     rNameMut74.valid === false && failCodes(rNameMut74).indexOf("path/purpose-not-trusted") !== -1);
+  // A constraint map is captured from its own DATA descriptor, never by property access, so an accessor-backed
+  // map -- a `get purposes()` whose getter could mutate the sibling distrustAfter map when read -- is REFUSED
+  // with path/bad-input and its getter is never invoked.
+  var accessorPurposes74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    get purposes() { return { serverAuth: true }; } };
+  check("#74 an accessor-backed purposes map is refused with path/bad-input (captured by descriptor, getter not invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: accessorPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // An accessor-backed constraint-map ENTRY (a `get serverAuth()`) is refused too: entries are read from their
+  // data descriptors, so an entry getter is never invoked.
+  var accessorEntry74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
+    purposes: Object.defineProperty({}, "serverAuth", { get: function () { return true; }, enumerable: true, configurable: true }) };
+  check("#74 an accessor-backed constraint-map entry is refused with path/bad-input",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: accessorEntry74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A CERTIFICATE anchor (subject / subjectPublicKeyInfo, not the tuple's name / publicKey / algorithm) must
   // not have its unrelated purposes / distrustAfter accessors read: the tuple metadata reads run only when the
   // discriminator (name / publicKey / algorithm) is satisfied, and those read undefined for a cert, so a cert
@@ -771,11 +784,14 @@ async function testAcceptChains() {
   var inheritedAnchor74 = Object.create(baseAnchor74);
   check("#74 an anchor whose name/fields are inherited (Object.create) keeps them and validates",
     (await run([direct], { time: T2027, trustAnchor: inheritedAnchor74 })).valid === true);
-  // and an inherited purpose RESTRICTION is still enforced, not lost by flattening (fail-open guard).
+  // An inherited constraint map (purposes / distrustAfter reached through the prototype, not an own property)
+  // is REFUSED with path/bad-input, not enforced: a constraint map must be an own data property so it is
+  // captured from its descriptor without invoking a getter (a `get purposes()` could mutate the sibling map).
+  // Refusing -- rather than silently dropping an inherited map -- means a restriction is never lost to a
+  // fail-open.
   var baseRestricted74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } };
-  var rInheritedRestrict = await run([direct], { time: T2027, trustAnchor: Object.create(baseRestricted74), checkPurpose: "serverAuth" });
-  check("#74 an inherited anchor purpose restriction survives flattening (serverAuth denied -> not valid)",
-    rInheritedRestrict.valid === false && failCodes(rInheritedRestrict).indexOf("path/purpose-not-trusted") !== -1);
+  check("#74 an inherited anchor constraint map is refused with path/bad-input (must be an own data property)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: Object.create(baseRestricted74), checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A parsed CERTIFICATE is recognized by its PROVENANCE (guard.parsed.isRecorded, a getter-free WeakMap
   // lookup) BEFORE the tuple discriminator, which reads name/publicKey/algorithm by property access. So a
   // polluted Object.prototype supplying those three cannot reclassify a real certificate as a tuple and bind
@@ -3463,21 +3479,17 @@ async function testTrustAnchorConstraints() {
   var taOk = withMeta({ purposes: { serverAuth: true, emailProtection: false, codeSigning: false }, distrustAfter: { serverAuth: D } });
   var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taOk, checkPurpose: "serverAuth" });
   check("T23 delegator + before D -> valid", r23.valid === true);
-  // A trust-anchor constraint field read more than once during validation must not be left a live caller
-  // accessor on the normalized anchor: assertAnchorConstraints gates on distrustAfter (a truthy test, then a
-  // hasOwn test) and then reads its value, so a getter answering the gates with a restriction and the value
-  // read with {} would drop the distrust control and validate a leaf issued past the operator's distrust
-  // date. Normalization materializes the field to data on ONE read, so whatever it resolves to is enforced
-  // consistently -- the accessor cannot answer the gates and the value differently.
+  // A distrustAfter that is an ACCESSOR (a getter) is REFUSED with path/bad-input, not materialized: a
+  // constraint map must be an own DATA property so it is captured from its descriptor without invoking the
+  // getter -- a getter could answer the gates with a restriction and the value read with {}, dropping the
+  // distrust control, or mutate the sibling map when read. The distrusted leaf is still not accepted, now via
+  // a fail-closed refusal at the anchor door rather than a soft distrusted-after verdict.
   var taTocDistrust = withMeta({});
-  var dnReads = 0;
   Object.defineProperty(taTocDistrust, "distrustAfter", {
-    enumerable: true, configurable: true,
-    get: function () { dnReads++; return dnReads <= 2 ? { serverAuth: D } : {}; }
+    enumerable: true, configurable: true, get: function () { return { serverAuth: D }; }
   });
-  var rToc = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" });
-  check("#74 an inconsistent distrustAfter accessor cannot bypass the distrust control (materialized on one read)",
-    rToc.valid === false && failCodes(rToc).indexOf("path/distrusted-after") !== -1);
+  check("#74 an accessor-backed distrustAfter is refused with path/bad-input (constraint maps must be own data)",
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A distrustAfter Date VALUE is snapshot by value: a later caller getter (algorithm.oid) that setTime()s the
   // caller's own Date to the future cannot move the distrust cutoff after the map was captured. The original
   // cutoff still distrusts a leaf issued after it -- the snapshot holds a private copy the caller cannot move.
