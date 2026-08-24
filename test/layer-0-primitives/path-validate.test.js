@@ -757,6 +757,17 @@ async function testAcceptChains() {
     { has: function (t, k) { return (k === "purposes" || k === "distrustAfter") ? false : (k in t); } }));
   check("#74 an anchor inheriting from a Proxy is refused with path/bad-input (Proxy in the prototype chain)",
     (await codeOf(run([direct], { time: T2027, trustAnchor: hidingProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+  // Direct cross-mutation regression: a name.rdns getter that would rewrite a WRONG object-form algorithm.oid to
+  // the SPKI's real one is refused BEFORE it runs (name.rdns is an accessor, captured getter-free), so the
+  // declared-algorithm mismatch refusal cannot be bypassed. Both nested fields are captured from own data
+  // descriptors, so neither accessor can mutate the other -- no read order is relied on.
+  var xmutAlg74 = { oid: "1.2.840.113549.1.1.1" };  // rsaEncryption -- wrong for the Ed25519 anchor key
+  var xmutReads74 = 0;
+  var xmutAnchor74 = {
+    publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: xmutAlg74,
+    name: { get rdns() { xmutReads74++; xmutAlg74.oid = "1.3.101.112"; return rootCert74.subject.rdns; } } };
+  check("#74 a name.rdns getter cannot rewrite algorithm.oid: the accessor is refused before it runs (getter never invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: xmutAnchor74 }))) === "path/bad-input" && xmutReads74 === 0 && xmutAlg74.oid === "1.2.840.113549.1.1.1");
   // A null-prototype object carrying an entry, used as the map's PARENT, is refused: the entry is inherited and
   // would be dropped, yet the parent is top-of-chain so a naive chain-depth test would pass it. The plain-object
   // test requires the top prototype to carry no enumerable own entries.
@@ -798,8 +809,8 @@ async function testAcceptChains() {
   var algOidReads74 = 0;
   var statefulOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: { get oid() { algOidReads74++; return algOidReads74 === 1 ? "not-a-canonical-oid" : Symbol("oid"); } } };
-  check("#74 a stateful algorithm.oid accessor (string on the type probe, Symbol on the value) is refused with path/bad-input, not a raw TypeError",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 1);
+  check("#74 an accessor algorithm.oid is refused with path/bad-input and its getter is never invoked (captured by descriptor)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 0);
   // A symbol-keyed field is OUTSIDE the closed anchor set (whose members are all string-named) and is dropped:
   // the normalized anchor carries only the defined shape, never a caller's arbitrary symbol bookkeeping.
   var SYM74 = Symbol("storeTag");
@@ -825,42 +836,37 @@ async function testAcceptChains() {
   var buildGetter74 = await pki.path.build(direct, { time: T2027, trustAnchors: [getterAnchor74] });
   check("#74 an unrelated caller getter outside the closed set is never evaluated during normalization",
     buildGetter74.valid === true && unrelatedGetterRan74 === false && buildGetter74.trustAnchor.sideEffect === undefined);
-  // The anchor name is MATERIALIZED once: name.rdns is read a single time at normalization and stored as
-  // data, so a stateful rdns accessor cannot answer the shape check with the checked DN and hand name
-  // chaining (which re-reads workingIssuerName.rdns) a different issuer DN. With the checked DN on the one
-  // read, the anchor validates consistently; the shallow-reference copy read the getter again at chaining.
+  // An accessor name.rdns is refused: it is captured from its own data descriptor, so a stateful rdns getter
+  // is never invoked (it cannot answer the shape check with one DN and hand name chaining another, and it cannot
+  // mutate a sibling field such as algorithm.oid before that is captured). A plain { rdns, bytes } name is the
+  // normal, unaffected form.
   var rdnsReads74 = 0;
   var flipNameAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     name: { get rdns() { rdnsReads74++; return rdnsReads74 === 1 ? rootCert74.subject.rdns : []; } } };
-  var rFlipName74 = await run([direct], { time: T2027, trustAnchor: flipNameAnchor74 });
-  check("#74 the anchor name.rdns is materialized once: a stateful getter cannot hand chaining a DN other than the one shape-checked",
-    rFlipName74.valid === true && rdnsReads74 === 1);
-  // A tuple whose name exposes rdns through its PROTOTYPE (Object.create, or a class prototype getter) is a
-  // valid tuple -- the contract does not require rdns to be an own property. Normalization reads name.rdns by
-  // property access, which follows the chain, so an inherited rdns is kept, not dropped.
+  check("#74 an accessor name.rdns is refused with path/bad-input and its getter is never invoked (captured by descriptor)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: flipNameAnchor74 }))) === "path/bad-input" && rdnsReads74 === 0);
+  // A tuple whose name.rdns is reached through the PROTOTYPE (Object.create) is refused too: name.rdns must be an
+  // OWN data property, captured getter-free, so an inherited definition -- which could be a prototype accessor
+  // running caller code -- cannot slip through. A plain own { rdns, bytes } name is the normal form.
   var inheritedRdnsAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     name: Object.create({ rdns: rootCert74.subject.rdns }) };
-  check("#74 a tuple whose name.rdns is inherited (Object.create) is accepted, not dropped by the own-key walk",
-    (await run([direct], { time: T2027, trustAnchor: inheritedRdnsAnchor74 })).valid === true);
-  // A caller getter that runs AFTER the constraint maps are read (algorithm.oid runs after purposes) cannot
-  // mutate them: purposes/distrustAfter are snapshot, so flipping a denied purpose to allowed via a later
-  // getter does not reach validation -- the deny the anchor declared stays enforced.
+  check("#74 a tuple whose name.rdns is inherited (Object.create) is refused with path/bad-input (own data property required)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedRdnsAnchor74 }))) === "path/bad-input");
+  // An accessor algorithm.oid is refused before its getter runs, so a getter that would flip a denied purpose
+  // in the snapshot maps never executes: the deny the anchor declared cannot be bypassed. (denyMap74 is left
+  // unmutated because the getter is never invoked.)
   var denyMap74 = { serverAuth: false };
   var mutatingOidAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     purposes: denyMap74, algorithm: { get oid() { denyMap74.serverAuth = true; return "1.3.101.112"; } } };
-  var rMutate74 = await run([direct], { time: T2027, trustAnchor: mutatingOidAnchor74, checkPurpose: "serverAuth" });
-  check("#74 a later caller getter cannot mutate the snapshot purposes map to bypass a denied purpose",
-    rMutate74.valid === false && failCodes(rMutate74).indexOf("path/purpose-not-trusted") !== -1);
-  // The anchor publicKey is pinned (snapshot) BEFORE the algorithm.oid getter runs, so a getter that
-  // overwrites the caller's key Buffer after the tuple is read cannot change which key is bound. The snapshot
-  // holds the bytes read at the discriminator; validation binds the key the caller supplied, and the leaf
-  // signed by that original key still validates -- a getter zeroing the Buffer would otherwise leave the
-  // snapshot (taken later) unable to decode, or bind a key the caller swapped in.
+  check("#74 an accessor algorithm.oid is refused before it can flip a denied purpose (getter never invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: mutatingOidAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && denyMap74.serverAuth === false);
+  // An accessor algorithm.oid is refused before its getter runs, so a getter that would overwrite the caller's
+  // key Buffer never executes: the key is not zeroed and the anchor is refused for the accessor, not validated.
   var origSpki74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
   var pkSwapAnchor74 = { name: rootCert74.subject, publicKey: origSpki74,
     algorithm: { get oid() { origSpki74.fill(0); return "1.3.101.112"; } } };
-  check("#74 the anchor publicKey is pinned before algorithm.oid runs: a getter overwriting the key Buffer cannot change the bound key",
-    (await run([direct], { time: T2027, trustAnchor: pkSwapAnchor74 })).valid === true);
+  check("#74 an accessor algorithm.oid is refused before its getter can overwrite the key Buffer (getter never invoked)",
+    (await codeOf(run([direct], { time: T2027, trustAnchor: pkSwapAnchor74 }))) === "path/bad-input" && origSpki74.some(function (b) { return b !== 0; }));
   // Same, for a name getter that runs during tuple discrimination: publicKey is read FIRST and pinned before
   // the name accessor is invoked, so a name getter overwriting the key Buffer cannot swap the bound key.
   var origSpki2_74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
@@ -3655,15 +3661,14 @@ async function testTrustAnchorConstraints() {
   });
   check("#74 an accessor-backed distrustAfter is refused with path/bad-input (constraint maps must be own data)",
     (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" }))) === "path/bad-input");
-  // A distrustAfter Date VALUE is snapshot by value: a later caller getter (algorithm.oid) that setTime()s the
-  // caller's own Date to the future cannot move the distrust cutoff after the map was captured. The original
-  // cutoff still distrusts a leaf issued after it -- the snapshot holds a private copy the caller cannot move.
+  // An accessor algorithm.oid is refused before its getter runs, so a getter that would setTime() the caller's
+  // own distrust Date to the future never executes: the anchor is refused for the accessor and the cutoff Date
+  // is never moved.
   var mutCutoff74 = new Date(D.getTime());
   var setTimeAnchor74 = withMeta({ distrustAfter: { serverAuth: mutCutoff74 } });
   setTimeAnchor74.algorithm = { get oid() { mutCutoff74.setTime(new Date("2030-01-01T00:00:00Z").getTime()); return anchor.algorithm; } };
-  var rSetTime74 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: setTimeAnchor74, checkPurpose: "serverAuth" });
-  check("#74 a snapshot distrustAfter Date cannot be moved by a later setTime getter (cutoff stays; a leaf after it is distrusted)",
-    rSetTime74.valid === false && failCodes(rSetTime74).indexOf("path/distrusted-after") !== -1);
+  check("#74 an accessor algorithm.oid is refused before its getter can setTime the caller's distrust Date (getter never invoked)",
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: setTimeAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && mutCutoff74.getTime() === D.getTime());
   // The purpose-scoped-metadata guard -- which refuses an anchor carrying purpose metadata when no
   // checkPurpose selects one -- reads the SAME value it enforces: an always-restriction accessor is refused
   // exactly like the data form, so a restriction cannot be hidden from the guard behind a getter.
