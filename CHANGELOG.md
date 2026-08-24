@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.30 — 2026-08-24
+
+A CMP certReqTemplate keySpec that names an ISO/IEC 9796-2 RSA signature scheme is now refused, instead of being surfaced to the caller as a non-RSA algorithm requirement.
+
+### Security
+
+- `pki.cmp.session` refuses a certReqTemplate keySpec whose `id-regCtrl-algId` names an ISO/IEC 9796-2 RSA signature-with-message-recovery scheme, with `cmp/bad-info-value`, rather than surfacing it to the caller as a non-RSA algorithm requirement. RFC 9483 sec. 4.3.3 reserves an RSA key requirement for `id-regCtrl-rsaKeyLen`; the 9796-2 schemes are RSA, so a keySpec naming one is now rejected the same way an rsaEncryption or RSASSA-PSS algId already was. The classifier recognizes the deterministic (1.3.36.3.4.2) and randomized (1.3.36.3.4.3) sub-arcs by prefix -- so a hash variant registered later is caught without being listed -- and ISO/IEC 9796-1 (1.3.36.3.4.1) on the same registrant arc. The generic signatureScheme parent (1.3.36.3.4) and the sibling authentication arc (1.3.36.3.5, whose children include ECC) are not treated as RSA, so a non-RSA algorithm under either is still surfaced. Recognizing these OIDs classifies a keySpec requirement; it is not a claim that the toolkit produces or verifies a 9796-2 signature.
+
 ## v0.5.29 — 2026-08-24
 
 pki.path.validate refuses a mis-shaped trust anchor instead of returning a verdict against it, and accepts a parsed certificate directly.

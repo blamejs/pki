@@ -1023,6 +1023,14 @@ security-only patches after the next major releases.
   The signatures are checked by the same certification-path engine that verifies a
   message's protection, so a responder cannot deliver three unrelated
   certificates and have the update reported as one an entity can act on.
+  A certificate-request template's `keySpec` is held to RFC 9483 §4.3.3: an
+  `id-regCtrl-algId` element must name an algorithm other than RSA, since an RSA
+  key length is stated with `id-regCtrl-rsaKeyLen` instead. Whether an algId names
+  RSA is decided by OID family rather than a fixed list, so a standardized RSA
+  identifier the registry has not enumerated is still recognized from the arc it
+  sits under — including the ISO/IEC 9796-2 RSA signatures giving message recovery,
+  on the TeleTrusT signatureScheme arc — and such a requirement is refused with
+  `cmp/bad-info-value` rather than surfaced to the caller as a non-RSA algorithm.
 - **JWS algorithm confusion and JSON smuggling (ACME).** The `pki.jose` layer
   binds every `alg` to its key type in a registry, so the classic JWS attacks
   have no code path: there is no `none` row (CVE-2015-9235), the HMAC algorithms

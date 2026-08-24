@@ -1437,6 +1437,17 @@ async function run() {
     "0.4.0.127.0.7.2.2.2.1.1", "0.4.0.127.0.7.2.2.2.1.4", "0.4.0.127.0.7.2.2.2.1.6",
     "0.4.0.127.0.7.2.2.2.1.99",   // an UNREGISTERED id-TA-RSA sibling -- refused by arc prefix, proving the dedicated-arc match
     "1.3.6.1.5.5.7.6.30", "1.3.6.1.5.5.7.6.31",
+    // TeleTrusT signatureScheme arc (1.3.36.3.4): the ISO/IEC 9796-2 RSA signature-with-message-recovery
+    // schemes. Every node is RSA-based (integer factorization), so a keySpec algId naming one states an RSA
+    // requirement sec. 4.3.3 forbids. The .4.2 (deterministic) and .4.3 (randomized) sub-arcs are RSA-
+    // dedicated and prefix-matched, so every descendant -- named or not -- is caught; the bare arc nodes
+    // (.4.2, .4.3, .4.1) sit at the arc length the strict-descendant match skips, so they are named. .4.1 is
+    // ISO/IEC 9796-1 (also RSA) on the same registrant arc.
+    "1.3.36.3.4.1", "1.3.36.3.4.1.1",
+    "1.3.36.3.4.2", "1.3.36.3.4.2.1", "1.3.36.3.4.2.2",
+    "1.3.36.3.4.2.2.1", "1.3.36.3.4.2.2.2", "1.3.36.3.4.2.2.3", "1.3.36.3.4.2.2.4", "1.3.36.3.4.2.2.5", "1.3.36.3.4.2.2.6",
+    "1.3.36.3.4.3", "1.3.36.3.4.3.1", "1.3.36.3.4.3.2",
+    "1.3.36.3.4.3.2.1", "1.3.36.3.4.3.2.2", "1.3.36.3.4.3.2.3", "1.3.36.3.4.3.2.4", "1.3.36.3.4.3.2.5", "1.3.36.3.4.3.2.6",
   ];
   var rsaCorpusResults = await Promise.all(RSA_OID_CORPUS.map(function (od) {
     return codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(od)])))]).session.info({ certReqTemplate: true })).then(function (code) { return { od: od, code: code }; });
@@ -1451,12 +1462,43 @@ async function run() {
   // in by the prefix -- the RSA_ARC_EXCLUDE carve-out. Listed here among the non-RSA controls that a keySpec
   // algId surfaces rather than refuses.
   var NONRSA_OID_CONTROLS = ["1.3.14.3.2.13", "1.3.14.3.2.26", "1.2.840.10045.4.3.2", "2.16.840.1.101.3.4.3.18", "1.3.101.112",
-    "1.2.840.113549.1.1.8", "1.2.840.113549.1.1.9"];
+    "1.2.840.113549.1.1.8", "1.2.840.113549.1.1.9",
+    // TeleTrusT signatureScheme precision: the RSA-dedicated 9796-2 sub-arcs (.4.2, .4.3) are prefix-matched,
+    // but neither the PARENT signatureScheme node (.4) nor the sibling authentication-scheme arc (.5) is, so
+    // an unassigned node directly under the parent and an ECC authentication node under .5.3 both stay
+    // surfaced. If either were swept in, the classifier would have over-broadened past the RSA sub-arcs.
+    "1.3.36.3.4.99",     // unassigned sibling directly under the parent signatureScheme arc (.4) -- parent not prefix-matched
+    "1.3.36.3.5.3.2"];   // an ECC authentication-scheme node under the sibling .5 arc -- not RSA, not matched
   var nonRsaResults = await Promise.all(NONRSA_OID_CONTROLS.map(function (od) {
     return mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid(od)])))]).session.info({ certReqTemplate: true }).then(function (r) { return { od: od, outcome: r.outcome }; }, function () { return { od: od, outcome: "THREW" }; });
   }));
   var nonRsaWrong = nonRsaResults.filter(function (r) { return r.outcome !== "answered"; }).map(function (r) { return r.od + "(" + r.outcome + ")"; });
   check("170m18. non-RSA algorithms on the shared arcs are surfaced, not refused -- wrong: [" + nonRsaWrong.join(", ") + "]", nonRsaWrong.length === 0);
+  // The TeleTrusT signatureScheme arc (1.3.36.3.4) carries the ISO/IEC 9796-2 RSA signature-with-message-
+  // recovery schemes. Every scheme is RSA-based, so a keySpec algId naming one states an RSA requirement
+  // sec. 4.3.3 forbids and MUST be refused -- the same "other than RSA" rule as PKCS#1. The .4.2
+  // (deterministic) and .4.3 (randomized) sub-arcs are RSA-dedicated and prefix-matched, so a named leaf, a
+  // deep member, and an unregistered sibling are all caught; the bare arc nodes are named in RSA_OFF_ARC
+  // because the strict-descendant match skips them. Distinct classification paths, each refused:
+  check("170m19. a keySpec algId naming ISO 9796-2 deterministic-with-SHA-256 (1.3.36.3.4.2.2.4) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.2.2.4")])))]).session.info({ certReqTemplate: true }))));
+  check("170m20. a keySpec algId naming ISO 9796-2 randomized-with-SHA-256 (1.3.36.3.4.3.2.4) -> refused (the .4.3 sub-arc, not only .4.2)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.3.2.4")])))]).session.info({ certReqTemplate: true }))));
+  // The .2.1 / .3.1 nodes are the even-public-exponent RSA variants (registrant sigS_ISO9796-2Withrsa_even-exp,
+  // marked "not used"). ISO/IEC 9796-2 is an integer-factorization (RSA) standard with no non-RSA member, so
+  // these ARE RSA and MUST be refused -- the sub-arc prefix classifies them correctly, not over-broadly.
+  check("170m21. a keySpec algId naming the deterministic even-exponent RSA variant (1.3.36.3.4.2.1) -> refused (RSA, registrant Withrsa_even-exp)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.2.1")])))]).session.info({ certReqTemplate: true }))));
+  check("170m21b. a keySpec algId naming the randomized even-exponent RSA variant (1.3.36.3.4.3.1) -> refused (RSA)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.3.1")])))]).session.info({ certReqTemplate: true }))));
+  check("170m22. a keySpec algId naming the 9796-2 hash-unspecified node (1.3.36.3.4.2.2) -> refused", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.2.2")])))]).session.info({ certReqTemplate: true }))));
+  check("170m23. a keySpec algId naming the 9796-2 deterministic BARE arc node (1.3.36.3.4.2) -> refused (RSA_OFF_ARC; the strict-descendant prefix skips the arc node itself)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.2")])))]).session.info({ certReqTemplate: true }))));
+  check("170m24. a keySpec algId naming the 9796-2 randomized BARE arc node (1.3.36.3.4.3) -> refused (RSA_OFF_ARC)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.3")])))]).session.info({ certReqTemplate: true }))));
+  // ISO/IEC 9796-1 (1.3.36.3.4.1) is on the same registrant arc and is likewise an RSA signature scheme,
+  // so it is refused too: the "other than RSA" rule holds for the whole arc, not the 9796-2 subset the OID
+  // family is titled for.
+  check("170m25. a keySpec algId naming ISO 9796-1 (1.3.36.3.4.1) -> refused (RSA on the same registrant arc)", /^cmp\//.test(await codeOf(mk([H.genpOf("certReqTemplate", keySpec("algId", B.sequence([B.oid("1.3.36.3.4.1")])))]).session.info({ certReqTemplate: true }))));
+  // Registration landed as classification metadata: the name resolves to its dotted OID. No sign/verify path
+  // dispatches on a 9796-2 scheme OID (sign-scheme keys on the rsaEncryption key OID, not the scheme), so
+  // this row classifies a keySpec requirement -- it is not a claim the toolkit can produce a 9796-2 signature.
+  check("170m26. sigS-ISO9796-2Withrsa-sha256 resolves in the registry (1.3.36.3.4.2.2.4)", pki.oid.byName("sigS-ISO9796-2Withrsa-sha256") === "1.3.36.3.4.2.2.4");
+  check("170m27. sigS-ISO9796-2rndWithrsa-sha512 resolves in the registry (1.3.36.3.4.3.2.6)", pki.oid.byName("sigS-ISO9796-2rndWithrsa-sha512") === "1.3.36.3.4.3.2.6");
   // The TeleTrusT rsaSignature arc (1.3.36.3.3.1) is RSA-dedicated, so it is prefix-matched: a named
   // member and an UNREGISTERED sibling on the same arc are both refused, proving the match catches the
   // whole family, not just the one OID the arc prefix was derived from.
