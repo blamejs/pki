@@ -53,6 +53,59 @@ function run() {
   check("isIpLiteral rejects a hostname", ip.isIpLiteral("example.com") === false);
   check("isIpLiteral rejects a colon non-address", ip.isIpLiteral("api:443") === false);
 
+  // --- immune to runtime prototype replacement (packIpLiteral gates a GeneralName form decision) ---
+  // The parser uses no regex; it reads bytes through captured String primitives. Replace those primitives
+  // AFTER load -- charCodeAt (forge every byte as the digit "1"), split (forge four octets), indexOf, slice,
+  // lastIndexOf -- and confirm the captured references ignore every swap, so a hostname still packs to null
+  // rather than an attacker-forced iPAddress. This is the prototype-steering the captured intrinsics stop.
+  var _oCC = String.prototype.charCodeAt, _oSp = String.prototype.split, _oIn = String.prototype.indexOf;
+  var _oSl = String.prototype.slice, _oLI = String.prototype.lastIndexOf;
+  String.prototype.charCodeAt = function () { return 49; };            // "1" -- every byte would read as a digit
+  String.prototype.split = function () { return ["1", "2", "3", "4"]; };
+  String.prototype.indexOf = function () { return -1; };
+  String.prototype.slice = function () { return "1"; };
+  String.prototype.lastIndexOf = function () { return -1; };
+  var _attackPack, _attackV4;
+  try { _attackPack = ip.packIpLiteral("example.com"); _attackV4 = ip.isIPv4("example.com"); }
+  finally {
+    String.prototype.charCodeAt = _oCC; String.prototype.split = _oSp; String.prototype.indexOf = _oIn;
+    String.prototype.slice = _oSl; String.prototype.lastIndexOf = _oLI;
+  }
+  check("packIpLiteral is immune to String-primitive (charCodeAt/split/indexOf/slice/lastIndexOf) replacement", _attackPack === null);
+  check("isIPv4 is immune to String-primitive replacement", _attackV4 === false);
+  // No form-matching regex exists or is exported: the parser reads bytes with captured primitives, so there
+  // is no RegExp handle a caller could mutate in place via RegExp.prototype.compile to steer the decision.
+  check("no form-matching regex is exported", ip.IPV4_RE === undefined && ip.DUAL_RE === undefined && ip.HEXGROUP_RE === undefined);
+  // packIpLiteral builds the octet array by indexed assignment, not Array.prototype.map/concat, so a hostile
+  // Array[Symbol.species] (whose constructor returns a Proxy that rewrites the mapped values) cannot steer
+  // the packed octets: install one, confirm 1.2.3.4 still packs to 01 02 03 04 rather than 09 09 09 09.
+  var _origSpecies = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  Object.defineProperty(Array, Symbol.species, {
+    configurable: true,
+    value: function (len) {
+      return new Proxy(new Array(len), { defineProperty: function (t, k, d) { if (d && "value" in d) d.value = 9; return Reflect.defineProperty(t, k, d); } });
+    }
+  });
+  var _speciesPack;
+  try { _speciesPack = ip.packIpLiteral("1.2.3.4"); }
+  finally { if (_origSpecies) Object.defineProperty(Array, Symbol.species, _origSpecies); }
+  check("packIpLiteral is immune to a hostile Array Symbol.species (no species-aware map/concat)",
+    _speciesPack !== null && _speciesPack.length === 4 && _speciesPack[0] === 1 && _speciesPack[1] === 2 && _speciesPack[2] === 3 && _speciesPack[3] === 4);
+  // Indexed array writes go through captured Object.defineProperty (an own element), and the octets are
+  // written into a Buffer's integer store, so a co-resident Array.prototype numeric setter (replacing a
+  // numeric assignment with 9) cannot rewrite a packed octet: 1.2.3.4 still packs with a first octet of 1.
+  var _proto0 = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true,
+    get: function () { return this.__v0; },
+    set: function (v) { this.__v0 = (typeof v === "number" ? 9 : v); }
+  });
+  var _setterPack;
+  try { _setterPack = ip.packIpLiteral("1.2.3.4"); }
+  finally { if (_proto0) { Object.defineProperty(Array.prototype, "0", _proto0); } else { delete Array.prototype["0"]; } }
+  check("packIpLiteral ignores an inherited Array.prototype['0'] numeric setter (Buffer/defineProperty writes)",
+    _setterPack !== null && _setterPack.length === 4 && _setterPack[0] === 1);
+
   // --- parity with node:net.isIP across the vector set ---
   var vectors = ["192.0.2.1", "999.999.999.999", "256.1.1.1", "api:443", "::1", "2001:db8::1",
     "fe80::1", "::ffff:192.0.2.1", "example.com", "1.2.3", "1.2.3.4.5", "gggg::1", ":::1",

@@ -563,11 +563,18 @@ function testNoFailOpenVerify() {
   // this catch's. Both forms are now bounded by the same rule, and the single-line catch is still
   // read, because it is the block that is found rather than a line shape.
   //
-  // Comments and string literals are stripped first, so a docstring example or a quoted message
-  // never trips the gate. Regex literals are NOT stripped (the walk deliberately leaves them), so a
-  // `/\}/` inside a catch body could unbalance the count; an unbalanced scan therefore falls back
-  // to the rest of the file rather than to nothing, because a detector that goes quiet on input it
-  // cannot parse is the failure this class exists to prevent.
+  // Comments and string literals are stripped first, so a docstring example or a quoted message never
+  // trips the gate. Regex literals are NOT stripped (the walk deliberately leaves them, so a
+  // `@guard-shape` can still match a `/.../` literal elsewhere), and deciding a regex literal from a
+  // division needs a real parser this walk does not carry. A LONE brace a regex could hold -- an escaped
+  // `/\}/` or a char-class `/[}]/` -- would therefore unbalance the count: a lone `}` closes the scanned
+  // body early (an undershoot that could MISS a fail-open), a lone `{` runs the scan to the file end
+  // (a loud overshoot). No lib file carries such a regex today, and a heuristic that blanks those braces
+  // is not safe -- it also blanks an array literal's braces (`[function(){...}]`), erasing a real
+  // `catch (...) {` opener -- so the scan is left exact and this precondition is documented instead of
+  // approximated. If a scan cannot balance, _matchingBrace falls back to the rest of the file rather
+  // than to nothing, because a detector that goes quiet on input it cannot parse is the failure this
+  // class exists to prevent.
   var VERDICT = new RegExp("\\breturn\\s+(?:(?:true|1|valid|verified|isValid|ok)\\b" +
     "|\\{[^}]*\\b(?:valid|verified|ok|allowed|trusted)\\s*:\\s*true)");
   var CATCH_OPENER = /catch\s*\([^)]*\)\s*\{/g;
@@ -1799,9 +1806,10 @@ function testNoDuplicateCodeBlocks() {
         "lib/schema-attrcert.js:<top>", "lib/tls-cert-compress.js:<top>",
         "lib/schema-crl.js:<top>", "lib/schema-ocsp.js:<top>",
         "lib/cmp-build.js:<top>", "lib/crmf-sign.js:<top>",
+        "lib/ip-utils.js:<top>", "lib/guard-encoding.js:_alphabet",
       ],
       mode: "family-subset",
-      reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes.",
+      reason: "The per-module capture header binds each module's subset of guard-intrinsic to local names at load. The repeated shape is a deliberate convention so the set is comparable across modules; the subsets differ per module and a shared indirection would put back the call-site property read the capture removes. The regex-free character scanners (the IP-literal parser, the base-N alphabet-table builder) share the same captured-primitive binding run and char-code-loop idiom while doing genuinely different work.",
     },
     {
       // The per-format-module PEM footer: pemDecode / pemEncode are thin one-line
@@ -3007,7 +3015,7 @@ function testGuardReadsRuntimeLive() {
     "lib/cms-encrypt.js": 73,
     "lib/crl-sign.js": 72,
     "lib/cmc-build.js": 64,
-    "lib/pki-build.js": 56,
+    "lib/pki-build.js": 47,
     "lib/hpke.js": 54,
     "lib/cms-decrypt.js": 53,
     "lib/cmc-verify.js": 39,

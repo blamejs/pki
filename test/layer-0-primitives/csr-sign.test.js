@@ -109,6 +109,15 @@ async function testExtensionRequest() {
   var er = c.attributes[0];
   check("extensionRequest decodes its extensions", Array.isArray(er.extensions) && er.extensions.some(function (e) { return (e.name || e.oid) === "subjectAltName"; }));
 
+  // #75 Half B uniformity: the same bare-string SAN shorthand classifies through csr.sign's
+  // extensionRequest, proving encodeGeneralName is the SHARED home (dNSName=2, iPAddress=7), not per-verb.
+  var shDer = await pki.csr.sign({ subject: "sh.example", subjectPublicKey: s.spki,
+    extensionRequest: { subjectAltName: ["sh.example", "10.0.0.1"] } }, { key: s.key });
+  var shSan = pki.schema.csr.parse(shDer).attributes[0].extensions.filter(function (e) { return (e.name || e.oid) === "subjectAltName"; })[0].value;
+  var shNode = pki.asn1.decode(shSan);
+  if (shNode.tagClass === "universal" && shNode.tagNumber === 4) shNode = pki.asn1.decode(shNode.content);
+  check("Half B uniformity: bare SAN shorthand classifies through csr.sign too", shNode.children.map(function (c) { return c.tagNumber; }).join(",") === "2,7");
+
   // end-to-end: a CA copies the requested SAN into an issued cert via the pre-encoded array form.
   var sanExt = er.extensions.filter(function (e) { return (e.name || e.oid) === "subjectAltName"; })[0];
   var ca = makeSigner("ec-p256");
