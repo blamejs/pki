@@ -584,6 +584,9 @@ async function testGeneralNameForms() {
   check("Half B: 'user@host-name.example.com' (hyphen in email domain) -> rfc822Name [1]", sanForms(await pki.x509.sign(base(["user@host-name.example.com"]), { key: s.key })) === "1");
   // Unlike a URI host or dNSName, an RFC 5321 mailbox domain has no trailing root dot, so it is refused.
   check("Half B: 'user@example.com.' (trailing dot in email domain) -> throws", await codeOf(pki.x509.sign(base(["user@example.com."]), { key: s.key })) === "x509/bad-input");
+  // RFC 5321 sec. 4.5.3.1.1 caps the local part at 64 octets: a 64-octet local part is accepted, 65 is refused.
+  check("Half B: a 64-octet email local part -> rfc822Name [1]", sanForms(await pki.x509.sign(base([new Array(65).join("a") + "@example.com"]), { key: s.key })) === "1");
+  check("Half B: a 65-octet email local part -> throws", await codeOf(pki.x509.sign(base([new Array(66).join("a") + "@example.com"]), { key: s.key })) === "x509/bad-input");
   check("Half B: '' empty bare string -> throws", await codeOf(pki.x509.sign(base([""]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'foo@bar' bare-label domain -> throws", await codeOf(pki.x509.sign(base(["foo@bar"]), { key: s.key })) === "x509/bad-input");
   // An IPv4-SHAPED string that is not a valid address is ambiguous (an invalid IP vs an all-numeric name),
