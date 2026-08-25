@@ -587,6 +587,9 @@ async function testGeneralNameForms() {
   // RFC 5321 sec. 4.5.3.1.1 caps the local part at 64 octets: a 64-octet local part is accepted, 65 is refused.
   check("Half B: a 64-octet email local part -> rfc822Name [1]", sanForms(await pki.x509.sign(base([new Array(65).join("a") + "@example.com"]), { key: s.key })) === "1");
   check("Half B: a 65-octet email local part -> throws", await codeOf(pki.x509.sign(base([new Array(66).join("a") + "@example.com"]), { key: s.key })) === "x509/bad-input");
+  // Even with a valid 64-octet local part and a valid dotted domain, the whole mailbox is capped at 254
+  // octets (RFC 5321 sec. 4.5.3.1.3): a 64-octet local + "@" + a 197-octet domain (262 total) is refused.
+  check("Half B: an email over the 254-octet mailbox limit -> throws", await codeOf(pki.x509.sign(base([new Array(65).join("a") + "@" + new Array(99).fill("a").join(".")]), { key: s.key })) === "x509/bad-input");
   check("Half B: '' empty bare string -> throws", await codeOf(pki.x509.sign(base([""]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'foo@bar' bare-label domain -> throws", await codeOf(pki.x509.sign(base(["foo@bar"]), { key: s.key })) === "x509/bad-input");
   // An IPv4-SHAPED string that is not a valid address is ambiguous (an invalid IP vs an all-numeric name),
@@ -604,6 +607,32 @@ async function testGeneralNameForms() {
   try { _immForms = sanForms(await pki.x509.sign(base(["example.com"]), { key: s.key })); }
   finally { _ipUtils.packIpLiteral = _origPack; }
   check("Half B immunity: hostname stays dNSName [2] when ipUtils.packIpLiteral is reassigned (captured at load)", _immForms === "2");
+  // The IA5String byte conversion (ia5Content) captures Buffer.from at load, so replacing Buffer.from after
+  // load cannot steer the emitted dNSName away from the value the classifier checked.
+  var _origBufFrom = Buffer.from;
+  var _victim = _origBufFrom("victim.example", "latin1"), _evil = _origBufFrom("evil.example", "latin1");   // built BEFORE the swap
+  Buffer.from = function (a, b) {
+    return (typeof a === "string" && a.indexOf("victim.example") !== -1)
+      ? _origBufFrom(a.split("victim.example").join("evil.example"), b) : _origBufFrom(a, b);
+  };
+  var _immDer;
+  try { _immDer = await pki.x509.sign(base(["victim.example"]), { key: s.key }); }
+  finally { Buffer.from = _origBufFrom; }
+  check("Half B immunity: emitted dNSName comes from the captured Buffer.from, not a replaced one",
+    _immDer.indexOf(_victim) !== -1 && _immDer.indexOf(_evil) === -1);
+  // The GeneralName emitter reads the classified object's form through captured Object.keys, so a replaced
+  // Object.keys cannot relabel a classified dNSName into another form after the classifier validated it.
+  var _origKeys = Object.keys;
+  Object.keys = function (o) {
+    if (o && typeof o === "object" && o.dNSName === "safe.example") { o.rfc822Name = "attacker@evil.example"; return ["rfc822Name"]; }
+    return _origKeys(o);
+  };
+  var _keyDer;
+  try { _keyDer = await pki.x509.sign(base(["safe.example"]), { key: s.key }); }
+  finally { Object.keys = _origKeys; }
+  check("Half B immunity: a classified dNSName is not relabeled by a replaced Object.keys", sanForms(_keyDer) === "2");
+  // The DER builder is frozen at load, so a builder method cannot be replaced to steer emitted bytes.
+  check("the asn1 DER builder is frozen (no replaceable builder method)", Object.isFrozen(require("../../lib/asn1-der").build) === true);
 }
 
 async function testCryptoKeySigningKey() {
