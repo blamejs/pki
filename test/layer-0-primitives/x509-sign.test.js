@@ -503,12 +503,18 @@ async function testGeneralNameForms() {
   check("Half B: bare '192.0.2.1' -> iPAddress [7]", sanForms(await pki.x509.sign(base(["192.0.2.1"]), { key: s.key })) === "7");
   check("Half B: bare '2001:db8::1' -> iPAddress [7]", sanForms(await pki.x509.sign(base(["2001:db8::1"]), { key: s.key })) === "7");
   check("Half B: bare 'https://example.com/x' -> URI [6]", sanForms(await pki.x509.sign(base(["https://example.com/x"]), { key: s.key })) === "6");
-  check("Half B: 'https://h/p?q=1#f' (query+fragment) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h/p?q=1#f"]), { key: s.key })) === "6");
-  check("Half B: 'https://user@host/x' -> URI [6] (userinfo not read as email)", sanForms(await pki.x509.sign(base(["https://user@host/x"]), { key: s.key })) === "6");
+  check("Half B: 'https://h.test/p?q=1#f' (query+fragment) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h.test/p?q=1#f"]), { key: s.key })) === "6");
+  check("Half B: 'https://user@host.test/x' -> URI [6] (userinfo not read as email)", sanForms(await pki.x509.sign(base(["https://user@host.test/x"]), { key: s.key })) === "6");
   check("Half B: underscore label '_acme-challenge.example.com' -> dNSName [2]", sanForms(await pki.x509.sign(base(["_acme-challenge.example.com"]), { key: s.key })) === "2");
   // The dNSName underscore tolerance is leading/embedded only (the real _acme-challenge / _dmarc forms);
   // a TRAILING underscore has no such use, so a label ending in "_" is refused rather than classified.
   check("Half B: embedded underscore 'a_b.example.com' -> dNSName [2]", sanForms(await pki.x509.sign(base(["a_b.example.com"]), { key: s.key })) === "2");
+  check("Half B: absolute FQDN 'example.com.' (trailing root dot) -> dNSName [2]", sanForms(await pki.x509.sign(base(["example.com."]), { key: s.key })) === "2");
+  // The RFC 1035 253-byte name limit excludes the presentation root dot: a 253-byte name plus a trailing
+  // "." (254 bytes) is accepted, while a 255-byte name is refused.
+  var _max253 = new Array(127).fill("a").join(".");   // 127 one-byte labels = 253 bytes
+  check("Half B: a 253-byte dNSName + trailing root dot -> dNSName [2]", sanForms(await pki.x509.sign(base([_max253 + "."]), { key: s.key })) === "2");
+  check("Half B: a 255-byte dNSName -> throws", await codeOf(pki.x509.sign(base([new Array(128).fill("a").join(".")]), { key: s.key })) === "x509/bad-input");
   check("Half B: trailing underscore 'host_.example' -> throws", await codeOf(pki.x509.sign(base(["host_.example"]), { key: s.key })) === "x509/bad-input");
   check("Half B: mixed shorthand + object form -> [dNSName, dNSName, iPAddress]", sanForms(await pki.x509.sign(base(["example.com", { dNSName: "b.example" }, "10.0.0.1"]), { key: s.key })) === "2,2,7");
   // unclassifiable / ambiguous -> throws (fail-closed; the object form is the escape)
@@ -528,26 +534,39 @@ async function testGeneralNameForms() {
   // A URI-shaped string that carries a character outside the RFC 3986 grammar -- a bare "%" not starting a
   // "%HEXHEX" triplet, or a byte like "^" that is neither unreserved, reserved, nor percent-encoded -- is
   // not a valid URI, so it is refused rather than classified as one (the object form accepts an odd value).
-  check("Half B: 'https://%' (bare percent, not %HEXHEX) -> throws", await codeOf(pki.x509.sign(base(["https://%"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://%zz' (invalid percent-encoding) -> throws", await codeOf(pki.x509.sign(base(["https://%zz"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://a^b' (caret is not a URI character) -> throws", await codeOf(pki.x509.sign(base(["https://a^b"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://h/%2f?a=1' (valid percent-encoding) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h/%2f?a=1"]), { key: s.key })) === "6");
+  check("Half B: 'https://h.test/%' (bare percent, not %HEXHEX) -> throws", await codeOf(pki.x509.sign(base(["https://h.test/%"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://h.test/%zz' (invalid percent-encoding) -> throws", await codeOf(pki.x509.sign(base(["https://h.test/%zz"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://h.test/a^b' (caret is not a URI character) -> throws", await codeOf(pki.x509.sign(base(["https://h.test/a^b"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://h.test/%2f?a=1' (valid percent-encoding) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h.test/%2f?a=1"]), { key: s.key })) === "6");
   // An IPv6-literal host ("[::1]") is out of the shorthand's scope: the "[" "]" delimiters are excluded, so
   // such a URL uses the object form { uniformResourceIdentifier } rather than the bare-string shorthand.
   check("Half B: 'https://[' (unbalanced IP-literal bracket) -> throws", await codeOf(pki.x509.sign(base(["https://["]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://[::1]/p' (IPv6-literal host, structural) -> throws (object form is the escape)", await codeOf(pki.x509.sign(base(["https://[::1]/p"]), { key: s.key })) === "x509/bad-input");
-  // The URI form is parsed by component (RFC 3986): the authority carries at most one "@", a non-empty
+  // The URI form is parsed by component (RFC 3986): the authority carries at most one "@", an FQDN-or-IP
   // host, and a numeric port, and there is at most one "#". A structurally malformed URL is refused, not
   // signed as a uniformResourceIdentifier; a fully well-formed URL (userinfo, port, path, query, fragment)
   // is still accepted.
-  check("Half B: 'https://u@v@host/' (two userinfo '@') -> throws", await codeOf(pki.x509.sign(base(["https://u@v@host/"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://host:abc/' (non-numeric port) -> throws", await codeOf(pki.x509.sign(base(["https://host:abc/"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://host##fragment' (two '#') -> throws", await codeOf(pki.x509.sign(base(["https://host##fragment"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://a#b#c' (two '#') -> throws", await codeOf(pki.x509.sign(base(["https://a#b#c"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://u@v@host.test/' (two userinfo '@') -> throws", await codeOf(pki.x509.sign(base(["https://u@v@host.test/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://host.test:abc/' (non-numeric port) -> throws", await codeOf(pki.x509.sign(base(["https://host.test:abc/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://host.test##fragment' (two '#') -> throws", await codeOf(pki.x509.sign(base(["https://host.test##fragment"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://host.test/a#b#c' (two '#') -> throws", await codeOf(pki.x509.sign(base(["https://host.test/a#b#c"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://:8080/p' (empty host before port) -> throws", await codeOf(pki.x509.sign(base(["https://:8080/p"]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://user:pass@host:8080/p?q=1#f' (full valid URL) -> URI [6]", sanForms(await pki.x509.sign(base(["https://user:pass@host:8080/p?q=1#f"]), { key: s.key })) === "6");
-  check("Half B: 'https://host:8080/p' (numeric port) -> URI [6]", sanForms(await pki.x509.sign(base(["https://host:8080/p"]), { key: s.key })) === "6");
-  check("Half B: 'https://host:/p' (empty port is allowed) -> URI [6]", sanForms(await pki.x509.sign(base(["https://host:/p"]), { key: s.key })) === "6");
+  check("Half B: 'https://user:pass@host.test:8080/p?q=1#f' (full valid URL) -> URI [6]", sanForms(await pki.x509.sign(base(["https://user:pass@host.test:8080/p?q=1#f"]), { key: s.key })) === "6");
+  check("Half B: 'https://host.test:8080/p' (numeric port) -> URI [6]", sanForms(await pki.x509.sign(base(["https://host.test:8080/p"]), { key: s.key })) === "6");
+  check("Half B: 'https://host.test:/p' (empty port is allowed) -> URI [6]", sanForms(await pki.x509.sign(base(["https://host.test:/p"]), { key: s.key })) === "6");
+  // The URI host itself must be a valid FQDN or IP (RFC 5280 sec. 4.2.1.6): a label with a leading/trailing
+  // hyphen, an IPv4-shaped but out-of-range host, a byte outside the hostname grammar, or a single-label
+  // host that is not fully qualified is refused; a valid dotted FQDN and a valid IPv4 host are kept.
+  check("Half B: 'https://-bad-.example/' (hyphen at host label edge) -> throws", await codeOf(pki.x509.sign(base(["https://-bad-.example/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://999.999.999.999/' (IPv4-shaped invalid host) -> throws", await codeOf(pki.x509.sign(base(["https://999.999.999.999/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://$/' (sub-delim host is not a hostname) -> throws", await codeOf(pki.x509.sign(base(["https://$/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://localhost/p' (single-label host, not an FQDN) -> throws", await codeOf(pki.x509.sign(base(["https://localhost/p"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://192.0.2.1/p' (valid IPv4 host) -> URI [6]", sanForms(await pki.x509.sign(base(["https://192.0.2.1/p"]), { key: s.key })) === "6");
+  // An absolute FQDN carries a trailing root "." and is still a valid multi-label host; a single label plus
+  // the root ("localhost.") is not multi-label, and a host over the 253-byte name length is refused.
+  check("Half B: 'https://example.com./p' (absolute FQDN, trailing root dot) -> URI [6]", sanForms(await pki.x509.sign(base(["https://example.com./p"]), { key: s.key })) === "6");
+  check("Half B: 'https://localhost./p' (single label + root dot, not an FQDN) -> throws", await codeOf(pki.x509.sign(base(["https://localhost./p"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: a URI host over 253 bytes -> throws", await codeOf(pki.x509.sign(base(["https://" + new Array(128).join("a.") + "com/p"]), { key: s.key })) === "x509/bad-input");
   // A control byte in an email local part is malformed -> refused (same fail-closed rule as the URI form).
   check("Half B: an rfc822Name local part with a control byte -> throws", await codeOf(pki.x509.sign(base(["a" + String.fromCharCode(1) + "b@example.com"]), { key: s.key })) === "x509/bad-input");
   // The local part is an unquoted RFC 5321 dot-atom: atext runs joined by SINGLE dots. Consecutive,
@@ -563,6 +582,8 @@ async function testGeneralNameForms() {
   // is refused, while an underscore-bearing dNSName (see _acme-challenge above) is still accepted.
   check("Half B: 'user@foo_bar.example' (underscore in email domain) -> throws", await codeOf(pki.x509.sign(base(["user@foo_bar.example"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'user@host-name.example.com' (hyphen in email domain) -> rfc822Name [1]", sanForms(await pki.x509.sign(base(["user@host-name.example.com"]), { key: s.key })) === "1");
+  // Unlike a URI host or dNSName, an RFC 5321 mailbox domain has no trailing root dot, so it is refused.
+  check("Half B: 'user@example.com.' (trailing dot in email domain) -> throws", await codeOf(pki.x509.sign(base(["user@example.com."]), { key: s.key })) === "x509/bad-input");
   check("Half B: '' empty bare string -> throws", await codeOf(pki.x509.sign(base([""]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'foo@bar' bare-label domain -> throws", await codeOf(pki.x509.sign(base(["foo@bar"]), { key: s.key })) === "x509/bad-input");
   // An IPv4-SHAPED string that is not a valid address is ambiguous (an invalid IP vs an all-numeric name),
