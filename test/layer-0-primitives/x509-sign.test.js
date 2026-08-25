@@ -525,11 +525,22 @@ async function testGeneralNameForms() {
   check("Half B: 'https://%zz' (invalid percent-encoding) -> throws", await codeOf(pki.x509.sign(base(["https://%zz"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://a^b' (caret is not a URI character) -> throws", await codeOf(pki.x509.sign(base(["https://a^b"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://h/%2f?a=1' (valid percent-encoding) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h/%2f?a=1"]), { key: s.key })) === "6");
-  // The bracket characters that delimit an IPv6-literal host are the only URI bytes whose validity is
-  // structural (a "[" needs a matching "]"), which a form classifier does not parse -- so they are not
-  // accepted as a shorthand and an IPv6-literal-host URL uses the object form { uniformResourceIdentifier }.
+  // An IPv6-literal host ("[::1]") is out of the shorthand's scope: the "[" "]" delimiters are excluded, so
+  // such a URL uses the object form { uniformResourceIdentifier } rather than the bare-string shorthand.
   check("Half B: 'https://[' (unbalanced IP-literal bracket) -> throws", await codeOf(pki.x509.sign(base(["https://["]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://[::1]/p' (IPv6-literal host, structural) -> throws (object form is the escape)", await codeOf(pki.x509.sign(base(["https://[::1]/p"]), { key: s.key })) === "x509/bad-input");
+  // The URI form is parsed by component (RFC 3986): the authority carries at most one "@", a non-empty
+  // host, and a numeric port, and there is at most one "#". A structurally malformed URL is refused, not
+  // signed as a uniformResourceIdentifier; a fully well-formed URL (userinfo, port, path, query, fragment)
+  // is still accepted.
+  check("Half B: 'https://u@v@host/' (two userinfo '@') -> throws", await codeOf(pki.x509.sign(base(["https://u@v@host/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://host:abc/' (non-numeric port) -> throws", await codeOf(pki.x509.sign(base(["https://host:abc/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://host##fragment' (two '#') -> throws", await codeOf(pki.x509.sign(base(["https://host##fragment"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://a#b#c' (two '#') -> throws", await codeOf(pki.x509.sign(base(["https://a#b#c"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://:8080/p' (empty host before port) -> throws", await codeOf(pki.x509.sign(base(["https://:8080/p"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://user:pass@host:8080/p?q=1#f' (full valid URL) -> URI [6]", sanForms(await pki.x509.sign(base(["https://user:pass@host:8080/p?q=1#f"]), { key: s.key })) === "6");
+  check("Half B: 'https://host:8080/p' (numeric port) -> URI [6]", sanForms(await pki.x509.sign(base(["https://host:8080/p"]), { key: s.key })) === "6");
+  check("Half B: 'https://host:/p' (empty port is allowed) -> URI [6]", sanForms(await pki.x509.sign(base(["https://host:/p"]), { key: s.key })) === "6");
   // A control byte in an email local part is malformed -> refused (same fail-closed rule as the URI form).
   check("Half B: an rfc822Name local part with a control byte -> throws", await codeOf(pki.x509.sign(base(["a" + String.fromCharCode(1) + "b@example.com"]), { key: s.key })) === "x509/bad-input");
   // The local part is an unquoted RFC 5321 dot-atom: atext runs joined by SINGLE dots. Consecutive,
