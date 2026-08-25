@@ -736,6 +736,18 @@ async function testInputForms() {
   check("a platform WebCrypto RSA CryptoKey signs a certificate", Buffer.isBuffer(
     await pki.x509.sign({ subject: caName, subjectPublicKey: Buffer.from(await nodeWc.subtle.exportKey("spki", foreignRsa.publicKey)), notBefore: NB, notAfter: NA }, { key: foreignRsa.privateKey })));
 
+  // #75 Half A: a WebCrypto RSA-PSS CryptoKey is bound to PSS. Its generic rsaEncryption SPKI resolves to
+  // the default RSASSA-PKCS1-v1_5 under default opts, which a PSS-bound key cannot produce -- the error
+  // names opts.pss -- and it signs once opts.pss selects the RSASSA-PSS scheme.
+  var pssKp = await nodeWc.subtle.generateKey({ name: "RSA-PSS", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var pssSpki = Buffer.from(await nodeWc.subtle.exportKey("spki", pssKp.publicKey));
+  check("an RSA-PSS CryptoKey under default opts is refused, naming opts.pss", await (async function () {
+    try { await pki.x509.sign({ subject: caName, subjectPublicKey: pssSpki, notBefore: NB, notAfter: NA }, { key: pssKp.privateKey }); return false; }
+    catch (e) { return e.code === "x509/bad-input" && /pass opts\.pss/.test(e.message); }
+  })());
+  check("an RSA-PSS CryptoKey signs a certificate with opts.pss", Buffer.isBuffer(
+    await pki.x509.sign({ subject: caName, subjectPublicKey: pssSpki, notBefore: NB, notAfter: NA }, { key: pssKp.privateKey }, { pss: true })));
+
   // raw Name DER as subject (the escape hatch) round-trips.
   var rawName = B.sequence([B.set([B.sequence([B.oid(oidB("commonName")), B.utf8("Raw DN")])])]);
   check("raw Name DER subject round-trips", /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawName }), { key: s.key })).subject.dn));
