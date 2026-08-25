@@ -76,6 +76,21 @@ function run() {
   // No form-matching regex exists or is exported: the parser reads bytes with captured primitives, so there
   // is no RegExp handle a caller could mutate in place via RegExp.prototype.compile to steer the decision.
   check("no form-matching regex is exported", ip.IPV4_RE === undefined && ip.DUAL_RE === undefined && ip.HEXGROUP_RE === undefined);
+  // packIpLiteral builds the octet array by indexed assignment, not Array.prototype.map/concat, so a hostile
+  // Array[Symbol.species] (whose constructor returns a Proxy that rewrites the mapped values) cannot steer
+  // the packed octets: install one, confirm 1.2.3.4 still packs to 01 02 03 04 rather than 09 09 09 09.
+  var _origSpecies = Object.getOwnPropertyDescriptor(Array, Symbol.species);
+  Object.defineProperty(Array, Symbol.species, {
+    configurable: true,
+    value: function (len) {
+      return new Proxy(new Array(len), { defineProperty: function (t, k, d) { if (d && "value" in d) d.value = 9; return Reflect.defineProperty(t, k, d); } });
+    }
+  });
+  var _speciesPack;
+  try { _speciesPack = ip.packIpLiteral("1.2.3.4"); }
+  finally { if (_origSpecies) Object.defineProperty(Array, Symbol.species, _origSpecies); }
+  check("packIpLiteral is immune to a hostile Array Symbol.species (no species-aware map/concat)",
+    _speciesPack !== null && _speciesPack.length === 4 && _speciesPack[0] === 1 && _speciesPack[1] === 2 && _speciesPack[2] === 3 && _speciesPack[3] === 4);
 
   // --- parity with node:net.isIP across the vector set ---
   var vectors = ["192.0.2.1", "999.999.999.999", "256.1.1.1", "api:443", "::1", "2001:db8::1",
