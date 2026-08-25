@@ -91,6 +91,20 @@ function run() {
   finally { if (_origSpecies) Object.defineProperty(Array, Symbol.species, _origSpecies); }
   check("packIpLiteral is immune to a hostile Array Symbol.species (no species-aware map/concat)",
     _speciesPack !== null && _speciesPack.length === 4 && _speciesPack[0] === 1 && _speciesPack[1] === 2 && _speciesPack[2] === 3 && _speciesPack[3] === 4);
+  // Indexed array writes go through captured Object.defineProperty (an own element), and the octets are
+  // written into a Buffer's integer store, so a co-resident Array.prototype numeric setter (replacing a
+  // numeric assignment with 9) cannot rewrite a packed octet: 1.2.3.4 still packs with a first octet of 1.
+  var _proto0 = Object.getOwnPropertyDescriptor(Array.prototype, "0");
+  Object.defineProperty(Array.prototype, "0", {
+    configurable: true,
+    get: function () { return this.__v0; },
+    set: function (v) { this.__v0 = (typeof v === "number" ? 9 : v); }
+  });
+  var _setterPack;
+  try { _setterPack = ip.packIpLiteral("1.2.3.4"); }
+  finally { if (_proto0) { Object.defineProperty(Array.prototype, "0", _proto0); } else { delete Array.prototype["0"]; } }
+  check("packIpLiteral ignores an inherited Array.prototype['0'] numeric setter (Buffer/defineProperty writes)",
+    _setterPack !== null && _setterPack.length === 4 && _setterPack[0] === 1);
 
   // --- parity with node:net.isIP across the vector set ---
   var vectors = ["192.0.2.1", "999.999.999.999", "256.1.1.1", "api:443", "::1", "2001:db8::1",
