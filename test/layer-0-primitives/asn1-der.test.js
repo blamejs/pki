@@ -830,6 +830,11 @@ function testBuildPrintableAndChildrenGuard() {
   check("isPrintableString rejects '@'", pki.asn1.isPrintableString("a@b") === false);
   check("isPrintableString rejects '_'", pki.asn1.isPrintableString("a_b") === false);
   check("isPrintableString rejects a tab", pki.asn1.isPrintableString("a\tb") === false);
+  // A non-string returns false rather than skipping the scan (42 / {} have no string length so the
+  // loop was vacuous) or throwing (null / undefined), matching the sibling string predicates.
+  check("isPrintableString returns false for non-strings", pki.asn1.isPrintableString(42) === false &&
+    pki.asn1.isPrintableString({}) === false && pki.asn1.isPrintableString(null) === false &&
+    pki.asn1.isPrintableString(undefined) === false && pki.asn1.isPrintableString([65]) === false);
   check("build.sequence rejects a non-array argument",
     code(function () { b.sequence("notarray"); }) === "asn1/bad-children");
   check("build.set rejects a null argument",
