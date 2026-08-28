@@ -292,6 +292,11 @@ function testBuilders() {
   // 50. a 12-byte channel binding -> challengePassword = its base64; parse-back shows the attr.
   var attr = pki.est.challengePasswordFromTlsUnique(Buffer.alloc(12, 0x5a));
   check("50. challengePassword attr from tls-unique", Buffer.isBuffer(attr) && pki.asn1.decode(attr).children[0] && pki.asn1.read.oid(pki.asn1.decode(attr).children[0]) === CHALLENGE_PW);
+  // 50a. the channel binding accepts any BufferSource, not only a Buffer: an ArrayBuffer of the same
+  // bytes builds the identical attribute. Before the widening the one-form Buffer.isBuffer gate refused it.
+  var _cbAB = new ArrayBuffer(12); new Uint8Array(_cbAB).fill(0x5a);
+  check("50a. challengePasswordFromTlsUnique accepts an ArrayBuffer channel binding (#68)",
+    Buffer.compare(pki.est.challengePasswordFromTlsUnique(_cbAB), attr) === 0);
   // 50b. a > 190-byte binding (base64 > 255) -> est/tls-unique-too-long.
   check("50b. over-long tls-unique rejected", code(function () { pki.est.challengePasswordFromTlsUnique(Buffer.alloc(200, 1)); }) === "est/tls-unique-too-long");
   // 51. decrypt-key attributes encode to attributes carrying the right OID.

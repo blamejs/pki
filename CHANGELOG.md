@@ -6,11 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.5.32 — 2026-08-28
 
-Every byte input across the toolkit accepts any BufferSource: an ArrayBuffer, a DataView, or any typed array, not only a Buffer or a Uint8Array.
+Byte inputs across the parsing, signing, verifying, and enrollment verbs accept any BufferSource: an ArrayBuffer, a DataView, or any typed array, not only a Buffer or a Uint8Array.
 
 ### Added
 
-- Every byte-valued input accepts any `BufferSource`, not only a `Buffer` or a `Uint8Array`. This covers the parse verbs such as `pki.x509.parse` and `pki.pkcs8.parse`; the certificate, request, and DER inputs to the signing and verifying verbs; a `messageImprint` in `pki.tsp.sign` and `pki.tsp.verify`; an OCSP `requestorName` and nonce; a CMP `expectedSender` and signer certificate; a CMC signer's `keyIdentifier` and `spki`; an EST enrollment CSR; a `subjectKeyIdentifier` or `authorityKeyIdentifier` key id; an `initialPermittedSubtrees` or `initialExcludedSubtrees` `iPAddress` base in `pki.path.validate`; and an HTTP request body. An `ArrayBuffer` or a `DataView` produces the same result as the equivalent `Buffer`.
+- A broad range of byte-valued inputs across the parsing, signing, verifying, and enrollment verbs accept any `BufferSource`, not only a `Buffer` or a `Uint8Array`. This covers the parse verbs such as `pki.x509.parse`, `pki.pkcs8.parse`, and `pki.schema.cmc.parsePkiData`; the certificate, request, and DER inputs to the signing and verifying verbs; a `messageImprint` in `pki.tsp.sign` and `pki.tsp.verify`; an OCSP `requestorName` and nonce; a CMP `expectedSender` and signer certificate; a CMC signer's `keyIdentifier` and `spki`; the ACME `finalize` CSR and the `revokeCert`, `ariCertId`, and `renewalInfo` certificates; the EST enrollment CSR and the `challengePasswordFromTlsUnique` channel binding; a `subjectKeyIdentifier` or `authorityKeyIdentifier` key id; an `initialPermittedSubtrees` or `initialExcludedSubtrees` `iPAddress` base in `pki.path.validate`; and an HTTP request body. An `ArrayBuffer` or a `DataView` produces the same result as the equivalent `Buffer`.
 - `pki.oid.isDottedDecimal(s)` reports whether a string is a dotted-decimal object identifier: two or more numeric arcs separated by dots.
 - `pki.asn1.isPrintableString(s)` reports whether a string contains only the characters an ASN.1 PrintableString may carry: `A` to `Z`, `a` to `z`, `0` to `9`, space, and the symbols `'()+,-./:=?`.
 

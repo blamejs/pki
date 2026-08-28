@@ -2999,8 +2999,8 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 217,
-    "lib/est.js": 183,
+    "lib/acme.js": 211,
+    "lib/est.js": 181,
     "lib/cmp-build.js": 147,
     "lib/crmf-sign.js": 46,
     "lib/path-validate.js": 185,

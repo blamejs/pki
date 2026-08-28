@@ -89,6 +89,11 @@ async function testFinalize() {
   await acme2.newAccount({});
   var before = s2.calls.length;
   check("#2 a mismatched CSR identifier set is rejected", (await codeOf(acme2.finalize({ finalize: A.URLS.finalize, identifiers: [{ type: "dns", value: "evil.example" }] }, { csr: CSR }))) === "acme/csr-identifier-mismatch");
+  // #2a the finalize CSR accepts any BufferSource: an ArrayBuffer CSR reaches the identifier check
+  // (the mismatch here) rather than being refused at the CSR gate. Before the widening it threw acme/bad-input.
+  var CSR_AB = new ArrayBuffer(CSR.length); new Uint8Array(CSR_AB).set(CSR);
+  check("#2a a finalize CSR given as an ArrayBuffer passes the CSR gate (#68)",
+    (await codeOf(acme2.finalize({ finalize: A.URLS.finalize, identifiers: [{ type: "dns", value: "evil.example" }] }, { csr: CSR_AB }))) === "acme/csr-identifier-mismatch");
   // #2b a CSR carrying the order's name in a SAN and an unauthorized one in its subject is a request
   // for a name the order does not cover: a CA that carries the common name through into the issued
   // certificate would put that name in it. Where the ISSUED certificate is read, a common name beside
