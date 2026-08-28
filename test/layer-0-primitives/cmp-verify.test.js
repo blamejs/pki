@@ -297,6 +297,16 @@ async function run() {
   var tidBefore = Buffer.from(snapV.transactionID);
   rawBuf.fill(0x00);
   check("9l3. a raw Buffer input is snapshotted -- mutating it after verify does not alter the verdict transactionID", snapV.valid === true && snapV.transactionID.equals(tidBefore));
+  // The same snapshot guarantee holds for an ArrayBuffer message, not only a Buffer/Uint8Array (#68): the
+  // message is copied before parse, so mutating the caller's ArrayBuffer cannot rewrite an authenticated
+  // field that verified against the snapshot.
+  var freshSig = Buffer.from(await buildSig());
+  var rawAB = new ArrayBuffer(freshSig.length); var rawABView = new Uint8Array(rawAB); rawABView.set(freshSig);
+  var snapVAB = await pki.cmp.verify(rawAB, { signerCert: s.cert });
+  var tidBeforeAB = Buffer.from(snapVAB.transactionID);
+  rawABView.fill(0x00);
+  check("9l3b. an ArrayBuffer message is snapshotted -- mutating it after verify does not alter the verdict transactionID (#68)",
+    snapVAB.valid === true && snapVAB.transactionID.equals(tidBeforeAB));
   // opts.signerCert is snapshotted too: mutating the caller's signerCert buffer after verify does not change
   // the surfaced verdict.signer.cert / .spki -- they bind to the verified copy, not the caller's live buffer.
   var scBuf = Buffer.from(s.cert);
