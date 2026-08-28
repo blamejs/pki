@@ -334,6 +334,12 @@ function testBuilders() {
   var OLD_SAN = pki.schema.x509.parse(REAL_CERT).extensions.filter(function (e) { return e.oid === SAN_OID; })[0].value;
   // 54b. a re-enroll CSR reusing subject + the identical SAN passes.
   check("54b. matching subject + SAN accepted", pki.est.reenrollGuard(REAL_CERT, reenrollCsr({ san: OLD_SAN })).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
+  // reenrollGuard reads the re-enroll CSR through csr.parse, which takes any BufferSource: an
+  // ArrayBuffer CSR guards identically to a Buffer.
+  var _reCsr = reenrollCsr({ san: OLD_SAN });
+  var _reCsrAB = new ArrayBuffer(_reCsr.length); new Uint8Array(_reCsrAB).set(_reCsr);
+  check("54b'. reenrollGuard accepts an ArrayBuffer CSR (via csr.parse)",
+    pki.est.reenrollGuard(REAL_CERT, _reCsrAB).subjectDn === pki.schema.x509.parse(REAL_CERT).subject.dn);
   // 54c. the old cert has a SAN but the CSR omits it -> est/reenroll-san-mismatch (RFC 7030 sec. 4.2.2 MUST).
   check("54c. omitted SAN rejected", code(function () { pki.est.reenrollGuard(REAL_CERT, reenrollCsr({})); }) === "est/reenroll-san-mismatch");
   // 54d. the CSR requests a DIFFERENT SAN -> est/reenroll-san-mismatch.
@@ -755,6 +761,17 @@ async function testOptionSurface() {
           password: "p", allowCrossOriginRedirect: false });
       })) === false);
   }
+  // The enroll CSR is accepted as any BufferSource, not only a Buffer: an ArrayBuffer CSR passes
+  // _csrDer and reaches the transport (which this vector's transport then refuses). Before the widening
+  // _csrDer refused it synchronously with est/bad-input, so the transport was never reached.
+  async function _reachedTransport(fn) {
+    try { await fn(); return false; }
+    catch (e) { return !!e && String(e.message).indexOf("transport not exercised") !== -1; }
+  }
+  var _enrollCsr = reenrollCsr({});
+  var _enrollCsrAB = new ArrayBuffer(_enrollCsr.length); new Uint8Array(_enrollCsrAB).set(_enrollCsr);
+  check("76a. an ArrayBuffer CSR passes est.simpleenroll's _csrDer and reaches the transport (#68 est _csrDer 1-form widening)",
+    (await _reachedTransport(function () { return pki.est.simpleenroll(BASE, _enrollCsrAB, { transport: never, tls: { useSystemStore: true } }); })) === true);
   // Per-verb keys stay per verb: `strict` is read only after the /cacerts branch has returned, and
   // `oldCert` means nothing to a first enrollment -- accepting either everywhere would advertise a
   // check that cannot run.

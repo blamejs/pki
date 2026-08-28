@@ -48,6 +48,14 @@ async function testRoundTrip() {
   check("policy round-trips", tst.policy === "1.2.3.4.1");
   check("serialNumber round-trips", tst.serialNumber === 42n);
   check("messageImprint hash round-trips", Buffer.compare(tst.messageImprint.hashedMessage, mi.hashedMessage) === 0);
+  // #68 A26: messageImprint.hashedMessage accepts the full BufferSource -- a caller holding a subtle.digest()
+  // result as an ArrayBuffer signs the same imprint (its byte view IS the digest). RED before: hashedMessage
+  // "must be a Buffer", or a length mismatch (an ArrayBuffer has no .length -> guard.bytes.lengthOf reads it).
+  var digAB = new ArrayBuffer(mi.hashedMessage.length);
+  new Uint8Array(digAB).set(mi.hashedMessage);
+  var tokenAB = await pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: digAB }, tsa, { policy: "1.2.3.4.1", serialNumber: 43 });
+  var tstAB = pki.schema.tsp.parseToken(tokenAB).tstInfo;
+  check("hashedMessage as an ArrayBuffer signs the same imprint (#68 A26)", Buffer.compare(tstAB.messageImprint.hashedMessage, mi.hashedMessage) === 0);
   check("genTime round-trips", tst.genTime instanceof Date && tst.genTime.toISOString() === "2026-07-13T12:00:00.000Z");
   check("nonce round-trips", tst.nonce === 0xdeadbeefn);
   check("accuracy round-trips", tst.accuracy && tst.accuracy.seconds === 1n && tst.accuracy.millis === 500);

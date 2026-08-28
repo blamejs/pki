@@ -238,6 +238,14 @@ async function run() {
   var signedReq2 = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
     { requestorName: { bytes: nameDN("Parsed Requestor") }, signer: { cert: pemCert(w.responderCertDer), key: w.responderKeyPkcs8 } });
   check("requestorName accepts a parsed Name ({bytes}) and the signer cert accepts PEM", pki.schema.ocsp.parseRequest(signedReq2).requestorName != null);
+  // requestorName accepts any BufferSource DER Name, not only a Buffer: an ArrayBuffer names the same
+  // requestor. Before the widening the one-form Buffer.isBuffer gate refused it (ocsp/bad-input).
+  var _rnBuf = nameDN("AB Requestor");
+  var _rnAB = new ArrayBuffer(_rnBuf.length); new Uint8Array(_rnAB).set(_rnBuf);
+  var signedReqAB = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer },
+    { requestorName: _rnAB, signer: { cert: w.responderCertDer, key: w.responderKeyPkcs8 } });
+  check("requestorName accepts an ArrayBuffer DER Name (#68 ocsp _nameDer 1-form widening)",
+    pki.schema.ocsp.parseRequest(signedReqAB).requestorName != null);
   check("requestorName must be a DER Name Buffer or a parsed Name",
     (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { requestorName: 42 }); })) === "ocsp/bad-input");
   check("a signer cert given as a parsed certificate is rejected (needs DER/PEM to embed verbatim)",

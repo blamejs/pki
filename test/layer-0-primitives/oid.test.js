@@ -246,6 +246,18 @@ function testKemParams() {
   });
   check("no lib module carries its own ML-KEM size table (the registry is the sole source)",
     offenders.length === 0, offenders.join(", "));
+
+  // isDottedDecimal: the shared dotted-OID vs symbolic-name discriminator (a character scan replacing the
+  // /^\d+(\.\d+)+$/ regex that cms-sign / tsp-sign / cmc-build each carried).
+  check("isDottedDecimal: a dotted OID is dotted", pki.oid.isDottedDecimal("1.2.840.113549") === true);
+  check("isDottedDecimal: two arcs suffice", pki.oid.isDottedDecimal("1.2") === true);
+  check("isDottedDecimal: a symbolic name is not", pki.oid.isDottedDecimal("serverAuth") === false);
+  check("isDottedDecimal: a single arc is not (needs >= 2 groups)", pki.oid.isDottedDecimal("1") === false);
+  check("isDottedDecimal: a trailing dot is not", pki.oid.isDottedDecimal("1.2.") === false);
+  check("isDottedDecimal: a leading dot is not", pki.oid.isDottedDecimal(".1.2") === false);
+  check("isDottedDecimal: a doubled dot is not", pki.oid.isDottedDecimal("1..2") === false);
+  check("isDottedDecimal: a non-digit is not", pki.oid.isDottedDecimal("1.2a") === false);
+  check("isDottedDecimal: empty and non-string are not", pki.oid.isDottedDecimal("") === false && pki.oid.isDottedDecimal(42) === false);
 }
 
 function run() {

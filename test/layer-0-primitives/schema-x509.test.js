@@ -83,6 +83,21 @@ function testPem() {
     var b = pki.schema.x509.parse(vectors.CERT_EC_PEM);
     return a.subject.dn === b.subject.dn && a.serialNumberHex === b.serialNumberHex;
   })());
+  // #68 stage 3: coerceToDer accepts the full BufferSource. An ArrayBuffer and an OFFSET DataView (proving
+  // byteOffset/byteLength are read from the slot) parse IDENTICALLY to the Buffer. RED before the widening:
+  // coerceToDer threw "parse expects a DER Buffer or a PEM string".
+  check("parse(ArrayBuffer) === parse(DER)", (function () {
+    var ab = new ArrayBuffer(der.length);
+    new Uint8Array(ab).set(der);
+    var a = pki.schema.x509.parse(ab), b = pki.schema.x509.parse(der);
+    return a.subject.dn === b.subject.dn && a.serialNumberHex === b.serialNumberHex;
+  })());
+  check("parse(offset DataView) === parse(DER)", (function () {
+    var ab = new ArrayBuffer(der.length + 3);
+    new Uint8Array(ab, 2).set(der);
+    var a = pki.schema.x509.parse(new DataView(ab, 2, der.length)), b = pki.schema.x509.parse(der);
+    return a.subject.dn === b.subject.dn && a.serialNumberHex === b.serialNumberHex;
+  })());
   check("pemDecode rejects wrong label", code(function () { pki.schema.x509.pemDecode(vectors.CERT_EC_PEM, "PRIVATE KEY"); }) === "pem/label-mismatch");
   // The format's canonical RFC 7468 label (CERTIFICATE) is the default, matching
   // every sibling format: called label-less on text whose first block is a

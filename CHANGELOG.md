@@ -4,7 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.31 — 2026-08-25
+## v0.5.32 — 2026-08-28
+
+Every byte input across the toolkit accepts any BufferSource: an ArrayBuffer, a DataView, or any typed array, not only a Buffer or a Uint8Array.
+
+### Added
+
+- Every byte-valued input accepts any `BufferSource`, not only a `Buffer` or a `Uint8Array`. This covers the parse verbs such as `pki.x509.parse` and `pki.pkcs8.parse`; the certificate, request, and DER inputs to the signing and verifying verbs; a `messageImprint` in `pki.tsp.sign` and `pki.tsp.verify`; an OCSP `requestorName` and nonce; a CMP `expectedSender` and signer certificate; a CMC signer's `keyIdentifier` and `spki`; an EST enrollment CSR; a `subjectKeyIdentifier` or `authorityKeyIdentifier` key id; an `initialPermittedSubtrees` or `initialExcludedSubtrees` `iPAddress` base in `pki.path.validate`; and an HTTP request body. An `ArrayBuffer` or a `DataView` produces the same result as the equivalent `Buffer`.
+- `pki.oid.isDottedDecimal(s)` reports whether a string is a dotted-decimal object identifier: two or more numeric arcs separated by dots.
+- `pki.asn1.isPrintableString(s)` reports whether a string contains only the characters an ASN.1 PrintableString may carry: `A` to `Z`, `a` to `z`, `0` to `9`, space, and the symbols `'()+,-./:=?`.
+
+### Changed
+
+- A private key, a password, and other secret byte inputs keep their existing contract of a `Buffer`, a `Uint8Array`, a PEM string, or a `CryptoKey` where one is accepted. A secret input still refuses an `ArrayBuffer` with a typed error, because widening the secret ownership paths is a separate decision.
+
+## v0.5.31 — 2026-08-24
 
 The signing verbs accept a WebCrypto CryptoKey as the signing key, and a subjectAltName entry may be a bare string classified into its GeneralName form.
 

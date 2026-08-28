@@ -186,6 +186,12 @@ async function run() {
   check("9a. crypto-only (no trustAnchors): valid, trusted=false, signer surfaced", t9a.valid === true && t9a.trusted === false && !!t9a.signer && !!t9a.signer.cert);
   var t9b = await pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], time: T });
   check("9b. with the issuing CA as trustAnchor: valid, trusted=true", t9b.valid === true && t9b.trusted === true);
+  // The signerCert and each trustAnchor accept any BufferSource, not only a Buffer/Uint8Array:
+  // an ArrayBuffer certificate resolves the same protection cert and chains to the same anchor.
+  function _cAB(bytes) { var ab = new ArrayBuffer(bytes.length); new Uint8Array(ab).set(bytes); return ab; }
+  var t9bAB = await pki.cmp.verify(chainDer, { signerCert: _cAB(signerCert), trustAnchors: [_cAB(caCert)], time: T });
+  check("9b'. an ArrayBuffer signerCert and trustAnchor verify and trust identically (#68 cmp cert doors)",
+    t9bAB.valid === true && t9bAB.trusted === true);
   var t9c = await pki.cmp.verify(await buildSig(), { signerCert: s.cert, trustAnchors: [caCert], time: T });
   check("9c. a signer NOT chaining to the anchor -> { valid:true, trusted:false, cmp/untrusted-signer }", t9c.trusted === false && t9c.code === "cmp/untrusted-signer");
   var noKuKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });

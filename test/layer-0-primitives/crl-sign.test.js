@@ -139,6 +139,15 @@ async function testRoundTrip() {
 
   // tbsBytes is the exact signed range -- re-parsing must recover identical bytes.
   check("tbsBytes byte-stable across re-parse", Buffer.compare(c.tbsBytes, pki.schema.crl.parse(der).tbsBytes) === 0);
+
+  // authorityKeyIdentifier accepts any BufferSource key id, not only a Buffer: an ArrayBuffer key id
+  // embeds the same bytes. Before the widening the one-form Buffer.isBuffer gate threw crl/bad-input.
+  var akiAB = new ArrayBuffer(20); new Uint8Array(akiAB).fill(0xab);
+  var derAkiAB = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 8n,
+    revoked: [{ serialNumber: 0x1234n, revocationDate: RD, reason: "keyCompromise" }],
+    extensions: { authorityKeyIdentifier: akiAB } }, issuerOf(s));
+  check("an ArrayBuffer authorityKeyIdentifier is accepted (#68 crl _akiKeyId 1-form widening)",
+    crlExt(pki.schema.crl.parse(derAkiAB), "authorityKeyIdentifier") != null);
 }
 
 // ---- sec. 5.1.2.6 -- an empty revocation list omits the field (not an empty SEQUENCE) ----

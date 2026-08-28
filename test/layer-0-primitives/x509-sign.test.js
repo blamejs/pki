@@ -460,6 +460,21 @@ async function testExtensionSurface() {
   check("explicit SKI value embedded verbatim", Buffer.compare(asn1.read.octetString(asn1.decode(ski.value)), Buffer.alloc(20, 0xab)) === 0);
   var bc = c.extensions.filter(function (x) { return (x.name || x.oid) === "basicConstraints"; })[0];
   check("basicConstraints pathLen encoded", asn1.decode(bc.value).children.length === 2);
+
+  // subjectKeyIdentifier and authorityKeyIdentifier accept any BufferSource key id, not only a
+  // Buffer: an ArrayBuffer key id embeds the same 20 bytes. Before the widening the one-form
+  // Buffer.isBuffer gate refused it and the sign threw x509/bad-input.
+  var skiAB = new ArrayBuffer(20); new Uint8Array(skiAB).fill(0xab);
+  var akiAB = new ArrayBuffer(20); new Uint8Array(akiAB).fill(0xcd);
+  var derKidAB = await pki.x509.sign({ subject: [{ commonName: "kidAB" }], subjectPublicKey: s.spki,
+    notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true },
+      subjectKeyIdentifier: skiAB, authorityKeyIdentifier: akiAB } }, { key: s.key });
+  var cKidAB = pki.schema.x509.parse(derKidAB);
+  var skiExtAB = cKidAB.extensions.filter(function (x) { return (x.name || x.oid) === "subjectKeyIdentifier"; })[0];
+  check("an ArrayBuffer subjectKeyIdentifier embeds the same key id (#68 A3 skiKeyId 1-form widening)",
+    !!skiExtAB && Buffer.compare(asn1.read.octetString(asn1.decode(skiExtAB.value)), Buffer.alloc(20, 0xab)) === 0);
+  check("an ArrayBuffer authorityKeyIdentifier is accepted (#68 x509 _akiKeyId 1-form widening)",
+    cKidAB.extensions.some(function (x) { return (x.name || x.oid) === "authorityKeyIdentifier"; }));
 }
 
 async function testGeneralNameForms() {
