@@ -520,6 +520,11 @@ async function run() {
   // ---- the lower-level pki.path.verifyOcspResponse primitive pki.ocsp.verify composes ----
   var lowGood = await pki.path.verifyOcspResponse(good, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
   check("pki.path.verifyOcspResponse (response DER) -> good, authorized, matched", lowGood.status === "good" && lowGood.responderAuthorized === true && lowGood.matched === true);
+  // #68: the OCSP response accepts any BufferSource, not only a Buffer / Uint8Array / PEM. An ArrayBuffer
+  // of the same DER verifies identically; before the widening it was refused as path/bad-input.
+  var _goodAB = new ArrayBuffer(good.length); new Uint8Array(_goodAB).set(good);
+  var lowGoodAB = await pki.path.verifyOcspResponse(_goodAB, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
+  check("pki.path.verifyOcspResponse accepts an ArrayBuffer response DER (#68)", lowGoodAB.status === "good" && lowGoodAB.matched === true);
   var lowStale = await pki.path.verifyOcspResponse(noNext, pki.schema.x509.parse(w.targetCertDer), pki.schema.x509.parse(w.issuerCertDer), T);
   check("pki.path.verifyOcspResponse fail-closes an uncacheable (no nextUpdate) response to unknown", lowStale.status === "unknown");
   // A signature check has three parts -- the signature, the algorithm that verifies it, and the

@@ -179,6 +179,11 @@ async function testSerialBounds() {
   var ok = BigInt("0x7f" + "ab".repeat(19));
   var der = await pki.x509.sign(Object.assign({ serialNumber: ok }, base), { key: s.key });
   check("20-octet serial accepted", pki.schema.x509.parse(der).serialNumberHex === ok.toString(16));
+  // #68: a byte-magnitude serialNumber accepts any BufferSource, not only a Buffer. An ArrayBuffer of
+  // the magnitude bytes signs the same serial; before the widening it was rejected as x509/bad-serial.
+  var serX509AB = new ArrayBuffer(2); new Uint8Array(serX509AB).set([0x7f, 0xab]);
+  check("serialNumber as an ArrayBuffer accepted (#68)",
+    pki.schema.x509.parse(await pki.x509.sign(Object.assign({ serialNumber: serX509AB }, base), { key: s.key })).serialNumberHex === "7fab");
 }
 
 // ---- validity encoding auto-selection (RFC 5280 sec. 4.1.2.5) --------------
@@ -766,6 +771,10 @@ async function testInputForms() {
   // raw Name DER as subject (the escape hatch) round-trips.
   var rawName = B.sequence([B.set([B.sequence([B.oid(oidB("commonName")), B.utf8("Raw DN")])])]);
   check("raw Name DER subject round-trips", /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawName }), { key: s.key })).subject.dn));
+  // #68: a raw Name DER subject accepts any BufferSource. An ArrayBuffer of the same DER round-trips.
+  var rawNameAB = new ArrayBuffer(rawName.length); new Uint8Array(rawNameAB).set(rawName);
+  check("raw Name DER subject as an ArrayBuffer round-trips (#68)",
+    /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawNameAB }), { key: s.key })).subject.dn));
 }
 
 async function testCoverageEdges() {
