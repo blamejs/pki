@@ -186,6 +186,12 @@ async function run() {
   check("9a. crypto-only (no trustAnchors): valid, trusted=false, signer surfaced", t9a.valid === true && t9a.trusted === false && !!t9a.signer && !!t9a.signer.cert);
   var t9b = await pki.cmp.verify(chainDer, { signerCert: signerCert, trustAnchors: [caCert], time: T });
   check("9b. with the issuing CA as trustAnchor: valid, trusted=true", t9b.valid === true && t9b.trusted === true);
+  // The signerCert and each trustAnchor accept any BufferSource, not only a Buffer/Uint8Array:
+  // an ArrayBuffer certificate resolves the same protection cert and chains to the same anchor.
+  function _cAB(bytes) { var ab = new ArrayBuffer(bytes.length); new Uint8Array(ab).set(bytes); return ab; }
+  var t9bAB = await pki.cmp.verify(chainDer, { signerCert: _cAB(signerCert), trustAnchors: [_cAB(caCert)], time: T });
+  check("9b'. an ArrayBuffer signerCert and trustAnchor verify and trust identically (#68 cmp cert doors)",
+    t9bAB.valid === true && t9bAB.trusted === true);
   var t9c = await pki.cmp.verify(await buildSig(), { signerCert: s.cert, trustAnchors: [caCert], time: T });
   check("9c. a signer NOT chaining to the anchor -> { valid:true, trusted:false, cmp/untrusted-signer }", t9c.trusted === false && t9c.code === "cmp/untrusted-signer");
   var noKuKp = nodeCrypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
@@ -291,6 +297,16 @@ async function run() {
   var tidBefore = Buffer.from(snapV.transactionID);
   rawBuf.fill(0x00);
   check("9l3. a raw Buffer input is snapshotted -- mutating it after verify does not alter the verdict transactionID", snapV.valid === true && snapV.transactionID.equals(tidBefore));
+  // The same snapshot guarantee holds for an ArrayBuffer message, not only a Buffer/Uint8Array (#68): the
+  // message is copied before parse, so mutating the caller's ArrayBuffer cannot rewrite an authenticated
+  // field that verified against the snapshot.
+  var freshSig = Buffer.from(await buildSig());
+  var rawAB = new ArrayBuffer(freshSig.length); var rawABView = new Uint8Array(rawAB); rawABView.set(freshSig);
+  var snapVAB = await pki.cmp.verify(rawAB, { signerCert: s.cert });
+  var tidBeforeAB = Buffer.from(snapVAB.transactionID);
+  rawABView.fill(0x00);
+  check("9l3b. an ArrayBuffer message is snapshotted -- mutating it after verify does not alter the verdict transactionID (#68)",
+    snapVAB.valid === true && snapVAB.transactionID.equals(tidBeforeAB));
   // opts.signerCert is snapshotted too: mutating the caller's signerCert buffer after verify does not change
   // the surfaced verdict.signer.cert / .spki -- they bind to the verified copy, not the caller's live buffer.
   var scBuf = Buffer.from(s.cert);

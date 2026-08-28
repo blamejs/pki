@@ -209,6 +209,13 @@ function run() {
   check("policy: the consistency check refuses an over-long authPolicy digest", code(function () {
     tpm.assertObjectAttributePolicy(pubWith({ authPolicy: Buffer.alloc(65, 1) }), policy({ consistency: true }), E, PCODE, MCODE);
   }) === MCODE);
+  // An authPolicy.allow entry accepts any BufferSource, not only a Buffer: an ArrayBuffer digest
+  // whitelists the same policy. Before the widening the one-form Buffer.isBuffer gate refused it.
+  check("policy: an ArrayBuffer authPolicy.allow entry whitelists the matching policy (#68 validator-tpm 1-form widening)", (function () {
+    var apAB = new ArrayBuffer(32); new Uint8Array(apAB).fill(1);   // matches pubWith's default authPolicy (Buffer.alloc(32, 1))
+    tpm.assertObjectAttributePolicy(pubWith({}), policy({ authPolicy: { allow: [apAB] } }), E, PCODE, MCODE);
+    return true;
+  })() === true);
   // sec. 8.3.3.11 verbatim: encryptedDuplication "shall not be SET in any object that has fixedTPM
   // SET" -- a key that cannot leave its TPM cannot be duplicated at all. bit 1 = fixedTPM,
   // bit 11 = encryptedDuplication.

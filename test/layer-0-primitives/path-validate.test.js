@@ -499,6 +499,14 @@ async function testAcceptChains() {
   var res1 = await run([direct], { time: T2027, trustAnchor: anchor });
   check("good 1-cert chain validates", res1.valid === true);
 
+  // #68 AB1: a trust-anchor tuple whose publicKey is an ArrayBuffer (a BufferSource) must validate
+  // identically to a Buffer -- isByteSource says yes, so the tuple normalizer must be snapshotSource, not
+  // snapshot (which accepts only Buffer/Uint8Array and would accept-then-throw on the wider form).
+  var abPub = new ArrayBuffer(anchor.publicKey.length);
+  new Uint8Array(abPub).set(anchor.publicKey);
+  var resAB = await run([direct], { time: T2027, trustAnchor: { name: anchor.name, publicKey: abPub, algorithm: anchor.algorithm } });
+  check("#68 AB1: an ArrayBuffer trustAnchor publicKey validates like a Buffer", resAB.valid === true);
+
   // #74: a parsed root CERTIFICATE works as opts.trustAnchor (normalized to a tuple), and a mis-shaped
   // anchor is refused with path/bad-input instead of a soft verdict -- a tuple missing `algorithm`
   // previously validated the path (fail-OPEN) because a self-describing SPKI masked the undefined value.
@@ -3185,6 +3193,16 @@ async function testInitialInputsAndTargetGates() {
   var leafEvil = await mkCert({ subject: "SeedEvil", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("www.evil.example")])] });
   var resSeedEx = await run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ tag: 2, base: "evil.example" }] });
   check("initialExcludedSubtrees rejects a matching dNSName SAN", resSeedEx.valid === false && failCodes(resSeedEx).indexOf("path/name-constraint-excluded") !== -1);
+  // An iPAddress excluded seed whose base (address+mask) arrives as an ArrayBuffer must
+  // exclude a matching iPAddress SAN exactly as a Buffer base does: it is normalized to a
+  // byte view the matcher can index. Left as an ArrayBuffer the address comparison would be
+  // vacuously false and the configured exclusion would silently not apply.
+  function _seedAB(bytes) { var ab = new ArrayBuffer(bytes.length); new Uint8Array(ab).set(bytes); return ab; }
+  var leafIp = await mkCert({ subject: "SeedIp", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([192, 0, 2, 5])])] });
+  var resSeedIpAB = await run([leafIp], { time: T2027, trustAnchor: anchor,
+    initialExcludedSubtrees: [{ tag: 7, base: _seedAB([192, 0, 2, 0, 255, 255, 255, 0]) }] });
+  check("initialExcludedSubtrees with an ArrayBuffer iPAddress base excludes a matching SAN (#68 A34)",
+    resSeedIpAB.valid === false && failCodes(resSeedIpAB).indexOf("path/name-constraint-excluded") !== -1);
   // A MIS-SHAPED seed entry (the decoder-natural { base: { tagNumber, value } }
   // shape) must throw at the entry point — absorbed raw it would never match
   // and the configured exclusion would silently not apply.

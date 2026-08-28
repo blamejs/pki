@@ -209,6 +209,28 @@ async function testInputForms() {
   var parsed = pki.schema.cms.parse(fx("rsa-attached.p7s"));
   var fromObj = await pki.cms.verify(parsed);
   check("parsed-object input -> valid", fromObj.valid === true);
+
+  // Byte-source input forms (the WebCrypto BufferSource contract): a same-realm AND a CROSS-REALM ArrayBuffer
+  // verify identically to a Buffer. #68 A'2 -- pki.cms.verify normalizes the input via _snapshotIfBytes ->
+  // guard.bytes.isByteSource; before routing, `instanceof ArrayBuffer` turned away the cross-realm buffer,
+  // leaving it un-snapshotted for cms.parse to reject with cms/bad-input.
+  var derBuf = fx("rsa-attached.p7s");
+  var sameAB = new ArrayBuffer(derBuf.length);
+  new Uint8Array(sameAB).set(derBuf);
+  var fromSameAB = await pki.cms.verify(sameAB);
+  check("same-realm ArrayBuffer input -> valid", fromSameAB.valid === true && fromSameAB.signers.length === 1);
+  var crossAB = require("vm").runInNewContext("new ArrayBuffer(" + derBuf.length + ")");
+  new Uint8Array(crossAB).set(derBuf);
+  var fromCrossAB = await pki.cms.verify(crossAB);
+  check("cross-realm ArrayBuffer input -> valid", fromCrossAB.valid === true && fromCrossAB.signers.length === 1);
+
+  // opts.content (detached) passes through _snapshotIfBytes -> guard.bytes.isByteSource (#68 A'2). A
+  // cross-realm ArrayBuffer content was refused before routing (instanceof ArrayBuffer fails cross-realm ->
+  // left un-snapshotted -> _toBuf rejects); after routing it verifies identically to the Buffer content.
+  var contentCrossAB = require("vm").runInNewContext("new ArrayBuffer(" + CONTENT.length + ")");
+  new Uint8Array(contentCrossAB).set(CONTENT);
+  var detachedCross = await pki.cms.verify(fx("rsa-detached.p7s"), { content: contentCrossAB });
+  check("detached opts.content as a cross-realm ArrayBuffer -> valid (#68 A'2 realm-fragility)", detachedCross.valid === true);
 }
 
 // An OID no registry row claims, so it resolves to no algorithm at all.

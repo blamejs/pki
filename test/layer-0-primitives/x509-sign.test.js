@@ -179,6 +179,11 @@ async function testSerialBounds() {
   var ok = BigInt("0x7f" + "ab".repeat(19));
   var der = await pki.x509.sign(Object.assign({ serialNumber: ok }, base), { key: s.key });
   check("20-octet serial accepted", pki.schema.x509.parse(der).serialNumberHex === ok.toString(16));
+  // #68: a byte-magnitude serialNumber accepts any BufferSource, not only a Buffer. An ArrayBuffer of
+  // the magnitude bytes signs the same serial; before the widening it was rejected as x509/bad-serial.
+  var serX509AB = new ArrayBuffer(2); new Uint8Array(serX509AB).set([0x7f, 0xab]);
+  check("serialNumber as an ArrayBuffer accepted (#68)",
+    pki.schema.x509.parse(await pki.x509.sign(Object.assign({ serialNumber: serX509AB }, base), { key: s.key })).serialNumberHex === "7fab");
 }
 
 // ---- validity encoding auto-selection (RFC 5280 sec. 4.1.2.5) --------------
@@ -460,6 +465,21 @@ async function testExtensionSurface() {
   check("explicit SKI value embedded verbatim", Buffer.compare(asn1.read.octetString(asn1.decode(ski.value)), Buffer.alloc(20, 0xab)) === 0);
   var bc = c.extensions.filter(function (x) { return (x.name || x.oid) === "basicConstraints"; })[0];
   check("basicConstraints pathLen encoded", asn1.decode(bc.value).children.length === 2);
+
+  // subjectKeyIdentifier and authorityKeyIdentifier accept any BufferSource key id, not only a
+  // Buffer: an ArrayBuffer key id embeds the same 20 bytes. Before the widening the one-form
+  // Buffer.isBuffer gate refused it and the sign threw x509/bad-input.
+  var skiAB = new ArrayBuffer(20); new Uint8Array(skiAB).fill(0xab);
+  var akiAB = new ArrayBuffer(20); new Uint8Array(akiAB).fill(0xcd);
+  var derKidAB = await pki.x509.sign({ subject: [{ commonName: "kidAB" }], subjectPublicKey: s.spki,
+    notBefore: NB, notAfter: NA, extensions: { basicConstraints: { cA: true },
+      subjectKeyIdentifier: skiAB, authorityKeyIdentifier: akiAB } }, { key: s.key });
+  var cKidAB = pki.schema.x509.parse(derKidAB);
+  var skiExtAB = cKidAB.extensions.filter(function (x) { return (x.name || x.oid) === "subjectKeyIdentifier"; })[0];
+  check("an ArrayBuffer subjectKeyIdentifier embeds the same key id (#68 A3 skiKeyId 1-form widening)",
+    !!skiExtAB && Buffer.compare(asn1.read.octetString(asn1.decode(skiExtAB.value)), Buffer.alloc(20, 0xab)) === 0);
+  check("an ArrayBuffer authorityKeyIdentifier is accepted (#68 x509 _akiKeyId 1-form widening)",
+    cKidAB.extensions.some(function (x) { return (x.name || x.oid) === "authorityKeyIdentifier"; }));
 }
 
 async function testGeneralNameForms() {
@@ -751,6 +771,10 @@ async function testInputForms() {
   // raw Name DER as subject (the escape hatch) round-trips.
   var rawName = B.sequence([B.set([B.sequence([B.oid(oidB("commonName")), B.utf8("Raw DN")])])]);
   check("raw Name DER subject round-trips", /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawName }), { key: s.key })).subject.dn));
+  // #68: a raw Name DER subject accepts any BufferSource. An ArrayBuffer of the same DER round-trips.
+  var rawNameAB = new ArrayBuffer(rawName.length); new Uint8Array(rawNameAB).set(rawName);
+  check("raw Name DER subject as an ArrayBuffer round-trips (#68)",
+    /Raw DN/.test(pki.schema.x509.parse(await pki.x509.sign(base({ subject: rawNameAB }), { key: s.key })).subject.dn));
 }
 
 async function testCoverageEdges() {

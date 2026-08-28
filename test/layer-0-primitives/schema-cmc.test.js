@@ -168,6 +168,13 @@ async function run() {
     a1.kind === "pkiData" && a1.controls.length === 0 && a1.requests.length === 0 &&
     a1.cmsSequence.length === 0 && a1.otherMsgs.length === 0);
 
+  // A1a -- parsePkiData reads any BufferSource. A DataView over the same PKIData DER parses identically;
+  // before the fix a DataView was handed to Buffer.from, which produced an empty buffer and a parse failure.
+  var _pdDer = pkiData([], [], [], []);
+  var _pdDV = new DataView(_pdDer.buffer.slice(_pdDer.byteOffset, _pdDer.byteOffset + _pdDer.length));
+  check("A1a. parsePkiData accepts a DataView (#68 -- Buffer.from(DataView) was garbage)",
+    cmc.parsePkiData(_pdDV).kind === "pkiData");
+
   // A2 -- PKIResponse has THREE sequences (no reqSequence).
   var a2 = cmc.parse(signedData(ID_CCT_PKI_RESPONSE, pkiResponse([], [], [])));
   check("A2. an all-empty PKIResponse parses as kind pkiResponse (PR6: three fields)",

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.5.31",
+  "packageVersion": "0.5.32",
   "surface": {
     "C": {
       "kind": "object",
@@ -998,6 +998,10 @@
         "encodeTLV": {
           "kind": "function",
           "arity": 4
+        },
+        "isPrintableString": {
+          "kind": "function",
+          "arity": 1
         },
         "read": {
           "kind": "object",
@@ -2604,6 +2608,10 @@
           "arity": 1
         },
         "has": {
+          "kind": "function",
+          "arity": 1
+        },
+        "isDottedDecimal": {
           "kind": "function",
           "arity": 1
         },

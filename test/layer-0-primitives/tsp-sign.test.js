@@ -48,6 +48,14 @@ async function testRoundTrip() {
   check("policy round-trips", tst.policy === "1.2.3.4.1");
   check("serialNumber round-trips", tst.serialNumber === 42n);
   check("messageImprint hash round-trips", Buffer.compare(tst.messageImprint.hashedMessage, mi.hashedMessage) === 0);
+  // #68 A26: messageImprint.hashedMessage accepts the full BufferSource -- a caller holding a subtle.digest()
+  // result as an ArrayBuffer signs the same imprint (its byte view IS the digest). RED before: hashedMessage
+  // "must be a Buffer", or a length mismatch (an ArrayBuffer has no .length -> guard.bytes.lengthOf reads it).
+  var digAB = new ArrayBuffer(mi.hashedMessage.length);
+  new Uint8Array(digAB).set(mi.hashedMessage);
+  var tokenAB = await pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: digAB }, tsa, { policy: "1.2.3.4.1", serialNumber: 43 });
+  var tstAB = pki.schema.tsp.parseToken(tokenAB).tstInfo;
+  check("hashedMessage as an ArrayBuffer signs the same imprint (#68 A26)", Buffer.compare(tstAB.messageImprint.hashedMessage, mi.hashedMessage) === 0);
   check("genTime round-trips", tst.genTime instanceof Date && tst.genTime.toISOString() === "2026-07-13T12:00:00.000Z");
   check("nonce round-trips", tst.nonce === 0xdeadbeefn);
   check("accuracy round-trips", tst.accuracy && tst.accuracy.seconds === 1n && tst.accuracy.millis === 500);
@@ -172,6 +180,10 @@ async function testPassthrough() {
   check("TSA cert as PEM -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: certPem, key: tsa.key }, { policy: "1.2.3", serialNumber: 7 }))).valid === true);
   check("TSA cert as Uint8Array -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: new Uint8Array(tsa.cert), key: tsa.key }, { policy: "1.2.3", serialNumber: 8 }))).valid === true);
   check("TSA cert as a PEM Buffer -> verifies", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: Buffer.from(certPem), key: tsa.key }, { policy: "1.2.3", serialNumber: 9 }))).valid === true);
+  // #68: the TSA certificate accepts any BufferSource, not only a Buffer / Uint8Array / PEM. A DER
+  // ArrayBuffer signs and verifies identically; before the widening it was refused as tsp/bad-input.
+  var certAB = new ArrayBuffer(tsa.cert.length); new Uint8Array(certAB).set(tsa.cert);
+  check("TSA cert as a DER ArrayBuffer -> verifies (#68)", (await pki.cms.verify(await pki.tsp.sign(imprint("sha256"), { cert: certAB, key: tsa.key }, { policy: "1.2.3", serialNumber: 11 }))).valid === true);
 
   // a TSA cert as a Uint8Array of PEM bytes: the ESSCertIDv2 certHash is over the DECODED DER
   // certificate (matching the embedded cert), never the PEM text.

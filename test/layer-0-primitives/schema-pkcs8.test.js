@@ -152,6 +152,15 @@ function testInputCoercion() {
   check("parse a PEM Buffer", parseCode(Buffer.from(pem, "utf8")) === "NO-THROW");
   check("parse a PEM Buffer with a BOM", parseCode(Buffer.concat([Buffer.from([0xEF, 0xBB, 0xBF]), Buffer.from(pem, "utf8")])) === "NO-THROW");
   check("parse a Uint8Array", parseCode(new Uint8Array(der)) === "NO-THROW");
+  // #68 stage 3: coerceToDer accepts the full BufferSource. pkcs8 parse is makeParser-DIRECT (no recording
+  // front-door), so coerceToDer is the byte gate here -- a bare ArrayBuffer and an OFFSET DataView (proving
+  // byteOffset/byteLength read from the slot) parse. RED before the widening: "pkcs8/bad-input".
+  var ab = new ArrayBuffer(der.length);
+  new Uint8Array(ab).set(der);
+  check("parse an ArrayBuffer", parseCode(ab) === "NO-THROW");
+  var abo = new ArrayBuffer(der.length + 3);
+  new Uint8Array(abo, 2).set(der);
+  check("parse an offset DataView", parseCode(new DataView(abo, 2, der.length)) === "NO-THROW");
   check("bad input type rejected", parseCode(42) === "pkcs8/bad-input");
   check("pemDecode yields DER", pki.schema.pkcs8.pemDecode(pem)[0] === 0x30);
 }

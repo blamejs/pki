@@ -824,6 +824,17 @@ function testBuildPrintableAndChildrenGuard() {
   var b = pki.asn1.build;
   check("build.printable rejects a character outside the set",
     code(function () { b.printable("A@B"); }) === "asn1/bad-printable-string");
+  // isPrintableString (the exported character-scan charset predicate replacing the /^[...]*$/ regex): the
+  // full special set is accepted; a byte outside it (@ _ tab) is rejected; empty is accepted.
+  check("isPrintableString accepts the full set + empty", pki.asn1.isPrintableString("Az9 '()+,-./:=?") === true && pki.asn1.isPrintableString("") === true);
+  check("isPrintableString rejects '@'", pki.asn1.isPrintableString("a@b") === false);
+  check("isPrintableString rejects '_'", pki.asn1.isPrintableString("a_b") === false);
+  check("isPrintableString rejects a tab", pki.asn1.isPrintableString("a\tb") === false);
+  // A non-string returns false rather than skipping the scan (42 / {} have no string length so the
+  // loop was vacuous) or throwing (null / undefined), matching the sibling string predicates.
+  check("isPrintableString returns false for non-strings", pki.asn1.isPrintableString(42) === false &&
+    pki.asn1.isPrintableString({}) === false && pki.asn1.isPrintableString(null) === false &&
+    pki.asn1.isPrintableString(undefined) === false && pki.asn1.isPrintableString([65]) === false);
   check("build.sequence rejects a non-array argument",
     code(function () { b.sequence("notarray"); }) === "asn1/bad-children");
   check("build.set rejects a null argument",

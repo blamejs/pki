@@ -139,6 +139,15 @@ async function testRoundTrip() {
 
   // tbsBytes is the exact signed range -- re-parsing must recover identical bytes.
   check("tbsBytes byte-stable across re-parse", Buffer.compare(c.tbsBytes, pki.schema.crl.parse(der).tbsBytes) === 0);
+
+  // authorityKeyIdentifier accepts any BufferSource key id, not only a Buffer: an ArrayBuffer key id
+  // embeds the same bytes. Before the widening the one-form Buffer.isBuffer gate threw crl/bad-input.
+  var akiAB = new ArrayBuffer(20); new Uint8Array(akiAB).fill(0xab);
+  var derAkiAB = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 8n,
+    revoked: [{ serialNumber: 0x1234n, revocationDate: RD, reason: "keyCompromise" }],
+    extensions: { authorityKeyIdentifier: akiAB } }, issuerOf(s));
+  check("an ArrayBuffer authorityKeyIdentifier is accepted (#68 crl _akiKeyId 1-form widening)",
+    crlExt(pki.schema.crl.parse(derAkiAB), "authorityKeyIdentifier") != null);
 }
 
 // ---- sec. 5.1.2.6 -- an empty revocation list omits the field (not an empty SEQUENCE) ----
@@ -300,6 +309,8 @@ async function testVerifyPerAlgorithm() {
     var s = makeSigner(alg);
     var der = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, revoked: [{ serialNumber: 3n, revocationDate: RD, reason: "keyCompromise" }] }, issuerOf(s));
     check(alg + " verify true with the correct key", (await pki.crl.verify(der, { publicKey: s.spki })) === true);
+    var spkiAB = new ArrayBuffer(s.spki.length); new Uint8Array(spkiAB).set(s.spki);   // #68: a raw SPKI issuer as any BufferSource
+    check(alg + " verify true with a raw SPKI issuer as an ArrayBuffer (#68)", (await pki.crl.verify(der, spkiAB)) === true);
     var bad = Buffer.from(der); bad[bad.length - 1] ^= 0xff;
     check(alg + " verify false on a tampered signature", (await pki.crl.verify(bad, { publicKey: s.spki })) === false);
     check(alg + " verify false with a wrong key", (await pki.crl.verify(der, { publicKey: makeSigner(alg).spki })) === false);
@@ -601,6 +612,10 @@ async function testPemAndIsRevoked() {
   // 0xabcd has its top bit set, so the DER INTEGER content carries a leading 00 sign octet -- isRevoked
   // normalizes the query the same way schema-crl surfaces serialNumberHex, so the padded forms match.
   check("isRevoked returns the matching entry (sign padding preserved)", pki.crl.isRevoked(der, 0xabcdn).serialNumberHex === "00abcd");
+  // #68: a byte-magnitude serial accepts any BufferSource, not only a Buffer. An ArrayBuffer of the
+  // same magnitude bytes finds the same entry; before the widening it was rejected as crl/bad-input.
+  var serAB = new ArrayBuffer(2); new Uint8Array(serAB).set([0xab, 0xcd]);
+  check("isRevoked accepts a byte serial as an ArrayBuffer (#68)", pki.crl.isRevoked(der, serAB) !== null && pki.crl.isRevoked(der, serAB).serialNumberHex === "00abcd");
   check("isRevoked returns null for an absent serial", pki.crl.isRevoked(der, 0x9999n) === null);
   // Currency, on the same footing as the scope refusals below: outside the window a CRL states,
   // a serial being absent says nothing about the certificate, and `null` read as "not revoked" is

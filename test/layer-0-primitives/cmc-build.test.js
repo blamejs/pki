@@ -727,6 +727,18 @@ async function run() {
     koParsed.kind === "pkiData" && koParsed.requests.length === 1 &&
     (koParsed.cms.certificates || []).length === 0);
 
+  // The signer's public byte fields (keyIdentifier, spki) accept any BufferSource, not only
+  // a Buffer/Uint8Array: an ArrayBuffer names the same identifier and binds the same key.
+  // Before the fix the ArrayBuffer keyIdentifier/spki was mangled to an empty object by the
+  // signer copy and the binding was refused; the caller-facing behavior must be identical.
+  function _toAB(b) { var ab = new ArrayBuffer(b.length); new Uint8Array(ab).set(b); return ab; }
+  var keyOnlyAB = await pki.cmc.build({ requests: [{ tcr: csrWithSki }] },
+    { key: s.key, spki: _toAB(s.spki), keyIdentifier: _toAB(ski) });
+  var koParsedAB = pki.schema.cmc.parse(keyOnlyAB);
+  check("F14a. a key-only signer accepts an ArrayBuffer keyIdentifier and spki, binding identically (#68 A15/A16)",
+    koParsedAB.kind === "pkiData" && koParsedAB.requests.length === 1 &&
+    (koParsedAB.cms.certificates || []).length === 0);
+
   check("F14b. a key-only signer naming an identifier no request declares is refused (sec. 3.2c)",
     (await acode(function () {
       return pki.cmc.build({ requests: [{ tcr: csrWithSki }] },

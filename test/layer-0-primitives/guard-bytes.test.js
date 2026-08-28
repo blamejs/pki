@@ -997,18 +997,16 @@ async function testCmsDoors() {
     function () { return pki.cms.sign(detachedUint8(CONTENT), { cert: s.cert, key: s.key }); },
     "cms/bad-input");
 
-  // The byte forms this verb does NOT document stay refused. Copying the arguments at entry must
-  // not widen that: a Uint16Array or a DataView reaching the encoder would carry whatever bytes the
-  // platform's element layout produced, under a signature that says nothing about which layout.
-  await rejectsWith("cms.sign over a Uint16Array",
-    function () { return pki.cms.sign(new Uint16Array([1, 2, 3]), { cert: s.cert, key: s.key }); },
-    "cms/bad-input");
-  await rejectsWith("cms.sign over a DataView",
-    function () { return pki.cms.sign(new DataView(new ArrayBuffer(8)), { cert: s.cert, key: s.key }); },
-    "cms/bad-input");
-  await rejectsWith("cms.sign over a raw ArrayBuffer",
-    function () { return pki.cms.sign(new ArrayBuffer(8), { cert: s.cert, key: s.key }); },
-    "cms/bad-input");
+  // Every BufferSource form is accepted as content and signed OVER ITS BYTE VIEW (#68 -- the byte doors route
+  // through guard.bytes.isByteSource, the WebCrypto BufferSource contract). A Uint16Array / DataView /
+  // ArrayBuffer carries the platform's element-layout bytes; passing a BufferSource is opting into exactly
+  // those bytes, and the signature is over them. (Detachment / TOCTOU is still refused, below and elsewhere.)
+  check("cms.sign over a Uint16Array is accepted (its byte view is signed)",
+    Buffer.isBuffer(await pki.cms.sign(new Uint16Array([1, 2, 3]), { cert: s.cert, key: s.key })));
+  check("cms.sign over a DataView is accepted",
+    Buffer.isBuffer(await pki.cms.sign(new DataView(new ArrayBuffer(8)), { cert: s.cert, key: s.key })));
+  check("cms.sign over a raw ArrayBuffer is accepted",
+    Buffer.isBuffer(await pki.cms.sign(new ArrayBuffer(8), { cert: s.cert, key: s.key })));
   check("cms.sign still accepts the byte forms it documents",
     Buffer.isBuffer(await pki.cms.sign(new Uint8Array([1, 2, 3]), { cert: s.cert, key: s.key })));
   await rejectsWith("cms.sign with a detached signer certificate",

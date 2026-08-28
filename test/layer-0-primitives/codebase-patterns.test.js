@@ -159,6 +159,9 @@ var VALID_ALLOW_CLASSES = {
   "nan-date-comparison-unguarded": 1,
   "eddsa-verify-without-loworder-gate": 1,
   "internal-provenance-in-comment": 1,
+  // The private-key / secret / password ownership paths keep the two-form (Buffer / Uint8Array)
+  // contract by design; testNoPartialByteAcceptance passes over a line that declares it.
+  "byte-source-narrow": 1,
   // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
   // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
   "swallow-unverified": 1,
@@ -2996,30 +2999,30 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 243,
-    "lib/est.js": 203,
-    "lib/cmp-build.js": 151,
-    "lib/crmf-sign.js": 47,
-    "lib/path-validate.js": 186,
-    "lib/webauthn.js": 178,
-    "lib/asn1-der.js": 135,
-    "lib/trust.js": 111,
-    "lib/cms-sign.js": 93,
-    "lib/webauthn-mds.js": 92,
+    "lib/acme.js": 211,
+    "lib/est.js": 181,
+    "lib/cmp-build.js": 147,
+    "lib/crmf-sign.js": 46,
+    "lib/path-validate.js": 184,
+    "lib/webauthn.js": 174,
+    "lib/asn1-der.js": 118,
+    "lib/trust.js": 108,
+    "lib/cms-sign.js": 90,
+    "lib/webauthn-mds.js": 90,
     "lib/attrcert-sign.js": 91,
-    "lib/tsp-sign.js": 89,
-    "lib/http-digest.js": 85,
+    "lib/tsp-sign.js": 71,
+    "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 78,
-    "lib/ct.js": 78,
-    "lib/cms-verify.js": 75,
-    "lib/cms-encrypt.js": 73,
-    "lib/crl-sign.js": 72,
-    "lib/cmc-build.js": 64,
-    "lib/pki-build.js": 47,
+    "lib/ct.js": 76,
+    "lib/cms-verify.js": 71,
+    "lib/cms-encrypt.js": 72,
+    "lib/crl-sign.js": 68,
+    "lib/cmc-build.js": 59,
+    "lib/pki-build.js": 42,
     "lib/hpke.js": 54,
-    "lib/cms-decrypt.js": 53,
-    "lib/cmc-verify.js": 39,
-    "lib/x509-sign.js": 28,
+    "lib/cms-decrypt.js": 50,
+    "lib/cmc-verify.js": 38,
+    "lib/x509-sign.js": 27,
     "lib/schema-attrcert.js": 26,
     "lib/tls-cert-compress.js": 19,
     "lib/schema-crl.js": 10,
@@ -3584,6 +3587,149 @@ function testGuardErrorFactoryNotClass() {
   _report("factory-convention guards receive a (code,message) factory, not an error class", bad);
 }
 
+// Keywords after which a `/` begins a regex literal rather than a division (an operand cannot follow them).
+var _REGEX_CTX_KEYWORDS = {
+  "return": 1, "typeof": 1, "instanceof": 1, "in": 1, "of": 1, "new": 1, "delete": 1, "void": 1,
+  "do": 1, "else": 1, "yield": 1, "case": 1, "throw": 1, "await": 1
+};
+// Walk a source file with just enough lexing to tell a regex literal from a division: skip comments and
+// string/template literals, track whether the previous significant token was an OPERAND (identifier, number,
+// `)`/`]`, or a string -- after which `/` is division) and record every regex literal and `RegExp` reference
+// with its 1-based line. Returns [{ line, what }].
+function _libRegexHits(content) {
+  var hits = [], n = content.length, i = 0, line = 1, prevOperand = false, pendingNew = false, c, rc;
+  var isIdStart = function (ch) { return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_" || ch === "$"; };
+  var isIdPart = function (ch) { return isIdStart(ch) || (ch >= "0" && ch <= "9"); };
+  var isDigit = function (ch) { return ch >= "0" && ch <= "9"; };
+  while (i < n) {
+    c = content.charAt(i);
+    if (c === "\n") { line++; i++; continue; }
+    if (c === " " || c === "\t" || c === "\r") { i++; continue; }
+    if (c === "/" && content.charAt(i + 1) === "*") {   // block comment
+      i += 2;
+      while (i < n && !(content.charAt(i) === "*" && content.charAt(i + 1) === "/")) { if (content.charAt(i) === "\n") line++; i++; }
+      i += 2; continue;
+    }
+    if (c === "/" && content.charAt(i + 1) === "/") { i += 2; while (i < n && content.charAt(i) !== "\n") i++; continue; }   // line comment
+    if (c === "\"" || c === "'" || c === "`") {   // string / template literal
+      var q = c; i++;
+      while (i < n && content.charAt(i) !== q) { if (content.charAt(i) === "\\") i++; else if (content.charAt(i) === "\n") line++; i++; }
+      i++; prevOperand = true; pendingNew = false; continue;
+    }
+    if (isIdStart(c)) {   // identifier or keyword
+      var id = "";
+      while (i < n && isIdPart(content.charAt(i))) { id += content.charAt(i); i++; }
+      // `new RegExp(...)` is banned; a bare `RegExp` reference (util.types.isRegExp, or reflecting on the type
+      // to GUARD against it) is not a regex and is allowed.
+      if (id === "RegExp" && pendingNew) hits.push({ line: line, what: "new RegExp" });
+      pendingNew = (id === "new");
+      prevOperand = !_REGEX_CTX_KEYWORDS[id];   // a regex-context keyword leaves `/` in regex position
+      continue;
+    }
+    if (isDigit(c)) { while (i < n && (isIdPart(content.charAt(i)) || content.charAt(i) === ".")) i++; prevOperand = true; pendingNew = false; continue; }
+    if (c === "/") {
+      pendingNew = false;
+      if (!prevOperand) {   // regex literal position
+        var start = i, ok = true, inClass = false;
+        i++;
+        while (i < n) {
+          rc = content.charAt(i);
+          if (rc === "\n") { ok = false; break; }
+          if (rc === "\\") { i += 2; continue; }
+          if (rc === "[") inClass = true;
+          else if (rc === "]") inClass = false;
+          else if (rc === "/" && !inClass) break;
+          i++;
+        }
+        if (ok && i < n && content.charAt(i) === "/") {
+          i++;
+          while (i < n && "gimsuy".indexOf(content.charAt(i)) !== -1) i++;
+          hits.push({ line: line, what: "regex-literal" });
+          prevOperand = true; continue;
+        }
+        i = start + 1; prevOperand = false; continue;   // not a valid regex literal; treat `/` as division
+      }
+      i++; prevOperand = false; continue;   // division; a regex may follow it
+    }
+    prevOperand = (c === ")" || c === "]");   // ) and ] are operands; every other operator is not
+    pendingNew = false;
+    i++;
+  }
+  return hits;
+}
+function testNoRegexInLib() {
+  // class: no-regex-in-lib
+  // CLAUDE.md rule #11: lib/ carries NO regular expression -- every decision, validation, and parse is
+  // explicit character-code scanning. A regex is matched through a live, replaceable protocol (RegExp.prototype
+  // test/exec, String match/split/replace re-dispatch through the regex's own exec and the Symbol hooks), so a
+  // co-resident replacement can steer a form or emission decision; and it cannot cleanly express the structural
+  // grammars (RFC 3986 / RFC 5321 / DER shape) these parsers need, which is where the edge-case escapes hide.
+  // Test/dev tooling, fuzz harnesses, and the wiki generator may use regex; lib/ may not. Fires on a regex
+  // literal, `new RegExp`, or any `RegExp` reference in lib/, division excluded.
+  var matches = [], files = _libFiles();
+  for (var i = 0; i < files.length; i++) {
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var raw = _lines(content);
+    var hits = _libRegexHits(content);
+    for (var h = 0; h < hits.length; h++) {
+      matches.push({ file: _relPath(files[i]), line: hits[h].line, content: (raw[hits[h].line - 1] || "").trim() });
+    }
+  }
+  _report("no regular expression in lib/ (rule #11)", matches);
+}
+
+function testNoInstanceofArrayBuffer() {
+  // class: no-instanceof-arraybuffer
+  // The realm-safe way to ask "is this an ArrayBuffer?" is `guard.bytes.isByteSource` (any of the four byte
+  // forms) or the captured slot predicate `intrinsic.types.isArrayBuffer`. A literal `instanceof ArrayBuffer`
+  // anywhere in lib/ EXCEPT the guard family (guard-bytes / guard-intrinsic, where the realm-safe primitives
+  // live) turns away a cross-realm ArrayBuffer that guard.bytes goes on to accept -- the exact "accepted at one
+  // door, refused at the next" realm-fragility the byte-source guard exists to own. Ask the guard instead.
+  var matches = _scanLib(/\binstanceof\s+ArrayBuffer\b/, { skipComments: true }).filter(function (m) {
+    return m.file.indexOf("guard-bytes.js") === -1 && m.file.indexOf("guard-intrinsic.js") === -1;
+  });
+  _report("no `instanceof ArrayBuffer` outside the guard family (ask guard.bytes.isByteSource / intrinsic.types.isArrayBuffer)", matches);
+}
+
+function testNoPartialByteAcceptance() {
+  // class: partial-byte-source-acceptance
+  // A byte-INPUT door that admits only the two forms `Buffer.isBuffer(x) || x instanceof Uint8Array` (or the
+  // slot-helper spelling `_isBuffer(x) || _isU8(x)` / `... isUint8Array(x)`, in either operand order) turns
+  // away an ArrayBuffer or a DataView that the rest of the toolkit reads through `guard.bytes.isByteSource`.
+  // Left partial it is the "accepted at one door, refused at the next" inconsistency: the same certificate,
+  // imprint, or content signs from a Buffer but is rejected as an ArrayBuffer. Route a byte door through
+  // `guard.bytes.isByteSource` + `source` / `snapshotSource` so every BufferSource is read the same way.
+  //   The two-form check is legitimate on exactly one family: the private-key / secret / password ownership
+  // paths, whose import and KDF contract is Buffer / Uint8Array / PEM by design and where widening is a
+  // separate root decision. Those lines carry an `allow:byte-source-narrow -- <reason>` tag naming the
+  // contract and are passed over -- the same "a declaration that costs something visible" gate the guard
+  // family uses, so a new narrow door forces the author to route through the guard or to state in writing why
+  // it is a key/secret door. The guard family (guard-*.js), where the realm-safe byte predicates are defined,
+  // is out of scope.
+  var partial = /(?:Buffer\.isBuffer|_isBuffer)\(\w+\)\s*\|\|\s*(?:\w+\s+instanceof\s+Uint8Array|[\w.]*isUint8Array\(\w+\)|_isU8\(\w+\))/;
+  var partialRev = /(?:\w+\s+instanceof\s+Uint8Array|[\w.]*isUint8Array\(\w+\)|_isU8\(\w+\))\s*\|\|\s*(?:Buffer\.isBuffer|_isBuffer)\(\w+\)/;
+  var files = _libFiles(), matches = [];
+  for (var i = 0; i < files.length; i++) {
+    var rel = _relPath(files[i]);
+    if (rel.indexOf("guard-") !== -1) continue;   // the guard family owns the realm-safe byte predicates
+    var content;
+    try { content = fs.readFileSync(files[i], "utf8"); }
+    catch (_e) { continue; }
+    var lines = _lines(content);
+    for (var j = 0; j < lines.length; j++) {
+      var line = lines[j];
+      if (/^\s*(\/\/|\*|\/\*)/.test(line)) continue;                    // a comment-only line
+      if (line.indexOf("allow:byte-source-narrow") !== -1) continue;    // a declared narrow key/secret/password door
+      if (partial.test(line) || partialRev.test(line)) {
+        matches.push({ file: rel, line: j + 1, content: line.trim() });
+      }
+    }
+  }
+  _report("no partial two-form byte-source acceptance outside the key/secret ownership paths (route byte doors through guard.bytes.isByteSource + source/snapshotSource, or tag a key/secret door allow:byte-source-narrow)", matches);
+}
+
 function run() {
   _allViolations = [];
   testSourceHeaders();
@@ -3631,6 +3777,9 @@ function run() {
   testAsn1TypesFromRegistry();
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
+  testNoRegexInLib();
+  testNoInstanceofArrayBuffer();
+  testNoPartialByteAcceptance();
   testNoDuplicateCodeBlocks();
 
   // Cumulative gate — every detector is hard.

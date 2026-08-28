@@ -82,6 +82,14 @@ async function testHappy() {
     check("7 the POST is not sent Transfer-Encoding: chunked", r.headers["x-req-te"] === "");
     check("7 the negotiated TLS protocol is surfaced", /^TLSv1\.[23]$/.test(r.tls.protocol));
     check("7 the peer certificate DER is surfaced", Buffer.isBuffer(r.tls.peerCertificate));
+    // The request body accepts any BufferSource, not only a Buffer: an ArrayBuffer body is written and
+    // framed with the same fixed Content-Length. Before the widening the one-form Buffer.isBuffer gate
+    // left an ArrayBuffer un-viewed and node's socket write rejected it.
+    var pingAB = new ArrayBuffer(4); new Uint8Array(pingAB).set(Buffer.from("PING"));
+    var rAB = await t({ method: "POST", url: urlFor(s.port), headers: { "content-type": "application/pkcs10" }, body: pingAB,
+      tls: { anchors: [tls.certPem], servername: "localhost" } });
+    check("7 an ArrayBuffer request body reaches the server, length-delimited (#68 http-transport body 1-form widening)",
+      rAB.status === 200 && rAB.headers["x-echo"] === "PING" && rAB.headers["x-req-cl"] === "4");
     // a body is written for ANY body-bearing method, not only POST.
     var rput = await t({ method: "PUT", url: urlFor(s.port), body: Buffer.from("PUTBODY"), tls: { anchors: [tls.certPem], servername: "localhost" } });
     check("7 a PUT body is transmitted, not silently dropped", rput.headers["x-echo"] === "PUTBODY");
