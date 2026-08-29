@@ -150,9 +150,13 @@ async function testStreamingDetachedVerify() {
     (await pki.cms.verify(multi, { content: _chunksOf(CONTENT, 7) })).valid === true);
   // A content-only signer (no signed attributes) binds the whole content as the preimage, which a
   // stream cannot hold -- it is refused before the stream is consumed, not silently mis-verified.
+  // A content-only signer cannot be verified from a stream (its signature is over content the stream
+  // does not retain), but that is a PER-SIGNER verdict, never a whole-message abort: verify resolves
+  // with valid:false and the signer's own code, exactly as the buffered path verdicts each signer.
   var contentOnly = await pki.cms.sign(CONTENT, makeSigner("ed25519"), { detached: true, signedAttributes: false });
-  var rc = await pki.cms.verify(contentOnly, { content: _chunksOf(CONTENT, 4) }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
-  check("streaming verify: a content-only signer is refused (needs buffered content)", rc === "cms/streamed-content-unverifiable");
+  var rco = await pki.cms.verify(contentOnly, { content: _chunksOf(CONTENT, 4) });
+  check("streaming verify: a content-only signer is a per-signer streamed-content-unverifiable verdict, not a throw",
+    rco.valid === false && rco.signers[0].code === "cms/streamed-content-unverifiable");
   // A non-byte chunk is reported in the CMS domain, not leaked as the engine's webcrypto/data.
   var badV = (async function* () { yield CONTENT.subarray(0, 4); yield 12345; })();
   var chunkErrV = await pki.cms.verify(det, { content: badV }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
