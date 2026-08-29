@@ -274,6 +274,12 @@ function testViewContract() {
     guardBytes.isAsyncIterable(callableAsyncIterable) === true);
   check("isAsyncIterable rejects a plain function with no Symbol.asyncIterator",
     guardBytes.isAsyncIterable(function () {}) === false);
+  // A byte source is bytes, never a stream, even when a caller has attached a Symbol.asyncIterator:
+  // the byte-source classification wins, so a door offering both forms never diverts real bytes.
+  var bufWithAsync = Buffer.from([1, 2, 3]);
+  bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
+  check("isAsyncIterable treats a byte source with an attached Symbol.asyncIterator as bytes, not a stream",
+    guardBytes.isByteSource(bufWithAsync) === true && guardBytes.isAsyncIterable(bufWithAsync) === false);
   check("isAsyncIterable rejects each byte source (never diverts bytes to streaming)",
     guardBytes.isAsyncIterable(Buffer.alloc(1)) === false && guardBytes.isAsyncIterable(new Uint8Array(1)) === false &&
     guardBytes.isAsyncIterable(new DataView(new ArrayBuffer(1))) === false && guardBytes.isAsyncIterable(new ArrayBuffer(1)) === false);

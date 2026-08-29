@@ -96,6 +96,23 @@ async function testStreamingDetachedSign() {
   callable[Symbol.asyncIterator] = async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
   check("streaming detached sign accepts a callable async-iterable content",
     Buffer.compare(await pki.cms.sign(callable, s, { detached: true, signingTime: false }), buffered) === 0);
+  // A byte source carrying a Symbol.asyncIterator is signed AS BYTES, not diverted to the streaming
+  // path: an attached (non-detached) sign of it succeeds, which the streaming path would refuse.
+  var bufWithAsync = Buffer.from("plain bytes that also expose an async iterator");
+  bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
+  var attachedOfBytes = await pki.cms.sign(bufWithAsync, s, { signingTime: false });
+  check("a byte source with a Symbol.asyncIterator signs as buffered bytes, not as a stream",
+    (await pki.cms.verify(attachedOfBytes)).valid === true);
+  // pki.cms.sign is documented `-> Promise`, so a content whose Symbol.asyncIterator is a throwing
+  // getter must REJECT, never throw synchronously out of the call.
+  var evil = {};
+  Object.defineProperty(evil, Symbol.asyncIterator, { get: function () { throw new Error("hostile getter"); } });
+  var threwSync = false, rejected = false;
+  try {
+    await pki.cms.sign(evil, s, { detached: true, signingTime: false }).then(function () {}, function () { rejected = true; });
+  } catch (_e) { threwSync = true; }
+  check("streaming sign does not throw synchronously on a throwing Symbol.asyncIterator getter", threwSync === false);
+  check("streaming sign rejects on a throwing Symbol.asyncIterator getter", rejected === true);
   // A multi-signer detached sign over a single-use async iterable hashes it once for both digests.
   var multi = await pki.cms.sign(_chunksOf(CONTENT, 3), [makeSigner("ed25519"), makeSigner("rsa")],
     { detached: true, signingTime: false });
