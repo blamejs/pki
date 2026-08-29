@@ -50,11 +50,12 @@ async function run() {
   check("1a. ir round-trips: sender/recipient/pvno/transactionID recovered", mi.header.pvno === 2 && Buffer.isBuffer(mi.header.transactionID) && mi.body.arm === "ir");
   check("1b. the inner CertReqMessages decodes via the CRMF walk", !!mi.body.decoded);
 
-  // nested [20] NestedMessageContent ::= PKIMessages (RFC 9810 sec. 5.1.3.4): an RA wraps complete,
-  // independently-protected PKIMessages to forward or batch them. The wrapper carries the RA's own
-  // protection; the parser surfaces the nested content raw (never auto-recursed), so the operator re-parses
-  // each inner message. A non-empty array is required (PKIMessages is SIZE (1..MAX)); each entry is validated
-  // as a PKIMessage.
+  // nested [20] NestedMessageContent ::= PKIMessages (RFC 9810 sec. 5.1.3.5 "Multiple Protection"): an RA
+  // wraps complete, independently-protected PKIMessages to forward or batch them. The wrapper carries the RA's
+  // own protection; the parser surfaces the nested content raw (never auto-recursed), so the operator re-parses
+  // each inner message. A non-empty array is required (PKIMessages is SIZE (1..MAX)); each entry is checked to
+  // parse as a PKIMessage and forwarded UNCHANGED (sec. 5.1.3.5 forwards the original message unchanged), so
+  // the builder never re-encodes or deep-validates an inner message's raw-arm content.
   var innerA = await pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { subject: [{ commonName: "ee-a" }], publicKey: s.spki } } } }, SIG);
   var innerB = await pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { subject: [{ commonName: "ee-b" }], publicKey: s.spki } } } }, SIG);
   var nestedDer = await pki.cmp.build({ header: HDR, body: { nested: [innerA, innerB] } }, SIG);
@@ -63,6 +64,8 @@ async function run() {
   var nseq = asn1.decode(mn.body.bytes);
   check("1d. nested wraps its PKIMessages as a SEQUENCE OF two", nseq.tagNumber === 16 && nseq.children.length === 2);
   check("1e. each inner PKIMessage re-parses to its ir body", parse(nseq.children[0].bytes).body.arm === "ir" && parse(nseq.children[1].bytes).body.arm === "ir");
+  check("1e2. each inner PKIMessage is wrapped byte-for-byte unchanged (sec. 5.1.3.5 forwards the original)",
+    Buffer.from(nseq.children[0].bytes).equals(innerA) && Buffer.from(nseq.children[1].bytes).equals(innerB));
   var nestedEmpty = await pki.cmp.build({ header: HDR, body: { nested: [] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("1f. nested rejects an empty array (PKIMessages is SIZE (1..MAX))", nestedEmpty === "cmp/bad-input");
   var nestedBad = await pki.cmp.build({ header: HDR, body: { nested: [Buffer.from([0x30, 0x00])] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });

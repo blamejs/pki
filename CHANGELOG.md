@@ -10,7 +10,7 @@ pki.cmp.build now assembles the nested PKIMessage body an RA uses to forward or 
 
 ### Added
 
-- `pki.cmp.build` accepts a `nested` body: `{ body: { nested: [pkiMessageDer, ...] } }` wraps an array of complete PKIMessage DER as a `NestedMessageContent` under the explicit `[20]` PKIBody tag (RFC 9810 sec. 5.1.3.4). This is the body a registration authority sends when it forwards or batches messages that were protected by other parties. Each entry is parsed as a PKIMessage before it is included, so a malformed entry is caught when the message is built. An empty array is refused, because the field is `SIZE (1..MAX)`. Both failures raise `cmp/bad-input`. Each wrapped message keeps its own protection, which the recipient validates; `pki.cmp.build` does not re-sign or verify the contents.
+- `pki.cmp.build` accepts a `nested` body: `{ body: { nested: [pkiMessageDer, ...] } }` wraps an array of complete PKIMessage DER as a `NestedMessageContent` under the explicit `[20]` PKIBody tag (RFC 9810 sec. 5.1.3.5). This is the body a registration authority sends when it forwards or batches messages that were protected by other parties. Each entry is checked to parse as a PKIMessage and is then wrapped byte-for-byte unchanged, so a byte string that is not a PKIMessage is refused. An empty array is refused, because the field is `SIZE (1..MAX)`. Both failures raise `cmp/bad-input`. Following the same section, the inner messages are forwarded unchanged: each keeps its own protection, which the recipient validates, and `pki.cmp.build` does not re-sign, re-verify, or deeply inspect their contents.
 
 ## v0.5.34 — 2026-08-29
 
