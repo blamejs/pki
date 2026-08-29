@@ -76,6 +76,371 @@ async function testContentModes() {
   check("detached + wrong content -> message-digest-mismatch", wrong.valid === false && wrong.signers[0].code === "cms/message-digest-mismatch");
 }
 
+// ---- streaming detached sign: async-iterable content (Streaming CMS) ----
+function _chunksOf(buf, n) { return (async function* () { for (var i = 0; i < buf.length; i += n) yield buf.subarray(i, i + n); })(); }
+async function testStreamingDetachedSign() {
+  // Ed25519 is deterministic, so with signing-time omitted a streamed detached signature is
+  // byte-identical to the buffered one: the only thing the stream could change is the messageDigest,
+  // so matching DER proves the incremental hash equals the one-shot hash. Chunk size must not matter.
+  var s = makeSigner("ed25519");
+  var buffered = await pki.cms.sign(CONTENT, s, { detached: true, signingTime: false });
+  var streamed = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signingTime: false });
+  check("streaming detached sign (async iterable) is byte-identical to the buffered detached sign",
+    Buffer.compare(streamed, buffered) === 0);
+  check("the streamed detached signature verifies against the content",
+    (await pki.cms.verify(streamed, { content: CONTENT })).valid === true);
+  check("streaming detached sign is chunk-boundary independent",
+    Buffer.compare(await pki.cms.sign(_chunksOf(CONTENT, 1), s, { detached: true, signingTime: false }), buffered) === 0);
+  // A callable that implements the async-iteration protocol is a valid content source, not a byte source.
+  var callable = function () {};
+  callable[Symbol.asyncIterator] = async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
+  check("streaming detached sign accepts a callable async-iterable content",
+    Buffer.compare(await pki.cms.sign(callable, s, { detached: true, signingTime: false }), buffered) === 0);
+  // A content whose Symbol.asyncIterator is a one-shot accessor is consumed: the door acquires the
+  // iterator once and threads it to the engine, so a valid stateful-accessor source a bare `for await`
+  // accepts is not refused by a second protocol read across the sign path.
+  var served = false, oneShotContent = {};
+  Object.defineProperty(oneShotContent, Symbol.asyncIterator, { get: function () {
+    if (served) return undefined; served = true;
+    return async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
+  } });
+  check("streaming detached sign consumes a one-shot-accessor content (one protocol read across the path)",
+    Buffer.compare(await pki.cms.sign(oneShotContent, s, { detached: true, signingTime: false }), buffered) === 0);
+  // Acquisition is deferred to the hashing path: a pre-hash rejection (an empty signer list) never
+  // drives the stream, so the content's iterator factory -- which might open a file or socket -- is
+  // never invoked, and a resource it would open cannot leak.
+  var factoryCalled = false, deferredContent = {};
+  deferredContent[Symbol.asyncIterator] = function () { factoryCalled = true; return (async function* () { yield CONTENT; })(); };
+  var deferErr = await pki.cms.sign(deferredContent, [], { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming sign rejects an empty signer list WITHOUT acquiring the content iterator",
+    deferErr === "cms/bad-input" && factoryCalled === false);
+  // The streamed content's iterator is untrusted: signing aggregates SignerInfos via await, never
+  // Promise.all, so a stream replacing Promise.all to aggregate only the first promise cannot drop the
+  // remaining signers from the emitted CMS.
+  var realAllSign = Promise.all;
+  var pollutedAllSign = (async function* () {
+    Promise.all = function (a) { return realAllSign.call(Promise, [a[0]]); };
+    for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4);
+  })();
+  var signedUnderPoll;
+  try { signedUnderPoll = await pki.cms.sign(pollutedAllSign, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true, signingTime: false }); }
+  finally { Promise.all = realAllSign; }
+  check("streaming multi-signer sign is not truncated by a stream replacing Promise.all",
+    (await pki.cms.verify(signedUnderPoll, { content: CONTENT })).signers.length === 2);
+  // Nor by replacing Array.prototype.map: assembling the signerInfos SET uses captured enumeration, so
+  // a stream truncating arrays of built SignerInfos cannot drop signers from the emitted CMS.
+  var realMapSign = Array.prototype.map;
+  var pollutedMapSign = (async function* () {
+    Array.prototype.map = function (fn, thisArg) {
+      if (this.length >= 2 && this[0] && this[0].si != null && this[0].digestAlgId != null) return realMapSign.call(this.slice(0, 1), fn, thisArg);
+      return realMapSign.call(this, fn, thisArg);
+    };
+    for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4);
+  })();
+  var signedMapPoll;
+  try { signedMapPoll = await pki.cms.sign(pollutedMapSign, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true, signingTime: false }); }
+  finally { Array.prototype.map = realMapSign; }
+  check("streaming multi-signer sign is not truncated by a stream replacing Array.prototype.map",
+    (await pki.cms.verify(signedMapPoll, { content: CONTENT })).signers.length === 2);
+  // Multiple FAILING signers over a streamed content must reject cleanly, WITHOUT leaving a later
+  // signer's rejection unobserved (which Node can escalate to a crash): SignerInfos are built
+  // sequentially, so a later signer is never started once an earlier one fails.
+  var sa = makeSigner("rsa"), sb = makeSigner("rsa");
+  var unhandled = [];
+  function onUnhandled(e) { unhandled.push(e); }
+  process.on("unhandledRejection", onUnhandled);
+  var rejCode = await pki.cms.sign(_chunksOf(CONTENT, 4), [{ cert: sa.cert, key: sb.key }, { cert: sb.cert, key: sa.key }], { detached: true, signingTime: false })
+    .then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  await helpers.passiveObserve(60, "a later failing signer's rejection must not surface as unhandled");
+  process.removeListener("unhandledRejection", onUnhandled);
+  check("streaming sign with multiple failing signers rejects cleanly without an unhandled rejection",
+    rejCode === "cms/bad-input" && unhandled.length === 0);
+  // A byte source carrying a Symbol.asyncIterator is signed AS BYTES, not diverted to the streaming
+  // path: an attached (non-detached) sign of it succeeds, which the streaming path would refuse.
+  var bufWithAsync = Buffer.from("plain bytes that also expose an async iterator");
+  bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
+  var attachedOfBytes = await pki.cms.sign(bufWithAsync, s, { signingTime: false });
+  check("a byte source with a Symbol.asyncIterator signs as buffered bytes, not as a stream",
+    (await pki.cms.verify(attachedOfBytes)).valid === true);
+  // pki.cms.sign is documented `-> Promise`, so a content whose Symbol.asyncIterator is a throwing
+  // getter must REJECT, never throw synchronously out of the call.
+  var evil = {};
+  Object.defineProperty(evil, Symbol.asyncIterator, { get: function () { throw new Error("hostile getter"); } });
+  var threwSync = false, rejected = false;
+  try {
+    await pki.cms.sign(evil, s, { detached: true, signingTime: false }).then(function () {}, function () { rejected = true; });
+  } catch (_e) { threwSync = true; }
+  check("streaming sign does not throw synchronously on a throwing Symbol.asyncIterator getter", threwSync === false);
+  check("streaming sign rejects on a throwing Symbol.asyncIterator getter", rejected === true);
+  // A multi-signer detached sign over a single-use async iterable hashes it once for both digests.
+  var multi = await pki.cms.sign(_chunksOf(CONTENT, 3), [makeSigner("ed25519"), makeSigner("rsa")],
+    { detached: true, signingTime: false });
+  check("streaming detached sign supports multiple signers (single pass over the content)",
+    (await pki.cms.verify(multi, { content: CONTENT })).valid === true);
+  // A streamed content is detached-only (an attached SignedData would need the content buffered to
+  // state the eContent OCTET STRING length) and requires signed attributes (the digest attribute is
+  // the whole point of streaming); both refusals are config-time cms/bad-input.
+  var attachedErr = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming content without detached is refused", attachedErr === "cms/bad-input");
+  var noAttrsErr = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signedAttributes: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming content with signedAttributes:false is refused", noAttrsErr === "cms/bad-input");
+  // A chunk that is not a byte source is reported in this verb's domain (cms/bad-input), the same as
+  // a buffered content's bad bytes, not leaked as the engine's webcrypto/data code.
+  var badChunks = (async function* () { yield CONTENT.subarray(0, 4); yield "not a byte source"; })();
+  var chunkErr = await pki.cms.sign(badChunks, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming sign: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErr === "cms/bad-input");
+  // A source whose async-iterator factory returns a malformed iterator (a non-callable next) surfaces
+  // from the engine as webcrypto/syntax; report it in this verb's domain, the same as a bad chunk.
+  var badIterSign = {};
+  badIterSign[Symbol.asyncIterator] = function () { return { next: 1 }; };
+  var badIterErr = await pki.cms.sign(badIterSign, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming sign: a malformed stream iterator is a cms/bad-input, not a webcrypto error", badIterErr === "cms/bad-input");
+  // The default signing time resolves through the captured Date intrinsic, so a streamed content whose
+  // Symbol.asyncIterator accessor replaces the global Date cannot stamp the emitted signingTime with an
+  // attacker-chosen instant. Ed25519 is deterministic: a forged instant would make the streamed output
+  // byte-identical to signing with that instant explicitly, which is the reference the check compares to.
+  var edTimeSigner = makeSigner("ed25519");
+  var realDateSign = Date;
+  var fakeMsSign = new realDateSign("2020-06-01T00:00:00Z").getTime();
+  function FakeDateSign(a) { return arguments.length === 0 ? new realDateSign(fakeMsSign) : new realDateSign(a); }
+  FakeDateSign.now = function () { return fakeMsSign; };
+  FakeDateSign.prototype = realDateSign.prototype;
+  var refAtFake = await pki.cms.sign(CONTENT, edTimeSigner, { detached: true, signingTime: new Date(fakeMsSign) });
+  var getterTimeContent = {};
+  Object.defineProperty(getterTimeContent, Symbol.asyncIterator, { configurable: true, get: function () {
+    global.Date = FakeDateSign;
+    return function () { return (async function* () { yield CONTENT; })(); };
+  } });
+  var streamedForgedTime;
+  try { streamedForgedTime = await pki.cms.sign(getterTimeContent, edTimeSigner, { detached: true }); }
+  finally { global.Date = realDateSign; }
+  check("streaming sign: a Symbol.asyncIterator getter replacing global Date cannot forge the signingTime attribute",
+    Buffer.compare(streamedForgedTime, refAtFake) !== 0);
+  // The signing that runs once the digest completes goes through await, never a live Promise.resolve()
+  // or .then lookup, so a streamed content that replaces the global Promise.resolve after its final
+  // chunk cannot disrupt it: the signature is still produced and verifies.
+  var edPromSigner = makeSigner("ed25519");
+  var realResolve = Promise.resolve;
+  var pollutesResolve = (async function* () {
+    yield CONTENT;
+    Promise.resolve = function () { throw new Error("hostile Promise.resolve"); };
+  })();
+  var promErr = null, signedUnderResolve = null;
+  try { signedUnderResolve = await pki.cms.sign(pollutesResolve, edPromSigner, { detached: true, signingTime: false }); }
+  catch (e) { promErr = e; }
+  finally { Promise.resolve = realResolve; }
+  var okUnderResolve = promErr === null && signedUnderResolve != null &&
+    (await pki.cms.verify(signedUnderResolve, { content: CONTENT })).valid === true;
+  check("streaming sign: a stream replacing global Promise.resolve after its last chunk cannot disrupt the signing", okUnderResolve === true);
+  // The signer list is copied before the content is classified, so a streamed content whose
+  // Symbol.asyncIterator accessor mutates the caller's signer array cannot add a SignerInfo the caller
+  // never asked for: the emitted SignedData carries exactly the one signer that was passed.
+  var edOne = makeSigner("ed25519"), edTwo = makeSigner("ed25519");
+  var signerArr = [edOne];
+  var injectSigner = {};
+  Object.defineProperty(injectSigner, Symbol.asyncIterator, { configurable: true, get: function () {
+    signerArr.push(edTwo);
+    return function () { return (async function* () { yield CONTENT; })(); };
+  } });
+  var injectedSig = await pki.cms.sign(injectSigner, signerArr, { detached: true, signingTime: false });
+  check("streaming sign: a content accessor cannot add a signer to the copied list",
+    pki.schema.cms.parse(injectedSig).signerInfos.length === 1);
+  // The options object is copied before the content is classified too, so a content accessor that sets
+  // opts.signingTime on the caller's still-uncopied options cannot stamp the signature with its instant.
+  var edOpt = makeSigner("ed25519");
+  var fakeOptMs = new Date("2019-03-03T00:00:00Z").getTime();
+  var refFakeOpt = await pki.cms.sign(CONTENT, edOpt, { detached: true, signingTime: new Date(fakeOptMs) });
+  var optsMut = { detached: true };
+  var mutOptsContent = {};
+  Object.defineProperty(mutOptsContent, Symbol.asyncIterator, { configurable: true, get: function () {
+    optsMut.signingTime = new Date(fakeOptMs);
+    return function () { return (async function* () { yield CONTENT; })(); };
+  } });
+  var streamedOpt = await pki.cms.sign(mutOptsContent, edOpt, optsMut);
+  check("streaming sign: a content accessor cannot set opts.signingTime on the copied options",
+    Buffer.compare(streamedOpt, refFakeOpt) !== 0);
+  // The signed-attribute list is assembled with captured array operations, so a streamed content whose
+  // iterator installs a targeted Array.prototype.concat -- one that drops an appended list of attribute
+  // pairs while passing every other concat through -- cannot silently drop the caller's
+  // additionalSignedAttributes from the signature. The default output here carries contentType +
+  // messageDigest + the one caller attribute = 3 signed attributes.
+  var edExtra = makeSigner("ed25519");
+  var customType = "1.2.840.113549.1.9.16.2.4";
+  var customVal = pki.asn1.build.octetString(Buffer.from("streamed-extra-attr"));
+  var realConcat = Array.prototype.concat;
+  var realIsArray = Array.isArray;
+  var dropAttrsContent = (async function* () {
+    yield CONTENT;
+    Array.prototype.concat = function (other) {
+      if (realIsArray(other) && other.length > 0 && other[0] && typeof other[0] === "object" && "type" in other[0]) return this;
+      return realConcat.apply(this, arguments);
+    };
+  })();
+  var signedExtra = null, extraErr = null;
+  try { signedExtra = await pki.cms.sign(dropAttrsContent, edExtra, { detached: true, signingTime: false, additionalSignedAttributes: [{ type: customType, values: [customVal] }] }); }
+  catch (e) { extraErr = e; }
+  finally { Array.prototype.concat = realConcat; }
+  var attrCount = (extraErr === null && signedExtra != null)
+    ? (pki.schema.cms.parse(signedExtra).signerInfos[0].signedAttrs || []).length : -1;
+  check("streaming sign: a targeted Array.prototype.concat replacement cannot drop the caller's additional signed attributes", attrCount === 3);
+}
+
+// ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
+async function testStreamingDetachedVerify() {
+  var det = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  check("streaming verify: async-iterable opts.content verifies a detached signature",
+    (await pki.cms.verify(det, { content: _chunksOf(CONTENT, 5) })).valid === true);
+  check("streaming verify: chunk size does not matter",
+    (await pki.cms.verify(det, { content: _chunksOf(CONTENT, 1) })).valid === true);
+  // A streamed content that differs by one byte mid-stream fails the message-digest check.
+  var bad = Buffer.from(CONTENT); bad[3] ^= 0xff;
+  var r2 = await pki.cms.verify(det, { content: _chunksOf(bad, 5) });
+  check("streaming verify: a differing streamed content -> message-digest-mismatch",
+    r2.valid === false && r2.signers[0].code === "cms/message-digest-mismatch");
+  // A multi-signer detached signature (two distinct digest algorithms) verifies from ONE streamed pass.
+  var multi = await pki.cms.sign(CONTENT, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true });
+  check("streaming verify: multi-signer detached verifies from a single streamed pass",
+    (await pki.cms.verify(multi, { content: _chunksOf(CONTENT, 7) })).valid === true);
+  // A content-only signer (no signed attributes) binds the whole content as the preimage, which a
+  // stream cannot hold -- it is refused before the stream is consumed, not silently mis-verified.
+  // A content-only signer cannot be verified from a stream (its signature is over content the stream
+  // does not retain), but that is a PER-SIGNER verdict, never a whole-message abort: verify resolves
+  // with valid:false and the signer's own code, exactly as the buffered path verdicts each signer.
+  var contentOnly = await pki.cms.sign(CONTENT, makeSigner("ed25519"), { detached: true, signedAttributes: false });
+  var rco = await pki.cms.verify(contentOnly, { content: _chunksOf(CONTENT, 4) });
+  check("streaming verify: a content-only signer is a per-signer streamed-content-unverifiable verdict, not a throw",
+    rco.valid === false && rco.signers[0].code === "cms/streamed-content-unverifiable");
+  // A non-byte chunk is reported in the CMS domain, not leaked as the engine's webcrypto/data.
+  var badV = (async function* () { yield CONTENT.subarray(0, 4); yield 12345; })();
+  var chunkErrV = await pki.cms.verify(det, { content: badV }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming verify: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErrV === "cms/bad-input");
+  // A source whose async-iterator factory returns a malformed iterator (a non-callable next) surfaces
+  // from the engine as webcrypto/syntax; report it in this verb's domain, the same as a bad chunk.
+  var badIterV = {};
+  badIterV[Symbol.asyncIterator] = function () { return { next: 1 }; };
+  var badIterErrV = await pki.cms.verify(det, { content: badIterV }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming verify: a malformed stream iterator is a cms/bad-input, not a webcrypto error", badIterErrV === "cms/bad-input");
+  // An unsupported digest is a per-signer verdict, exactly as the buffered path returns, not a
+  // whole-operation throw: streaming must not change the verdict of a message with such a signer.
+  var UNREG = "1.3.6.1.4.1.99999.8.7.6";
+  var badDigest = surgery.replaceLastAlgId(await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true }),
+    pki.oid.byName("sha256"), function () { return b.sequence([b.oid(UNREG)]); }).der;
+  var ru = await pki.cms.verify(badDigest, { content: _chunksOf(CONTENT, 5) });
+  check("streaming verify: an unsupported digest is a per-signer unsupported-algorithm verdict, not a throw",
+    ru.valid === false && ru.signers[0].code === "cms/unsupported-algorithm");
+  // The candidate certificate set (opts.certs) is snapshotted before opts.content is probed, so a
+  // streamed content whose Symbol.asyncIterator accessor empties the caller's opts.certs cannot hide the
+  // signer certificate the caller supplied: the signature still verifies against it.
+  var sc = makeSigner("ec-p256");
+  var detNoCert = await pki.cms.sign(CONTENT, sc, { certificates: false, detached: true });
+  var certsArr = [sc.cert];
+  var emptiesCerts = {};
+  Object.defineProperty(emptiesCerts, Symbol.asyncIterator, { configurable: true, get: function () {
+    certsArr.length = 0;
+    return function () { return (async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); })(); };
+  } });
+  var rCerts = await pki.cms.verify(detNoCert, { content: emptiesCerts, certs: certsArr });
+  check("streaming verify: a content accessor that empties opts.certs cannot hide the caller-supplied signer certificate",
+    rCerts.valid === true);
+}
+
+// ---- streaming verify: the untrusted stream cannot steer the verdict via prototype pollution ----
+async function testStreamingVerifyPrototypePollution() {
+  // A streamed opts.content is untrusted: its next() runs while the digest is awaited, so it can
+  // replace a prototype method mid-verify. Every verdict-deciding step uses a captured intrinsic, so
+  // it cannot. Buffer.prototype.equals: a stream replacing it with always-true must not pass the
+  // message-digest check for content that was never signed.
+  var det1 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var realEquals = Buffer.prototype.equals;
+  var pollutedEquals = (async function* () { Buffer.prototype.equals = function () { return true; }; yield Buffer.from("bytes that were never signed"); })();
+  var r1;
+  try { r1 = await pki.cms.verify(det1, { content: pollutedEquals }); }
+  finally { Buffer.prototype.equals = realEquals; }
+  check("streaming verify: a stream replacing Buffer.prototype.equals cannot forge the digest check",
+    r1.valid === false && r1.signers[0].code === "cms/message-digest-mismatch");
+  // Array.prototype.map: a stream replacing it to truncate the signer enumeration must not hide signers
+  // (a dropped signer could be an unverified one, so `valid` would report only a passing subset).
+  var det2 = await pki.cms.sign(CONTENT, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true });
+  var realMap = Array.prototype.map;
+  var pollutedMap = (async function* () {
+    Array.prototype.map = function (fn, thisArg) {
+      var out = realMap.call(this, fn, thisArg);
+      if (this.length >= 2 && this[0] && this[0].signature != null && this[0].digestAlgorithm != null) return out.slice(0, 1);
+      return out;
+    };
+    yield CONTENT;
+  })();
+  var r2;
+  try { r2 = await pki.cms.verify(det2, { content: pollutedMap }); }
+  finally { Array.prototype.map = realMap; }
+  check("streaming verify: a stream replacing Array.prototype.map cannot truncate signer enumeration",
+    r2.signers.length === 2 && r2.valid === true);
+  // Promise.all: a stream replacing it to resolve to a fabricated [{ ok: true }] must not make `valid`
+  // true without verifying any real SignerInfo.
+  var det3 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var realPromiseAll = Promise.all;
+  var pollutedAll = (async function* () { Promise.all = function () { return realPromiseAll.call(Promise, [{ ok: true }]); }; yield Buffer.from("bytes that were never signed"); })();
+  var r3;
+  try { r3 = await pki.cms.verify(det3, { content: pollutedAll }).then(function (v) { return v; }, function () { return { valid: false }; }); }
+  finally { Promise.all = realPromiseAll; }
+  check("streaming verify: a stream replacing Promise.all cannot fabricate a passing signer set", r3.valid === false);
+  // Promise.prototype.then: a stream replacing it to invoke callbacks with a fabricated { ok: true }
+  // must not forge `valid` — the whole verify path chains with await, which does not dispatch through it.
+  var det4 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var realThen = Promise.prototype.then;
+  var pollutedThen = (async function* () {
+    Promise.prototype.then = function (onF) { return realThen.call(Promise.resolve({ ok: true, sid: {}, cert: null, signedAttributesPresent: true }), onF); };
+    yield Buffer.from("bytes that were never signed");
+  })();
+  var r4;
+  try { r4 = await pki.cms.verify(det4, { content: pollutedThen }); }
+  catch (_e4) { r4 = { valid: false }; }
+  finally { Promise.prototype.then = realThen; }
+  check("streaming verify: a stream replacing Promise.prototype.then cannot forge the verdict", r4.valid === false);
+  // The default trust instant is captured at snapshot time -- before the stream is consumed -- so a
+  // stream replacing the global Date cannot move the validation instant into an EXPIRED signer
+  // certificate's lifetime and report it trusted. The leaf below is expired at the real "now".
+  var caKpT = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var caKeyT = caKpT.privateKey.export({ format: "der", type: "pkcs8" });
+  var caDerT = await pki.x509.sign({ subject: [{ commonName: "stream-time-ca" }], subjectPublicKey: caKpT.publicKey.export({ format: "der", type: "spki" }),
+    serialNumber: 1, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2037-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKeyT });
+  var leafKpT = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var expiredLeafDer = await pki.x509.sign({ subject: [{ commonName: "stream-expired-signer" }], subjectPublicKey: leafKpT.publicKey.export({ format: "der", type: "spki" }),
+    serialNumber: 21, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: caKeyT, cert: caDerT });
+  var p7t = await pki.cms.sign(CONTENT, { cert: expiredLeafDer, key: leafKpT.privateKey.export({ format: "der", type: "pkcs8" }) }, { detached: true });
+  var realDateCtor = Date;
+  var fakeMs = new realDateCtor("2020-06-01T00:00:00Z").getTime();
+  function FakeDate(a) { return arguments.length === 0 ? new realDateCtor(fakeMs) : new realDateCtor(a); }
+  FakeDate.now = function () { return fakeMs; };
+  FakeDate.prototype = realDateCtor.prototype;
+  var pollutedDate = (async function* () { global.Date = FakeDate; for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); })();
+  var rt;
+  try { rt = await pki.cms.verify(p7t, { content: pollutedDate, trustAnchors: [caDerT] }); }
+  finally { global.Date = realDateCtor; }
+  check("streaming verify: an expired signer is not reported trusted even when a stream replaces the global Date",
+    rt.signers[0].trusted === false);
+  // The SAME replacement reached through the Symbol.asyncIterator ACCESSOR, which asyncStreamOf reads one
+  // turn BEFORE the trust snapshot -- not from a later next(). A snapshot taken after opts.content was
+  // touched would miss this window. The snapshot is taken before opts.content is read at all, and the
+  // instant defaults through the captured Date intrinsic, so this forges nothing either.
+  var getterDate = {};
+  Object.defineProperty(getterDate, Symbol.asyncIterator, { configurable: true, get: function () {
+    global.Date = FakeDate;
+    return function () { return (async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); })(); };
+  } });
+  var rtg;
+  try { rtg = await pki.cms.verify(p7t, { content: getterDate, trustAnchors: [caDerT] }); }
+  finally { global.Date = realDateCtor; }
+  check("streaming verify: a Symbol.asyncIterator getter that replaces global Date before the snapshot cannot report an expired signer trusted",
+    rtg.signers[0].trusted === false);
+  // The trust path's key-usage gate (_keyUsagePermitsSigning) reads the signer certificate through the
+  // same captured intrinsic.bufferEquals proven above for the digest check, closing its fail-open
+  // `if (!entry) return true` against a Buffer.prototype.equals replacement. It has no dedicated vector
+  // here: a global equals replacement also breaks the path validator's own comparisons (the trust build
+  // then fails to trusted:false regardless), so only a surgical replacement reaches the gate, and the
+  // captured lookup is the same RED-proven mechanism.
+}
+
 // ---- multiple signers ----
 async function testMultiSigner() {
   var p7 = await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("rsa"), makeSigner("ed25519")]);
@@ -761,6 +1126,9 @@ async function run() {
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();
+  await testStreamingDetachedSign();
+  await testStreamingDetachedVerify();
+  await testStreamingVerifyPrototypePollution();
   await testMultiSigner();
   await testSignerIdentifier();
   await testSignedAttributes();

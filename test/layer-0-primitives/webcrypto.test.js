@@ -790,6 +790,130 @@ async function testNormalizeAndDigestEdges() {
     (await code(function () { return subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHAKE256" }, false, ["sign", "verify"]); })) === "webcrypto/not-supported");
 }
 
+// digestStream hashes an async iterable of chunks in one pass under several algorithms; each result
+// MUST equal the one-shot digest of the concatenated chunks (chunk boundaries never matter), and a
+// bad algorithm list / non-iterable source / non-byte chunk MUST fail closed before any hash runs.
+async function testDigestStream() {
+  var payload = Buffer.from("digestStream single-pass byte-identity across chunk boundaries and algorithms");
+  function chunks(buf, n) { return (async function* () { for (var i = 0; i < buf.length; i += n) yield buf.subarray(i, i + n); })(); }
+  var algs = ["SHA-256", "SHA-384", "SHA-512", "SHAKE128", "SHAKE256"];
+  for (var a = 0; a < algs.length; a++) {
+    var oneShot = Buffer.from(await subtle.digest(algs[a], payload));
+    for (var n = 1; n < 30; n += 11) {
+      var streamed = Buffer.from((await subtle.digestStream([algs[a]], chunks(payload, n)))[0]);
+      check("digestStream " + algs[a] + " chunk=" + n + " equals the one-shot digest", Buffer.compare(streamed, oneShot) === 0);
+    }
+  }
+  // one single-use stream, two algorithms, one pass: each output matches its own one-shot digest.
+  var multi = await subtle.digestStream(["SHA-256", "SHA-512"], chunks(payload, 5));
+  check("digestStream multi-hash[0] is the SHA-256 one-shot", Buffer.compare(Buffer.from(multi[0]), Buffer.from(await subtle.digest("SHA-256", payload))) === 0);
+  check("digestStream multi-hash[1] is the SHA-512 one-shot", Buffer.compare(Buffer.from(multi[1]), Buffer.from(await subtle.digest("SHA-512", payload))) === 0);
+  // an empty stream digests the empty message.
+  check("digestStream over an empty stream is the digest of the empty message",
+    Buffer.compare(Buffer.from((await subtle.digestStream(["SHA-256"], chunks(Buffer.alloc(0), 4)))[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.alloc(0)))) === 0);
+  // fail-closed doors.
+  check("digestStream refuses a non-array algorithm list",
+    (await code(function () { return subtle.digestStream("SHA-256", chunks(payload, 4)); })) === "webcrypto/syntax");
+  check("digestStream refuses an empty algorithm list",
+    (await code(function () { return subtle.digestStream([], chunks(payload, 4)); })) === "webcrypto/syntax");
+  check("digestStream refuses a source that is not an async iterable",
+    (await code(function () { return subtle.digestStream(["SHA-256"], [payload]); })) === "webcrypto/syntax");
+  check("digestStream refuses a chunk that is not a byte source",
+    (await code(function () { return subtle.digestStream(["SHA-256"], (async function* () { yield "not bytes"; })()); })) === "webcrypto/data");
+  // digestStream detects an async iterable through the async-iterator symbol captured at load, not a
+  // live global Symbol lookup, so a co-resident that replaces Symbol cannot make a real stream look
+  // non-iterable and be refused. Restore Symbol immediately in a finally.
+  var payload2 = Buffer.from("captured async-iterator symbol survives a replaced global Symbol");
+  var realSymbol = global.Symbol;
+  var streamedUnderReplacedSymbol;
+  try {
+    global.Symbol = function () { return realSymbol.apply(this, arguments); };
+    streamedUnderReplacedSymbol = await subtle.digestStream(["SHA-256"], chunks(payload2, 6));
+  } finally { global.Symbol = realSymbol; }
+  check("digestStream uses the captured async-iterator symbol, not the live global Symbol",
+    Buffer.compare(Buffer.from(streamedUnderReplacedSymbol[0]), Buffer.from(await subtle.digest("SHA-256", payload2))) === 0);
+  // The digest stays bound to the bytes the stream yielded even if a hostile iterator replaces
+  // Hash.prototype.update during the await between chunks: the captured update/digest cannot be
+  // steered by the swap. Without the capture, dropping the second chunk would make digest("ab")
+  // equal digest("a") -- a forged digest the streamed CMS sign/verify would then trust.
+  var realHashUpdate = nodeCrypto.Hash.prototype.update;
+  var hostile = (async function* () {
+    yield Buffer.from("a");
+    nodeCrypto.Hash.prototype.update = function () { return this; };
+    yield Buffer.from("b");
+  })();
+  var underSwap;
+  try { underSwap = await subtle.digestStream(["SHA-256"], hostile); }
+  finally { nodeCrypto.Hash.prototype.update = realHashUpdate; }
+  check("digestStream binds the digest to the streamed bytes despite a mid-stream Hash.update swap",
+    Buffer.compare(Buffer.from(underSwap[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // digestStream reads Symbol.asyncIterator exactly once: a source exposing it through a one-shot
+  // accessor (the method on the first read, undefined after) is consumed, as a bare `for await` would,
+  // not refused by a second lookup that a preflight-plus-loop would make.
+  var oneShotServed = false;
+  var oneShotSource = {};
+  Object.defineProperty(oneShotSource, Symbol.asyncIterator, { configurable: true, get: function () {
+    if (oneShotServed) return undefined;
+    oneShotServed = true;
+    return async function* () { yield Buffer.from("a"); yield Buffer.from("b"); };
+  } });
+  var oneShotDigest = await subtle.digestStream(["SHA-256"], oneShotSource);
+  check("digestStream reads Symbol.asyncIterator once (a one-shot-accessor source is consumed)",
+    Buffer.compare(Buffer.from(oneShotDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // digestStream reads the iterator's `next` exactly once (captured), as native for-await does: an
+  // iterator whose `next` is a one-shot accessor is driven, not refused by a second lookup.
+  var nextServed = false;
+  var backingGen = (async function* () { yield Buffer.from("a"); yield Buffer.from("b"); })();
+  var oneShotNextIter = {};
+  Object.defineProperty(oneShotNextIter, "next", { get: function () { if (nextServed) return undefined; nextServed = true; return backingGen.next.bind(backingGen); } });
+  oneShotNextIter[Symbol.asyncIterator] = function () { return oneShotNextIter; };
+  var oneShotNextDigest = await subtle.digestStream(["SHA-256"], oneShotNextIter);
+  check("digestStream reads the iterator's next once (a one-shot-next iterator is consumed)",
+    Buffer.compare(Buffer.from(oneShotNextDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // When a chunk is bad AND the iterator's `return` cleanup throws (even as a throwing accessor read
+  // during completion), the ORIGINAL chunk error is what surfaces, not the cleanup fault: the
+  // best-effort completion runs fully inside the guard, so it cannot mask the malformed-chunk verdict.
+  var badChunkThrowingReturn = {};
+  badChunkThrowingReturn[Symbol.asyncIterator] = function () {
+    var yielded = false;
+    var it = { next: function () { if (yielded) return Promise.resolve({ done: true }); yielded = true; return Promise.resolve({ value: "not a byte source", done: false }); } };
+    Object.defineProperty(it, "return", { get: function () { throw new Error("hostile return getter"); } });
+    return it;
+  };
+  var cleanupCode = await subtle.digestStream(["SHA-256"], badChunkThrowingReturn).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("digestStream surfaces the chunk error even when the iterator's return cleanup throws", cleanupCode === "webcrypto/data");
+  // digestStream follows the async-iteration protocol: it acquires via Symbol.asyncIterator, never the
+  // source's own `next`. A source with a DECOY `next` (different bytes) whose Symbol.asyncIterator
+  // returns the real iterator must hash the iterator's bytes, exactly what `for await` consumes.
+  var decoyCalled = 0;
+  var protoSrc = {};
+  protoSrc.next = function () { return Promise.resolve(decoyCalled++ === 0 ? { value: Buffer.from("WRONG"), done: false } : { done: true }); };
+  protoSrc[Symbol.asyncIterator] = function () { return (async function* () { yield Buffer.from("a"); yield Buffer.from("b"); })(); };
+  var protoDigest = await subtle.digestStream(["SHA-256"], protoSrc);
+  check("digestStream acquires via Symbol.asyncIterator, not the source's own next",
+    Buffer.compare(Buffer.from(protoDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // An unsupported algorithm rejects BEFORE the iterator is acquired, so a factory that opens a
+  // resource is never invoked on a pre-hash rejection (the lazy-stream guarantee CMS relies on).
+  var acquiredOnBadAlg = false, badAlgSrc = {};
+  badAlgSrc[Symbol.asyncIterator] = function () { acquiredOnBadAlg = true; return (async function* () { yield Buffer.from("x"); })(); };
+  var badAlgCode = await subtle.digestStream(["NOT-A-REAL-ALGORITHM"], badAlgSrc).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("digestStream rejects an unsupported algorithm without acquiring the iterator",
+    badAlgCode === "webcrypto/not-supported" && acquiredOnBadAlg === false);
+  // A sparse algorithm list (a hole) is rejected with a typed webcrypto/syntax before any chunk is
+  // read, not left as a hole that later updates `undefined` with a raw TypeError or yields sparse output.
+  var sparse = []; sparse[1] = "SHA-256";
+  var sparseCode = await subtle.digestStream(sparse, chunks(Buffer.from("x"), 4)).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  check("digestStream rejects a sparse algorithm list with a typed error", sparseCode === "webcrypto/syntax");
+  // A factory that acquires a resource but returns an iterator with a non-callable `next` is rejected
+  // with webcrypto/syntax AND the iterator's return() is still invoked, so the resource is released:
+  // the validation of `next` is inside the cleanup boundary, not before it.
+  var badNextReturned = false, badNextSrc = {};
+  badNextSrc[Symbol.asyncIterator] = function () { return { next: 1, return: function () { badNextReturned = true; return Promise.resolve({ done: true }); } }; };
+  var badNextCode = await subtle.digestStream(["SHA-256"], badNextSrc).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  check("digestStream rejects an iterator with a non-callable next", badNextCode === "webcrypto/syntax");
+  check("digestStream closes the acquired iterator when next is invalid (return called)", badNextReturned === true);
+}
+
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length
 // default (RSA_PSS_SALTLEN_DIGEST) on both the sign and verify branches.
 async function testRsaPssDefaultSalt() {
@@ -1165,6 +1289,7 @@ async function run() {
   await testJwkOctStrict();
   await testGenerateKeyEdges();
   await testNormalizeAndDigestEdges();
+  await testDigestStream();
   await testRsaPssDefaultSalt();
   await testRsaOaepLabel();
   await testEncryptDecryptUnsupported();

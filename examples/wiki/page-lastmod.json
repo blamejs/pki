@@ -1,5 +1,5 @@
 {
-  "README.md": "2026-08-28",
+  "README.md": "2026-08-29",
   "examples/wiki/concepts.js": "2026-08-18",
   "examples/wiki/lib/assets.js": "2026-07-13",
   "examples/wiki/lib/auto-site-entries.js": "2026-07-04",
@@ -29,8 +29,8 @@
   "lib/cms-compress.js": "2026-08-28",
   "lib/cms-decrypt.js": "2026-08-28",
   "lib/cms-encrypt.js": "2026-08-28",
-  "lib/cms-sign.js": "2026-08-28",
-  "lib/cms-verify.js": "2026-08-28",
+  "lib/cms-sign.js": "2026-08-29",
+  "lib/cms-verify.js": "2026-08-29",
   "lib/composite-sig.js": "2026-08-17",
   "lib/constants.js": "2026-08-20",
   "lib/crl-sign.js": "2026-08-28",
@@ -45,7 +45,7 @@
   "lib/framework-error.js": "2026-08-28",
   "lib/guard-all.js": "2026-08-21",
   "lib/guard-async.js": "2026-08-21",
-  "lib/guard-bytes.js": "2026-08-28",
+  "lib/guard-bytes.js": "2026-08-29",
   "lib/guard-compress.js": "2026-08-21",
   "lib/guard-crypto.js": "2026-08-21",
   "lib/guard-der.js": "2026-08-21",
@@ -118,7 +118,7 @@
   "lib/verify-seam.js": "2026-08-19",
   "lib/webauthn-mds.js": "2026-08-28",
   "lib/webauthn.js": "2026-08-28",
-  "lib/webcrypto.js": "2026-08-28",
+  "lib/webcrypto.js": "2026-08-29",
   "lib/x509-sign.js": "2026-08-28",
   "lib/x509.js": "2026-07-04"
 }
