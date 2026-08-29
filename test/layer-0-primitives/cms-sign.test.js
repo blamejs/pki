@@ -232,6 +232,33 @@ async function testStreamingDetachedSign() {
   var okUnderResolve = promErr === null && signedUnderResolve != null &&
     (await pki.cms.verify(signedUnderResolve, { content: CONTENT })).valid === true;
   check("streaming sign: a stream replacing global Promise.resolve after its last chunk cannot disrupt the signing", okUnderResolve === true);
+  // The signer list is copied before the content is classified, so a streamed content whose
+  // Symbol.asyncIterator accessor mutates the caller's signer array cannot add a SignerInfo the caller
+  // never asked for: the emitted SignedData carries exactly the one signer that was passed.
+  var edOne = makeSigner("ed25519"), edTwo = makeSigner("ed25519");
+  var signerArr = [edOne];
+  var injectSigner = {};
+  Object.defineProperty(injectSigner, Symbol.asyncIterator, { configurable: true, get: function () {
+    signerArr.push(edTwo);
+    return function () { return (async function* () { yield CONTENT; })(); };
+  } });
+  var injectedSig = await pki.cms.sign(injectSigner, signerArr, { detached: true, signingTime: false });
+  check("streaming sign: a content accessor cannot add a signer to the copied list",
+    pki.schema.cms.parse(injectedSig).signerInfos.length === 1);
+  // The options object is copied before the content is classified too, so a content accessor that sets
+  // opts.signingTime on the caller's still-uncopied options cannot stamp the signature with its instant.
+  var edOpt = makeSigner("ed25519");
+  var fakeOptMs = new Date("2019-03-03T00:00:00Z").getTime();
+  var refFakeOpt = await pki.cms.sign(CONTENT, edOpt, { detached: true, signingTime: new Date(fakeOptMs) });
+  var optsMut = { detached: true };
+  var mutOptsContent = {};
+  Object.defineProperty(mutOptsContent, Symbol.asyncIterator, { configurable: true, get: function () {
+    optsMut.signingTime = new Date(fakeOptMs);
+    return function () { return (async function* () { yield CONTENT; })(); };
+  } });
+  var streamedOpt = await pki.cms.sign(mutOptsContent, edOpt, optsMut);
+  check("streaming sign: a content accessor cannot set opts.signingTime on the copied options",
+    Buffer.compare(streamedOpt, refFakeOpt) !== 0);
 }
 
 // ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
@@ -277,6 +304,20 @@ async function testStreamingDetachedVerify() {
   var ru = await pki.cms.verify(badDigest, { content: _chunksOf(CONTENT, 5) });
   check("streaming verify: an unsupported digest is a per-signer unsupported-algorithm verdict, not a throw",
     ru.valid === false && ru.signers[0].code === "cms/unsupported-algorithm");
+  // The candidate certificate set (opts.certs) is snapshotted before opts.content is probed, so a
+  // streamed content whose Symbol.asyncIterator accessor empties the caller's opts.certs cannot hide the
+  // signer certificate the caller supplied: the signature still verifies against it.
+  var sc = makeSigner("ec-p256");
+  var detNoCert = await pki.cms.sign(CONTENT, sc, { certificates: false, detached: true });
+  var certsArr = [sc.cert];
+  var emptiesCerts = {};
+  Object.defineProperty(emptiesCerts, Symbol.asyncIterator, { configurable: true, get: function () {
+    certsArr.length = 0;
+    return function () { return (async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); })(); };
+  } });
+  var rCerts = await pki.cms.verify(detNoCert, { content: emptiesCerts, certs: certsArr });
+  check("streaming verify: a content accessor that empties opts.certs cannot hide the caller-supplied signer certificate",
+    rCerts.valid === true);
 }
 
 // ---- streaming verify: the untrusted stream cannot steer the verdict via prototype pollution ----
