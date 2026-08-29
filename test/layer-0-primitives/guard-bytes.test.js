@@ -258,28 +258,35 @@ function testViewContract() {
   check("and neither is a plain object or a nullish value",
     guardBytes.isByteSource({}) === false && guardBytes.isByteSource(null) === false &&
     guardBytes.isByteSource(undefined) === false);
-  // isAsyncIterable is the sibling classifier: a byte STREAM, not a byte source. The two are
-  // mutually exclusive -- a verb accepting a streamed content asks this, and a byte source is
-  // never diverted to the streaming path.
+  // asyncIteratorOf is the sibling classifier: it ACQUIRES a byte STREAM's iterator with one read of
+  // Symbol.asyncIterator, or returns null for a byte source (which is bytes, not a stream). A verb
+  // accepting a streamed content asks this once and threads the iterator through, so the protocol
+  // property is never read a second time downstream.
+  function hasNext(it) { return it != null && typeof it.next === "function"; }
   var asyncGen = (async function* () { yield Buffer.from([1]); })();
   var asyncIterableObj = {};
   asyncIterableObj[Symbol.asyncIterator] = function () { return { next: function () { return Promise.resolve({ done: true }); } }; };
-  check("isAsyncIterable accepts an async generator and a bare Symbol.asyncIterator object",
-    guardBytes.isAsyncIterable(asyncGen) === true && guardBytes.isAsyncIterable(asyncIterableObj) === true);
+  check("asyncIteratorOf acquires the iterator of an async generator and a Symbol.asyncIterator object",
+    hasNext(guardBytes.asyncIteratorOf(asyncGen)) && hasNext(guardBytes.asyncIteratorOf(asyncIterableObj)));
   // A callable that carries a Symbol.asyncIterator method is a valid async iterable `for await`
-  // consumes, so it is accepted despite being a function rather than a plain object.
+  // consumes, so its iterator is acquired despite it being a function rather than a plain object.
   var callableAsyncIterable = function () {};
   callableAsyncIterable[Symbol.asyncIterator] = async function* () { yield Buffer.from([1]); };
-  check("isAsyncIterable accepts a callable that implements the async-iteration protocol",
-    guardBytes.isAsyncIterable(callableAsyncIterable) === true);
-  check("isAsyncIterable rejects a plain function with no Symbol.asyncIterator",
-    guardBytes.isAsyncIterable(function () {}) === false);
+  check("asyncIteratorOf acquires the iterator of a callable that implements the async-iteration protocol",
+    hasNext(guardBytes.asyncIteratorOf(callableAsyncIterable)));
+  check("asyncIteratorOf returns null for a plain function with no Symbol.asyncIterator",
+    guardBytes.asyncIteratorOf(function () {}) === null);
   // A byte source is bytes, never a stream, even when a caller has attached a Symbol.asyncIterator:
-  // the byte-source classification wins, so a door offering both forms never diverts real bytes.
+  // the byte-source classification wins and its accessor is never invoked, so real bytes are not diverted.
   var bufWithAsync = Buffer.from([1, 2, 3]);
   bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
-  check("isAsyncIterable treats a byte source with an attached Symbol.asyncIterator as bytes, not a stream",
-    guardBytes.isByteSource(bufWithAsync) === true && guardBytes.isAsyncIterable(bufWithAsync) === false);
+  check("asyncIteratorOf treats a byte source with an attached Symbol.asyncIterator as bytes (null)",
+    guardBytes.isByteSource(bufWithAsync) === true && guardBytes.asyncIteratorOf(bufWithAsync) === null);
+  // A one-shot accessor (the method on the first read, undefined after) is acquired with a SINGLE read,
+  // so the acquired iterator can be driven; a second classification would refuse it.
+  var served = false, oneShot = {};
+  Object.defineProperty(oneShot, Symbol.asyncIterator, { get: function () { if (served) return undefined; served = true; return async function* () { yield Buffer.from([1]); }; } });
+  check("asyncIteratorOf acquires a one-shot-accessor stream with a single read", hasNext(guardBytes.asyncIteratorOf(oneShot)));
   // The classification reads the async-iterator symbol captured at load, the one `for await` uses,
   // not a live lookup off the writable global Symbol: a co-resident that replaces Symbol must not make
   // a real async iterable look non-iterable at the door while the engine would still consume it.
@@ -287,15 +294,15 @@ function testViewContract() {
   var realSymbol = global.Symbol;
   try {
     global.Symbol = function () { return realSymbol.apply(this, arguments); };
-    check("isAsyncIterable uses the captured async-iterator symbol, not the live global Symbol",
-      guardBytes.isAsyncIterable(realAsyncGen) === true);
+    check("asyncIteratorOf uses the captured async-iterator symbol, not the live global Symbol",
+      hasNext(guardBytes.asyncIteratorOf(realAsyncGen)));
   } finally { global.Symbol = realSymbol; }
-  check("isAsyncIterable rejects each byte source (never diverts bytes to streaming)",
-    guardBytes.isAsyncIterable(Buffer.alloc(1)) === false && guardBytes.isAsyncIterable(new Uint8Array(1)) === false &&
-    guardBytes.isAsyncIterable(new DataView(new ArrayBuffer(1))) === false && guardBytes.isAsyncIterable(new ArrayBuffer(1)) === false);
-  check("isAsyncIterable rejects a plain object, a sync iterable, and nullish values",
-    guardBytes.isAsyncIterable({}) === false && guardBytes.isAsyncIterable([1, 2]) === false &&
-    guardBytes.isAsyncIterable(null) === false && guardBytes.isAsyncIterable(undefined) === false);
+  check("asyncIteratorOf returns null for each byte source (never diverts bytes to streaming)",
+    guardBytes.asyncIteratorOf(Buffer.alloc(1)) === null && guardBytes.asyncIteratorOf(new Uint8Array(1)) === null &&
+    guardBytes.asyncIteratorOf(new DataView(new ArrayBuffer(1))) === null && guardBytes.asyncIteratorOf(new ArrayBuffer(1)) === null);
+  check("asyncIteratorOf returns null for a plain object, a sync iterable, and nullish values",
+    guardBytes.asyncIteratorOf({}) === null && guardBytes.asyncIteratorOf([1, 2]) === null &&
+    guardBytes.asyncIteratorOf(null) === null && guardBytes.asyncIteratorOf(undefined) === null);
   // Shared memory holds bytes and cannot hold this module's promise about them, since another
   // thread can rewrite it after the checks have read it. Copying it into a private ArrayBuffer
   // would keep the bytes and change the kind, so it is refused at every door instead, including

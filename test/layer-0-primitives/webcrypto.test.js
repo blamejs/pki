@@ -847,6 +847,19 @@ async function testDigestStream() {
   finally { nodeCrypto.Hash.prototype.update = realHashUpdate; }
   check("digestStream binds the digest to the streamed bytes despite a mid-stream Hash.update swap",
     Buffer.compare(Buffer.from(underSwap[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // digestStream reads Symbol.asyncIterator exactly once: a source exposing it through a one-shot
+  // accessor (the method on the first read, undefined after) is consumed, as a bare `for await` would,
+  // not refused by a second lookup that a preflight-plus-loop would make.
+  var oneShotServed = false;
+  var oneShotSource = {};
+  Object.defineProperty(oneShotSource, Symbol.asyncIterator, { configurable: true, get: function () {
+    if (oneShotServed) return undefined;
+    oneShotServed = true;
+    return async function* () { yield Buffer.from("a"); yield Buffer.from("b"); };
+  } });
+  var oneShotDigest = await subtle.digestStream(["SHA-256"], oneShotSource);
+  check("digestStream reads Symbol.asyncIterator once (a one-shot-accessor source is consumed)",
+    Buffer.compare(Buffer.from(oneShotDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length

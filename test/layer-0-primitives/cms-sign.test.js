@@ -96,6 +96,16 @@ async function testStreamingDetachedSign() {
   callable[Symbol.asyncIterator] = async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
   check("streaming detached sign accepts a callable async-iterable content",
     Buffer.compare(await pki.cms.sign(callable, s, { detached: true, signingTime: false }), buffered) === 0);
+  // A content whose Symbol.asyncIterator is a one-shot accessor is consumed: the door acquires the
+  // iterator once and threads it to the engine, so a valid stateful-accessor source a bare `for await`
+  // accepts is not refused by a second protocol read across the sign path.
+  var served = false, oneShotContent = {};
+  Object.defineProperty(oneShotContent, Symbol.asyncIterator, { get: function () {
+    if (served) return undefined; served = true;
+    return async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
+  } });
+  check("streaming detached sign consumes a one-shot-accessor content (one protocol read across the path)",
+    Buffer.compare(await pki.cms.sign(oneShotContent, s, { detached: true, signingTime: false }), buffered) === 0);
   // A byte source carrying a Symbol.asyncIterator is signed AS BYTES, not diverted to the streaming
   // path: an attached (non-detached) sign of it succeeds, which the streaming path would refuse.
   var bufWithAsync = Buffer.from("plain bytes that also expose an async iterator");
