@@ -1264,6 +1264,17 @@ async function testInheritedArrayElementIsRefused() {
   check("cms.sign refuses a signer supplied only through the array's prototype, never signs it",
     code === "cms/bad-input");
 
+  // The copy itself refuses the prototype-supplied index, independent of any verb's own density check, so
+  // a verb that maps the snapshot without one (crmf.build, pkcs12.build) cannot silently skip the hole.
+  var protoDirect = errorOf(function () { guardBytes.snapshotDeep(signers, TestError, "t/bad", "list"); });
+  check("snapshotDeep refuses an array whose in-range index comes from its prototype", protoDirect.code === "t/bad");
+  // ...while it preserves a GENUINE hole (own-absent AND prototype-absent), so an ordinary sparse array
+  // round-trips unchanged.
+  var genuine = [1, 2, 3]; genuine[5] = 9;
+  var genuineCopy = guardBytes.snapshotDeep(genuine, TestError, "t/bad", "list");
+  check("snapshotDeep preserves a genuine hole (an ordinary sparse array round-trips)",
+    genuineCopy.length === 6 && genuineCopy[0] === 1 && genuineCopy[5] === 9 && !(3 in genuineCopy));
+
   // An own element with an inherited index PAST length is a dense one-signer list: the own element is
   // signed and the past-length prototype index is never reached by a length-bounded copy.
   var two = [{ cert: s.cert, key: s.key }];

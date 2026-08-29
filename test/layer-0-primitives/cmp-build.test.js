@@ -103,6 +103,24 @@ async function run() {
     nestedPolluted = await pki.cmp.build({ header: HDR, body: { nested: new Array(1) } }, SIG).then(function () { return "SIGNED-PROTOTYPE-MESSAGE"; }, function (e) { return e.code; });
   } finally { if (!hadP0) delete Array.prototype[0]; }
   check("1m. a prototype-supplied nested entry is refused, never signed", nestedPolluted === "cmp/bad-input");
+  // A PEM-armored entry (a Buffer of PEM, e.g. from fs.readFileSync) must be refused here as cmp/bad-input.
+  // cmp.parse unwraps PEM from a byte source and so would accept it, but b.raw embeds the raw armor bytes,
+  // which the outer message's own parse then rejects as cmp/bad-der only after protection is computed.
+  var innerPem = Buffer.from(pki.schema.cmp.pemEncode(innerA));
+  var nestedPem = await pki.cmp.build({ header: HDR, body: { nested: [innerPem] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1n. a PEM-armored nested entry is refused with cmp/bad-input, not cmp/bad-der", nestedPem === "cmp/bad-input");
+  // The same PEM-armor mismatch on the p10cr arm (csr.parse unwraps PEM; b.raw embeds it), closed by the
+  // shared reqDerSequence guard every caller-DER-then-parse arm now uses.
+  var csrD = await csrDer();
+  var p10Pem = Buffer.from(pki.schema.csr.pemEncode(csrD));
+  var p10PemCode = await pki.cmp.build({ header: HDR, body: { p10cr: p10Pem } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1o. a PEM-armored p10cr is refused with cmp/bad-input, not cmp/bad-der", p10PemCode === "cmp/bad-input");
+  // reqDerSequence contract (the guard cert / crl / p10cr / nested arms compose): a DER SEQUENCE is
+  // returned, PEM or non-SEQUENCE bytes are refused.
+  var derSeqGuard = pkiBuild.makeBuilder({ ErrorClass: pki.errors.CmpError, prefix: "cmp", O: null, NS: null, NAME_SCHEMA: null, SPKI_SCHEMA: null, EXT_DECODERS: null }).reqDerSequence;
+  var seqOk = derSeqGuard(Buffer.from([0x30, 0x00]), "x");
+  var pemRej = (function () { try { derSeqGuard(Buffer.from("-----BEGIN X-----"), "x"); return "NO-THROW"; } catch (e) { return e.code; } })();
+  check("1p. reqDerSequence returns a DER SEQUENCE and refuses PEM", Buffer.isBuffer(seqOk) && seqOk[0] === 0x30 && pemRej === "cmp/bad-input");
 
   // 2. ProtectedPart exactness (THE load-bearing vector).
   var recon = reconProtectedPart(mi);
