@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.34 — 2026-08-29
+
+A subjectAltName URI shorthand whose authority is a bracketed IPv6 literal is now accepted rather than refused.
+
+### Fixed
+
+- A bare-string `subjectAltName` entry whose value is a URI with a bracketed IPv6 authority, such as `https://[2001:db8::1]:443/path`, now classifies as a `uniformResourceIdentifier`. The bracketed host is taken as one unit before an optional port, so a colon inside the IPv6 literal is no longer read as the port separator. An unterminated bracket, a bracket body that is not a valid IPv6 address, or bytes other than a port after the closing bracket stay refused, and the explicit `{ uniformResourceIdentifier: ... }` object form is unchanged.
+
 ## v0.5.33 — 2026-08-29
 
 pki.cms.sign and pki.cms.verify accept the content as an async iterable of byte chunks, so a detached signature over a large payload is produced and verified without holding the payload in memory.

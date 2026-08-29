@@ -1,0 +1,10 @@
+{
+  "version": "0.5.34",
+  "headline": "A subjectAltName URI shorthand whose authority is a bracketed IPv6 literal is now accepted rather than refused.",
+  "summary": "The bare-string `subjectAltName` shorthand classifies a value into its GeneralName form. A URI whose authority is a bracketed IPv6 literal, such as `https://[2001:db8::1]/`, was refused as unclassifiable, because the authority parser read the first colon after the scheme as the port separator and so split inside the IPv6 literal. A bracketed literal is the only way to write an IPv6 host in a URI (RFC 3986 sec. 3.2.2), so a caller had no other shorthand spelling for it. The shorthand now classifies these values as a `uniformResourceIdentifier`. The explicit object form was never affected.",
+  "sections": {
+    "Fixed": [
+      "A bare-string `subjectAltName` entry whose value is a URI with a bracketed IPv6 authority, such as `https://[2001:db8::1]:443/path`, now classifies as a `uniformResourceIdentifier`. The bracketed host is taken as one unit before an optional port, so a colon inside the IPv6 literal is no longer read as the port separator. An unterminated bracket, a bracket body that is not a valid IPv6 address, or bytes other than a port after the closing bracket stay refused, and the explicit `{ uniformResourceIdentifier: ... }` object form is unchanged."
+    ]
+  }
+}
