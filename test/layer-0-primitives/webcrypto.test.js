@@ -860,6 +860,16 @@ async function testDigestStream() {
   var oneShotDigest = await subtle.digestStream(["SHA-256"], oneShotSource);
   check("digestStream reads Symbol.asyncIterator once (a one-shot-accessor source is consumed)",
     Buffer.compare(Buffer.from(oneShotDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // digestStream reads the iterator's `next` exactly once (captured), as native for-await does: an
+  // iterator whose `next` is a one-shot accessor is driven, not refused by a second lookup.
+  var nextServed = false;
+  var backingGen = (async function* () { yield Buffer.from("a"); yield Buffer.from("b"); })();
+  var oneShotNextIter = {};
+  Object.defineProperty(oneShotNextIter, "next", { get: function () { if (nextServed) return undefined; nextServed = true; return backingGen.next.bind(backingGen); } });
+  oneShotNextIter[Symbol.asyncIterator] = function () { return oneShotNextIter; };
+  var oneShotNextDigest = await subtle.digestStream(["SHA-256"], oneShotNextIter);
+  check("digestStream reads the iterator's next once (a one-shot-next iterator is consumed)",
+    Buffer.compare(Buffer.from(oneShotNextDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length
