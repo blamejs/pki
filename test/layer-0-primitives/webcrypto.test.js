@@ -892,6 +892,13 @@ async function testDigestStream() {
   var protoDigest = await subtle.digestStream(["SHA-256"], protoSrc);
   check("digestStream acquires via Symbol.asyncIterator, not the source's own next",
     Buffer.compare(Buffer.from(protoDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // An unsupported algorithm rejects BEFORE the iterator is acquired, so a factory that opens a
+  // resource is never invoked on a pre-hash rejection (the lazy-stream guarantee CMS relies on).
+  var acquiredOnBadAlg = false, badAlgSrc = {};
+  badAlgSrc[Symbol.asyncIterator] = function () { acquiredOnBadAlg = true; return (async function* () { yield Buffer.from("x"); })(); };
+  var badAlgCode = await subtle.digestStream(["NOT-A-REAL-ALGORITHM"], badAlgSrc).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("digestStream rejects an unsupported algorithm without acquiring the iterator",
+    badAlgCode === "webcrypto/not-supported" && acquiredOnBadAlg === false);
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length

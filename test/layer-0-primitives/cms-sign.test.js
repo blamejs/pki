@@ -189,6 +189,61 @@ async function testStreamingDetachedVerify() {
     ru.valid === false && ru.signers[0].code === "cms/unsupported-algorithm");
 }
 
+// ---- streaming verify: the untrusted stream cannot steer the verdict via prototype pollution ----
+async function testStreamingVerifyPrototypePollution() {
+  // A streamed opts.content is untrusted: its next() runs while the digest is awaited, so it can
+  // replace a prototype method mid-verify. Every verdict-deciding step uses a captured intrinsic, so
+  // it cannot. Buffer.prototype.equals: a stream replacing it with always-true must not pass the
+  // message-digest check for content that was never signed.
+  var det1 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var realEquals = Buffer.prototype.equals;
+  var pollutedEquals = (async function* () { Buffer.prototype.equals = function () { return true; }; yield Buffer.from("bytes that were never signed"); })();
+  var r1;
+  try { r1 = await pki.cms.verify(det1, { content: pollutedEquals }); }
+  finally { Buffer.prototype.equals = realEquals; }
+  check("streaming verify: a stream replacing Buffer.prototype.equals cannot forge the digest check",
+    r1.valid === false && r1.signers[0].code === "cms/message-digest-mismatch");
+  // Array.prototype.map: a stream replacing it to truncate the signer enumeration must not hide signers
+  // (a dropped signer could be an unverified one, so `valid` would report only a passing subset).
+  var det2 = await pki.cms.sign(CONTENT, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true });
+  var realMap = Array.prototype.map;
+  var pollutedMap = (async function* () {
+    Array.prototype.map = function (fn, thisArg) {
+      var out = realMap.call(this, fn, thisArg);
+      if (this.length >= 2 && this[0] && this[0].signature != null && this[0].digestAlgorithm != null) return out.slice(0, 1);
+      return out;
+    };
+    yield CONTENT;
+  })();
+  var r2;
+  try { r2 = await pki.cms.verify(det2, { content: pollutedMap }); }
+  finally { Array.prototype.map = realMap; }
+  check("streaming verify: a stream replacing Array.prototype.map cannot truncate signer enumeration",
+    r2.signers.length === 2 && r2.valid === true);
+  // Promise.all: a stream replacing it to resolve to a fabricated [{ ok: true }] must not make `valid`
+  // true without verifying any real SignerInfo.
+  var det3 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var realPromiseAll = Promise.all;
+  var pollutedAll = (async function* () { Promise.all = function () { return realPromiseAll.call(Promise, [{ ok: true }]); }; yield Buffer.from("bytes that were never signed"); })();
+  var r3;
+  try { r3 = await pki.cms.verify(det3, { content: pollutedAll }).then(function (v) { return v; }, function () { return { valid: false }; }); }
+  finally { Promise.all = realPromiseAll; }
+  check("streaming verify: a stream replacing Promise.all cannot fabricate a passing signer set", r3.valid === false);
+  // Promise.prototype.then: a stream replacing it to invoke callbacks with a fabricated { ok: true }
+  // must not forge `valid` — the whole verify path chains with await, which does not dispatch through it.
+  var det4 = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  var realThen = Promise.prototype.then;
+  var pollutedThen = (async function* () {
+    Promise.prototype.then = function (onF) { return realThen.call(Promise.resolve({ ok: true, sid: {}, cert: null, signedAttributesPresent: true }), onF); };
+    yield Buffer.from("bytes that were never signed");
+  })();
+  var r4;
+  try { r4 = await pki.cms.verify(det4, { content: pollutedThen }); }
+  catch (_e4) { r4 = { valid: false }; }
+  finally { Promise.prototype.then = realThen; }
+  check("streaming verify: a stream replacing Promise.prototype.then cannot forge the verdict", r4.valid === false);
+}
+
 // ---- multiple signers ----
 async function testMultiSigner() {
   var p7 = await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("rsa"), makeSigner("ed25519")]);
@@ -876,6 +931,7 @@ async function run() {
   await testContentModes();
   await testStreamingDetachedSign();
   await testStreamingDetachedVerify();
+  await testStreamingVerifyPrototypePollution();
   await testMultiSigner();
   await testSignerIdentifier();
   await testSignedAttributes();
