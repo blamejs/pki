@@ -558,10 +558,15 @@ async function testGeneralNameForms() {
   check("Half B: 'https://h.test/%zz' (invalid percent-encoding) -> throws", await codeOf(pki.x509.sign(base(["https://h.test/%zz"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://h.test/a^b' (caret is not a URI character) -> throws", await codeOf(pki.x509.sign(base(["https://h.test/a^b"]), { key: s.key })) === "x509/bad-input");
   check("Half B: 'https://h.test/%2f?a=1' (valid percent-encoding) -> URI [6]", sanForms(await pki.x509.sign(base(["https://h.test/%2f?a=1"]), { key: s.key })) === "6");
-  // An IPv6-literal host ("[::1]") is out of the shorthand's scope: the "[" "]" delimiters are excluded, so
-  // such a URL uses the object form { uniformResourceIdentifier } rather than the bare-string shorthand.
+  // A bracketed IPv6-literal host ("[::1]") is classified (#201): RFC 3986 sec. 3.2.2 IP-literal is taken as
+  // one unit before the optional port, and an IPv6 host is a valid iPAddress per RFC 5280 sec. 4.2.1.6. The
+  // bracket is the only way to write an IPv6 host in a URI. An unbalanced bracket, a bracket body that is not
+  // a valid IPv6 address, or bytes other than a port after the "]" stay refused.
   check("Half B: 'https://[' (unbalanced IP-literal bracket) -> throws", await codeOf(pki.x509.sign(base(["https://["]), { key: s.key })) === "x509/bad-input");
-  check("Half B: 'https://[::1]/p' (IPv6-literal host, structural) -> throws (object form is the escape)", await codeOf(pki.x509.sign(base(["https://[::1]/p"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://[::1]/p' (bracketed IPv6 host) -> URI [6]", sanForms(await pki.x509.sign(base(["https://[::1]/p"]), { key: s.key })) === "6");
+  check("Half B: 'https://[2001:db8::1]:8443/p' (bracketed IPv6 host + port) -> URI [6]", sanForms(await pki.x509.sign(base(["https://[2001:db8::1]:8443/p"]), { key: s.key })) === "6");
+  check("Half B: 'https://[not-ipv6]/' (non-IPv6 bracket body) -> throws", await codeOf(pki.x509.sign(base(["https://[not-ipv6]/"]), { key: s.key })) === "x509/bad-input");
+  check("Half B: 'https://[::1]x/' (junk after IP-literal bracket) -> throws", await codeOf(pki.x509.sign(base(["https://[::1]x/"]), { key: s.key })) === "x509/bad-input");
   // The URI form is parsed by component (RFC 3986): the authority carries at most one "@", an FQDN-or-IP
   // host, and a numeric port, and there is at most one "#". A structurally malformed URL is refused, not
   // signed as a uniformResourceIdentifier; a fully well-formed URL (userinfo, port, path, query, fragment)

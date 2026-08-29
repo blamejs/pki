@@ -118,6 +118,29 @@ async function testExtensionRequest() {
   if (shNode.tagClass === "universal" && shNode.tagNumber === 4) shNode = pki.asn1.decode(shNode.content);
   check("Half B uniformity: bare SAN shorthand classifies through csr.sign too", shNode.children.map(function (c) { return c.tagNumber; }).join(",") === "2,7");
 
+  // #201: a bare-string URI SAN whose authority is a bracketed IPv6 literal (RFC 3986 sec. 3.2.2)
+  // classifies as uniformResourceIdentifier (tag 6), not refused -- the bracket is the ONLY way to write
+  // an IPv6 host in a URI, so the caller has no other shorthand spelling. An optional ":" port follows the
+  // "]"; an unterminated "[", a bracket body that is not a valid IPv6 literal, or bytes other than a port
+  // after the "]" stay refused (the object form is the escape for anything the shorthand won't classify).
+  async function _bareUriTag(uri) {
+    var der = await pki.csr.sign({ subject: "v6.example", subjectPublicKey: s.spki,
+      extensionRequest: { subjectAltName: [uri] } }, { key: s.key });
+    var san = pki.schema.csr.parse(der).attributes[0].extensions.filter(function (e) { return (e.name || e.oid) === "subjectAltName"; })[0].value;
+    var node = pki.asn1.decode(san);
+    if (node.tagClass === "universal" && node.tagNumber === 4) node = pki.asn1.decode(node.content);
+    return node.children.map(function (c) { return c.tagNumber; }).join(",");
+  }
+  var v6Port = await _bareUriTag("https://[2001:db8::1]:443/p").then(function (t) { return t; }, function () { return "REFUSED"; });
+  check("#201: a bare URI SAN with a bracketed IPv6 authority + port classifies as uniformResourceIdentifier", v6Port === "6");
+  var v6NoPort = await _bareUriTag("https://[2001:db8::1]/").then(function (t) { return t; }, function () { return "REFUSED"; });
+  check("#201: a bare URI SAN with a bracketed IPv6 authority, no port, classifies as URI", v6NoPort === "6");
+  var v6Bad = ["https://[2001:db8/p", "https://[not-ipv6]/", "https://[2001:db8::1]x/"];
+  for (var _bi = 0; _bi < v6Bad.length; _bi += 1) {
+    var badRes = await _bareUriTag(v6Bad[_bi]).then(function () { return "CLASSIFIED"; }, function () { return "REFUSED"; });
+    check("#201: a malformed bracketed-IPv6 URI SAN stays refused: " + v6Bad[_bi], badRes === "REFUSED");
+  }
+
   // end-to-end: a CA copies the requested SAN into an issued cert via the pre-encoded array form.
   var sanExt = er.extensions.filter(function (e) { return (e.name || e.oid) === "subjectAltName"; })[0];
   var ca = makeSigner("ec-p256");
