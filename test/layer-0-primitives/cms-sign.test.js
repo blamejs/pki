@@ -210,6 +210,22 @@ async function testStreamingDetachedSign() {
   finally { global.Date = realDateSign; }
   check("streaming sign: a Symbol.asyncIterator getter replacing global Date cannot forge the signingTime attribute",
     Buffer.compare(streamedForgedTime, refAtFake) !== 0);
+  // The signing that runs once the digest completes goes through await, never a live Promise.resolve()
+  // or .then lookup, so a streamed content that replaces the global Promise.resolve after its final
+  // chunk cannot disrupt it: the signature is still produced and verifies.
+  var edPromSigner = makeSigner("ed25519");
+  var realResolve = Promise.resolve;
+  var pollutesResolve = (async function* () {
+    yield CONTENT;
+    Promise.resolve = function () { throw new Error("hostile Promise.resolve"); };
+  })();
+  var promErr = null, signedUnderResolve = null;
+  try { signedUnderResolve = await pki.cms.sign(pollutesResolve, edPromSigner, { detached: true, signingTime: false }); }
+  catch (e) { promErr = e; }
+  finally { Promise.resolve = realResolve; }
+  var okUnderResolve = promErr === null && signedUnderResolve != null &&
+    (await pki.cms.verify(signedUnderResolve, { content: CONTENT })).valid === true;
+  check("streaming sign: a stream replacing global Promise.resolve after its last chunk cannot disrupt the signing", okUnderResolve === true);
 }
 
 // ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
