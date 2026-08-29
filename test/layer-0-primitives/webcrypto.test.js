@@ -899,6 +899,11 @@ async function testDigestStream() {
   var badAlgCode = await subtle.digestStream(["NOT-A-REAL-ALGORITHM"], badAlgSrc).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("digestStream rejects an unsupported algorithm without acquiring the iterator",
     badAlgCode === "webcrypto/not-supported" && acquiredOnBadAlg === false);
+  // A sparse algorithm list (a hole) is rejected with a typed webcrypto/syntax before any chunk is
+  // read, not left as a hole that later updates `undefined` with a raw TypeError or yields sparse output.
+  var sparse = []; sparse[1] = "SHA-256";
+  var sparseCode = await subtle.digestStream(sparse, chunks(Buffer.from("x"), 4)).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  check("digestStream rejects a sparse algorithm list with a typed error", sparseCode === "webcrypto/syntax");
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length

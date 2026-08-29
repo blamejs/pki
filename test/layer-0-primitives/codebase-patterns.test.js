@@ -3007,7 +3007,7 @@ function testGuardReadsRuntimeLive() {
     "lib/webauthn.js": 174,
     "lib/asn1-der.js": 118,
     "lib/trust.js": 108,
-    "lib/cms-sign.js": 90,
+    "lib/cms-sign.js": 76,
     "lib/webauthn-mds.js": 90,
     "lib/attrcert-sign.js": 91,
     "lib/tsp-sign.js": 71,

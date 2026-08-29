@@ -127,6 +127,21 @@ async function testStreamingDetachedSign() {
   finally { Promise.all = realAllSign; }
   check("streaming multi-signer sign is not truncated by a stream replacing Promise.all",
     (await pki.cms.verify(signedUnderPoll, { content: CONTENT })).signers.length === 2);
+  // Nor by replacing Array.prototype.map: assembling the signerInfos SET uses captured enumeration, so
+  // a stream truncating arrays of built SignerInfos cannot drop signers from the emitted CMS.
+  var realMapSign = Array.prototype.map;
+  var pollutedMapSign = (async function* () {
+    Array.prototype.map = function (fn, thisArg) {
+      if (this.length >= 2 && this[0] && this[0].si != null && this[0].digestAlgId != null) return realMapSign.call(this.slice(0, 1), fn, thisArg);
+      return realMapSign.call(this, fn, thisArg);
+    };
+    for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4);
+  })();
+  var signedMapPoll;
+  try { signedMapPoll = await pki.cms.sign(pollutedMapSign, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true, signingTime: false }); }
+  finally { Array.prototype.map = realMapSign; }
+  check("streaming multi-signer sign is not truncated by a stream replacing Array.prototype.map",
+    (await pki.cms.verify(signedMapPoll, { content: CONTENT })).signers.length === 2);
   // Multiple FAILING signers over a streamed content must reject cleanly, WITHOUT leaving a later
   // signer's rejection unobserved (which Node can escalate to a crash): SignerInfos are built
   // sequentially, so a later signer is never started once an earlier one fails.
@@ -268,6 +283,28 @@ async function testStreamingVerifyPrototypePollution() {
   catch (_e4) { r4 = { valid: false }; }
   finally { Promise.prototype.then = realThen; }
   check("streaming verify: a stream replacing Promise.prototype.then cannot forge the verdict", r4.valid === false);
+  // The default trust instant is captured at snapshot time -- before the stream is consumed -- so a
+  // stream replacing the global Date cannot move the validation instant into an EXPIRED signer
+  // certificate's lifetime and report it trusted. The leaf below is expired at the real "now".
+  var caKpT = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var caKeyT = caKpT.privateKey.export({ format: "der", type: "pkcs8" });
+  var caDerT = await pki.x509.sign({ subject: [{ commonName: "stream-time-ca" }], subjectPublicKey: caKpT.publicKey.export({ format: "der", type: "spki" }),
+    serialNumber: 1, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2037-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"], subjectKeyIdentifier: true } }, { key: caKeyT });
+  var leafKpT = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
+  var expiredLeafDer = await pki.x509.sign({ subject: [{ commonName: "stream-expired-signer" }], subjectPublicKey: leafKpT.publicKey.export({ format: "der", type: "spki" }),
+    serialNumber: 21, notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"), extensions: { keyUsage: ["digitalSignature"], subjectKeyIdentifier: true, authorityKeyIdentifier: true } }, { key: caKeyT, cert: caDerT });
+  var p7t = await pki.cms.sign(CONTENT, { cert: expiredLeafDer, key: leafKpT.privateKey.export({ format: "der", type: "pkcs8" }) }, { detached: true });
+  var realDateCtor = Date;
+  var fakeMs = new realDateCtor("2020-06-01T00:00:00Z").getTime();
+  function FakeDate(a) { return arguments.length === 0 ? new realDateCtor(fakeMs) : new realDateCtor(a); }
+  FakeDate.now = function () { return fakeMs; };
+  FakeDate.prototype = realDateCtor.prototype;
+  var pollutedDate = (async function* () { global.Date = FakeDate; for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); })();
+  var rt;
+  try { rt = await pki.cms.verify(p7t, { content: pollutedDate, trustAnchors: [caDerT] }); }
+  finally { global.Date = realDateCtor; }
+  check("streaming verify: an expired signer is not reported trusted even when a stream replaces the global Date",
+    rt.signers[0].trusted === false);
   // The trust path's key-usage gate (_keyUsagePermitsSigning) reads the signer certificate through the
   // same captured intrinsic.bufferEquals proven above for the digest check, closing its fail-open
   // `if (!entry) return true` against a Buffer.prototype.equals replacement. It has no dedicated vector
