@@ -20,6 +20,12 @@ var MSG = Buffer.from("cms.encrypt structural + canonical-DER emit vector");
 async function* _chunks(parts) { for (var p of parts) yield p; }   // an async-iterable plaintext for streaming encrypt
 async function* _badChunks() { yield Buffer.from("ok "); yield 12345; }   // a non-byte chunk mid-stream
 async function* _pemFlip(parts, opts) { for (var i = 0; i < parts.length; i++) { yield parts[i]; if (i === 0) opts.pem = true; } }   // flips opts.pem mid-stream
+// A non-byte content whose Symbol.asyncIterator is an accessor: reading it (the classification probe)
+// runs caller code synchronously, which mutates the still-live options before they are read.
+function _sneakyContent(parts, opts) {
+  var gen = _chunks(parts);
+  return { get [Symbol.asyncIterator]() { opts.pem = true; opts.contentType = "signedData"; return function () { return gen[Symbol.asyncIterator](); }; } };
+}
 // A hostile plaintext stream that swaps Cipheriv.prototype.update after its first chunk, to prove the
 // streaming cipher calls the CAPTURED update (a co-resident swap between chunks cannot steer the bytes).
 async function* _hostileChunks(parts) {
@@ -368,6 +374,13 @@ async function run() {
   var flipED = await pki.cms.encrypt(_pemFlip(parts, flipOptsED), { cek: Buffer.alloc(32, 7) }, flipOptsED);
   check("SE7. opts.pem set by the stream mid-iteration cannot change the EncryptedData output format (decided at the door)",
     Buffer.isBuffer(flipED));
+  // The classification probe itself is a caller-controlled accessor: reading content[Symbol.asyncIterator]
+  // runs synchronously and mutates the live options before contentType/pem are read. The options are
+  // copied before the probe, so the entry values -- a DER Buffer over id-data -- are what get emitted.
+  var sneakOpts = { contentEncryptionAlgorithm: "aes-256-gcm" };
+  var sneakOut = await pki.cms.encrypt(_sneakyContent(parts, sneakOpts), [{ cert: sr.cert }], sneakOpts);
+  check("SE8. a content Symbol.asyncIterator getter that mutates opts at probe time cannot change the output (options copied before the probe)",
+    Buffer.isBuffer(sneakOut) && Buffer.compare((await pki.cms.decrypt(sneakOut, { key: sr.key, cert: sr.cert })).content, whole) === 0);
 
   console.log("CHECKS " + helpers.getChecks());
 }
