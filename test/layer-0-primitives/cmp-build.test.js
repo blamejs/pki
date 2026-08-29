@@ -19,6 +19,7 @@ var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
 var nodeCrypto = require("node:crypto");
 var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
+var pkiBuild = require("../../lib/pki-build");    // for a direct contract test of the shared reqDenseArray guard
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -49,6 +50,77 @@ async function run() {
   var mi = parse(irDer);
   check("1a. ir round-trips: sender/recipient/pvno/transactionID recovered", mi.header.pvno === 2 && Buffer.isBuffer(mi.header.transactionID) && mi.body.arm === "ir");
   check("1b. the inner CertReqMessages decodes via the CRMF walk", !!mi.body.decoded);
+
+  // nested [20] NestedMessageContent ::= PKIMessages (RFC 9810 sec. 5.1.3.5 "Multiple Protection"): an RA
+  // wraps complete, independently-protected PKIMessages to forward or batch them. The wrapper carries the RA's
+  // own protection; the parser surfaces the nested content raw (never auto-recursed), so the operator re-parses
+  // each inner message. A non-empty array is required (PKIMessages is SIZE (1..MAX)); each entry is checked to
+  // parse as a PKIMessage and forwarded UNCHANGED (sec. 5.1.3.5 forwards the original message unchanged), so
+  // the builder never re-encodes or deep-validates an inner message's raw-arm content.
+  var innerA = await pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { subject: [{ commonName: "ee-a" }], publicKey: s.spki } } } }, SIG);
+  var innerB = await pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { subject: [{ commonName: "ee-b" }], publicKey: s.spki } } } }, SIG);
+  var nestedDer = await pki.cmp.build({ header: HDR, body: { nested: [innerA, innerB] } }, SIG);
+  var mn = parse(nestedDer);
+  check("1c. nested round-trips as the nested [20] arm", mn.body.arm === "nested");
+  var nseq = asn1.decode(mn.body.bytes);
+  check("1d. nested wraps its PKIMessages as a SEQUENCE OF two", nseq.tagNumber === 16 && nseq.children.length === 2);
+  check("1e. each inner PKIMessage re-parses to its ir body", parse(nseq.children[0].bytes).body.arm === "ir" && parse(nseq.children[1].bytes).body.arm === "ir");
+  check("1e2. each inner PKIMessage is wrapped byte-for-byte unchanged (sec. 5.1.3.5 forwards the original)",
+    Buffer.from(nseq.children[0].bytes).equals(innerA) && Buffer.from(nseq.children[1].bytes).equals(innerB));
+  var nestedEmpty = await pki.cmp.build({ header: HDR, body: { nested: [] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1f. nested rejects an empty array (PKIMessages is SIZE (1..MAX))", nestedEmpty === "cmp/bad-input");
+  var nestedBad = await pki.cmp.build({ header: HDR, body: { nested: [Buffer.from([0x30, 0x00])] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1g. nested rejects an entry that is not a PKIMessage", nestedBad === "cmp/bad-input");
+  // A sparse array skips holes under Array.prototype.map, so a hole must be a typed cmp/bad-input, never a
+  // native Buffer.concat error, and a huge sparse length must fail fast rather than traverse empty slots.
+  var nestedSparse = await pki.cmp.build({ header: HDR, body: { nested: new Array(2) } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1h. nested rejects a fully sparse array with cmp/bad-input (not a native error)", nestedSparse === "cmp/bad-input");
+  var holey = [innerA]; holey[2] = innerB;   // length 3, a hole at index 1
+  var nestedHole = await pki.cmp.build({ header: HDR, body: { nested: holey } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1i. nested rejects an array with a hole with cmp/bad-input", nestedHole === "cmp/bad-input");
+  var nestedHugeSparse = await pki.cmp.build({ header: HDR, body: { nested: new Array(1000000) } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1j. a huge sparse array fails fast with cmp/bad-input", nestedHugeSparse === "cmp/bad-input");
+  // reqDenseArray (the shared dense-array guard cmp.build and cms.sign compose) must test OWN-property
+  // presence at each index before reading it: a bare list[i] on a hole walks the prototype chain, so a
+  // polluted Array.prototype[i] would read as a value and let a hole slip past while map still skips it.
+  var denseGuard = pkiBuild.makeBuilder({ ErrorClass: pki.errors.CmpError, prefix: "cmp", O: null, NS: null, NAME_SCHEMA: null, SPKI_SCHEMA: null, EXT_DECODERS: null }).reqDenseArray;
+  var hadProto0 = Object.prototype.hasOwnProperty.call(Array.prototype, 0);
+  Array.prototype[0] = Buffer.from([0x30, 0x00]);   // a plausible value at the hole index
+  var pollutedHole, denseReturned;
+  try {
+    pollutedHole = (function () { try { denseGuard(new Array(1), "nested"); return "NO-THROW"; } catch (e) { return e.code; } })();
+    denseReturned = denseGuard([1, 2], "nested");
+  } finally { if (!hadProto0) delete Array.prototype[0]; }
+  check("1k. reqDenseArray rejects a hole even under Array.prototype[0] pollution (own-property tested first)", pollutedHole === "cmp/bad-input");
+  check("1l. reqDenseArray returns a dense array unchanged", Array.isArray(denseReturned) && denseReturned.length === 2);
+  // End-to-end: under Array.prototype[0] pollution the entry deep-copy must leave the hole (it copies
+  // own indices only), so the density check refuses the list rather than wrapping and signing the
+  // prototype-supplied PKIMessage.
+  var hadP0 = Object.prototype.hasOwnProperty.call(Array.prototype, 0);
+  Array.prototype[0] = innerA;   // a valid PKIMessage at the hole index
+  var nestedPolluted;
+  try {
+    nestedPolluted = await pki.cmp.build({ header: HDR, body: { nested: new Array(1) } }, SIG).then(function () { return "SIGNED-PROTOTYPE-MESSAGE"; }, function (e) { return e.code; });
+  } finally { if (!hadP0) delete Array.prototype[0]; }
+  check("1m. a prototype-supplied nested entry is refused, never signed", nestedPolluted === "cmp/bad-input");
+  // A PEM-armored entry (a Buffer of PEM, e.g. from fs.readFileSync) must be refused here as cmp/bad-input.
+  // cmp.parse unwraps PEM from a byte source and so would accept it, but b.raw embeds the raw armor bytes,
+  // which the outer message's own parse then rejects as cmp/bad-der only after protection is computed.
+  var innerPem = Buffer.from(pki.schema.cmp.pemEncode(innerA));
+  var nestedPem = await pki.cmp.build({ header: HDR, body: { nested: [innerPem] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1n. a PEM-armored nested entry is refused with cmp/bad-input, not cmp/bad-der", nestedPem === "cmp/bad-input");
+  // The same PEM-armor mismatch on the p10cr arm (csr.parse unwraps PEM; b.raw embeds it), closed by the
+  // shared reqDerSequence guard every caller-DER-then-parse arm now uses.
+  var csrD = await csrDer();
+  var p10Pem = Buffer.from(pki.schema.csr.pemEncode(csrD));
+  var p10PemCode = await pki.cmp.build({ header: HDR, body: { p10cr: p10Pem } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1o. a PEM-armored p10cr is refused with cmp/bad-input, not cmp/bad-der", p10PemCode === "cmp/bad-input");
+  // reqDerSequence contract (the guard cert / crl / p10cr / nested arms compose): a DER SEQUENCE is
+  // returned, PEM or non-SEQUENCE bytes are refused.
+  var derSeqGuard = pkiBuild.makeBuilder({ ErrorClass: pki.errors.CmpError, prefix: "cmp", O: null, NS: null, NAME_SCHEMA: null, SPKI_SCHEMA: null, EXT_DECODERS: null }).reqDerSequence;
+  var seqOk = derSeqGuard(Buffer.from([0x30, 0x00]), "x");
+  var pemRej = (function () { try { derSeqGuard(Buffer.from("-----BEGIN X-----"), "x"); return "NO-THROW"; } catch (e) { return e.code; } })();
+  check("1p. reqDerSequence returns a DER SEQUENCE and refuses PEM", Buffer.isBuffer(seqOk) && seqOk[0] === 0x30 && pemRej === "cmp/bad-input");
 
   // 2. ProtectedPart exactness (THE load-bearing vector).
   var recon = reconProtectedPart(mi);
@@ -143,6 +215,12 @@ async function run() {
   check("13f. opts.extraCerts adds certificates to extraCerts [1]", parse(await pki.cmp.build(irMsg, Object.assign({ extraCerts: [s.cert] }, SIG))).extraCerts.length === 2);
   check("13g. a non-array opts.extraCerts -> cmp/bad-extra-certs", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: "x" }, SIG))) === "cmp/bad-extra-certs");
   check("13h. a garbage opts.extraCerts entry -> cmp/bad-extra-certs (each must be a valid certificate)", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])] }, SIG))) === "cmp/bad-extra-certs");
+  // opts.cert and opts.extraCerts take Certificate DER, validated by x509.parse (which unwraps PEM) then
+  // embedded by b.raw. A PEM-armored Buffer must be refused up front, not embedded as armor and rejected
+  // as cmp/bad-der after the private-key operation.
+  var certPem = Buffer.from(pki.schema.x509.pemEncode(s.cert, "CERTIFICATE"));
+  check("13i. a PEM-armored opts.cert -> cmp/bad-input, not cmp/bad-der after signing", await codeOf(pki.cmp.build(irMsg, { key: s.key, cert: certPem })) === "cmp/bad-input");
+  check("13j. a PEM-armored opts.extraCerts entry -> cmp/bad-input, not cmp/bad-der", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: [certPem] }, SIG))) === "cmp/bad-input");
   check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
   var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");

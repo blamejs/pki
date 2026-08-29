@@ -630,6 +630,12 @@ async function testBadInput() {
 
   await rejects("content not a Buffer", function () { return pki.cms.sign("string", s); }, "cms/bad-input");
   await rejects("no signers", function () { return pki.cms.sign(CONTENT, []); }, "cms/bad-input");
+  // A sparse or nullish signer list must be a typed cms/bad-input, never a native error: Array.prototype.map
+  // SKIPS a hole, which would otherwise surface downstream as an ERR_INVALID_ARG_TYPE from Buffer.concat.
+  await rejects("a fully sparse signer array", function () { return pki.cms.sign(CONTENT, new Array(1)); }, "cms/bad-input");
+  await rejects("a signer array with a null entry", function () { return pki.cms.sign(CONTENT, [null]); }, "cms/bad-input");
+  await rejects("a signer array with a hole", function () { var h = [makeSigner("ec-p256")]; h[2] = makeSigner("ec-p256"); return pki.cms.sign(CONTENT, h); }, "cms/bad-input");
+  await rejects("a huge sparse signer array fails fast", function () { return pki.cms.sign(CONTENT, new Array(1000000)); }, "cms/bad-input");
   // signed attributes are REQUIRED for a non-data eContentType (RFC 5652 sec. 5.3).
   await rejects("signedAttributes:false with a non-data eContentType", function () { return pki.cms.sign(CONTENT, makeSigner("ec-p256"), { eContentType: "tSTInfo", signedAttributes: false }); }, "cms/bad-input");
   // an additional signed attribute that duplicates a built-in type is rejected (RFC 5652 sec. 5.3).
