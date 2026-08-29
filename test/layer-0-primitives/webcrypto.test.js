@@ -820,6 +820,18 @@ async function testDigestStream() {
     (await code(function () { return subtle.digestStream(["SHA-256"], [payload]); })) === "webcrypto/syntax");
   check("digestStream refuses a chunk that is not a byte source",
     (await code(function () { return subtle.digestStream(["SHA-256"], (async function* () { yield "not bytes"; })()); })) === "webcrypto/data");
+  // digestStream detects an async iterable through the async-iterator symbol captured at load, not a
+  // live global Symbol lookup, so a co-resident that replaces Symbol cannot make a real stream look
+  // non-iterable and be refused. Restore Symbol immediately in a finally.
+  var payload2 = Buffer.from("captured async-iterator symbol survives a replaced global Symbol");
+  var realSymbol = global.Symbol;
+  var streamedUnderReplacedSymbol;
+  try {
+    global.Symbol = function () { return realSymbol.apply(this, arguments); };
+    streamedUnderReplacedSymbol = await subtle.digestStream(["SHA-256"], chunks(payload2, 6));
+  } finally { global.Symbol = realSymbol; }
+  check("digestStream uses the captured async-iterator symbol, not the live global Symbol",
+    Buffer.compare(Buffer.from(streamedUnderReplacedSymbol[0]), Buffer.from(await subtle.digest("SHA-256", payload2))) === 0);
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length

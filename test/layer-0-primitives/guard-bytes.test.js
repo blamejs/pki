@@ -280,6 +280,16 @@ function testViewContract() {
   bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
   check("isAsyncIterable treats a byte source with an attached Symbol.asyncIterator as bytes, not a stream",
     guardBytes.isByteSource(bufWithAsync) === true && guardBytes.isAsyncIterable(bufWithAsync) === false);
+  // The classification reads the async-iterator symbol captured at load, the one `for await` uses,
+  // not a live lookup off the writable global Symbol: a co-resident that replaces Symbol must not make
+  // a real async iterable look non-iterable at the door while the engine would still consume it.
+  var realAsyncGen = (async function* () { yield Buffer.from([1]); })();
+  var realSymbol = global.Symbol;
+  try {
+    global.Symbol = function () { return realSymbol.apply(this, arguments); };
+    check("isAsyncIterable uses the captured async-iterator symbol, not the live global Symbol",
+      guardBytes.isAsyncIterable(realAsyncGen) === true);
+  } finally { global.Symbol = realSymbol; }
   check("isAsyncIterable rejects each byte source (never diverts bytes to streaming)",
     guardBytes.isAsyncIterable(Buffer.alloc(1)) === false && guardBytes.isAsyncIterable(new Uint8Array(1)) === false &&
     guardBytes.isAsyncIterable(new DataView(new ArrayBuffer(1))) === false && guardBytes.isAsyncIterable(new ArrayBuffer(1)) === false);
