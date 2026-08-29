@@ -93,6 +93,16 @@ async function run() {
   } finally { if (!hadProto0) delete Array.prototype[0]; }
   check("1k. reqDenseArray rejects a hole even under Array.prototype[0] pollution (own-property tested first)", pollutedHole === "cmp/bad-input");
   check("1l. reqDenseArray returns a dense array unchanged", Array.isArray(denseReturned) && denseReturned.length === 2);
+  // End-to-end: under Array.prototype[0] pollution the entry deep-copy must leave the hole (it copies
+  // own indices only), so the density check refuses the list rather than wrapping and signing the
+  // prototype-supplied PKIMessage.
+  var hadP0 = Object.prototype.hasOwnProperty.call(Array.prototype, 0);
+  Array.prototype[0] = innerA;   // a valid PKIMessage at the hole index
+  var nestedPolluted;
+  try {
+    nestedPolluted = await pki.cmp.build({ header: HDR, body: { nested: new Array(1) } }, SIG).then(function () { return "SIGNED-PROTOTYPE-MESSAGE"; }, function (e) { return e.code; });
+  } finally { if (!hadP0) delete Array.prototype[0]; }
+  check("1m. a prototype-supplied nested entry is refused, never signed", nestedPolluted === "cmp/bad-input");
 
   // 2. ProtectedPart exactness (THE load-bearing vector).
   var recon = reconProtectedPart(mi);

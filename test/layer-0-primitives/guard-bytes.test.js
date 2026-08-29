@@ -1245,11 +1245,11 @@ async function testOcspAndPkcs12Doors() {
 // same time-of-check/time-of-use window a detached buffer opens, reached from the other side,
 // and it is the one a mechanical "route this through the guard" edit reintroduces: `view` and
 // `snapshot` differ by exactly this and nothing else at the call site.
-// An array reads its elements through its prototype chain wherever it has a hole, so the
-// set a consumer sees is not the set `Reflect.ownKeys` reports. A copy built from the own
-// keys alone hands the verb a shorter list than the caller passed, and the verb then acts
-// on a signer, an anchor or a policy that was never dropped by anyone.
-async function testInheritedArrayElementsSurviveTheCopy() {
+// An array reads its elements through its prototype chain wherever it has a hole, so an inherited
+// index a read resolves is one prototype pollution can supply. Materializing it into the copy would
+// sign a value the array never held, so the copy leaves the hole and the caller-array density check
+// refuses the list rather than signing a prototype-supplied element.
+async function testInheritedArrayElementIsRefused() {
   var s = signing.makeSigner("ec-p256");
 
   var signers = [];
@@ -1260,19 +1260,16 @@ async function testInheritedArrayElementsSurviveTheCopy() {
   check("the fixture reads as a one-signer list to an ordinary consumer",
     signers.length === 1 && signers[0] !== undefined && Reflect.ownKeys(signers).indexOf("0") === -1);
 
-  var der = await pki.cms.sign(Buffer.from("content"), signers);
-  var parsed = pki.schema.cms.parse(der);
-  check("cms.sign signs with the signer the array resolves, not the hole its own keys report",
-    parsed.signerInfos.length === 1);
-  var verdict = await pki.cms.verify(der, { certs: [s.cert] });
-  check("and the message it produced verifies", verdict.valid === true);
+  var code = await pki.cms.sign(Buffer.from("content"), signers).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("cms.sign refuses a signer supplied only through the array's prototype, never signs it",
+    code === "cms/bad-input");
 
-  // The other direction: an inherited index at or past `length` is not something a
-  // length-bounded read reaches, so carrying it across would lengthen the copy.
+  // An own element with an inherited index PAST length is a dense one-signer list: the own element is
+  // signed and the past-length prototype index is never reached by a length-bounded copy.
   var two = [{ cert: s.cert, key: s.key }];
   Object.setPrototypeOf(two, Object.assign(Object.create(Array.prototype), { 1: "past the end" }));
   var der2 = await pki.cms.sign(Buffer.from("content"), two);
-  check("an inherited index past length does not lengthen the copy",
+  check("an own element with an inherited index past length still signs as a dense one-signer list",
     pki.schema.cms.parse(der2).signerInfos.length === 1);
 }
 
@@ -1390,7 +1387,7 @@ async function run() {
   await testIssuanceDoors();
   await testOcspAndPkcs12Doors();
   await testCallerCannotRewriteAfterEntry();
-  await testInheritedArrayElementsSurviveTheCopy();
+  await testInheritedArrayElementIsRefused();
   await testCallerDateCannotAnswerTheInstant();
 }
 
