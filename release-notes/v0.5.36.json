@@ -1,0 +1,10 @@
+{
+  "version": "0.5.36",
+  "headline": "pki.cms.encrypt accepts an async-iterable plaintext, encrypting a large payload without holding it whole in memory.",
+  "summary": "`pki.cms.encrypt` now accepts an async iterable of byte chunks as its content, alongside the existing byte-source forms. The plaintext is run through the content cipher incrementally, so a large payload is never buffered whole. The ciphertext is assembled before the DER is emitted, because the encryptedContent is a definite-length OCTET STRING, and the emitted EnvelopedData, AuthEnvelopedData, or EncryptedData is byte-for-byte identical to what the buffered form of the same plaintext produces. The cipher runs through methods captured at load, so a co-resident that replaces a cipher method between chunks cannot steer the ciphertext.",
+  "sections": {
+    "Added": [
+      "`pki.cms.encrypt(content, recipients, opts)` accepts an async iterable of byte chunks as `content` (detected by `Symbol.asyncIterator`), alongside the existing `Buffer`, typed-array, `DataView`, and `ArrayBuffer` forms. It streams the plaintext through the AES-GCM or AES-CBC content cipher chunk by chunk, assembling only the ciphertext, so a large plaintext is not held in memory whole. The output is a byte-for-byte match for the buffered form and decrypts with `pki.cms.decrypt` and OpenSSL. This covers the recipient-based EnvelopedData and AuthEnvelopedData as well as the `{ cek }` and `{ password }` EncryptedData forms."
+    ]
+  }
+}

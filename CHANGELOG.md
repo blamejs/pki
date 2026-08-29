@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.36 — 2026-08-29
+
+pki.cms.encrypt accepts an async-iterable plaintext, encrypting a large payload without holding it whole in memory.
+
+### Added
+
+- `pki.cms.encrypt(content, recipients, opts)` accepts an async iterable of byte chunks as `content` (detected by `Symbol.asyncIterator`), alongside the existing `Buffer`, typed-array, `DataView`, and `ArrayBuffer` forms. It streams the plaintext through the AES-GCM or AES-CBC content cipher chunk by chunk, assembling only the ciphertext, so a large plaintext is not held in memory whole. The output is a byte-for-byte match for the buffered form and decrypts with `pki.cms.decrypt` and OpenSSL. This covers the recipient-based EnvelopedData and AuthEnvelopedData as well as the `{ cek }` and `{ password }` EncryptedData forms.
+
 ## v0.5.35 — 2026-08-29
 
 pki.cmp.build now assembles the nested PKIMessage body an RA uses to forward or batch complete messages.
