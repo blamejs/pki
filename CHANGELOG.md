@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.35 — 2026-08-29
+
+pki.cmp.build now assembles the nested PKIMessage body an RA uses to forward or batch complete messages.
+
+### Added
+
+- `pki.cmp.build` accepts a `nested` body: `{ body: { nested: [pkiMessageDer, ...] } }` wraps an array of complete PKIMessage DER as a `NestedMessageContent` under the explicit `[20]` PKIBody tag (RFC 9810 sec. 5.1.3.4). This is the body a registration authority sends when it forwards or batches messages that were protected by other parties. Each entry is parsed as a PKIMessage before it is included, so a malformed entry is caught when the message is built. An empty array is refused, because the field is `SIZE (1..MAX)`. Both failures raise `cmp/bad-input`. Each wrapped message keeps its own protection, which the recipient validates; `pki.cmp.build` does not re-sign or verify the contents.
+
 ## v0.5.34 — 2026-08-29
 
 A subjectAltName URI shorthand whose authority is a bracketed IPv6 literal is now accepted rather than refused.
