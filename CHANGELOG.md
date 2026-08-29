@@ -12,6 +12,10 @@ pki.cmp.build now assembles the nested PKIMessage body an RA uses to forward or 
 
 - `pki.cmp.build` accepts a `nested` body: `{ body: { nested: [pkiMessageDer, ...] } }` wraps an array of complete PKIMessage DER as a `NestedMessageContent` under the explicit `[20]` PKIBody tag (RFC 9810 sec. 5.1.3.5). This is the body a registration authority sends when it forwards or batches messages that were protected by other parties. Each entry is checked to parse as a PKIMessage and is then wrapped byte-for-byte unchanged, so a byte string that is not a PKIMessage is refused. An empty array is refused, because the field is `SIZE (1..MAX)`. Both failures raise `cmp/bad-input`. Following the same section, the inner messages are forwarded unchanged: each keeps its own protection, which the recipient validates, and `pki.cmp.build` does not re-sign, re-verify, or deeply inspect their contents.
 
+### Fixed
+
+- A sparse or nullish array passed where a list of complete items is required is now refused with a typed error instead of a native one. `pki.cms.sign` (the signer list) and `pki.cmp.build` (a `nested` message list) mapped the caller's array with a routine that skips array holes, so a sparse array such as `new Array(2)`, or one carrying an empty slot or a `null` entry, reached an internal buffer step and raised a native `TypeError` rather than the toolkit's `cms/bad-input` or `cmp/bad-input`. Both now check that the array is dense first, failing fast at the first bad index so a large sparse length cannot force a long traversal.
+
 ## v0.5.34 — 2026-08-29
 
 A subjectAltName URI shorthand whose authority is a bracketed IPv6 literal is now accepted rather than refused.

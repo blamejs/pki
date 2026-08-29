@@ -19,6 +19,7 @@ var makeCompositeSigner = signing.makeCompositeSigner;
 var asn1 = pki.asn1;
 var nodeCrypto = require("node:crypto");
 var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
+var pkiBuild = require("../../lib/pki-build");    // for a direct contract test of the shared reqDenseArray guard
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -70,6 +71,28 @@ async function run() {
   check("1f. nested rejects an empty array (PKIMessages is SIZE (1..MAX))", nestedEmpty === "cmp/bad-input");
   var nestedBad = await pki.cmp.build({ header: HDR, body: { nested: [Buffer.from([0x30, 0x00])] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("1g. nested rejects an entry that is not a PKIMessage", nestedBad === "cmp/bad-input");
+  // A sparse array skips holes under Array.prototype.map, so a hole must be a typed cmp/bad-input, never a
+  // native Buffer.concat error, and a huge sparse length must fail fast rather than traverse empty slots.
+  var nestedSparse = await pki.cmp.build({ header: HDR, body: { nested: new Array(2) } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1h. nested rejects a fully sparse array with cmp/bad-input (not a native error)", nestedSparse === "cmp/bad-input");
+  var holey = [innerA]; holey[2] = innerB;   // length 3, a hole at index 1
+  var nestedHole = await pki.cmp.build({ header: HDR, body: { nested: holey } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1i. nested rejects an array with a hole with cmp/bad-input", nestedHole === "cmp/bad-input");
+  var nestedHugeSparse = await pki.cmp.build({ header: HDR, body: { nested: new Array(1000000) } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1j. a huge sparse array fails fast with cmp/bad-input", nestedHugeSparse === "cmp/bad-input");
+  // reqDenseArray (the shared dense-array guard cmp.build and cms.sign compose) must test OWN-property
+  // presence at each index before reading it: a bare list[i] on a hole walks the prototype chain, so a
+  // polluted Array.prototype[i] would read as a value and let a hole slip past while map still skips it.
+  var denseGuard = pkiBuild.makeBuilder({ ErrorClass: pki.errors.CmpError, prefix: "cmp", O: null, NS: null, NAME_SCHEMA: null, SPKI_SCHEMA: null, EXT_DECODERS: null }).reqDenseArray;
+  var hadProto0 = Object.prototype.hasOwnProperty.call(Array.prototype, 0);
+  Array.prototype[0] = Buffer.from([0x30, 0x00]);   // a plausible value at the hole index
+  var pollutedHole, denseReturned;
+  try {
+    pollutedHole = (function () { try { denseGuard(new Array(1), "nested"); return "NO-THROW"; } catch (e) { return e.code; } })();
+    denseReturned = denseGuard([1, 2], "nested");
+  } finally { if (!hadProto0) delete Array.prototype[0]; }
+  check("1k. reqDenseArray rejects a hole even under Array.prototype[0] pollution (own-property tested first)", pollutedHole === "cmp/bad-input");
+  check("1l. reqDenseArray returns a dense array unchanged", Array.isArray(denseReturned) && denseReturned.length === 2);
 
   // 2. ProtectedPart exactness (THE load-bearing vector).
   var recon = reconProtectedPart(mi);
