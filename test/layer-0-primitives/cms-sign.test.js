@@ -259,6 +259,30 @@ async function testStreamingDetachedSign() {
   var streamedOpt = await pki.cms.sign(mutOptsContent, edOpt, optsMut);
   check("streaming sign: a content accessor cannot set opts.signingTime on the copied options",
     Buffer.compare(streamedOpt, refFakeOpt) !== 0);
+  // The signed-attribute list is assembled with captured array operations, so a streamed content whose
+  // iterator installs a targeted Array.prototype.concat -- one that drops an appended list of attribute
+  // pairs while passing every other concat through -- cannot silently drop the caller's
+  // additionalSignedAttributes from the signature. The default output here carries contentType +
+  // messageDigest + the one caller attribute = 3 signed attributes.
+  var edExtra = makeSigner("ed25519");
+  var customType = "1.2.840.113549.1.9.16.2.4";
+  var customVal = pki.asn1.build.octetString(Buffer.from("streamed-extra-attr"));
+  var realConcat = Array.prototype.concat;
+  var realIsArray = Array.isArray;
+  var dropAttrsContent = (async function* () {
+    yield CONTENT;
+    Array.prototype.concat = function (other) {
+      if (realIsArray(other) && other.length > 0 && other[0] && typeof other[0] === "object" && "type" in other[0]) return this;
+      return realConcat.apply(this, arguments);
+    };
+  })();
+  var signedExtra = null, extraErr = null;
+  try { signedExtra = await pki.cms.sign(dropAttrsContent, edExtra, { detached: true, signingTime: false, additionalSignedAttributes: [{ type: customType, values: [customVal] }] }); }
+  catch (e) { extraErr = e; }
+  finally { Array.prototype.concat = realConcat; }
+  var attrCount = (extraErr === null && signedExtra != null)
+    ? (pki.schema.cms.parse(signedExtra).signerInfos[0].signedAttrs || []).length : -1;
+  check("streaming sign: a targeted Array.prototype.concat replacement cannot drop the caller's additional signed attributes", attrCount === 3);
 }
 
 // ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
