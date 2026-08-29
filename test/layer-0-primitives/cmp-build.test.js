@@ -215,6 +215,12 @@ async function run() {
   check("13f. opts.extraCerts adds certificates to extraCerts [1]", parse(await pki.cmp.build(irMsg, Object.assign({ extraCerts: [s.cert] }, SIG))).extraCerts.length === 2);
   check("13g. a non-array opts.extraCerts -> cmp/bad-extra-certs", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: "x" }, SIG))) === "cmp/bad-extra-certs");
   check("13h. a garbage opts.extraCerts entry -> cmp/bad-extra-certs (each must be a valid certificate)", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01])] }, SIG))) === "cmp/bad-extra-certs");
+  // opts.cert and opts.extraCerts take Certificate DER, validated by x509.parse (which unwraps PEM) then
+  // embedded by b.raw. A PEM-armored Buffer must be refused up front, not embedded as armor and rejected
+  // as cmp/bad-der after the private-key operation.
+  var certPem = Buffer.from(pki.schema.x509.pemEncode(s.cert, "CERTIFICATE"));
+  check("13i. a PEM-armored opts.cert -> cmp/bad-input, not cmp/bad-der after signing", await codeOf(pki.cmp.build(irMsg, { key: s.key, cert: certPem })) === "cmp/bad-input");
+  check("13j. a PEM-armored opts.extraCerts entry -> cmp/bad-input, not cmp/bad-der", await codeOf(pki.cmp.build(irMsg, Object.assign({ extraCerts: [certPem] }, SIG))) === "cmp/bad-input");
   check("14. rr round-trips; certDetails re-decodes via the CertTemplate walk", parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: { issuer: "CN=CA", serialNumber: 42n } }] } }, SIG)).body.arm === "rr");
   var tplDer = pki.crmf.buildCertTemplate({ serialNumber: 42n, issuer: "CN=CA" });
   check("14b. pki.crmf.buildCertTemplate produces a CertTemplate DER usable as rr certDetails", pki.asn1.decode(tplDer).tagNumber === asn1.TAGS.SEQUENCE && parse(await pki.cmp.build({ header: HDR, body: { rr: [{ certDetails: tplDer }] } }, SIG)).body.arm === "rr");
