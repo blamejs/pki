@@ -870,6 +870,18 @@ async function testDigestStream() {
   var oneShotNextDigest = await subtle.digestStream(["SHA-256"], oneShotNextIter);
   check("digestStream reads the iterator's next once (a one-shot-next iterator is consumed)",
     Buffer.compare(Buffer.from(oneShotNextDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
+  // When a chunk is bad AND the iterator's `return` cleanup throws (even as a throwing accessor read
+  // during completion), the ORIGINAL chunk error is what surfaces, not the cleanup fault: the
+  // best-effort completion runs fully inside the guard, so it cannot mask the malformed-chunk verdict.
+  var badChunkThrowingReturn = {};
+  badChunkThrowingReturn[Symbol.asyncIterator] = function () {
+    var yielded = false;
+    var it = { next: function () { if (yielded) return Promise.resolve({ done: true }); yielded = true; return Promise.resolve({ value: "not a byte source", done: false }); } };
+    Object.defineProperty(it, "return", { get: function () { throw new Error("hostile return getter"); } });
+    return it;
+  };
+  var cleanupCode = await subtle.digestStream(["SHA-256"], badChunkThrowingReturn).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("digestStream surfaces the chunk error even when the iterator's return cleanup throws", cleanupCode === "webcrypto/data");
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length
