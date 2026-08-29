@@ -106,6 +106,14 @@ async function testStreamingDetachedSign() {
   } });
   check("streaming detached sign consumes a one-shot-accessor content (one protocol read across the path)",
     Buffer.compare(await pki.cms.sign(oneShotContent, s, { detached: true, signingTime: false }), buffered) === 0);
+  // Acquisition is deferred to the hashing path: a pre-hash rejection (an empty signer list) never
+  // drives the stream, so the content's iterator factory -- which might open a file or socket -- is
+  // never invoked, and a resource it would open cannot leak.
+  var factoryCalled = false, deferredContent = {};
+  deferredContent[Symbol.asyncIterator] = function () { factoryCalled = true; return (async function* () { yield CONTENT; })(); };
+  var deferErr = await pki.cms.sign(deferredContent, [], { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming sign rejects an empty signer list WITHOUT acquiring the content iterator",
+    deferErr === "cms/bad-input" && factoryCalled === false);
   // A byte source carrying a Symbol.asyncIterator is signed AS BYTES, not diverted to the streaming
   // path: an attached (non-detached) sign of it succeeds, which the streaming path would refuse.
   var bufWithAsync = Buffer.from("plain bytes that also expose an async iterator");

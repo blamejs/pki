@@ -258,35 +258,44 @@ function testViewContract() {
   check("and neither is a plain object or a nullish value",
     guardBytes.isByteSource({}) === false && guardBytes.isByteSource(null) === false &&
     guardBytes.isByteSource(undefined) === false);
-  // asyncIteratorOf is the sibling classifier: it ACQUIRES a byte STREAM's iterator with one read of
-  // Symbol.asyncIterator, or returns null for a byte source (which is bytes, not a stream). A verb
-  // accepting a streamed content asks this once and threads the iterator through, so the protocol
-  // property is never read a second time downstream.
-  function hasNext(it) { return it != null && typeof it.next === "function"; }
+  // asyncStreamOf is the sibling classifier: it returns a LAZY byte STREAM (an async iterable) for a
+  // streamed content, or null for a byte source (which is bytes, not a stream). A verb accepting a
+  // streamed content asks this once and threads the stream through; the underlying iterator is acquired
+  // only when the stream is driven, so the protocol property is read once and no resource opens early.
+  function isStream(s) { return s != null && typeof s[Symbol.asyncIterator] === "function"; }
   var asyncGen = (async function* () { yield Buffer.from([1]); })();
   var asyncIterableObj = {};
   asyncIterableObj[Symbol.asyncIterator] = function () { return { next: function () { return Promise.resolve({ done: true }); } }; };
-  check("asyncIteratorOf acquires the iterator of an async generator and a Symbol.asyncIterator object",
-    hasNext(guardBytes.asyncIteratorOf(asyncGen)) && hasNext(guardBytes.asyncIteratorOf(asyncIterableObj)));
+  check("asyncStreamOf yields a lazy stream for an async generator and a Symbol.asyncIterator object",
+    isStream(guardBytes.asyncStreamOf(asyncGen)) && isStream(guardBytes.asyncStreamOf(asyncIterableObj)));
   // A callable that carries a Symbol.asyncIterator method is a valid async iterable `for await`
-  // consumes, so its iterator is acquired despite it being a function rather than a plain object.
+  // consumes, so it too yields a stream despite being a function rather than a plain object.
   var callableAsyncIterable = function () {};
   callableAsyncIterable[Symbol.asyncIterator] = async function* () { yield Buffer.from([1]); };
-  check("asyncIteratorOf acquires the iterator of a callable that implements the async-iteration protocol",
-    hasNext(guardBytes.asyncIteratorOf(callableAsyncIterable)));
-  check("asyncIteratorOf returns null for a plain function with no Symbol.asyncIterator",
-    guardBytes.asyncIteratorOf(function () {}) === null);
+  check("asyncStreamOf yields a stream for a callable that implements the async-iteration protocol",
+    isStream(guardBytes.asyncStreamOf(callableAsyncIterable)));
+  check("asyncStreamOf returns null for a plain function with no Symbol.asyncIterator",
+    guardBytes.asyncStreamOf(function () {}) === null);
   // A byte source is bytes, never a stream, even when a caller has attached a Symbol.asyncIterator:
   // the byte-source classification wins and its accessor is never invoked, so real bytes are not diverted.
   var bufWithAsync = Buffer.from([1, 2, 3]);
   bufWithAsync[Symbol.asyncIterator] = async function* () { yield Buffer.from([9]); };
-  check("asyncIteratorOf treats a byte source with an attached Symbol.asyncIterator as bytes (null)",
-    guardBytes.isByteSource(bufWithAsync) === true && guardBytes.asyncIteratorOf(bufWithAsync) === null);
-  // A one-shot accessor (the method on the first read, undefined after) is acquired with a SINGLE read,
-  // so the acquired iterator can be driven; a second classification would refuse it.
+  check("asyncStreamOf treats a byte source with an attached Symbol.asyncIterator as bytes (null)",
+    guardBytes.isByteSource(bufWithAsync) === true && guardBytes.asyncStreamOf(bufWithAsync) === null);
+  // Acquisition is DEFERRED: asyncStreamOf reads the async-iteration method but does NOT call it, so a
+  // factory that opens a resource runs only when the stream is driven, never at classification (a
+  // pre-hash rejection would otherwise leak it). Driving the returned stream is what acquires.
+  var acquired = false, deferredSrc = {};
+  deferredSrc[Symbol.asyncIterator] = function () { acquired = true; return (async function* () { yield Buffer.from([1]); })(); };
+  var lazyStream = guardBytes.asyncStreamOf(deferredSrc);
+  check("asyncStreamOf does not acquire the underlying iterator at classification", acquired === false && isStream(lazyStream));
+  var drivenIter = lazyStream[Symbol.asyncIterator]();
+  check("asyncStreamOf acquires the iterator only when the stream is driven", acquired === true && typeof drivenIter.next === "function");
+  // A one-shot accessor (the method on the first read, undefined after) is captured with a SINGLE read,
+  // so the stream can be driven; a second classification would refuse it.
   var served = false, oneShot = {};
   Object.defineProperty(oneShot, Symbol.asyncIterator, { get: function () { if (served) return undefined; served = true; return async function* () { yield Buffer.from([1]); }; } });
-  check("asyncIteratorOf acquires a one-shot-accessor stream with a single read", hasNext(guardBytes.asyncIteratorOf(oneShot)));
+  check("asyncStreamOf captures a one-shot accessor with a single read", isStream(guardBytes.asyncStreamOf(oneShot)));
   // The classification reads the async-iterator symbol captured at load, the one `for await` uses,
   // not a live lookup off the writable global Symbol: a co-resident that replaces Symbol must not make
   // a real async iterable look non-iterable at the door while the engine would still consume it.
@@ -294,15 +303,17 @@ function testViewContract() {
   var realSymbol = global.Symbol;
   try {
     global.Symbol = function () { return realSymbol.apply(this, arguments); };
-    check("asyncIteratorOf uses the captured async-iterator symbol, not the live global Symbol",
-      hasNext(guardBytes.asyncIteratorOf(realAsyncGen)));
+    // Assert non-null rather than isStream(): the helper would read the now-replaced global Symbol. A
+    // live lookup inside asyncStreamOf would miss the method under the fake Symbol and return null.
+    check("asyncStreamOf uses the captured async-iterator symbol, not the live global Symbol",
+      guardBytes.asyncStreamOf(realAsyncGen) != null);
   } finally { global.Symbol = realSymbol; }
-  check("asyncIteratorOf returns null for each byte source (never diverts bytes to streaming)",
-    guardBytes.asyncIteratorOf(Buffer.alloc(1)) === null && guardBytes.asyncIteratorOf(new Uint8Array(1)) === null &&
-    guardBytes.asyncIteratorOf(new DataView(new ArrayBuffer(1))) === null && guardBytes.asyncIteratorOf(new ArrayBuffer(1)) === null);
-  check("asyncIteratorOf returns null for a plain object, a sync iterable, and nullish values",
-    guardBytes.asyncIteratorOf({}) === null && guardBytes.asyncIteratorOf([1, 2]) === null &&
-    guardBytes.asyncIteratorOf(null) === null && guardBytes.asyncIteratorOf(undefined) === null);
+  check("asyncStreamOf returns null for each byte source (never diverts bytes to streaming)",
+    guardBytes.asyncStreamOf(Buffer.alloc(1)) === null && guardBytes.asyncStreamOf(new Uint8Array(1)) === null &&
+    guardBytes.asyncStreamOf(new DataView(new ArrayBuffer(1))) === null && guardBytes.asyncStreamOf(new ArrayBuffer(1)) === null);
+  check("asyncStreamOf returns null for a plain object, a sync iterable, and nullish values",
+    guardBytes.asyncStreamOf({}) === null && guardBytes.asyncStreamOf([1, 2]) === null &&
+    guardBytes.asyncStreamOf(null) === null && guardBytes.asyncStreamOf(undefined) === null);
   // Shared memory holds bytes and cannot hold this module's promise about them, since another
   // thread can rewrite it after the checks have read it. Copying it into a private ArrayBuffer
   // would keep the bytes and change the kind, so it is refused at every door instead, including

@@ -882,6 +882,16 @@ async function testDigestStream() {
   };
   var cleanupCode = await subtle.digestStream(["SHA-256"], badChunkThrowingReturn).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("digestStream surfaces the chunk error even when the iterator's return cleanup throws", cleanupCode === "webcrypto/data");
+  // digestStream follows the async-iteration protocol: it acquires via Symbol.asyncIterator, never the
+  // source's own `next`. A source with a DECOY `next` (different bytes) whose Symbol.asyncIterator
+  // returns the real iterator must hash the iterator's bytes, exactly what `for await` consumes.
+  var decoyCalled = 0;
+  var protoSrc = {};
+  protoSrc.next = function () { return Promise.resolve(decoyCalled++ === 0 ? { value: Buffer.from("WRONG"), done: false } : { done: true }); };
+  protoSrc[Symbol.asyncIterator] = function () { return (async function* () { yield Buffer.from("a"); yield Buffer.from("b"); })(); };
+  var protoDigest = await subtle.digestStream(["SHA-256"], protoSrc);
+  check("digestStream acquires via Symbol.asyncIterator, not the source's own next",
+    Buffer.compare(Buffer.from(protoDigest[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.from("ab")))) === 0);
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length
