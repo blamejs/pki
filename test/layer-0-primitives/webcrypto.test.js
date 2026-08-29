@@ -790,6 +790,38 @@ async function testNormalizeAndDigestEdges() {
     (await code(function () { return subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHAKE256" }, false, ["sign", "verify"]); })) === "webcrypto/not-supported");
 }
 
+// digestStream hashes an async iterable of chunks in one pass under several algorithms; each result
+// MUST equal the one-shot digest of the concatenated chunks (chunk boundaries never matter), and a
+// bad algorithm list / non-iterable source / non-byte chunk MUST fail closed before any hash runs.
+async function testDigestStream() {
+  var payload = Buffer.from("digestStream single-pass byte-identity across chunk boundaries and algorithms");
+  function chunks(buf, n) { return (async function* () { for (var i = 0; i < buf.length; i += n) yield buf.subarray(i, i + n); })(); }
+  var algs = ["SHA-256", "SHA-384", "SHA-512", "SHAKE128", "SHAKE256"];
+  for (var a = 0; a < algs.length; a++) {
+    var oneShot = Buffer.from(await subtle.digest(algs[a], payload));
+    for (var n = 1; n < 30; n += 11) {
+      var streamed = Buffer.from((await subtle.digestStream([algs[a]], chunks(payload, n)))[0]);
+      check("digestStream " + algs[a] + " chunk=" + n + " equals the one-shot digest", Buffer.compare(streamed, oneShot) === 0);
+    }
+  }
+  // one single-use stream, two algorithms, one pass: each output matches its own one-shot digest.
+  var multi = await subtle.digestStream(["SHA-256", "SHA-512"], chunks(payload, 5));
+  check("digestStream multi-hash[0] is the SHA-256 one-shot", Buffer.compare(Buffer.from(multi[0]), Buffer.from(await subtle.digest("SHA-256", payload))) === 0);
+  check("digestStream multi-hash[1] is the SHA-512 one-shot", Buffer.compare(Buffer.from(multi[1]), Buffer.from(await subtle.digest("SHA-512", payload))) === 0);
+  // an empty stream digests the empty message.
+  check("digestStream over an empty stream is the digest of the empty message",
+    Buffer.compare(Buffer.from((await subtle.digestStream(["SHA-256"], chunks(Buffer.alloc(0), 4)))[0]), Buffer.from(await subtle.digest("SHA-256", Buffer.alloc(0)))) === 0);
+  // fail-closed doors.
+  check("digestStream refuses a non-array algorithm list",
+    (await code(function () { return subtle.digestStream("SHA-256", chunks(payload, 4)); })) === "webcrypto/syntax");
+  check("digestStream refuses an empty algorithm list",
+    (await code(function () { return subtle.digestStream([], chunks(payload, 4)); })) === "webcrypto/syntax");
+  check("digestStream refuses a source that is not an async iterable",
+    (await code(function () { return subtle.digestStream(["SHA-256"], [payload]); })) === "webcrypto/syntax");
+  check("digestStream refuses a chunk that is not a byte source",
+    (await code(function () { return subtle.digestStream(["SHA-256"], (async function* () { yield "not bytes"; })()); })) === "webcrypto/data");
+}
+
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length
 // default (RSA_PSS_SALTLEN_DIGEST) on both the sign and verify branches.
 async function testRsaPssDefaultSalt() {
@@ -1165,6 +1197,7 @@ async function run() {
   await testJwkOctStrict();
   await testGenerateKeyEdges();
   await testNormalizeAndDigestEdges();
+  await testDigestStream();
   await testRsaPssDefaultSalt();
   await testRsaOaepLabel();
   await testEncryptDecryptUnsupported();

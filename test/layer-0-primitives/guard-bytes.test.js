@@ -258,6 +258,28 @@ function testViewContract() {
   check("and neither is a plain object or a nullish value",
     guardBytes.isByteSource({}) === false && guardBytes.isByteSource(null) === false &&
     guardBytes.isByteSource(undefined) === false);
+  // isAsyncIterable is the sibling classifier: a byte STREAM, not a byte source. The two are
+  // mutually exclusive -- a verb accepting a streamed content asks this, and a byte source is
+  // never diverted to the streaming path.
+  var asyncGen = (async function* () { yield Buffer.from([1]); })();
+  var asyncIterableObj = {};
+  asyncIterableObj[Symbol.asyncIterator] = function () { return { next: function () { return Promise.resolve({ done: true }); } }; };
+  check("isAsyncIterable accepts an async generator and a bare Symbol.asyncIterator object",
+    guardBytes.isAsyncIterable(asyncGen) === true && guardBytes.isAsyncIterable(asyncIterableObj) === true);
+  // A callable that carries a Symbol.asyncIterator method is a valid async iterable `for await`
+  // consumes, so it is accepted despite being a function rather than a plain object.
+  var callableAsyncIterable = function () {};
+  callableAsyncIterable[Symbol.asyncIterator] = async function* () { yield Buffer.from([1]); };
+  check("isAsyncIterable accepts a callable that implements the async-iteration protocol",
+    guardBytes.isAsyncIterable(callableAsyncIterable) === true);
+  check("isAsyncIterable rejects a plain function with no Symbol.asyncIterator",
+    guardBytes.isAsyncIterable(function () {}) === false);
+  check("isAsyncIterable rejects each byte source (never diverts bytes to streaming)",
+    guardBytes.isAsyncIterable(Buffer.alloc(1)) === false && guardBytes.isAsyncIterable(new Uint8Array(1)) === false &&
+    guardBytes.isAsyncIterable(new DataView(new ArrayBuffer(1))) === false && guardBytes.isAsyncIterable(new ArrayBuffer(1)) === false);
+  check("isAsyncIterable rejects a plain object, a sync iterable, and nullish values",
+    guardBytes.isAsyncIterable({}) === false && guardBytes.isAsyncIterable([1, 2]) === false &&
+    guardBytes.isAsyncIterable(null) === false && guardBytes.isAsyncIterable(undefined) === false);
   // Shared memory holds bytes and cannot hold this module's promise about them, since another
   // thread can rewrite it after the checks have read it. Copying it into a private ArrayBuffer
   // would keep the bytes and change the kind, so it is refused at every door instead, including

@@ -76,6 +76,80 @@ async function testContentModes() {
   check("detached + wrong content -> message-digest-mismatch", wrong.valid === false && wrong.signers[0].code === "cms/message-digest-mismatch");
 }
 
+// ---- streaming detached sign: async-iterable content (Streaming CMS) ----
+function _chunksOf(buf, n) { return (async function* () { for (var i = 0; i < buf.length; i += n) yield buf.subarray(i, i + n); })(); }
+async function testStreamingDetachedSign() {
+  // Ed25519 is deterministic, so with signing-time omitted a streamed detached signature is
+  // byte-identical to the buffered one: the only thing the stream could change is the messageDigest,
+  // so matching DER proves the incremental hash equals the one-shot hash. Chunk size must not matter.
+  var s = makeSigner("ed25519");
+  var buffered = await pki.cms.sign(CONTENT, s, { detached: true, signingTime: false });
+  var streamed = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signingTime: false });
+  check("streaming detached sign (async iterable) is byte-identical to the buffered detached sign",
+    Buffer.compare(streamed, buffered) === 0);
+  check("the streamed detached signature verifies against the content",
+    (await pki.cms.verify(streamed, { content: CONTENT })).valid === true);
+  check("streaming detached sign is chunk-boundary independent",
+    Buffer.compare(await pki.cms.sign(_chunksOf(CONTENT, 1), s, { detached: true, signingTime: false }), buffered) === 0);
+  // A callable that implements the async-iteration protocol is a valid content source, not a byte source.
+  var callable = function () {};
+  callable[Symbol.asyncIterator] = async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); };
+  check("streaming detached sign accepts a callable async-iterable content",
+    Buffer.compare(await pki.cms.sign(callable, s, { detached: true, signingTime: false }), buffered) === 0);
+  // A multi-signer detached sign over a single-use async iterable hashes it once for both digests.
+  var multi = await pki.cms.sign(_chunksOf(CONTENT, 3), [makeSigner("ed25519"), makeSigner("rsa")],
+    { detached: true, signingTime: false });
+  check("streaming detached sign supports multiple signers (single pass over the content)",
+    (await pki.cms.verify(multi, { content: CONTENT })).valid === true);
+  // A streamed content is detached-only (an attached SignedData would need the content buffered to
+  // state the eContent OCTET STRING length) and requires signed attributes (the digest attribute is
+  // the whole point of streaming); both refusals are config-time cms/bad-input.
+  var attachedErr = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming content without detached is refused", attachedErr === "cms/bad-input");
+  var noAttrsErr = await pki.cms.sign(_chunksOf(CONTENT, 4), s, { detached: true, signedAttributes: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming content with signedAttributes:false is refused", noAttrsErr === "cms/bad-input");
+  // A chunk that is not a byte source is reported in this verb's domain (cms/bad-input), the same as
+  // a buffered content's bad bytes, not leaked as the engine's webcrypto/data code.
+  var badChunks = (async function* () { yield CONTENT.subarray(0, 4); yield "not a byte source"; })();
+  var chunkErr = await pki.cms.sign(badChunks, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming sign: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErr === "cms/bad-input");
+}
+
+// ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
+async function testStreamingDetachedVerify() {
+  var det = await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true });
+  check("streaming verify: async-iterable opts.content verifies a detached signature",
+    (await pki.cms.verify(det, { content: _chunksOf(CONTENT, 5) })).valid === true);
+  check("streaming verify: chunk size does not matter",
+    (await pki.cms.verify(det, { content: _chunksOf(CONTENT, 1) })).valid === true);
+  // A streamed content that differs by one byte mid-stream fails the message-digest check.
+  var bad = Buffer.from(CONTENT); bad[3] ^= 0xff;
+  var r2 = await pki.cms.verify(det, { content: _chunksOf(bad, 5) });
+  check("streaming verify: a differing streamed content -> message-digest-mismatch",
+    r2.valid === false && r2.signers[0].code === "cms/message-digest-mismatch");
+  // A multi-signer detached signature (two distinct digest algorithms) verifies from ONE streamed pass.
+  var multi = await pki.cms.sign(CONTENT, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true });
+  check("streaming verify: multi-signer detached verifies from a single streamed pass",
+    (await pki.cms.verify(multi, { content: _chunksOf(CONTENT, 7) })).valid === true);
+  // A content-only signer (no signed attributes) binds the whole content as the preimage, which a
+  // stream cannot hold -- it is refused before the stream is consumed, not silently mis-verified.
+  var contentOnly = await pki.cms.sign(CONTENT, makeSigner("ed25519"), { detached: true, signedAttributes: false });
+  var rc = await pki.cms.verify(contentOnly, { content: _chunksOf(CONTENT, 4) }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming verify: a content-only signer is refused (needs buffered content)", rc === "cms/streamed-content-unverifiable");
+  // A non-byte chunk is reported in the CMS domain, not leaked as the engine's webcrypto/data.
+  var badV = (async function* () { yield CONTENT.subarray(0, 4); yield 12345; })();
+  var chunkErrV = await pki.cms.verify(det, { content: badV }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming verify: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErrV === "cms/bad-input");
+  // An unsupported digest is a per-signer verdict, exactly as the buffered path returns, not a
+  // whole-operation throw: streaming must not change the verdict of a message with such a signer.
+  var UNREG = "1.3.6.1.4.1.99999.8.7.6";
+  var badDigest = surgery.replaceLastAlgId(await pki.cms.sign(CONTENT, makeSigner("rsa"), { detached: true }),
+    pki.oid.byName("sha256"), function () { return b.sequence([b.oid(UNREG)]); }).der;
+  var ru = await pki.cms.verify(badDigest, { content: _chunksOf(CONTENT, 5) });
+  check("streaming verify: an unsupported digest is a per-signer unsupported-algorithm verdict, not a throw",
+    ru.valid === false && ru.signers[0].code === "cms/unsupported-algorithm");
+}
+
 // ---- multiple signers ----
 async function testMultiSigner() {
   var p7 = await pki.cms.sign(CONTENT, [makeSigner("ec-p256"), makeSigner("rsa"), makeSigner("ed25519")]);
@@ -761,6 +835,8 @@ async function run() {
   await testAlgorithms();
   await testSchemeAndInputs();
   await testContentModes();
+  await testStreamingDetachedSign();
+  await testStreamingDetachedVerify();
   await testMultiSigner();
   await testSignerIdentifier();
   await testSignedAttributes();

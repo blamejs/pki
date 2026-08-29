@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.33 — 2026-08-29
+
+pki.cms.sign and pki.cms.verify accept the content as an async iterable of byte chunks, so a detached signature over a large payload is produced and verified without holding the payload in memory.
+
+### Added
+
+- `pki.cms.sign` accepts its `content` as an async iterable of byte chunks (for example an async generator), signing a large payload without holding it in memory. This form requires `detached: true` and signed attributes: the payload is hashed incrementally to build the message-digest attribute (RFC 5652 sec. 5.4), in a single pass that serves every signer, so signers may use different digest algorithms. The signature covers the same content as the buffered form.
+- `pki.cms.verify` accepts its `content` option as an async iterable of byte chunks, verifying a detached signature over a streamed payload. The stream is hashed once for every signer, so every signer must carry signed attributes; a signer that signs the content directly is refused with a typed error and needs the content as a `Buffer`.
+
 ## v0.5.32 — 2026-08-28
 
 The parse verbs accept their DER input as any BufferSource: an ArrayBuffer, a DataView, or any typed array, not only a Buffer or a Uint8Array.

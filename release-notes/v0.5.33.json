@@ -1,0 +1,11 @@
+{
+  "version": "0.5.33",
+  "headline": "pki.cms.sign and pki.cms.verify accept the content as an async iterable of byte chunks, so a detached signature over a large payload is produced and verified without holding the payload in memory.",
+  "summary": "A detached CMS signature can now be produced and verified over a streamed content. Pass the content to `pki.cms.sign` as an async iterable of byte chunks, such as an async generator, together with `detached: true`, and the payload is hashed incrementally to build the message-digest attribute rather than buffered whole. A single pass serves every signer, so signers may use different digest algorithms. `pki.cms.verify` accepts the same async-iterable form for its `content` option. The message-digest is computed over the same content bytes as the buffered form, so a streamed signature verifies wherever a buffered one would and the two are interchangeable. A `Buffer` content is unchanged, so no existing call needs to change.",
+  "sections": {
+    "Added": [
+      "`pki.cms.sign` accepts its `content` as an async iterable of byte chunks (for example an async generator), signing a large payload without holding it in memory. This form requires `detached: true` and signed attributes: the payload is hashed incrementally to build the message-digest attribute (RFC 5652 sec. 5.4), in a single pass that serves every signer, so signers may use different digest algorithms. The signature covers the same content as the buffered form.",
+      "`pki.cms.verify` accepts its `content` option as an async iterable of byte chunks, verifying a detached signature over a streamed payload. The stream is hashed once for every signer, so every signer must carry signed attributes; a signer that signs the content directly is refused with a typed error and needs the content as a `Buffer`."
+    ]
+  }
+}
