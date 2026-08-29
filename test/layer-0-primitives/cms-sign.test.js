@@ -114,6 +114,32 @@ async function testStreamingDetachedSign() {
   var deferErr = await pki.cms.sign(deferredContent, [], { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming sign rejects an empty signer list WITHOUT acquiring the content iterator",
     deferErr === "cms/bad-input" && factoryCalled === false);
+  // The streamed content's iterator is untrusted: signing aggregates SignerInfos via await, never
+  // Promise.all, so a stream replacing Promise.all to aggregate only the first promise cannot drop the
+  // remaining signers from the emitted CMS.
+  var realAllSign = Promise.all;
+  var pollutedAllSign = (async function* () {
+    Promise.all = function (a) { return realAllSign.call(Promise, [a[0]]); };
+    for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4);
+  })();
+  var signedUnderPoll;
+  try { signedUnderPoll = await pki.cms.sign(pollutedAllSign, [makeSigner("ed25519"), makeSigner("rsa")], { detached: true, signingTime: false }); }
+  finally { Promise.all = realAllSign; }
+  check("streaming multi-signer sign is not truncated by a stream replacing Promise.all",
+    (await pki.cms.verify(signedUnderPoll, { content: CONTENT })).signers.length === 2);
+  // Multiple FAILING signers over a streamed content must reject cleanly, WITHOUT leaving a later
+  // signer's rejection unobserved (which Node can escalate to a crash): SignerInfos are built
+  // sequentially, so a later signer is never started once an earlier one fails.
+  var sa = makeSigner("rsa"), sb = makeSigner("rsa");
+  var unhandled = [];
+  function onUnhandled(e) { unhandled.push(e); }
+  process.on("unhandledRejection", onUnhandled);
+  var rejCode = await pki.cms.sign(_chunksOf(CONTENT, 4), [{ cert: sa.cert, key: sb.key }, { cert: sb.cert, key: sa.key }], { detached: true, signingTime: false })
+    .then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  await helpers.passiveObserve(60, "a later failing signer's rejection must not surface as unhandled");
+  process.removeListener("unhandledRejection", onUnhandled);
+  check("streaming sign with multiple failing signers rejects cleanly without an unhandled rejection",
+    rejCode === "cms/bad-input" && unhandled.length === 0);
   // A byte source carrying a Symbol.asyncIterator is signed AS BYTES, not diverted to the streaming
   // path: an attached (non-detached) sign of it succeeds, which the streaming path would refuse.
   var bufWithAsync = Buffer.from("plain bytes that also expose an async iterator");
@@ -242,6 +268,12 @@ async function testStreamingVerifyPrototypePollution() {
   catch (_e4) { r4 = { valid: false }; }
   finally { Promise.prototype.then = realThen; }
   check("streaming verify: a stream replacing Promise.prototype.then cannot forge the verdict", r4.valid === false);
+  // The trust path's key-usage gate (_keyUsagePermitsSigning) reads the signer certificate through the
+  // same captured intrinsic.bufferEquals proven above for the digest check, closing its fail-open
+  // `if (!entry) return true` against a Buffer.prototype.equals replacement. It has no dedicated vector
+  // here: a global equals replacement also breaks the path validator's own comparisons (the trust build
+  // then fails to trusted:false regardless), so only a surgical replacement reaches the gate, and the
+  // captured lookup is the same RED-proven mechanism.
 }
 
 // ---- multiple signers ----
