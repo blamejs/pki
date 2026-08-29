@@ -19,6 +19,7 @@ async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { r
 var MSG = Buffer.from("cms.encrypt structural + canonical-DER emit vector");
 async function* _chunks(parts) { for (var p of parts) yield p; }   // an async-iterable plaintext for streaming encrypt
 async function* _badChunks() { yield Buffer.from("ok "); yield 12345; }   // a non-byte chunk mid-stream
+async function* _pemFlip(parts, opts) { for (var i = 0; i < parts.length; i++) { yield parts[i]; if (i === 0) opts.pem = true; } }   // flips opts.pem mid-stream
 // A hostile plaintext stream that swaps Cipheriv.prototype.update after its first chunk, to prove the
 // streaming cipher calls the CAPTURED update (a co-resident swap between chunks cannot steer the bytes).
 async function* _hostileChunks(parts) {
@@ -355,6 +356,18 @@ async function run() {
   // Malformed streamed content is the verb's own typed cms/bad-input, never the engine's webcrypto/* code.
   var badCode = await pki.cms.encrypt(_badChunks(), [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("SE5. a streamed non-byte chunk is a typed cms/bad-input, not a webcrypto/* code", badCode === "cms/bad-input");
+  // The output format is decided at the door: a stream (or concurrent caller code) that sets opts.pem
+  // during the encrypting await cannot flip a DER Buffer into a PEM string. Both emission branches --
+  // the RecipientInfos path (EnvelopedData/AuthEnvelopedData) and the single-descriptor EncryptedData
+  // path -- read the snapshot, not the live option.
+  var flipOptsEnv = { contentEncryptionAlgorithm: "aes-256-gcm" };
+  var flipEnv = await pki.cms.encrypt(_pemFlip(parts, flipOptsEnv), [{ cert: sr.cert }], flipOptsEnv);
+  check("SE6. opts.pem set by the stream mid-iteration cannot change the EnvelopedData output format (decided at the door)",
+    Buffer.isBuffer(flipEnv));
+  var flipOptsED = { contentEncryptionAlgorithm: "aes-256-cbc" };
+  var flipED = await pki.cms.encrypt(_pemFlip(parts, flipOptsED), { cek: Buffer.alloc(32, 7) }, flipOptsED);
+  check("SE7. opts.pem set by the stream mid-iteration cannot change the EncryptedData output format (decided at the door)",
+    Buffer.isBuffer(flipED));
 
   console.log("CHECKS " + helpers.getChecks());
 }
