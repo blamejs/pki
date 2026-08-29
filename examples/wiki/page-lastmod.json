@@ -28,7 +28,7 @@
   "lib/cmp-verify.js": "2026-08-28",
   "lib/cms-compress.js": "2026-08-28",
   "lib/cms-decrypt.js": "2026-08-28",
-  "lib/cms-encrypt.js": "2026-08-28",
+  "lib/cms-encrypt.js": "2026-08-29",
   "lib/cms-sign.js": "2026-08-29",
   "lib/cms-verify.js": "2026-08-29",
   "lib/composite-sig.js": "2026-08-17",

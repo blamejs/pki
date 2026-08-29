@@ -17,6 +17,24 @@ var b = pki.asn1.build;
 function O(n) { return pki.oid.byName(n); }
 async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
 var MSG = Buffer.from("cms.encrypt structural + canonical-DER emit vector");
+async function* _chunks(parts) { for (var p of parts) yield p; }   // an async-iterable plaintext for streaming encrypt
+async function* _badChunks() { yield Buffer.from("ok "); yield 12345; }   // a non-byte chunk mid-stream
+async function* _pemFlip(parts, opts) { for (var i = 0; i < parts.length; i++) { yield parts[i]; if (i === 0) opts.pem = true; } }   // flips opts.pem mid-stream
+// A non-byte content whose Symbol.asyncIterator is an accessor: reading it (the classification probe)
+// runs caller code synchronously, which mutates the still-live options before they are read.
+function _sneakyContent(parts, opts) {
+  var gen = _chunks(parts);
+  return { get [Symbol.asyncIterator]() { opts.pem = true; opts.contentType = "signedData"; return function () { return gen[Symbol.asyncIterator](); }; } };
+}
+// A hostile plaintext stream that swaps Cipheriv.prototype.update after its first chunk, to prove the
+// streaming cipher calls the CAPTURED update (a co-resident swap between chunks cannot steer the bytes).
+async function* _hostileChunks(parts) {
+  var crypto = require("node:crypto");
+  var realUpdate = crypto.Cipheriv.prototype.update;
+  try {
+    for (var i = 0; i < parts.length; i++) { yield parts[i]; if (i === 0) crypto.Cipheriv.prototype.update = function () { return Buffer.alloc(16, 0xEE); }; }
+  } finally { crypto.Cipheriv.prototype.update = realUpdate; }
+}
 
 async function run() {
   var rsa = makeRecipient("rsa"), ec = makeRecipient("ec-p256"), mkem = makeRecipient("ml-kem-768");
@@ -316,6 +334,53 @@ async function run() {
   // ---- orchestrator routing ----
   check("pki.schema.parse routes an emitted EnvelopedData to cms/envelopedData", pki.schema.parse(envBytes).contentTypeName === "envelopedData");
   check("pki.schema.parse routes an emitted EncryptedData to cms/encryptedData", pki.schema.parse(await pki.cms.encrypt(MSG, { cek: Buffer.alloc(32, 2) }, { contentEncryptionAlgorithm: "aes-256-cbc" })).contentTypeName === "encryptedData");
+
+  // ---- STREAMING ENCRYPT (slice 5): async-iterable plaintext, memory-bounded on the plaintext side ----
+  // cms.encrypt(asyncIterable, recipients, opts) runs the plaintext chunks through the content cipher
+  // incrementally (never buffering the whole plaintext), assembles the ciphertext, and emits the same
+  // EnvelopedData / AuthEnvelopedData. It round-trips through decrypt; chunk boundaries are not on the wire.
+  var sr = makeRecipient("ec-p256");
+  var parts = [Buffer.from("streaming-encrypt chunk one|"), Buffer.from("chunk two|"), Buffer.from("chunk three")];
+  var whole = Buffer.concat(parts);
+  var envG = await pki.cms.encrypt(_chunks(parts), [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  var dG = await pki.cms.decrypt(envG, { key: sr.key, cert: sr.cert });
+  check("SE1. streaming GCM encrypt (async-iterable plaintext) round-trips == concatenated chunks, authenticated",
+    Buffer.compare(dG.content, whole) === 0 && dG.authenticated === true);
+  var envC = await pki.cms.encrypt(_chunks(parts), [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  check("SE2. streaming CBC encrypt round-trips == concatenated chunks",
+    Buffer.compare((await pki.cms.decrypt(envC, { key: sr.key, cert: sr.cert })).content, whole) === 0);
+  var env1 = await pki.cms.encrypt(_chunks([whole]), [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  check("SE3. a single-chunk stream round-trips identically to the buffered form",
+    Buffer.compare((await pki.cms.decrypt(env1, { key: sr.key, cert: sr.cert })).content, whole) === 0);
+  // The captured-update defense: a stream swapping Cipheriv.prototype.update mid-stream must not corrupt
+  // the ciphertext -- the emitted message still decrypts to the bytes the stream yielded.
+  var hostileEnv = await pki.cms.encrypt(_hostileChunks(parts), [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  var hostileOut = await pki.cms.decrypt(hostileEnv, { key: sr.key, cert: sr.cert }).then(
+    function (v) { return Buffer.compare(v.content, whole) === 0 ? "CORRECT" : "CORRUPTED"; }, function (e) { return e.code || "throw"; });
+  check("SE4. a stream swapping Cipheriv.prototype.update mid-stream cannot steer the ciphertext (captured update)",
+    hostileOut === "CORRECT");
+  // Malformed streamed content is the verb's own typed cms/bad-input, never the engine's webcrypto/* code.
+  var badCode = await pki.cms.encrypt(_badChunks(), [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("SE5. a streamed non-byte chunk is a typed cms/bad-input, not a webcrypto/* code", badCode === "cms/bad-input");
+  // The output format is decided at the door: a stream (or concurrent caller code) that sets opts.pem
+  // during the encrypting await cannot flip a DER Buffer into a PEM string. Both emission branches --
+  // the RecipientInfos path (EnvelopedData/AuthEnvelopedData) and the single-descriptor EncryptedData
+  // path -- read the snapshot, not the live option.
+  var flipOptsEnv = { contentEncryptionAlgorithm: "aes-256-gcm" };
+  var flipEnv = await pki.cms.encrypt(_pemFlip(parts, flipOptsEnv), [{ cert: sr.cert }], flipOptsEnv);
+  check("SE6. opts.pem set by the stream mid-iteration cannot change the EnvelopedData output format (decided at the door)",
+    Buffer.isBuffer(flipEnv));
+  var flipOptsED = { contentEncryptionAlgorithm: "aes-256-cbc" };
+  var flipED = await pki.cms.encrypt(_pemFlip(parts, flipOptsED), { cek: Buffer.alloc(32, 7) }, flipOptsED);
+  check("SE7. opts.pem set by the stream mid-iteration cannot change the EncryptedData output format (decided at the door)",
+    Buffer.isBuffer(flipED));
+  // The classification probe itself is a caller-controlled accessor: reading content[Symbol.asyncIterator]
+  // runs synchronously and mutates the live options before contentType/pem are read. The options are
+  // copied before the probe, so the entry values -- a DER Buffer over id-data -- are what get emitted.
+  var sneakOpts = { contentEncryptionAlgorithm: "aes-256-gcm" };
+  var sneakOut = await pki.cms.encrypt(_sneakyContent(parts, sneakOpts), [{ cert: sr.cert }], sneakOpts);
+  check("SE8. a content Symbol.asyncIterator getter that mutates opts at probe time cannot change the output (options copied before the probe)",
+    Buffer.isBuffer(sneakOut) && Buffer.compare((await pki.cms.decrypt(sneakOut, { key: sr.key, cert: sr.cert })).content, whole) === 0);
 
   console.log("CHECKS " + helpers.getChecks());
 }

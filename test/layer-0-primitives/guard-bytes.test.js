@@ -1400,6 +1400,21 @@ async function run() {
   await testCallerCannotRewriteAfterEntry();
   await testInheritedArrayElementIsRefused();
   await testCallerDateCannotAnswerTheInstant();
+  testTranslateStreamError();
+}
+
+// The shared streamed-content error translation cms.sign / cms.verify / cms.encrypt compose: the engine's
+// webcrypto/data (a non-byte chunk) and webcrypto/syntax (a malformed iterator) become the caller's code;
+// a caller's own next() fault is rethrown unchanged so it is never mistaken for a malformed-input verdict.
+function testTranslateStreamError() {
+  var E = function (c, m, cause) { return new TestError(c, m, cause); };
+  check("translateStreamError maps webcrypto/data to the caller's code",
+    errorOf(function () { guardBytes.translateStreamError({ code: "webcrypto/data" }, E, "t/bad"); }).code === "t/bad");
+  check("translateStreamError maps webcrypto/syntax to the caller's code",
+    errorOf(function () { guardBytes.translateStreamError({ code: "webcrypto/syntax" }, E, "t/bad"); }).code === "t/bad");
+  var own = new Error("caller next() fault"); own.code = "caller/own";
+  check("translateStreamError rethrows any other error unchanged (a caller next() fault)",
+    errorOf(function () { guardBytes.translateStreamError(own, E, "t/bad"); }) === own);
 }
 
 module.exports = { run: run };
