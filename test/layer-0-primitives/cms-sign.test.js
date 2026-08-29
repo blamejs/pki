@@ -189,6 +189,27 @@ async function testStreamingDetachedSign() {
   var badChunks = (async function* () { yield CONTENT.subarray(0, 4); yield "not a byte source"; })();
   var chunkErr = await pki.cms.sign(badChunks, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming sign: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErr === "cms/bad-input");
+  // The default signing time resolves through the captured Date intrinsic, so a streamed content whose
+  // Symbol.asyncIterator accessor replaces the global Date cannot stamp the emitted signingTime with an
+  // attacker-chosen instant. Ed25519 is deterministic: a forged instant would make the streamed output
+  // byte-identical to signing with that instant explicitly, which is the reference the check compares to.
+  var edTimeSigner = makeSigner("ed25519");
+  var realDateSign = Date;
+  var fakeMsSign = new realDateSign("2020-06-01T00:00:00Z").getTime();
+  function FakeDateSign(a) { return arguments.length === 0 ? new realDateSign(fakeMsSign) : new realDateSign(a); }
+  FakeDateSign.now = function () { return fakeMsSign; };
+  FakeDateSign.prototype = realDateSign.prototype;
+  var refAtFake = await pki.cms.sign(CONTENT, edTimeSigner, { detached: true, signingTime: new Date(fakeMsSign) });
+  var getterTimeContent = {};
+  Object.defineProperty(getterTimeContent, Symbol.asyncIterator, { configurable: true, get: function () {
+    global.Date = FakeDateSign;
+    return function () { return (async function* () { yield CONTENT; })(); };
+  } });
+  var streamedForgedTime;
+  try { streamedForgedTime = await pki.cms.sign(getterTimeContent, edTimeSigner, { detached: true }); }
+  finally { global.Date = realDateSign; }
+  check("streaming sign: a Symbol.asyncIterator getter replacing global Date cannot forge the signingTime attribute",
+    Buffer.compare(streamedForgedTime, refAtFake) !== 0);
 }
 
 // ---- streaming detached verify: async-iterable opts.content (Streaming CMS) ----
@@ -305,6 +326,20 @@ async function testStreamingVerifyPrototypePollution() {
   finally { global.Date = realDateCtor; }
   check("streaming verify: an expired signer is not reported trusted even when a stream replaces the global Date",
     rt.signers[0].trusted === false);
+  // The SAME replacement reached through the Symbol.asyncIterator ACCESSOR, which asyncStreamOf reads one
+  // turn BEFORE the trust snapshot -- not from a later next(). A snapshot taken after opts.content was
+  // touched would miss this window. The snapshot is taken before opts.content is read at all, and the
+  // instant defaults through the captured Date intrinsic, so this forges nothing either.
+  var getterDate = {};
+  Object.defineProperty(getterDate, Symbol.asyncIterator, { configurable: true, get: function () {
+    global.Date = FakeDate;
+    return function () { return (async function* () { for (var i = 0; i < CONTENT.length; i += 4) yield CONTENT.subarray(i, i + 4); })(); };
+  } });
+  var rtg;
+  try { rtg = await pki.cms.verify(p7t, { content: getterDate, trustAnchors: [caDerT] }); }
+  finally { global.Date = realDateCtor; }
+  check("streaming verify: a Symbol.asyncIterator getter that replaces global Date before the snapshot cannot report an expired signer trusted",
+    rtg.signers[0].trusted === false);
   // The trust path's key-usage gate (_keyUsagePermitsSigning) reads the signer certificate through the
   // same captured intrinsic.bufferEquals proven above for the digest check, closing its fail-open
   // `if (!entry) return true` against a Buffer.prototype.equals replacement. It has no dedicated vector
