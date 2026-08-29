@@ -904,6 +904,14 @@ async function testDigestStream() {
   var sparse = []; sparse[1] = "SHA-256";
   var sparseCode = await subtle.digestStream(sparse, chunks(Buffer.from("x"), 4)).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
   check("digestStream rejects a sparse algorithm list with a typed error", sparseCode === "webcrypto/syntax");
+  // A factory that acquires a resource but returns an iterator with a non-callable `next` is rejected
+  // with webcrypto/syntax AND the iterator's return() is still invoked, so the resource is released:
+  // the validation of `next` is inside the cleanup boundary, not before it.
+  var badNextReturned = false, badNextSrc = {};
+  badNextSrc[Symbol.asyncIterator] = function () { return { next: 1, return: function () { badNextReturned = true; return Promise.resolve({ done: true }); } }; };
+  var badNextCode = await subtle.digestStream(["SHA-256"], badNextSrc).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  check("digestStream rejects an iterator with a non-callable next", badNextCode === "webcrypto/syntax");
+  check("digestStream closes the acquired iterator when next is invalid (return called)", badNextReturned === true);
 }
 
 // RSA-PSS with no explicit saltLength signs + verifies via the digest-length

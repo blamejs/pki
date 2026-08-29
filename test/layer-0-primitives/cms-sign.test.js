@@ -189,6 +189,12 @@ async function testStreamingDetachedSign() {
   var badChunks = (async function* () { yield CONTENT.subarray(0, 4); yield "not a byte source"; })();
   var chunkErr = await pki.cms.sign(badChunks, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming sign: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErr === "cms/bad-input");
+  // A source whose async-iterator factory returns a malformed iterator (a non-callable next) surfaces
+  // from the engine as webcrypto/syntax; report it in this verb's domain, the same as a bad chunk.
+  var badIterSign = {};
+  badIterSign[Symbol.asyncIterator] = function () { return { next: 1 }; };
+  var badIterErr = await pki.cms.sign(badIterSign, s, { detached: true, signingTime: false }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming sign: a malformed stream iterator is a cms/bad-input, not a webcrypto error", badIterErr === "cms/bad-input");
   // The default signing time resolves through the captured Date intrinsic, so a streamed content whose
   // Symbol.asyncIterator accessor replaces the global Date cannot stamp the emitted signingTime with an
   // attacker-chosen instant. Ed25519 is deterministic: a forged instant would make the streamed output
@@ -257,6 +263,12 @@ async function testStreamingDetachedVerify() {
   var badV = (async function* () { yield CONTENT.subarray(0, 4); yield 12345; })();
   var chunkErrV = await pki.cms.verify(det, { content: badV }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("streaming verify: a non-byte chunk is a cms/bad-input, not a webcrypto error", chunkErrV === "cms/bad-input");
+  // A source whose async-iterator factory returns a malformed iterator (a non-callable next) surfaces
+  // from the engine as webcrypto/syntax; report it in this verb's domain, the same as a bad chunk.
+  var badIterV = {};
+  badIterV[Symbol.asyncIterator] = function () { return { next: 1 }; };
+  var badIterErrV = await pki.cms.verify(det, { content: badIterV }).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("streaming verify: a malformed stream iterator is a cms/bad-input, not a webcrypto error", badIterErrV === "cms/bad-input");
   // An unsupported digest is a per-signer verdict, exactly as the buffered path returns, not a
   // whole-operation throw: streaming must not change the verdict of a message with such a signer.
   var UNREG = "1.3.6.1.4.1.99999.8.7.6";
