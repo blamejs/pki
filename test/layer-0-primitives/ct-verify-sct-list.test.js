@@ -280,6 +280,11 @@ async function run() {
   check("VL30. no-SCT cert + an invalid ctPolicy value -> path/bad-input (config validated before the cert)",
     (await code(function () { return pki.path.validate([certA], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 0 } }); })) === "path/bad-input");
 
+  // VL31: a non-Date opts.certNotAfter is a caller mis-shape that throws, never silently ignored (which
+  // would substitute the certificate's own notAfter and defeat the caller's intended override).
+  check("VL31. a non-Date opts.certNotAfter -> ct/bad-input (not silently ignored)",
+    (await code(function () { return pki.ct.verifySctList(ENTRY, [signedSct(opA)], listAB, { certNotAfter: "2026-06-01T00:00:00Z" }); })) === "ct/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
