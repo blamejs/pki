@@ -282,6 +282,9 @@ async function testEnvelopeMandatory() {
   check("FAILURE CertRep carrying signed content refused", (await codeOf(pki.scep.parse(failWithContent))) === "scep/unexpected-envelope");
   var pendWithContent = await buildCertRep({ statusCode: "3", transactionId: "p", content: certsOnly([F.issuedCert]) });
   check("PENDING CertRep carrying signed content refused", (await codeOf(pki.scep.parse(pendWithContent))) === "scep/unexpected-envelope");
+  // The envelope must be OMITTED (a null eContent), so even an attached zero-length OCTET STRING is refused.
+  var attachedEmpty = await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f", content: Buffer.alloc(0) });
+  check("FAILURE CertRep with an attached empty eContent refused", (await codeOf(pki.scep.parse(attachedEmpty))) === "scep/unexpected-envelope");
 }
 
 async function testOuterContentTypeMustBeData() {
