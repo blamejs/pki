@@ -382,6 +382,13 @@ async function run() {
   var vrPending2 = pki.ocsp.verifyRequest(noCerts, { certs: [certBuf] });
   certBuf.fill(0);   // mutate the caller-owned opts.certs buffer during the await window
   check("VR18. mutating an opts.certs buffer across the await does not change the verdict", (await vrPending2).signatureValid === true);
+  // VR19: several certificates in the (unordered) certs field share the signing key -- an expired
+  // certificate beside its renewal. All verify; ALL are surfaced so the responder can pick a usable
+  // one rather than being handed only whichever appears first.
+  var caSpki = pki.schema.x509.parse(w.issuerCertDer).subjectPublicKeyInfo.bytes;
+  var caTwin = await pki.x509.sign({ subject: "OCSP Mini CA (renewed)", subjectPublicKey: caSpki, notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2029-01-01T00:00:00Z") }, { key: w.issuerKeyPkcs8 });
+  var vrMulti = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, caTwin]));
+  check("VR19. multiple certs sharing the signing key -> signerCerts lists all matches", vrMulti.signatureValid === true && vrMulti.signerCerts.length === 2 && Buffer.compare(vrMulti.signerCert, vrMulti.signerCerts[0]) === 0);
 
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.
