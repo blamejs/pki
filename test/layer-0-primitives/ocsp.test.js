@@ -14,6 +14,7 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var pki = helpers.pki;
 var world = require("../helpers/ocsp-world");
+var derSurgery = require("../helpers/der-surgery");
 var makeOcspWorld = world.makeOcspWorld;
 var nameDN = world.nameDN;
 var b = pki.asn1.build;
@@ -320,6 +321,134 @@ async function run() {
   check("verify accepts a Uint8Array response", (await pki.ocsp.verify(new Uint8Array(good), { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T })).status === "good");
   check("verify rejects an undecodable PEM response -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verify("-----BEGIN OCSP RESPONSE-----\nnot b64 !!!\n-----END OCSP RESPONSE-----\n", { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
   check("buildRequest with an unsupported CertID hashAlgorithm -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { hashAlgorithm: "md5" }); })) === "ocsp/bad-input");
+
+  // ---- verifyRequest: a responder verifies a client's signed OCSP request (RFC 6960 sec. 4.1.1) ----
+  var reqSigner = { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, requestorName: nameDN("OCSP Mini CA") };
+  function mkSignedReq(cert) { return pki.ocsp.buildRequest({ cert: cert, issuer: w.issuerCertDer }, reqSigner); }
+  // Rebuild a signed OCSPRequest with its optionalSignature carrying NO certs (RFC 6960 lets them
+  // travel out of band). The signature is over tbsRequest, unchanged, so it still verifies.
+  function stripCerts(reqDer) {
+    var r = pki.asn1.decode(reqDer);                 // SEQ { tbsRequest, [0] EXPLICIT { Signature } }
+    var s = r.children[1].children[0];               // Signature SEQ
+    return b.sequence([b.raw(r.children[0].bytes), b.explicit(0, b.sequence([b.raw(s.children[0].bytes), b.raw(s.children[1].bytes)]))]);
+  }
+  var vrOk = await pki.ocsp.verifyRequest(await mkSignedReq(w.targetCertDer));
+  check("VR1. a signed request verifies: signed + signatureValid, signerSubject decoded", vrOk.signed === true && vrOk.signatureValid === true && vrOk.signerSubject.dn === "CN=OCSP Mini CA");
+  check("VR1b. signerCert is surfaced raw + requestList/version decoded", Buffer.compare(vrOk.signerCert, w.issuerCertDer) === 0 && vrOk.requestList.length === 1 && vrOk.version === 1);
+  // VR2: splice tbsRequest of A onto the optionalSignature (over a DIFFERENT tbs) of B -> the
+  // signature does not verify over the message's own tbsRequest.
+  var da = pki.asn1.decode(await mkSignedReq(w.targetCertDer)), db = pki.asn1.decode(await mkSignedReq(w.responderCertDer));
+  var spliced = b.sequence([b.raw(da.children[0].bytes), b.raw(db.children[1].bytes)]);
+  var vrBad = await pki.ocsp.verifyRequest(spliced);
+  check("VR2. a request whose signature does not match its tbsRequest -> signatureValid:false", vrBad.signed === true && vrBad.signatureValid === false);
+  var vrUn = await pki.ocsp.verifyRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }));
+  check("VR3. an unsigned request -> signed:false, signatureValid:false, no signerCert", vrUn.signed === false && vrUn.signatureValid === false && vrUn.signerCert === null);
+  check("VR4. malformed bytes -> a typed OcspError", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00])); })).indexOf("ocsp/") === 0);
+  check("VR5. an unknown option -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(spliced, { nope: 1 }); })) === "ocsp/bad-input");
+  // VR6/VR7: a signed request that omits its own certs. opts.certs supplies the signer, or its
+  // absence is reported rather than guessed.
+  var noCerts = stripCerts(await mkSignedReq(w.targetCertDer));
+  var vrOob = await pki.ocsp.verifyRequest(noCerts, { certs: [w.issuerCertDer] });
+  check("VR6. a certs-less signed request verifies against opts.certs", vrOob.signed === true && vrOob.signatureValid === true);
+  var vrNoCert = await pki.ocsp.verifyRequest(noCerts);
+  check("VR7. a signed request with no cert and no opts.certs -> signatureValid:false, named reason", vrNoCert.signed === true && vrNoCert.signatureValid === false && vrNoCert.signerCert === null && /no certificate/.test(vrNoCert.reason));
+  check("VR8. opts.certs accepts a PEM entry (input-form parity)", (await pki.ocsp.verifyRequest(noCerts, { certs: [pemCert(w.issuerCertDer)] })).signatureValid === true);
+  check("VR9. a sparse opts.certs array -> ocsp/bad-input", (await codeOfAsync(function () { var a = []; a[2] = w.issuerCertDer; return pki.ocsp.verifyRequest(noCerts, { certs: a }); })) === "ocsp/bad-input");
+  check("VR10. a non-certificate opts.certs entry -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(noCerts, { certs: [42] }); })) === "ocsp/bad-input");
+  check("VR11. verifyRequest accepts a PEM OCSP REQUEST string", (await pki.ocsp.verifyRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, Object.assign({ pem: true }, reqSigner)))).signatureValid === true);
+  check("VR12. a valid-DER but non-certificate signer (opts.certs) -> ocsp/bad-signer-cert", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(noCerts, { certs: [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00])] }); })) === "ocsp/bad-signer-cert");
+  // VR13: RFC 6960 sec. 4.1.1 certs is an unordered SEQUENCE OF Certificate. Rebuild the request so
+  // its signer certificate is NOT first (a chain cert precedes it); the signer is still found.
+  function reorderCerts(reqDer, certDers) {
+    var r = pki.asn1.decode(reqDer), s = r.children[1].children[0];   // Signature SEQ
+    var optSig = b.sequence([b.raw(s.children[0].bytes), b.raw(s.children[1].bytes), b.explicit(0, b.sequence(certDers.map(function (d) { return b.raw(d); })))]);
+    return b.sequence([b.raw(r.children[0].bytes), b.explicit(0, optSig)]);
+  }
+  var reordered = reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer, w.issuerCertDer]);   // signer (issuer) is second
+  var vrReord = await pki.ocsp.verifyRequest(reordered);
+  check("VR13. a signer certificate that is not first in certs still verifies", vrReord.signatureValid === true && Buffer.compare(vrReord.signerCert, w.issuerCertDer) === 0);
+  // VR14: a malformed certificate embedded in the request is skipped (never fatal), so a valid
+  // signer beside it still verifies -- unlike a malformed opts.certs entry (VR12), which is refused.
+  var withJunk = reorderCerts(await mkSignedReq(w.targetCertDer), [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]), w.issuerCertDer]);
+  var vrJunk = await pki.ocsp.verifyRequest(withJunk);
+  check("VR14. a malformed embedded cert is skipped, the valid signer beside it wins", vrJunk.signatureValid === true);
+  check("VR14b. certs excludes the malformed entry (only parseable certs reach the path-build pool)", vrJunk.certs.length === 1 && Buffer.compare(vrJunk.certs[0], w.issuerCertDer) === 0);
+  check("VR15. embedded certs none of which signed -> signatureValid:false (not a throw)", (await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer]))).signatureValid === false);
+  check("VR16. opts.certs supplied but none signed -> signatureValid:false", (await pki.ocsp.verifyRequest(noCerts, { certs: [w.responderCertDer] })).signatureValid === false);
+  // VR17: the request bytes are snapshotted at the door, so a caller mutating the buffer across the
+  // async signature check cannot make verification read bytes other than those parsed and reported.
+  var reqBuf = Buffer.from(await mkSignedReq(w.targetCertDer));
+  var vrPending = pki.ocsp.verifyRequest(reqBuf);
+  reqBuf.fill(0);   // mutate the caller-owned buffer during the await window
+  check("VR17. mutating the request buffer across the await does not change the verdict", (await vrPending).signatureValid === true);
+  var certBuf = Buffer.from(w.issuerCertDer);
+  var vrPending2 = pki.ocsp.verifyRequest(noCerts, { certs: [certBuf] });
+  certBuf.fill(0);   // mutate the caller-owned opts.certs buffer during the await window
+  check("VR18. mutating an opts.certs buffer across the await does not change the verdict", (await vrPending2).signatureValid === true);
+  // VR19: several certificates in the (unordered) certs field share the signing key -- an expired
+  // certificate beside its renewal. All verify; ALL are surfaced so the responder can pick a usable
+  // one rather than being handed only whichever appears first.
+  var caSpki = pki.schema.x509.parse(w.issuerCertDer).subjectPublicKeyInfo.bytes;
+  var caTwin = await pki.x509.sign({ subject: "OCSP Mini CA (renewed)", subjectPublicKey: caSpki, notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2029-01-01T00:00:00Z") }, { key: w.issuerKeyPkcs8 });
+  var vrMulti = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, caTwin]));
+  check("VR19. multiple certs sharing the signing key -> signerCerts lists all matches", vrMulti.signatureValid === true && vrMulti.signerCerts.length === 2 && Buffer.compare(vrMulti.signerCert, vrMulti.signerCerts[0]) === 0);
+  // VR20: a request embeds the signer plus a non-signing (intermediate) certificate. Only the signer
+  // verifies, but `certs` surfaces the FULL embedded bag so the responder has the chain to path-validate.
+  var withChain = reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, w.responderCertDer]);
+  var vrChain = await pki.ocsp.verifyRequest(withChain);
+  check("VR20. certs surfaces the full embedded bag; signerCerts only the certs that signed", vrChain.signatureValid === true && vrChain.signerCerts.length === 1 && vrChain.certs.length === 2);
+  // VR21: a non-signing certificate precedes the signer, and a same-key renewal follows it. The
+  // signature verification stops at the first match; the renewal is then collected by public-key
+  // comparison (not another verify), so signerCerts lists both signing certs and skips the non-signer.
+  var vrPre = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer, w.issuerCertDer, caTwin]));
+  check("VR21. non-signer skipped; signer + same-key renewal both in signerCerts", vrPre.signatureValid === true && vrPre.signerCerts.length === 2 && vrPre.certs.length === 3);
+  // VR22: two certificates reuse an RSA key but encode the rsaEncryption AlgorithmIdentifier
+  // differently -- one with NULL parameters (the canonical form pki.x509.sign emits), one with the
+  // parameters absent. Both keys verify the same request signature, but their subjectPublicKeyInfo
+  // DER differs, so membership is by the subjectPublicKey material rather than the whole SPKI, or the
+  // absent-parameters twin is dropped from signerCerts even though it carries the signing key.
+  var rsaKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var rsaPkcs8 = await pki.key.export(rsaKp.privateKey);
+  var rsaCert = await pki.x509.sign({ subject: "RSA OCSP Requestor", subjectPublicKey: await pki.key.export(rsaKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"] } }, { key: rsaPkcs8 });
+  var rsaTwin = derSurgery.patch(rsaCert, function (node) {
+    if (derSurgery.isAlgId(node, O("rsaEncryption")) && node.children.length === 2) return pki.asn1.build.sequence([Buffer.from(node.children[0].bytes)]);
+    return undefined;
+  });
+  var rsaReq = await pki.ocsp.buildRequest({ cert: rsaCert, issuer: rsaCert }, { signer: { cert: rsaCert, key: rsaPkcs8 }, requestorName: pki.schema.x509.parse(rsaCert).subject.bytes });
+  var vrRsa = await pki.ocsp.verifyRequest(reorderCerts(rsaReq, [rsaCert, rsaTwin]));
+  check("VR22. same RSA key under NULL vs absent params -> both in signerCerts", vrRsa.signatureValid === true && vrRsa.signerCerts.length === 2 && vrRsa.certs.length === 2);
+  // VR23: a non-signing certificate carries the SAME key bytes as the signer under a DIFFERENT
+  // algorithm -- an X25519 subjectPublicKey equal to the Ed25519 signer's 32-byte value. X25519
+  // cannot verify the Ed25519 request signature, so membership binds the algorithm identity, not the
+  // key bytes alone, and the coincident-key certificate is NOT reported as a signer.
+  var edKp = await pki.key.generate("Ed25519");
+  var edPkcs8 = await pki.key.export(edKp.privateKey);
+  var edCert = await pki.x509.sign({ subject: "Ed OCSP Requestor", subjectPublicKey: await pki.key.export(edKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"] } }, { key: edPkcs8 });
+  var edSpkiTlv = pki.schema.x509.parse(edCert).subjectPublicKeyInfo.bytes;
+  var x25519Spki = derSurgery.patch(edSpkiTlv, function (node) {
+    if (derSurgery.isAlgId(node, O("Ed25519"))) return b.sequence([Buffer.from(pki.asn1.build.oid(O("X25519")))]);
+    return undefined;
+  });
+  var x25519Twin = derSurgery.replaceTlv(edCert, edSpkiTlv, x25519Spki).der;
+  var edReq = await pki.ocsp.buildRequest({ cert: edCert, issuer: edCert }, { signer: { cert: edCert, key: edPkcs8 }, requestorName: pki.schema.x509.parse(edCert).subject.bytes });
+  var vrEd = await pki.ocsp.verifyRequest(reorderCerts(edReq, [edCert, x25519Twin]));
+  check("VR23. coincident key bytes under a different algorithm -> not a signer", vrEd.signatureValid === true && vrEd.signerCerts.length === 1 && vrEd.certs.length === 2);
+  // VR24: two ECDSA P-256 certificates carry the SAME key, one encoding the point uncompressed
+  // (04||X||Y) and one compressed (02/03||X). Both verify the request, but their key bytes differ, so
+  // membership is by verifying each candidate rather than comparing key bytes, or the compressed
+  // encoding is dropped from signerCerts even though it carries the signing key.
+  var ecKp = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var ecPkcs8 = await pki.key.export(ecKp.privateKey);
+  var ecCert = await pki.x509.sign({ subject: "EC OCSP Requestor", subjectPublicKey: await pki.key.export(ecKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"] } }, { key: ecPkcs8 });
+  var ecSpkiTlv = pki.schema.x509.parse(ecCert).subjectPublicKeyInfo.bytes;
+  var ecSpkiNode = pki.asn1.decode(ecSpkiTlv);
+  var ecPoint = pki.asn1.read.bitString(ecSpkiNode.children[1]).bytes;   // 04 || X(32) || Y(32)
+  var ecCompressed = Buffer.concat([Buffer.from([(ecPoint[64] & 1) ? 0x03 : 0x02]), ecPoint.slice(1, 33)]);
+  var ecCompSpki = b.sequence([b.raw(ecSpkiNode.children[0].bytes), b.bitString(ecCompressed)]);
+  var ecTwin = derSurgery.replaceTlv(ecCert, ecSpkiTlv, ecCompSpki).der;
+  var ecReq = await pki.ocsp.buildRequest({ cert: ecCert, issuer: ecCert }, { signer: { cert: ecCert, key: ecPkcs8 }, requestorName: pki.schema.x509.parse(ecCert).subject.bytes });
+  var vrEc = await pki.ocsp.verifyRequest(reorderCerts(ecReq, [ecCert, ecTwin]));
+  check("VR24. same EC key compressed and uncompressed -> both in signerCerts", vrEc.signatureValid === true && vrEc.signerCerts.length === 2 && vrEc.certs.length === 2);
 
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.

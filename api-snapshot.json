@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.5.39",
+  "packageVersion": "0.6.0",
   "surface": {
     "C": {
       "kind": "object",
@@ -2585,6 +2585,10 @@
         "verify": {
           "kind": "function",
           "arity": 2
+        },
+        "verifyRequest": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -3498,6 +3502,7 @@
     "pki.ocsp.sign": "0.2.22",
     "pki.ocsp.buildErrorResponse": "0.2.22",
     "pki.ocsp.verify": "0.2.22",
+    "pki.ocsp.verifyRequest": "0.6.0",
     "pki.oid.name": "0.1.0",
     "pki.oid.register": "0.1.0",
     "pki.oid.registerFamily": "0.1.2",

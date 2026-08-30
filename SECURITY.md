@@ -936,6 +936,23 @@ security-only patches after the next major releases.
   caller cannot sign and send a message embedding a request a CA would reject.
   The verdict is awaited through the native promise job rather than a replaceable
   prototype method, so a co-resident cannot force the check to report success.
+- **Signed OCSP request verification (responder side).** `pki.ocsp.verifyRequest`
+  lets a responder authenticate a client's signed request (RFC 6960 §4.1.1)
+  through the same certification-path signature engine `pki.ocsp.verify` uses for
+  a response. The signer is found by verifying, not by assuming a position in the
+  request's unordered certificate field, so a chain certificate placed before the
+  signer cannot make a valid request read as invalid, and no certificate that did
+  not sign is reported as a signer. Every certificate whose key verified is
+  surfaced in `signerCerts` (a key may appear under an expired certificate beside
+  its renewal), so the responder's trust decision does not depend on ordering.
+  `signatureValid` speaks only to the cryptographic check: those certificates are
+  surfaced raw for the responder to path-validate, confirm authorized to sign (a
+  `keyUsage`, where present, must assert `digitalSignature`, RFC 5280 sec. 4.2.1.3),
+  and whose subjects it compares against the identity expected, rather than trusted
+  by the verb. The request bytes are snapshotted at entry, so a caller mutating the
+  buffer across the asynchronous check is judged on the bytes the parser read, and
+  an unsigned request is reported (`signed: false`) rather than refused, since
+  RFC 6960 makes the signature optional.
 - **EST enrollment-response confusion.** The `pki.est` client codecs are
   fail-closed over hostile server output. The RFC 8951 base64 transfer decode is
   bounded before and after decoding and never reads a Content-Transfer-Encoding
