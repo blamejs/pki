@@ -1522,6 +1522,20 @@ async function testMlKemImport() {
   }
   check("a real usages array still generates a pair",
     (await subtle.generateKey({ name: "ECDSA", namedCurve: "P-256" }, true, ["sign", "verify"])).privateKey.usages.length === 1);
+
+  // decryptStream slices its ciphertext lazily as the caller iterates, so it must snapshot that input at
+  // the call: a caller reusing the buffer afterward must not change the recovered plaintext or its padding
+  // verdict (the guard-bytes detached-BufferSource class, applied across the lazy boundary).
+  var dsKey = Buffer.alloc(32, 7), dsIv = Buffer.alloc(16, 3);
+  var dsMsg = Buffer.from("decryptStream snapshots its ciphertext argument across the lazy boundary; a buffer reuse cannot steer it");
+  var dsCipher = nodeCrypto.createCipheriv("aes-256-cbc", dsKey, dsIv);
+  var dsCt = Buffer.concat([dsCipher.update(dsMsg), dsCipher.final()]);
+  var dsIter = subtle.decryptStream({ algNode: "aes-256-cbc", key: dsKey, iv: dsIv }, dsCt);
+  dsCt.fill(0);   // the caller reuses/clears the pooled buffer after the call returns, before iterating
+  var dsParts = [];
+  for await (var dsChunk of dsIter) dsParts.push(Buffer.from(dsChunk));
+  check("decryptStream snapshots its ciphertext: mutating the caller's buffer after the call cannot change the recovered plaintext",
+    Buffer.compare(Buffer.concat(dsParts), dsMsg) === 0);
 }
 
 module.exports = { run: run };
