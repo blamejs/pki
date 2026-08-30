@@ -394,6 +394,11 @@ async function run() {
   var withChain = reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, w.responderCertDer]);
   var vrChain = await pki.ocsp.verifyRequest(withChain);
   check("VR20. certs surfaces the full embedded bag; signerCerts only the certs that signed", vrChain.signatureValid === true && vrChain.signerCerts.length === 1 && vrChain.certs.length === 2);
+  // VR21: a non-signing certificate precedes the signer, and a same-key renewal follows it. The
+  // signature verification stops at the first match; the renewal is then collected by SPKI comparison
+  // (not another verify), so signerCerts lists both signing certs and skips the non-signer.
+  var vrPre = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer, w.issuerCertDer, caTwin]));
+  check("VR21. non-signer skipped; signer + same-key renewal both in signerCerts", vrPre.signatureValid === true && vrPre.signerCerts.length === 2 && vrPre.certs.length === 3);
 
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.
