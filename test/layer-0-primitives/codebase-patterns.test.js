@@ -1801,6 +1801,7 @@ function testNoDuplicateCodeBlocks() {
         "lib/guard-range.js:<top>", "lib/guard-async.js:<top>", "lib/guard-time.js:<top>",
         "lib/guard-name.js:<top>", "lib/guard-text.js:<top>", "lib/guard-secret.js:<top>",
         "lib/cmp-verify.js:<top>", "lib/ocsp-verify.js:makeOcspVerify",
+        "lib/cms-verify.js:_addCert",
         "lib/jose.js:<top>", "lib/webcrypto.js:<top>",
         "lib/acme.js:<top>", "lib/est.js:<top>", "lib/webauthn.js:<top>", "lib/trust.js:<top>",
         "lib/webauthn-mds.js:<top>", "lib/attrcert-sign.js:<top>", "lib/http-digest.js:<top>",

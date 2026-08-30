@@ -4,6 +4,17 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.3 — 2026-08-30
+
+pki.cms builds and reads certs-only certificate-management messages: a degenerate CMS SignedData that conveys certificates and CRLs without signing anything (RFC 8551 sec. 3.8).
+
+### Added
+
+- pki.cms.certsOnly(certs, opts?) builds a certs-only certificate-management message (RFC 8551 sec. 3.8): a degenerate CMS SignedData with version 1, an empty digestAlgorithms and signerInfos, an id-data encapContentInfo with the eContent absent, and the caller's certificates in certificates [0] and any CRLs in crls [1], both DER-sorted and deduplicated. certs is a certificate or an array of them (DER Buffer or PEM string), and opts.crls carries CRLs the same way; at least one certificate or CRL is required. Each entry is parsed as a real X.509 certificate or CertificateList before it is embedded, so a non-certificate, a non-CRL, or a tagged CertificateChoices alternative is refused with a typed cms/bad-input rather than emitted. opts.pem returns a PEM string instead of DER.
+- pki.cms.parseCertsOnly(input, opts?) reads a certs-only message (DER Buffer or PEM) and returns { certificates, crls } as raw DER. It requires a degenerate SignedData (id-data with no eContent, empty signerInfos) and refuses a non-degenerate structure with cms/not-certs-only. Unlike the RFC 5272 Simple PKI Response that pki.est.parseCertsOnly reads, a CRL-only message is accepted (RFC 8551 sec. 3.8 conveys certificates and/or CRLs); a message carrying neither is refused. opts.maxCerts caps the number of certificates and CRLs parsed and returned, a bound on an untrusted bundle.
+- pki.cms.isCertsOnly(input) reports whether input is a certs-only message structurally, returning true for a SignedData with an id-data content, absent eContent, and empty signerInfos, and false for any other well-formed CMS. Undecodable bytes throw a typed CmsError.
+- pki.smime.buildCertsOnly(certs, opts?) wraps a certs-only message in one application/pkcs7-mime; smime-type=certs-only; name=smime.p7c S/MIME entity (RFC 8551 sec. 3.2.1), with the certs-only DER as the base64 body. It accepts the same certificate and opts.crls inputs as pki.cms.certsOnly.
+
 ## v0.6.2 — 2026-08-30
 
 pki.scep builds and reads SCEP (RFC 8894) enrollment messages: a client assembles a PKCSReq or RenewalReq request and parses a CA's response back to its verified transaction attributes and issued certificates.
