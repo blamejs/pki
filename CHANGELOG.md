@@ -4,7 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.37 — 2026-08-30
+## v0.5.38 — 2026-08-30
+
+Builder verbs reject a sparse or nullish array argument with a typed error instead of a native one.
+
+### Changed
+
+- The array arguments of pki.pkcs12.build (SafeContents bags), pki.ocsp.buildRequest and pki.ocsp.sign (the query and response batches), pki.cmc.build (requests and the CMS and other-message sequences), pki.crl.sign (revoked entries and the issuing-distribution-point and freshest-CRL general names), pki.crmf.build (controls and registration info), and pki.cms.encrypt (authenticated attributes) are checked for holes and nullish entries up front. A sparse or nullish array is now the verb's own typed `<domain>/bad-input` error naming the index, in place of the native `TypeError` the hole previously produced at the encoder. A valid (dense) array is unaffected and its emitted structure is byte-for-byte identical.
+
+## v0.5.37 — 2026-08-29
 
 pki.cms.decrypt can return the recovered content as an async iterable of plaintext chunks.
 

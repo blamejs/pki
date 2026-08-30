@@ -93,6 +93,27 @@ async function run() {
   } finally { if (!hadProto0) delete Array.prototype[0]; }
   check("1k. reqDenseArray rejects a hole even under Array.prototype[0] pollution (own-property tested first)", pollutedHole === "cmp/bad-input");
   check("1l. reqDenseArray returns a dense array unchanged", Array.isArray(denseReturned) && denseReturned.length === 2);
+  var denseNonArray = (function () { try { denseGuard("not-an-array", "nested"); return "NO-THROW"; } catch (e) { return e.code; } })();
+  check("1l2. reqDenseArray rejects a non-array with a typed error", denseNonArray === "cmp/bad-input");
+  var denseNullish = (function () { try { denseGuard([Buffer.from([0x30, 0x00]), null], "nested"); return "NO-THROW"; } catch (e) { return e.code; } })();
+  check("1l3. reqDenseArray rejects a nullish entry with a typed error", denseNullish === "cmp/bad-input");
+  // TOCTOU: an indexed accessor that extends the array while its value is read must not yield a sparse
+  // result. reqDenseArray snapshots each own index into a fresh dense array and returns that, so the
+  // getter's later mutation of the original cannot reintroduce a hole into what the caller iterates.
+  var toctou = [0];
+  Object.defineProperty(toctou, 0, { configurable: true, enumerable: true, get: function () { toctou[2] = Buffer.from([0x30, 0x00]); return Buffer.from([0x30, 0x00]); } });
+  var toctouSnap = denseGuard(toctou, "nested");
+  check("1l4. reqDenseArray returns a dense snapshot when an indexed accessor extends the array during the read",
+    Array.isArray(toctouSnap) && toctouSnap !== toctou && toctouSnap.length === 1 && Object.prototype.hasOwnProperty.call(toctouSnap, 0));
+  // A polluted Array.prototype[i] SETTER must not swallow the snapshot write: the guard defines each
+  // index as an own data property, so the returned array is dense (own 0) rather than sparse.
+  var hadSet0 = Object.getOwnPropertyDescriptor(Array.prototype, 0);
+  Object.defineProperty(Array.prototype, 0, { configurable: true, set: function () { /* swallow the write */ } });
+  var setterSnap;
+  try { setterSnap = denseGuard([Buffer.from([0x30, 0x00])], "nested"); }
+  finally { if (hadSet0) Object.defineProperty(Array.prototype, 0, hadSet0); else delete Array.prototype[0]; }
+  check("1l5. reqDenseArray builds an own-property snapshot even under an Array.prototype[0] setter",
+    Object.prototype.hasOwnProperty.call(setterSnap, 0) && setterSnap[0] != null);
   // End-to-end: under Array.prototype[0] pollution the entry deep-copy must leave the hole (it copies
   // own indices only), so the density check refuses the list rather than wrapping and signing the
   // prototype-supplied PKIMessage.

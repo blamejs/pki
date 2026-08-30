@@ -834,6 +834,17 @@ async function run() {
     pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: csrDer }] },
       { cert: s.cert, key: s.key })).kind === "pkiData");
 
+  // Dense caller-array hardening: a sparse requests array is a typed cmc/bad-input, caught before the
+  // forEach/map reach the hole as a native concat error.
+  var _spReq = [{ tcr: csrDer }]; _spReq[2] = _spReq[0];
+  var _cmcCode = function (spec) { return pki.cmc.build(spec, { cert: s.cert, key: s.key }).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; }); };
+  check("sparse cmc requests -> typed cmc/bad-input (not a native concat error)",
+    (await _cmcCode({ requests: _spReq })) === "cmc/bad-input");
+  var _spCms = [1]; _spCms[2] = 1;
+  check("sparse cmc cmsSequence -> typed cmc/bad-input", (await _cmcCode({ requests: [{ tcr: csrDer }], cmsSequence: _spCms })) === "cmc/bad-input");
+  var _spOther = [1]; _spOther[2] = 1;
+  check("sparse cmc otherMsgSequence -> typed cmc/bad-input", (await _cmcCode({ requests: [{ tcr: csrDer }], otherMsgSequence: _spOther })) === "cmc/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
