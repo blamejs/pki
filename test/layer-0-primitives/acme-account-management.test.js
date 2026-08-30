@@ -141,6 +141,14 @@ async function run() {
   } });
   var r5d = await l5d.acme.listOrders(ORDERS_URL);
   check("L5c. a next back to an earlier visited page stops the loop (2-cycle)", r5d.pages === 2 && r5d.truncated === false && JSON.stringify(r5d.orders) === JSON.stringify([U1, U2]));
+  // A cycle back to a visited page that lands EXACTLY on the page cap is NOT truncated: the list is
+  // complete (the next names nothing new), so the visited check must run before the cap decision.
+  var l5e = await mkClient({ ordersByUrl: {
+    "/acct/1/orders": { orders: [U1], link: "<" + ORDERS_URL + "?cursor=2>;rel=\"next\"" },
+    "/acct/1/orders?cursor=2": { orders: [U2], link: "<" + ORDERS_URL + ">;rel=\"next\"" },
+  } });
+  var r5e = await l5e.acme.listOrders(ORDERS_URL, { maxPages: 2 });
+  check("L5d. a cycle back to a visited page at the cap is complete, not truncated", r5e.pages === 2 && r5e.truncated === false && JSON.stringify(r5e.orders) === JSON.stringify([U1, U2]));
 
   // 6. https gate.
   var l6 = await mkClient({ ordersByUrl: { "/acct/1/orders": { orders: [U1] } } });
