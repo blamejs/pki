@@ -389,6 +389,11 @@ async function run() {
   var caTwin = await pki.x509.sign({ subject: "OCSP Mini CA (renewed)", subjectPublicKey: caSpki, notBefore: new Date("2027-01-01T00:00:00Z"), notAfter: new Date("2029-01-01T00:00:00Z") }, { key: w.issuerKeyPkcs8 });
   var vrMulti = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, caTwin]));
   check("VR19. multiple certs sharing the signing key -> signerCerts lists all matches", vrMulti.signatureValid === true && vrMulti.signerCerts.length === 2 && Buffer.compare(vrMulti.signerCert, vrMulti.signerCerts[0]) === 0);
+  // VR20: a request embeds the signer plus a non-signing (intermediate) certificate. Only the signer
+  // verifies, but `certs` surfaces the FULL embedded bag so the responder has the chain to path-validate.
+  var withChain = reorderCerts(await mkSignedReq(w.targetCertDer), [w.issuerCertDer, w.responderCertDer]);
+  var vrChain = await pki.ocsp.verifyRequest(withChain);
+  check("VR20. certs surfaces the full embedded bag; signerCerts only the certs that signed", vrChain.signatureValid === true && vrChain.signerCerts.length === 1 && vrChain.certs.length === 2);
 
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.
