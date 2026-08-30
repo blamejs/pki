@@ -939,6 +939,38 @@ security-only patches after the next major releases.
   all is refused. Nothing in the response is trusted, so the certificate bag and
   any Publish Trust Anchors control are surfaced as data for
   `pki.path.validate` rather than added to a store.
+- **Forged and unauthenticated SCEP responses.** `pki.scep.parse` verifies the
+  outer SignedData signature before it reads a single transaction attribute, and
+  refuses a pkiMessage whose signature does not verify (`scep/bad-signature`).
+  The transaction state a SCEP client acts on, the messageType, the pkiStatus and
+  failInfo of a CertRep, and the sender and recipient nonces, is therefore read
+  only from a signer whose signature checked, never surfaced alongside a false
+  verdict a caller could mistake for a verified one. The underlying CMS verifier
+  returns a per-signer verdict rather than throwing on a bad signature, so the
+  refusal is an explicit gate in the SCEP layer rather than an inherited side
+  effect. A valid signature is not an authenticated signer, however: it proves
+  only that the message is self-consistent with the certificate it embeds, so an
+  attacker could mint a certificate and sign a forged CertRep that echoes an
+  observed nonce. A client authenticates a CA response against the CA certificate
+  it already holds by passing `opts.signerCert`, which refuses a signer whose
+  public key does not match (`scep/untrusted-signer`) and reports
+  `signerAuthenticated: true`; a caller that omits it receives a crypto-only
+  verdict (`signerAuthenticated: false`) and must authenticate the surfaced
+  `signerCert` itself before acting on the transaction state. A message carrying
+  more than one signer is refused, and passing `expectedSenderNonce` refuses a
+  recipientNonce that does not echo the nonce sent (RFC 8894 §3.1, §3.2.1).
+- **Enrolling an unprovable request (SCEP).** `pki.scep.build` verifies that the
+  PKCS#10 `messageData` is a well-formed CertificationRequest whose self-signature
+  is a valid proof-of-possession before it encrypts it, through the same inbound
+  check `pki.csr.verify` runs. Arbitrary bytes or a request whose signature does
+  not verify under its own subject public key is refused (`scep/bad-input` or
+  `scep/bad-popo`) rather than enveloped into a message the CA would reject, the
+  same discipline `pki.cmc.build` and `pki.cmp.build` apply to their embedded
+  requests (RFC 8894 §3.3.1). The pkcsPKIEnvelope transports the content key
+  under RSAES-OAEP, not the Bleichenbacher-vulnerable RSAES-PKCS1-v1_5 that
+  legacy SCEP servers historically expect; RFC 8894 does not pin the key-transport
+  algorithm, and the toolkit does not emit PKCS1-v1_5 anywhere, so a SCEP CA must
+  support OAEP key transport to decrypt a request this builder produces.
 - **Embedded-request proof-of-possession on the build side (CMC / CMP).** A
   `tcr` request in `pki.cmc.build` and a `p10cr` request in `pki.cmp.build` each
   carry a PKCS#10 CertificationRequest whose self-signature under its own subject

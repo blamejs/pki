@@ -261,6 +261,10 @@ function fixturesFor(tag) {
     leafCertDer: certDer, issuerCertDer: certDer,
     // pki.ct.verifyLogListSignature: a detached RSA-PKCS1-SHA256 signature over the log-list bytes + its signer SPKI.
     logListSig: ctLogListSig, googleSignerSpki: ctSignerSpki,
+    // pki.scep: the keyEncipherment RSA recipient is the CA, the EC signer is the client, so build's
+    // encrypt+sign example runs to a real pkiMessage and parse's example decrypts scepPkiMessage.
+    caCertDer: cmsRecipient && cmsRecipient.cert, caKeyPkcs8: cmsRecipient && cmsRecipient.key,
+    clientCertDer: signFixtureSigner.cert, clientKeyPkcs8: signFixtureSigner.key, pkiMessage: scepPkiMessage,
     // pki.cmp.session: a stateful fake CMP CA (its self-signed anchor + a signer chained to it) scripted to
     // grant then confirm, so the session @example runs a real ir -> granted -> certConf -> pkiConf to issuance.
     cmpTransport: cmpTransport, cmpCaCert: cmpCaCert,
@@ -273,6 +277,9 @@ var ctLogListSig = null, ctSignerSpki = null;
 // A real signed BasicOCSPResponse for the pki.ocsp.verify @example, built at run()
 // start (signing is async so it cannot be a module-load constant).
 var ocspResponseDer = null;
+// A real SCEP PKCSReq pkiMessage for the pki.scep.parse @example, built at run()
+// start (build is async), so parse's example decrypts a genuine message.
+var scepPkiMessage = null;
 // A real RFC 7515 Appendix A.3 P-256 public JWK — the jose/acme pure examples
 // (thumbprint, key authorization, the challenge computations) run against it.
 var JOSE_EC_JWK = { kty: "EC", crv: "P-256", x: "f83OJ3D2xF1Bg8vub9tLe1gHMzV76e8Tus9uPHvRVEU", y: "x_FEzRu9m36HLN_tue659LNpXW6pCyStikYjKIWI5a0" };
@@ -314,6 +321,13 @@ async function run() {
     { cert: signFixtureSigner.cert, key: signFixtureSigner.key });
   cmsRecipient = require("../helpers/signing").makeRecipient("rsa");
   cmsEnvDer = await pki.cms.encrypt(Buffer.from("secret"), [{ cert: cmsRecipient.cert }]);
+  // The keyEncipherment recipient is the SCEP CA, the EC signer is the client: build's
+  // encrypt+sign path runs to a genuine pkiMessage that parse's example then decrypts. The messageData
+  // is a real self-signed PKCS#10 so build's proof-of-possession check passes.
+  var scepCsr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: signFixtureSigner.spki }, { key: signFixtureSigner.key });
+  scepPkiMessage = await pki.scep.build({ messageType: "PKCSReq", messageData: scepCsr,
+    recipient: cmsRecipient.cert, signer: { cert: signFixtureSigner.cert, key: signFixtureSigner.key },
+    transactionId: "txn-0001" });
   cmsCompressedDer = await pki.cms.compress(Buffer.from("compress me"));
   smimeCompressedBytes = await pki.smime.compress(Buffer.from("compress this message"));
   smimeMessageBytes = await pki.smime.sign(Buffer.from("hello"), [{ cert: signFixtureSigner.cert, key: signFixtureSigner.key }]);

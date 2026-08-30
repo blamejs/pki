@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.2 — 2026-08-30
+
+pki.scep builds and reads SCEP (RFC 8894) enrollment messages: a client assembles a PKCSReq or RenewalReq request and parses a CA's response back to its verified transaction attributes and issued certificates.
+
+### Added
+
+- pki.scep.build(spec) assembles a SCEP request pkiMessage (RFC 8894 sec. 3). Given a PKCS#10 certification request as messageData, a recipient CA certificate, and a signer { cert, key }, it verifies the request's own proof-of-possession, encrypts it to the CA as the inner EnvelopedData (pkcsPKIEnvelope, AES-128-CBC with RSAES-OAEP key transport, not the legacy RSAES-PKCS1-v1_5, so the CA must support OAEP), and signs that under the transaction attributes: the messageType (PKCSReq or RenewalReq), a caller-unique transactionId, and a 16-byte senderNonce that is generated when omitted. The messageData must be a well-formed PKCS#10 whose self-signature verifies under its own subject public key, or it is refused (scep/bad-input or scep/bad-popo) rather than enveloped into a message the CA would reject. The recipient CA certificate must assert the keyEncipherment key usage, since the EnvelopedData uses RSA key transport. A malformed spec, an unknown messageType, an over-long transactionId, or a senderNonce that is not 16 bytes is refused with a typed ScepError.
+- pki.scep.parse(bytes, opts?) disassembles a SCEP pkiMessage. It verifies the outer SignedData signature first and refuses a message whose signature does not verify (scep/bad-signature), so the transaction attributes it returns are read only from a verified signer and are never surfaced alongside a false verdict. A valid signature proves only that the message is self-consistent with the certificate it embeds; pass opts.signerCert to authenticate a CA response against the CA certificate you hold, which refuses a signer whose public key does not match (scep/untrusted-signer) and reports signerAuthenticated. The verdict carries the messageType, transactionId, senderNonce, and, for a CertRep, the pkiStatus, failInfo, failInfoText, and recipientNonce, each mapped from its RFC 8894 enumerant and refused when unknown. Passing recipientKey ({ cert, key }) decrypts the pkcsPKIEnvelope to recover the messageData; a SUCCESS CertRep's payload is validated as a certs-only CMS SignedData and the issued certificate(s) are surfaced in certificates, raw for the caller to path-validate. Passing expectedSenderNonce refuses a response whose recipientNonce does not echo the nonce that was sent. A message carrying more than one signer, a duplicate or multi-valued transaction attribute, or a missing mandatory attribute is refused.
+- pki.errors.ScepError is the typed error for the SCEP codec, alongside the other per-domain PkiError subclasses.
+
 ## v0.6.1 — 2026-08-30
 
 pki.ct verifies all of a certificate's SCTs against a trusted log-list and renders a certificate-level Certificate Transparency verdict, and pki.path.validate gains an optional CT gate.

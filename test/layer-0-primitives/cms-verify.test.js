@@ -1290,6 +1290,26 @@ async function testTrustSeam() {
     (await pki.cms.verify(twinDirect, Object.assign({ trustAnchors: [ourCa.der] }, AT))).trusted === true);
 }
 
+// ENGINE-GAP-1/2 for pki.scep (and any signed-attribute consumer): cms.verify surfaces each signer's
+// AUTHENTICATED attributes and the attached eContent, bound to the verified signature -- so a protocol's
+// transaction state is read from what the signature covered, never a separate untrusted re-parse.
+async function testSignedAttrsAndEContentSurface() {
+  var s = makeSigner("ec-p256");
+  var scepish = "1.3.6.1.5.5.7.24.1";   // an arbitrary OID standing in for a protocol's own signed attribute
+  var p7 = await pki.cms.sign(CONTENT, s, { additionalSignedAttributes: [{ type: scepish, values: [b.octetString(Buffer.from("txn"))] }] });
+  var v = await pki.cms.verify(p7);
+  check("EG1. verify surfaces the authenticated attributes under the verified signer",
+    v.valid === true && Array.isArray(v.signers[0].signedAttributes));
+  var types = v.signers[0].signedAttributes.map(function (a) { return a.type; });
+  check("EG1. the custom signed attribute is surfaced by OID (bound to the signer)", types.indexOf(scepish) >= 0);
+  check("EG1. the standard authenticated attributes are surfaced (contentType + messageDigest)",
+    types.indexOf(pki.oid.byName("contentType")) >= 0 && types.indexOf(pki.oid.byName("messageDigest")) >= 0);
+  check("EG2. verify surfaces the attached eContent, equal to the signed content",
+    Buffer.isBuffer(v.eContent) && v.eContent.equals(CONTENT));
+  var det = await pki.cms.sign(CONTENT, s, { detached: true });
+  check("EG2. a detached SignedData surfaces eContent:null", (await pki.cms.verify(det, { content: CONTENT })).eContent === null);
+}
+
 async function run() {
   await testTrustSeam();
   await testParseVerifyReadSameBytes();
@@ -1308,6 +1328,7 @@ async function run() {
   await testBadSignedAttrs();
   await testContentType();
   await testSignedAttrsBinding();
+  await testSignedAttrsAndEContentSurface();
   await testSignedAttrsStripping();
   await testEdPointValidation();
   await testMlDsaVerify();

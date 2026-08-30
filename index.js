@@ -55,6 +55,7 @@ var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
 var sigstore  = require("./lib/sigstore");
 var est        = require("./lib/est");
+var scep       = require("./lib/scep");
 var transport  = require("./lib/http-transport");
 var jose       = require("./lib/jose");
 var acme       = require("./lib/acme");
@@ -164,6 +165,7 @@ module.exports = {
   // splitter, certs-only + serverkeygen validators over CMS, the enroll-attribute
   // builders, the HTTP response classifier). est opens no socket; fail-closed.
   est:       est,
+  scep:      { build: scep.build, parse: scep.parse },
   // `transport` is the shared fail-closed node:https transport the enrollment clients
   // drive -- pki.transport.https(defaults) returns a transport(request) -> {status,
   // headers, body}. The toolkit's sole socket choke point: explicit trust anchors,
