@@ -570,6 +570,15 @@ async function main() {
   // compared (a Symbol) must be the typed pkcs12/bad-input from reqDenseArray, never a native TypeError.
   check("a non-array bags with an incomparable length is a typed pkcs12/bad-input (not a native TypeError)",
     (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: { length: Symbol("x") } }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The standalone consumers read reqDenseArray off the pki-build export at call time, so that export is
+  // frozen: reassigning it to an identity function must NOT let a sparse array slip through to a native error.
+  var _pb = require("../../lib/pki-build");
+  var _origRDA = _pb.reqDenseArray;
+  try { _pb.reqDenseArray = function (x) { return x; }; } catch (_e) { /* frozen surface */ }
+  var _swapRes = await codeOf(pki.pkcs12.build({ safeContents: [{ bags: _spBags }] }, { password: "1234" }));
+  try { _pb.reqDenseArray = _origRDA; } catch (_e) { /* frozen surface */ }
+  check("reqDenseArray cannot be swapped on the frozen pki-build export (a sparse bags array stays typed)",
+    _swapRes === "pkcs12/bad-input");
   console.log("CHECKS " + helpers.getChecks());
 }
 
