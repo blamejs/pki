@@ -271,7 +271,21 @@ security-only patches after the next major releases.
   after its retirement, is `ct/log-untrusted`, and a certificate whose `notAfter`
   is outside the resolved log's temporal-interval window, or unresolvable for a
   windowed log, is `ct/temporal-interval`. Neither constraint is silently
-  skipped, and only then does it delegate the signature check to `verifySct`. The
+  skipped, and only then does it delegate the signature check to `verifySct`.
+  `pki.ct.verifySctList` applies those same per-SCT trust gates across every SCT a
+  certificate carries and renders a certificate-level verdict, recording each
+  SCT's outcome so one untrusted or forged SCT cannot sink the result and the
+  caller decides a CT policy (a minimum count of valid SCTs from a minimum number
+  of distinct trusted operators) from the surfaced counts. `pki.path.validate`
+  runs that verification as an opt-in gate (`ctLogList` / `ctPolicy`): a
+  certificate that declares a CT policy but carries no SCT-list extension fails
+  closed (`path/ct-required`), and the embedded SCTs are checked against the
+  precertificate entry `pki.ct.x509CertEntry` reconstructs by removing the SCT
+  extension from the certificate's TBSCertificate as byte surgery, never a
+  re-encoding. An SCT dated after the validation time is rejected and never
+  counted toward the policy (RFC 6962 sec. 5.2, a client rejects a future-dated
+  SCT), so a postdated attestation cannot satisfy a CT threshold before its
+  claimed issuance time. The
   log-list JSON is decoded through the bounded, duplicate-member-rejecting reader
   with byte and depth caps and `__proto__` safety.
   `pki.ct.verifyLogListSignature` verifies the detached `log_list.sig` over the

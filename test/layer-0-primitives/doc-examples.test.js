@@ -256,6 +256,9 @@ function fixturesFor(tag) {
     // pki.ct.parseLogList / verifySctWithLogList: a real CT log-list JSON + a parsed result + a
     // cryptographically-real embedded SCT (a generated log key signs an SCT whose logId = SHA-256 SPKI).
     logListJsonBytes: ctLogListJson, logList: ctLogList, sctEntry: ctEntry, embeddedSct: ctSct,
+    // pki.ct.verifySctList / x509CertEntry: the fixture cert carries no SCT extension, so x509CertEntry
+    // throws the documented ct/no-sct-extension (a PkiError the contract accepts) and verifySctList runs.
+    leafCertDer: certDer, issuerCertDer: certDer,
     // pki.ct.verifyLogListSignature: a detached RSA-PKCS1-SHA256 signature over the log-list bytes + its signer SPKI.
     logListSig: ctLogListSig, googleSignerSpki: ctSignerSpki,
     // pki.cmp.session: a stateful fake CMP CA (its self-signed anchor + a signer chained to it) scripted to
