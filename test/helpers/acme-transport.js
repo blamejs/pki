@@ -180,6 +180,17 @@ function acmeServer(opts) {
       if (!altPems) return withNonce({ status: 404, headers: {}, body: "no such alternate" });
       return withNonce(pemChain(altPems, opts.altContentType ? { "content-type": opts.altContentType } : {}));
     }
+    // listOrders (RFC 8555 sec. 7.1.2.1): opts.ordersByUrl maps a pathname[+search] to an orders page
+    // { orders: [url,...], link?: <raw Link header value carrying rel="next"> } (or body: <raw override>
+    // for a malformed-shape vector). A `next` link drives pagination; an off-origin/looping next exercises
+    // the SSRF + loop guards.
+    if (opts.ordersByUrl) {
+      var oKey = path + (u.search || "");
+      if (Object.prototype.hasOwnProperty.call(opts.ordersByUrl, oKey)) {
+        var pg = opts.ordersByUrl[oKey];
+        return withNonce(json(200, pg.body !== undefined ? pg.body : { orders: pg.orders }, pg.link != null ? { link: pg.link } : {}));
+      }
+    }
     if (path === "/acct/1") return withNonce(json(200, opts.accountAfter || { status: "deactivated" }));
     if (path === "/key-change") return withNonce({ status: 200, headers: { "content-type": "application/json" }, body: opts.keyChangeBody !== undefined ? opts.keyChangeBody : JSON.stringify({ status: "valid" }) });
     if (path === "/revoke-cert") return withNonce({ status: opts.revokeStatus || 200, headers: {}, body: "" });
