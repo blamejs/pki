@@ -330,6 +330,17 @@ async function testBuildSnapshotsMessageData() {
     Buffer.compare(v.messageData, F.csr) === 0 && (await pki.csr.verify(v.messageData)).verified === true);
 }
 
+async function testParseSnapshotsBytes() {
+  // parse snapshots the message bytes at its door and uses that copy for both verification attempts (a
+  // detached FAILURE / PENDING is re-verified against an empty payload), so a caller overwriting the
+  // Buffer between the two attempts cannot swap which message's attributes are returned.
+  var failMsg = Buffer.from(await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f" }));   // conforming detached FAILURE
+  var p = pki.scep.parse(failMsg);   // door snapshots failMsg
+  failMsg.fill(0);                    // overwrite the caller's Buffer after the door
+  var v = await p;
+  check("parse snapshots message bytes: parsed from the door-time bytes", v.pkiStatus === "FAILURE" && v.failInfo === "badRequest");
+}
+
 async function testParseSnapshotsSignerCert() {
   // parse captures opts.signerCert at its synchronous door, so a caller swapping it during the awaited
   // verification cannot change which certificate the response is authenticated against.
@@ -416,6 +427,7 @@ async function main() {
   await testFailInfoOnlyOnFailure();
   await testMalformedInputsCoverage();
   await testBuildSnapshotsMessageData();
+  await testParseSnapshotsBytes();
   await testParseSnapshotsSignerCert();
   await testBuildSnapshotsRecipient();
   await testWrongStringType();
