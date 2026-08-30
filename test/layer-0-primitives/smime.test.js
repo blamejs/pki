@@ -712,8 +712,8 @@ async function run() {
   // Read OFF the documentation blocks rather than repeated here: a list copied into the test drifts
   // from the one an operator reads, which is the drift this is for.
   var DOCUMENTED = docOptsOf(require("path").join(__dirname, "..", "..", "lib", "smime.js"));
-  check("110a. the documented option surface was recovered for all six verbs",
-    Object.keys(DOCUMENTED).length === 6 && Object.keys(DOCUMENTED).every(function (v) { return DOCUMENTED[v].length > 0; }));
+  check("110a. the documented option surface was recovered for all seven verbs",
+    Object.keys(DOCUMENTED).length === 7 && Object.keys(DOCUMENTED).every(function (v) { return DOCUMENTED[v].length > 0; }));
   var enc1 = await pki.smime.encrypt(MSG, [{ cert: rcpt.cert }]);
   var z1 = await pki.smime.compress(MSG);
   var drive = {
@@ -723,6 +723,7 @@ async function run() {
     decrypt: function (o) { return pki.smime.decrypt(enc1, { key: rcpt.key, cert: rcpt.cert }, o); },
     compress: function (o) { return pki.smime.compress(MSG, o); },
     decompress: function (o) { return pki.smime.decompress(z1, o); },
+    buildCertsOnly: function (o) { return pki.smime.buildCertsOnly([rcpt.cert], o); },
   };
   for (var verb of Object.keys(DOCUMENTED)) {
     var accepted = true, rejectedName = null;

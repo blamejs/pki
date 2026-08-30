@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.2",
+  "packageVersion": "0.6.3",
   "surface": {
     "C": {
       "kind": "object",
@@ -1270,6 +1270,10 @@
           "kind": "function",
           "arity": 3
         },
+        "certsOnly": {
+          "kind": "function",
+          "arity": 2
+        },
         "compress": {
           "kind": "function",
           "arity": 2
@@ -1289,6 +1293,14 @@
         "encrypt": {
           "kind": "function",
           "arity": 3
+        },
+        "isCertsOnly": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parseCertsOnly": {
+          "kind": "function",
+          "arity": 2
         },
         "sign": {
           "kind": "function",
@@ -3227,6 +3239,10 @@
     "smime": {
       "kind": "object",
       "members": {
+        "buildCertsOnly": {
+          "kind": "function",
+          "arity": 2
+        },
         "compress": {
           "kind": "function",
           "arity": 2
@@ -3465,6 +3481,9 @@
     "pki.cms.decrypt": "0.2.23",
     "pki.cms.compress": "0.2.27",
     "pki.cms.decompress": "0.2.27",
+    "pki.cms.certsOnly": "0.6.3",
+    "pki.cms.parseCertsOnly": "0.6.3",
+    "pki.cms.isCertsOnly": "0.6.3",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.crl.sign": "0.3.9",
@@ -3615,6 +3634,7 @@
     "pki.smime.decrypt": "0.2.26",
     "pki.smime.compress": "0.2.27",
     "pki.smime.decompress": "0.2.27",
+    "pki.smime.buildCertsOnly": "0.6.3",
     "pki.tls.decompressCertificate": "0.4.3",
     "pki.tls.parseCertificateMessage": "0.4.3",
     "pki.tls.compressCertificate": "0.4.3",
