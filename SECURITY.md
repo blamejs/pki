@@ -946,8 +946,10 @@ security-only patches after the next major releases.
   surfaced in `signerCerts` (a key may appear under an expired certificate beside
   its renewal), so the responder's trust decision does not depend on ordering.
   `signatureValid` speaks only to the cryptographic check: those certificates are
-  surfaced raw for the responder to path-validate and their subjects decoded to
-  compare against the identity expected, rather than trusted by the verb. The request bytes are snapshotted at entry, so a caller mutating the
+  surfaced raw for the responder to path-validate, confirm authorized to sign (a
+  `keyUsage`, where present, must assert `digitalSignature`, RFC 5280 sec. 4.2.1.3),
+  and whose subjects it compares against the identity expected, rather than trusted
+  by the verb. The request bytes are snapshotted at entry, so a caller mutating the
   buffer across the asynchronous check is judged on the bytes the parser read, and
   an unsigned request is reported (`signed: false`) rather than refused, since
   RFC 6960 makes the signature optional.
