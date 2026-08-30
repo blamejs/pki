@@ -331,6 +331,26 @@ async function testFailInfoOnlyOnFailure() {
   check("PENDING CertRep carrying failInfoText refused", (await codeOf(pki.scep.parse(pendWithText))) === "scep/unexpected-attribute");
 }
 
+async function testUnsupportedMessageTypes() {
+  // CertPoll (20), GetCert (21), GetCRL (22) are client queries this release's parser does not read.
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var codes = ["20", "21", "22"], i;
+  for (i = 0; i < codes.length; i++) {
+    var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable(codes[i])] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+    check("messageType " + codes[i] + " (query) refused", (await codeOf(pki.scep.parse(msg))) === "scep/unsupported-message-type");
+  }
+}
+
+async function testRequestRejectsResponseAttrs() {
+  // A request (PKCSReq / RenewalReq) carrying a CertRep response attribute is off-profile (RFC 8894 sec. 3.2.1).
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var base = [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var withStatus = await signWith(env, base.concat([{ type: O("scepPkiStatus"), values: [b.printable("0")] }]));
+  check("PKCSReq carrying pkiStatus refused", (await codeOf(pki.scep.parse(withStatus))) === "scep/unexpected-attribute");
+  var withRecipNonce = await signWith(env, base.concat([{ type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]));
+  check("PKCSReq carrying recipientNonce refused", (await codeOf(pki.scep.parse(withRecipNonce))) === "scep/unexpected-attribute");
+}
+
 async function testEnvelopeContentTypeMustBeData() {
   // The pkcsPKIEnvelope's encrypted content type MUST be id-data (RFC 8894 sec. 3.2.2); an off-profile
   // envelope naming another type is refused even though its plaintext would parse as a request.
@@ -486,6 +506,8 @@ async function main() {
   await testParseSnapshotsBytes();
   await testParseSnapshotsSignerCert();
   await testBuildSnapshotsRecipient();
+  await testUnsupportedMessageTypes();
+  await testRequestRejectsResponseAttrs();
   await testEnvelopeContentTypeMustBeData();
   await testWrongStringType();
   await testMultiValuedAttribute();
