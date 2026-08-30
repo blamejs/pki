@@ -4,7 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.38 — 2026-08-30
+## v0.5.39 — 2026-08-30
+
+pki.cmc.build and pki.cmp.build verify an embedded PKCS#10 request's proof-of-possession and refuse one whose self-signature does not verify.
+
+### Added
+
+- pki.cmc.build (`tcr` arm) and pki.cmp.build (`p10cr` arm) verify the embedded PKCS#10 request's proof-of-possession before signing or protecting the enrollment message: the request's self-signature must verify under the subject public key it carries (RFC 5272 sec. 6.3 for CMC; RFC 9810 sec. 5.3.3 for CMP, over the PKCS#10 structure of RFC 2986). A request whose signature does not verify is refused with a typed `cmc/bad-popo` or `cmp/bad-popo` error naming the offending request; a request with a valid proof-of-possession builds unchanged.
+
+## v0.5.38 — 2026-08-29
 
 Builder verbs reject a sparse or nullish array argument with a typed error instead of a native one.
 

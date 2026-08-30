@@ -20,10 +20,26 @@ var asn1 = pki.asn1;
 var nodeCrypto = require("node:crypto");
 var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
 var pkiBuild = require("../../lib/pki-build");    // for a direct contract test of the shared reqDenseArray guard
+var surgery = require("../helpers/der-surgery");
 
 async function codeOf(promise) {
   try { await promise; return null; }
   catch (e) { return e && e.code; }
+}
+
+// Flip one content byte of a PKCS#10's signatureValue (the LAST BIT STRING) so its proof-of-possession
+// no longer verifies, while the request stays valid DER that parses.
+function corruptCsrPop(csr) {
+  var count = 0;
+  surgery.patch(csr, function (n) { if (n.tagClass === "universal" && n.tagNumber === 3 && !n.constructed) count++; return undefined; });
+  var seen = 0;
+  return surgery.patch(csr, function (n) {
+    if (n.tagClass === "universal" && n.tagNumber === 3 && !n.constructed) {
+      seen++;
+      if (seen === count) { var v = Buffer.from(n.value != null ? n.value : n.content); v[v.length - 1] ^= 0x01; return asn1.build.bitString(v.subarray(1), v[0]); }
+    }
+    return undefined;
+  });
 }
 function parse(der) { return pki.schema.cmp.parse(der); }
 function bodyTagOctet(der) {
@@ -136,6 +152,12 @@ async function run() {
   var p10Pem = Buffer.from(pki.schema.csr.pemEncode(csrD));
   var p10PemCode = await pki.cmp.build({ header: HDR, body: { p10cr: p10Pem } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("1o. a PEM-armored p10cr is refused with cmp/bad-input, not cmp/bad-der", p10PemCode === "cmp/bad-input");
+  // Proof-of-possession: a p10cr's embedded PKCS#10 is verified before the message is protected and sent.
+  // A CSR whose self-signature does not verify under its own subject key is one the CA rejects, so refuse it.
+  check("1p. a p10cr with a valid proof-of-possession builds", Buffer.isBuffer(await pki.cmp.build({ header: HDR, body: { p10cr: await csrDer() } }, SIG)));
+  var badP10 = corruptCsrPop(await csrDer());
+  check("1q. a p10cr whose proof-of-possession does not verify is refused (cmp/bad-popo)",
+    (await pki.cmp.build({ header: HDR, body: { p10cr: badP10 } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; })) === "cmp/bad-popo");
   // reqDerSequence contract (the guard cert / crl / p10cr / nested arms compose): a DER SEQUENCE is
   // returned, PEM or non-SEQUENCE bytes are refused.
   var derSeqGuard = pkiBuild.makeBuilder({ ErrorClass: pki.errors.CmpError, prefix: "cmp", O: null, NS: null, NAME_SCHEMA: null, SPKI_SCHEMA: null, EXT_DECODERS: null }).reqDerSequence;

@@ -1,0 +1,10 @@
+{
+  "version": "0.5.39",
+  "headline": "pki.cmc.build and pki.cmp.build verify an embedded PKCS#10 request's proof-of-possession and refuse one whose self-signature does not verify.",
+  "summary": "A `tcr` request in pki.cmc.build, and a `p10cr` request in pki.cmp.build, carries a PKCS#10 CertificationRequest whose self-signature under its own subject public key is the request's proof-of-possession. Both verbs now verify that signature before the enrollment message is signed or protected, through the same inbound proof-of-possession check pki.csr.verify runs. A request whose signature does not verify is refused with the verb's typed `cmc/bad-popo` or `cmp/bad-popo` error, naming the failure, rather than embedded in a signed message a CA would reject. A request whose proof-of-possession verifies builds exactly as before, byte-for-byte.",
+  "sections": {
+    "Added": [
+      "pki.cmc.build (`tcr` arm) and pki.cmp.build (`p10cr` arm) verify the embedded PKCS#10 request's proof-of-possession before signing or protecting the enrollment message: the request's self-signature must verify under the subject public key it carries (RFC 5272 sec. 6.3 for CMC; RFC 9810 sec. 5.3.3 for CMP, over the PKCS#10 structure of RFC 2986). A request whose signature does not verify is refused with a typed `cmc/bad-popo` or `cmp/bad-popo` error naming the offending request; a request with a valid proof-of-possession builds unchanged."
+    ]
+  }
+}

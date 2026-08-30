@@ -925,6 +925,17 @@ security-only patches after the next major releases.
   all is refused. Nothing in the response is trusted, so the certificate bag and
   any Publish Trust Anchors control are surfaced as data for
   `pki.path.validate` rather than added to a store.
+- **Embedded-request proof-of-possession on the build side (CMC / CMP).** A
+  `tcr` request in `pki.cmc.build` and a `p10cr` request in `pki.cmp.build` each
+  carry a PKCS#10 CertificationRequest whose self-signature under its own subject
+  public key is that request's proof-of-possession (RFC 5272 §6.3; RFC 9810
+  §5.3.3, over the PKCS#10 structure of RFC 2986). Both verbs verify that
+  signature, through the same inbound check `pki.csr.verify` runs, before the
+  enrollment message is signed or protected. A request whose signature does not
+  verify is refused with a typed `cmc/bad-popo` or `cmp/bad-popo` error, so a
+  caller cannot sign and send a message embedding a request a CA would reject.
+  The verdict is awaited through the native promise job rather than a replaceable
+  prototype method, so a co-resident cannot force the check to report success.
 - **EST enrollment-response confusion.** The `pki.est` client codecs are
   fail-closed over hostile server output. The RFC 8951 base64 transfer decode is
   bounded before and after decoding and never reads a Content-Transfer-Encoding
