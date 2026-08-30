@@ -14,6 +14,7 @@ var helpers = require("../helpers");
 var check = helpers.check;
 var pki = helpers.pki;
 var world = require("../helpers/ocsp-world");
+var derSurgery = require("../helpers/der-surgery");
 var makeOcspWorld = world.makeOcspWorld;
 var nameDN = world.nameDN;
 var b = pki.asn1.build;
@@ -397,10 +398,41 @@ async function run() {
   var vrChain = await pki.ocsp.verifyRequest(withChain);
   check("VR20. certs surfaces the full embedded bag; signerCerts only the certs that signed", vrChain.signatureValid === true && vrChain.signerCerts.length === 1 && vrChain.certs.length === 2);
   // VR21: a non-signing certificate precedes the signer, and a same-key renewal follows it. The
-  // signature verification stops at the first match; the renewal is then collected by SPKI comparison
-  // (not another verify), so signerCerts lists both signing certs and skips the non-signer.
+  // signature verification stops at the first match; the renewal is then collected by public-key
+  // comparison (not another verify), so signerCerts lists both signing certs and skips the non-signer.
   var vrPre = await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer, w.issuerCertDer, caTwin]));
   check("VR21. non-signer skipped; signer + same-key renewal both in signerCerts", vrPre.signatureValid === true && vrPre.signerCerts.length === 2 && vrPre.certs.length === 3);
+  // VR22: two certificates reuse an RSA key but encode the rsaEncryption AlgorithmIdentifier
+  // differently -- one with NULL parameters (the canonical form pki.x509.sign emits), one with the
+  // parameters absent. Both keys verify the same request signature, but their subjectPublicKeyInfo
+  // DER differs, so membership is by the subjectPublicKey material rather than the whole SPKI, or the
+  // absent-parameters twin is dropped from signerCerts even though it carries the signing key.
+  var rsaKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var rsaPkcs8 = await pki.key.export(rsaKp.privateKey);
+  var rsaCert = await pki.x509.sign({ subject: "RSA OCSP Requestor", subjectPublicKey: await pki.key.export(rsaKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"] } }, { key: rsaPkcs8 });
+  var rsaTwin = derSurgery.patch(rsaCert, function (node) {
+    if (derSurgery.isAlgId(node, O("rsaEncryption")) && node.children.length === 2) return pki.asn1.build.sequence([Buffer.from(node.children[0].bytes)]);
+    return undefined;
+  });
+  var rsaReq = await pki.ocsp.buildRequest({ cert: rsaCert, issuer: rsaCert }, { signer: { cert: rsaCert, key: rsaPkcs8 }, requestorName: pki.schema.x509.parse(rsaCert).subject.bytes });
+  var vrRsa = await pki.ocsp.verifyRequest(reorderCerts(rsaReq, [rsaCert, rsaTwin]));
+  check("VR22. same RSA key under NULL vs absent params -> both in signerCerts", vrRsa.signatureValid === true && vrRsa.signerCerts.length === 2 && vrRsa.certs.length === 2);
+  // VR23: a non-signing certificate carries the SAME key bytes as the signer under a DIFFERENT
+  // algorithm -- an X25519 subjectPublicKey equal to the Ed25519 signer's 32-byte value. X25519
+  // cannot verify the Ed25519 request signature, so membership binds the algorithm identity, not the
+  // key bytes alone, and the coincident-key certificate is NOT reported as a signer.
+  var edKp = await pki.key.generate("Ed25519");
+  var edPkcs8 = await pki.key.export(edKp.privateKey);
+  var edCert = await pki.x509.sign({ subject: "Ed OCSP Requestor", subjectPublicKey: await pki.key.export(edKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"] } }, { key: edPkcs8 });
+  var edSpkiTlv = pki.schema.x509.parse(edCert).subjectPublicKeyInfo.bytes;
+  var x25519Spki = derSurgery.patch(edSpkiTlv, function (node) {
+    if (derSurgery.isAlgId(node, O("Ed25519"))) return b.sequence([Buffer.from(pki.asn1.build.oid(O("X25519")))]);
+    return undefined;
+  });
+  var x25519Twin = derSurgery.replaceTlv(edCert, edSpkiTlv, x25519Spki).der;
+  var edReq = await pki.ocsp.buildRequest({ cert: edCert, issuer: edCert }, { signer: { cert: edCert, key: edPkcs8 }, requestorName: pki.schema.x509.parse(edCert).subject.bytes });
+  var vrEd = await pki.ocsp.verifyRequest(reorderCerts(edReq, [edCert, x25519Twin]));
+  check("VR23. coincident key bytes under a different algorithm -> not a signer", vrEd.signatureValid === true && vrEd.signerCerts.length === 1 && vrEd.certs.length === 2);
 
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.
