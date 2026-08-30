@@ -31,13 +31,23 @@ function certsOnly(certs) {
   return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(sd))]);
 }
 
+// A degenerate SignedData carrying CRLs in the [1] field (and optionally certs in [0]) -- the shape a
+// SUCCESS CertRep answering GetCRL carries.
+function certsOnlyBag(certs, crls) {
+  var sd = [b.integer(1n), b.set([]), b.sequence([b.oid(ID_DATA)])];
+  if (certs && certs.length) sd.push(b.contextConstructed(0, Buffer.concat(certs.slice().sort(Buffer.compare))));
+  if (crls && crls.length) sd.push(b.contextConstructed(1, Buffer.concat(crls.slice())));
+  sd.push(b.set([]));
+  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(sd))]);
+}
+
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
 
 var F = {};
 async function setup() {
   var caKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
   F.caKey = await pki.key.export(caKp.privateKey);
-  F.caCert = await pki.x509.sign({ subject: "SCEP CA", subjectPublicKey: await pki.key.export(caKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "keyEncipherment", "digitalSignature"] } }, { key: F.caKey });
+  F.caCert = await pki.x509.sign({ subject: "SCEP CA", subjectPublicKey: await pki.key.export(caKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "keyEncipherment", "digitalSignature", "cRLSign"] } }, { key: F.caKey });
   var clientKp = await pki.key.generate("Ed25519");
   F.clientKey = await pki.key.export(clientKp.privateKey);
   F.clientCert = await pki.x509.sign({ subject: "SCEP Client", subjectPublicKey: await pki.key.export(clientKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2028-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: F.clientKey });
@@ -59,7 +69,11 @@ async function buildCertRep(opts) {
   if (!opts.omitRecipientNonce) attrs.push({ type: O("scepRecipientNonce"), values: [b.octetString(opts.recipientNonce || nodeCrypto.randomBytes(16))] });
   if (opts.failCode != null) attrs.push({ type: O("scepFailInfo"), values: [b.printable(opts.failCode)] });
   if (opts.failText != null) attrs.push({ type: O("scepFailInfoText"), values: [b.utf8(opts.failText)] });
-  return cmsSign.sign(opts.content, { cert: F.caCert, key: F.caKey }, { additionalSignedAttributes: attrs });
+  // A conforming FAILURE / PENDING CertRep omits the pkcsPKIEnvelope: sign detached with no content
+  // when the caller gives none. A SUCCESS response passes its certs-only envelope as content.
+  var signOpts = { additionalSignedAttributes: attrs }, content = opts.content;
+  if (content == null) { content = Buffer.alloc(0); signOpts.detached = true; }
+  return cmsSign.sign(content, { cert: F.caCert, key: F.caKey }, signOpts);
 }
 
 // Sign an arbitrary content with the client under a caller-chosen attribute list (for missing /
@@ -122,16 +136,35 @@ async function testRequestPayloadValidated() {
   check("decrypted request messageData that is not a PKCS#10 refused", (await codeOf(pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
 }
 
+async function testCertRepCrlOnly() {
+  // A SUCCESS CertRep answering GetCRL carries a CRL and no certificate (RFC 8894 sec. 3.3.4); the CRL
+  // is surfaced in crls and certificates is empty, rather than rejected for having no certificate.
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "crl", content: env });
+  var v = await pki.scep.parse(rep, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("CRL-only SUCCESS CertRep: CRL surfaced, no certificates", v.crls.length === 1 && Buffer.compare(v.crls[0], crl) === 0 && v.certificates.length === 0);
+  // A SUCCESS CertRep whose payload carries neither a certificate nor a CRL is refused.
+  var empty = await cmsEncrypt.encrypt(certsOnlyBag(null, null), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var emptyRep = await buildCertRep({ statusCode: "0", transactionId: "e", content: empty });
+  check("SUCCESS CertRep with an empty bag refused", (await codeOf(pki.scep.parse(emptyRep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/empty-response");
+}
+
 async function testCertRepSuccessValidatesPayload() {
   // A SUCCESS CertRep's decrypted messageData MUST be a certs-only CMS SignedData (RFC 8894 sec. 3.3.2);
   // decrypted bytes that are not are refused rather than surfaced as a successful issuance.
   var notCms = await cmsEncrypt.encrypt(Buffer.from("not a CMS certs-only message"), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
   var rep = await buildCertRep({ statusCode: "0", transactionId: "s", content: notCms });
   check("SUCCESS CertRep with a non-certs-only payload refused", (await codeOf(pki.scep.parse(rep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-response");
+  // A degenerate bag whose certificates field holds a non-certificate (here a PKCS#10) is refused: each
+  // entry is validated as a plain X.509 certificate, not surfaced raw.
+  var badCert = await cmsEncrypt.encrypt(certsOnly([F.csr]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var badCertRep = await buildCertRep({ statusCode: "0", transactionId: "bc", content: badCert });
+  check("SUCCESS CertRep with a non-certificate in certificates refused", (await codeOf(pki.scep.parse(badCertRep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-certificate");
 }
 
 async function testCertRepFailureParse() {
-  var rep = await buildCertRep({ statusCode: "2", failCode: "2", failText: "policy rejected the request", transactionId: "f-1", content: Buffer.alloc(0) });
+  var rep = await buildCertRep({ statusCode: "2", failCode: "2", failText: "policy rejected the request", transactionId: "f-1" });
   var v = await pki.scep.parse(rep);
   check("CertRep FAILURE: pkiStatus", v.pkiStatus === "FAILURE");
   check("CertRep FAILURE: failInfo mapped", v.failInfo === "badRequest");
@@ -139,7 +172,7 @@ async function testCertRepFailureParse() {
 }
 
 async function testCertRepPendingParse() {
-  var rep = await buildCertRep({ statusCode: "3", transactionId: "p-1", content: Buffer.alloc(0) });
+  var rep = await buildCertRep({ statusCode: "3", transactionId: "p-1" });
   var v = await pki.scep.parse(rep);
   check("CertRep PENDING: pkiStatus", v.pkiStatus === "PENDING");
   check("CertRep PENDING: no failInfo", v.failInfo === null);
@@ -178,10 +211,10 @@ async function testCertRepMissingStatusAndFail() {
 async function testNonSuccessCertRepWithRecipientKey() {
   // A FAILURE / PENDING CertRep carries no pkcsPKIEnvelope; passing recipientKey must still return the
   // authenticated status rather than a decrypt failure over content that is not an EnvelopedData.
-  var fail = await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f", content: Buffer.alloc(0) });
+  var fail = await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f" });
   var vf = await pki.scep.parse(fail, { recipientKey: { cert: F.caCert, key: F.caKey } });
   check("FAILURE CertRep + recipientKey: status returned, not a decrypt error", vf.pkiStatus === "FAILURE" && vf.failInfo === "badRequest" && vf.messageData === null);
-  var pend = await buildCertRep({ statusCode: "3", transactionId: "p", content: Buffer.alloc(0) });
+  var pend = await buildCertRep({ statusCode: "3", transactionId: "p" });
   var vp = await pki.scep.parse(pend, { recipientKey: { cert: F.caCert, key: F.caKey } });
   check("PENDING CertRep + recipientKey: status returned, not a decrypt error", vp.pkiStatus === "PENDING" && vp.messageData === null);
 }
@@ -251,7 +284,7 @@ async function testFailInfoOnlyOnFailure() {
   var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
   var successWithFail = await buildCertRep({ statusCode: "0", transactionId: "s", failCode: "2", content: env });
   check("SUCCESS CertRep carrying failInfo refused", (await codeOf(pki.scep.parse(successWithFail))) === "scep/unexpected-attribute");
-  var pendWithText = await buildCertRep({ statusCode: "3", transactionId: "p", failText: "should not be here", content: Buffer.alloc(0) });
+  var pendWithText = await buildCertRep({ statusCode: "3", transactionId: "p", failText: "should not be here" });
   check("PENDING CertRep carrying failInfoText refused", (await codeOf(pki.scep.parse(pendWithText))) === "scep/unexpected-attribute");
 }
 
@@ -325,6 +358,7 @@ async function main() {
   await testNoKeyParse();
   await testNonceEcho();
   await testCertRepSuccessParse();
+  await testCertRepCrlOnly();
   await testRequestPayloadValidated();
   await testCertRepSuccessValidatesPayload();
   await testCertRepFailureParse();
