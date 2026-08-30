@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.0",
+  "packageVersion": "0.6.1",
   "surface": {
     "C": {
       "kind": "object",
@@ -2085,9 +2085,17 @@
           "kind": "function",
           "arity": 3
         },
+        "verifySctList": {
+          "kind": "function",
+          "arity": 4
+        },
         "verifySctWithLogList": {
           "kind": "function",
           "arity": 4
+        },
+        "x509CertEntry": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -3451,6 +3459,8 @@
     "pki.ct.signSct": "0.2.24",
     "pki.ct.parseLogList": "0.2.28",
     "pki.ct.verifySctWithLogList": "0.2.28",
+    "pki.ct.verifySctList": "0.6.1",
+    "pki.ct.x509CertEntry": "0.6.1",
     "pki.ct.verifyLogListSignature": "0.2.29",
     "pki.ct.fetchLogList": "0.3.21",
     "pki.est.transferDecode": "0.1.24",

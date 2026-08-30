@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.1 — 2026-08-30
+
+pki.ct verifies all of a certificate's SCTs against a trusted log-list and renders a certificate-level Certificate Transparency verdict, and pki.path.validate gains an optional CT gate.
+
+### Added
+
+- pki.ct.verifySctList(entry, list, logList, opts?) renders a certificate-level Certificate Transparency verdict (RFC 6962 sec. 3.3) over the set of SCTs a certificate carries, rather than one SCT at a time. It verifies each SCT against the trusted log-list through the same signature check pki.ct.verifySct applies, and reports how many distinct trusted logs verified an SCT (validScts, so a duplicated SCT cannot inflate the count), from how many distinct trusted log operators (operatorCount and operators), and whether that meets the CT policy. The policy is minScts and minOperators, both defaulting to the RFC floor of one valid SCT; the distinct-operator requirement is a browser CT policy layered on top of the RFC, so the caller sets the threshold and the verdict surfaces the counts. A policy shortfall is a verdict (policyOk: false), not an error, and a per-SCT trust or signature failure is recorded in its result row rather than sinking the verdict; only a mis-shaped entry, list, logList, or opts throws a typed CtError.
+- pki.ct.x509CertEntry(cert, issuer) reconstructs the precertificate log entry from a final certificate that carries embedded SCTs (RFC 6962 sec. 3.2), the piece the embedded-SCT verification path needs end to end. It removes the signedCertificateTimestampList extension from the certificate's TBSCertificate by byte surgery, leaving every other byte of the CA-signed structure intact, and computes issuerKeyHash as SHA-256 of the issuer's SubjectPublicKeyInfo. The returned entry feeds pki.ct.verifySctList or pki.ct.reconstructSignedData directly.
+- pki.path.validate accepts an optional Certificate Transparency gate: pass ctLogList (a pki.ct.parseLogList result) and ctPolicy ({ minScts, minOperators }) to verify the target certificate's embedded SCTs against the trusted log-list as part of path validation. The verdict carries a ct check on the target certificate's checks; a target that declares a CT policy but carries no SCT-list extension fails closed. Callers that pass neither option are unaffected.
+
 ## v0.6.0 — 2026-08-30
 
 The toolkit's public APIs graduate to stable, and pki.ocsp.verifyRequest verifies a signed OCSP request for responder implementers.
