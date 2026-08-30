@@ -314,6 +314,19 @@ async function testMalformedInputsCoverage() {
   check("parse with a wrong-width senderNonce refused", (await codeOf(pki.scep.parse(badNonce))) === "scep/bad-nonce");
 }
 
+async function testBuildSnapshotsMessageData() {
+  // build snapshots messageData synchronously before its awaited proof-of-possession verify, so a caller
+  // that mutates the Buffer after calling build (but before awaiting it) cannot desync the enveloped
+  // request from the verified one: the message carries the original bytes.
+  var csrCopy = Buffer.from(F.csr);
+  var p = pki.scep.build({ messageType: "PKCSReq", messageData: csrCopy, recipient: F.caCert, signer: F.signer, transactionId: "toctou" });
+  csrCopy[csrCopy.length - 4] ^= 0x40;   // mutate after the synchronous snapshot, before the awaited encrypt
+  var msg = await p;
+  var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("build snapshots messageData: enveloped request is the original, PoP intact",
+    Buffer.compare(v.messageData, F.csr) === 0 && (await pki.csr.verify(v.messageData)).verified === true);
+}
+
 async function testMultiValuedAttribute() {
   // A single-typed attribute whose value SET holds more than one value passes the CMS parser (which
   // rejects only a repeated attribute TYPE), so the single-value refusal is SCEP's own (P2).
@@ -374,6 +387,7 @@ async function main() {
   await testOuterContentTypeMustBeData();
   await testFailInfoOnlyOnFailure();
   await testMalformedInputsCoverage();
+  await testBuildSnapshotsMessageData();
   await testWrongStringType();
   await testMultiValuedAttribute();
   await testMultipleSigners();
