@@ -288,6 +288,16 @@ async function testFailInfoOnlyOnFailure() {
   check("PENDING CertRep carrying failInfoText refused", (await codeOf(pki.scep.parse(pendWithText))) === "scep/unexpected-attribute");
 }
 
+async function testEnvelopeContentTypeMustBeData() {
+  // The pkcsPKIEnvelope's encrypted content type MUST be id-data (RFC 8894 sec. 3.2.2); an off-profile
+  // envelope naming another type is refused even though its plaintext would parse as a request.
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc", contentType: "signedData" });
+  var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  // The content type is a structural field, so it is refused with or without a recipient key.
+  check("non-data pkcsPKIEnvelope content type refused (no recipientKey)", (await codeOf(pki.scep.parse(msg))) === "scep/bad-envelope-content-type");
+  check("non-data pkcsPKIEnvelope content type refused (with recipientKey)", (await codeOf(pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-envelope-content-type");
+}
+
 async function testWrongStringType() {
   // RFC 8894 sec. 3.2 pins messageType / transactionID / pkiStatus / failInfo as PrintableString and
   // failInfoText as UTF8String; an off-profile string type (or nonce type) is refused.
@@ -430,6 +440,7 @@ async function main() {
   await testParseSnapshotsBytes();
   await testParseSnapshotsSignerCert();
   await testBuildSnapshotsRecipient();
+  await testEnvelopeContentTypeMustBeData();
   await testWrongStringType();
   await testMultiValuedAttribute();
   await testMultipleSigners();
