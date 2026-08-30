@@ -369,7 +369,9 @@ async function run() {
   // VR14: a malformed certificate embedded in the request is skipped (never fatal), so a valid
   // signer beside it still verifies -- unlike a malformed opts.certs entry (VR12), which is refused.
   var withJunk = reorderCerts(await mkSignedReq(w.targetCertDer), [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]), w.issuerCertDer]);
-  check("VR14. a malformed embedded cert is skipped, the valid signer beside it wins", (await pki.ocsp.verifyRequest(withJunk)).signatureValid === true);
+  var vrJunk = await pki.ocsp.verifyRequest(withJunk);
+  check("VR14. a malformed embedded cert is skipped, the valid signer beside it wins", vrJunk.signatureValid === true);
+  check("VR14b. certs excludes the malformed entry (only parseable certs reach the path-build pool)", vrJunk.certs.length === 1 && Buffer.compare(vrJunk.certs[0], w.issuerCertDer) === 0);
   check("VR15. embedded certs none of which signed -> signatureValid:false (not a throw)", (await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer]))).signatureValid === false);
   check("VR16. opts.certs supplied but none signed -> signatureValid:false", (await pki.ocsp.verifyRequest(noCerts, { certs: [w.responderCertDer] })).signatureValid === false);
   // VR17: the request bytes are snapshotted at the door, so a caller mutating the buffer across the
