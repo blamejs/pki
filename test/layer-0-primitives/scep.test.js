@@ -302,7 +302,10 @@ async function testWrongStringType() {
 async function testMalformedInputsCoverage() {
   // build fail-closed paths: a missing signer, a recipient without keyEncipherment, and a bad signer key.
   check("build without signer refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, transactionId: "t" }))) === "scep/bad-input");
-  check("build with a non-keyEncipherment recipient refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.clientCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("build with a non-RSA recipient refused (RSAES-OAEP profile)", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.clientCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-recipient");
+  var rsaNoEncKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var rsaNoEncCert = await pki.x509.sign({ subject: "no-enc", subjectPublicKey: await pki.key.export(rsaNoEncKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: await pki.key.export(rsaNoEncKp.privateKey) });
+  check("build with an RSA recipient lacking keyEncipherment refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: rsaNoEncCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
   check("build with a bad signer key refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: { cert: F.clientCert, key: Buffer.from("bad-key") }, transactionId: "t" }))) === "scep/bad-input");
 
   var msg = await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" });
@@ -325,6 +328,31 @@ async function testBuildSnapshotsMessageData() {
   var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
   check("build snapshots messageData: enveloped request is the original, PoP intact",
     Buffer.compare(v.messageData, F.csr) === 0 && (await pki.csr.verify(v.messageData)).verified === true);
+}
+
+async function testParseSnapshotsSignerCert() {
+  // parse captures opts.signerCert at its synchronous door, so a caller swapping it during the awaited
+  // verification cannot change which certificate the response is authenticated against.
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "auth", recipientNonce: nodeCrypto.randomBytes(16), content: env });
+  var o = { signerCert: F.caCert, recipientKey: { cert: F.caCert, key: F.caKey } };
+  var p = pki.scep.parse(rep, o);   // door snapshots F.caCert
+  o.signerCert = F.clientCert;       // swap to a different certificate after the door
+  var v = await p;
+  check("parse snapshots signerCert: authenticated against the door-time cert", v.signerAuthenticated === true && v.pkiStatus === "SUCCESS");
+}
+
+async function testBuildSnapshotsRecipient() {
+  // build captures the recipient at its synchronous door, so a caller swapping spec.recipient during the
+  // awaited verify cannot redirect the envelope to a substituted CA.
+  var otherKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var otherCa = await pki.x509.sign({ subject: "other CA", subjectPublicKey: await pki.key.export(otherKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["keyEncipherment"] } }, { key: await pki.key.export(otherKp.privateKey) });
+  var spec = { messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "r" };
+  var p = pki.scep.build(spec);   // door snapshots F.caCert as the recipient
+  spec.recipient = otherCa;        // swap to a different CA after the door
+  var msg = await p;
+  var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("build snapshots recipient: enveloped to the door-time CA", Buffer.compare(v.messageData, F.csr) === 0);
 }
 
 async function testMultiValuedAttribute() {
@@ -388,6 +416,8 @@ async function main() {
   await testFailInfoOnlyOnFailure();
   await testMalformedInputsCoverage();
   await testBuildSnapshotsMessageData();
+  await testParseSnapshotsSignerCert();
+  await testBuildSnapshotsRecipient();
   await testWrongStringType();
   await testMultiValuedAttribute();
   await testMultipleSigners();
