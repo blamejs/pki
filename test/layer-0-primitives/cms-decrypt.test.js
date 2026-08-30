@@ -14,6 +14,7 @@ var check = helpers.check;
 var pki = helpers.pki;
 var signing = require("../helpers/signing");
 var makeRecipient = signing.makeRecipient;
+var surgery = require("../helpers/der-surgery");
 var b = pki.asn1.build;
 function O(n) { return pki.oid.byName(n); }
 async function codeOf(fn) { try { await fn(); return "NO-THROW"; } catch (e) { return e.code || e.constructor.name; } }
@@ -454,6 +455,75 @@ async function run() {
   // orchestrator routing
   check("pki.schema.parse routes an emitted EncryptedData to cms", pki.schema.parse(cekEnv).contentTypeName === "encryptedData");
 
+  // ---- streaming decrypt (slice 4): { stream: true } makes `content` an async iterable of chunks ----
+  var sr = makeRecipient("ec-p256");
+  var big = Buffer.alloc(200000, 0x41);   // larger than one chunk at any sane chunk size
+  // DS1: CBC streams the plaintext -- the chunk concatenation equals the one-shot content, authenticated:false.
+  var ds1env = await pki.cms.encrypt(MSG, [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var ds1v = await pki.cms.decrypt(ds1env, { key: sr.key, cert: sr.cert }, { stream: true });
+  check("DS1. CBC streaming decrypt yields plaintext chunks whose concatenation equals the one-shot content (authenticated:false)",
+    Buffer.compare(await _collectChunks(ds1v.content), MSG) === 0 && ds1v.authenticated === false);
+  // DS2: GCM buffers+verifies FIRST, then yields the verified plaintext in chunks, authenticated:true.
+  var ds2env = await pki.cms.encrypt(MSG, [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-gcm" });
+  var ds2v = await pki.cms.decrypt(ds2env, { key: sr.key, cert: sr.cert }, { stream: true });
+  check("DS2. GCM streaming decrypt yields the verified plaintext in chunks (authenticated:true)",
+    Buffer.compare(await _collectChunks(ds2v.content), MSG) === 0 && ds2v.authenticated === true);
+  // DS3: no-leak -- a tampered GCM ciphertext decrypts+verifies before returning, so it fails at
+  // cms/decrypt-failed with ZERO plaintext chunks yielded (RFC 5083 sec. 1: destroy, don't withhold).
+  var ds3bad = _flipByte(ds2env, ds2env.length - 25);
+  var ds3code = await codeOf(function () { return pki.cms.decrypt(ds3bad, { key: sr.key, cert: sr.cert }, { stream: true }); });
+  check("DS3. a tampered GCM ciphertext (stream) fails at cms/decrypt-failed before any plaintext chunk is yielded (RFC 5083 sec. 1)",
+    ds3code === "cms/decrypt-failed");
+  // DS4: memory-bound -- a large CBC payload actually chunks (never held whole).
+  var ds4env = await pki.cms.encrypt(big, [{ cert: sr.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var ds4v = await pki.cms.decrypt(ds4env, { key: sr.key, cert: sr.cert }, { stream: true });
+  check("DS4. a large CBC payload streams in more than one chunk (the plaintext is never held whole)",
+    (await _countChunks(ds4v.content)) > 1);
+  // DS5: an EncryptedData { cek } also streams (CBC), concatenation equals the one-shot content.
+  var ds5cek = Buffer.alloc(32, 9);
+  var ds5env = await pki.cms.encrypt(MSG, { cek: ds5cek }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var ds5v = await pki.cms.decrypt(ds5env, { cek: ds5cek }, { stream: true });
+  check("DS5. an EncryptedData { cek } streams the CBC plaintext (concatenation equals the one-shot content)",
+    Buffer.compare(await _collectChunks(ds5v.content), MSG) === 0);
+  // DS6: AuthenticatedData verifies the MAC first, so { stream: true } yields the already-authenticated
+  // plaintext in chunks (uniform content shape, authenticated:true) -- the same before-yield guarantee as GCM.
+  var ds6env = await pki.cms.authenticate(MSG, [{ cert: sr.cert }], {});
+  var ds6v = await pki.cms.decrypt(ds6env, { key: sr.key, cert: sr.cert }, { stream: true });
+  check("DS6. an AuthenticatedData streams the authenticated plaintext in chunks (authenticated:true)",
+    Buffer.compare(await _collectChunks(ds6v.content), MSG) === 0 && ds6v.authenticated === true);
+  // DS7: a corrupt CBC stream (a ciphertext truncated to a non-block-aligned length) surfaces the uniform
+  // cms/decrypt-failed at iteration, never a distinct engine error -- the padding-oracle defense of the
+  // buffered path extends to the streamed path.
+  var ds7cek = Buffer.alloc(32, 3);
+  var ds7env = await pki.cms.encrypt(Buffer.alloc(80, 0x42), { cek: ds7cek }, { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var ds7bad = surgery.patch(ds7env, function (node) {
+    if (node.tagClass === "context" && node.tagNumber === 0 && !node.constructed) {
+      var val = node.value != null ? node.value : node.content;
+      if (val && val.length > 32) return pki.asn1.encodeTLV(0x80, false, 0, val.subarray(0, val.length - 1));
+    }
+    return undefined;
+  });
+  var ds7v = await pki.cms.decrypt(ds7bad, { cek: ds7cek }, { stream: true });
+  var ds7code = "NO-THROW";
+  try { for await (var _c of ds7v.content) { void _c; } } catch (e) { ds7code = e.code || e.constructor.name; }
+  check("DS7. a corrupt CBC stream fails at the uniform cms/decrypt-failed on iteration (no distinct engine error leaks)",
+    ds7code === "cms/decrypt-failed");
+  // DS8: with several ambiguous recipients a lazy CBC stream would select the first candidate to unwrap a
+  // key and never fall back, but a v1.5 KTRI returns a garbage key (implicit rejection) that only the
+  // content decrypt can reject. Two OAEP recipients to one RSA cert, the first downgraded to v1.5: the
+  // buffered path rejects it on padding and recovers from the second, and the streamed path must too.
+  var ds8rsa = makeRecipient("rsa");
+  var ds8env = await pki.cms.encrypt(MSG, [{ cert: ds8rsa.cert }, { cert: ds8rsa.cert }], { contentEncryptionAlgorithm: "aes-256-cbc" });
+  var ds8seen = 0;
+  var ds8bad = surgery.patch(ds8env, function (node) {
+    if (surgery.isAlgId(node, "1.2.840.113549.1.1.7")) { ds8seen++; if (ds8seen === 1) return pki.asn1.build.sequence([pki.asn1.build.oid("1.2.840.113549.1.1.1"), pki.asn1.build.raw(Buffer.from([5, 0]))]); }
+    return undefined;
+  });
+  var ds8buf = await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert });
+  var ds8str = await _collectChunks((await pki.cms.decrypt(ds8bad, { key: ds8rsa.key, cert: ds8rsa.cert }, { stream: true })).content);
+  check("DS8. a streamed CBC decrypt falls back across ambiguous recipients (a v1.5 garbage-key candidate does not shadow the correct one)",
+    Buffer.compare(ds8buf.content, MSG) === 0 && Buffer.compare(ds8str, MSG) === 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
@@ -556,6 +626,8 @@ function _dupKtriBroken(der) {
 }
 
 function _flipByte(buf, i) { var c = Buffer.from(buf); c[i] ^= 0x01; return c; }
+async function _collectChunks(iter) { var parts = []; for await (var c of iter) parts[parts.length] = Buffer.from(c); return Buffer.concat(parts); }
+async function _countChunks(iter) { var n = 0; for await (var c of iter) { n++; void c; } return n; }
 function _encKeyOffset(der) { return Math.floor(der.length / 2); }  // a byte inside the RSA-encrypted key region
 
 // An OpenSSL PKCS#1 v1.5 ktri EnvelopedData over MSG for `recip`, or null when openssl is absent

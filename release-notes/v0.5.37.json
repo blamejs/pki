@@ -1,0 +1,10 @@
+{
+  "version": "0.5.37",
+  "headline": "pki.cms.decrypt can return the recovered content as an async iterable of plaintext chunks.",
+  "summary": "`pki.cms.decrypt(input, keyMaterial, opts)` accepts `opts.stream: true`, which returns the recovered `content` as an async iterable of plaintext `Buffer` chunks rather than a single `Buffer`, for a payload too large to hold whole. The authenticated modes (AuthEnvelopedData, AuthenticatedData, and the AES-GCM path) verify integrity before the iterable yields, so a forged message throws `cms/decrypt-failed` and no unverified plaintext is ever exposed. A CBC EnvelopedData or EncryptedData carries no integrity, so it yields plaintext as the content cipher produces it and never holds the whole plaintext; a corrupt message still collapses to the same uniform `cms/decrypt-failed`. The cipher runs through methods captured at load, so a co-resident that replaces a cipher method between chunks cannot steer the recovered bytes.",
+  "sections": {
+    "Added": [
+      "`pki.cms.decrypt(input, keyMaterial, opts)` accepts `opts.stream: true`, returning the verdict's `content` as an async iterable of plaintext `Buffer` chunks instead of a single `Buffer`. It applies to EnvelopedData, AuthEnvelopedData, EncryptedData (the `{ cek }` and `{ password }` forms), and AuthenticatedData. The integrity-checked modes verify before the first chunk is yielded, so a forged message fails before any plaintext is exposed; the unauthenticated CBC modes stream the plaintext as the cipher produces it, so a large payload is never buffered whole. Every failure remains the single uniform `cms/decrypt-failed` verdict, on the streamed path as on the buffered one."
+    ]
+  }
+}
