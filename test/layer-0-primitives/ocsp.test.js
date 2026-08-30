@@ -433,6 +433,22 @@ async function run() {
   var edReq = await pki.ocsp.buildRequest({ cert: edCert, issuer: edCert }, { signer: { cert: edCert, key: edPkcs8 }, requestorName: pki.schema.x509.parse(edCert).subject.bytes });
   var vrEd = await pki.ocsp.verifyRequest(reorderCerts(edReq, [edCert, x25519Twin]));
   check("VR23. coincident key bytes under a different algorithm -> not a signer", vrEd.signatureValid === true && vrEd.signerCerts.length === 1 && vrEd.certs.length === 2);
+  // VR24: two ECDSA P-256 certificates carry the SAME key, one encoding the point uncompressed
+  // (04||X||Y) and one compressed (02/03||X). Both verify the request, but their key bytes differ, so
+  // membership is by verifying each candidate rather than comparing key bytes, or the compressed
+  // encoding is dropped from signerCerts even though it carries the signing key.
+  var ecKp = await pki.key.generate({ name: "ECDSA", namedCurve: "P-256" });
+  var ecPkcs8 = await pki.key.export(ecKp.privateKey);
+  var ecCert = await pki.x509.sign({ subject: "EC OCSP Requestor", subjectPublicKey: await pki.key.export(ecKp.publicKey), notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2028-01-01T00:00:00Z"), extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyCertSign"] } }, { key: ecPkcs8 });
+  var ecSpkiTlv = pki.schema.x509.parse(ecCert).subjectPublicKeyInfo.bytes;
+  var ecSpkiNode = pki.asn1.decode(ecSpkiTlv);
+  var ecPoint = pki.asn1.read.bitString(ecSpkiNode.children[1]).bytes;   // 04 || X(32) || Y(32)
+  var ecCompressed = Buffer.concat([Buffer.from([(ecPoint[64] & 1) ? 0x03 : 0x02]), ecPoint.slice(1, 33)]);
+  var ecCompSpki = b.sequence([b.raw(ecSpkiNode.children[0].bytes), b.bitString(ecCompressed)]);
+  var ecTwin = derSurgery.replaceTlv(ecCert, ecSpkiTlv, ecCompSpki).der;
+  var ecReq = await pki.ocsp.buildRequest({ cert: ecCert, issuer: ecCert }, { signer: { cert: ecCert, key: ecPkcs8 }, requestorName: pki.schema.x509.parse(ecCert).subject.bytes });
+  var vrEc = await pki.ocsp.verifyRequest(reorderCerts(ecReq, [ecCert, ecTwin]));
+  check("VR24. same EC key compressed and uncompressed -> both in signerCerts", vrEc.signatureValid === true && vrEc.signerCerts.length === 2 && vrEc.certs.length === 2);
 
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.
