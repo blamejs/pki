@@ -1003,6 +1003,18 @@ async function main() {
   await testPemAndIsRevoked();
   await testFailClosed();
   await testUnknownArgumentKeys();
+  // Dense caller-array hardening: a sparse revoked array is a typed crl/bad-input, caught before the map
+  // reaches the hole as a native concat error.
+  var _dzcrl = makeSigner("ec-p256");
+  var _spRev = [{ serialNumber: 1n, revocationDate: TU }]; _spRev[2] = { serialNumber: 2n, revocationDate: TU };   // distinct serials, hole at 1
+  check("sparse revoked entries -> typed crl/bad-input (not a native concat error)",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, revoked: _spRev }, issuerOf(_dzcrl)))) === "crl/bad-input");
+  var _spFn = [{ uniformResourceIdentifier: "http://x/crl" }]; _spFn[2] = { uniformResourceIdentifier: "http://y/crl" };
+  check("sparse issuingDistributionPoint fullName -> typed crl/bad-idp",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { issuingDistributionPoint: { fullName: _spFn } } }, issuerOf(_dzcrl)))) === "crl/bad-idp");
+  var _spFresh = [{ uniformResourceIdentifier: "http://x/delta" }]; _spFresh[2] = { uniformResourceIdentifier: "http://y/delta" };
+  check("sparse freshestCRL -> typed crl/bad-input",
+    (await codeOf(pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, extensions: { freshestCRL: _spFresh } }, issuerOf(_dzcrl)))) === "crl/bad-input");
   console.log("CHECKS " + helpers.getChecks());
 }
 

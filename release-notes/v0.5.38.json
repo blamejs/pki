@@ -1,0 +1,10 @@
+{
+  "version": "0.5.38",
+  "headline": "Builder verbs reject a sparse or nullish array argument with a typed error instead of a native one.",
+  "summary": "Several builders that iterate a caller-supplied array now reject a sparse array (a hole left by `new Array(n)` or a deleted element) or a `null`/`undefined` entry with the verb's own typed `<domain>/bad-input` error, naming the offending index, rather than letting the hole reach the DER encoder as a native `TypeError`. The check tests own-property presence at each index, so a polluted `Array.prototype` index cannot make a hole read as a value, and it fails at the first bad index, so a very large sparse length cannot force a long traversal. This covers pki.pkcs12.build, pki.ocsp.buildRequest, pki.ocsp.sign, pki.cmc.build, pki.crl.sign, pki.crmf.build, and pki.cms.encrypt.",
+  "sections": {
+    "Changed": [
+      "The array arguments of pki.pkcs12.build (SafeContents bags), pki.ocsp.buildRequest and pki.ocsp.sign (the query and response batches), pki.cmc.build (requests and the CMS and other-message sequences), pki.crl.sign (revoked entries and the issuing-distribution-point and freshest-CRL general names), pki.crmf.build (controls and registration info), and pki.cms.encrypt (authenticated attributes) are checked for holes and nullish entries up front. A sparse or nullish array is now the verb's own typed `<domain>/bad-input` error naming the index, in place of the native `TypeError` the hole previously produced at the encoder. A valid (dense) array is unaffected and its emitted structure is byte-for-byte identical."
+    ]
+  }
+}

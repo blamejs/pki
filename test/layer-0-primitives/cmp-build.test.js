@@ -93,6 +93,10 @@ async function run() {
   } finally { if (!hadProto0) delete Array.prototype[0]; }
   check("1k. reqDenseArray rejects a hole even under Array.prototype[0] pollution (own-property tested first)", pollutedHole === "cmp/bad-input");
   check("1l. reqDenseArray returns a dense array unchanged", Array.isArray(denseReturned) && denseReturned.length === 2);
+  var denseNonArray = (function () { try { denseGuard("not-an-array", "nested"); return "NO-THROW"; } catch (e) { return e.code; } })();
+  check("1l2. reqDenseArray rejects a non-array with a typed error", denseNonArray === "cmp/bad-input");
+  var denseNullish = (function () { try { denseGuard([Buffer.from([0x30, 0x00]), null], "nested"); return "NO-THROW"; } catch (e) { return e.code; } })();
+  check("1l3. reqDenseArray rejects a nullish entry with a typed error", denseNullish === "cmp/bad-input");
   // End-to-end: under Array.prototype[0] pollution the entry deep-copy must leave the hole (it copies
   // own indices only), so the density check refuses the list rather than wrapping and signing the
   // prototype-supplied PKIMessage.

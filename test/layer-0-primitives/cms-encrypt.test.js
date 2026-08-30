@@ -382,6 +382,12 @@ async function run() {
   check("SE8. a content Symbol.asyncIterator getter that mutates opts at probe time cannot change the output (options copied before the probe)",
     Buffer.isBuffer(sneakOut) && Buffer.compare((await pki.cms.decrypt(sneakOut, { key: sr.key, cert: sr.cert })).content, whole) === 0);
 
+  // Dense caller-array hardening: a sparse/nullish authAttrs array is a typed cms/bad-input, caught before
+  // b.setOf reaches the hole as a native concat error.
+  var _spAttrs = [b.sequence([b.oid(O("contentType")), b.set([b.oid(O("data"))])])]; _spAttrs[2] = b.sequence([b.oid(O("signingTime")), b.set([b.utcTime(new Date("2026-01-01T00:00:00Z"))])]);   // distinct types, hole at 1
+  check("sparse authAttrs -> typed cms/bad-input (not a native setOf error)",
+    (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-256-gcm", authAttrs: _spAttrs }); })) === "cms/bad-input");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

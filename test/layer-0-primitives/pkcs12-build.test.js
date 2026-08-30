@@ -558,6 +558,18 @@ async function main() {
   await testFailClosedInputs();
   await testBagTypes();
   await testUnknownBuildKeys();
+  // Dense caller-array hardening: a sparse bags array is a typed pkcs12/bad-input, caught before b.sequence
+  // reaches the hole as a native concat error; a huge sparse length fails FAST (no traversal).
+  var _dzSigner = signer();
+  var _spBags = [{ type: "cert", cert: _dzSigner.cert }]; _spBags[2] = _spBags[0];
+  check("sparse SafeContents bags -> typed pkcs12/bad-input (not a native concat error)",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: _spBags }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  check("a huge sparse bags array fails fast as pkcs12/bad-input",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: new Array(1000000) }] }, { password: "1234" }))) === "pkcs12/bad-input");
+  // The element-cap pre-check must not read .length on a non-array: a non-array whose length cannot be
+  // compared (a Symbol) must be the typed pkcs12/bad-input from reqDenseArray, never a native TypeError.
+  check("a non-array bags with an incomparable length is a typed pkcs12/bad-input (not a native TypeError)",
+    (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: { length: Symbol("x") } }] }, { password: "1234" }))) === "pkcs12/bad-input");
   console.log("CHECKS " + helpers.getChecks());
 }
 

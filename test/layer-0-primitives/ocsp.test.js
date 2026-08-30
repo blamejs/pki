@@ -43,6 +43,13 @@ async function run() {
   // ---- buildRequest ----
   var req = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer });
   var pr = pki.schema.ocsp.parseRequest(req);
+
+  // Dense caller-array hardening: a sparse batch of queries / responses is a typed ocsp/bad-input, caught
+  // before the map reaches the hole as a native error.
+  var _spQ = [{ cert: w.targetCertDer, issuer: w.issuerCertDer }]; _spQ[2] = _spQ[0];
+  check("sparse buildRequest batch -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest(_spQ); })) === "ocsp/bad-input");
+  var _spR = [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }]; _spR[2] = _spR[0];
+  check("sparse responses -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: _spR }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
   check("buildRequest round-trips: one Request with the target serial",
     pr.requestList.length === 1 && pr.requestList[0].certID.serialNumberHex === pki.schema.x509.parse(w.targetCertDer).serialNumberHex);
   var reqN = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: true });

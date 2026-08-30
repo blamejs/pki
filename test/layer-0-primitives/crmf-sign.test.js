@@ -486,6 +486,13 @@ async function main() {
   await testCoverageEdges();
   await testFailClosed();
   await testPopoPrivKeyArms();
+  // Dense caller-array hardening: a sparse controls array is a typed crmf/bad-controls, caught before the
+  // map reaches the hole as a native concat error (reqDenseArray runs before any entry is validated).
+  var _dzs = makeSigner("ec-p256");
+  var _spCtrls = [1]; _spCtrls[2] = 1;   // own 0 and 2, hole at 1
+  check("sparse controls -> typed crmf/bad-controls (not a native concat error)",
+    (await codeOf(pki.crmf.build({ certReqId: 0, certTemplate: tpl(_dzs.spki), controls: _spCtrls }, { key: _dzs.key }))) === "crmf/bad-controls");
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
