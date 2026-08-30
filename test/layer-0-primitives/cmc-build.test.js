@@ -30,6 +30,22 @@ var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
 var b = pki.asn1.build;
+var surgery = require("../helpers/der-surgery");
+
+// Flip one content byte of a PKCS#10's signatureValue (the LAST BIT STRING) so its proof-of-possession
+// no longer verifies, while the request stays valid DER that parses.
+function corruptCsrPop(csr) {
+  var count = 0;
+  surgery.patch(csr, function (n) { if (n.tagClass === "universal" && n.tagNumber === 3 && !n.constructed) count++; return undefined; });
+  var seen = 0;
+  return surgery.patch(csr, function (n) {
+    if (n.tagClass === "universal" && n.tagNumber === 3 && !n.constructed) {
+      seen++;
+      if (seen === count) { var v = Buffer.from(n.value != null ? n.value : n.content); v[v.length - 1] ^= 0x01; return b.bitString(v.subarray(1), v[0]); }
+    }
+    return undefined;
+  });
+}
 
 var ID_CCT_PKI_DATA = "1.3.6.1.5.5.7.12.2";
 var ID_CMC_IDENTITY_PROOF_V2 = "1.3.6.1.5.5.7.7.34";   // RFC 5272 sec. 6.2.1 body + its own module
@@ -844,6 +860,17 @@ async function run() {
   check("sparse cmc cmsSequence -> typed cmc/bad-input", (await _cmcCode({ requests: [{ tcr: csrDer }], cmsSequence: _spCms })) === "cmc/bad-input");
   var _spOther = [1]; _spOther[2] = 1;
   check("sparse cmc otherMsgSequence -> typed cmc/bad-input", (await _cmcCode({ requests: [{ tcr: csrDer }], otherMsgSequence: _spOther })) === "cmc/bad-input");
+
+  // Proof-of-possession: an embedded tcr (PKCS#10) request is verified before it is signed into the CMC
+  // message. A CSR whose self-signature does not verify under its own subject key is one the CA will
+  // reject (RFC 5272 sec. 4.1 / RFC 6402), so the producer refuses it rather than signing it.
+  check("PoP1. a tcr with a valid proof-of-possession builds",
+    pki.schema.cmc.parse(await pki.cmc.build({ requests: [{ tcr: await csrFor(s) }] }, { cert: s.cert, key: s.key })).kind === "pkiData");
+  var badPopCsr = corruptCsrPop(await csrFor(s));
+  check("PoP2. a tcr whose proof-of-possession does not verify is refused (cmc/bad-popo)",
+    (await _cmcCode({ requests: [{ tcr: badPopCsr }] })) === "cmc/bad-popo");
+  check("PoP3. a valid tcr alongside a bad-PoP tcr still fails the whole build (no partial acceptance)",
+    (await _cmcCode({ requests: [{ tcr: await csrFor(s) }, { tcr: badPopCsr }] })) === "cmc/bad-popo");
 
   console.log("CHECKS " + helpers.getChecks());
 }
