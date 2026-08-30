@@ -231,6 +231,21 @@ async function testSignerAuthentication() {
   check("no signerCert: crypto-only verdict, signerAuthenticated false", vNo.signerAuthenticated === false && vNo.signatureValid === true);
 }
 
+async function testSignerKeyUsage() {
+  // A SCEP signer's certificate must be authorized to sign (RFC 8894 sec. 2.3): an encryption-only
+  // certificate (keyUsage keyEncipherment, no digitalSignature) is refused for both build and parse.
+  var encKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var encKey = await pki.key.export(encKp.privateKey);
+  var encCert = await pki.x509.sign({ subject: "enc only", subjectPublicKey: await pki.key.export(encKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["keyEncipherment"] } }, { key: encKey });
+  check("build with an encryption-only signer refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: { cert: encCert, key: encKey }, transactionId: "t" }))) === "scep/bad-signer-usage");
+  // RFC 8894 sec. 2.3 requires digitalSignature specifically; a contentCommitment-only cert is refused.
+  var ncCert = await pki.x509.sign({ subject: "nonrepud only", subjectPublicKey: await pki.key.export(encKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["contentCommitment"] } }, { key: encKey });
+  check("build with a contentCommitment-only signer refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: { cert: ncCert, key: encKey }, transactionId: "t" }))) === "scep/bad-signer-usage");
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await cmsSign.sign(env, { cert: encCert, key: encKey }, { additionalSignedAttributes: [{ type: O("scepMessageType"), values: [b.printable("3")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepPkiStatus"), values: [b.printable("0")] }, { type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }] });
+  check("parse of a CertRep signed by an encryption-only cert refused", (await codeOf(pki.scep.parse(rep))) === "scep/bad-signer-usage");
+}
+
 async function testBuildValidatesCsr() {
   // build's messageData must be a PKCS#10 with a valid proof-of-possession (P2): non-CSR bytes or a
   // request whose self-signature does not verify is refused before enveloping, not left to the CA.
@@ -430,6 +445,7 @@ async function main() {
   await testCertRepMissingStatusAndFail();
   await testNonSuccessCertRepWithRecipientKey();
   await testSignerAuthentication();
+  await testSignerKeyUsage();
   await testBuildValidatesCsr();
   await testCertRepRequiresRecipientNonce();
   await testEnvelopeMandatory();
