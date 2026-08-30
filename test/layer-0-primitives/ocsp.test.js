@@ -321,6 +321,68 @@ async function run() {
   check("verify rejects an undecodable PEM response -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verify("-----BEGIN OCSP RESPONSE-----\nnot b64 !!!\n-----END OCSP RESPONSE-----\n", { cert: w.targetCertDer, issuer: w.issuerCertDer, time: T }); })) === "ocsp/bad-input");
   check("buildRequest with an unsupported CertID hashAlgorithm -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { hashAlgorithm: "md5" }); })) === "ocsp/bad-input");
 
+  // ---- verifyRequest: a responder verifies a client's signed OCSP request (RFC 6960 sec. 4.1.1) ----
+  var reqSigner = { signer: { cert: w.issuerCertDer, key: w.issuerKeyPkcs8 }, requestorName: nameDN("OCSP Mini CA") };
+  function mkSignedReq(cert) { return pki.ocsp.buildRequest({ cert: cert, issuer: w.issuerCertDer }, reqSigner); }
+  // Rebuild a signed OCSPRequest with its optionalSignature carrying NO certs (RFC 6960 lets them
+  // travel out of band). The signature is over tbsRequest, unchanged, so it still verifies.
+  function stripCerts(reqDer) {
+    var r = pki.asn1.decode(reqDer);                 // SEQ { tbsRequest, [0] EXPLICIT { Signature } }
+    var s = r.children[1].children[0];               // Signature SEQ
+    return b.sequence([b.raw(r.children[0].bytes), b.explicit(0, b.sequence([b.raw(s.children[0].bytes), b.raw(s.children[1].bytes)]))]);
+  }
+  var vrOk = await pki.ocsp.verifyRequest(await mkSignedReq(w.targetCertDer));
+  check("VR1. a signed request verifies: signed + signatureValid, signerSubject decoded", vrOk.signed === true && vrOk.signatureValid === true && vrOk.signerSubject.dn === "CN=OCSP Mini CA");
+  check("VR1b. signerCert is surfaced raw + requestList/version decoded", Buffer.compare(vrOk.signerCert, w.issuerCertDer) === 0 && vrOk.requestList.length === 1 && vrOk.version === 1);
+  // VR2: splice tbsRequest of A onto the optionalSignature (over a DIFFERENT tbs) of B -> the
+  // signature does not verify over the message's own tbsRequest.
+  var da = pki.asn1.decode(await mkSignedReq(w.targetCertDer)), db = pki.asn1.decode(await mkSignedReq(w.responderCertDer));
+  var spliced = b.sequence([b.raw(da.children[0].bytes), b.raw(db.children[1].bytes)]);
+  var vrBad = await pki.ocsp.verifyRequest(spliced);
+  check("VR2. a request whose signature does not match its tbsRequest -> signatureValid:false", vrBad.signed === true && vrBad.signatureValid === false);
+  var vrUn = await pki.ocsp.verifyRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }));
+  check("VR3. an unsigned request -> signed:false, signatureValid:false, no signerCert", vrUn.signed === false && vrUn.signatureValid === false && vrUn.signerCert === null);
+  check("VR4. malformed bytes -> a typed OcspError", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00])); })).indexOf("ocsp/") === 0);
+  check("VR5. an unknown option -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(spliced, { nope: 1 }); })) === "ocsp/bad-input");
+  // VR6/VR7: a signed request that omits its own certs. opts.certs supplies the signer, or its
+  // absence is reported rather than guessed.
+  var noCerts = stripCerts(await mkSignedReq(w.targetCertDer));
+  var vrOob = await pki.ocsp.verifyRequest(noCerts, { certs: [w.issuerCertDer] });
+  check("VR6. a certs-less signed request verifies against opts.certs", vrOob.signed === true && vrOob.signatureValid === true);
+  var vrNoCert = await pki.ocsp.verifyRequest(noCerts);
+  check("VR7. a signed request with no cert and no opts.certs -> signatureValid:false, named reason", vrNoCert.signed === true && vrNoCert.signatureValid === false && vrNoCert.signerCert === null && /no certificate/.test(vrNoCert.reason));
+  check("VR8. opts.certs accepts a PEM entry (input-form parity)", (await pki.ocsp.verifyRequest(noCerts, { certs: [pemCert(w.issuerCertDer)] })).signatureValid === true);
+  check("VR9. a sparse opts.certs array -> ocsp/bad-input", (await codeOfAsync(function () { var a = []; a[2] = w.issuerCertDer; return pki.ocsp.verifyRequest(noCerts, { certs: a }); })) === "ocsp/bad-input");
+  check("VR10. a non-certificate opts.certs entry -> ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(noCerts, { certs: [42] }); })) === "ocsp/bad-input");
+  check("VR11. verifyRequest accepts a PEM OCSP REQUEST string", (await pki.ocsp.verifyRequest(await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, Object.assign({ pem: true }, reqSigner)))).signatureValid === true);
+  check("VR12. a valid-DER but non-certificate signer (opts.certs) -> ocsp/bad-signer-cert", (await codeOfAsync(function () { return pki.ocsp.verifyRequest(noCerts, { certs: [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00])] }); })) === "ocsp/bad-signer-cert");
+  // VR13: RFC 6960 sec. 4.1.1 certs is an unordered SEQUENCE OF Certificate. Rebuild the request so
+  // its signer certificate is NOT first (a chain cert precedes it); the signer is still found.
+  function reorderCerts(reqDer, certDers) {
+    var r = pki.asn1.decode(reqDer), s = r.children[1].children[0];   // Signature SEQ
+    var optSig = b.sequence([b.raw(s.children[0].bytes), b.raw(s.children[1].bytes), b.explicit(0, b.sequence(certDers.map(function (d) { return b.raw(d); })))]);
+    return b.sequence([b.raw(r.children[0].bytes), b.explicit(0, optSig)]);
+  }
+  var reordered = reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer, w.issuerCertDer]);   // signer (issuer) is second
+  var vrReord = await pki.ocsp.verifyRequest(reordered);
+  check("VR13. a signer certificate that is not first in certs still verifies", vrReord.signatureValid === true && Buffer.compare(vrReord.signerCert, w.issuerCertDer) === 0);
+  // VR14: a malformed certificate embedded in the request is skipped (never fatal), so a valid
+  // signer beside it still verifies -- unlike a malformed opts.certs entry (VR12), which is refused.
+  var withJunk = reorderCerts(await mkSignedReq(w.targetCertDer), [Buffer.from([0x30, 0x03, 0x02, 0x01, 0x00]), w.issuerCertDer]);
+  check("VR14. a malformed embedded cert is skipped, the valid signer beside it wins", (await pki.ocsp.verifyRequest(withJunk)).signatureValid === true);
+  check("VR15. embedded certs none of which signed -> signatureValid:false (not a throw)", (await pki.ocsp.verifyRequest(reorderCerts(await mkSignedReq(w.targetCertDer), [w.responderCertDer]))).signatureValid === false);
+  check("VR16. opts.certs supplied but none signed -> signatureValid:false", (await pki.ocsp.verifyRequest(noCerts, { certs: [w.responderCertDer] })).signatureValid === false);
+  // VR17: the request bytes are snapshotted at the door, so a caller mutating the buffer across the
+  // async signature check cannot make verification read bytes other than those parsed and reported.
+  var reqBuf = Buffer.from(await mkSignedReq(w.targetCertDer));
+  var vrPending = pki.ocsp.verifyRequest(reqBuf);
+  reqBuf.fill(0);   // mutate the caller-owned buffer during the await window
+  check("VR17. mutating the request buffer across the await does not change the verdict", (await vrPending).signatureValid === true);
+  var certBuf = Buffer.from(w.issuerCertDer);
+  var vrPending2 = pki.ocsp.verifyRequest(noCerts, { certs: [certBuf] });
+  certBuf.fill(0);   // mutate the caller-owned opts.certs buffer during the await window
+  check("VR18. mutating an opts.certs buffer across the await does not change the verdict", (await vrPending2).signatureValid === true);
+
   // ---- certStatus state machine: default good, raw certID, and every revoked cell ----
   // status + thisUpdate BOTH omitted -> good [0] + a producedAt-now thisUpdate.
   var recent = new Date(Date.now() - 3600 * 1000);

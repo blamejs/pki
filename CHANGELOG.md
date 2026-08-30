@@ -4,7 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.5.39 — 2026-08-30
+## v0.6.0 — 2026-08-30
+
+The toolkit's public APIs graduate to stable, and pki.ocsp.verifyRequest verifies a signed OCSP request for responder implementers.
+
+### Added
+
+- pki.ocsp.verifyRequest(request, opts?) verifies a signed OCSP request (RFC 6960 sec. 4.1.1) for a responder implementer. It checks the requestor's signature over the exact tbsRequest under the public key of the requestor certificate embedded in the request, or supplied through opts.certs when the request carries none, using the same signature engine pki.ocsp.verify applies to a response. The verdict is { signed, signatureValid, signerCert, signerSubject, requestorName, requestList, requestExtensions, version, reason }. Signing a request is optional under RFC 6960, so an unsigned request reports signed:false rather than an error; signatureValid speaks only to the cryptographic check; and signerCert and signerSubject are surfaced so the responder validates the requestor certificate and binds its identity itself.
+
+### Changed
+
+- The public APIs that previously carried an experimental status are now stable and covered by the stable-upgrade policy: a deprecation warning ships at least one minor release before any removal, and a minor release makes no silent breaking change. The graduation bar is a settled governing standard, an interop-proven wire format, and a frozen public surface. pki.tls certificate compression (RFC 8879) and the newly added pki.ocsp.verifyRequest graduate on the settled-standard-and-frozen-surface half of that bar alone, with no independent implementation in the interop harness cross-checking their wire format.
+
+## v0.5.39 — 2026-08-29
 
 pki.cmc.build and pki.cmp.build verify an embedded PKCS#10 request's proof-of-possession and refuse one whose self-signature does not verify.
 
