@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.1",
+  "packageVersion": "0.6.2",
   "surface": {
     "C": {
       "kind": "object",
@@ -168,6 +168,9 @@
               "kind": "number"
             },
             "SAFETYNET_JWS_MAX_BYTES": {
+              "kind": "number"
+            },
+            "SCEP_TRANSACTION_ID_MAX": {
               "kind": "number"
             },
             "SCT_MAX_BYTES": {
@@ -1465,6 +1468,9 @@
             "SAFETYNET_JWS_MAX_BYTES": {
               "kind": "number"
             },
+            "SCEP_TRANSACTION_ID_MAX": {
+              "kind": "number"
+            },
             "SCT_MAX_BYTES": {
               "kind": "number"
             },
@@ -2218,6 +2224,10 @@
           "kind": "function",
           "arity": 2
         },
+        "ScepError": {
+          "kind": "function",
+          "arity": 3
+        },
         "SchemaError": {
           "kind": "function",
           "arity": 3
@@ -2743,6 +2753,19 @@
         "verifyMac": {
           "kind": "function",
           "arity": 3
+        }
+      }
+    },
+    "scep": {
+      "kind": "object",
+      "members": {
+        "build": {
+          "kind": "function",
+          "arity": 1
+        },
+        "parse": {
+          "kind": "function",
+          "arity": 2
         }
       }
     },
@@ -3525,6 +3548,8 @@
     "pki.pkcs12.build": "0.3.11",
     "pki.pkcs12.verifyMac": "0.3.11",
     "pki.pkcs12.open": "0.3.12",
+    "pki.scep.build": "0.6.2",
+    "pki.scep.parse": "0.6.2",
     "pki.schema.all": "0.1.7",
     "pki.schema.parse": "0.1.7",
     "pki.schema.detectFormat": "0.3.8",

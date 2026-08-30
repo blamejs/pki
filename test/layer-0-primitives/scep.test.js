@@ -1,0 +1,520 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright (c) blamejs contributors
+"use strict";
+//
+// Layer 0 -- pki.scep pkiMessage codec (RFC 8894). The SCEP client's enrollment surface: build a
+// PKCSReq / RenewalReq request (inner EnvelopedData over the PKCS#10, outer SignedData under the
+// transaction attributes) and parse any pkiMessage (verify the outer signature, read the attributes
+// BOUND to the verified signer, decrypt the pkcsPKIEnvelope). Every vector drives the SHIPPED verb
+// (pki.scep.build / pki.scep.parse). CertRep fixtures are assembled inline from the CMS verbs to
+// exercise the response-reading paths. The security property under test is that the transaction
+// attributes are surfaced only from a signature that verified -- a tampered message is refused, never
+// returned with a false verdict.
+
+var helpers = require("../helpers");
+var pki = helpers.pki;
+var check = helpers.check;
+var b = pki.asn1.build;
+var cmsSign = require("../../lib/cms-sign");
+var cmsEncrypt = require("../../lib/cms-encrypt");
+var nodeCrypto = require("node:crypto");
+var O = function (n) { return pki.oid.byName(n); };
+
+var ID_SIGNED_DATA = "1.2.840.113549.1.7.2", ID_DATA = "1.2.840.113549.1.7.1";
+
+// A degenerate certs-only SignedData (RFC 5272 sec. 4.1): no eContent, EMPTY signerInfos, the
+// certificates in the [0] field DER-sorted. This is the messageData a CertRep SUCCESS carries.
+function certsOnly(certs) {
+  var sd = [b.integer(1n), b.set([]), b.sequence([b.oid(ID_DATA)])];
+  if (certs && certs.length) sd.push(b.contextConstructed(0, Buffer.concat(certs.slice().sort(Buffer.compare))));
+  sd.push(b.set([]));
+  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(sd))]);
+}
+
+// A degenerate SignedData carrying CRLs in the [1] field (and optionally certs in [0]) -- the shape a
+// SUCCESS CertRep answering GetCRL carries.
+function certsOnlyBag(certs, crls) {
+  var sd = [b.integer(1n), b.set([]), b.sequence([b.oid(ID_DATA)])];
+  if (certs && certs.length) sd.push(b.contextConstructed(0, Buffer.concat(certs.slice().sort(Buffer.compare))));
+  if (crls && crls.length) sd.push(b.contextConstructed(1, Buffer.concat(crls.slice())));
+  sd.push(b.set([]));
+  return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(sd))]);
+}
+
+async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
+
+var F = {};
+async function setup() {
+  var caKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  F.caKey = await pki.key.export(caKp.privateKey);
+  F.caCert = await pki.x509.sign({ subject: "SCEP CA", subjectPublicKey: await pki.key.export(caKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "keyEncipherment", "digitalSignature", "cRLSign"] } }, { key: F.caKey });
+  var clientKp = await pki.key.generate("Ed25519");
+  F.clientKey = await pki.key.export(clientKp.privateKey);
+  F.clientCert = await pki.x509.sign({ subject: "SCEP Client", subjectPublicKey: await pki.key.export(clientKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2028-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: F.clientKey });
+  var reqKp = await pki.key.generate("Ed25519");
+  F.csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: await pki.key.export(reqKp.publicKey), challengePassword: "s3cret" }, { key: await pki.key.export(reqKp.privateKey) });
+  var issuedKp = await pki.key.generate("Ed25519");
+  F.issuedCert = await pki.x509.sign({ subject: "device.example", subjectPublicKey: await pki.key.export(issuedKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  F.signer = { cert: F.clientCert, key: F.clientKey };
+}
+
+// Assemble a CertRep fixture from the CMS verbs (the response direction, issued by a CA in the field).
+async function buildCertRep(opts) {
+  var attrs = [
+    { type: O("scepMessageType"), values: [b.printable("3")] },
+    { type: O("scepTransactionId"), values: [b.printable(opts.transactionId || "txn")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] },
+    { type: O("scepPkiStatus"), values: [b.printable(opts.statusCode)] },
+  ];
+  if (!opts.omitRecipientNonce) attrs.push({ type: O("scepRecipientNonce"), values: [b.octetString(opts.recipientNonce || nodeCrypto.randomBytes(16))] });
+  if (opts.failCode != null) attrs.push({ type: O("scepFailInfo"), values: [b.printable(opts.failCode)] });
+  if (opts.failText != null) attrs.push({ type: O("scepFailInfoText"), values: [b.utf8(opts.failText)] });
+  // A conforming FAILURE / PENDING CertRep omits the pkcsPKIEnvelope: sign detached with no content
+  // when the caller gives none. A SUCCESS response passes its certs-only envelope as content.
+  var signOpts = { additionalSignedAttributes: attrs }, content = opts.content;
+  if (content == null) { content = Buffer.alloc(0); signOpts.detached = true; }
+  return cmsSign.sign(content, { cert: F.caCert, key: F.caKey }, signOpts);
+}
+
+// Sign an arbitrary content with the client under a caller-chosen attribute list (for missing /
+// malformed-attribute vectors that cms.sign would not let build() emit).
+function signWith(content, attrs) {
+  return cmsSign.sign(content, F.signer, { additionalSignedAttributes: attrs });
+}
+
+async function testPkcsReqRoundTrip() {
+  var msg = await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "txn-0001" });
+  var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("PKCSReq: signatureValid", v.signatureValid === true);
+  check("PKCSReq: messageType", v.messageType === "PKCSReq");
+  check("PKCSReq: transactionId echoed", v.transactionId === "txn-0001");
+  check("PKCSReq: senderNonce is 16 bytes", Buffer.isBuffer(v.senderNonce) && v.senderNonce.length === 16);
+  check("PKCSReq: messageData is the exact CSR", Buffer.compare(v.messageData, F.csr) === 0);
+  check("PKCSReq: recovered CSR subject", pki.schema.csr.parse(v.messageData).subject.dn === "CN=device.example");
+}
+
+async function testRenewalReqRoundTrip() {
+  var msg = await pki.scep.build({ messageType: "RenewalReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "renew-1", senderNonce: nodeCrypto.randomBytes(16) });
+  var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("RenewalReq: messageType", v.messageType === "RenewalReq");
+  check("RenewalReq: messageData recovered", Buffer.compare(v.messageData, F.csr) === 0);
+}
+
+async function testNoKeyParse() {
+  var msg = await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" });
+  var v = await pki.scep.parse(msg);
+  check("no recipientKey: signature still verified", v.signatureValid === true);
+  check("no recipientKey: messageData not decrypted", v.messageData === null);
+  check("no recipientKey: attributes still read", v.transactionId === "t");
+}
+
+async function testNonceEcho() {
+  var sent = nodeCrypto.randomBytes(16);
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "t", recipientNonce: sent, content: await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }) });
+  var ok = await pki.scep.parse(rep, { expectedSenderNonce: sent });
+  check("nonce echo: matching recipientNonce accepted", ok.pkiStatus === "SUCCESS");
+  check("nonce echo: mismatch refused", (await codeOf(pki.scep.parse(rep, { expectedSenderNonce: nodeCrypto.randomBytes(16) }))) === "scep/nonce-mismatch");
+}
+
+async function testCertRepSuccessParse() {
+  var recipNonce = nodeCrypto.randomBytes(16);
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "s-1", recipientNonce: recipNonce, content: env });
+  var v = await pki.scep.parse(rep, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("CertRep SUCCESS: messageType", v.messageType === "CertRep");
+  check("CertRep SUCCESS: pkiStatus", v.pkiStatus === "SUCCESS");
+  check("CertRep SUCCESS: recipientNonce 16 bytes", v.recipientNonce.length === 16);
+  check("CertRep SUCCESS: messageData decrypts to the certs-only bag", Buffer.compare(v.messageData, certsOnly([F.issuedCert])) === 0);
+  check("CertRep SUCCESS: issued certificate surfaced", v.certificates.length === 1 && Buffer.compare(v.certificates[0], F.issuedCert) === 0);
+}
+
+async function testRequestPayloadValidated() {
+  // A decrypted request's messageData must be a PKCS#10 (RFC 8894 sec. 3.3.1). Build a PKCSReq whose
+  // envelope encrypts non-CSR bytes (bypassing build's own check) and confirm parse refuses it.
+  var env = await cmsEncrypt.encrypt(Buffer.from("not a certification request"), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("decrypted request messageData that is not a PKCS#10 refused", (await codeOf(pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+}
+
+async function testCertRepCrlOnly() {
+  // A SUCCESS CertRep answering GetCRL carries a CRL and no certificate (RFC 8894 sec. 3.3.4); the CRL
+  // is surfaced in crls and certificates is empty, rather than rejected for having no certificate.
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "crl", content: env });
+  var v = await pki.scep.parse(rep, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("CRL-only SUCCESS CertRep: CRL surfaced, no certificates", v.crls.length === 1 && Buffer.compare(v.crls[0], crl) === 0 && v.certificates.length === 0);
+  // A SUCCESS CertRep whose payload carries neither a certificate nor a CRL is refused.
+  var empty = await cmsEncrypt.encrypt(certsOnlyBag(null, null), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var emptyRep = await buildCertRep({ statusCode: "0", transactionId: "e", content: empty });
+  check("SUCCESS CertRep with an empty bag refused", (await codeOf(pki.scep.parse(emptyRep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/empty-response");
+}
+
+async function testCertRepSuccessValidatesPayload() {
+  // A SUCCESS CertRep's decrypted messageData MUST be a certs-only CMS SignedData (RFC 8894 sec. 3.3.2);
+  // decrypted bytes that are not are refused rather than surfaced as a successful issuance.
+  var notCms = await cmsEncrypt.encrypt(Buffer.from("not a CMS certs-only message"), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "s", content: notCms });
+  check("SUCCESS CertRep with a non-certs-only payload refused", (await codeOf(pki.scep.parse(rep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-response");
+  // A degenerate bag whose certificates field holds a non-certificate (here a PKCS#10) is refused: each
+  // entry is validated as a plain X.509 certificate, not surfaced raw.
+  var badCert = await cmsEncrypt.encrypt(certsOnly([F.csr]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var badCertRep = await buildCertRep({ statusCode: "0", transactionId: "bc", content: badCert });
+  check("SUCCESS CertRep with a non-certificate in certificates refused", (await codeOf(pki.scep.parse(badCertRep, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-certificate");
+}
+
+async function testCertRepFailureParse() {
+  var rep = await buildCertRep({ statusCode: "2", failCode: "2", failText: "policy rejected the request", transactionId: "f-1" });
+  var v = await pki.scep.parse(rep);
+  check("CertRep FAILURE: pkiStatus", v.pkiStatus === "FAILURE");
+  check("CertRep FAILURE: failInfo mapped", v.failInfo === "badRequest");
+  check("CertRep FAILURE: failInfoText surfaced", v.failInfoText === "policy rejected the request");
+}
+
+async function testCertRepPendingParse() {
+  var rep = await buildCertRep({ statusCode: "3", transactionId: "p-1" });
+  var v = await pki.scep.parse(rep);
+  check("CertRep PENDING: pkiStatus", v.pkiStatus === "PENDING");
+  check("CertRep PENDING: no failInfo", v.failInfo === null);
+}
+
+async function testMissingMandatoryAttributes() {
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var noType = await signWith(env, [{ type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("missing messageType refused", (await codeOf(pki.scep.parse(noType))) === "scep/missing-attribute");
+  var noTxn = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("missing transactionID refused", (await codeOf(pki.scep.parse(noTxn))) === "scep/missing-attribute");
+  var noNonce = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }]);
+  check("missing senderNonce refused", (await codeOf(pki.scep.parse(noNonce))) === "scep/missing-attribute");
+}
+
+async function testUnknownEnumerants() {
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var base = [{ type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var badType = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("99")] }].concat(base));
+  check("unknown messageType enumerant refused", (await codeOf(pki.scep.parse(badType))) === "scep/bad-message-type");
+  var badStatus = await buildCertRep({ statusCode: "7", transactionId: "t", content: certsOnly([]) });
+  check("unknown pkiStatus enumerant refused", (await codeOf(pki.scep.parse(badStatus))) === "scep/bad-pki-status");
+  var badFail = await buildCertRep({ statusCode: "2", failCode: "9", transactionId: "t", content: certsOnly([]) });
+  check("unknown failInfo enumerant refused", (await codeOf(pki.scep.parse(badFail))) === "scep/bad-fail-info");
+}
+
+async function testCertRepMissingStatusAndFail() {
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var noStatus = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("3")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("CertRep without pkiStatus refused", (await codeOf(pki.scep.parse(noStatus))) === "scep/missing-attribute");
+  // Carries a recipientNonce (so it passes that gate) but omits failInfo, so the failInfo gate is what refuses it.
+  var failNoInfo = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("3")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepPkiStatus"), values: [b.printable("2")] }]);
+  check("FAILURE without failInfo refused", (await codeOf(pki.scep.parse(failNoInfo))) === "scep/missing-attribute");
+}
+
+async function testNonSuccessCertRepWithRecipientKey() {
+  // A FAILURE / PENDING CertRep carries no pkcsPKIEnvelope; passing recipientKey must still return the
+  // authenticated status rather than a decrypt failure over content that is not an EnvelopedData.
+  var fail = await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f" });
+  var vf = await pki.scep.parse(fail, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("FAILURE CertRep + recipientKey: status returned, not a decrypt error", vf.pkiStatus === "FAILURE" && vf.failInfo === "badRequest" && vf.messageData === null);
+  var pend = await buildCertRep({ statusCode: "3", transactionId: "p" });
+  var vp = await pki.scep.parse(pend, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("PENDING CertRep + recipientKey: status returned, not a decrypt error", vp.pkiStatus === "PENDING" && vp.messageData === null);
+}
+
+async function testSignerAuthentication() {
+  // A valid signature is not an authenticated signer: opts.signerCert must match the CA that signed
+  // the CertRep, or the message is refused; without it the verdict is crypto-only (P1).
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "auth-1", recipientNonce: nodeCrypto.randomBytes(16), content: env });
+  var vOk = await pki.scep.parse(rep, { signerCert: F.caCert });
+  check("signerCert match: signerAuthenticated true", vOk.signerAuthenticated === true && vOk.pkiStatus === "SUCCESS");
+  check("signerCert mismatch refused (forged-response defense)", (await codeOf(pki.scep.parse(rep, { signerCert: F.clientCert }))) === "scep/untrusted-signer");
+  var vNo = await pki.scep.parse(rep);
+  check("no signerCert: crypto-only verdict, signerAuthenticated false", vNo.signerAuthenticated === false && vNo.signatureValid === true);
+}
+
+async function testEnvelopeRequiresCiphertext() {
+  // A request or SUCCESS CertRep whose EnvelopedData omits encryptedContent has no messageData to
+  // recover; it is refused structurally, without a recipient key (RFC 8894 sec. 3.2).
+  var ds = require("../helpers/der-surgery");
+  var realEnv = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  function reqAttrs() { return [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]; }
+  var noCt = ds.patch(realEnv, function (n) { return (n.tagClass === "context" && n.tagNumber === 0 && !n.constructed) ? Buffer.alloc(0) : undefined; });
+  check("pkcsPKIEnvelope with absent ciphertext refused (no recipientKey)", (await codeOf(pki.scep.parse(await signWith(noCt, reqAttrs())))) === "scep/missing-envelope");
+  // A present but zero-length [0] OCTET STRING also carries no ciphertext.
+  var emptyCt = ds.patch(realEnv, function (n) { return (n.tagClass === "context" && n.tagNumber === 0 && !n.constructed) ? Buffer.from([0x80, 0x00]) : undefined; });
+  check("pkcsPKIEnvelope with empty ciphertext refused (no recipientKey)", (await codeOf(pki.scep.parse(await signWith(emptyCt, reqAttrs())))) === "scep/missing-envelope");
+}
+
+async function testPinnedSignerKeyUsage() {
+  // The pinned opts.signerCert must itself be authorized to sign: a same-key digitalSignature cert
+  // embedded in the message cannot authenticate a pinned encryption-only cert (RFC 8894 sec. 2.3).
+  var kp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var key = await pki.key.export(kp.privateKey), spki = await pki.key.export(kp.publicKey);
+  var sigCert = await pki.x509.sign({ subject: "dual", subjectPublicKey: spki, notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: key });
+  var encCert = await pki.x509.sign({ subject: "dual", subjectPublicKey: spki, notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["keyEncipherment"] } }, { key: key });
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await cmsSign.sign(env, { cert: sigCert, key: key }, { additionalSignedAttributes: [{ type: O("scepMessageType"), values: [b.printable("3")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepPkiStatus"), values: [b.printable("0")] }, { type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }] });
+  check("pinned encryption-only signerCert refused despite same-key signing cert", (await codeOf(pki.scep.parse(rep, { signerCert: encCert }))) === "scep/bad-signer-usage");
+}
+
+async function testSignerKeyUsage() {
+  // A SCEP signer's certificate must be authorized to sign (RFC 8894 sec. 2.3): an encryption-only
+  // certificate (keyUsage keyEncipherment, no digitalSignature) is refused for both build and parse.
+  var encKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var encKey = await pki.key.export(encKp.privateKey);
+  var encCert = await pki.x509.sign({ subject: "enc only", subjectPublicKey: await pki.key.export(encKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["keyEncipherment"] } }, { key: encKey });
+  check("build with an encryption-only signer refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: { cert: encCert, key: encKey }, transactionId: "t" }))) === "scep/bad-signer-usage");
+  // RFC 8894 sec. 2.3 requires digitalSignature specifically; a contentCommitment-only cert is refused.
+  var ncCert = await pki.x509.sign({ subject: "nonrepud only", subjectPublicKey: await pki.key.export(encKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["contentCommitment"] } }, { key: encKey });
+  check("build with a contentCommitment-only signer refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: { cert: ncCert, key: encKey }, transactionId: "t" }))) === "scep/bad-signer-usage");
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await cmsSign.sign(env, { cert: encCert, key: encKey }, { additionalSignedAttributes: [{ type: O("scepMessageType"), values: [b.printable("3")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepPkiStatus"), values: [b.printable("0")] }, { type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }] });
+  check("parse of a CertRep signed by an encryption-only cert refused", (await codeOf(pki.scep.parse(rep))) === "scep/bad-signer-usage");
+}
+
+async function testBuildValidatesCsr() {
+  // build's messageData must be a PKCS#10 with a valid proof-of-possession (P2): non-CSR bytes or a
+  // request whose self-signature does not verify is refused before enveloping, not left to the CA.
+  check("non-CSR messageData refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: Buffer.from("not a certification request"), recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var badPop = Buffer.from(F.csr);
+  badPop[badPop.length - 4] ^= 0x40;   // flip a signature byte: structure intact, proof-of-possession broken
+  check("PKCS#10 with a broken proof-of-possession refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: badPop, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-popo");
+}
+
+async function testCertRepRequiresRecipientNonce() {
+  // A CertRep MUST echo the request's senderNonce in a recipientNonce (RFC 8894 sec. 3.1), regardless
+  // of whether the caller passes expectedSenderNonce.
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var noRecip = await buildCertRep({ statusCode: "0", transactionId: "s", omitRecipientNonce: true, content: env });
+  check("CertRep without recipientNonce refused", (await codeOf(pki.scep.parse(noRecip))) === "scep/missing-attribute");
+}
+
+async function testEnvelopeMandatory() {
+  // A request and a SUCCESS CertRep MUST carry a pkcsPKIEnvelope (RFC 8894 sec. 3.2). A signed message
+  // of those types whose content is not an EnvelopedData is refused before any recipient-key decryption.
+  var reqAttrs = [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var fakeReq = await signWith(certsOnly([]), reqAttrs);
+  check("request with non-envelope content refused (no recipientKey)", (await codeOf(pki.scep.parse(fakeReq))) === "scep/missing-envelope");
+  // An OID-only "envelope" (ContentInfo carrying the envelopedData OID but no [0] content) is not a
+  // valid EnvelopedData and is refused, not accepted as a message with a null messageData.
+  var oidOnly = await signWith(b.sequence([b.oid(O("envelopedData"))]), reqAttrs);
+  check("OID-only pseudo-envelope refused", (await codeOf(pki.scep.parse(oidOnly))) === "scep/missing-envelope");
+  var emptyContent = await signWith(b.sequence([b.oid(O("envelopedData")), b.contextConstructed(0, Buffer.alloc(0))]), reqAttrs);
+  check("envelopedData OID with an empty [0] content refused", (await codeOf(pki.scep.parse(emptyContent))) === "scep/missing-envelope");
+  var fakeSuccess = await buildCertRep({ statusCode: "0", transactionId: "s", content: certsOnly([]) });
+  check("SUCCESS CertRep with non-envelope content refused", (await codeOf(pki.scep.parse(fakeSuccess))) === "scep/missing-envelope");
+  // A FAILURE / PENDING CertRep MUST omit the pkcsPKIEnvelope; carrying signed content is off-profile.
+  var failWithContent = await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f", content: certsOnly([F.issuedCert]) });
+  check("FAILURE CertRep carrying signed content refused", (await codeOf(pki.scep.parse(failWithContent))) === "scep/unexpected-envelope");
+  var pendWithContent = await buildCertRep({ statusCode: "3", transactionId: "p", content: certsOnly([F.issuedCert]) });
+  check("PENDING CertRep carrying signed content refused", (await codeOf(pki.scep.parse(pendWithContent))) === "scep/unexpected-envelope");
+  // The envelope must be OMITTED (a null eContent), so even an attached zero-length OCTET STRING is refused.
+  var attachedEmpty = await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f", content: Buffer.alloc(0) });
+  check("FAILURE CertRep with an attached empty eContent refused", (await codeOf(pki.scep.parse(attachedEmpty))) === "scep/unexpected-envelope");
+}
+
+async function testOuterContentTypeMustBeData() {
+  // RFC 8894 sec. 3.2: the SignedData eContentType MUST be id-data. A message that verifies as CMS but
+  // names another eContentType is not a valid SCEP pkiMessage.
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var attrs = [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var wrongType = await cmsSign.sign(env, F.signer, { eContentType: "signedData", additionalSignedAttributes: attrs });
+  check("non-data eContentType refused", (await codeOf(pki.scep.parse(wrongType))) === "scep/bad-content-type");
+}
+
+async function testFailInfoOnlyOnFailure() {
+  // failInfo / failInfoText are FAILURE-only (RFC 8894 sec. 3.2.1.4): a SUCCESS or PENDING CertRep
+  // carrying them asserts a contradictory authenticated status and is refused.
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var successWithFail = await buildCertRep({ statusCode: "0", transactionId: "s", failCode: "2", content: env });
+  check("SUCCESS CertRep carrying failInfo refused", (await codeOf(pki.scep.parse(successWithFail))) === "scep/unexpected-attribute");
+  var pendWithText = await buildCertRep({ statusCode: "3", transactionId: "p", failText: "should not be here" });
+  check("PENDING CertRep carrying failInfoText refused", (await codeOf(pki.scep.parse(pendWithText))) === "scep/unexpected-attribute");
+}
+
+async function testUnsupportedMessageTypes() {
+  // CertPoll (20), GetCert (21), GetCRL (22) are client queries this release's parser does not read.
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var codes = ["20", "21", "22"], i;
+  for (i = 0; i < codes.length; i++) {
+    var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable(codes[i])] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+    check("messageType " + codes[i] + " (query) refused", (await codeOf(pki.scep.parse(msg))) === "scep/unsupported-message-type");
+  }
+}
+
+async function testRequestRejectsResponseAttrs() {
+  // A request (PKCSReq / RenewalReq) carrying a CertRep response attribute is off-profile (RFC 8894 sec. 3.2.1).
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var base = [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var withStatus = await signWith(env, base.concat([{ type: O("scepPkiStatus"), values: [b.printable("0")] }]));
+  check("PKCSReq carrying pkiStatus refused", (await codeOf(pki.scep.parse(withStatus))) === "scep/unexpected-attribute");
+  var withRecipNonce = await signWith(env, base.concat([{ type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]));
+  check("PKCSReq carrying recipientNonce refused", (await codeOf(pki.scep.parse(withRecipNonce))) === "scep/unexpected-attribute");
+}
+
+async function testEnvelopeContentTypeMustBeData() {
+  // The pkcsPKIEnvelope's encrypted content type MUST be id-data (RFC 8894 sec. 3.2.2); an off-profile
+  // envelope naming another type is refused even though its plaintext would parse as a request.
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc", contentType: "signedData" });
+  var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  // The content type is a structural field, so it is refused with or without a recipient key.
+  check("non-data pkcsPKIEnvelope content type refused (no recipientKey)", (await codeOf(pki.scep.parse(msg))) === "scep/bad-envelope-content-type");
+  check("non-data pkcsPKIEnvelope content type refused (with recipientKey)", (await codeOf(pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-envelope-content-type");
+}
+
+async function testWrongStringType() {
+  // RFC 8894 sec. 3.2 pins messageType / transactionID / pkiStatus / failInfo as PrintableString and
+  // failInfoText as UTF8String; an off-profile string type (or nonce type) is refused.
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var base = [{ type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var utf8Type = await signWith(env, [{ type: O("scepMessageType"), values: [b.utf8("19")] }].concat(base));
+  check("messageType as UTF8String (not PrintableString) refused", (await codeOf(pki.scep.parse(utf8Type))) === "scep/bad-attribute");
+  var strNonce = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.printable("not-octets")] }]);
+  check("senderNonce as PrintableString (not OCTET STRING) refused", (await codeOf(pki.scep.parse(strNonce))) === "scep/bad-nonce");
+}
+
+async function testMalformedInputsCoverage() {
+  // build fail-closed paths: a missing signer, a recipient without keyEncipherment, and a bad signer key.
+  check("build without signer refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, transactionId: "t" }))) === "scep/bad-input");
+  check("build with a non-RSA recipient refused (RSAES-OAEP profile)", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.clientCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-recipient");
+  var rsaNoEncKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var rsaNoEncCert = await pki.x509.sign({ subject: "no-enc", subjectPublicKey: await pki.key.export(rsaNoEncKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: await pki.key.export(rsaNoEncKp.privateKey) });
+  check("build with an RSA recipient lacking keyEncipherment refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: rsaNoEncCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("build with a bad signer key refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: { cert: F.clientCert, key: Buffer.from("bad-key") }, transactionId: "t" }))) === "scep/bad-input");
+
+  var msg = await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" });
+  check("parse with the wrong recipient key -> decrypt-failed", (await codeOf(pki.scep.parse(msg, { recipientKey: { cert: F.clientCert, key: F.clientKey } }))) === "scep/decrypt-failed");
+  check("parse with a malformed signerCert refused", (await codeOf(pki.scep.parse(msg, { signerCert: Buffer.from("not a certificate") }))) === "scep/bad-input");
+
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var badNonce = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(8))] }]);
+  check("parse with a wrong-width senderNonce refused", (await codeOf(pki.scep.parse(badNonce))) === "scep/bad-nonce");
+}
+
+async function testBuildSnapshotsMessageData() {
+  // build snapshots messageData synchronously before its awaited proof-of-possession verify, so a caller
+  // that mutates the Buffer after calling build (but before awaiting it) cannot desync the enveloped
+  // request from the verified one: the message carries the original bytes.
+  var csrCopy = Buffer.from(F.csr);
+  var p = pki.scep.build({ messageType: "PKCSReq", messageData: csrCopy, recipient: F.caCert, signer: F.signer, transactionId: "toctou" });
+  csrCopy[csrCopy.length - 4] ^= 0x40;   // mutate after the synchronous snapshot, before the awaited encrypt
+  var msg = await p;
+  var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("build snapshots messageData: enveloped request is the original, PoP intact",
+    Buffer.compare(v.messageData, F.csr) === 0 && (await pki.csr.verify(v.messageData)).verified === true);
+}
+
+async function testParseSnapshotsBytes() {
+  // parse snapshots the message bytes at its door and uses that copy for both verification attempts (a
+  // detached FAILURE / PENDING is re-verified against an empty payload), so a caller overwriting the
+  // Buffer between the two attempts cannot swap which message's attributes are returned.
+  var failMsg = Buffer.from(await buildCertRep({ statusCode: "2", failCode: "2", transactionId: "f" }));   // conforming detached FAILURE
+  var p = pki.scep.parse(failMsg);   // door snapshots failMsg
+  failMsg.fill(0);                    // overwrite the caller's Buffer after the door
+  var v = await p;
+  check("parse snapshots message bytes: parsed from the door-time bytes", v.pkiStatus === "FAILURE" && v.failInfo === "badRequest");
+}
+
+async function testParseSnapshotsSignerCert() {
+  // parse captures opts.signerCert at its synchronous door, so a caller swapping it during the awaited
+  // verification cannot change which certificate the response is authenticated against.
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await buildCertRep({ statusCode: "0", transactionId: "auth", recipientNonce: nodeCrypto.randomBytes(16), content: env });
+  var o = { signerCert: F.caCert, recipientKey: { cert: F.caCert, key: F.caKey } };
+  var p = pki.scep.parse(rep, o);   // door snapshots F.caCert
+  o.signerCert = F.clientCert;       // swap to a different certificate after the door
+  var v = await p;
+  check("parse snapshots signerCert: authenticated against the door-time cert", v.signerAuthenticated === true && v.pkiStatus === "SUCCESS");
+}
+
+async function testBuildSnapshotsRecipient() {
+  // build captures the recipient at its synchronous door, so a caller swapping spec.recipient during the
+  // awaited verify cannot redirect the envelope to a substituted CA.
+  var otherKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var otherCa = await pki.x509.sign({ subject: "other CA", subjectPublicKey: await pki.key.export(otherKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["keyEncipherment"] } }, { key: await pki.key.export(otherKp.privateKey) });
+  var spec = { messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "r" };
+  var p = pki.scep.build(spec);   // door snapshots F.caCert as the recipient
+  spec.recipient = otherCa;        // swap to a different CA after the door
+  var msg = await p;
+  var v = await pki.scep.parse(msg, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("build snapshots recipient: enveloped to the door-time CA", Buffer.compare(v.messageData, F.csr) === 0);
+}
+
+async function testMultiValuedAttribute() {
+  // A single-typed attribute whose value SET holds more than one value passes the CMS parser (which
+  // rejects only a repeated attribute TYPE), so the single-value refusal is SCEP's own (P2).
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var base = [{ type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }];
+  var multi = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("19"), b.printable("17")] }].concat(base));
+  check("multi-valued transaction attribute refused", (await codeOf(pki.scep.parse(multi))) === "scep/bad-attribute");
+}
+
+async function testMultipleSigners() {
+  var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var two = await cmsSign.sign(env, [F.signer, { cert: F.caCert, key: F.caKey }], { additionalSignedAttributes: [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }] });
+  check("two SignerInfos refused", (await codeOf(pki.scep.parse(two))) === "scep/bad-signer");
+}
+
+async function testTamperFailsClosed() {
+  var msg = await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" });
+  // The client signs Ed25519, so the 64-byte signature is the trailing OCTET STRING. Flip a byte
+  // inside it: the DER stays well-formed and the outer signature no longer verifies.
+  var tampered = Buffer.from(msg);
+  tampered[tampered.length - 4] ^= 0x40;
+  var code = await codeOf(pki.scep.parse(tampered));
+  check("tampered signature is refused (fail-closed), never a false verdict", code === "scep/bad-signature");
+}
+
+async function testInputGuards() {
+  check("unknown build option refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t", bogus: 1 }))) === "scep/bad-input");
+  check("unknown parse option refused", (await codeOf(pki.scep.parse(await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" }), { nope: 1 }))) === "scep/bad-input");
+  check("unknown messageType refused", (await codeOf(pki.scep.build({ messageType: "Nope", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-message-type");
+  check("CertRep not built by this release", (await codeOf(pki.scep.build({ messageType: "CertRep", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-message-type");
+  check("empty transactionId refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "" }))) === "scep/bad-input");
+  var long = new Array(300).join("x");
+  check("over-long transactionId refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: long }))) === "scep/bad-input");
+  check("bad senderNonce width refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t", senderNonce: nodeCrypto.randomBytes(8) }))) === "scep/bad-nonce");
+  check("non-object build spec refused", (await codeOf(pki.scep.build(42))) === "scep/bad-input");
+}
+
+async function main() {
+  await setup();
+  await testPkcsReqRoundTrip();
+  await testRenewalReqRoundTrip();
+  await testNoKeyParse();
+  await testNonceEcho();
+  await testCertRepSuccessParse();
+  await testCertRepCrlOnly();
+  await testRequestPayloadValidated();
+  await testCertRepSuccessValidatesPayload();
+  await testCertRepFailureParse();
+  await testCertRepPendingParse();
+  await testMissingMandatoryAttributes();
+  await testUnknownEnumerants();
+  await testCertRepMissingStatusAndFail();
+  await testNonSuccessCertRepWithRecipientKey();
+  await testSignerAuthentication();
+  await testSignerKeyUsage();
+  await testEnvelopeRequiresCiphertext();
+  await testPinnedSignerKeyUsage();
+  await testBuildValidatesCsr();
+  await testCertRepRequiresRecipientNonce();
+  await testEnvelopeMandatory();
+  await testOuterContentTypeMustBeData();
+  await testFailInfoOnlyOnFailure();
+  await testMalformedInputsCoverage();
+  await testBuildSnapshotsMessageData();
+  await testParseSnapshotsBytes();
+  await testParseSnapshotsSignerCert();
+  await testBuildSnapshotsRecipient();
+  await testUnsupportedMessageTypes();
+  await testRequestRejectsResponseAttrs();
+  await testEnvelopeContentTypeMustBeData();
+  await testWrongStringType();
+  await testMultiValuedAttribute();
+  await testMultipleSigners();
+  await testTamperFailsClosed();
+  await testInputGuards();
+  console.log("CHECKS " + helpers.getChecks());
+}
+
+main().then(function () { process.exit(0); }, function (e) { console.error(e && e.stack || e); process.exit(1); });

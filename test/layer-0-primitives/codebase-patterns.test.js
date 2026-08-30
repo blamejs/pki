@@ -2006,11 +2006,12 @@ function testNoDuplicateCodeBlocks() {
       // The per-attribute uniqueness + assembly idiom: a dedup helper that rejects a repeated
       // AttributeType OID (seen[type]) then pushes Attribute ::= SEQUENCE { type OID, SET OF value }.
       // attrcert-sign's `add` and csr-sign's `addAttr` share it (different domain codes); pki-build's
-      // assertValidExtension shares only the decode+throw shingle coincidentally. Each is a small
-      // domain-local helper, not further extractable without threading a per-domain error callback.
-      files: ["lib/attrcert-sign.js:add", "lib/csr-sign.js:addAttr", "lib/pki-build.js:assertValidExtension"],
+      // assertValidExtension and scep's _assertValidEnvelope share only the decode+throw shingle
+      // coincidentally. Each is a small domain-local helper, not further extractable without threading
+      // a per-domain error callback.
+      files: ["lib/attrcert-sign.js:add", "lib/csr-sign.js:addAttr", "lib/pki-build.js:assertValidExtension", "lib/scep.js:_assertValidEnvelope"],
       mode: "family-subset",
-      reason: "attribute dedup+assembly idiom (reject a repeated AttributeType, push SEQUENCE{type, SET OF value}); attrcert `add` / csr `addAttr` share it with different domain codes, pki-build assertValidExtension shares only a coincidental decode+throw shingle -- domain-local, nothing cleanly extractable.",
+      reason: "attribute dedup+assembly idiom (reject a repeated AttributeType, push SEQUENCE{type, SET OF value}); attrcert `add` / csr `addAttr` share it with different domain codes, pki-build assertValidExtension and scep _assertValidEnvelope share only a coincidental decode+throw shingle -- domain-local, nothing cleanly extractable.",
     },
     {
       // The Promise-returning entry wrapper. Every verb documented `-> Promise<...>` opens the same
