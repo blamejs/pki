@@ -231,6 +231,31 @@ async function testSignerAuthentication() {
   check("no signerCert: crypto-only verdict, signerAuthenticated false", vNo.signerAuthenticated === false && vNo.signatureValid === true);
 }
 
+async function testEnvelopeRequiresCiphertext() {
+  // A request or SUCCESS CertRep whose EnvelopedData omits encryptedContent has no messageData to
+  // recover; it is refused structurally, without a recipient key (RFC 8894 sec. 3.2).
+  var ds = require("../helpers/der-surgery");
+  var realEnv = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  function reqAttrs() { return [{ type: O("scepMessageType"), values: [b.printable("19")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]; }
+  var noCt = ds.patch(realEnv, function (n) { return (n.tagClass === "context" && n.tagNumber === 0 && !n.constructed) ? Buffer.alloc(0) : undefined; });
+  check("pkcsPKIEnvelope with absent ciphertext refused (no recipientKey)", (await codeOf(pki.scep.parse(await signWith(noCt, reqAttrs())))) === "scep/missing-envelope");
+  // A present but zero-length [0] OCTET STRING also carries no ciphertext.
+  var emptyCt = ds.patch(realEnv, function (n) { return (n.tagClass === "context" && n.tagNumber === 0 && !n.constructed) ? Buffer.from([0x80, 0x00]) : undefined; });
+  check("pkcsPKIEnvelope with empty ciphertext refused (no recipientKey)", (await codeOf(pki.scep.parse(await signWith(emptyCt, reqAttrs())))) === "scep/missing-envelope");
+}
+
+async function testPinnedSignerKeyUsage() {
+  // The pinned opts.signerCert must itself be authorized to sign: a same-key digitalSignature cert
+  // embedded in the message cannot authenticate a pinned encryption-only cert (RFC 8894 sec. 2.3).
+  var kp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var key = await pki.key.export(kp.privateKey), spki = await pki.key.export(kp.publicKey);
+  var sigCert = await pki.x509.sign({ subject: "dual", subjectPublicKey: spki, notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: key });
+  var encCert = await pki.x509.sign({ subject: "dual", subjectPublicKey: spki, notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { keyUsage: ["keyEncipherment"] } }, { key: key });
+  var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+  var rep = await cmsSign.sign(env, { cert: sigCert, key: key }, { additionalSignedAttributes: [{ type: O("scepMessageType"), values: [b.printable("3")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepPkiStatus"), values: [b.printable("0")] }, { type: O("scepRecipientNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }] });
+  check("pinned encryption-only signerCert refused despite same-key signing cert", (await codeOf(pki.scep.parse(rep, { signerCert: encCert }))) === "scep/bad-signer-usage");
+}
+
 async function testSignerKeyUsage() {
   // A SCEP signer's certificate must be authorized to sign (RFC 8894 sec. 2.3): an encryption-only
   // certificate (keyUsage keyEncipherment, no digitalSignature) is refused for both build and parse.
@@ -449,6 +474,8 @@ async function main() {
   await testNonSuccessCertRepWithRecipientKey();
   await testSignerAuthentication();
   await testSignerKeyUsage();
+  await testEnvelopeRequiresCiphertext();
+  await testPinnedSignerKeyUsage();
   await testBuildValidatesCsr();
   await testCertRepRequiresRecipientNonce();
   await testEnvelopeMandatory();
