@@ -106,8 +106,8 @@ async function run() {
   var sctA = signedSct(opA);
   var parsedUnknown = { scts: [sctA], unknownScts: [{ version: 7, rawSct: Buffer.concat([Buffer.from([7]), Buffer.alloc(10, 0xEE)]) }], all: [sctA] };
   var v9 = await pki.ct.verifySctList(ENTRY, parsedUnknown, listAB, { certNotAfter: NOT_AFTER });
-  check("VL9. an unknown-version entry alongside a valid v1 SCT -> unknownScts:1, absent from results, validScts:1",
-    v9.unknownScts === 1 && v9.validScts === 1 && v9.results.length === 1 && v9.results[0].valid === true);
+  check("VL9. an unknown-version entry alongside a valid v1 SCT -> unknownScts:1, absent from results, validScts:1, totalScts:2",
+    v9.unknownScts === 1 && v9.validScts === 1 && v9.results.length === 1 && v9.results[0].valid === true && v9.totalScts === 2);
 
   // ---- Mis-shaped inputs THROW typed CtError ----
   check("VL10a. logList not a parseLogList result -> ct/bad-input",
@@ -250,6 +250,35 @@ async function run() {
   for (var hi = 0; hi < re26Node.children.length; hi++) if (re26Node.children[hi].tagClass === "context" && re26Node.children[hi].tagNumber === 3) hasExt3 = true;
   check("VL26. SCT-list as the only extension -> the extensions field is dropped (no empty [3]) and the SCT verifies",
     hasExt3 === false && Buffer.compare(re26.tbsCertificate, R) === 0 && (await pki.ct.verifySct(re26, rSct, logSpki)) === true);
+
+  // VL27 (RFC 6962 sec. 5.2): a future-dated SCT is rejected even with a valid signature, and not counted.
+  var futureSct = signedSct(opA, BigInt(Date.parse("2030-01-01T00:00:00Z")));
+  var v27 = await pki.ct.verifySctList(ENTRY, [signedSct(opB), futureSct], listAB, { certNotAfter: NOT_AFTER, at: new Date("2026-06-01T00:00:00Z") });
+  check("VL27. a future-dated SCT is rejected (ct/future-timestamp) and not counted; a valid sibling counts",
+    v27.validScts === 1 && v27.results[1].valid === false && v27.results[1].code === "ct/future-timestamp" && v27.results[0].valid === true);
+
+  // VL28: the path gate forwards opts.time as `at`, so a certificate whose embedded SCT is dated after the
+  // validation time fails the CT gate. The SCT signs over the reconstruction (tbsA) at a future timestamp.
+  var certFutSct = { version: 0, logId: logIdE, logIdHex: logIdE.toString("hex"), timestamp: BigInt(Date.parse("2027-01-01T00:00:00Z")), hashAlg: 4, sigAlg: 3,
+    signatureAlgorithm: { hash: 4, hashName: "sha256", signature: 3, signatureName: "ecdsa" }, signature: null, extensions: Buffer.alloc(0) };
+  certFutSct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData({ entryType: 1, tbsCertificate: tbsA, issuerKeyHash: issuerKeyHash }, certFutSct), logKp.privateKey);
+  var futSctExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), pki.asn1.build.octetString(pki.ct.encodeSctList([certFutSct]))]);
+  var certFuture = await pki.x509.sign(Object.assign({}, common, { extensions: [futSctExt, otherExt] }), issuerArg);
+  var rFut = await pki.path.validate([certFuture], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
+  var cFut = ctCheckOf(rFut);
+  check("VL28. the path gate rejects a future-dated SCT (opts.time forwarded as at) -> ct ok:false, path invalid",
+    cFut !== null && cFut.ok === false && rFut.valid === false);
+
+  // VL29 (DoS bound): a caller-supplied array over the SCT_MAX_COUNT cap (256) is refused before any
+  // verification, matching the bound parseSctList enforces on wire input.
+  var tooMany = new Array(257).fill(signedSct(opA));
+  check("VL29. an SCT array over the SCT_MAX_COUNT cap -> ct/too-many-scts (no unbounded verification)",
+    (await code(function () { return pki.ct.verifySctList(ENTRY, tooMany, listAB, { certNotAfter: NOT_AFTER }); })) === "ct/too-many-scts");
+
+  // VL30: the CT configuration is validated independent of the target certificate -- a cert with no SCT
+  // extension plus a bad policy value is path/bad-input at entry, not masked as path/ct-required.
+  check("VL30. no-SCT cert + an invalid ctPolicy value -> path/bad-input (config validated before the cert)",
+    (await code(function () { return pki.path.validate([certA], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 0 } }); })) === "path/bad-input");
 
   console.log("CHECKS " + helpers.getChecks());
 }

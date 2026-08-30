@@ -282,7 +282,10 @@ security-only patches after the next major releases.
   closed (`path/ct-required`), and the embedded SCTs are checked against the
   precertificate entry `pki.ct.x509CertEntry` reconstructs by removing the SCT
   extension from the certificate's TBSCertificate as byte surgery, never a
-  re-encoding. The
+  re-encoding. An SCT dated after the validation time is rejected and never
+  counted toward the policy (RFC 6962 sec. 5.2, a client rejects a future-dated
+  SCT), so a postdated attestation cannot satisfy a CT threshold before its
+  claimed issuance time. The
   log-list JSON is decoded through the bounded, duplicate-member-rejecting reader
   with byte and depth caps and `__proto__` safety.
   `pki.ct.verifyLogListSignature` verifies the detached `log_list.sig` over the
