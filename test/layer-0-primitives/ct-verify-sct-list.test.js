@@ -285,6 +285,14 @@ async function run() {
   check("VL31. a non-Date opts.certNotAfter -> ct/bad-input (not silently ignored)",
     (await code(function () { return pki.ct.verifySctList(ENTRY, [signedSct(opA)], listAB, { certNotAfter: "2026-06-01T00:00:00Z" }); })) === "ct/bad-input");
 
+  // VL32: a malformed timestamp on an SCT matching a RETIRED log makes _classifyLog throw (the retired
+  // gate range-checks the timestamp); the aggregate records it per-row rather than aborting, consistent
+  // with a malformed SCT against a usable log, so a valid sibling still counts.
+  var badTsSct = signedSct(retired, 1000000000000n); badTsSct.timestamp = -1n;
+  var v32 = await pki.ct.verifySctList(ENTRY, [signedSct(opA), badTsSct], listRet, { certNotAfter: NOT_AFTER });
+  check("VL32. a malformed-timestamp SCT on a retired log is recorded per-row, not a thrown abort; sibling counts",
+    v32.results.length === 2 && v32.results[1].valid === false && v32.results[1].code === "ct/bad-input" && v32.validScts >= 1);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
