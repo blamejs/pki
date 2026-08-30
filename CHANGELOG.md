@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.5.37 — 2026-08-30
+
+pki.cms.decrypt can return the recovered content as an async iterable of plaintext chunks.
+
+### Added
+
+- `pki.cms.decrypt(input, keyMaterial, opts)` accepts `opts.stream: true`, returning the verdict's `content` as an async iterable of plaintext `Buffer` chunks instead of a single `Buffer`. It applies to EnvelopedData, AuthEnvelopedData, EncryptedData (the `{ cek }` and `{ password }` forms), and AuthenticatedData. The integrity-checked modes verify before the first chunk is yielded, so a forged message fails before any plaintext is exposed; the unauthenticated CBC modes stream the plaintext as the cipher produces it, so a large payload is never buffered whole. Every failure remains the single uniform `cms/decrypt-failed` verdict, on the streamed path as on the buffered one.
+
 ## v0.5.36 — 2026-08-29
 
 pki.cms.encrypt accepts an async-iterable plaintext, encrypting a large payload without holding it whole in memory.
