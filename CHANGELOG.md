@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.5 — 2026-08-31
+
+pki.cmp.build assembles the two remaining CMP request bodies: a key-recovery request (krr) and a cross-certification request (ccr), completing the request-side arms (RFC 9810 sec. 5.3.7 / sec. 5.3.11).
+
+### Added
+
+- pki.cmp.build accepts a { krr } body arm (RFC 9810 sec. 5.3.7): a key-recovery request, a CertReqMessages built through pki.crmf.build under PKIBody tag [9], identical in syntax to an initialization request. Any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof.
+- pki.cmp.build accepts a { ccr } body arm (RFC 9810 sec. 5.3.11): a cross-certification request, a CertReqMessages under PKIBody tag [13], which a CA uses to have its certificate signed by another CA. Because the requesting CA generates and keeps the key pair, the private key must not be sent to the responding CA, so a ccr carrying a private-key-transport encryptedKey proof of possession is refused; a cross-certification request holds exactly one CertReqMsg (RFC 9810 Appendix D.6).
+
 ## v0.6.4 — 2026-08-30
 
 The ACME client gains account update and order listing: pki.acme.client updates an account's contacts (RFC 8555 sec. 7.3.2) and fetches the account's orders list, following the paginated Link: rel="next" chain (sec. 7.1.2.1).

@@ -209,6 +209,27 @@ async function run() {
   check("6f. genm body arm octet is 0xB5 ([21])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)) === 0xb5);
   check("6g. certConf body arm octet is 0xB8 ([24])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0 }] } }, SIG)) === 0xb8);
   check("6h. pollReq body arm octet is 0xB9 ([25])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 0 }] } }, SIG)) === 0xb9);
+  // krr [9] (key recovery request) and ccr [13] (cross-certification request), RFC 9810 sec. 5.3.7 / 5.3.11:
+  // both are CertReqMessages like ir/cr/kur. The parser is already krr/ccr-aware, and the build round-trips
+  // through it, so a ccr's sec. 5.3.11 restrictions are enforced on the emitted bytes.
+  check("6i. krr body arm octet is 0xA9 ([9]) and round-trips to body.arm krr",
+    bodyTagOctet(await pki.cmp.build({ header: HDR, body: { krr: irMsg.body.ir } }, SIG)) === 0xa9 &&
+    parse(await pki.cmp.build({ header: HDR, body: { krr: irMsg.body.ir } }, SIG)).body.arm === "krr");
+  check("6j. ccr body arm octet is 0xAD ([13]) and round-trips to body.arm ccr",
+    bodyTagOctet(await pki.cmp.build({ header: HDR, body: { ccr: irMsg.body.ir } }, SIG)) === 0xad &&
+    parse(await pki.cmp.build({ header: HDR, body: { ccr: irMsg.body.ir } }, SIG)).body.arm === "ccr");
+  // A ccr MUST NOT send the private key to the responding CA (RFC 9810 sec. 5.3.11): an encryptedKey POP is
+  // forbidden. The same request as a krr (key recovery) MAY carry it -- the restriction is ccr-only.
+  var kemKp = nodeCrypto.generateKeyPairSync("ml-kem-768");
+  var kemPk8 = kemKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var kemSpki = kemKp.publicKey.export({ format: "der", type: "spki" });
+  var ccrRecip = makeSigner("rsa");
+  var encKeyBody = { certTemplate: { subject: [{ commonName: "subca" }], publicKey: kemSpki },
+    pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPk8, identifier: "subca", recipients: [{ cert: ccrRecip.cert }], archive: true } };
+  check("6k. a ccr with an encryptedKey POP is refused (the private key must not be sent, RFC 9810 sec. 5.3.11)",
+    await codeOf(pki.cmp.build({ header: HDR, body: { ccr: encKeyBody } }, SIG)) === "cmp/bad-body");
+  check("6l. the same encryptedKey POP is accepted in a krr (the restriction is ccr-only)",
+    parse(await pki.cmp.build({ header: HDR, body: { krr: encKeyBody } }, SIG)).body.arm === "krr");
 
   // 7. envelope EXPLICIT tags: protection [0], extraCerts [1], header messageTime [0] / protectionAlg [1].
   var msgChildren = asn1.decode(irDer).children;
