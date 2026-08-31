@@ -1,5 +1,5 @@
 {
-  "README.md": "2026-08-31",
+  "README.md": "2026-08-30",
   "examples/wiki/concepts.js": "2026-08-18",
   "examples/wiki/lib/assets.js": "2026-07-13",
   "examples/wiki/lib/auto-site-entries.js": "2026-07-04",
@@ -35,7 +35,7 @@
   "lib/constants.js": "2026-08-30",
   "lib/crl-sign.js": "2026-08-29",
   "lib/crl-verify.js": "2026-08-19",
-  "lib/crmf-sign.js": "2026-08-29",
+  "lib/crmf-sign.js": "2026-08-31",
   "lib/crmf-verify.js": "2026-08-19",
   "lib/csr-sign.js": "2026-08-28",
   "lib/csr-verify.js": "2026-08-19",

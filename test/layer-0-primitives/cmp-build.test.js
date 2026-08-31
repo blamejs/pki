@@ -21,6 +21,7 @@ var nodeCrypto = require("node:crypto");
 var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
 var pkiBuild = require("../../lib/pki-build");    // for a direct contract test of the shared reqDenseArray guard
 var surgery = require("../helpers/der-surgery");
+var schemaCrmf = require("../../lib/schema-crmf");   // walkCertReqMessages: read a ccr's App. D.6 signingAlg back off the emitted CRMF
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -230,6 +231,32 @@ async function run() {
     await codeOf(pki.cmp.build({ header: HDR, body: { ccr: encKeyBody } }, SIG)) === "cmp/bad-body");
   check("6l. the same encryptedKey POP is accepted in a krr (the restriction is ccr-only)",
     parse(await pki.cmp.build({ header: HDR, body: { krr: encKeyBody } }, SIG)).body.arm === "krr");
+  // A ccr MAY profile its template with signingAlg [2] (RFC 9810 App. D.6): the requesting CA names the
+  // algorithm it asks the responding CA to sign the cross-certificate with. This is the one arm the parser
+  // accepts it on; RFC 4211 sec. 5 omits it from every other request, and the build gates emission to ccr.
+  var sigAlgId = asn1.build.sequence([asn1.build.oid(pki.oid.byName("ecdsaWithSHA256"))]);
+  var ccrTpl = { subject: [{ commonName: "subca" }], publicKey: s.spki, signingAlg: sigAlgId };
+  var ccrWalk = schemaCrmf.walkCertReqMessages(asn1.decode(await pki.crmf.build({ certTemplate: ccrTpl }, SIG, { crossCert: true })), { allowSigningAlg: true });
+  check("6m. a ccr template carries signingAlg [2], round-trips to arm ccr, and surfaces the requested algorithm (RFC 9810 App. D.6)",
+    parse(await pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTpl } } }, SIG)).body.arm === "ccr" &&
+    ccrWalk.messages[0].certReq.certTemplate.signingAlg != null &&
+    ccrWalk.messages[0].certReq.certTemplate.signingAlg.oid === pki.oid.byName("ecdsaWithSHA256"));
+  // signingAlg outside the cross-certification arm is an unknown certTemplate field the CRMF builder rejects
+  // at build time (RFC 4211 sec. 5); cmp.build passes that fault through untranslated so it names the field.
+  check("6n. signingAlg is refused outside a ccr: in an ir, in a krr, and (at the CRMF layer) without crossCert",
+    await codeOf(pki.cmp.build({ header: HDR, body: { ir: { certTemplate: ccrTpl } } }, SIG)) === "crmf/bad-input" &&
+    await codeOf(pki.cmp.build({ header: HDR, body: { krr: { certTemplate: ccrTpl } } }, SIG)) === "crmf/bad-input" &&
+    await codeOf(pki.crmf.build({ certTemplate: ccrTpl }, SIG, {})) === "crmf/bad-input");
+  // Every malformed signingAlg shape is refused: not a SEQUENCE, a SEQUENCE whose first element is not an
+  // OID, a SEQUENCE with an element beyond the one optional parameters (AlgorithmIdentifier holds at most the
+  // OID and one parameters), and a valid AlgorithmIdentifier followed by trailing bytes (the strict decoder
+  // rejects the trailing). All fail at build time with crmf/bad-input, naming the caller's field.
+  async function ccrSigningAlgCode(sa) { return codeOf(pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: { subject: [{ commonName: "subca" }], publicKey: s.spki, signingAlg: sa } } } }, SIG)); }
+  check("6o. a malformed signingAlg is refused in a ccr: not a SEQUENCE, no OID, an extra element, or trailing bytes",
+    await ccrSigningAlgCode(asn1.build.integer(5n)) === "crmf/bad-input" &&
+    await ccrSigningAlgCode(asn1.build.sequence([asn1.build.integer(1n)])) === "crmf/bad-input" &&
+    await ccrSigningAlgCode(asn1.build.sequence([asn1.build.oid(pki.oid.byName("ecdsaWithSHA256")), asn1.build.nullValue(), asn1.build.nullValue()])) === "crmf/bad-input" &&
+    await ccrSigningAlgCode(Buffer.concat([sigAlgId, Buffer.from([0])])) === "crmf/bad-input");
 
   // 7. envelope EXPLICIT tags: protection [0], extraCerts [1], header messageTime [0] / protectionAlg [1].
   var msgChildren = asn1.decode(irDer).children;
