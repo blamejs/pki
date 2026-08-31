@@ -275,6 +275,30 @@ async function testOversized() {
   check("#10 an oversized certificate download is rejected", (await codeOf(acme.downloadCertificate(A.URLS.certificate, NO_BIND))) === "acme/response-too-large");
 }
 
+// ---- 10b an injected transport may return a BufferSource (Uint8Array) body, not only a Buffer/string ----
+async function testByteSourceBody() {
+  var s = A.acmeServer({ certPems: [ISSUED_PEM] });
+  // Convert the directory (JSON, read via _jsonInput) and the certificate chain (PEM text, read via
+  // _bodyText) response bodies to a Uint8Array on the wire. A body read that String()-coerces a BufferSource
+  // turns it into "123,45,..." and the JSON fails to parse or the PEM chain does not split.
+  var u8 = function (req) {
+    return s.transport(req).then(function (res) {
+      if (req.url === A.URLS.directory && typeof res.body === "string") {   // a Uint8Array view
+        return Object.assign({}, res, { body: new Uint8Array(Buffer.from(res.body, "utf8")) });
+      }
+      if (req.url === A.URLS.certificate && typeof res.body === "string") {   // a raw ArrayBuffer (the full BufferSource contract)
+        return Object.assign({}, res, { body: new Uint8Array(Buffer.from(res.body, "utf8")).buffer });
+      }
+      return res;
+    });
+  };
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, u8));
+  var acct = await acme.newAccount({ termsOfServiceAgreed: true });
+  check("#10b a Uint8Array directory response body is normalized, not string-coerced (_jsonInput)", acct.account.status === "valid");
+  var dl = await acme.downloadCertificate(A.URLS.certificate, NO_BIND);
+  check("#10c an ArrayBuffer certificate-chain body is size-checked and read consistently (source, not view)", Buffer.isBuffer(dl.certificate) && Array.isArray(dl.chain));
+}
+
 // ---- 11 pre-push audit hardening (RFC 8555 sec. 6.1/6.4/6.5/7.4, CWE-770) ----
 async function testAuditHardening() {
   // (a) every request carries the sec. 6.1 REQUIRED User-Agent.
@@ -1809,6 +1833,7 @@ async function main() {
   await testRemainingVerbs();
   await testRenewalInfo();
   await testOversized();
+  await testByteSourceBody();
   await testAuditHardening();
   await testReviewHardening();
   await testReadyAndRelativeRedirect();

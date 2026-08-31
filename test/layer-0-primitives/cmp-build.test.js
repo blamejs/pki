@@ -87,6 +87,34 @@ async function run() {
   check("1f. nested rejects an empty array (PKIMessages is SIZE (1..MAX))", nestedEmpty === "cmp/bad-input");
   var nestedBad = await pki.cmp.build({ header: HDR, body: { nested: [Buffer.from([0x30, 0x00])] } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("1g. nested rejects an entry that is not a PKIMessage", nestedBad === "cmp/bad-input");
+
+  // ccr [13] cross-certification request (RFC 9810 sec. 5.3.11): the normative floor -- a CertReqMessages
+  // with the same template + POP rules as ir, and the one sec. 5.3.11 restriction that the requester's
+  // private key is not sent. App. D.6 is an OPTIONAL profile, so no D.6 field is enforced.
+  var ccrMsg = { header: HDR, body: { ccr: { certTemplate: { subject: [{ commonName: "cross-ca" }], publicKey: s.spki } } } };
+  var ccrDer = await pki.cmp.build(ccrMsg, SIG);
+  var mc = parse(ccrDer);
+  check("1h. ccr round-trips as the ccr [13] arm (RFC 9810 sec. 5.3.11)", mc.body.arm === "ccr");
+  check("1i. ccr wraps a CertReqMessages (ir syntax), decoded via the CRMF walk", !!mc.body.decoded);
+  check("1j. ccr is EXPLICIT-tagged [13]", bodyTagOctet(ccrDer) === 0xad);
+  // The one sec. 5.3.11 restriction: a ccr MUST NOT send the requester's private key, so the private-key
+  // -carrying encryptedKey POP is refused. The build's own round-trip self-verify (cmp.parse) enforces the
+  // parser's ccr rule, so a message this toolkit would refuse to read is never emitted.
+  var kemC = await pki.key.generate("ML-KEM-768");
+  var recipC = makeSigner("rsa");
+  var ccrEncKey = { header: HDR, body: { ccr: { certTemplate: { subject: [{ commonName: "cross-ca" }], publicKey: await pki.key.export(kemC.publicKey) },
+    pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: await pki.key.export(kemC.privateKey), identifier: "cross-ca", recipients: [{ cert: recipC.cert }], archive: true } } } };
+  var ccrEncErr = await pki.cmp.build(ccrEncKey, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1k. a ccr carrying an encryptedKey POP is refused (RFC 9810 sec. 5.3.11: the private key must not be sent)", ccrEncErr === "cmp/bad-body");
+  // A ccr carries exactly one CertReqMsg (App. D.6, the mirror of the one-CertResponse ccp rule): a
+  // multi-request ccr is refused up front, as the ccp builder refuses a multi-response ccp, not only at
+  // the round-trip self-verify.
+  var ccrMulti = { header: HDR, body: { ccr: { messages: [
+    { certReqId: 0, certTemplate: { subject: [{ commonName: "cross-a" }], publicKey: s.spki } },
+    { certReqId: 1, certTemplate: { subject: [{ commonName: "cross-b" }], publicKey: s.spki } },
+  ], key: s.key } } };
+  var ccrMultiErr = await pki.cmp.build(ccrMulti, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
+  check("1l. a multi-request ccr is refused up front (App. D.6: one CertReqMsg per ccr)", ccrMultiErr === "cmp/bad-input");
   // A sparse array skips holes under Array.prototype.map, so a hole must be a typed cmp/bad-input, never a
   // native Buffer.concat error, and a huge sparse length must fail fast rather than traverse empty slots.
   var nestedSparse = await pki.cmp.build({ header: HDR, body: { nested: new Array(2) } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });

@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.8 — 2026-08-31
+
+pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11), and the ACME client accepts a response body an injected transport returns as any BufferSource, not only a Node Buffer.
+
+### Added
+
+- pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11): a CertReqMessages under PKIBody [13], the request one certification authority sends to have another certify its existing public key. It carries the same certificate template and proof-of-possession as an ir or cr, and refuses the private-key-transport encryptedKey proof-of-possession, since a ccr does not send the requesting CA's private key. It carries exactly one CertReqMsg (Appendix D.6, mirroring the one-CertResponse ccp rule), with multiple cross-certificates sent in separate messages, and requires no Appendix D.6 certificate-template field.
+
+### Fixed
+
+- The ACME and SCEP clients read a response body an injected transport returns as any BufferSource (a Uint8Array, a raw ArrayBuffer, a DataView), not only a Node Buffer or a string. Both the response-size check and the body decode take its raw bytes through the byte guard, so a BufferSource response is measured and parsed from its bytes rather than from a comma-joined string, and the size check accepts the same forms the decode does.
+
 ## v0.6.7 — 2026-08-31
 
 pki.scep gains the SCEP HTTP client verbs (RFC 8894): getCACaps, getCACert, enroll, and renew drive a certificate enrollment against a SCEP CA over the shipped pkiMessage codec.
