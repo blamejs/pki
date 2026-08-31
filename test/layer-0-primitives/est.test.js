@@ -463,6 +463,12 @@ function testClassify() {
   // 59. a 4xx text/plain body surfaced capped as the diagnostic on the typed error.
   var c59 = code(function () { pki.est.classifyResponse(400, { "content-type": "text/plain" }, Buffer.from("bad request details"), { op: "simpleenroll" }); });
   check("59. 4xx typed http-error", c59 === "est/http-error");
+  // 59b. a 4xx error body delivered as a Uint8Array (an injected transport) is decoded for the diagnostic,
+  // not String()-coerced to a "104,105,..." comma list.
+  check("59b. a Uint8Array 4xx error body is decoded in the est/http-error message (not String()-coerced)", (function () {
+    try { pki.est.classifyResponse(400, { "content-type": "text/plain" }, new Uint8Array([0x68, 0x69]), { op: "simpleenroll" }); return false; }
+    catch (e) { return e.code === "est/http-error" && e.message.indexOf("hi") !== -1 && e.message.indexOf("104,105") === -1; }
+  })());
   // 59b. a DETACHED-backed error body must not crash the message decode -- the
   // bounded toString reads it as empty so the est/http-error verdict survives.
   check("59b. 4xx with a detached body still yields est/http-error", code(function () {
@@ -798,6 +804,14 @@ async function testOptionSurface() {
     (await refusedUnknown(function () {
       return pki.est.serverkeygen(BASE, csr, { transport: never, tls: { useSystemStore: true }, expectedRecipientKind: "ktri" });
     })) === true);
+  // 81z. RFC 7030 sec. 6 response cap: a near-cap BufferSource body is sized by its real bytes, not a
+  // String()-coerced comma list (which over-counts ~4x and falsely trips est/response-too-large). Only a
+  // caller-injected non-Buffer transport reaches this; the default transport returns a capped Buffer.
+  var _ccU8 = new Uint8Array(Buffer.from(Buffer.from(certsOnly([REAL_CERT])).toString("base64"), "ascii"));
+  var _ccT = function () { return Promise.resolve({ status: 200, headers: { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, body: _ccU8 }); };
+  var _ccRes = await pki.est.cacerts(BASE, { transport: _ccT, tls: { useSystemStore: true }, maxResponseBytes: _ccU8.length + 32 });
+  check("81z. a near-cap Uint8Array cacerts body is sized by its real bytes (not String()-coerced) -> parsed, not est/response-too-large",
+    _ccRes && Array.isArray(_ccRes.certificates) && _ccRes.certificates.length === 1);
   // The two verbs that take options without going near the network.
   check("82. pki.est.classifyResponse refuses an unknown option",
     code(function () { pki.est.classifyResponse(200, {}, Buffer.alloc(0), { op: "cacerts", nwo: 1 }); }) === "est/bad-input");

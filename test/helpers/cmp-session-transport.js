@@ -461,6 +461,7 @@ function corruptLeafSig(leafDer) {
 // central-key-generation payload on the certifiedKeyPair).
 function _certRep(arm, certReqId, statusCode, certDer, extra) {
   var r = { certReqId: certReqId, status: { status: statusCode } };
+  if (extra && extra.failInfo != null) r.status.failInfo = extra.failInfo;   // an off-profile failInfo on a granted / waiting CertResponse
   if (certDer) { r.certifiedKeyPair = { certificate: certDer }; if (extra && extra.privateKey != null) r.certifiedKeyPair.privateKey = extra.privateKey; }
   var content = { response: [r] };
   if (extra && extra.caPubs != null) content.caPubs = extra.caPubs;

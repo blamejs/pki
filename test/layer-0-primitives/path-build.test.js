@@ -490,6 +490,13 @@ async function run() {
   check("AIA B3: a certs-only body mislabeled application/pkix-cert still parses (structure-sniff)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b3a }))).valid === true);
   var b3b = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: aInter }; });
   check("AIA B3: a single DER cert mislabeled application/pkcs7-mime still parses", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b3b }))).valid === true);
+  // B4 BYTE-SOURCE BODY: an injected transport may return the cert body as any BufferSource (Uint8Array /
+  // ArrayBuffer), not only a Buffer. A String()-coercion turns a Uint8Array into "48,130,..." and corrupts
+  // the DER, silently missing the AIA-discoverable intermediate; the body is re-viewed through the byte guard.
+  var b4u = mkTransport(function () { var d = certsOnlyCms([aInter]); return { status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: new Uint8Array(d) }; });
+  check("AIA B4: a Uint8Array certs-only response body is normalized, not String()-coerced (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b4u }))).valid === true);
+  var b4a = mkTransport(function () { var d = aInter; var ab = new ArrayBuffer(d.length); new Uint8Array(ab).set(d); return { status: 200, headers: { "content-type": "application/pkix-cert" }, body: ab }; });
+  check("AIA B4: a raw ArrayBuffer single-cert response body is normalized (the full BufferSource contract, valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b4a }))).valid === true);
 
   // C1 SSRF SCHEME GATE: a non-https caIssuers URL is NEVER fetched (no socket); the verdict is the no-AIA case.
   var cHttpLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "http://internal.example/inter.der" }, { tag: 6, value: "ldap://ca.example/cn=x" }, { tag: 6, value: "file:///etc/passwd" }])] });

@@ -110,6 +110,20 @@ async function run() {
   check("2. PBMAC1 verifies: valid, type=mac, trusted (secret matched), protectionAlg.name=pbmac1",
     mv.valid === true && mv.protectionType === "mac" && mv.trusted === true && mv.protectionAlg.name === "pbmac1");
 
+  // ===== 2b. RFC 9483 sec. 3.5 header conformance (receiving side) =====
+  // pvno MUST be cmp2000(2) or cmp2021(3); a protection-valid cmp1999(1) message is refused on receipt.
+  // The parser still accepts pvno=1 as valid RFC 9810 sec. 5.1.1 syntax; the lightweight profile refuses it.
+  var v1 = await pki.cmp.verify(await buildSig({ pvno: 1 }), { signerCert: s.cert });
+  check("2b1. a protection-valid cmp1999(1) message is refused -> cmp/unsupported-version (RFC 9483 sec. 3.5)", v1.valid === false && v1.code === "cmp/unsupported-version");
+  check("2b2. a cmp2000(2) message is accepted (the lower bound is 2, not a blanket reject)", (await pki.cmp.verify(await buildSig({ pvno: 2 }), { signerCert: s.cert })).valid === true);
+  // senderNonce MUST be present and MUST contain at least 128 bits (16 octets). failInfo: badSenderNonce.
+  check("2b3. a message with no senderNonce is refused -> cmp/bad-sender-nonce (RFC 9483 sec. 3.5)", (await pki.cmp.verify(await buildSig({ senderNonce: null }), { signerCert: s.cert })).code === "cmp/bad-sender-nonce");
+  check("2b4. a senderNonce shorter than 128 bits is refused -> cmp/bad-sender-nonce", (await pki.cmp.verify(await buildSig({ senderNonce: Buffer.alloc(8, 5) }), { signerCert: s.cert })).code === "cmp/bad-sender-nonce");
+  // transactionID MUST be present. failInfo: badDataFormat.
+  check("2b6. a message with no transactionID is refused -> cmp/bad-transaction-id (RFC 9483 sec. 3.5)", (await pki.cmp.verify(await buildSig({ transactionID: null }), { signerCert: s.cert })).code === "cmp/bad-transaction-id");
+  // The same header checks apply to a PBMAC1 message (uniform across protection flavors).
+  check("2b5. the senderNonce check applies to a PBMAC1 message too -> cmp/bad-sender-nonce", (await pki.cmp.verify(await buildMac("hunter2", null, { senderNonce: null }), { sharedSecret: "hunter2" })).code === "cmp/bad-sender-nonce");
+
   // ===== 3. GREEN oracle cross-check: an independent PBKDF2+HMAC over the reconstructed ProtectedPart =====
   var mm = parse(macDer);
   var derivedKey = nodeCrypto.pbkdf2Sync(Buffer.from("hunter2", "utf8"), Buffer.alloc(16, 9), 2048, 32, "sha256");
@@ -693,9 +707,9 @@ async function run() {
   check("20a. opts=null is treated as the default (empty) opts", (await pki.cmp.verify(await buildSig(), null)).valid === true);
   check("20b. opts as a Buffer -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), Buffer.from("x"))) === "cmp/bad-input");
   check("20b2. opts as a string -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), "x")) === "cmp/bad-input");
-  var minHdr = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } };
+  var minHdr = { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) };
   var minV = await pki.cmp.verify(await pki.cmp.build({ header: minHdr, body: IRBODY }, SIG), { signerCert: s.cert });
-  check("20c. a message with no transactionID/senderNonce -> verdict echoes null for the absent fields", minV.valid === true && minV.transactionID === null && minV.senderNonce === null && minV.recipNonce === null);
+  check("20c. a first-message header (no recipNonce) verifies; the verdict echoes null for the absent recipNonce and surfaces the present transactionID/senderNonce", minV.valid === true && Buffer.isBuffer(minV.transactionID) && Buffer.isBuffer(minV.senderNonce) && minV.recipNonce === null);
   // trustAnchors as a SINGLE root cert (not an array); no opts.time -> the signer path is validated at the
   // trusted current time (the signer cert's 2020..2040 window covers it), exercising the single-cert coercion.
   var mtChain = await pki.cmp.build({ header: Object.assign({ messageTime: T }, HDR), body: await p10Body(signerSpki, signerKey) }, { key: signerKey, cert: signerCert });
@@ -707,8 +721,8 @@ async function run() {
   check("21b. maxIterations = 0 -> throws cmp/bad-input", await codeOf(pki.cmp.verify(macDer, { sharedSecret: "hunter2", maxIterations: 0 })) === "cmp/bad-input");
   check("21c. a malformed PEM signerCert -> throws cmp/bad-input", await codeOf(pki.cmp.verify(await buildSig(), { signerCert: "-----BEGIN CERTIFICATE-----\n@@@\n-----END CERTIFICATE-----" })) === "cmp/bad-input");
   check("21d. a valid-DER-but-not-a-certificate signerCert (corrupt required config) -> throws cmp/bad-input, not a routine not-found verdict", await codeOf(pki.cmp.verify(await buildSig(), { signerCert: Buffer.from([0x30, 0x03, 0x02, 0x01, 0x01]) })) === "cmp/bad-input");
-  var noTidDer = await pki.cmp.build({ header: { sender: { directoryName: [{ commonName: "Test Signer" }] }, recipient: { directoryName: "CN=CA" } }, body: IRBODY }, SIG);
-  check("21e. an opt-in transactionID against a message that carries none -> cmp/transaction-id-mismatch", (await pki.cmp.verify(noTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
+  var difTidDer = await buildSig({ transactionID: Buffer.alloc(16, 2) });
+  check("21e. an opt-in transactionID against a message carrying a DIFFERENT transactionID -> cmp/transaction-id-mismatch", (await pki.cmp.verify(difTidDer, { signerCert: s.cert, transactionID: Buffer.alloc(16, 1) })).code === "cmp/transaction-id-mismatch");
 
   // ===== 23. every caller-owned option is fixed at the call =====
   // Verification suspends this verb -- PBMAC1 derivation on one path, the signature engine on the

@@ -25,7 +25,13 @@ function testDecode() {
   check("string passes through", text.decode("abc", 16, TestError, SPEC) === "abc");
   check("over-cap Buffer rejected", codeOf(function () { text.decode(Buffer.alloc(17), 16, TestError, SPEC); }) === "x/too-large");
   check("over-cap string rejected", codeOf(function () { text.decode(new Array(18).join("x"), 16, TestError, SPEC); }) === "x/too-large");
-  check("non-string/Buffer rejected", codeOf(function () { text.decode(42, 16, TestError, SPEC); }) === "x/bad-input");
+  // Any byte source decodes, not only a Node Buffer (a caller-injected transport may return a Uint8Array, a
+  // DataView, or a raw ArrayBuffer); each is re-viewed through the byte guard, capped, then decoded.
+  check("Uint8Array decodes (a byte source, not only a Buffer)", text.decode(new Uint8Array([0x61, 0x62, 0x63]), 16, TestError, SPEC) === "abc");
+  check("DataView decodes (a byte source)", text.decode(new DataView(Uint8Array.from([0x61, 0x62, 0x63]).buffer), 16, TestError, SPEC) === "abc");
+  check("raw ArrayBuffer decodes (the full BufferSource contract)", text.decode(Uint8Array.from([0x61, 0x62, 0x63]).buffer, 16, TestError, SPEC) === "abc");
+  check("over-cap Uint8Array rejected (cap-before-copy applies to every byte source)", codeOf(function () { text.decode(new Uint8Array(17), 16, TestError, SPEC); }) === "x/too-large");
+  check("non-byte-source/non-string rejected", codeOf(function () { text.decode(42, 16, TestError, SPEC); }) === "x/bad-input");
   check("fatal utf-8 rejects an invalid sequence", codeOf(function () { text.decode(Buffer.from([0xC3]), 16, TestError, FATAL); }) === "x/bad-utf8");
   check("fatal utf-8 decodes a valid sequence", text.decode(Buffer.from([0xC3, 0xA9]), 16, TestError, FATAL) === String.fromCharCode(0xE9));
 }

@@ -1,0 +1,14 @@
+{
+  "version": "0.6.9",
+  "headline": "pki.cmp.verify holds a received PKIMessage to the RFC 9483 sec. 3.5 header rules, and pki.path.build and pki.est read a response body an injected transport returns as any BufferSource, not only a Node Buffer.",
+  "summary": "A received CMP message is now checked against the RFC 9483 sec. 3.5 receiving-side header rules. Once a message's protection verifies, pki.cmp.verify refuses a header that violates the profile: a pvno other than cmp2000(2) or cmp2021(3), an absent transactionID, or a senderNonce that is absent or under 128 bits. pki.cmp.session applies the same checks to every response and refuses a waiting certificate-response that carries failInfo (sec. 4.4). Separately, pki.path.build's opt-in AIA fetch and every pki.est network verb read a response body an injected transport returns as any BufferSource (a Uint8Array, a raw ArrayBuffer, a DataView), so a transport that delivers bytes in a typed array is parsed from its bytes rather than a comma-joined string. The default HTTPS transport returns a Node Buffer and is unaffected.",
+  "sections": {
+    "Changed": [
+      "pki.cmp.verify holds a received PKIMessage to the RFC 9483 sec. 3.5 receiving-side header rules once its protection verifies: the pvno must be cmp2000(2) or cmp2021(3), the transactionID must be present, and the senderNonce must be present and carry at least 128 bits. A message failing any of these is a fail-closed verdict (cmp/unsupported-version, cmp/bad-transaction-id, cmp/bad-sender-nonce). A cmp1999(1) message stays valid RFC 9810 syntax that pki.cmp.parse still decodes; the profile refuses it only on receipt. pki.cmp.session applies these checks to every response and additionally refuses a waiting ip/cp/kup CertResponse that carries failInfo (RFC 9483 sec. 4.4). A conformant peer is unaffected; a peer that omits a required header field is now refused."
+    ],
+    "Fixed": [
+      "pki.path.build's opt-in AIA caIssuers fetch reads a certificate an injected transport returns as any BufferSource (a Uint8Array, a raw ArrayBuffer, a DataView), not only a Node Buffer. A typed-array body was coerced to a comma-joined string and failed to parse, silently dropping an AIA-discoverable intermediate from the built path; it is now re-viewed through the byte guard and parsed from its bytes.",
+      "Every pki.est network verb reads a response body an injected transport returns as any BufferSource, not only a Node Buffer or a string. The transfer decode, the multipart splitter, the response-size checks, and the error diagnostic take the raw bytes through the byte guard, so a cacerts, enrollment, or serverkeygen response delivered in a typed array is parsed and sized from its bytes."
+    ]
+  }
+}
