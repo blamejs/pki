@@ -531,6 +531,13 @@ async function testGetCACert() {
   check("getCACert: chain response carrying no certificate refused", (await codeOf(pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-ra-cert" }, body: certsOnly([]) }) }))) === "scep/no-certificates");
   check("getCACert: wrong content-type refused", (await codeOf(pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "text/html" }, body: F.caCert }) }))) === "scep/bad-content-type");
   check("getCACert: HTTP error refused", (await codeOf(pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 500, headers: {}, body: "oops" }) }))) === "scep/http-error");
+  // the fingerprint is captured at the entry point: a caller mutating expectedFingerprint while the GET is
+  // in flight cannot repoint the pin away from the value it supplied at the call.
+  var fpOrig = nodeCrypto.createHash("sha256").update(F.caCert).digest("hex");
+  var gcOpts = { expectedFingerprint: fpOrig };
+  gcOpts.transport = fakeTransport(function () { gcOpts.expectedFingerprint = "00" + fpOrig.slice(2); return Promise.resolve({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }); });
+  var gcOut = await pki.scep.getCACert("http://ca.example/scep", gcOpts);
+  check("getCACert: a mid-GET fingerprint swap cannot repoint the pin", Buffer.compare(gcOut.caCertificate, F.caCert) === 0);
 }
 
 async function testEnrollSuccess() {
@@ -553,7 +560,10 @@ async function testEnrollFailureAndPending() {
   var csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: cl.pub }, { key: cl.key });
   var base = { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key } };
   var fT = caTransport(function (p) { return buildCertRep({ statusCode: "2", failCode: "2", failText: "bad request", transactionId: p.transactionId, recipientNonce: p.senderNonce }); });
-  check("enroll: a FAILURE CertRep throws scep/enrollment-failed", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: fT }, base)))) === "scep/enrollment-failed");
+  var failErr = null;
+  try { await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: fT }, base)); } catch (e) { failErr = e; }
+  check("enroll: a FAILURE CertRep throws scep/enrollment-failed", failErr && failErr.code === "scep/enrollment-failed");
+  check("enroll: the failure error carries the structured failInfo and failInfoText", failErr && failErr.failInfo === "badRequest" && failErr.failInfoText === "bad request");
   var pT = caTransport(function (p) { return buildCertRep({ statusCode: "3", transactionId: p.transactionId, recipientNonce: p.senderNonce }); });
   var pend = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: pT }, base));
   check("enroll: a PENDING CertRep returns the pending status", pend.status === "PENDING" && typeof pend.transactionId === "string");
@@ -587,9 +597,19 @@ async function testClientTransportEdges() {
   ]);
   await pki.scep.getCACaps("https://ca.example/scep", { transport: xorigin, tls: { cert: Buffer.from("CLIENT-CERT"), key: Buffer.from("CLIENT-KEY"), anchors: [] } });
   check("client: mTLS credential reaches the initial origin", Buffer.isBuffer(xorigin.calls[0].tls.cert) && Buffer.isBuffer(xorigin.calls[0].tls.key));
-  check("client: mTLS credential is stripped on a cross-origin hop", xorigin.calls[1].tls.cert == null && xorigin.calls[1].tls.key == null);
+  // Explicitly null, not absent: a deleted field falls back to a transport's own tls defaults, so the
+  // cross-origin hop must OVERRIDE cert/key/servername to suppress a configured default credential.
+  check("client: mTLS credential is overridden (not just omitted) on a cross-origin hop", xorigin.calls[1].tls.cert === null && xorigin.calls[1].tls.key === null && xorigin.calls[1].tls.servername === null);
+  // even when the call carries no request-level tls, a cross-origin hop must emit explicit null overrides:
+  // the transport may hold default client credentials that an omitted field would fall through to.
+  var xoBare = fakeTransport([{ status: 302, headers: { location: "https://other.example/scep" } }, { status: 200, headers: { "content-type": "text/plain" }, body: "AES\n" }]);
+  await pki.scep.getCACaps("https://ca.example/scep", { transport: xoBare });
+  check("client: a cross-origin hop overrides tls credentials even when the call sets none", xoBare.calls[1].tls.cert === null && xoBare.calls[1].tls.key === null && xoBare.calls[1].tls.servername === null);
+  check("client: a redirect to a non-HTTP scheme is refused", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport([{ status: 302, headers: { location: "ftp://evil.example/x" } }]) }))) === "scep/bad-url");
   check("client: the redirect cap is enforced", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 302, headers: { location: "http://ca.example/next" } }), maxRedirects: 1 }))) === "scep/too-many-redirects");
   check("client: a redirect without a Location is refused", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 302, headers: {}, body: "" }) }))) === "scep/bad-response");
+  check("client: a non-HTTP base URL is refused even with an injected transport", (await codeOf(pki.scep.getCACaps("ftp://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\n" }) }))) === "scep/bad-url");
+  check("client: a file URL is refused", (await codeOf(pki.scep.getCACaps("file:///etc/passwd", { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\n" }) }))) === "scep/bad-url");
   check("getCACaps: a 500 is an error, not none-supported", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 500, headers: {}, body: "" }) }))) === "scep/http-error");
   check("client: a response over the byte cap is refused", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: Buffer.alloc(4096, 0x41) }), maxResponseBytes: 16 }))) === "scep/response-too-large");
   var fpColon = nodeCrypto.createHash("sha256").update(F.caCert).digest("hex").replace(/(..)(?!$)/g, "$1:");
@@ -621,6 +641,28 @@ async function testEnrollSecurity() {
   // a CertRep whose transactionID does not echo the request is refused even with a matching nonce + signer.
   var wrongTxn = caTransport(function (p) { return buildCertRep({ statusCode: "3", transactionId: "a-different-transaction", recipientNonce: p.senderNonce }); });
   check("enroll: a mismatched CertRep transactionID is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: wrongTxn }, base)))) === "scep/transaction-id-mismatch");
+  // a mid-flight mutation of caCert must not change the trusted response signer: the response-security
+  // inputs are snapshotted at the synchronous entry point, so the response is authenticated against the
+  // caCert the request was built with, not one the caller swaps in while the POST is in flight.
+  var swapIssued = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  var swapOpts = Object.assign({}, base);
+  swapOpts.transport = fakeTransport(async function (req) {
+    swapOpts.caCert = F.issuedCert;   // swap the trusted signer after build, before the response is parsed
+    var p = await pki.scep.parse(req.body, { recipientKey: { cert: F.caCert, key: F.caKey } });
+    var env = await cmsEncrypt.encrypt(certsOnly([swapIssued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return { status: 200, headers: { "content-type": "application/x-pki-message" }, body: await buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }) };
+  });
+  var swapOut = await pki.scep.enroll("http://ca.example/scep", swapOpts);
+  check("enroll: a mid-flight caCert swap cannot change the trusted response signer", swapOut.status === "SUCCESS" && Buffer.compare(swapOut.certificate, swapIssued) === 0);
+  // two returned certificates carrying the requested public key (a same-key renewal, a duplicate) are
+  // ambiguous: a CMS CertificateSet states no issuance order, so the issued certificate cannot be chosen.
+  var issuedA = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  var issuedB = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-02-01"), notAfter: new Date("2028-01-01") }, { key: F.caKey, cert: F.caCert });
+  var ambigT = caTransport(async function (p) {
+    var env = await cmsEncrypt.encrypt(certsOnly([issuedA, issuedB]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+  });
+  check("enroll: two certificates carrying the requested key are refused as ambiguous", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: ambigT }, base)))) === "scep/ambiguous-issued-cert");
 }
 
 async function testClientInputGuards() {

@@ -1052,6 +1052,8 @@ security-only patches after the next major releases.
   credentials (answered only after the server is authenticated), the mTLS client
   certificate and key, and the pinned `servername` (SNI, which selects the
   enrollment host's certificate), dropped even when no client certificate is set.
+  The drop is an explicit override, so a credential configured as a default on the
+  transport is suppressed on the cross-origin hop.
   A caller's `checkServerIdentity` pin is retained and re-evaluated against the
   redirected host, so a certificate or SPKI pin keeps applying rather than being
   silently bypassed. The response body is bounded while it streams, aborted the

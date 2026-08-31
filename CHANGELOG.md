@@ -14,6 +14,10 @@ pki.scep gains the SCEP HTTP client verbs (RFC 8894): getCACaps, getCACert, enro
 - pki.scep.getCACert(baseUrl, opts) retrieves the CA certificate, either a single DER certificate or a certs-only chain (RFC 8894 sec. 4.2). Pass an out-of-band expectedFingerprint (a hex string or Buffer, SHA-256 by default) and a returned certificate must match it or the response is refused (RFC 8894 sec. 2.2); omitting it returns the certificates for the caller to authenticate.
 - pki.scep.enroll(baseUrl, opts) and pki.scep.renew(baseUrl, opts) POST a PKCSReq or RenewalReq to ?operation=PKIOperation and read the CertRep. The response signature is authenticated against the CA certificate and its recipientNonce must echo the request's senderNonce; on SUCCESS the issued certificate is selected out of the response by SubjectPublicKeyInfo match, a FAILURE throws scep/enrollment-failed carrying the CA's failInfo, and a PENDING returns { status: "PENDING", transactionId } to retry. The content key is transported under RSAES-OAEP, so the CA certificate must be an RSA keyEncipherment certificate.
 
+### Fixed
+
+- The EST, SCEP, and ACME client verbs override the mTLS client certificate, key, and pinned servername on a cross-origin redirect rather than omitting them. A transport constructed with a default client credential (for example pki.transport.https({ tls: { cert, key } })) no longer presents that credential to the redirected origin.
+
 ## v0.6.6 — 2026-08-31
 
 pki.kem establishes a shared secret with composite ML-KEM (draft-ietf-lamps-pq-composite-kem): a post-quantum ML-KEM hybridized with a traditional RSA-OAEP, ECDH, X25519, or X448, so the secret holds if either component is later broken.
