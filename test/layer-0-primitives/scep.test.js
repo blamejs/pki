@@ -509,10 +509,18 @@ async function testGetCACaps() {
   check("getCACaps: 404 means none supported", Object.keys(none).length === 0);
   var notImpl = await pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 501, headers: {}, body: "" }) });
   check("getCACaps: 501 Not Implemented means none supported (RFC 8894 sec. 3.5.1)", Object.keys(notImpl).length === 0);
+  var notAllowed = await pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 405, headers: {}, body: "" }) });
+  check("getCACaps: 405 Method Not Allowed means none supported", Object.keys(notAllowed).length === 0);
+  check("getCACaps: a 502 is a transient error, not none-supported", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 502, headers: {}, body: "" }) }))) === "scep/http-error");
   var weak = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "SHA-1\r\nDES3\r\n" });
   check("getCACaps: expectSCEPStandard fails closed when absent", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: weak, expectSCEPStandard: true }))) === "scep/weak-profile");
   var proxyHtml = fakeTransport({ status: 200, headers: { "content-type": "text/html" }, body: "<html>gateway error</html>" });
   check("getCACaps: a 200 non-text/plain response is refused, not read as no capabilities", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: proxyHtml }))) === "scep/bad-content-type");
+  // the strong-profile policy is captured at the door: a caller cannot relax its own downgrade guard by
+  // mutating opts while the GET is in flight.
+  var relaxOpts = { expectSCEPStandard: true };
+  relaxOpts.transport = fakeTransport(function () { relaxOpts.expectSCEPStandard = false; return Promise.resolve({ status: 200, headers: { "content-type": "text/plain" }, body: "SHA-1\r\n" }); });
+  check("getCACaps: a mid-flight relax of expectSCEPStandard is ignored", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", relaxOpts))) === "scep/weak-profile");
 }
 
 async function testGetCACert() {
@@ -687,6 +695,29 @@ async function testEnrollSecurity() {
   });
   var rkOut = await pki.scep.enroll("http://ca.example/scep", rkSwapOpts);
   check("enroll: a mid-flight recipientKey field swap cannot change the decryption credential", rkOut.status === "SUCCESS" && Buffer.compare(rkOut.certificate, swapIssued) === 0);
+  // the transport options are snapshotted at the door too: replacing opts.transport or opts.tls.cert
+  // immediately after the call must not reroute the in-flight request or change the mTLS identity it presents.
+  var okBuild = async function (p) {
+    var env = await cmsEncrypt.encrypt(certsOnly([swapIssued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+  };
+  var T1 = caTransport(okBuild), T2 = caTransport(okBuild);
+  var swapTOpts = Object.assign({ transport: T1, tls: { cert: Buffer.from("CLIENT-CERT-A"), anchors: [] } }, base);
+  var pSwap = pki.scep.enroll("http://ca.example/scep", swapTOpts);
+  swapTOpts.transport = T2;                          // reroute attempt
+  swapTOpts.tls.cert = Buffer.from("CLIENT-CERT-B"); // mTLS identity-swap attempt
+  await pSwap;
+  check("enroll: a transport swap immediately after the call cannot reroute the in-flight request", T1.calls.length === 1 && T2.calls.length === 0);
+  check("enroll: a tls.cert swap immediately after the call cannot change the presented mTLS identity", T1.calls.length === 1 && T1.calls[0].tls.cert.equals(Buffer.from("CLIENT-CERT-A")));
+  // the request URL is resolved at the door: a baseUrl object whose toString() changes after the call must
+  // not redirect the in-flight POST to another host.
+  var urlTarget = "http://ca.example/scep";
+  var mutBaseUrl = { toString: function () { return urlTarget; } };
+  var urlT = caTransport(okBuild);
+  var pUrl = pki.scep.enroll(mutBaseUrl, Object.assign({ transport: urlT }, base));
+  urlTarget = "http://evil.example/scep";   // repoint the URL while the request is being built
+  await pUrl;
+  check("enroll: a mutable baseUrl toString cannot redirect the in-flight POST", urlT.calls[0].url.indexOf("ca.example") !== -1 && urlT.calls[0].url.indexOf("evil.example") === -1);
   // two returned certificates carrying the requested public key (a same-key renewal, a duplicate) are
   // ambiguous: a CMS CertificateSet states no issuance order, so the issued certificate cannot be chosen.
   var issuedA = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
