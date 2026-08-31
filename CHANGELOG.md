@@ -4,6 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.7 — 2026-08-31
+
+pki.scep gains the SCEP HTTP client verbs (RFC 8894): getCACaps, getCACert, enroll, and renew drive a certificate enrollment against a SCEP CA over the shipped pkiMessage codec.
+
+### Added
+
+- pki.scep.getCACaps(baseUrl, opts) queries a SCEP CA's advertised capabilities (RFC 8894 sec. 3.5) and returns the parsed keyword set; pki.scep.parseCapabilities(text) exposes the parser directly. The response is unauthenticated (sec. 7.5), so the verb reports what the CA claims without downgrading on it; pass expectSCEPStandard or requireStrongProfile to fail closed when the strong profile is absent.
+- pki.scep.getCACert(baseUrl, opts) retrieves the CA certificate, either a single DER certificate or a certs-only chain (RFC 8894 sec. 4.2). Pass an out-of-band expectedFingerprint (a hex string or Buffer, SHA-256 by default) and a returned certificate must match it or the response is refused (RFC 8894 sec. 2.2); omitting it returns the certificates for the caller to authenticate.
+- pki.scep.enroll(baseUrl, opts) and pki.scep.renew(baseUrl, opts) POST a PKCSReq or RenewalReq to ?operation=PKIOperation and read the CertRep. The response signature is authenticated against the CA certificate and its recipientNonce must echo the request's senderNonce; on SUCCESS the issued certificate is selected out of the response by SubjectPublicKeyInfo match, a FAILURE throws scep/enrollment-failed carrying the CA's failInfo, and a PENDING returns { status: "PENDING", transactionId } to retry. The content key is transported under RSAES-OAEP, so the CA certificate must be an RSA keyEncipherment certificate.
+
 ## v0.6.6 — 2026-08-31
 
 pki.kem establishes a shared secret with composite ML-KEM (draft-ietf-lamps-pq-composite-kem): a post-quantum ML-KEM hybridized with a traditional RSA-OAEP, ECDH, X25519, or X448, so the secret holds if either component is later broken.
