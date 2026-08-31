@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.10 — 2026-08-31
+
+pki.est computes a response body's length from a single read of res.body, shared by one helper across every verb, so a caller-supplied transport whose res.body getter changes between reads cannot desync the type check from the measured length.
+
+### Fixed
+
+- pki.est reads a response body's length from a single access of res.body rather than re-reading it across the null / string / BufferSource type-check arms. A caller-supplied transport whose res.body getter returns different values across reads could otherwise size the body from a different value than the one the type check classified. The five identical per-verb length computations are consolidated into one shared helper that reads res.body once.
+
 ## v0.6.9 — 2026-08-31
 
 pki.cmp.verify holds a received PKIMessage to the RFC 9483 sec. 3.5 header rules, and pki.path.build and pki.est read a response body an injected transport returns as any BufferSource, not only a Node Buffer.

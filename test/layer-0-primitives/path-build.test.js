@@ -497,6 +497,21 @@ async function run() {
   check("AIA B4: a Uint8Array certs-only response body is normalized, not String()-coerced (valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b4u }))).valid === true);
   var b4a = mkTransport(function () { var d = aInter; var ab = new ArrayBuffer(d.length); new Uint8Array(ab).set(d); return { status: 200, headers: { "content-type": "application/pkix-cert" }, body: ab }; });
   check("AIA B4: a raw ArrayBuffer single-cert response body is normalized (the full BufferSource contract, valid:true)", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b4a }))).valid === true);
+  // B5 STRING BODY: an injected transport may return the cert as a latin1 string (the isByteSource-false
+  // fallback); Buffer.from(String(body), "latin1") reconstructs the DER, so it still parses.
+  var b5s = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkix-cert" }, body: aInter.toString("latin1") }; });
+  check("AIA B5: a latin1 string single-cert response body parses (the String fallback arm) -> valid", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b5s }))).valid === true);
+  // B6 NULL BODY: a 200 with a null body reads as empty -> the fetch skips (path/no-path), never a crash.
+  var b6n = mkTransport(function () { return { status: 200, headers: { "content-type": "application/pkix-cert" }, body: null }; });
+  check("AIA B6: a null AIA response body is skipped -> path/no-path, not a crash", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b6n })))) === "path/no-path");
+  // B7 FALSY RESPONSE: a transport that resolves a falsy value -> res = res || {} -> a non-200 (undefined)
+  // status -> path/aia-status -> the fetch is a silent skip -> path/no-path.
+  var b7t = mkTransport(function () { return null; });
+  check("AIA B7: a falsy transport response is skipped -> path/no-path (res || {} arm)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b7t })))) === "path/no-path");
+  // B8 NO HEADERS: a 200 response with no headers field -> Object.keys(res.headers || {}) -> {} -> a missing
+  // content-type is a hint, so a valid cert body still parses by structure.
+  var b8t = mkTransport(function () { return { status: 200, body: aInter }; });
+  check("AIA B8: a headerless AIA response still parses (res.headers || {} arm) -> valid", (await pki.path.build(aLeaf, Object.assign({}, aBase, { transport: b8t }))).valid === true);
 
   // C1 SSRF SCHEME GATE: a non-https caIssuers URL is NEVER fetched (no socket); the verdict is the no-AIA case.
   var cHttpLeaf = await mkCert({ signer: aInterKp, subjectKp: aLeafKp, issuerName: "AiaInter", subjectName: "AiaLeaf", extensions: [aiaExt([{ tag: 6, value: "http://internal.example/inter.der" }, { tag: 6, value: "ldap://ca.example/cn=x" }, { tag: 6, value: "file:///etc/passwd" }])] });

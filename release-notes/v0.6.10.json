@@ -1,0 +1,10 @@
+{
+  "version": "0.6.10",
+  "headline": "pki.est computes a response body's length from a single read of res.body, shared by one helper across every verb, so a caller-supplied transport whose res.body getter changes between reads cannot desync the type check from the measured length.",
+  "summary": "Every pki.est network verb measured a response body's length inline, re-reading res.body across the null, string, and BufferSource type checks. A caller-supplied transport whose res.body is a getter returning different values across those reads could size the body from one value while the type check saw another. The five identical computations are now one shared helper that reads res.body once, so the type check and the length always agree on the same value.",
+  "sections": {
+    "Fixed": [
+      "pki.est reads a response body's length from a single access of res.body rather than re-reading it across the null / string / BufferSource type-check arms. A caller-supplied transport whose res.body getter returns different values across reads could otherwise size the body from a different value than the one the type check classified. The five identical per-verb length computations are consolidated into one shared helper that reads res.body once."
+    ]
+  }
+}
