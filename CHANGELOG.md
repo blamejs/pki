@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.5 — 2026-08-31
+## v0.6.6 — 2026-08-31
+
+pki.kem establishes a shared secret with composite ML-KEM (draft-ietf-lamps-pq-composite-kem): a post-quantum ML-KEM hybridized with a traditional RSA-OAEP, ECDH, X25519, or X448, so the secret holds if either component is later broken.
+
+### Added
+
+- pki.kem.encapsulate(publicKey) establishes a 256-bit shared secret for a recipient's composite ML-KEM SubjectPublicKeyInfo, returning the secret and a ciphertext to send to the recipient (draft-ietf-lamps-pq-composite-kem).
+- pki.kem.decapsulate(privateKey, ciphertext) recovers the shared secret from a composite ML-KEM ciphertext and the composite PKCS#8 private key. The twelve algorithms pair ML-KEM-768 and ML-KEM-1024 with RSA-OAEP 2048/3072/4096, ECDH over P-256/P-384/P-521 and brainpoolP256r1/P384r1, X25519, and X448.
+
+## v0.6.5 — 2026-08-30
 
 pki.cmp.build assembles a CMP key-recovery request (krr) body: a CertReqMessages under PKIBody tag [9], the key-recovery counterpart of an initialization request (RFC 9810 sec. 5.3.7).
 

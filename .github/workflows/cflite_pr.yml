@@ -46,6 +46,7 @@ jobs:
           - cbor-det-parse
           - x509-parse
           - c509-parse
+          - composite-kem
           - cms-parse
           - ocsp-parse
           - tsp-parse

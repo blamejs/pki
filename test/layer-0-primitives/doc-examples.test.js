@@ -153,6 +153,15 @@ var cmsDetachedContent = Buffer.from("hello CMS SignedData verification");
 var signFixtureSigner = require("../helpers/signing").makeSigner("ec-p256");
 var cmsSha256Digest = require("node:crypto").createHash("sha256").update("hello").digest();
 
+// pki.kem fixtures: a composite ML-KEM recipient from the draft Appendix G KAT (a private key can be
+// committed here because it is an official test vector), so the encapsulate / decapsulate examples run
+// the real composite key-establishment path.
+var kemKat = JSON.parse(fs.readFileSync(path.join(__dirname, "..", "fixtures", "composite-kem", "kat.json"), "utf8"));
+var kemVec = kemKat.tests.filter(function (t) { return t.tcId === "id-MLKEM768-X25519-SHA3-256"; })[0];
+var kemPrivatePkcs8Der = Buffer.from(kemVec.dk_pkcs8, "base64");
+var kemCiphertext = Buffer.from(kemVec.c, "base64");
+var kemRecipientSpkiDer = b.sequence([b.sequence([b.oid(pki.oid.byName(kemVec.tcId))]), b.bitString(Buffer.from(kemVec.ek, "base64"), 0)]);
+
 // pki.est.simplereenroll fixture: a structural PKCS#10 whose subject + SPKI are byte-identical to
 // signFixtureSigner.cert and which carries no SAN, so reenrollGuard's RFC 7030 sec. 4.2.2 identity
 // check passes and the example reaches the (injected) transport.
@@ -215,6 +224,8 @@ function fixturesFor(tag) {
     // pki.sigstore: a real bundle + trust material so verifyBundle's example runs
     // the full offline verification path.
     bundle: sigstoreBundle, sigstoreTrust: sigstoreTrust,
+    // pki.kem: a composite ML-KEM recipient so encapsulate / decapsulate run the real path.
+    recipientSpkiDer: kemRecipientSpkiDer, privatePkcs8Der: kemPrivatePkcs8Der, ciphertext: kemCiphertext,
     // pki.webauthn: a real packed attestation + its clientDataHash so the parse
     // and verify examples run the actual decode + attestation-statement verify.
     attestationObject: webauthnAttObj, clientDataHash: webauthnClientHash,

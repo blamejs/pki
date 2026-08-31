@@ -53,6 +53,7 @@ var pkcs12    = require("./lib/pkcs12-build");
 var merkle    = require("./lib/merkle");
 var shbs      = require("./lib/shbs");
 var hpke      = require("./lib/hpke");
+var compositeKem = require("./lib/composite-kem");
 var sigstore  = require("./lib/sigstore");
 var est        = require("./lib/est");
 var scep       = require("./lib/scep");
@@ -156,6 +157,10 @@ module.exports = {
   // schedule + AEAD context construction behind TLS ECH / MLS / OHTTP. Pure
   // composition over node:crypto; the classical DHKEM suites, all four modes.
   hpke:      hpke,
+  // `kem` is composite ML-KEM key establishment (draft-ietf-lamps-pq-composite-kem):
+  // pki.kem.encapsulate / decapsulate over a post-quantum ML-KEM hybridized with a
+  // traditional RSA-OAEP / ECDH / X25519 / X448, mixed through the SHA3-256 combiner.
+  kem:       compositeKem,
   // `sigstore` verifies a Sigstore bundle (the npm --provenance artifact): a
   // keyless Fulcio signature over a DSSE-wrapped in-toto SLSA attestation with a
   // Rekor inclusion proof -- offline, zero-dep, against caller-pinned trust.
