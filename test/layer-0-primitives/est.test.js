@@ -475,6 +475,13 @@ function testClassify() {
     var ab = new ArrayBuffer(16); var b = Buffer.from(ab); structuredClone(ab, { transfer: [ab] });
     pki.est.classifyResponse(500, { "content-type": "text/plain" }, b, { op: "cacerts" });
   }) === "est/http-error");
+  // 59c. a DETACHED non-Buffer byte source (a Uint8Array whose backing ArrayBuffer was transferred) reaches
+  // the byte-guard arm; guard.bytes.source throws on the detached backing and the snippet reads as empty
+  // rather than masking the est/http-error verdict with a raw TypeError.
+  check("59c. 4xx with a detached Uint8Array error body still yields est/http-error", code(function () {
+    var ab2 = new ArrayBuffer(16); var u8 = new Uint8Array(ab2); structuredClone(ab2, { transfer: [ab2] });
+    pki.est.classifyResponse(500, { "content-type": "text/plain" }, u8, { op: "cacerts" });
+  }) === "est/http-error");
   // 60. /fullcmc responses are CLASSIFIED, not refused (RFC 7030 sec. 4.3.2).
   //
   // FC5: a 200 must be application/pkcs7-mime with smime-type EITHER certs-only OR
@@ -812,6 +819,19 @@ async function testOptionSurface() {
   var _ccRes = await pki.est.cacerts(BASE, { transport: _ccT, tls: { useSystemStore: true }, maxResponseBytes: _ccU8.length + 32 });
   check("81z. a near-cap Uint8Array cacerts body is sized by its real bytes (not String()-coerced) -> parsed, not est/response-too-large",
     _ccRes && Array.isArray(_ccRes.certificates) && _ccRes.certificates.length === 1);
+  // 81a. _bodyLen null arm: a 200 with a null / absent body sizes to 0 -> est/empty-body.
+  var _ccNullT = function () { return Promise.resolve({ status: 200, headers: { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, body: null }); };
+  check("81a. a null cacerts response body sizes to 0 -> est/empty-body (_bodyLen null arm)",
+    (await pki.est.cacerts(BASE, { transport: _ccNullT, tls: { useSystemStore: true } }).then(function () { return "NO-THROW"; }, function (e) { return e.code; })) === "est/empty-body");
+  // 81b. _bodyLen string arm: a base64 string body is sized by its UTF-8 length and parsed.
+  var _ccStrT = function () { return Promise.resolve({ status: 200, headers: { "content-type": "application/pkcs7-mime; smime-type=certs-only" }, body: Buffer.from(certsOnly([REAL_CERT])).toString("base64") }); };
+  var _ccStrRes = await pki.est.cacerts(BASE, { transport: _ccStrT, tls: { useSystemStore: true } });
+  check("81b. a string cacerts response body is sized + parsed (_bodyLen string arm)",
+    _ccStrRes && Array.isArray(_ccStrRes.certificates) && _ccStrRes.certificates.length === 1);
+  // 81c. _drive falsy-response arm: a transport that resolves a falsy value (null) -> res = res || {} ->
+  // status undefined -> classifyResponse 'unexpected' -> est/http-error.
+  check("81c. a falsy transport response is refused -> est/http-error (_drive res||{} arm)",
+    (await pki.est.cacerts(BASE, { transport: function () { return Promise.resolve(null); }, tls: { useSystemStore: true } }).then(function () { return "NO-THROW"; }, function (e) { return e.code; })) === "est/http-error");
   // The two verbs that take options without going near the network.
   check("82. pki.est.classifyResponse refuses an unknown option",
     code(function () { pki.est.classifyResponse(200, {}, Buffer.alloc(0), { op: "cacerts", nwo: 1 }); }) === "est/bad-input");

@@ -341,6 +341,14 @@ async function run() {
           body: pki.est.transferEncode(pkiResponse([statusV2(1, 0, null)], [certDer])) }),
         tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
     })) === "est/http-error");
+  // G1z -- a non-standard 2xx (201) is not a conforming /fullcmc response; classifyResponse returns
+  // 'unexpected' and the verdict.status !== "ok" arm throws est/http-error.
+  check("G1z. a non-standard 2xx (201) fullcmc response is refused -> est/http-error",
+    (await acode(function () {
+      return pki.est.fullcmc("https://ca.example", requestDer, {
+        transport: fakeTransport({ status: 201, headers: ct("application/pkcs7-mime; smime-type=certs-only"), body: "AA==" }),
+        tls: TLS, allowUnverifiedResponse: true, allowUnboundResponse: true });
+    })) === "est/http-error");
 
   // G1s -- a request mixing a readable arm with an unreadable one must not be
   // sent. The CMC parser validates request arms only far enough to find their

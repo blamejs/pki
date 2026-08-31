@@ -168,6 +168,7 @@ async function run() {
   check("SK-14a. an http base URL is refused pre-transport", (await codeOf(pki.est.serverkeygen("http://ca.example", CSR_PLAIN, { transport: t14a }))) === "est/insecure-url" && t14a.calls.length === 0);
   check("SK-14b. no trust anchor without a transport", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, {}))) === "est/no-trust-anchors");
   check("SK-15a. a 500 http error", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 500, headers: {}, body: "boom" }) }))) === "est/http-error");
+  check("SK-15b. a non-standard 2xx (201) is refused -> est/http-error", (await codeOf(pki.est.serverkeygen(BASE, CSR_PLAIN, { transport: fakeTransport({ status: 201, headers: ct(SK_CT), body: "AA==" }) }))) === "est/http-error");
   var t15b = fakeTransport(skReply("application/pkcs8", pkcs8.toString("base64")));
   check("SK-15b. a non-CSR input is rejected pre-transport", (await codeOf(pki.est.serverkeygen(BASE, 123, { transport: t15b }))) === "est/bad-input" && t15b.calls.length === 0);
   var r15c = await pki.est.serverkeygen(BASE, pki.schema.csr.pemEncode(CSR_PLAIN), { transport: fakeTransport(skReply("application/pkcs8", REAL_PKCS8.toString("base64"), { certPart: MATCH_CERT_PART })) });
