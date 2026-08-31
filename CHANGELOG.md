@@ -10,7 +10,11 @@ pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 
 
 ### Added
 
-- pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11): a CertReqMessages under PKIBody [13], the request one certification authority sends to have another certify its existing public key. It carries the same certificate template and proof-of-possession as an ir or cr, and refuses the private-key-transport encryptedKey proof-of-possession, since a ccr does not send the requesting CA's private key. It carries exactly one CertReqMsg (Appendix D.6, mirroring the one-CertResponse ccp rule), with multiple cross-certificates sent in separate messages, and requires no Appendix D.6 certificate-template field.
+- pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11): a CertReqMessages under PKIBody [13], the request one certification authority sends to have another certify its existing public key. It carries the same certificate template and proof-of-possession as an ir or cr, and refuses the private-key-transport encryptedKey proof-of-possession, since a ccr does not send the requesting CA's private key. It is a CertReqMessages at the sec. 5.3.11 normative floor, so it requires no Appendix D.6 profile field and does not enforce the optional D.6 single-request cardinality: a multi-request ccr builds and round-trips, and a producer that follows App. D.6 sends one cross-certificate per message by its own policy.
+
+### Changed
+
+- pki.schema.cmp.parse and pki.cmp.build no longer enforce the App. D.6 single-CertResponse cardinality on a ccp cross-certification response. A CertRepMessage is SIZE (1..MAX) and App. D.6 is optional, so a multi-response ccp is parsed and built at the RFC 9810 sec. 5.3.12 normative floor, matching the new ccr treatment. The sec. 5.3.12 no-private-key restriction is unchanged.
 
 ### Fixed
 

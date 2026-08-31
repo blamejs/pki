@@ -106,15 +106,14 @@ async function run() {
     pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: await pki.key.export(kemC.privateKey), identifier: "cross-ca", recipients: [{ cert: recipC.cert }], archive: true } } } };
   var ccrEncErr = await pki.cmp.build(ccrEncKey, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
   check("1k. a ccr carrying an encryptedKey POP is refused (RFC 9810 sec. 5.3.11: the private key must not be sent)", ccrEncErr === "cmp/bad-body");
-  // A ccr carries exactly one CertReqMsg (App. D.6, the mirror of the one-CertResponse ccp rule): a
-  // multi-request ccr is refused up front, as the ccp builder refuses a multi-response ccp, not only at
-  // the round-trip self-verify.
+  // A ccr is a CertReqMessages (SIZE (1..MAX)); the App. D.6 single-request profile is OPTIONAL, so a
+  // multi-request ccr builds and round-trips at the normative floor.
   var ccrMulti = { header: HDR, body: { ccr: { messages: [
     { certReqId: 0, certTemplate: { subject: [{ commonName: "cross-a" }], publicKey: s.spki } },
     { certReqId: 1, certTemplate: { subject: [{ commonName: "cross-b" }], publicKey: s.spki } },
   ], key: s.key } } };
-  var ccrMultiErr = await pki.cmp.build(ccrMulti, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
-  check("1l. a multi-request ccr is refused up front (App. D.6: one CertReqMsg per ccr)", ccrMultiErr === "cmp/bad-input");
+  var mcm = parse(await pki.cmp.build(ccrMulti, SIG));
+  check("1l. a multi-request ccr builds and round-trips (RFC 9810 sec. 5.3.11 CertReqMessages is 1..MAX; App. D.6 single is optional)", mcm.body.arm === "ccr" && mcm.body.decoded.messages.length === 2);
   // A sparse array skips holes under Array.prototype.map, so a hole must be a typed cmp/bad-input, never a
   // native Buffer.concat error, and a huge sparse length must fail fast rather than traverse empty slots.
   var nestedSparse = await pki.cmp.build({ header: HDR, body: { nested: new Array(2) } }, SIG).then(function () { return "NO-THROW"; }, function (e) { return e.code; });
@@ -520,7 +519,7 @@ async function run() {
   check("25b. certifiedKeyPair together with a failInfo -> cmp/bad-cert-response", await codeOf(pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0, failInfo: ["badPOP"] }, certifiedKeyPair: { certificate: CERT } }] } } }, SIG)) === "cmp/bad-cert-response");
   check("25c. a garbage certOrEncCert certificate -> cmp/bad-cert-response", await codeOf(pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { certificate: Buffer.from([0x30, 0x00]) } }] } } }, SIG)) === "cmp/bad-cert-response");
   check("25c2. both certificate AND encryptedCert (the CHOICE) -> cmp/bad-cert-response", await codeOf(pki.cmp.build({ header: HDR, body: { ip: { response: [{ certReqId: 0, status: { status: 0 }, certifiedKeyPair: { certificate: CERT, encryptedCert: asn1.build.sequence([asn1.build.integer(1n)]) } }] } } }, SIG)) === "cmp/bad-cert-response");
-  check("25d. a ccp with more than one CertResponse -> cmp/bad-cert-rep", await codeOf(pki.cmp.build({ header: HDR, body: { ccp: { response: [{ certReqId: 0, status: { status: 0 } }, { certReqId: 1, status: { status: 0 } }] } } }, SIG)) === "cmp/bad-cert-rep");
+  check("25d. a ccp with more than one CertResponse builds (CertRepMessage is 1..MAX; App. D.6 single is optional)", parse(await pki.cmp.build({ header: HDR, body: { ccp: { response: [{ certReqId: 0, status: { status: 0 } }, { certReqId: 1, status: { status: 0 } }] } } }, SIG)).body.decoded.response.length === 2);
   check("25e. an rp with an empty status array -> cmp/bad-rev-rep", await codeOf(pki.cmp.build({ header: HDR, body: { rp: { status: [] } } }, SIG)) === "cmp/bad-rev-rep");
   check("25e2. a garbage rp crls entry -> cmp/bad-rev-rep (each must be a valid CRL)", await codeOf(pki.cmp.build({ header: HDR, body: { rp: { status: [{ status: 0 }], crls: [asn1.build.sequence([asn1.build.integer(1n)])] } } }, SIG)) === "cmp/bad-rev-rep");
   check("25f. a negative pollRep checkAfter -> cmp/bad-poll-rep", await codeOf(pki.cmp.build({ header: HDR, body: { pollRep: [{ certReqId: 0, checkAfter: -1 }] } }, SIG)) === "cmp/bad-poll-rep");
