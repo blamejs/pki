@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.9 — 2026-08-31
+
+pki.cmp.verify holds a received PKIMessage to the RFC 9483 sec. 3.5 header rules, and pki.path.build and pki.est read a response body an injected transport returns as any BufferSource, not only a Node Buffer.
+
+### Changed
+
+- pki.cmp.verify holds a received PKIMessage to the RFC 9483 sec. 3.5 receiving-side header rules once its protection verifies: the pvno must be cmp2000(2) or cmp2021(3), the transactionID must be present, and the senderNonce must be present and carry at least 128 bits. A message failing any of these is a fail-closed verdict (cmp/unsupported-version, cmp/bad-transaction-id, cmp/bad-sender-nonce). A cmp1999(1) message stays valid RFC 9810 syntax that pki.cmp.parse still decodes; the profile refuses it only on receipt. pki.cmp.session applies these checks to every response and additionally refuses a waiting ip/cp/kup CertResponse that carries failInfo (RFC 9483 sec. 4.4). A conformant peer is unaffected; a peer that omits a required header field is now refused.
+
+### Fixed
+
+- pki.path.build's opt-in AIA caIssuers fetch reads a certificate an injected transport returns as any BufferSource (a Uint8Array, a raw ArrayBuffer, a DataView), not only a Node Buffer. A typed-array body was coerced to a comma-joined string and failed to parse, silently dropping an AIA-discoverable intermediate from the built path; it is now re-viewed through the byte guard and parsed from its bytes.
+- Every pki.est network verb reads a response body an injected transport returns as any BufferSource, not only a Node Buffer or a string. The transfer decode, the multipart splitter, the response-size checks, and the error diagnostic take the raw bytes through the byte guard, so a cacerts, enrollment, or serverkeygen response delivered in a typed array is parsed and sized from its bytes.
+
 ## v0.6.8 — 2026-08-31
 
 pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11), and the ACME client accepts a response body an injected transport returns as any BufferSource, not only a Node Buffer.

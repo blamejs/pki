@@ -3002,10 +3002,10 @@ function testGuardReadsRuntimeLive() {
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
     "lib/acme.js": 208,
-    "lib/est.js": 181,
+    "lib/est.js": 177,
     "lib/cmp-build.js": 146,
     "lib/crmf-sign.js": 46,
-    "lib/path-validate.js": 184,
+    "lib/path-validate.js": 183,
     "lib/webauthn.js": 174,
     "lib/asn1-der.js": 118,
     "lib/trust.js": 108,

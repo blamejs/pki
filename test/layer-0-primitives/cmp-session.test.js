@@ -283,9 +283,16 @@ async function run() {
   var cc35 = pki.schema.cmp.parse(s35.transport.calls[1].body).body.decoded[0];
   check("35. a bigint certReqId (2^53+1) is echoed exactly in the certConf and matched in the response", r35.outcome === "issued" && BigInt(cc35.certReqId) === BIG);
 
-  // ===== 36. a response that omits its senderNonce, before a follow-up leg -> cmp/bad-nonce (chain broken) =====
-  check("36. a waiting response omitting senderNonce, then a poll leg -> cmp/bad-nonce (the chain cannot continue)",
-    await codeOf(mk([{ body: H.ip(0, 3), noSenderNonce: true }, H.pollRep(0, 1)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-nonce");
+  // ===== 36. a response that omits its senderNonce -> cmp/bad-sender-nonce (RFC 9483 sec. 3.5, caught at verify) =====
+  check("36. a waiting response omitting senderNonce is refused at verify -> cmp/bad-sender-nonce (RFC 9483 sec. 3.5)",
+    await codeOf(mk([{ body: H.ip(0, 3), noSenderNonce: true }, H.pollRep(0, 1)]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/bad-sender-nonce");
+
+  // ===== 36b. RFC 9483 sec. 4.4: a waiting ip/cp/kup CertResponse must not carry failInfo (a wait is not a failure) =====
+  // Without the check the failInfo is ignored and the same leg sequence would poll to issuance (the sec. 3 happy
+  // path); the check refuses the contradictory response on the first leg. A granted status carrying failInfo is
+  // already refused upstream (the parser's failInfo/certifiedKeyPair mutual exclusion, then the no-certificate check).
+  check("36b. a waiting ip carrying failInfo is refused -> cmp/unexpected-arm (RFC 9483 sec. 4.4)",
+    await codeOf(mk([H.ip(0, 3, null, { failInfo: ["badRequest"] }), H.pollRep(0, 5), H.pollRep(0, 5), H.ip(0, 0, certDer), H.pkiconf()]).session.enroll(H.irRequest(CLIENT.spki))) === "cmp/unexpected-arm");
 
   // ===== 37. the FINAL permitted poll's pollRep does NOT sleep its checkAfter (the poll-count bound holds) =====
   var s37 = mk([H.ip(0, 3), H.pollRep(0, 31536000)], { maxPolls: 1 });   // a 1-year checkAfter on the last allowed poll

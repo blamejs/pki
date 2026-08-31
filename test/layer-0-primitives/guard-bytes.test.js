@@ -1191,7 +1191,7 @@ async function testOcspAndPkcs12Doors() {
   // leaves the MAC keyed to whatever the caller wrote afterwards rather than what they passed.
   var csrDer = await pki.csr.sign({ subject: [{ commonName: "c" }], subjectPublicKey: s.spki }, s.key);
   var message = {
-    header: { sender: { directoryName: [{ commonName: "c" }] }, recipient: { directoryName: [{ commonName: "srv" }] } },
+    header: { sender: { directoryName: [{ commonName: "c" }] }, recipient: { directoryName: [{ commonName: "srv" }] }, transactionID: Buffer.alloc(16, 7), senderNonce: Buffer.alloc(16, 5) },
     body: { p10cr: csrDer },
   };
   // An options object with a prototype of its own is still a caller's data. pki.cms.sign accepts
