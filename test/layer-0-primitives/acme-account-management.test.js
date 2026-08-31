@@ -165,6 +165,10 @@ async function run() {
     "/acct/1/orders": { orders: [U1], link: "<" + ORDERS_URL + "?cursor=2>;rel=\"next\", <" + ORDERS_URL + "?cursor=9>;rel=\"next\"" },
   } });
   check("L7a. two distinct rel=next targets (RFC 8288 singleton) -> acme/bad-link", (await codeOf(l7b.acme.listOrders(ORDERS_URL))) === "acme/bad-link");
+  var l7c = await mkClient({ ordersByUrl: {
+    "/acct/1/orders": { orders: [U1], link: "<" + ORDERS_URL + ">;rel=\"next\", <" + ORDERS_URL + "?cursor=2>;rel=\"next\"" },   // a self next AND a distinct next
+  } });
+  check("L7b. a self next plus a distinct next is two ambiguous targets -> acme/bad-link", (await codeOf(l7c.acme.listOrders(ORDERS_URL))) === "acme/bad-link");
 
   console.log("CHECKS " + helpers.getChecks());
 }
