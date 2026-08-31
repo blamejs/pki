@@ -52,6 +52,8 @@ async function run() {
   var c2 = await mkClient({ accountAfter: { status: "valid" } });
   check("2. a bad mailto contact -> acme/bad-contact", (await codeOf(c2.acme.updateAccount({ contact: ["mailto:a@b?subject=x"] }))) === "acme/bad-contact");
   check("2a. a two-@ mailto -> acme/bad-contact", (await codeOf(c2.acme.updateAccount({ contact: ["mailto:a@b@c"] }))) === "acme/bad-contact");
+  check("2b. a sparse contact array (a hole) is refused, not signed as [null]", (await codeOf(c2.acme.updateAccount({ contact: new Array(1) }))) === "acme/bad-contact");
+  check("2c. the message builder rejects a sparse contact too", (await codeOf(pki.acme.updateAccount({ key: ACCT.key, alg: "ES256", nonce: "oFvnlFP1wIhRlYS2jTaXbA", url: ACCT_URL, kid: ACCT_URL, contact: new Array(1) }))) === "acme/bad-contact");
 
   // 3. refuse the server-ignored / wrong-verb fields at the door (no POST emitted).
   var c3 = await mkClient({ accountAfter: { status: "valid" } });

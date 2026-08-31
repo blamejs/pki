@@ -424,6 +424,7 @@ async function testBuilders() {
   var cnCsr = buildCsr({ spki: cert.spki, subject: cnSubject("cn.example") });
   check("65d. CN counted in the identifier set", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: cnCsr, identifiers: [{ type: "dns", value: "cn.example" }], accountJwk: acct.jwk })); })) === "NO-THROW");
   check("65e. finalize with a malformed identifier fails closed (no TypeError)", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: [{ type: "dns" }], accountJwk: acct.jwk })); })) === "acme/bad-identifier");
+  check("65f. finalize with a sparse identifiers array (a hole) is refused, not skipped", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: goodCsr, identifiers: new Array(1), accountJwk: acct.jwk })); })) === "acme/bad-input");
   // 65f/g. a SECOND extensionRequest attribute's SAN is aggregated, not ignored.
   var twoAttrCsr = buildCsr({ spki: cert.spki, san: ["example.org"], san2: ["extra.example"] });
   check("65f. finalize counts a second extensionRequest's SAN (mismatch)", (await acode(function () { return pki.acme.finalize(Object.assign({}, base, { csr: twoAttrCsr, identifiers: [{ type: "dns", value: "example.org" }], accountJwk: acct.jwk })); })) === "acme/csr-identifier-mismatch");
