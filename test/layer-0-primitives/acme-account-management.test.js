@@ -171,6 +171,10 @@ async function run() {
     "/acct/1/orders": { orders: [U1], link: "<" + ORDERS_URL + ">;rel=\"next\", <" + ORDERS_URL + "?cursor=2>;rel=\"next\"" },   // a self next AND a distinct next
   } });
   check("L7b. a self next plus a distinct next is two ambiguous targets -> acme/bad-link", (await codeOf(l7c.acme.listOrders(ORDERS_URL))) === "acme/bad-link");
+  var l7d = await mkClient({ ordersByUrl: {
+    "/acct/1/orders": { orders: [U1], link: "<https://acme.example/x/../acct/1/orders?cursor=2>;rel=\"next\"" },   // a literal dot-segment: valid URI, not a canonical ACME request URL
+  } });
+  check("L7c. an unusable (non-canonical) next fails closed, not silently ending pagination", (await codeOf(l7d.acme.listOrders(ORDERS_URL))) === "acme/bad-link");
 
   console.log("CHECKS " + helpers.getChecks());
 }
