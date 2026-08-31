@@ -257,6 +257,17 @@ async function run() {
     await ccrSigningAlgCode(asn1.build.sequence([asn1.build.integer(1n)])) === "crmf/bad-input" &&
     await ccrSigningAlgCode(asn1.build.sequence([asn1.build.oid(pki.oid.byName("ecdsaWithSHA256")), asn1.build.nullValue(), asn1.build.nullValue()])) === "crmf/bad-input" &&
     await ccrSigningAlgCode(Buffer.concat([sigAlgId, Buffer.from([0])])) === "crmf/bad-input");
+  // A ccr template accepts version v1 (0) as well as v3 (2) (RFC 9810 App. D.6 profiles "v1 or v3", v3
+  // strongly recommended); RFC 4211 sec. 5 fixes every other request at v3, so v1 is refused off the ccr
+  // arm, and v2 (1) is refused everywhere.
+  function ccrTemplate(over) { return Object.assign({ subject: [{ commonName: "subca" }], publicKey: s.spki }, over); }
+  var ccrV1Walk = schemaCrmf.walkCertReqMessages(asn1.decode(await pki.crmf.build({ certTemplate: ccrTemplate({ version: 0 }) }, SIG, { crossCert: true })), { allowSigningAlg: true, allowV1Version: true });
+  check("6p. a ccr template accepts version v1 (0) and v3 (2); v1 is refused off the ccr arm and v2 (1) is refused",
+    parse(await pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTemplate({ version: 0 }) } } }, SIG)).body.arm === "ccr" &&
+    ccrV1Walk.messages[0].certReq.certTemplate.version === 0n &&
+    parse(await pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTemplate({ version: 2 }) } } }, SIG)).body.arm === "ccr" &&
+    await codeOf(pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { version: 0, subject: [{ commonName: "leaf" }], publicKey: s.spki } } } }, SIG)) === "crmf/bad-version" &&
+    await codeOf(pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTemplate({ version: 1 }) } } }, SIG)) === "crmf/bad-version");
 
   // 7. envelope EXPLICIT tags: protection [0], extraCerts [1], header messageTime [0] / protectionAlg [1].
   var msgChildren = asn1.decode(irDer).children;
