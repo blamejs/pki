@@ -221,7 +221,7 @@ async function run() {
   check("V-BUILD-1 path is [interA, leaf] (anchor-proximal first, leaf last, anchor excluded)",
     r1.path.length === 2 && r1.path[1].subject.rdns && Buffer.from(r1.path[0].subjectPublicKeyInfo.bytes).equals(interAKp.spki));
   // GREEN oracle: the built path validates through the SHIPPED validate.
-  var green = await pki.path.validate(r1.path, { time: T, trustAnchor: r1.trustAnchor });
+  var green = await pki.path.validate(r1.path, { time: T, trustAnchors: r1.trustAnchor });
   check("V-BUILD-1 the built path validates through pki.path.validate (round-trip GREEN oracle)", green.valid === true);
 
   // ---- V-BUILD-2: decoy same-name issuer -> backtrack past it via validate ----
@@ -321,7 +321,7 @@ async function run() {
   // ---- V-BUILD-10: build-only mode round-trip (the explicit GREEN oracle) ----
   var r10 = await pki.path.build(leaf, { candidates: [interA], trustAnchors: [anchorCert], time: T, validate: false });
   check("V-BUILD-10 build-only returns a path + trustAnchor without a validate result", r10.path.length === 2 && !!r10.trustAnchor && r10.result === undefined);
-  var green10 = await pki.path.validate(r10.path, { time: T, trustAnchor: r10.trustAnchor });
+  var green10 = await pki.path.validate(r10.path, { time: T, trustAnchors: r10.trustAnchor });
   check("V-BUILD-10 the build-only order validates through pki.path.validate", green10.valid === true);
 
   // ---- V-BUILD-11: multiple anchors selects the correct terminal ----
@@ -418,13 +418,13 @@ async function run() {
   // tbsBytes and passed the object straight into the sec. 6.1 walk. One rule, two doors, and the
   // permissive one is the one an operator calls directly.
   check("validate refuses a partial claimed-parsed certificate, as build already did",
-    await codeOf(pki.path.validate([bad({ subject: null })], { trustAnchor: anchorTuple, time: T })) === "path/bad-input");
+    await codeOf(pki.path.validate([bad({ subject: null })], { trustAnchors: anchorTuple, time: T })) === "path/bad-input");
   check("...for every field, not just the one build happened to be handed",
-    await codeOf(pki.path.validate([bad({ extensions: [{ oid: "1.2" }] })], { trustAnchor: anchorTuple, time: T })) === "path/bad-input");
+    await codeOf(pki.path.validate([bad({ extensions: [{ oid: "1.2" }] })], { trustAnchors: anchorTuple, time: T })) === "path/bad-input");
   // An object with NO tbsBytes at all is not claiming to be parsed, so it goes to the byte parser
   // and fails there -- still typed, and still not a raw TypeError from a missing field.
   check("an object that claims nothing is refused by the byte parser, not dereferenced",
-    await codeOf(pki.path.validate([{ nope: 1 }], { trustAnchor: anchorTuple, time: T })) === "path/bad-input");
+    await codeOf(pki.path.validate([{ nope: 1 }], { trustAnchors: anchorTuple, time: T })) === "path/bad-input");
 
   // A ready anchor TUPLE is a caller option: a malformed tuple (bad name.rdns / publicKey / algorithm
   // types) fails closed at entry as path/bad-input, not a downstream no-path or soft valid:false.

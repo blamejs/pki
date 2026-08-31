@@ -576,10 +576,10 @@ module.exports = {
           var ca = pki.schema.x509.parse(ctx.fs.readFileSync(caCert));
           var anchor = { name: ca.subject, publicKey: ca.subjectPublicKeyInfo.bytes, algorithm: ca.subjectPublicKeyInfo.algorithm.oid };
           var tokenBytes = ctx.fs.readFileSync(theirToken);
-          var v = await tsp.verify(tokenBytes, data, { trustAnchor: anchor });
+          var v = await tsp.verify(tokenBytes, data, { trustAnchors: anchor });
           ctx.check("pki.tsp.verify accepts openssl's timestamp token against the CA anchor", v.valid === true);
           ctx.check("pki.tsp.verify surfaces genTime as a Date from the verified eContent", v.genTime instanceof Date && !isNaN(v.genTime.getTime()));
-          var vNeg = await tsp.verify(tokenBytes, Buffer.from("a different payload"), { trustAnchor: anchor });
+          var vNeg = await tsp.verify(tokenBytes, Buffer.from("a different payload"), { trustAnchors: anchor });
           ctx.check("pki.tsp.verify rejects openssl's token over tampered data (tsp/imprint-mismatch)", vNeg.valid === false && vNeg.code === "tsp/imprint-mismatch");
           // (they verify us) openssl ts -verify accepts a response we sign + wrap; wrong data rejected.
           var tsaCertDer = reserve("tsaCert.der");

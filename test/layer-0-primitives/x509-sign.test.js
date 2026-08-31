@@ -78,12 +78,12 @@ async function testSelfSignedValidates() {
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: s.key });
   var c = pki.schema.x509.parse(der);
-  var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchor: anchorFor(c) });
+  var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchors: anchorFor(c) });
   check("self-signed cert path.validate valid", res.valid === true);
 
   // flip one signed byte -> signature must fail.
   var bad = Buffer.from(der); bad[bad.length - 1] ^= 0xff;
-  var resBad = await pki.path.validate([pki.schema.x509.parse(bad)], { time: IN_WINDOW, trustAnchor: anchorFor(c) });
+  var resBad = await pki.path.validate([pki.schema.x509.parse(bad)], { time: IN_WINDOW, trustAnchors: anchorFor(c) });
   check("tampered signature -> invalid", resBad.valid === false);
 }
 
@@ -104,7 +104,7 @@ async function testCaSignedLeaf() {
 
   check("leaf issuer dnEquals CA subject", leafCert.issuer.dn === caCert.subject.dn);
   // The RFC 5280 path excludes the anchor: the leaf, issued directly by the CA, validates to the CA anchor.
-  var res = await pki.path.validate([leafCert], { time: IN_WINDOW, trustAnchor: anchorFor(caCert) });
+  var res = await pki.path.validate([leafCert], { time: IN_WINDOW, trustAnchors: anchorFor(caCert) });
   check("CA-signed leaf validates to the CA anchor", res.valid === true);
 }
 
@@ -123,7 +123,7 @@ async function testAlgorithmArms() {
       extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
     }, { key: s.key }, opts);
     var c = pki.schema.x509.parse(der);
-    var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchor: anchorFor(c) });
+    var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchors: anchorFor(c) });
     check(alg + " self-signed cert verifies", res.valid === true);
   }
 }
@@ -139,7 +139,7 @@ async function testCompositeArm() {
     extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign"] },
   }, { key: cs.key });
   var c = pki.schema.x509.parse(der);
-  var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchor: anchorFor(c) });
+  var res = await pki.path.validate([c], { time: IN_WINDOW, trustAnchors: anchorFor(c) });
   check("composite self-signed cert verifies", res.valid === true);
   // a mismatched composite signer (a different composite key pair claiming this SPKI) fails the
   // post-sign composite verify -- the certificate would not chain.
@@ -733,7 +733,7 @@ async function testInputForms() {
   var foreignDer = await pki.x509.sign({ subject: caName, subjectPublicKey: foreignSpki, notBefore: NB, notAfter: NA }, { key: foreignKp.privateKey });
   var foreignParsed = pki.schema.x509.parse(foreignDer);
   check("the platform-key certificate verifies under its own public key",
-    (await pki.path.validate([foreignParsed], { time: NB, trustAnchor: { name: foreignParsed.subject, publicKey: foreignParsed.subjectPublicKeyInfo.bytes, algorithm: foreignParsed.subjectPublicKeyInfo.algorithm } }))
+    (await pki.path.validate([foreignParsed], { time: NB, trustAnchors: { name: foreignParsed.subject, publicKey: foreignParsed.subjectPublicKeyInfo.bytes, algorithm: foreignParsed.subjectPublicKeyInfo.algorithm } }))
       .results[0].checks.find(function (c) { return c.name === "signature"; }).ok === true);
   var sealed = await nodeWc.subtle.importKey("pkcs8", foreignPkcs8, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   check("a non-extractable platform CryptoKey is refused, naming the real reason", await (async function () {

@@ -155,7 +155,7 @@ async function testExtensionRequest() {
     subject: "leaf.example", subjectPublicKey: s.spki, notBefore: new Date("2026-01-01Z"), notAfter: new Date("2030-01-01Z"),
     extensions: [sanDer],
   }, { cert: caCert, key: ca.key }));
-  var res = await pki.path.validate([leaf], { time: new Date("2027-06-01Z"), trustAnchor: { name: caCert.subject, publicKey: caCert.subjectPublicKeyInfo.bytes, algorithm: caCert.subjectPublicKeyInfo.algorithm.oid } });
+  var res = await pki.path.validate([leaf], { time: new Date("2027-06-01Z"), trustAnchors: { name: caCert.subject, publicKey: caCert.subjectPublicKeyInfo.bytes, algorithm: caCert.subjectPublicKeyInfo.algorithm.oid } });
   check("a CA copies the requested SAN into a valid issued cert", res.valid === true && leaf.extensions.some(function (e) { return (e.name || e.oid) === "subjectAltName"; }));
 
   // The extensionRequest spec's own shape contract. Unlike an issued certificate's `extensions` -- where

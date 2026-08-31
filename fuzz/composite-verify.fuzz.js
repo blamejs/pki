@@ -39,7 +39,7 @@ module.exports.fuzz = async function (data) {
   try {
     await pki.path.validate([cert], {
       time: T,
-      trustAnchor: { name: cert.subject, publicKey: cert.subjectPublicKeyInfo.bytes, algorithm: cert.subjectPublicKeyInfo.algorithm },
+      trustAnchors: { name: cert.subject, publicKey: cert.subjectPublicKeyInfo.bytes, algorithm: cert.subjectPublicKeyInfo.algorithm },
     });
   } catch (e) { if (!isPki(e)) throw e; }
 };

@@ -14,6 +14,26 @@ The toolkit has no `deprecate()`-marked surface awaiting removal.
 
 Listed newest-first.
 
+### v0.6.11 — `pki.path.validate(path, opts) and pki.tsp.verify(token, data, opts)`
+
+The trust anchor option is now `trustAnchors` (a single anchor or an array); the former singular `trustAnchor` is removed and refused by name.
+
+Both verbs read the trust anchor from `opts.trustAnchors`, the spelling pki.path.build,
+pki.cms.verify, pki.cmp.verify, and pki.smime.verify already use. It accepts a single anchor
+tuple or root certificate, or a non-empty array of them.
+
+```js
+var res = await pki.path.validate(path, { time: t, trustAnchor: anchor });   // removed
+
+var res = await pki.path.validate(path, { time: t, trustAnchors: anchor });          // one anchor
+var res = await pki.path.validate(path, { time: t, trustAnchors: [rootA, rootB] });  // several
+```
+
+With several anchors, pki.path.validate selects the one that issued the path's top certificate,
+and a one-element array reproduces the previous single-anchor result. The removed `trustAnchor`
+is refused as an unknown option (`path/bad-input` or `tsp/bad-input`) naming it, rather than read
+as absent, so a request that was silently unanchored now fails closed with a named error.
+
 ### v0.5.24 — `pki.acme.client(...).downloadCertificate(url, opts)`
 
 The verb needs to be told which certificate the download is allowed to be, and refuses with acme/binding-required when it is not.

@@ -190,7 +190,7 @@ function cmdVerify(args) {
   var spki = anchor.subjectPublicKeyInfo;
   return pki.path.validate(certs, {
     time: time,
-    trustAnchor: { name: anchor.subject, publicKey: spki.bytes, algorithm: spki.algorithm.oid, parameters: spki.algorithm.parameters },
+    trustAnchors: { name: anchor.subject, publicKey: spki.bytes, algorithm: spki.algorithm.oid, parameters: spki.algorithm.parameters },
   }).then(function (res) {
     process.stdout.write(res.valid ? "valid\n" : "invalid\n");
     if (!res.valid) {
