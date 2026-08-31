@@ -171,7 +171,7 @@ module.exports = {
   // splitter, certs-only + serverkeygen validators over CMS, the enroll-attribute
   // builders, the HTTP response classifier). est opens no socket; fail-closed.
   est:       est,
-  scep:      { build: scep.build, parse: scep.parse },
+  scep:      { build: scep.build, parse: scep.parse, getCACaps: scep.getCACaps, getCACert: scep.getCACert, enroll: scep.enroll, renew: scep.renew, parseCapabilities: scep.parseCapabilities },
   // `transport` is the shared fail-closed node:https transport the enrollment clients
   // drive -- pki.transport.https(defaults) returns a transport(request) -> {status,
   // headers, body}. The toolkit's sole socket choke point: explicit trust anchors,

@@ -342,7 +342,13 @@ async function testRedirectCredentialScope() {
   var tmtls = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, cacertsOK([S.cert])]);
   var rmtls = await pki.est.cacerts(BASE, { transport: tmtls, tls: { anchors: [S.cert], cert: Buffer.from("CLIENTCERT"), key: Buffer.from("CLIENTKEY") } });
   check("#29 the mTLS cert/key are presented on the original origin", !!(tmtls.calls[0].tls.cert && tmtls.calls[0].tls.key));
-  check("#29 the mTLS cert/key are stripped on a cross-origin redirect", !tmtls.calls[1].tls.cert && !tmtls.calls[1].tls.key && rmtls.certificates.length === 1);
+  // Overridden with null, not deleted: an omitted tls field falls back to a configured-transport default credential.
+  check("#29 the mTLS cert/key are overridden on a cross-origin redirect", tmtls.calls[1].tls.cert === null && tmtls.calls[1].tls.key === null && rmtls.certificates.length === 1);
+  // even when the caller sets no client credential, the cross-origin hop overrides cert/key/servername:
+  // the transport itself may carry defaults that an omitted field would fall through to.
+  var tbare = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, cacertsOK([S.cert])]);
+  await pki.est.cacerts(BASE, { transport: tbare });
+  check("#29 a cross-origin hop overrides tls even when the call sets no client credential", tbare.calls[1].tls.cert === null && tbare.calls[1].tls.key === null && tbare.calls[1].tls.servername === null);
   // On a cross-origin redirect the origin-specific servername (SNI) is reset, but a caller's
   // checkServerIdentity pin is RETAINED -- it is an additional tightening constraint that node re-evaluates
   // against the redirected host, so a certificate/SPKI pin keeps applying (dropping it would let the
@@ -351,7 +357,7 @@ async function testRedirectCredentialScope() {
   var tpin = fakeTransport([{ status: 302, headers: { location: "https://mirror.example/.well-known/est/cacerts" }, body: "" }, cacertsOK([S.cert])]);
   var rpin = await pki.est.cacerts(BASE, { transport: tpin, tls: { anchors: [S.cert], servername: "ca.example", checkServerIdentity: pinnedCheck } });
   check("#29 the pinned servername + checkServerIdentity are presented on the original origin", tpin.calls[0].tls.servername === "ca.example" && tpin.calls[0].tls.checkServerIdentity === pinnedCheck);
-  check("#29 a cross-origin redirect resets the origin-specific servername but RETAINS the checkServerIdentity pin", tpin.calls[1].tls.servername === undefined && tpin.calls[1].tls.checkServerIdentity === pinnedCheck && rpin.certificates.length === 1);
+  check("#29 a cross-origin redirect resets the origin-specific servername but RETAINS the checkServerIdentity pin", tpin.calls[1].tls.servername === null && tpin.calls[1].tls.checkServerIdentity === pinnedCheck && rpin.certificates.length === 1);
   // A redirect that leaves the origin and then returns to it restores the origin-scoped SNI on the return hop
   // (per-hop TLS scoping, not a one-way strip): ca.example -> mirror.example (SNI dropped) -> ca.example (SNI back).
   var tbounce = fakeTransport([
@@ -360,7 +366,7 @@ async function testRedirectCredentialScope() {
     cacertsOK([S.cert]),
   ]);
   var rbounce = await pki.est.cacerts(BASE, { transport: tbounce, tls: { anchors: [S.cert], servername: "ca.example" } });
-  check("#29 a redirect off-origin then back restores the origin-scoped servername on the return hop", tbounce.calls[0].tls.servername === "ca.example" && tbounce.calls[1].tls.servername === undefined && tbounce.calls[2].tls.servername === "ca.example" && rbounce.certificates.length === 1);
+  check("#29 a redirect off-origin then back restores the origin-scoped servername on the return hop", tbounce.calls[0].tls.servername === "ca.example" && tbounce.calls[1].tls.servername === null && tbounce.calls[2].tls.servername === "ca.example" && rbounce.certificates.length === 1);
   // The HTTP Basic credential is likewise origin-scoped per hop: after a 401 on the origin it is sent to that
   // origin, dropped off-origin, and RESTORED on a redirect back -- so an authenticated flow that bounces
   // off-origin and returns still completes instead of arriving unauthenticated and being re-challenged.

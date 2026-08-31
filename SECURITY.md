@@ -986,6 +986,21 @@ security-only patches after the next major releases.
   legacy SCEP servers historically expect; RFC 8894 does not pin the key-transport
   algorithm, and the toolkit does not emit PKCS1-v1_5 anywhere, so a SCEP CA must
   support OAEP key transport to decrypt a request this builder produces.
+- **SCEP CA discovery is fingerprint-pinned and downgrade-resistant.**
+  `pki.scep.getCACert` retrieves the CA certificate in the clear, so its only
+  authentication is an out-of-band fingerprint. Pass `expectedFingerprint` and a
+  returned certificate must hash to it or the response is refused
+  (`scep/fingerprint-mismatch`, RFC 8894 §2.2); omitting it returns the certificate
+  unauthenticated for the caller to verify. `pki.scep.getCACaps` reports the CA's
+  advertised capabilities without lowering the client's algorithm choice on them,
+  because the GetCACaps response is unauthenticated (RFC 8894 §7.5); passing
+  `expectSCEPStandard` treats the absence of the strong profile as the downgrade
+  signal it is and fails closed. `pki.scep.enroll` and `pki.scep.renew` authenticate
+  the CA's CertRep against the CA certificate, require its recipientNonce to echo the
+  request's fresh senderNonce, and select the issued certificate by public-key match
+  rather than by position. The shared-secret authenticator for a first enrollment is
+  the `challengePassword` the caller places in the PKCS#10; its strength is the
+  operator's to guarantee, and the toolkit neither generates nor stores it.
 - **Embedded-request proof-of-possession on the build side (CMC / CMP).** A
   `tcr` request in `pki.cmc.build` and a `p10cr` request in `pki.cmp.build` each
   carry a PKCS#10 CertificationRequest whose self-signature under its own subject
@@ -1037,6 +1052,8 @@ security-only patches after the next major releases.
   credentials (answered only after the server is authenticated), the mTLS client
   certificate and key, and the pinned `servername` (SNI, which selects the
   enrollment host's certificate), dropped even when no client certificate is set.
+  The drop is an explicit override, so a credential configured as a default on the
+  transport is suppressed on the cross-origin hop.
   A caller's `checkServerIdentity` pin is retained and re-evaluated against the
   redirected host, so a certificate or SPKI pin keeps applying rather than being
   silently bypassed. The response body is bounded while it streams, aborted the

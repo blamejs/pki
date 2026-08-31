@@ -487,7 +487,15 @@ async function testReadyAndRelativeRedirect() {
   var acmeXo = pki.acme.client(A.URLS.base + "/dir-xo", A.clientOpts(ACCT, sXo, { tls: { anchors: [ACCT.spki], cert: mk, key: mk } }));
   await acmeXo.newAccount({});
   var xoReqs = sXo.calls.filter(function (c) { return new URL(c.url).origin === "https://other.example"; });
-  check("#13 a cross-origin redirect strips the mTLS cert/key", xoReqs.length > 0 && xoReqs.every(function (c) { return (c.tls || {}).cert == null && (c.tls || {}).key == null; }));
+  // Overridden with null, not deleted: an omitted tls field falls back to a configured-transport default credential.
+  check("#13 a cross-origin redirect overrides the mTLS cert/key", xoReqs.length > 0 && xoReqs.every(function (c) { return (c.tls || {}).cert === null && (c.tls || {}).key === null; }));
+  // even when the client sets no credential in its tls, a cross-origin hop overrides cert/key/servername:
+  // the transport may carry defaults that an omitted field would fall through to.
+  var sXoBare = A.acmeServer({ redirects: { "/dir-xb": "https://other.example/directory" } });
+  var acmeXoBare = pki.acme.client(A.URLS.base + "/dir-xb", A.clientOpts(ACCT, sXoBare, { tls: { anchors: [ACCT.spki] } }));
+  await acmeXoBare.newAccount({});
+  var xbReqs = sXoBare.calls.filter(function (c) { return new URL(c.url).origin === "https://other.example"; });
+  check("#13 a cross-origin hop overrides tls credentials even when the client sets none", xbReqs.length > 0 && xbReqs.every(function (c) { return (c.tls || {}).cert === null && (c.tls || {}).key === null && (c.tls || {}).servername === null; }));
   var sSo = A.acmeServer({ redirects: { "/dir-so": "/directory" } });
   var acmeSo = pki.acme.client(A.URLS.base + "/dir-so", A.clientOpts(ACCT, sSo, { tls: { anchors: [ACCT.spki], cert: mk, key: mk } }));
   await acmeSo.newAccount({});
@@ -555,7 +563,7 @@ async function testReadyAndRelativeRedirect() {
   var acmeXoDir = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sXoDir, { tls: { anchors: [ACCT.spki], cert: mk2, key: mk2 } }));
   await acmeXoDir.newAccount({});
   var naXo = sXoDir.calls.filter(function (c) { return c.url === "https://other.example/new-account"; })[0];
-  check("#13 mTLS is stripped for a directory-advertised cross-origin URL", naXo && (naXo.tls || {}).cert == null && (naXo.tls || {}).key == null);
+  check("#13 mTLS is overridden for a directory-advertised cross-origin URL", naXo && (naXo.tls || {}).cert === null && (naXo.tls || {}).key === null);
   var dirTrust = sXoDir.calls.filter(function (c) { return c.url === A.URLS.directory; })[0];
   check("#13 mTLS is kept for the trusted directory origin", dirTrust && (dirTrust.tls || {}).cert != null);
 
@@ -703,7 +711,7 @@ async function testReadyAndRelativeRedirect() {
   var acmeSni = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, sSni, { tls: { anchors: [ACCT.spki], servername: "acme.example", checkServerIdentity: sniPin } }));
   await acmeSni.newAccount({});
   var naSni = sSni.calls.filter(function (c) { return c.url === "https://other.example/new-account"; })[0];
-  check("#13 a cross-origin request resets servername but RETAINS the checkServerIdentity pin", naSni && (naSni.tls || {}).servername == null && (naSni.tls || {}).checkServerIdentity === sniPin);
+  check("#13 a cross-origin request resets servername but RETAINS the checkServerIdentity pin", naSni && (naSni.tls || {}).servername === null && (naSni.tls || {}).checkServerIdentity === sniPin);
   var dirSni = sSni.calls.filter(function (c) { return c.url === A.URLS.directory; })[0];
   check("#13 the trusted origin keeps the servername override", dirSni && (dirSni.tls || {}).servername === "acme.example");
 

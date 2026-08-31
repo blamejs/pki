@@ -251,6 +251,21 @@ async function testTlsDefaultsHonored() {
   } finally { s.srv.close(); }
 }
 
+// ---- an explicit null servername overrides a factory default (SNI is not falsy-coalesced) -
+async function testServernameNullOverride() {
+  var tls = await selfSigned("Loopback A");
+  var s = await startServer(tls, function (req, res) { res.end("ok"); });
+  try {
+    // A request that overrides servername to null must SUPPRESS the transport's default servername, not
+    // fall through to it: null is falsy, so a resolver coalescing with `reqTls.servername || default` would
+    // leak the default. With the "localhost" default suppressed, SNI falls to the 127.0.0.1 host (an IP, so
+    // no SNI is sent) and the localhost-SAN identity check fails closed, which is what proves the override.
+    var t = pki.transport.https({ tls: { anchors: [tls.certPem], servername: "localhost" } });
+    var code = await codeOf(t({ method: "GET", url: urlFor(s.port), tls: { servername: null } }));
+    check("14d a null servername override suppresses the transport default rather than coalescing to it", code === "transport/server-auth-failed");
+  } finally { s.srv.close(); }
+}
+
 // ---- a stalled connection setup is bounded by the wall-clock timeout -------
 async function testConnectStallTimeout() {
   // a raw TCP server accepts the connection but never speaks TLS, so the handshake (connection setup,
@@ -375,6 +390,7 @@ async function main() {
   await testHappy();
   await testIdentityHookCannotBypass();
   await testTlsDefaultsHonored();
+  await testServernameNullOverride();
   await testDerAnchor();
   await testDerAnchorWithArmorBytes();
   await testIpv6BracketHost();
