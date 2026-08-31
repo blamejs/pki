@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.5 — 2026-08-31
+
+pki.cmp.build assembles a CMP key-recovery request (krr) body: a CertReqMessages under PKIBody tag [9], the key-recovery counterpart of an initialization request (RFC 9810 sec. 5.3.7).
+
+### Added
+
+- pki.cmp.build accepts a { krr } body arm (RFC 9810 sec. 5.3.7): a key-recovery request, a CertReqMessages built through pki.crmf.build under PKIBody tag [9], identical in syntax to an initialization request. The proof-of-possession key is a key field on the arm spec, and any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof.
+
 ## v0.6.4 — 2026-08-30
 
 The ACME client gains account update and order listing: pki.acme.client updates an account's contacts (RFC 8555 sec. 7.3.2) and fetches the account's orders list, following the paginated Link: rel="next" chain (sec. 7.1.2.1).

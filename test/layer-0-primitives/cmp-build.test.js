@@ -209,6 +209,21 @@ async function run() {
   check("6f. genm body arm octet is 0xB5 ([21])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)) === 0xb5);
   check("6g. certConf body arm octet is 0xB8 ([24])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0 }] } }, SIG)) === 0xb8);
   check("6h. pollReq body arm octet is 0xB9 ([25])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 0 }] } }, SIG)) === 0xb9);
+  // krr [9] (key recovery request), RFC 9810 sec. 5.3.7: a CertReqMessages like ir/cr/kur. The parser is
+  // already krr-aware, and the build round-trips through it.
+  check("6i. krr body arm octet is 0xA9 ([9]) and round-trips to body.arm krr",
+    bodyTagOctet(await pki.cmp.build({ header: HDR, body: { krr: irMsg.body.ir } }, SIG)) === 0xa9 &&
+    parse(await pki.cmp.build({ header: HDR, body: { krr: irMsg.body.ir } }, SIG)).body.arm === "krr");
+  // A krr (key recovery) is a CertReqMessages, so it accepts any proof-of-possession the CRMF builder
+  // produces, including a private-key-transport encryptedKey proof.
+  var kemKp = nodeCrypto.generateKeyPairSync("ml-kem-768");
+  var kemPk8 = kemKp.privateKey.export({ format: "der", type: "pkcs8" });
+  var kemSpki = kemKp.publicKey.export({ format: "der", type: "spki" });
+  var krrRecip = makeSigner("rsa");
+  var encKeyBody = { certTemplate: { subject: [{ commonName: "subca" }], publicKey: kemSpki },
+    pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPk8, identifier: "subca", recipients: [{ cert: krrRecip.cert }], archive: true } };
+  check("6j. a krr accepts an encryptedKey POP (a CertReqMessages carries any CRMF proof of possession)",
+    parse(await pki.cmp.build({ header: HDR, body: { krr: encKeyBody } }, SIG)).body.arm === "krr");
 
   // 7. envelope EXPLICIT tags: protection [0], extraCerts [1], header messageTime [0] / protectionAlg [1].
   var msgChildren = asn1.decode(irDer).children;

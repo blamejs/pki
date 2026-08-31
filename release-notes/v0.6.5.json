@@ -1,0 +1,10 @@
+{
+  "version": "0.6.5",
+  "headline": "pki.cmp.build assembles a CMP key-recovery request (krr) body: a CertReqMessages under PKIBody tag [9], the key-recovery counterpart of an initialization request (RFC 9810 sec. 5.3.7).",
+  "summary": "The CMP builder already produced ir/cr/kur/p10cr/certConf/pollReq/genm/rr and the nested RA wrapper. This adds the key-recovery request body. A krr is a CertReqMessages, built through pki.crmf.build like ir/cr/kur, under PKIBody tag [9], identical in syntax to an initialization request. Any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof.",
+  "sections": {
+    "Added": [
+      "pki.cmp.build accepts a { krr } body arm (RFC 9810 sec. 5.3.7): a key-recovery request, a CertReqMessages built through pki.crmf.build under PKIBody tag [9], identical in syntax to an initialization request. The proof-of-possession key is a key field on the arm spec, and any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof."
+    ]
+  }
+}
