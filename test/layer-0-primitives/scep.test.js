@@ -526,6 +526,10 @@ async function testGetCACaps() {
 async function testGetCACert() {
   var r = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }) });
   check("getCACert: single certificate returned", Buffer.compare(r.caCertificate, F.caCert) === 0);
+  // an injected transport may hand back a BufferSource (Uint8Array) rather than a Node Buffer: its raw bytes
+  // must be normalized, not String()-coerced into "48,1,..." and fed to the certificate parser.
+  var r8 = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: new Uint8Array(F.caCert) }) });
+  check("getCACert: a Uint8Array response body is normalized, not string-coerced", Buffer.compare(r8.caCertificate, F.caCert) === 0);
   var fp = nodeCrypto.createHash("sha256").update(F.caCert).digest("hex");
   var okFp = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }), expectedFingerprint: fp });
   check("getCACert: matching fingerprint accepted", Buffer.compare(okFp.caCertificate, F.caCert) === 0);
@@ -629,6 +633,17 @@ async function testClientTransportEdges() {
   // Explicitly null, not absent: a deleted field falls back to a transport's own tls defaults, so the
   // cross-origin hop must OVERRIDE cert/key/servername to suppress a configured default credential.
   check("client: mTLS credential is overridden (not just omitted) on a cross-origin hop", xorigin.calls[1].tls.cert === null && xorigin.calls[1].tls.key === null && xorigin.calls[1].tls.servername === null);
+  // a discovery GET snapshots its tls at the start: a same-origin redirect hop uses the identity the first
+  // hop did, even if opts.tls is replaced while the request is in flight.
+  var redirOpts = { tls: { cert: Buffer.from("ORIG-CERT"), anchors: [] } };
+  var hopN = 0;
+  redirOpts.transport = fakeTransport(function () {
+    hopN += 1;
+    if (hopN === 1) { redirOpts.tls = { cert: Buffer.from("SWAPPED-CERT"), anchors: [] }; return { status: 302, headers: { location: "http://ca.example/scep2" } }; }
+    return { status: 200, headers: { "content-type": "text/plain" }, body: "AES\n" };
+  });
+  await pki.scep.getCACaps("http://ca.example/scep", redirOpts);
+  check("getCACaps: a redirect hop uses the tls captured at the start, not a mid-flight replacement", redirOpts.transport.calls[1].tls.cert.equals(Buffer.from("ORIG-CERT")));
   // even when the call carries no request-level tls, a cross-origin hop must emit explicit null overrides:
   // the transport may hold default client credentials that an omitted field would fall through to.
   var xoBare = fakeTransport([{ status: 302, headers: { location: "https://other.example/scep" } }, { status: 200, headers: { "content-type": "text/plain" }, body: "AES\n" }]);
