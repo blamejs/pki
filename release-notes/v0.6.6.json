@@ -1,0 +1,11 @@
+{
+  "version": "0.6.6",
+  "headline": "pki.kem establishes a shared secret with composite ML-KEM (draft-ietf-lamps-pq-composite-kem): a post-quantum ML-KEM hybridized with a traditional RSA-OAEP, ECDH, X25519, or X448, so the secret holds if either component is later broken.",
+  "summary": "pki.kem.encapsulate turns a recipient's composite public key into a 256-bit shared secret and a ciphertext; pki.kem.decapsulate recovers the same secret from the ciphertext and the composite private key. Each component KEM runs independently and the two secrets are mixed through a SHA3-256 combiner that binds the traditional ciphertext, the traditional public key, and a per-algorithm label. All twelve registered algorithms (ML-KEM-768 and ML-KEM-1024 paired with RSA-OAEP 2048/3072/4096, ECDH over P-256/P-384/P-521 and brainpool, X25519, and X448) are verified against the draft Appendix G known-answer vectors, and a composite ML-KEM public key is recognized in an X.509 SubjectPublicKeyInfo. Keys and ciphertexts are the draft's raw concatenation encodings (the ML-KEM component first); a malformed key or ciphertext, an unsupported algorithm, or a component decapsulation failure throws a typed error.",
+  "sections": {
+    "Added": [
+      "pki.kem.encapsulate(publicKey) establishes a 256-bit shared secret for a recipient's composite ML-KEM SubjectPublicKeyInfo, returning the secret and a ciphertext to send to the recipient (draft-ietf-lamps-pq-composite-kem).",
+      "pki.kem.decapsulate(privateKey, ciphertext) recovers the shared secret from a composite ML-KEM ciphertext and the composite PKCS#8 private key. The twelve algorithms pair ML-KEM-768 and ML-KEM-1024 with RSA-OAEP 2048/3072/4096, ECDH over P-256/P-384/P-521 and brainpoolP256r1/P384r1, X25519, and X448."
+    ]
+  }
+}

@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.5",
+  "packageVersion": "0.6.6",
   "surface": {
     "C": {
       "kind": "object",
@@ -2200,6 +2200,10 @@
           "kind": "function",
           "arity": 3
         },
+        "KemError": {
+          "kind": "function",
+          "arity": 3
+        },
         "KeyError": {
           "kind": "function",
           "arity": 3
@@ -2527,6 +2531,19 @@
         "verify": {
           "kind": "function",
           "arity": 2
+        }
+      }
+    },
+    "kem": {
+      "kind": "object",
+      "members": {
+        "decapsulate": {
+          "kind": "function",
+          "arity": 2
+        },
+        "encapsulate": {
+          "kind": "function",
+          "arity": 1
         }
       }
     },
@@ -3489,6 +3506,8 @@
     "pki.cms.certsOnly": "0.6.3",
     "pki.cms.parseCertsOnly": "0.6.3",
     "pki.cms.isCertsOnly": "0.6.3",
+    "pki.kem.decapsulate": "0.6.6",
+    "pki.kem.encapsulate": "0.6.6",
     "pki.C.TIME": "0.1.0",
     "pki.C.BYTES": "0.1.0",
     "pki.crl.sign": "0.3.9",

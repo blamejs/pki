@@ -537,6 +537,21 @@ security-only patches after the next major releases.
   composite signature covers. `pki.cms.sign` produces a composite `SignerInfo`
   from the two component keys (`{ mldsa, trad }`) and never emits a
   single-component signature.
+- **Composite (hybrid) KEM.** `pki.kem.encapsulate` and `pki.kem.decapsulate`
+  establish a shared secret with a composite ML-KEM key
+  (draft-ietf-lamps-pq-composite-kem): a post-quantum ML-KEM paired with a
+  traditional RSA-OAEP, ECDH, X25519, or X448. The two component shared secrets
+  are mixed through the draft's SHA3-256 combiner, which also binds the
+  traditional ciphertext, the traditional public key, and a per-algorithm label,
+  so the established secret stays secret as long as EITHER component is unbroken,
+  and a ciphertext cannot be re-bound to a different composite algorithm. The
+  per-algorithm label bytes are stored as the draft's authoritative values rather
+  than derived from the algorithm name, since one label is a non-mnemonic byte
+  string. The AlgorithmIdentifier parameters must be absent, an RSA component
+  whose modulus does not match the algorithm OID is refused, and a malformed key
+  or ciphertext, an unsupported algorithm, or a component decapsulation failure
+  fails closed to a typed reason code. The intermediate component secrets and the
+  combiner preimage are cleared once the composite secret is derived (draft §3.5).
 - **Algorithm substitution.** Every algorithm, attribute, and extension is named
   in an OID registry (`pki.oid`), so a structure's algorithm identifiers resolve
   to a known name rather than being trusted blindly. OID-driven sign and verify
