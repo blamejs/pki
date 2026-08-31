@@ -530,6 +530,9 @@ async function testGetCACert() {
   // must be normalized, not String()-coerced into "48,1,..." and fed to the certificate parser.
   var r8 = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: new Uint8Array(F.caCert) }) });
   check("getCACert: a Uint8Array response body is normalized, not string-coerced", Buffer.compare(r8.caCertificate, F.caCert) === 0);
+  // a raw ArrayBuffer is a BufferSource too: the size check must accept the same forms the body decode does.
+  var rab = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: new Uint8Array(F.caCert).buffer }) });
+  check("getCACert: an ArrayBuffer response body is size-checked and read consistently (source, not view)", Buffer.compare(rab.caCertificate, F.caCert) === 0);
   var fp = nodeCrypto.createHash("sha256").update(F.caCert).digest("hex");
   var okFp = await pki.scep.getCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: F.caCert }), expectedFingerprint: fp });
   check("getCACert: matching fingerprint accepted", Buffer.compare(okFp.caCertificate, F.caCert) === 0);

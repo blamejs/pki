@@ -4,6 +4,22 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.8 — 2026-08-31
+
+pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11), and the ACME client accepts a response body an injected transport returns as any BufferSource, not only a Node Buffer.
+
+### Added
+
+- pki.cmp.build assembles the ccr cross-certification request body (RFC 9810 sec. 5.3.11): a CertReqMessages under PKIBody [13], the request one certification authority sends to have another certify its existing public key. It carries the same certificate template and proof-of-possession as an ir or cr, and refuses the private-key-transport encryptedKey proof-of-possession, since a ccr does not send the requesting CA's private key. It is a CertReqMessages at the sec. 5.3.11 normative floor, so it requires no Appendix D.6 profile field and does not enforce the optional D.6 single-request cardinality: a multi-request ccr builds and round-trips, and a producer that follows App. D.6 sends one cross-certificate per message by its own policy.
+
+### Changed
+
+- pki.schema.cmp.parse and pki.cmp.build no longer enforce the App. D.6 single-CertResponse cardinality on a ccp cross-certification response. A CertRepMessage is SIZE (1..MAX) and App. D.6 is optional, so a multi-response ccp is parsed and built at the RFC 9810 sec. 5.3.12 normative floor, matching the new ccr treatment. The sec. 5.3.12 no-private-key restriction is unchanged.
+
+### Fixed
+
+- The ACME and SCEP clients read a response body an injected transport returns as any BufferSource (a Uint8Array, a raw ArrayBuffer, a DataView), not only a Node Buffer or a string. Both the response-size check and the body decode take its raw bytes through the byte guard, so a BufferSource response is measured and parsed from its bytes rather than from a comma-joined string, and the size check accepts the same forms the decode does.
+
 ## v0.6.7 — 2026-08-31
 
 pki.scep gains the SCEP HTTP client verbs (RFC 8894): getCACaps, getCACert, enroll, and renew drive a certificate enrollment against a SCEP CA over the shipped pkiMessage codec.

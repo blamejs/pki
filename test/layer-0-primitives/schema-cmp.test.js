@@ -736,17 +736,20 @@ function testRejectBody() {
         parseCode(minimalMessage({ body: body(0, certReqWithVersion(0)) })) === "crmf/bad-version");
   check("rr certDetails version v1 still rejected (no ccr relaxation)",
         parseCode(minimalMessage({ body: body(11, b.sequence([b.sequence([b.sequence([implicitInt(0, 0), implicitInt(1, 7)])])])) })) === "crmf/bad-version");
-  // RFC 9810 Appendix D.6 — a ccr allows exactly one CertReqMsg (multiple
-  // cross-certificates go in separate PKIMessages).
+  // RFC 9810 sec. 5.3.11: a ccr uses the CertReqMessages syntax, SIZE (1..MAX), so multiple CertReqMsg
+  // parse. Appendix D.6 profiles it to one, but D.6 is OPTIONAL, so the base parser does not enforce it (an
+  // App. D.6-conforming producer sends multiple cross-certificates in separate messages by its own policy).
   var ccrTwoMsgs = b.sequence([
     b.sequence([b.sequence([b.integer(0), b.sequence([b.explicit(5, rdn("a"))])])]),
     b.sequence([b.sequence([b.integer(1), b.sequence([b.explicit(5, rdn("b"))])])]),
   ]);
-  check("ccr with two CertReqMsgs rejected (Appendix D.6)",
-        parseCode(minimalMessage({ body: body(13, ccrTwoMsgs) })) === "cmp/bad-body");
-  // RFC 9810 Appendix D.6 — the response mirror: a ccp carries exactly one CertResponse.
-  check("ccp with two CertResponses rejected (Appendix D.6)", parseCode(minimalMessage({
-    body: body(14, certRepMessage({ responses: [certResponse({}), certResponse({})] })) })) === "cmp/bad-body");
+  var mccr2 = parse(minimalMessage({ body: body(13, ccrTwoMsgs) }));
+  check("ccr with two CertReqMsgs parses (RFC 9810 sec. 5.3.11 CertReqMessages is 1..MAX)",
+        mccr2.body.arm === "ccr" && mccr2.body.decoded.messages.length === 2);
+  // The response mirror: a ccp uses CertRepMessage (SIZE (1..MAX)), so multiple CertResponse parse too.
+  var mccp2 = parse(minimalMessage({ body: body(14, certRepMessage({ responses: [certResponse({}), certResponse({})] })) }));
+  check("ccp with two CertResponses parses (RFC 9810 sec. 5.3.12 CertRepMessage is 1..MAX)",
+        mccp2.body.arm === "ccp" && mccp2.body.decoded.response.length === 2);
   // RFC 9810 §5.2.8.3 — the encryptedKey (and agreeMAC) POPOPrivKey choices are
   // cmp2021(3) syntax; a request carrying one under pvno 2 is a version mismatch.
   check("ir POP using encryptedKey at pvno 2 rejected (RFC 9810 §5.2.8.3)", parseCode(minimalMessage({
