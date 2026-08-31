@@ -127,6 +127,60 @@ async function testBadNonceStorm() {
   check("#4 the retry count is bounded (maxNonceRetries+1)", s.calls.filter(function (c) { return c.url === A.URLS.newAccount; }).length === 2);
 }
 
+// ---- 4b badSignatureAlgorithm re-sign (RFC 8555 sec. 6.2, opts.resignKeys) --
+async function testResignBadSigAlg() {
+  var rsa = await A.makeRsaAccount();
+  // (a) re-sign succeeds: a newAccount signed RS256 is refused with algorithms:["PS256"]; the client
+  // re-signs with the caller's PS256 key (the SAME account material) and the account is created.
+  var s = A.acmeServer({ badSigAlgRounds: 1, serverAlgs: ["PS256"] });
+  var acme = pki.acme.client(A.URLS.directory, A.clientOpts(rsa, s, { alg: "RS256", resignKeys: [{ alg: "PS256", key: rsa.ps256Key }] }));
+  var acct = await acme.newAccount({});
+  check("#4b a badSignatureAlgorithm is re-signed and the account is created", acct.url === A.URLS.account);
+  var posts = s.calls.filter(function (c) { return c.method === "POST" && c.url === A.URLS.newAccount; });
+  check("#4b exactly two POSTs to newAccount (initial + one re-sign)", posts.length === 2);
+  check("#4b the initial POST used the primary alg RS256", jwsProtected(posts[0].body).alg === "RS256");
+  check("#4b the re-signed POST used the allowlisted PS256", jwsProtected(posts[1].body).alg === "PS256");
+  check("#4b the re-signed embedded jwk declares the re-sign alg (no jwk vs header alg conflict)",
+    jwsProtected(posts[1].body).jwk && jwsProtected(posts[1].body).jwk.alg === "PS256");
+
+  // (b) anti-downgrade (RFC 8555 sec. 10): the CALLER's order selects, not the server's. The caller
+  // prefers PS512; the server advertises ["PS256","PS512"] (PS256 first). The re-sign must use PS512.
+  var s2 = A.acmeServer({ badSigAlgRounds: 1, serverAlgs: ["PS256", "PS512"] });
+  var acme2 = pki.acme.client(A.URLS.directory, A.clientOpts(rsa, s2, { alg: "RS256", resignKeys: [{ alg: "PS512", key: rsa.ps512Key }, { alg: "PS256", key: rsa.ps256Key }] }));
+  await acme2.newAccount({});
+  var posts2 = s2.calls.filter(function (c) { return c.method === "POST" && c.url === A.URLS.newAccount; });
+  check("#4b the re-sign picks the caller's first preference (PS512), not the server's order (PS256)", jwsProtected(posts2[1].body).alg === "PS512");
+
+  // (c) no resignKeys -> the badSignatureAlgorithm surfaces (fail closed; the conformant default is kept).
+  var s3 = A.acmeServer({ badSigAlgRounds: 1, serverAlgs: ["PS256"] });
+  var acme3 = pki.acme.client(A.URLS.directory, A.clientOpts(rsa, s3, { alg: "RS256" }));
+  check("#4b without resignKeys the badSignatureAlgorithm is surfaced", (await codeOf(acme3.newAccount({}))) === "acme/server-problem");
+
+  // (d) resignKeys present but no entry matches the server's advertised array -> fail closed (no re-sign).
+  var s4 = A.acmeServer({ badSigAlgRounds: 1, serverAlgs: ["ES256"] });
+  var acme4 = pki.acme.client(A.URLS.directory, A.clientOpts(rsa, s4, { alg: "RS256", resignKeys: [{ alg: "PS256", key: rsa.ps256Key }] }));
+  check("#4b a resignKeys with no server-advertised match fails closed", (await codeOf(acme4.newAccount({}))) === "acme/server-problem");
+
+  // (e) bounded to ONE re-sign: an unbroken badSignatureAlgorithm storm fails closed after a single re-sign.
+  var s5 = A.acmeServer({ badSigAlgRounds: 9, serverAlgs: ["PS256"] });
+  var acme5 = pki.acme.client(A.URLS.directory, A.clientOpts(rsa, s5, { alg: "RS256", resignKeys: [{ alg: "PS256", key: rsa.ps256Key }] }));
+  check("#4b an unbroken badSignatureAlgorithm storm fails closed", (await codeOf(acme5.newAccount({}))) === "acme/server-problem");
+  check("#4b the re-sign is bounded to one (initial + one re-sign)", s5.calls.filter(function (c) { return c.url === A.URLS.newAccount; }).length === 2);
+
+  // (f) after keyChange rotates the account key, the resignKeys (CryptoKeys for the OLD key material) are
+  // dropped: a later badSignatureAlgorithm surfaces rather than re-signing with obsolete key material under
+  // the new kid, which the CA would reject.
+  var neu = await A.makeAccount();   // rotate to a fresh (EC) account key
+  var s6 = A.acmeServer({ problemOn: { "/new-order": A.problem(400, "badSignatureAlgorithm", "unsupported", { algorithms: ["PS256"] }) } });
+  var acme6 = pki.acme.client(A.URLS.directory, A.clientOpts(rsa, s6, { alg: "RS256", resignKeys: [{ alg: "PS256", key: rsa.ps256Key }] }));
+  await acme6.newAccount({});
+  await acme6.keyChange({ newKey: neu.key, newJwk: neu.jwk, newAlg: "ES256" });
+  check("#4b after keyChange the stale resignKeys are dropped; a badSignatureAlgorithm surfaces",
+    (await codeOf(acme6.newOrder({ identifiers: [{ type: "dns", value: "example.org" }] }))) === "acme/server-problem");
+  check("#4b ...and the request was not re-signed with obsolete keys (one POST to newOrder)",
+    s6.calls.filter(function (c) { return c.method === "POST" && c.url === A.URLS.newOrder; }).length === 1);
+}
+
 // ---- 5 problem+json surfaced ------------------------------------------------
 async function testProblemSurfaced() {
   var s = A.acmeServer({ problemOn: { "/new-account": A.problem(403, "unauthorized", "account key not acceptable") } });
@@ -1840,6 +1894,7 @@ async function main() {
   await testFinalize();
   await testBadNonceRetry();
   await testBadNonceStorm();
+  await testResignBadSigAlg();
   await testProblemSurfaced();
   await testFailClosedGates();
   await testPolling();

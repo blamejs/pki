@@ -489,14 +489,14 @@ async function testAcceptChains() {
   var inter = await mkCert({ subject: "Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var leaf = await mkCert({ subject: "Leaf", issuer: "Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
 
-  var res = await run([inter, leaf], { time: T2027, trustAnchor: anchor });
+  var res = await run([inter, leaf], { time: T2027, trustAnchors: anchor });
   check("good 2-cert chain validates", res.valid === true);
   check("per-cert results present", res.results.length === 2);
   check("workingPublicKey is the leaf SPKI", Buffer.isBuffer(res.workingPublicKey) && res.workingPublicKey.equals(KEYS.ed25519leaf.spki));
 
   // good 1-cert chain (anchor directly issues the leaf).
   var direct = await mkCert({ subject: "Direct", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  var res1 = await run([direct], { time: T2027, trustAnchor: anchor });
+  var res1 = await run([direct], { time: T2027, trustAnchors: anchor });
   check("good 1-cert chain validates", res1.valid === true);
 
   // #68 AB1: a trust-anchor tuple whose publicKey is an ArrayBuffer (a BufferSource) must validate
@@ -504,7 +504,7 @@ async function testAcceptChains() {
   // snapshot (which accepts only Buffer/Uint8Array and would accept-then-throw on the wider form).
   var abPub = new ArrayBuffer(anchor.publicKey.length);
   new Uint8Array(abPub).set(anchor.publicKey);
-  var resAB = await run([direct], { time: T2027, trustAnchor: { name: anchor.name, publicKey: abPub, algorithm: anchor.algorithm } });
+  var resAB = await run([direct], { time: T2027, trustAnchors: { name: anchor.name, publicKey: abPub, algorithm: anchor.algorithm } });
   check("#68 AB1: an ArrayBuffer trustAnchor publicKey validates like a Buffer", resAB.valid === true);
 
   // #74: a parsed root CERTIFICATE works as opts.trustAnchor (normalized to a tuple), and a mis-shaped
@@ -512,19 +512,19 @@ async function testAcceptChains() {
   // previously validated the path (fail-OPEN) because a self-describing SPKI masked the undefined value.
   var rootCert74 = pki.schema.x509.parse(await mkCert({ subject: "Root", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
   check("#74 a parsed root certificate is accepted as opts.trustAnchor",
-    (await run([direct], { time: T2027, trustAnchor: rootCert74 })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: rootCert74 })).valid === true);
   check("#74 a malformed trustAnchor tuple is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: "nope", algorithm: 1234 } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: "nope", algorithm: 1234 } }))) === "path/bad-input");
   check("#74 a trustAnchor tuple missing algorithm is refused (was a fail-open valid:true)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes } }))) === "path/bad-input");
   check("#74 a trustAnchor whose algorithm is an object with no OID is refused (self-describing SPKI would else mask it)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: {} } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: {} } }))) === "path/bad-input");
   check("#74 a trustAnchor whose algorithm is a non-canonical OID string is refused (built-in verify reads the SPKI, not this)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "not-an-oid" } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "not-an-oid" } }))) === "path/bad-input");
   check("#74 a trustAnchor whose algorithm object carries a non-canonical OID is refused",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: { oid: "not-an-oid" } } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: { oid: "not-an-oid" } } }))) === "path/bad-input");
   check("#74 a trustAnchor whose declared algorithm is canonical but DISAGREES with its publicKey SPKI is refused (declared must equal the SPKI key algorithm)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.2.840.113549.1.1.1" } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.2.840.113549.1.1.1" } }))) === "path/bad-input");
   // TOCTOU: a caller publicKey getter must not answer the declared-vs-SPKI check with one key and hand
   // verification another. toAnchor pins publicKey once and the anchor it returns carries that pinned copy,
   // so a getter returning a matching EC SPKI to the check and the real Ed25519 signer to the key-binding
@@ -538,7 +538,7 @@ async function testAcceptChains() {
     get publicKey() { pkReads74++; return pkReads74 <= 3 ? ecSpki74 : rootCert74.subjectPublicKeyInfo.bytes; },
   };
   var lyingRes74;
-  try { lyingRes74 = await run([direct], { time: T2027, trustAnchor: lyingAnchor74 }); }
+  try { lyingRes74 = await run([direct], { time: T2027, trustAnchors: lyingAnchor74 }); }
   catch (e) { lyingRes74 = { threw: (e && e.code) || "throw" }; }
   check("#74 a lying publicKey getter (matching SPKI to the check, real signer to the bind) cannot force valid:true (TOCTOU pinned)",
     lyingRes74.valid !== true);
@@ -552,7 +552,7 @@ async function testAcceptChains() {
     get publicKey() { pkReadCount++; if (pkReadCount > 3) throw new Error("publicKey re-read after snapshot"); return rootCert74.subjectPublicKeyInfo.bytes; },
   };
   var rAccessor;
-  try { rAccessor = await run([direct], { time: T2027, trustAnchor: accessorAnchor }); } catch (e) { rAccessor = { threw: (e && e.message) || "throw" }; }
+  try { rAccessor = await run([direct], { time: T2027, trustAnchors: accessorAnchor }); } catch (e) { rAccessor = { threw: (e && e.message) || "throw" }; }
   check("#74 the flatten copy does not re-read an overridden accessor field (publicKey) after snapshotting it",
     rAccessor.valid === true);
   // A publicKey that decodes to an AlgorithmIdentifier but omits the required key BIT STRING is a
@@ -560,10 +560,10 @@ async function testAcceptChains() {
   // through the OID read to a soft valid:false when key import later rejects it (3007300506032b6570 =
   // SEQUENCE { SEQUENCE { OID ed25519 } } with no subjectPublicKey).
   check("#74 a structurally-incomplete trustAnchor SPKI (AlgorithmIdentifier, no key BIT STRING) is refused at entry",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: { name: rootCert74.subject, publicKey: Buffer.from("3007300506032b6570", "hex"), algorithm: "1.3.101.112" } }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: { name: rootCert74.subject, publicKey: Buffer.from("3007300506032b6570", "hex"), algorithm: "1.3.101.112" } }))) === "path/bad-input");
   check("#74 pki.path.anchorFromCert(cert) returns a tuple that validates",
     typeof pki.path.anchorFromCert === "function" &&
-    (await run([direct], { time: T2027, trustAnchor: pki.path.anchorFromCert(rootCert74) })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: pki.path.anchorFromCert(rootCert74) })).valid === true);
   // The normalized anchor is a SELF-CONTAINED tuple: cloning it (Object.assign / spread / JSON) keeps every
   // field as its own property, so a caller can round-trip and reuse it. An anchor that only inherited its
   // name/metadata would lose them on Object.assign and be rejected as malformed on re-use.
@@ -571,7 +571,7 @@ async function testAcceptChains() {
   var clonedAnchor = Object.assign({}, normAnchor);
   check("#74 a normalized anchor tuple is self-contained: an Object.assign clone keeps its name and re-validates",
     clonedAnchor.name !== undefined && Buffer.isBuffer(clonedAnchor.publicKey) &&
-    (await run([direct], { time: T2027, trustAnchor: clonedAnchor })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: clonedAnchor })).valid === true);
   // anchorFromCert's documented output carries subjectDer; re-normalizing its result (a ready tuple) through
   // anchorFromCert again keeps it -- the conversion is idempotent, not lossy. A dropped subjectDer would make
   // the twice-normalized anchor a different shape than the once-normalized one, and the trust store keys its
@@ -581,7 +581,7 @@ async function testAcceptChains() {
   check("#74 anchorFromCert is idempotent: re-normalizing its result preserves the documented subjectDer",
     Buffer.isBuffer(afcOnce.subjectDer) && Buffer.isBuffer(afcTwice.subjectDer) &&
     afcTwice.subjectDer.equals(afcOnce.subjectDer) &&
-    (await run([direct], { time: T2027, trustAnchor: afcTwice })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: afcTwice })).valid === true);
   // A tuple anchor's documented trust-store identity fields -- label and mozillaCaPolicy, part of the closed
   // anchor field set pki.trust.parseCertdata emits -- survive normalization, so build's returned
   // result.trustAnchor still identifies which named store entry was selected. A field OUTSIDE the closed set
@@ -598,11 +598,11 @@ async function testAcceptChains() {
   var throwName74 = { get name() { throw new Error("boom-name"); },
     publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
   check("#74 a trustAnchor with a throwing name accessor is refused with path/bad-input, not a raw throw",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: throwName74 }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: throwName74 }))) === "path/bad-input");
   var throwAlgOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: { get oid() { throw new Error("boom-oid"); } } };
   check("#74 a trustAnchor with a throwing algorithm.oid accessor is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: throwAlgOid74 }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: throwAlgOid74 }))) === "path/bad-input");
   // A Proxy anchor is refused at the door with path/bad-input, before any field is read. A Proxy's traps can
   // answer the same read with different values on successive lookups, or report a field absent while forwarding
   // its siblings, so no field-by-field normalization can trust a Proxy to describe itself honestly. A
@@ -614,12 +614,12 @@ async function testAcceptChains() {
     { get: function (t, k, r) { trapReads74++; return Reflect.get(t, k, r); },
       getOwnPropertyDescriptor: function (t, k) { trapReads74++; return Object.getOwnPropertyDescriptor(t, k); } });
   check("#74 a Proxy trustAnchor is refused at the door with path/bad-input, before any field is read",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: proxyAnchor74 }))) === "path/bad-input" && trapReads74 === 0);
+    (await codeOf(run([direct], { time: T2027, trustAnchors: proxyAnchor74 }))) === "path/bad-input" && trapReads74 === 0);
   // A Proxy whose target is a FUNCTION (typeof "function", not "object") is refused too: the door check tests
   // the Proxy internal slot, not the target's typeof, so a callable-target Proxy cannot slip past into a field read.
   var fnProxyAnchor74 = new Proxy(function () {}, { get: function () { return "1.3.101.112"; } });
   check("#74 a Proxy over a function target is also refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: fnProxyAnchor74 }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: fnProxyAnchor74 }))) === "path/bad-input");
   // A caller field OUTSIDE the closed anchor set is not carried onto the normalized anchor -- neither as
   // enumerable data nor as hidden non-enumerable state. A non-enumerable "internalSecret" is dropped entirely,
   // so it can never leak via Object.keys / spread / JSON nor ride along as hidden state.
@@ -640,7 +640,7 @@ async function testAcceptChains() {
     { getOwnPropertyDescriptor: function (t, k) { return k === "purposes" ? undefined : Object.getOwnPropertyDescriptor(t, k); },
       has: function (t, k) { return k === "purposes" ? false : (k in t); } });
   check("#74 a Proxy anchor that hides a purposes restriction via its descriptor/has traps is refused, not read",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: hidePurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: hidePurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A constraint MAP (purposes / distrustAfter) nested inside an otherwise-plain anchor and supplied as a Proxy
   // is refused too: its ownKeys trap could return an empty key list, dropping the restriction the caller
   // attached. A Proxy distrustAfter over { serverAuth: <past date> } that reports no keys would snapshot to an
@@ -651,30 +651,30 @@ async function testAcceptChains() {
   var distrustProxyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", distrustAfter: proxyDistrust74 };
   check("#74 a Proxy distrustAfter constraint map is refused with path/bad-input (its ownKeys trap cannot hide the cutoff)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: distrustProxyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: distrustProxyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   var proxyPurposes74 = new Proxy({ serverAuth: false }, { ownKeys: function () { return []; } });
   var purposesProxyMapAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: proxyPurposes74 };
   check("#74 a Proxy purposes constraint map is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: purposesProxyMapAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: purposesProxyMapAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A constraint map whose restriction is reached through the prototype -- Object.create({ serverAuth: <past
   // date> }) -- is refused, not silently dropped: getOwnPropertyNames reads only own keys, so an inherited entry
   // would normalize to an empty map and omit the cutoff. The map must be a plain object (or null-prototype).
   var inheritedDistrust74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", distrustAfter: Object.create({ serverAuth: new Date("2000-01-01T00:00:00Z") }) };
   check("#74 a distrustAfter map with a prototype-reached entry is refused with path/bad-input (not dropped to empty)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: inheritedDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   var inheritedPurposes74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: Object.create({ serverAuth: false }) };
   check("#74 a purposes map with a prototype-reached entry is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: inheritedPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A null-prototype constraint map is plain data and is accepted (a distrust cutoff BEFORE the check time
   // distrusts a leaf issued after it; here the anchor itself validates, proving the map was read, not refused).
   var nullProtoPurposes74 = Object.create(null); nullProtoPurposes74.serverAuth = true;
   var nullProtoAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: nullProtoPurposes74 };
   check("#74 a null-prototype constraint map is plain data and is accepted",
-    (await run([direct], { time: T2027, trustAnchor: nullProtoAnchor74, checkPurpose: "serverAuth" })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: nullProtoAnchor74, checkPurpose: "serverAuth" })).valid === true);
   // A constraint map built in ANOTHER realm (vm context) has that realm's Object.prototype, not this one's, so
   // the identity test refuses it fail-closed. This is deliberate: a hostile object can mimic every STRUCTURAL
   // signal of a genuine Object.prototype (a non-enumerable data entry looks like a built-in), so only identity
@@ -683,7 +683,7 @@ async function testAcceptChains() {
   var crossRealmAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: crossRealmPurposes74 };
   check("#74 a constraint map from another realm (vm context) is refused fail-closed with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: crossRealmAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: crossRealmAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A restriction defined NON-ENUMERABLY on a custom prototype is refused too: the identity test refuses any
   // non-plain prototype regardless of how its entries are defined, so a non-enumerable serverAuth cannot slip
   // through looking like a built-in.
@@ -691,7 +691,7 @@ async function testAcceptChains() {
   var nonEnumAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", distrustAfter: nonEnumProto74 };
   check("#74 a non-enumerable restriction on a custom prototype is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: nonEnumAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: nonEnumAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A restriction defined as a NON-ENUMERABLE OWN entry on an otherwise-plain map must still be seen: the map is
   // materialized enumerable and the purpose-scoped-metadata gate counts own names (not Object.keys). With no
   // checkPurpose the anchor is refused (metadata present), not validated as though it carried none.
@@ -700,8 +700,8 @@ async function testAcceptChains() {
   var nonEnumEntryAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: nonEnumEntryPurposes74 };
   check("#74 a non-enumerable own purposes entry still triggers the checkPurpose-required gate (not silently dropped)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: nonEnumEntryAnchor74 }))) === "path/bad-input");
-  var rNonEnumApplied74 = await run([direct], { time: T2027, trustAnchor: nonEnumEntryAnchor74, checkPurpose: "serverAuth" });
+    (await codeOf(run([direct], { time: T2027, trustAnchors: nonEnumEntryAnchor74 }))) === "path/bad-input");
+  var rNonEnumApplied74 = await run([direct], { time: T2027, trustAnchors: nonEnumEntryAnchor74, checkPurpose: "serverAuth" });
   check("#74 a non-enumerable own purposes restriction is applied under checkPurpose (purpose not trusted)",
     rNonEnumApplied74.valid === false && failCodes(rNonEnumApplied74).indexOf("path/purpose-not-trusted") !== -1);
   // A symbol-keyed constraint entry is refused: getOwnPropertyNames omits symbols, so it would be dropped from
@@ -711,7 +711,7 @@ async function testAcceptChains() {
   var symKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: symKeyPurposes74 };
   check("#74 a symbol-keyed constraint map entry is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: symKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: symKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // An own __proto__ DATA entry on the map is refused: the snapshot skips __proto__ to avoid polluting the fresh
   // map, so it would be silently dropped. (defineProperty makes a data property NAMED __proto__ without changing
   // the object's prototype, so the map stays plain -- the presence of the entry is the concern, its value is
@@ -721,38 +721,38 @@ async function testAcceptChains() {
   var protoKeyAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: protoKeyPurposes74 };
   check("#74 an own __proto__ data entry on a constraint map is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: protoKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: protoKeyAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A constraint map that is not a plain object -- a primitive, a Buffer, or an array -- carries no
   // purpose -> value restriction and is refused, not passed through as an unusable value that applies nothing.
   var primPurposesAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: "serverAuth" };
   check("#74 a primitive (string) constraint map is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: primPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: primPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   var bufDistrustAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", distrustAfter: Buffer.from([1, 2, 3]) };
   check("#74 a Buffer constraint map is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: bufDistrustAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: bufDistrustAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   var arrPurposesAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: [false] };
   check("#74 an array constraint map is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: arrPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: arrPurposesAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A parsed-certificate anchor with per-purpose constraints ATTACHED to it is refused: the certificate branch
   // carries no purposes / distrustAfter, so attaching them would silently drop the restriction and validate a
   // path the caller meant to forbid. Constraints belong on a { name, publicKey, algorithm, ... } tuple.
   var certForAttach74 = pki.schema.x509.parse(await mkCert({ subject: "AttachRoot", issuer: "AttachRoot", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
   certForAttach74.purposes = { serverAuth: false };
   check("#74 a parsed-certificate anchor with attached purposes is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: certForAttach74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: certForAttach74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   var certForAttachD74 = pki.schema.x509.parse(await mkCert({ subject: "AttachRootD", issuer: "AttachRootD", signWith: "ed25519", subjectKeys: "ed25519", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] }));
   certForAttachD74.distrustAfter = { serverAuth: new Date("2000-01-01T00:00:00Z") };
   check("#74 a parsed-certificate anchor with attached distrustAfter is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: certForAttachD74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: certForAttachD74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // An INHERITED distrustAfter on a CERTIFICATE anchor (reached through the prototype, e.g. a polluted
   // Object.prototype) is refused: the cert branch's `in` check follows the chain, matching the tuple branch's
   // inherited-field refusal, rather than reading it by hasOwn (own-only) and letting the branch drop it.
   var certInheritCode74;
   Object.prototype.distrustAfter = { serverAuth: new Date("2000-01-01T00:00:00Z") };
-  try { certInheritCode74 = await codeOf(run([direct], { time: T2027, trustAnchor: rootCert74, checkPurpose: "serverAuth" })); }
+  try { certInheritCode74 = await codeOf(run([direct], { time: T2027, trustAnchors: rootCert74, checkPurpose: "serverAuth" })); }
   finally { delete Object.prototype.distrustAfter; }
   check("#74 a certificate anchor with an inherited distrustAfter (polluted Object.prototype) is refused",
     certInheritCode74 === "path/bad-input");
@@ -764,7 +764,7 @@ async function testAcceptChains() {
     { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } },
     { has: function (t, k) { return (k === "purposes" || k === "distrustAfter") ? false : (k in t); } }));
   check("#74 an anchor inheriting from a Proxy is refused with path/bad-input (Proxy in the prototype chain)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: hidingProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: hidingProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // Direct cross-mutation regression: a name.rdns getter that would rewrite a WRONG object-form algorithm.oid to
   // the SPKI's real one is refused BEFORE it runs (name.rdns is an accessor, captured getter-free), so the
   // declared-algorithm mismatch refusal cannot be bypassed. Both nested fields are captured from own data
@@ -775,7 +775,7 @@ async function testAcceptChains() {
     publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: xmutAlg74,
     name: { get rdns() { xmutReads74++; xmutAlg74.oid = "1.3.101.112"; return rootCert74.subject.rdns; } } };
   check("#74 a name.rdns getter cannot rewrite algorithm.oid: the accessor is refused before it runs (getter never invoked)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: xmutAnchor74 }))) === "path/bad-input" && xmutReads74 === 0 && xmutAlg74.oid === "1.2.840.113549.1.1.1");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: xmutAnchor74 }))) === "path/bad-input" && xmutReads74 === 0 && xmutAlg74.oid === "1.2.840.113549.1.1.1");
   // The name shape check reads the materialized name's OWN rdns (hasOwn-gated), so it resolves only its own data.
   // Tested through anchorFromCert (normalization alone, so no incidental deep-validation effect of the global
   // pollution): with Object.prototype.rdns polluted with an issuer RDN array, a name with no own rdns must be
@@ -822,7 +822,7 @@ async function testAcceptChains() {
   var nullParentDistrust74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", distrustAfter: nullParentWithEntry74 };
   check("#74 a constraint map whose null-prototype parent carries an entry is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: nullParentDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: nullParentDistrust74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A map whose PROTOTYPE is a Proxy is refused before that Proxy's traps can run. The prototype here carries a
   // serverAuth restriction but its traps report a null prototype and no keys -- so a check that reflected on it
   // instead of refusing it up front would see a top-of-chain, entry-free prototype, accept the map, and drop the
@@ -834,7 +834,7 @@ async function testAcceptChains() {
   var proxyProtoAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: "1.3.101.112", purposes: proxyProtoMap74 };
   check("#74 a constraint map with a Proxy prototype is refused with path/bad-input (its traps never run)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: proxyProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: proxyProtoAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // publicKey is pinned to ONE read during tuple detection and used for the shape check and the snapshot: a
   // stateful getter that returns the key on its first read but would throw on a later read still validates,
   // because there is no later read. Re-reading it at the shape check or snapshot would leak the raw exception.
@@ -842,7 +842,7 @@ async function testAcceptChains() {
   var pinnedPk74 = { name: rootCert74.subject, algorithm: "1.3.101.112",
     get publicKey() { pkPinReads74++; if (pkPinReads74 >= 2) throw new Error("pk-reread"); return rootCert74.subjectPublicKeyInfo.bytes; } };
   var pinnedPkResult74;
-  try { pinnedPkResult74 = (await run([direct], { time: T2027, trustAnchor: pinnedPk74 })).valid === true ? "valid" : "invalid"; }
+  try { pinnedPkResult74 = (await run([direct], { time: T2027, trustAnchors: pinnedPk74 })).valid === true ? "valid" : "invalid"; }
   catch (e) { pinnedPkResult74 = "threw:" + (e.code || e.name); }
   check("#74 the anchor publicKey is read once (pinned): a getter that would throw on a later read still validates, no raw leak",
     pinnedPkResult74 === "valid" && pkPinReads74 === 1);
@@ -852,12 +852,12 @@ async function testAcceptChains() {
   var throwRdns74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     name: { get rdns() { throw new Error("rdns-boom"); } } };
   check("#74 a throwing name.rdns accessor is refused with path/bad-input, not a raw throw",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: throwRdns74 }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: throwRdns74 }))) === "path/bad-input");
   var algOidReads74 = 0;
   var statefulOid74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     algorithm: { get oid() { algOidReads74++; return algOidReads74 === 1 ? "not-a-canonical-oid" : Symbol("oid"); } } };
   check("#74 an accessor algorithm.oid is refused with path/bad-input and its getter is never invoked (captured by descriptor)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 0);
+    (await codeOf(run([direct], { time: T2027, trustAnchors: statefulOid74 }))) === "path/bad-input" && algOidReads74 === 0);
   // A symbol-keyed field is OUTSIDE the closed anchor set (whose members are all string-named) and is dropped:
   // the normalized anchor carries only the defined shape, never a caller's arbitrary symbol bookkeeping.
   var SYM74 = Symbol("storeTag");
@@ -891,14 +891,14 @@ async function testAcceptChains() {
   var flipNameAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     name: { get rdns() { rdnsReads74++; return rdnsReads74 === 1 ? rootCert74.subject.rdns : []; } } };
   check("#74 an accessor name.rdns is refused with path/bad-input and its getter is never invoked (captured by descriptor)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: flipNameAnchor74 }))) === "path/bad-input" && rdnsReads74 === 0);
+    (await codeOf(run([direct], { time: T2027, trustAnchors: flipNameAnchor74 }))) === "path/bad-input" && rdnsReads74 === 0);
   // A tuple whose name.rdns is reached through the PROTOTYPE (Object.create) is refused too: name.rdns must be an
   // OWN data property, captured getter-free, so an inherited definition -- which could be a prototype accessor
   // running caller code -- cannot slip through. A plain own { rdns, bytes } name is the normal form.
   var inheritedRdnsAnchor74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     name: Object.create({ rdns: rootCert74.subject.rdns }) };
   check("#74 a tuple whose name.rdns is inherited (Object.create) is refused with path/bad-input (own data property required)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: inheritedRdnsAnchor74 }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: inheritedRdnsAnchor74 }))) === "path/bad-input");
   // An accessor algorithm.oid is refused before its getter runs, so a getter that would flip a denied purpose
   // in the snapshot maps never executes: the deny the anchor declared cannot be bypassed. (denyMap74 is left
   // unmutated because the getter is never invoked.)
@@ -906,21 +906,21 @@ async function testAcceptChains() {
   var mutatingOidAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     purposes: denyMap74, algorithm: { get oid() { denyMap74.serverAuth = true; return "1.3.101.112"; } } };
   check("#74 an accessor algorithm.oid is refused before it can flip a denied purpose (getter never invoked)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: mutatingOidAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && denyMap74.serverAuth === false);
+    (await codeOf(run([direct], { time: T2027, trustAnchors: mutatingOidAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && denyMap74.serverAuth === false);
   // An accessor algorithm.oid is refused before its getter runs, so a getter that would overwrite the caller's
   // key Buffer never executes: the key is not zeroed and the anchor is refused for the accessor, not validated.
   var origSpki74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
   var pkSwapAnchor74 = { name: rootCert74.subject, publicKey: origSpki74,
     algorithm: { get oid() { origSpki74.fill(0); return "1.3.101.112"; } } };
   check("#74 an accessor algorithm.oid is refused before its getter can overwrite the key Buffer (getter never invoked)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: pkSwapAnchor74 }))) === "path/bad-input" && origSpki74.some(function (b) { return b !== 0; }));
+    (await codeOf(run([direct], { time: T2027, trustAnchors: pkSwapAnchor74 }))) === "path/bad-input" && origSpki74.some(function (b) { return b !== 0; }));
   // Same, for a name getter that runs during tuple discrimination: publicKey is read FIRST and pinned before
   // the name accessor is invoked, so a name getter overwriting the key Buffer cannot swap the bound key.
   var origSpki2_74 = Buffer.from(rootCert74.subjectPublicKeyInfo.bytes);
   var nameSwapAnchor74 = { publicKey: origSpki2_74, algorithm: "1.3.101.112",
     get name() { origSpki2_74.fill(0); return rootCert74.subject; } };
   check("#74 the anchor publicKey is pinned before the name accessor runs: a name getter overwriting the key Buffer cannot change the bound key",
-    (await run([direct], { time: T2027, trustAnchor: nameSwapAnchor74 })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: nameSwapAnchor74 })).valid === true);
   // The optional identity metadata (subjectDer / label / mozillaCaPolicy) is captured from its own DATA
   // descriptor, so an accessor identity field is NEVER invoked: a subjectDer getter that overwrites the
   // caller's key Buffer cannot run before the key is pinned and swap the bound key. The anchor binds the
@@ -930,7 +930,7 @@ async function testAcceptChains() {
   var idAccessorAnchor74 = { name: rootCert74.subject, publicKey: origKeyId74, algorithm: "1.3.101.112",
     get subjectDer() { idGetterRan74 = true; origKeyId74.fill(0); return Buffer.alloc(4); } };
   var idAccessorOk74;
-  try { idAccessorOk74 = (await run([direct], { time: T2027, trustAnchor: idAccessorAnchor74 })).valid === true; }
+  try { idAccessorOk74 = (await run([direct], { time: T2027, trustAnchors: idAccessorAnchor74 })).valid === true; }
   catch (_e3) { idAccessorOk74 = false; }
   check("#74 an accessor identity field is captured by descriptor, not invoked: its getter cannot overwrite the pinned key",
     idAccessorOk74 === true && idGetterRan74 === false);
@@ -940,7 +940,7 @@ async function testAcceptChains() {
   var denyMap2_74 = { serverAuth: false };
   var topAlgMutateAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes,
     purposes: denyMap2_74, get algorithm() { denyMap2_74.serverAuth = true; return "1.3.101.112"; } };
-  var rTopAlg74 = await run([direct], { time: T2027, trustAnchor: topAlgMutateAnchor74, checkPurpose: "serverAuth" });
+  var rTopAlg74 = await run([direct], { time: T2027, trustAnchors: topAlgMutateAnchor74, checkPurpose: "serverAuth" });
   check("#74 a top-level algorithm getter cannot mutate the snapshot purposes map to bypass a denied purpose",
     rTopAlg74.valid === false && failCodes(rTopAlg74).indexOf("path/purpose-not-trusted") !== -1);
   // The discriminator getters (publicKey / name) also run before the constraint maps would be captured unless
@@ -950,7 +950,7 @@ async function testAcceptChains() {
   var denyMap3_74 = { serverAuth: false };
   var nameMutatesPurposes74 = { publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     purposes: denyMap3_74, get name() { denyMap3_74.serverAuth = true; return rootCert74.subject; } };
-  var rNameMut74 = await run([direct], { time: T2027, trustAnchor: nameMutatesPurposes74, checkPurpose: "serverAuth" });
+  var rNameMut74 = await run([direct], { time: T2027, trustAnchors: nameMutatesPurposes74, checkPurpose: "serverAuth" });
   check("#74 a name getter cannot mutate the snapshot purposes map to bypass a denied purpose (snapshot precedes the discriminator reads)",
     rNameMut74.valid === false && failCodes(rNameMut74).indexOf("path/purpose-not-trusted") !== -1);
   // A constraint map is captured from its own DATA descriptor, never by property access, so an accessor-backed
@@ -959,13 +959,13 @@ async function testAcceptChains() {
   var accessorPurposes74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     get purposes() { return { serverAuth: true }; } };
   check("#74 an accessor-backed purposes map is refused with path/bad-input (captured by descriptor, getter not invoked)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: accessorPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: accessorPurposes74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // An accessor-backed constraint-map ENTRY (a `get serverAuth()`) is refused too: entries are read from their
   // data descriptors, so an entry getter is never invoked.
   var accessorEntry74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112",
     purposes: Object.defineProperty({}, "serverAuth", { get: function () { return true; }, enumerable: true, configurable: true }) };
   check("#74 an accessor-backed constraint-map entry is refused with path/bad-input",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: accessorEntry74, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: accessorEntry74, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A CERTIFICATE anchor must not carry per-purpose constraints: the certificate branch produces no purposes /
   // distrustAfter, so attaching them to a parsed certificate would silently drop the restriction. Such a cert is
   // REFUSED -- by own-property EXISTENCE (hasOwn), which never invokes the property, so even a throwing purposes
@@ -973,7 +973,7 @@ async function testAcceptChains() {
   var certPurposesGetterInvoked74 = false;
   Object.defineProperty(rootCert74, "purposes", { get: function () { certPurposesGetterInvoked74 = true; throw new Error("cert-purposes-boom"); }, configurable: true });
   var certAttachCode74;
-  try { certAttachCode74 = await codeOf(run([direct], { time: T2027, trustAnchor: rootCert74 })); }
+  try { certAttachCode74 = await codeOf(run([direct], { time: T2027, trustAnchors: rootCert74 })); }
   finally { delete rootCert74.purposes; }
   check("#74 a certificate anchor carrying purposes is refused by existence, without invoking its getter",
     certAttachCode74 === "path/bad-input" && certPurposesGetterInvoked74 === false);
@@ -983,7 +983,7 @@ async function testAcceptChains() {
   // validation consumes. With the own-data-property copy the injection is inert and the path validates.
   var protoAnchor = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
   Object.defineProperty(protoAnchor, "__proto__", { value: { purposes: { serverAuth: false } }, enumerable: true, configurable: true, writable: true });
-  var rProto = await run([direct], { time: T2027, trustAnchor: protoAnchor, checkPurpose: "serverAuth" });
+  var rProto = await run([direct], { time: T2027, trustAnchors: protoAnchor, checkPurpose: "serverAuth" });
   check("#74 an own __proto__ field cannot repoint the normalized anchor's prototype (no injected purpose restriction)",
     rProto.valid === true);
   // Cloning the NORMALIZED anchor must not repoint the clone's prototype either: the __proto__ field is
@@ -991,7 +991,7 @@ async function testAcceptChains() {
   // __proto__ setter to inherit the attacker's purposes restriction.
   var normProto = pki.path.anchorFromCert(protoAnchor);
   var clonedProto = Object.assign({}, normProto);
-  var rClonedProto = await run([direct], { time: T2027, trustAnchor: clonedProto, checkPurpose: "serverAuth" });
+  var rClonedProto = await run([direct], { time: T2027, trustAnchors: clonedProto, checkPurpose: "serverAuth" });
   check("#74 cloning a normalized anchor that carried a __proto__ field does not repoint the clone's prototype",
     rClonedProto.valid === true);
   // An anchor whose fields are reached through its prototype (Object.create(baseAnchor)) must keep them: the
@@ -1001,7 +1001,7 @@ async function testAcceptChains() {
   var baseAnchor74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112" };
   var inheritedAnchor74 = Object.create(baseAnchor74);
   check("#74 an anchor whose name/fields are inherited (Object.create) keeps them and validates",
-    (await run([direct], { time: T2027, trustAnchor: inheritedAnchor74 })).valid === true);
+    (await run([direct], { time: T2027, trustAnchors: inheritedAnchor74 })).valid === true);
   // An inherited constraint map (purposes / distrustAfter reached through the prototype, not an own property)
   // is REFUSED with path/bad-input, not enforced: a constraint map must be an own data property so it is
   // captured from its descriptor without invoking a getter (a `get purposes()` could mutate the sibling map).
@@ -1009,7 +1009,7 @@ async function testAcceptChains() {
   // fail-open.
   var baseRestricted74 = { name: rootCert74.subject, publicKey: rootCert74.subjectPublicKeyInfo.bytes, algorithm: "1.3.101.112", purposes: { serverAuth: false } };
   check("#74 an inherited anchor constraint map is refused with path/bad-input (must be an own data property)",
-    (await codeOf(run([direct], { time: T2027, trustAnchor: Object.create(baseRestricted74), checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([direct], { time: T2027, trustAnchors: Object.create(baseRestricted74), checkPurpose: "serverAuth" }))) === "path/bad-input");
   // A parsed CERTIFICATE is recognized by its PROVENANCE (guard.parsed.isRecorded, a getter-free WeakMap
   // lookup) BEFORE the tuple discriminator, which reads name/publicKey/algorithm by property access. So a
   // polluted Object.prototype supplying those three cannot reclassify a real certificate as a tuple and bind
@@ -1083,26 +1083,26 @@ async function testAcceptChains() {
   // ECDSA-P256 chain (exercises the DER->P1363 verify-bridge shim).
   var anchorEc = await mkAnchor("p256", "EcRoot");
   var leafEc = await mkCert({ subject: "EcLeaf", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf" });
-  var resEc = await run([leafEc], { time: T2027, trustAnchor: anchorEc });
+  var resEc = await run([leafEc], { time: T2027, trustAnchors: anchorEc });
   check("ECDSA-P256-signed chain validates (DER->P1363 shim)", resEc.valid === true);
 
   // ML-DSA-65 chain (one-shot PQC verify path).
   var anchorPq = await mkAnchor("mldsa65", "PqRoot");
   var leafPq = await mkCert({ subject: "PqLeaf", issuer: "PqRoot", signWith: "mldsa65", subjectKeys: "ed25519leaf" });
-  var resPq = await run([leafPq], { time: T2027, trustAnchor: anchorPq });
+  var resPq = await run([leafPq], { time: T2027, trustAnchors: anchorPq });
   check("ML-DSA-65-signed chain validates", resPq.valid === true);
 
   // SLH-DSA-SHA2-128F chain (FIPS 205 one-shot PQC verify path — the twelve
   // SIG_ALGS rows plug into the same builtinVerify the ML-DSA rows use).
   var anchorSlh = await mkAnchor("slhdsa", "SlhRoot");
   var leafSlh = await mkCert({ subject: "SlhLeaf", issuer: "SlhRoot", signWith: "slhdsa", subjectKeys: "ed25519leaf" });
-  var resSlh = await run([leafSlh], { time: T2027, trustAnchor: anchorSlh });
+  var resSlh = await run([leafSlh], { time: T2027, trustAnchors: anchorSlh });
   check("SLH-DSA-SHA2-128F-signed chain validates", resSlh.valid === true);
 
   // RSA chain.
   var anchorRsa = await mkAnchor("rsa", "RsaRoot");
   var leafRsa = await mkCert({ subject: "RsaLeaf", issuer: "RsaRoot", signWith: "rsa", subjectKeys: "ed25519leaf" });
-  var resRsa = await run([leafRsa], { time: T2027, trustAnchor: anchorRsa });
+  var resRsa = await run([leafRsa], { time: T2027, trustAnchors: anchorRsa });
   check("RSA-signed chain validates", resRsa.valid === true);
 }
 
@@ -1115,20 +1115,20 @@ async function testSelfIssuedAndConstraints() {
   var inter = await mkCert({ subject: "Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true, 0), kuExt([KU_KEY_CERT_SIGN])] });
   var rollover = await mkCert({ subject: "Inter", issuer: "Inter", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: [bcExt(true, 0), kuExt([KU_KEY_CERT_SIGN])] });
   var leaf = await mkCert({ subject: "Leaf5", issuer: "Inter", signWith: "ed25519j", subjectKeys: "ed25519leaf" });
-  var res = await run([inter, rollover, leaf], { time: T2027, trustAnchor: anchor });
+  var res = await run([inter, rollover, leaf], { time: T2027, trustAnchors: anchor });
   check("self-issued intermediate not counted against pathLen", res.valid === true);
 
   // nameConstraints permitted: leaf SAN within the permitted dNSName tree.
   var interNc = await mkCert({ subject: "NcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("example.com")], null)] });
   var leafNc = await mkCert({ subject: "NcLeaf", issuer: "NcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("www.example.com")])] });
-  var resNc = await run([interNc, leafNc], { time: T2027, trustAnchor: anchor });
+  var resNc = await run([interNc, leafNc], { time: T2027, trustAnchors: anchor });
   check("SAN within permitted subtree validates", resNc.valid === true);
 
   // explicit policy satisfied end-to-end.
   var P1 = "1.3.6.1.4.1.99999.1";
   var interP = await mkCert({ subject: "PInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), cpExt([P1])] });
   var leafP = await mkCert({ subject: "PLeaf", issuer: "PInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1])] });
-  var resP = await run([interP, leafP], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resP = await run([interP, leafP], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("explicit policy satisfied validates", resP.valid === true);
   check("policy tree survives", resP.validPolicyTree !== null && resP.validPolicyTree !== undefined);
 }
@@ -1145,15 +1145,15 @@ async function testCoreRejections() {
     subject: "Tamper", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
     mutateSig: function (sig) { var s = Buffer.from(sig); s[8] ^= 0xff; return s; },
   });
-  var res8 = await run([tampered], { time: T2027, trustAnchor: anchor });
+  var res8 = await run([tampered], { time: T2027, trustAnchors: anchor });
   check("bad signature rejected", res8.valid === false && failCodes(res8).indexOf("path/bad-signature") !== -1);
 
   // expired / not-yet-valid.
   var expired = await mkCert({ subject: "Old", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z") });
-  var res9a = await run([expired], { time: T2027, trustAnchor: anchor });
+  var res9a = await run([expired], { time: T2027, trustAnchors: anchor });
   check("expired leaf rejected", res9a.valid === false && failCodes(res9a).indexOf("path/expired") !== -1);
   var future = await mkCert({ subject: "Future", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", notBefore: new Date("2029-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z") });
-  var res9b = await run([future], { time: T2027, trustAnchor: anchor });
+  var res9b = await run([future], { time: T2027, trustAnchors: anchor });
   check("not-yet-valid leaf rejected", res9b.valid === false && failCodes(res9b).indexOf("path/not-yet-valid") !== -1);
 
   // The same expired leaf, checked at a `time` that holds 2027 and reports 2020. `opts.time`
@@ -1170,78 +1170,78 @@ async function testCoreRejections() {
   var twoFaced = new ReportsAnEarlierMoment(T2027.toISOString());
   check("the fixture holds 2027 and reports 2020",
     Date.prototype.getTime.call(twoFaced) === T2027.getTime() && Number(twoFaced) === Date.parse("2020-06-01T00:00:00Z"));
-  var res9c = await run([expired], { time: twoFaced, trustAnchor: anchor });
+  var res9c = await run([expired], { time: twoFaced, trustAnchors: anchor });
   check("a Date that reports an earlier moment than it holds cannot revive an expired leaf",
     res9c.valid === false && failCodes(res9c).indexOf("path/expired") !== -1);
 
   // name-chaining break.
   var inter = await mkCert({ subject: "Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var orphan = await mkCert({ subject: "Orphan", issuer: "SomebodyElse", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res10 = await run([inter, orphan], { time: T2027, trustAnchor: anchor });
+  var res10 = await run([inter, orphan], { time: T2027, trustAnchors: anchor });
   check("issuer/subject chaining break rejected", res10.valid === false && failCodes(res10).indexOf("path/name-chaining") !== -1);
 
   // basicConstraints bypass: non-CA used as issuer (CVE-2021-3450 class).
   var notCa = await mkCert({ subject: "NotCa", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(false)] });
   var below = await mkCert({ subject: "Below", issuer: "NotCa", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res11a = await run([notCa, below], { time: T2027, trustAnchor: anchor });
+  var res11a = await run([notCa, below], { time: T2027, trustAnchors: anchor });
   check("cA:FALSE intermediate rejected", res11a.valid === false && failCodes(res11a).indexOf("path/not-a-ca") !== -1);
   var noBc = await mkCert({ subject: "NoBc", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i" });
   var below2 = await mkCert({ subject: "Below2", issuer: "NoBc", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res11b = await run([noBc, below2], { time: T2027, trustAnchor: anchor });
+  var res11b = await run([noBc, below2], { time: T2027, trustAnchors: anchor });
   check("basicConstraints-absent intermediate rejected", res11b.valid === false && failCodes(res11b).indexOf("path/not-a-ca") !== -1);
 
   // pathLenConstraint:0 with a further non-self-issued CA below.
   var top = await mkCert({ subject: "Top", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true, 0), kuExt([KU_KEY_CERT_SIGN])] });
   var mid = await mkCert({ subject: "Mid", issuer: "Top", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var leaf12 = await mkCert({ subject: "Leaf12", issuer: "Mid", signWith: "ed25519j", subjectKeys: "ed25519leaf" });
-  var res12 = await run([top, mid, leaf12], { time: T2027, trustAnchor: anchor });
+  var res12 = await run([top, mid, leaf12], { time: T2027, trustAnchors: anchor });
   check("pathLenConstraint exceeded rejected", res12.valid === false && failCodes(res12).indexOf("path/path-length-exceeded") !== -1);
 
   // keyUsage present WITHOUT keyCertSign on an intermediate.
   var noKcs = await mkCert({ subject: "NoKcs", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_DIGITAL_SIGNATURE])] });
   var below13 = await mkCert({ subject: "Below13", issuer: "NoKcs", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res13 = await run([noKcs, below13], { time: T2027, trustAnchor: anchor });
+  var res13 = await run([noKcs, below13], { time: T2027, trustAnchors: anchor });
   check("keyUsage without keyCertSign rejected", res13.valid === false && failCodes(res13).indexOf("path/missing-key-cert-sign") !== -1);
 
   // name-constraint excluded + not-permitted.
   var interEx = await mkCert({ subject: "ExInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDns("evil.example.com")])] });
   var leafEx = await mkCert({ subject: "ExLeaf", issuer: "ExInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.evil.example.com")])] });
-  var res16a = await run([interEx, leafEx], { time: T2027, trustAnchor: anchor });
+  var res16a = await run([interEx, leafEx], { time: T2027, trustAnchors: anchor });
   check("excluded SAN rejected", res16a.valid === false && failCodes(res16a).indexOf("path/name-constraint-excluded") !== -1);
   var interPm = await mkCert({ subject: "PmInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt([gnDns("example.com")], null)] });
   var leafPm = await mkCert({ subject: "PmLeaf", issuer: "PmInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("other.org")])] });
-  var res16b = await run([interPm, leafPm], { time: T2027, trustAnchor: anchor });
+  var res16b = await run([interPm, leafPm], { time: T2027, trustAnchors: anchor });
   check("not-permitted SAN rejected", res16b.valid === false && failCodes(res16b).indexOf("path/name-constraint-not-permitted") !== -1);
 
   // directoryName is the MUST-support constraint form (§4.2.1.10):
   // an excluded directoryName subtree matching the leaf's subject DN rejects.
   var interDir = await mkCert({ subject: "DirInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnDirectoryName(nameDer("Victim"))])] });
   var leafDir = await mkCert({ subject: "Victim", issuer: "DirInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res16c = await run([interDir, leafDir], { time: T2027, trustAnchor: anchor });
+  var res16c = await run([interDir, leafDir], { time: T2027, trustAnchors: anchor });
   check("excluded directoryName matching the subject DN rejected", res16c.valid === false && failCodes(res16c).indexOf("path/name-constraint-excluded") !== -1);
 
   // a uniformResourceIdentifier constraint applies to the URI's host;
   // a leading-dot domain constraint matches a subdomain host (RFC 5280 §4.2.1.10).
   var interUri = await mkCert({ subject: "UriInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnUri(".evil.example")])] });
   var leafUri = await mkCert({ subject: "UriLeaf", issuer: "UriInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.evil.example/callback")])] });
-  var res16d = await run([interUri, leafUri], { time: T2027, trustAnchor: anchor });
+  var res16d = await run([interUri, leafUri], { time: T2027, trustAnchors: anchor });
   check("excluded URI subdomain host rejected", res16d.valid === false && failCodes(res16d).indexOf("path/name-constraint-excluded") !== -1);
   // ...and a bare-host URI constraint matches that host EXACTLY, not a subdomain.
   var interUriHost = await mkCert({ subject: "UriHostInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnUri("evil.example")])] });
   var leafUriSub = await mkCert({ subject: "UriSubLeaf", issuer: "UriHostInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://host.evil.example/x")])] });
-  var res16dSub = await run([interUriHost, leafUriSub], { time: T2027, trustAnchor: anchor });
+  var res16dSub = await run([interUriHost, leafUriSub], { time: T2027, trustAnchors: anchor });
   check("bare-host URI constraint does NOT match a subdomain", res16dSub.valid === true);
 
   // emailAddress in the SUBJECT DN checked as an rfc822Name constraint (§I9).
   var interEm = await mkCert({ subject: "EmInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ncExt(null, [gnEmail("banned.example")])] });
   var emailRdn = [b.set([atv("2.5.4.3", "EmLeaf")]), b.set([b.sequence([b.oid("1.2.840.113549.1.9.1"), b.ia5("user@banned.example")])])];
   var leafEm = await mkCert({ subject: emailRdn, issuer: "EmInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res17 = await run([interEm, leafEm], { time: T2027, trustAnchor: anchor });
+  var res17 = await run([interEm, leafEm], { time: T2027, trustAnchors: anchor });
   check("email-in-DN checked as rfc822Name constraint", res17.valid === false && failCodes(res17).indexOf("path/name-constraint-excluded") !== -1);
 
   // unrecognized critical extension fails; same OID non-critical passes.
   var unkCrit = await mkCert({ subject: "UnkC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.4.1.99999.99", true, b.octetString(Buffer.from([1])))] });
-  var res18a = await run([unkCrit], { time: T2027, trustAnchor: anchor });
+  var res18a = await run([unkCrit], { time: T2027, trustAnchors: anchor });
   check("unrecognized critical extension rejected", res18a.valid === false && failCodes(res18a).indexOf("path/unrecognized-critical-extension") !== -1);
   // The criticality flag is what that check reads, and a parsed certificate may be
   // passed in place of its bytes. An extension entry with no `critical` property at
@@ -1257,19 +1257,19 @@ async function testCoreRejections() {
     }),
   });
   check("an extension entry stripped of its criticality flag is refused at the door",
-    (await codeOf(run([unkCritNoFlag], { time: T2027, trustAnchor: anchor }))) === "path/bad-input");
+    (await codeOf(run([unkCritNoFlag], { time: T2027, trustAnchors: anchor }))) === "path/bad-input");
 
   var unkNon = await mkCert({ subject: "UnkN", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.4.1.99999.99", false, b.octetString(Buffer.from([1])))] });
-  var res18b = await run([unkNon], { time: T2027, trustAnchor: anchor });
+  var res18b = await run([unkNon], { time: T2027, trustAnchors: anchor });
   check("same OID non-critical accepted", res18b.valid === true);
   // A CRITICAL qcStatements is REJECTED: it asserts qualified-certificate semantics (reliance limit,
   // certificate purpose) this validator does not enforce, so it is an unprocessed critical extension.
   var qcCrit = await mkCert({ subject: "QcC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.5.5.7.1.3", true, b.sequence([b.sequence([b.oid("0.4.0.1862.1.1")])]))] });
-  var res18c = await run([qcCrit], { time: T2027, trustAnchor: anchor });
+  var res18c = await run([qcCrit], { time: T2027, trustAnchors: anchor });
   check("critical qcStatements rejected (semantics not enforced)", res18c.valid === false && failCodes(res18c).indexOf("path/unrecognized-critical-extension") !== -1);
   // A NON-critical qcStatements is informational and does not affect the verdict.
   var qcNon = await mkCert({ subject: "QcN", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("1.3.6.1.5.5.7.1.3", false, b.sequence([b.sequence([b.oid("0.4.0.1862.1.1")])]))] });
-  var res18d = await run([qcNon], { time: T2027, trustAnchor: anchor });
+  var res18d = await run([qcNon], { time: T2027, trustAnchors: anchor });
   check("non-critical qcStatements accepted (informational)", res18d.valid === true);
 
   // The exported processed-extension set is FROZEN: a caller must not be able to add an OID and make
@@ -1280,7 +1280,7 @@ async function testCoreRejections() {
   try { pki.path.PROCESSED_EXTENSIONS[injOid] = true; } catch (_e) { /* strict-mode throw on a frozen write is acceptable */ }
   check("a write to PROCESSED_EXTENSIONS does not take effect", pki.path.PROCESSED_EXTENSIONS[injOid] !== true);
   var injCrit = await mkCert({ subject: "Inj", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext(injOid, true, b.nullValue())] });
-  var res18e = await run([injCrit], { time: T2027, trustAnchor: anchor });
+  var res18e = await run([injCrit], { time: T2027, trustAnchors: anchor });
   check("a critical extension whose OID a caller tried to inject is still rejected", res18e.valid === false && failCodes(res18e).indexOf("path/unrecognized-critical-extension") !== -1);
 
   // Freezing the table stops a WRITE to it; it does not stop an inherited lookup. The membership
@@ -1293,7 +1293,7 @@ async function testCoreRejections() {
   // and refuse the call first; this vector is aimed at the extension table, not at that door.
   var protoOpts = Object.create(null);
   protoOpts.time = T2027;
-  protoOpts.trustAnchor = anchor;
+  protoOpts.trustAnchors = anchor;
   var res18f;
   Object.prototype[protoOid] = true;  try { res18f = await run([protoCrit], protoOpts); }
   finally { delete Object.prototype[protoOid]; }
@@ -1307,7 +1307,7 @@ async function testCoreRejections() {
   var protoLeaf = await mkCert({ subject: "ProtoLeaf", issuer: "ProtoInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   var protoOpts2 = Object.create(null);
   protoOpts2.time = T2027;
-  protoOpts2.trustAnchor = anchor;
+  protoOpts2.trustAnchors = anchor;
   var res18g;
   Object.prototype[protoOid] = true;  try { res18g = await run([protoInter, protoLeaf], protoOpts2); }
   finally { delete Object.prototype[protoOid]; }
@@ -1330,27 +1330,27 @@ async function testPolicyMachinery() {
   // explicit policy demanded, tree pruned to NULL by disjoint sets.
   var interA = await mkCert({ subject: "PA", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1])]) });
   var leafB = await mkCert({ subject: "PB", issuer: "PA", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2])] });
-  var res19 = await run([interA, leafB], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var res19 = await run([interA, leafB], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("disjoint policies under explicit-policy rejected", res19.valid === false && failCodes(res19).indexOf("path/policy-required") !== -1);
 
   // mapping to/from anyPolicy is prohibited (§6.1.4(a)).
   var interMapAny = await mkCert({ subject: "MapAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1]), pmExt([[P1, ANY_POLICY]])]) });
   var leafAny = await mkCert({ subject: "LeafAny", issuer: "MapAny", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1])] });
-  var res20 = await run([interMapAny, leafAny], { time: T2027, trustAnchor: anchor });
+  var res20 = await run([interMapAny, leafAny], { time: T2027, trustAnchors: anchor });
   check("policyMappings naming anyPolicy rejected", res20.valid === false && failCodes(res20).indexOf("path/bad-policy") !== -1);
 
   // policy-tree node cap fail-closed (CVE-2023-0464 class): a tiny
   // maxPolicyNodes with a policy-rich chain terminates typed, never hangs.
   var interRich = await mkCert({ subject: "Rich", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY])]) });
   var leafRich = await mkCert({ subject: "RichLeaf", issuer: "Rich", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1, P2, P3])] });
-  var res21 = await run([interRich, leafRich], { time: T2027, trustAnchor: anchor, maxPolicyNodes: 2 });
+  var res21 = await run([interRich, leafRich], { time: T2027, trustAnchors: anchor, maxPolicyNodes: 2 });
   check("policy-tree cap fail-closed", res21.valid === false && failCodes(res21).indexOf("path/policy-tree-cap") !== -1);
 
   // a malformed policy OID is rejected, never silently dropped
   // (CVE-2023-0465 class). 0x80 is an invalid first OID content byte.
   var badPolicyVal = b.sequence([b.sequence([b.raw(Buffer.from([0x06, 0x01, 0x80]))])]);
   var leafBadP = await mkCert({ subject: "BadP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.32", false, badPolicyVal)] });
-  var res22 = await run([leafBadP], { time: T2027, trustAnchor: anchor });
+  var res22 = await run([leafBadP], { time: T2027, trustAnchors: anchor });
   check("malformed policy OID rejected not dropped", res22.valid === false && failCodes(res22).indexOf("path/bad-policy") !== -1);
 
   // the §6.1.2(d) n+1 (not n) counter init, both directions: a
@@ -1359,19 +1359,19 @@ async function testPolicyMachinery() {
   // chain FAILS with initial-explicit-policy TRUE (init 0, tree NULL).
   var inter23 = await mkCert({ subject: "C23", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts() });
   var leaf23 = await mkCert({ subject: "L23", issuer: "C23", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res23a = await run([inter23, leaf23], { time: T2027, trustAnchor: anchor });
+  var res23a = await run([inter23, leaf23], { time: T2027, trustAnchors: anchor });
   check("no-policy chain passes with explicit-policy unset (n+1 init)", res23a.valid === true);
-  var res23b = await run([inter23, leaf23], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var res23b = await run([inter23, leaf23], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("no-policy chain fails with explicit-policy set", res23b.valid === false && failCodes(res23b).indexOf("path/policy-required") !== -1);
 
   // anyPolicy suppression at inhibit_anyPolicy == 0 (§6.1.3(d)(2), §I5).
   var interIap = await mkCert({ subject: "Iap", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), iapExt(0)]) });
   var interAny = await mkCert({ subject: "Any", issuer: "Iap", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: caExts([cpExt([ANY_POLICY])]) });
   var leaf35 = await mkCert({ subject: "L35", issuer: "Any", signWith: "ed25519j", subjectKeys: "ed25519leaf", extensions: [cpExt([P1])] });
-  var res35 = await run([interIap, interAny, leaf35], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var res35 = await run([interIap, interAny, leaf35], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("anyPolicy suppressed once inhibit_anyPolicy hits 0", res35.valid === false && failCodes(res35).indexOf("path/policy-required") !== -1);
   var interNoIap = await mkCert({ subject: "Iap", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY])]) });
-  var res35b = await run([interNoIap, interAny, leaf35], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var res35b = await run([interNoIap, interAny, leaf35], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("control: same chain without inhibitAnyPolicy validates", res35b.valid === true);
 
   // a LEAF requireExplicitPolicy == 0 forces explicit_policy = 0 at
@@ -1379,14 +1379,14 @@ async function testPolicyMachinery() {
   // implementation skipping §6.1.5(b) would pass.
   var inter36 = await mkCert({ subject: "C36", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts() });
   var leaf36 = await mkCert({ subject: "L36", issuer: "C36", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [pcExt({ requireExplicitPolicy: 0 })] });
-  var res36 = await run([inter36, leaf36], { time: T2027, trustAnchor: anchor });
+  var res36 = await run([inter36, leaf36], { time: T2027, trustAnchors: anchor });
   check("leaf requireExplicitPolicy=0 flips the wrap-up verdict", res36.valid === false && failCodes(res36).indexOf("path/policy-required") !== -1);
 
   // a mapping carried on the SAME cert as an inhibitPolicyMapping:0
   // still applies (§6.1.4 order: (b) mapping before (i)(2) clamp)...
   var interMapSelf = await mkCert({ subject: "MapSelf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1]), pmExt([[P1, P2]]), pcExt({ inhibitPolicyMapping: 0 })]) });
   var leaf38 = await mkCert({ subject: "L38", issuer: "MapSelf", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2])] });
-  var res38 = await run([interMapSelf, leaf38], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var res38 = await run([interMapSelf, leaf38], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("same-cert mapping applies before the inhibit clamp", res38.valid === true);
 
   // ...but a mapping arriving AFTER the counter reached 0 DELETES the
@@ -1394,7 +1394,7 @@ async function testPolicyMachinery() {
   var interClamp = await mkCert({ subject: "Clamp", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1]), pcExt({ inhibitPolicyMapping: 0 })]) });
   var interMapLate = await mkCert({ subject: "MapLate", issuer: "Clamp", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: caExts([cpExt([P1]), pmExt([[P1, P2]])]) });
   var leaf39 = await mkCert({ subject: "L39", issuer: "MapLate", signWith: "ed25519j", subjectKeys: "ed25519leaf", extensions: [cpExt([P2])] });
-  var res39 = await run([interClamp, interMapLate, leaf39], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var res39 = await run([interClamp, interMapLate, leaf39], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("mapping at policy_mapping==0 deletes, not remaps", res39.valid === false && failCodes(res39).indexOf("path/policy-required") !== -1);
 }
 
@@ -1410,18 +1410,18 @@ async function testConstraintOrderingAndAnchor() {
   // passes; the NEXT cert violating it fails.
   var interB = await mkCert({ subject: "B37", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnDns("b.example")]), sanExt([gnDns("host.b.example")])]) });
   var cleanLeaf = await mkCert({ subject: "L37", issuer: "B37", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("ok.example.org")])] });
-  var res37a = await run([interB, cleanLeaf], { time: T2027, trustAnchor: anchor });
+  var res37a = await run([interB, cleanLeaf], { time: T2027, trustAnchors: anchor });
   check("own-name checked before absorb (clean leaf passes)", res37a.valid === true);
   var dirtyLeaf = await mkCert({ subject: "L37d", issuer: "B37", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.b.example")])] });
-  var res37b = await run([interB, dirtyLeaf], { time: T2027, trustAnchor: anchor });
+  var res37b = await run([interB, dirtyLeaf], { time: T2027, trustAnchors: anchor });
   check("next cert violating the absorbed constraint fails", res37b.valid === false && failCodes(res37b).indexOf("path/name-constraint-excluded") !== -1);
 
   // an empty subject is legal ONLY with a critical SAN (§4.1.2.6).
   var emptySubjCritSan = await mkCert({ subject: [], issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("empty.example")], true)] });
-  var res40a = await run([emptySubjCritSan], { time: T2027, trustAnchor: anchor });
+  var res40a = await run([emptySubjCritSan], { time: T2027, trustAnchors: anchor });
   check("empty subject with critical SAN accepted", res40a.valid === true);
   var emptySubjPlainSan = await mkCert({ subject: [], issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("empty.example")], false)] });
-  var res40b = await run([emptySubjPlainSan], { time: T2027, trustAnchor: anchor });
+  var res40b = await run([emptySubjPlainSan], { time: T2027, trustAnchors: anchor });
   check("empty subject with non-critical SAN rejected", res40b.valid === false && failCodes(res40b).length > 0);
 
   // the trust anchor is INPUT, never a path certificate: an expired
@@ -1430,7 +1430,7 @@ async function testConstraintOrderingAndAnchor() {
   var expiredAnchorCert = pki.schema.x509.parse(await mkCert({ subject: "OldRoot", issuer: "OldRoot", signWith: "ed25519", notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z") }));
   var anchorFromExpired = { name: expiredAnchorCert.subject, publicKey: k.spki, algorithm: ALG.ed25519.sigOid };
   var leaf41 = await mkCert({ subject: "L41", issuer: "OldRoot", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  var res41 = await run([leaf41], { time: T2027, trustAnchor: anchorFromExpired });
+  var res41 = await run([leaf41], { time: T2027, trustAnchors: anchorFromExpired });
   check("expired anchor still anchors (anchor never validated)", res41.valid === true);
 }
 
@@ -1447,7 +1447,7 @@ async function testSignatureAndInputEdges() {
     subject: "Zero", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf",
     mutateSig: function () { return b.sequence([b.integer(0n), b.integer(0n)]); },
   });
-  var res28 = await run([zeroSig], { time: T2027, trustAnchor: anchorEc });
+  var res28 = await run([zeroSig], { time: T2027, trustAnchors: anchorEc });
   check("r=0,s=0 ECDSA signature rejected", res28.valid === false && failCodes(res28).indexOf("path/bad-signature") !== -1);
 
   // the EdDSA analogue: a low-order issuer key verifies a matching low-order signature as TRUE for
@@ -1462,7 +1462,7 @@ async function testSignatureAndInputEdges() {
     subject: "LoLeaf", issuer: "LoRoot", signWith: "ed25519", subjectKeys: "ed25519leaf",
     mutateSig: function () { return Buffer.concat([ID_POINT, Buffer.alloc(32)]); },   // R=identity, S=0
   });
-  var resLo = await run([loLeaf], { time: T2027, trustAnchor: loAnchor });
+  var resLo = await run([loLeaf], { time: T2027, trustAnchors: loAnchor });
   check("low-order EdDSA issuer key rejected before verify", resLo.valid === false && failCodes(resLo).indexOf("path/bad-signature") !== -1);
 
   // an embedded NUL in a constrained name never truncates the
@@ -1472,7 +1472,7 @@ async function testSignatureAndInputEdges() {
   var out29;
   try {
     var nulLeaf = await mkCert({ subject: "NulLeaf", issuer: "NulNc", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("www.example.com\u0000.evil.org")])] });
-    var res29 = await run([interNc, nulLeaf], { time: T2027, trustAnchor: anchor });
+    var res29 = await run([interNc, nulLeaf], { time: T2027, trustAnchors: anchor });
     out29 = res29.valid === false;
   } catch (e) {
     out29 = typeof e.code === "string"; // typed reject at parse is equally fail-closed
@@ -1480,7 +1480,7 @@ async function testSignatureAndInputEdges() {
   check("NUL-embedded SAN never validates inside the permitted tree", out29 === true);
 
   // empty path is a caller error.
-  check("empty path throws path/empty-path", (await codeOf(run([], { time: T2027, trustAnchor: anchor }))) === "path/empty-path");
+  check("empty path throws path/empty-path", (await codeOf(run([], { time: T2027, trustAnchors: anchor }))) === "path/empty-path");
 
   // algorithm confusion: the verify algorithm derives from the cert +
   // working key, never trusted blindly (CVE-2015-9235). A cert declaring an
@@ -1493,7 +1493,7 @@ async function testSignatureAndInputEdges() {
   // The same Ed25519 key pair under a lying (RSA) algorithm identifier.
   KEYS.confused = { privateKey: edKeys.privateKey, publicKey: edKeys.publicKey, spki: edKeys.spki, alg: confusedAlg };
   var confused = await mkCert({ subject: "Confused", issuer: "Root", signWith: "confused", subjectKeys: "ed25519leaf" });
-  var res31 = await run([confused], { time: T2027, trustAnchor: anchor });
+  var res31 = await run([confused], { time: T2027, trustAnchors: anchor });
   var codes31 = failCodes(res31);
   check("algorithm-confused cert rejected typed", res31.valid === false &&
     (codes31.indexOf("path/bad-signature") !== -1 || codes31.indexOf("path/unsupported-algorithm") !== -1));
@@ -1505,7 +1505,7 @@ async function testSignatureAndInputEdges() {
     notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z"),
     mutateSig: function (sig) { var s = Buffer.from(sig); s[3] ^= 0x55; return s; },
   });
-  var res32 = await run([notCa, brokenLeaf], { time: T2027, trustAnchor: anchor });
+  var res32 = await run([notCa, brokenLeaf], { time: T2027, trustAnchors: anchor });
   var codes32 = failCodes(res32);
   check("multi-defect chain fails with typed path/* codes", res32.valid === false && codes32.length > 0 &&
     codes32.every(function (c) { return c.indexOf("path/") === 0; }));
@@ -1515,8 +1515,8 @@ async function testSignatureAndInputEdges() {
   var leaf33 = await mkCert({ subject: "L33", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   var parsed33 = [pki.schema.x509.parse(leaf33)];
   var snapshot = JSON.stringify({ dn: parsed33[0].subject.dn, serial: parsed33[0].serialNumberHex, nb: parsed33[0].validity.notBefore.toISOString() });
-  var runA = await pki.path.validate(parsed33, { time: T2027, trustAnchor: anchor });
-  var runB = await pki.path.validate(parsed33, { time: T2027, trustAnchor: anchor });
+  var runA = await pki.path.validate(parsed33, { time: T2027, trustAnchors: anchor });
+  var runB = await pki.path.validate(parsed33, { time: T2027, trustAnchors: anchor });
   check("re-entrant: two runs agree", runA.valid === runB.valid && JSON.stringify(failCodes(runA)) === JSON.stringify(failCodes(runB)));
   check("inputs not mutated", JSON.stringify({ dn: parsed33[0].subject.dn, serial: parsed33[0].serialNumberHex, nb: parsed33[0].validity.notBefore.toISOString() }) === snapshot);
 
@@ -1526,14 +1526,14 @@ async function testSignatureAndInputEdges() {
   // own vectors in the pkix suites.)
   var interIp = await mkCert({ subject: "Ip", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnIp([192, 168, 0, 0, 255, 255, 0, 0])], null)]) });
   var leafIpIn = await mkCert({ subject: "IpIn", issuer: "Ip", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([192, 168, 5, 9])])] });
-  var res34a = await run([interIp, leafIpIn], { time: T2027, trustAnchor: anchor });
+  var res34a = await run([interIp, leafIpIn], { time: T2027, trustAnchors: anchor });
   check("8-octet subtree base constrains a 4-octet SAN address", res34a.valid === true);
   var leafIpOut = await mkCert({ subject: "IpOut", issuer: "Ip", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([10, 0, 0, 1])])] });
-  var res34b = await run([interIp, leafIpOut], { time: T2027, trustAnchor: anchor });
+  var res34b = await run([interIp, leafIpOut], { time: T2027, trustAnchors: anchor });
   check("address outside the masked subtree rejected", res34b.valid === false && failCodes(res34b).indexOf("path/name-constraint-not-permitted") !== -1);
   var interIpBad = await mkCert({ subject: "IpBad", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnIp([192, 168, 0, 0])], null)]) });
   var leaf34c = await mkCert({ subject: "L34c", issuer: "IpBad", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([192, 168, 5, 9])])] });
-  var res34c = await run([interIpBad, leaf34c], { time: T2027, trustAnchor: anchor });
+  var res34c = await run([interIpBad, leaf34c], { time: T2027, trustAnchors: anchor });
   check("4-octet subtree base (no mask) rejected as malformed", res34c.valid === false && failCodes(res34c).indexOf("path/bad-name-constraints") !== -1);
 }
 
@@ -1716,9 +1716,9 @@ async function testRevocation() {
   // checker contract: UNDETERMINED fails closed; softFail opts out.
   var leaf = await mkCert({ subject: "R1", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: LEAF_SERIAL });
   var unknownChecker = { check: function () { return Promise.resolve({ status: "unknown" }); } };
-  var res15a = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: unknownChecker });
+  var res15a = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: unknownChecker });
   check("UNDETERMINED revocation fails closed", res15a.valid === false && failCodes(res15a).indexOf("path/revocation-undetermined") !== -1);
-  var res15b = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: unknownChecker, softFail: true });
+  var res15b = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: unknownChecker, softFail: true });
   check("softFail opts into UNDETERMINED-as-pass", res15b.valid === true);
 
   // "checked, and it said good" and "could not check, and you waived it" are the SAME claim to a
@@ -1726,20 +1726,20 @@ async function testRevocation() {
   // verdict now says which happened, at the top level and per certificate, because a stored path
   // verdict is re-read later to answer exactly this and cannot answer it from a boolean.
   var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
-  var resDet = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: goodChecker });
+  var resDet = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: goodChecker });
   check("a determined non-revocation reports itself determined",
     resDet.valid === true && resDet.revocationChecked === "determined");
   check("softFail waiving an undetermined status says so, rather than reading as checked",
     res15b.revocationChecked === "waived");
   check("no checker at all reports the rule as not requested",
-    (await run([leaf], { time: T2027, trustAnchor: anchor })).revocationChecked === false);
+    (await run([leaf], { time: T2027, trustAnchors: anchor })).revocationChecked === false);
   // The field says whether revocation was ESTABLISHED, so a run that failed BECAUSE it could not be
   // established must not report the same word as one that established it. Deriving the answer from
   // "a checker ran" put the two on the same value, which is the reading the field exists to prevent.
   check("an undetermined status that fails the path reports itself undetermined, not determined",
     res15a.revocationChecked === "undetermined");
   var revokedChecker = { check: function () { return Promise.resolve({ status: "revoked" }); } };
-  var resRevoked = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: revokedChecker });
+  var resRevoked = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: revokedChecker });
   check("a revoked status is a determination, and reports as one",
     resRevoked.valid === false && resRevoked.revocationChecked === "determined");
   // A path long enough to mix outcomes takes the WEAKEST: one certificate nobody could answer for
@@ -1748,7 +1748,7 @@ async function testRevocation() {
   var mixLeaf = await mkCert({ subject: "MixLeaf", issuer: "MixInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   var seen = 0;
   var mixed = { check: function () { seen++; return Promise.resolve({ status: seen === 1 ? "good" : "unknown" }); } };
-  var resMixed = await run([mixInter, mixLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: mixed, softFail: true });
+  var resMixed = await run([mixInter, mixLeaf], { time: T2027, trustAnchors: anchor, revocationChecker: mixed, softFail: true });
   check("one waived certificate outranks the determined ones on the same path",
     seen === 2 && resMixed.valid === true && resMixed.revocationChecked === "waived");
   // Per certificate, too: the waived entry is distinguishable from the determined one, and names
@@ -1765,7 +1765,7 @@ async function testRevocation() {
   // revocation result at all. The fault fails the path whatever softFail says, and is carried on the
   // check so an operator can tell their bug from a network condition.
   var throwingChecker = { check: function () { throw new Error("checker exploded"); } };
-  var resThrew = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: throwingChecker, softFail: true });
+  var resThrew = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: throwingChecker, softFail: true });
   var threwCheck = resThrew.results[resThrew.results.length - 1].checks.filter(function (c) { return c.name === "revocation"; })[0];
   check("a checker that throws fails the path even under softFail, and is not called a waiver",
     resThrew.valid === false && resThrew.revocationChecked === "undetermined" &&
@@ -1776,39 +1776,39 @@ async function testRevocation() {
   // A checker that REJECTS is the same fault by another route: an async checker's bug arrives as a
   // rejected promise, and reaching the waiver through it would restore exactly what the throw lost.
   var rejectingChecker = { check: function () { return Promise.reject(new Error("responder client bug")); } };
-  var resRej = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: rejectingChecker, softFail: true });
+  var resRej = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: rejectingChecker, softFail: true });
   check("a checker that rejects is the same fault as one that throws",
     resRej.valid === false && resRej.revocationChecked === "undetermined" &&
     failCodes(resRej).indexOf("path/revocation-checker-error") !== -1);
 
   // a real CRL revoking the leaf serial, via pki.path.crlChecker.
   var crlRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: LEAF_SERIAL }] });
-  var res14 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRevoking]) });
+  var res14 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlRevoking]) });
   check("revoked serial rejected via CRL checker", res14.valid === false && failCodes(res14).indexOf("path/revoked") !== -1);
 
   // ...and the same CRL without the serial passes.
   var crlClean = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n }] });
-  var res14b = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlClean]) });
+  var res14b = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlClean]) });
   check("unlisted serial passes the CRL checker", res14b.valid === true);
 
   // stale CRL (nextUpdate < time) -> unknown -> undetermined.
   var crlStale = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: new Date("2026-06-01T00:00:00Z") });
-  var res27 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlStale]) });
+  var res27 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlStale]) });
   check("stale CRL yields undetermined", res27.valid === false && failCodes(res27).indexOf("path/revocation-undetermined") !== -1);
 
   // thisUpdate in the future -> unknown.
   var crlFuture = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2028-01-01T00:00:00Z"), nextUpdate: new Date("2029-01-01T00:00:00Z") });
-  var res44 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFuture]) });
+  var res44 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlFuture]) });
   check("future thisUpdate yields undetermined", res44.valid === false && failCodes(res44).indexOf("path/revocation-undetermined") !== -1);
 
   // a CRL whose signature does not verify -> unknown.
   var crlBadSig = await mkCrl({ issuer: "Root", signWith: "ed25519", mutateSig: function (sig) { var s = Buffer.from(sig); s[5] ^= 0xaa; return s; } });
-  var res42 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadSig]) });
+  var res42 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlBadSig]) });
   check("bad CRL signature yields undetermined", res42.valid === false && failCodes(res42).indexOf("path/revocation-undetermined") !== -1);
 
   // a CRL from an unauthorized third-party issuer -> unknown.
   var crlThirdParty = await mkCrl({ issuer: "SomeoneElse", signWith: "ed25519i" });
-  var res43 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlThirdParty]) });
+  var res43 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlThirdParty]) });
   check("unauthorized CRL issuer yields undetermined", res43.valid === false && failCodes(res43).indexOf("path/revocation-undetermined") !== -1);
 
   // the CRL signer's certificate lacks keyUsage.cRLSign -> unknown;
@@ -1819,25 +1819,25 @@ async function testRevocation() {
   var interNoCrlSign = await mkCert({ subject: "NoCrlSign", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var leafUnder = await mkCert({ subject: "Under", issuer: "NoCrlSign", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 4242n });
   var crlByInter = await mkCrl({ issuer: "NoCrlSign", signWith: "ed25519i" });
-  var res26 = await run([interNoCrlSign, leafUnder], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrl, crlByInter]) });
+  var res26 = await run([interNoCrlSign, leafUnder], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([rootCrl, crlByInter]) });
   check("CRL signer without cRLSign yields undetermined", res26.valid === false && failCodes(res26).indexOf("path/revocation-undetermined") !== -1);
   var interCrlSign = await mkCert({ subject: "WithCrlSign", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519j", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN])] });
   var leafUnder2 = await mkCert({ subject: "Under2", issuer: "WithCrlSign", signWith: "ed25519j", subjectKeys: "ed25519leaf", serial: 4243n });
   var crlByInter2 = await mkCrl({ issuer: "WithCrlSign", signWith: "ed25519j" });
-  var res26b = await run([interCrlSign, leafUnder2], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrl, crlByInter2]) });
+  var res26b = await run([interCrlSign, leafUnder2], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([rootCrl, crlByInter2]) });
   check("control: CRL signer with cRLSign passes", res26b.valid === true);
 
   // scoped CRLs (onlySomeReasons) covering only part of the reason
   // space are never a definitive UNREVOKED.
   var someReasons = Buffer.from([0x06, 0x40]); // BIT STRING content: 6 unused bits, keyCompromise only
   var crlPartial = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1), idpExt({ onlySomeReasons: someReasons })] });
-  var res45 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPartial]) });
+  var res45 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlPartial]) });
   check("partial reasons_mask coverage yields undetermined", res45.valid === false && failCodes(res45).indexOf("path/revocation-undetermined") !== -1);
 
   // IDP scope mismatch: an onlyContainsCACerts CRL consulted for an
   // end-entity certificate -> unknown.
   var crlCaOnly = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2), idpExt({ onlyCa: true })] });
-  var res46 = await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCaOnly]) });
+  var res46 = await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCaOnly]) });
   check("onlyContainsCACerts CRL out of scope for an EE cert", res46.valid === false && failCodes(res46).indexOf("path/revocation-undetermined") !== -1);
 }
 
@@ -1902,7 +1902,7 @@ async function testLeafRulesAndParams() {
   // the leaf is NOT subject to §6.1.4: cA:FALSE + no keyUsage at
   // position n is fine (§I10).
   var leaf25 = await mkCert({ subject: "L25", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [bcExt(false)] });
-  var res25 = await run([leaf25], { time: T2027, trustAnchor: anchor });
+  var res25 = await run([leaf25], { time: T2027, trustAnchors: anchor });
   check("non-CA leaf accepted at position n", res25.valid === true);
 
   // §6.1.4(e) parameter inheritance, observed through the verifier
@@ -1931,13 +1931,13 @@ async function testLeafRulesAndParams() {
   var certSame = await mkCert({ subject: "Same", issuer: "SynRoot", signWith: "ed25519", spki: synSpkiSame, extensions: caExts() });
   var certUnder = await mkCert({ subject: "UnderSame", issuer: "Same", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   seen.length = 0;
-  var resSame = await run([certSame, certUnder], { time: T2027, trustAnchor: synAnchor, verifier: recordingVerifier });
+  var resSame = await run([certSame, certUnder], { time: T2027, trustAnchors: synAnchor, verifier: recordingVerifier });
   check("same-algorithm absent params inherited", resSame.valid === true && seen.length === 2 && seen[1].params === PARAMS.toString("hex"));
 
   var certOther = await mkCert({ subject: "Other", issuer: "SynRoot", signWith: "ed25519", spki: synSpkiOther, extensions: caExts() });
   var certUnder2 = await mkCert({ subject: "UnderOther", issuer: "Other", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   seen.length = 0;
-  var resOther = await run([certOther, certUnder2], { time: T2027, trustAnchor: synAnchor, verifier: recordingVerifier });
+  var resOther = await run([certOther, certUnder2], { time: T2027, trustAnchors: synAnchor, verifier: recordingVerifier });
   check("different-algorithm absent params cleared", resOther.valid === true && seen.length === 2 && seen[1].params === null);
 
   // an EXPLICIT DER NULL parameters field is treated identically to
@@ -1947,7 +1947,7 @@ async function testLeafRulesAndParams() {
   var certNull = await mkCert({ subject: "NullP", issuer: "SynRoot", signWith: "ed25519", spki: synSpkiNull, extensions: caExts() });
   var certUnder3 = await mkCert({ subject: "UnderNull", issuer: "NullP", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   seen.length = 0;
-  var resNull = await run([certNull, certUnder3], { time: T2027, trustAnchor: synAnchor, verifier: recordingVerifier });
+  var resNull = await run([certNull, certUnder3], { time: T2027, trustAnchors: synAnchor, verifier: recordingVerifier });
   check("explicit NULL params inherit like omitted (not copied)", resNull.valid === true && seen.length === 2 && seen[1].params === PARAMS.toString("hex"));
 }
 
@@ -1970,13 +1970,13 @@ async function testRfc5280ConformanceMusts() {
   var parentNc = await mkCert({ subject: "P1a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnDns("a.example")], null)]) });
   var childNc = await mkCert({ subject: "C1a", issuer: "P1a", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: caExts([ncExt([gnDns("evil.com")], null)]) });
   var leafA1 = await mkCert({ subject: "L1a", issuer: "C1a", signWith: "ed25519j", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.evil.com")])] });
-  var resA1 = await run([parentNc, childNc, leafA1], { time: T2027, trustAnchor: anchor });
+  var resA1 = await run([parentNc, childNc, leafA1], { time: T2027, trustAnchors: anchor });
   check("permitted-subtree intersection blocks a subordinate broadening", resA1.valid === false && failCodes(resA1).indexOf("path/name-constraint-not-permitted") !== -1);
   // control: a leaf within BOTH generations passes... but the two generations
   // are disjoint (a.example vs evil.com), so no name satisfies both dNSName
   // sets — instead verify a single-generation permit still admits its match.
   var leafA1ok = await mkCert({ subject: "L1ok", issuer: "P1a", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.a.example")])] });
-  var resA1ok = await run([parentNc, leafA1ok], { time: T2027, trustAnchor: anchor });
+  var resA1ok = await run([parentNc, leafA1ok], { time: T2027, trustAnchors: anchor });
   check("control: name within the single permitted generation passes", resA1ok.valid === true);
 
   // rfc822Name leading-dot domain matches a SUBDOMAIN mailbox but not the
@@ -1986,11 +1986,11 @@ async function testRfc5280ConformanceMusts() {
     var rdn = [b.set([atv("2.5.4.3", subj)]), b.set([b.sequence([b.oid("1.2.840.113549.1.9.1"), b.ia5(addr)])])];
     return mkCert({ subject: rdn, issuer: "P2", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   }
-  var resA2sub = await run([interA2, await emailLeaf("A2sub", "u@sub.example.com")], { time: T2027, trustAnchor: anchor });
+  var resA2sub = await run([interA2, await emailLeaf("A2sub", "u@sub.example.com")], { time: T2027, trustAnchors: anchor });
   check("leading-dot rfc822 excludes a subdomain mailbox", resA2sub.valid === false && failCodes(resA2sub).indexOf("path/name-constraint-excluded") !== -1);
-  var resA2bare = await run([interA2, await emailLeaf("A2bare", "u@example.com")], { time: T2027, trustAnchor: anchor });
+  var resA2bare = await run([interA2, await emailLeaf("A2bare", "u@example.com")], { time: T2027, trustAnchors: anchor });
   check("leading-dot rfc822 does NOT match the bare domain", resA2bare.valid === true);
-  var resA2nb = await run([interA2, await emailLeaf("A2nb", "u@aexample.com")], { time: T2027, trustAnchor: anchor });
+  var resA2nb = await run([interA2, await emailLeaf("A2nb", "u@aexample.com")], { time: T2027, trustAnchors: anchor });
   check("leading-dot rfc822 does NOT match a non-boundary label", resA2nb.valid === true);
 
   // bare-host rfc822Name matches the host exactly, not a subdomain.
@@ -1999,37 +1999,37 @@ async function testRfc5280ConformanceMusts() {
     var rdn = [b.set([atv("2.5.4.3", subj)]), b.set([b.sequence([b.oid("1.2.840.113549.1.9.1"), b.ia5(addr)])])];
     return mkCert({ subject: rdn, issuer: "P3", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
   }
-  var resA3exact = await run([interA3, await emailLeaf3("A3x", "u@example.com")], { time: T2027, trustAnchor: anchor });
+  var resA3exact = await run([interA3, await emailLeaf3("A3x", "u@example.com")], { time: T2027, trustAnchors: anchor });
   check("bare-host rfc822 matches the exact host (excluded)", resA3exact.valid === false && failCodes(resA3exact).indexOf("path/name-constraint-excluded") !== -1);
-  var resA3sub = await run([interA3, await emailLeaf3("A3s", "u@sub.example.com")], { time: T2027, trustAnchor: anchor });
+  var resA3sub = await run([interA3, await emailLeaf3("A3s", "u@sub.example.com")], { time: T2027, trustAnchors: anchor });
   check("bare-host rfc822 does NOT match a subdomain mailbox", resA3sub.valid === true);
 
   // an RSA-PSS-signed chain validates (the hashAlgorithm OID is decoded at
   // the correct EXPLICIT-tag depth).
   var anchorPss = await mkAnchor("rsapss", "PssRoot");
   var leafPss = await mkCert({ subject: "PssLeaf", issuer: "PssRoot", signWith: "rsapss", subjectKeys: "ed25519leaf" });
-  var resA4 = await run([leafPss], { time: T2027, trustAnchor: anchorPss });
+  var resA4 = await run([leafPss], { time: T2027, trustAnchors: anchorPss });
   check("RSA-PSS-signed chain validates", resA4.valid === true);
 
   // a PSS cert declaring an UNSUPPORTED hash OID must be
   // rejected, never silently verified under the SHA-1 default.
   var anchorPssBad = await mkAnchor("pssbad", "PssBadRoot");
   var leafBadPss = await mkCert({ subject: "BadPss", issuer: "PssBadRoot", signWith: "pssbad", subjectKeys: "ed25519leaf" });
-  var resC6 = await run([leafBadPss], { time: T2027, trustAnchor: anchorPssBad });
+  var resC6 = await run([leafBadPss], { time: T2027, trustAnchors: anchorPssBad });
   check("PSS cert with unsupported hash rejected (no SHA-1 fallback)", resC6.valid === false && failCodes(resC6).indexOf("path/unsupported-algorithm") !== -1);
 
   // PSS params whose MGF1 hash mismatches the signature hash
   // cannot be honored by WebCrypto and must be rejected, not verified anyway.
   var anchorBadMgf = await mkAnchor("pssbadmgf", "PssMgfRoot");
   var leafBadMgf = await mkCert({ subject: "BadMgf", issuer: "PssMgfRoot", signWith: "pssbadmgf", subjectKeys: "ed25519leaf" });
-  var resC7 = await run([leafBadMgf], { time: T2027, trustAnchor: anchorBadMgf });
+  var resC7 = await run([leafBadMgf], { time: T2027, trustAnchors: anchorBadMgf });
   check("PSS MGF1-hash mismatch rejected", resC7.valid === false && failCodes(resC7).indexOf("path/unsupported-algorithm") !== -1);
 
   // a PSS AlgorithmIdentifier with a present-but-non-SEQUENCE
   // parameters field (a DER NULL) must be rejected, not defaulted to SHA-1.
   var anchorPssNull = await mkAnchor("pssnull", "PssNullRoot");
   var leafPssNull = await mkCert({ subject: "PssNull", issuer: "PssNullRoot", signWith: "pssnull", subjectKeys: "ed25519leaf" });
-  var resC10 = await run([leafPssNull], { time: T2027, trustAnchor: anchorPssNull });
+  var resC10 = await run([leafPssNull], { time: T2027, trustAnchors: anchorPssNull });
   check("PSS non-SEQUENCE params rejected", resC10.valid === false && failCodes(resC10).indexOf("path/unsupported-algorithm") !== -1);
 
   // a critical excluded nameConstraints of a form the
@@ -2037,14 +2037,14 @@ async function testRfc5280ConformanceMusts() {
   // must fail closed, not be treated as "not excluded".
   var interRegId = await mkCert({ subject: "RegIdInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnRegisteredID("1.3.6.1.4.1.99999.5")])]) });
   var leafRegId = await mkCert({ subject: "RegIdLeaf", issuer: "RegIdInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnRegisteredID("1.3.6.1.4.1.99999.5")])] });
-  var resC9 = await run([interRegId, leafRegId], { time: T2027, trustAnchor: anchor });
+  var resC9 = await run([interRegId, leafRegId], { time: T2027, trustAnchors: anchor });
   check("unsupported excluded name form fails closed", resC9.valid === false && failCodes(resC9).indexOf("path/name-constraint-unsupported") !== -1);
 
   // an UNDECODED SAN form (x400Address [3]) must still be
   // preserved so a critical excluded constraint of that form fails closed.
   var interX400 = await mkCert({ subject: "X400Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnX400()])]) });
   var leafX400 = await mkCert({ subject: "X400Leaf", issuer: "X400Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnX400()])] });
-  var resC11 = await run([interX400, leafX400], { time: T2027, trustAnchor: anchor });
+  var resC11 = await run([interX400, leafX400], { time: T2027, trustAnchors: anchor });
   check("undecoded SAN form preserved for constraints (fails closed)", resC11.valid === false && failCodes(resC11).indexOf("path/name-constraint-unsupported") !== -1);
 
   // a CA asserting only anyPolicy plus a policyMappings
@@ -2052,61 +2052,61 @@ async function testRfc5280ConformanceMusts() {
   // mapped-TO policy P2 validates under explicit policy.
   var interAnyMap = await mkCert({ subject: "AnyMap", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), pmExt([[P1m, P2m]])]) });
   var leafAnyMap = await mkCert({ subject: "AnyMapLeaf", issuer: "AnyMap", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
-  var resC12 = await run([interAnyMap, leafAnyMap], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resC12 = await run([interAnyMap, leafAnyMap], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("policy mapping generates the ID-P node from anyPolicy", resC12.valid === true);
 
   // a PSS params SEQUENCE with a malformed primitive [0]
   // field must be rejected, not skipped-and-defaulted.
   var anchorPssPrim = await mkAnchor("pssprim", "PssPrimRoot");
   var leafPssPrim = await mkCert({ subject: "PssPrim", issuer: "PssPrimRoot", signWith: "pssprim", subjectKeys: "ed25519leaf" });
-  var resC13 = await run([leafPssPrim], { time: T2027, trustAnchor: anchorPssPrim });
+  var resC13 = await run([leafPssPrim], { time: T2027, trustAnchors: anchorPssPrim });
   check("malformed PSS parameter field rejected", resC13.valid === false && failCodes(resC13).indexOf("path/unsupported-algorithm") !== -1);
 
   // an indirect CRL (IDP indirectCRL) attributes entries by
   // the per-entry certificateIssuer (not tracked here), so it is unusable.
   var crlIndirect = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(6), idpExt({ indirect: true })] });
-  var resC14 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlIndirect]) });
+  var resC14 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlIndirect]) });
   check("indirect CRL is unusable (undetermined)", resC14.valid === false && failCodes(resC14).indexOf("path/revocation-undetermined") !== -1);
 
   // a CRL with NO nextUpdate has no bounded validity: its
   // currency cannot be confirmed, so it is unusable (a replayed old CRL must
   // not read good).
   var crlNoNext = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: null });
-  var resC15 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlNoNext]) });
+  var resC15 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlNoNext]) });
   check("CRL without nextUpdate is unusable (undetermined)", resC15.valid === false && failCodes(resC15).indexOf("path/revocation-undetermined") !== -1);
 
   // a revoked entry marked removeFromCRL (reasonCode 8) is
   // NOT a revocation; the cert is good (covered, un-revoked).
   var crlRemove = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n, exts: [reasonCodeExt(8)] }] });
-  var resC16 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRemove]) });
+  var resC16 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlRemove]) });
   check("removeFromCRL entry is not a revocation (good)", resC16.valid === true);
 
   // a negative RSASSA-PSS saltLength must be rejected (the
   // OpenSSL shim would treat it as RSA_PSS_SALTLEN_AUTO, accepting any salt).
   var anchorNegSalt = await mkAnchor("pssnegsalt", "NegSaltRoot");
   var leafNegSalt = await mkCert({ subject: "NegSalt", issuer: "NegSaltRoot", signWith: "pssnegsalt", subjectKeys: "ed25519leaf" });
-  var resC17 = await run([leafNegSalt], { time: T2027, trustAnchor: anchorNegSalt });
+  var resC17 = await run([leafNegSalt], { time: T2027, trustAnchors: anchorNegSalt });
   check("negative PSS saltLength rejected", resC17.valid === false && failCodes(resC17).indexOf("path/unsupported-algorithm") !== -1);
 
   // an oversized RSASSA-PSS saltLength must be rejected before it
   // rounds through Number conversion (exact-or-rejected verifier inputs).
   var anchorBigSalt = await mkAnchor("pssbigsalt", "BigSaltRoot");
   var leafBigSalt = await mkCert({ subject: "BigSalt", issuer: "BigSaltRoot", signWith: "pssbigsalt", subjectKeys: "ed25519leaf" });
-  var resC17b = await run([leafBigSalt], { time: T2027, trustAnchor: anchorBigSalt });
+  var resC17b = await run([leafBigSalt], { time: T2027, trustAnchors: anchorBigSalt });
   check("oversized PSS saltLength rejected", resC17b.valid === false && failCodes(resC17b).indexOf("path/unsupported-algorithm") !== -1);
 
   // a trailing-dot dNSName SAN must not escape an excluded
   // dNSName constraint (FQDN root-label normalization).
   var interTd = await mkCert({ subject: "TdInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnDns("evil.com")])]) });
   var leafTd = await mkCert({ subject: "TdLeaf", issuer: "TdInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.evil.com.")])] });
-  var resC18 = await run([interTd, leafTd], { time: T2027, trustAnchor: anchor });
+  var resC18 = await run([interTd, leafTd], { time: T2027, trustAnchors: anchor });
   check("trailing-dot dNSName does not escape the exclusion", resC18.valid === false && failCodes(resC18).indexOf("path/name-constraint-excluded") !== -1);
 
   // a URI SAN with no authority component under a URI
   // constraint cannot be evaluated -> fail closed, not escape.
   var interUriC = await mkCert({ subject: "UriCInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.example")])]) });
   var leafUriC = await mkCert({ subject: "UriCLeaf", issuer: "UriCInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("urn:example:resource")])] });
-  var resC19 = await run([interUriC, leafUriC], { time: T2027, trustAnchor: anchor });
+  var resC19 = await run([interUriC, leafUriC], { time: T2027, trustAnchors: anchor });
   check("hostless URI under a URI constraint fails closed", resC19.valid === false && failCodes(resC19).indexOf("path/name-constraint-unsupported") !== -1);
 
   // a CRL whose IDP carries a malformed IMPLICIT BOOLEAN
@@ -2114,7 +2114,7 @@ async function testRfc5280ConformanceMusts() {
   // CRL is unusable, not treated as unrestricted-authoritative.
   var idpBadBool = ext("2.5.29.28", true, b.sequence([b.contextConstructed(2, b.octetString(Buffer.from([0xff])))]));
   var crlBadBool = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpBadBool] });
-  var resC20 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadBool]) });
+  var resC20 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlBadBool]) });
   check("malformed IDP BOOLEAN makes the CRL unusable", resC20.valid === false && failCodes(resC20).indexOf("path/revocation-undetermined") !== -1);
 
   // DER encodes SEQUENCE fields in definition order, at most once -- an IDP
@@ -2122,16 +2122,16 @@ async function testRfc5280ConformanceMusts() {
   // so the scope is unknown and the CRL unusable.
   var idpDupField = ext("2.5.29.28", true, b.sequence([b.contextPrimitive(1, Buffer.from([0xff])), b.contextPrimitive(1, Buffer.from([0xff]))]));
   var crlDupField = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpDupField] });
-  var resC20b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDupField]) });
+  var resC20b = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlDupField]) });
   check("duplicate IDP field makes the CRL unusable", resC20b.valid === false && failCodes(resC20b).indexOf("path/revocation-undetermined") !== -1);
   var idpDisorder = ext("2.5.29.28", true, b.sequence([b.contextPrimitive(4, Buffer.from([0xff])), b.contextPrimitive(1, Buffer.from([0xff]))]));
   var crlDisorder = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpDisorder] });
-  var resC20c = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDisorder]) });
+  var resC20c = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlDisorder]) });
   check("out-of-order IDP fields make the CRL unusable", resC20c.valid === false && failCodes(resC20c).indexOf("path/revocation-undetermined") !== -1);
   // an explicitly-encoded FALSE is the omitted DEFAULT (X.690 sec. 11.5) -- non-DER.
   var idpFalse = ext("2.5.29.28", true, b.sequence([b.contextPrimitive(1, Buffer.from([0x00]))]));
   var crlFalse = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(7), idpFalse] });
-  var resC20d = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFalse]) });
+  var resC20d = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlFalse]) });
   check("encoded-FALSE IDP flag makes the CRL unusable", resC20d.valid === false && failCodes(resC20d).indexOf("path/revocation-undetermined") !== -1);
 
   // The validator's own octet-alignment guard (a signature BIT STRING with a non-zero unused-bit
@@ -2148,16 +2148,16 @@ async function testRfc5280ConformanceMusts() {
   var leafC21 = pki.schema.x509.parse(alignedDer);
   var editedC21 = Object.assign({}, leafC21, { signatureValue: { unusedBits: 3, bytes: leafC21.signatureValue.bytes } });
   check("an edited certificate is refused rather than walked",
-    (await codeOf(run([editedC21], { time: T2027, trustAnchor: anchor }))) === "path/bad-input");
+    (await codeOf(run([editedC21], { time: T2027, trustAnchors: anchor }))) === "path/bad-input");
   // The attack the re-derivation exists for: a genuine certificate's signed bytes and signature
   // beside somebody else's public key. Every field is well-formed and the signature verifies over
   // the original range, so no completeness or signature check can see it -- only provenance can.
   var otherKeyCert = pki.schema.x509.parse(await mkCert({ subject: "Other", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i" }));
   var swappedKey = Object.assign({}, leafC21, { subjectPublicKeyInfo: otherKeyCert.subjectPublicKeyInfo });
   check("a genuine certificate with a substituted public key is refused",
-    (await codeOf(run([swappedKey], { time: T2027, trustAnchor: anchor }))) === "path/bad-input");
+    (await codeOf(run([swappedKey], { time: T2027, trustAnchors: anchor }))) === "path/bad-input");
   // ...while the parser's own unmodified result still validates, so the rule costs a caller nothing.
-  var resC21 = await run([leafC21], { time: T2027, trustAnchor: anchor });
+  var resC21 = await run([leafC21], { time: T2027, trustAnchors: anchor });
   check("the parser's own certificate object still validates", resC21.valid === true);
 
   // A fixed-parameter algorithm carrying the WRONG parameter shape — Ed25519
@@ -2180,12 +2180,12 @@ async function testRfc5280ConformanceMusts() {
   var edConfAnchor = await mkAnchor("ed25519", "EdConfRoot");
   var slhLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.21")]);   // id-slh-dsa-sha2-128f, params absent
   var confusedSlh = await mkCert({ subject: "ConfSlh", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: slhLabel });
-  var resConfSlh = await run([confusedSlh], { time: T2027, trustAnchor: edConfAnchor });
+  var resConfSlh = await run([confusedSlh], { time: T2027, trustAnchors: edConfAnchor });
   check("Ed25519-signed cert labeled SLH-DSA rejected (no algorithm confusion)",
     resConfSlh.valid === false && failCodes(resConfSlh).indexOf("path/algorithm-mismatch") !== -1);
   var mlLabel = b.sequence([b.oid("2.16.840.1.101.3.4.3.18")]);   // id-ml-dsa-65, params absent
   var confusedMl = await mkCert({ subject: "ConfMl", issuer: "EdConfRoot", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: mlLabel });
-  var resConfMl = await run([confusedMl], { time: T2027, trustAnchor: edConfAnchor });
+  var resConfMl = await run([confusedMl], { time: T2027, trustAnchors: edConfAnchor });
   check("Ed25519-signed cert labeled ML-DSA rejected (no algorithm confusion)",
     resConfMl.valid === false && failCodes(resConfMl).indexOf("path/algorithm-mismatch") !== -1);
 
@@ -2193,7 +2193,7 @@ async function testRfc5280ConformanceMusts() {
   // the supported set, matching the no-sha1WithRSAEncryption posture).
   var anchorSha1 = await mkAnchor("psssha1", "Sha1Root");
   var leafSha1 = await mkCert({ subject: "Sha1Pss", issuer: "Sha1Root", signWith: "psssha1", subjectKeys: "ed25519leaf" });
-  var resC23 = await run([leafSha1], { time: T2027, trustAnchor: anchorSha1 });
+  var resC23 = await run([leafSha1], { time: T2027, trustAnchors: anchorSha1 });
   check("SHA-1 PSS signature rejected", resC23.valid === false && failCodes(resC23).indexOf("path/unsupported-algorithm") !== -1);
 
   // a PSS AlgorithmIdentifier declaring an explicit SHA-256
@@ -2201,7 +2201,7 @@ async function testRfc5280ConformanceMusts() {
   // rejected, not verified as SHA-256/MGF1-SHA256.
   var anchorNoMgf = await mkAnchor("pssnomgf", "NoMgfRoot");
   var leafNoMgf = await mkCert({ subject: "NoMgf", issuer: "NoMgfRoot", signWith: "pssnomgf", subjectKeys: "ed25519leaf" });
-  var resC24 = await run([leafNoMgf], { time: T2027, trustAnchor: anchorNoMgf });
+  var resC24 = await run([leafNoMgf], { time: T2027, trustAnchors: anchorNoMgf });
   check("PSS with absent maskGenAlgorithm rejected (SHA-1 default)", resC24.valid === false && failCodes(resC24).indexOf("path/unsupported-algorithm") !== -1);
 
   // a NUL byte in the leaf SUBJECT DN must not crash the
@@ -2211,19 +2211,19 @@ async function testRfc5280ConformanceMusts() {
   var nulRdn = [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("a" + String.fromCharCode(0) + "b")])])];
   var nulLeaf = await mkCert({ subject: nulRdn, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   var res25threw = false;
-  try { await run([nulLeaf], { time: T2027, trustAnchor: anchor }); }
+  try { await run([nulLeaf], { time: T2027, trustAnchors: anchor }); }
   catch (_e) { res25threw = true; }
   check("NUL in subject DN yields a verdict, not an uncaught throw", res25threw === false);
   var interDirNul = await mkCert({ subject: "DirNulInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnDirectoryName(nameDer("X"))], null)]) });
   var nulLeaf2 = await mkCert({ subject: nulRdn, issuer: "DirNulInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var res25b = await run([interDirNul, nulLeaf2], { time: T2027, trustAnchor: anchor });
+  var res25b = await run([interDirNul, nulLeaf2], { time: T2027, trustAnchors: anchor });
   check("NUL subject under a directoryName constraint fails closed", res25b.valid === false);
 
   // a CRL with a revoked entry carrying an UNKNOWN CRITICAL
   // CRL-entry extension is unusable for any cert (§5.3) -> undetermined.
   var critEntryExt = ext("1.3.6.1.4.1.99999.43", true, b.octetString(Buffer.from([1])));
   var crlCritEntry = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [critEntryExt] }] });
-  var resC26 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
+  var resC26 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCritEntry]) });
   check("unknown critical CRL-entry extension makes the CRL unusable", resC26.valid === false && failCodes(resC26).indexOf("path/revocation-undetermined") !== -1);
 
   // The same rule on the CRL side of the door: crlChecker takes bytes or the CRL
@@ -2246,7 +2246,7 @@ async function testRfc5280ConformanceMusts() {
   // is entered -- the call is deferred into the promise chain to catch it either way.
   check("a CRL-entry extension stripped of its criticality flag is refused at the door",
     (await codeOf(Promise.resolve().then(function () {
-      return run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCritNoFlag]) });
+      return run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCritNoFlag]) });
     }))) === "path/bad-input");
 
   // RFC 5280 6.1.3(d)(1)(ii): the child-from-anyPolicy fallback is
@@ -2257,21 +2257,21 @@ async function testRfc5280ConformanceMusts() {
   // policy is satisfied and the user-constrained set is [P1].
   var interIapC = await mkCert({ subject: "IapC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY]), iapExt(0)]) });
   var leafIapC = await mkCert({ subject: "IapCLeaf", issuer: "IapC", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
-  var resC27 = await run([interIapC, leafIapC], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resC27 = await run([interIapC, leafIapC], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("anyPolicy fallback unconditional under an exhausted inhibit counter", resC27.valid === true && resC27.userConstrainedPolicySet.indexOf(P1m) !== -1);
 
   // a URI SAN with an empty authority cannot be evaluated
   // against a URI constraint -> fail closed, not escape.
   var interUriE = await mkCert({ subject: "UriEInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.example")])]) });
   var leafUriE = await mkCert({ subject: "UriELeaf", issuer: "UriEInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https:///path")])] });
-  var resC28 = await run([interUriE, leafUriE], { time: T2027, trustAnchor: anchor });
+  var resC28 = await run([interUriE, leafUriE], { time: T2027, trustAnchors: anchor });
   check("empty-authority URI fails closed under a URI constraint", resC28.valid === false && failCodes(resC28).indexOf("path/name-constraint-unsupported") !== -1);
 
   // a PSS params SEQUENCE with an unexpected [4] field is a
   // structural fault and must be rejected.
   var anchorPssX = await mkAnchor("pssextra", "PssXRoot");
   var leafPssX = await mkCert({ subject: "PssX", issuer: "PssXRoot", signWith: "pssextra", subjectKeys: "ed25519leaf" });
-  var resC29 = await run([leafPssX], { time: T2027, trustAnchor: anchorPssX });
+  var resC29 = await run([leafPssX], { time: T2027, trustAnchors: anchorPssX });
   check("unexpected PSS parameter field rejected", resC29.valid === false && failCodes(resC29).indexOf("path/unsupported-algorithm") !== -1);
 
   // the unhandled-critical-entry check keys on the STABLE
@@ -2282,7 +2282,7 @@ async function testRfc5280ConformanceMusts() {
   pki.oid.register(FAKE_REASON, "reasonCode");
   var fakeReasonEntryExt = ext(FAKE_REASON, true, b.octetString(Buffer.from([1])));
   var crlFakeReason = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1234n, exts: [fakeReasonEntryExt] }] });
-  var resC30 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFakeReason]) });
+  var resC30 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlFakeReason]) });
   check("critical entry ext keyed by OID not display name (unusable)", resC30.valid === false && failCodes(resC30).indexOf("path/revocation-undetermined") !== -1);
 
   // a revocationChecker returning a status OUTSIDE
@@ -2290,10 +2290,10 @@ async function testRfc5280ConformanceMusts() {
   // as undetermined and fail closed, never as a pass.
   var oddChecker = { check: function () { return Promise.resolve({ status: "tryLater" }); } };
   var leafC31 = await mkCert({ subject: "C31", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  var resC31 = await run([leafC31], { time: T2027, trustAnchor: anchor, revocationChecker: oddChecker });
+  var resC31 = await run([leafC31], { time: T2027, trustAnchors: anchor, revocationChecker: oddChecker });
   check("unexpected revocation status fails closed", resC31.valid === false && failCodes(resC31).indexOf("path/revocation-undetermined") !== -1);
   // ...and softFail opts the SAME unexpected status into a pass.
-  var resC31s = await run([leafC31], { time: T2027, trustAnchor: anchor, revocationChecker: oddChecker, softFail: true });
+  var resC31s = await run([leafC31], { time: T2027, trustAnchors: anchor, revocationChecker: oddChecker, softFail: true });
   check("softFail opts unexpected status into a pass", resC31s.valid === true);
 
   // an RSASSA-PSS hashAlgorithm [0] EXPLICIT wrapping a BARE
@@ -2301,18 +2301,18 @@ async function testRfc5280ConformanceMusts() {
   // never be read leniently as SHA-256. Same for the MGF1 hash parameter.
   var pssBareHash = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-bare-hash" });
   var leafC32a = await mkCert({ subject: "C32a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssBareHash });
-  var resC32a = await run([leafC32a], { time: T2027, trustAnchor: anchor });
+  var resC32a = await run([leafC32a], { time: T2027, trustAnchors: anchor });
   check("PSS hashAlgorithm as a bare OID (no AlgorithmIdentifier SEQUENCE) rejected", resC32a.valid === false && failCodes(resC32a).indexOf("path/unsupported-algorithm") !== -1);
   var pssBareMgf = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-bare-mgfhash" });
   var leafC32b = await mkCert({ subject: "C32b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssBareMgf });
-  var resC32b = await run([leafC32b], { time: T2027, trustAnchor: anchor });
+  var resC32b = await run([leafC32b], { time: T2027, trustAnchors: anchor });
   check("PSS MGF1 hash as a bare OID rejected", resC32b.valid === false && failCodes(resC32b).indexOf("path/unsupported-algorithm") !== -1);
   // an RSASSA-PSS hashAlgorithm parameters field that is a NULL with NON-EMPTY
   // content is malformed DER — the right tag but not a well-formed empty NULL
   // (X.690 8.8.2); a tag-only check would accept it. Must fail closed.
   var pssHashNullNe = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-hash-nullparams-nonempty" });
   var leafC32c = await mkCert({ subject: "C32c", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashNullNe });
-  var resC32c = await run([leafC32c], { time: T2027, trustAnchor: anchor });
+  var resC32c = await run([leafC32c], { time: T2027, trustAnchors: anchor });
   check("PSS hashAlgorithm NULL parameters with non-empty content rejected", resC32c.valid === false && failCodes(resC32c).indexOf("path/unsupported-algorithm") !== -1);
 
   // the returned validPolicyTree must be acyclic: no internal
@@ -2321,7 +2321,7 @@ async function testRfc5280ConformanceMusts() {
   var P33 = "1.3.6.1.4.1.99999.33";
   var interC33 = await mkCert({ subject: "C33i", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P33])]) });
   var leafC33 = await mkCert({ subject: "C33l", issuer: "C33i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P33])] });
-  var resC33 = await run([interC33, leafC33], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P33] });
+  var resC33 = await run([interC33, leafC33], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P33] });
   var c33Serialized = true;
   try { JSON.stringify(resC33.validPolicyTree); } catch (_e) { c33Serialized = false; }
   check("policy tree is JSON-serializable (acyclic, no circular parent)", resC33.valid === true && resC33.validPolicyTree !== null && c33Serialized);
@@ -2335,23 +2335,23 @@ async function testRfc5280ConformanceMusts() {
   // non-critical extensions would not see the constraint. Fail closed on each.
   var interNCBC = await mkCert({ subject: "NCBCi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [ext("2.5.29.19", false, bcVal(true)), kuExt([KU_KEY_CERT_SIGN])] });
   var leafNCBC = await mkCert({ subject: "NCBCl", issuer: "NCBCi", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var resC34a = await run([interNCBC, leafNCBC], { time: T2027, trustAnchor: anchor });
+  var resC34a = await run([interNCBC, leafNCBC], { time: T2027, trustAnchors: anchor });
   check("non-critical CA basicConstraints rejected", resC34a.valid === false && failCodes(resC34a).indexOf("path/extension-not-critical") !== -1);
   // control: the critical form of the SAME chain validates.
   var interCBC = await mkCert({ subject: "NCBCi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([]) });
-  var resC34ctl = await run([interCBC, leafNCBC], { time: T2027, trustAnchor: anchor });
+  var resC34ctl = await run([interCBC, leafNCBC], { time: T2027, trustAnchors: anchor });
   check("control: critical basicConstraints validates", resC34ctl.valid === true);
 
   var interNCnc = await mkCert({ subject: "NCnci", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.30", false, ncVal([gnDns("example.com")], null))]) });
-  var resC34b = await run([interNCnc, leafNCBC], { time: T2027, trustAnchor: anchor });
+  var resC34b = await run([interNCnc, leafNCBC], { time: T2027, trustAnchors: anchor });
   check("non-critical nameConstraints rejected", resC34b.valid === false && failCodes(resC34b).indexOf("path/extension-not-critical") !== -1);
 
   var interNCpc = await mkCert({ subject: "NCpci", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.36", false, b.sequence([b.contextPrimitive(0, intContent(0))]))]) });
-  var resC34c = await run([interNCpc, leafNCBC], { time: T2027, trustAnchor: anchor });
+  var resC34c = await run([interNCpc, leafNCBC], { time: T2027, trustAnchors: anchor });
   check("non-critical policyConstraints rejected", resC34c.valid === false && failCodes(resC34c).indexOf("path/extension-not-critical") !== -1);
 
   var interNCiap = await mkCert({ subject: "NCiapi", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ext("2.5.29.54", false, b.integer(0n))]) });
-  var resC34d = await run([interNCiap, leafNCBC], { time: T2027, trustAnchor: anchor });
+  var resC34d = await run([interNCiap, leafNCBC], { time: T2027, trustAnchors: anchor });
   check("non-critical inhibitAnyPolicy rejected", resC34d.valid === false && failCodes(resC34d).indexOf("path/extension-not-critical") !== -1);
 
   // A revocation is effective as of its revocationDate (RFC 5280 §5.3).
@@ -2360,15 +2360,15 @@ async function testRfc5280ConformanceMusts() {
   // DEFAULT (present-time) validation is STRICT per §6.3.3: a listed serial is
   // revoked regardless of a future revocationDate (post-dating / clock skew must
   // not read good).
-  var resFutStrict = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
+  var resFutStrict = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
   check("future revocationDate is revoked by default (strict §6.3.3)", resFutStrict.valid === false && failCodes(resFutStrict).indexOf("path/revoked") !== -1);
   // Under an EXPLICIT historical validation, a revocation dated AFTER the
   // validation instant is not yet effective (validating a timestamped signature).
-  var resFutHist = await run([leafCrl], { time: T2027, trustAnchor: anchor, historicalMode: true, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
+  var resFutHist = await run([leafCrl], { time: T2027, trustAnchors: anchor, historicalMode: true, revocationChecker: pki.path.crlChecker([crlFutureRev]) });
   check("historicalMode: future revocationDate is not yet effective", resFutHist.valid === true);
   // control: a revocationDate at/before the instant IS a revocation in either mode.
   var crlPastRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, date: new Date("2027-03-01T00:00:00Z") }] });
-  var resC35b = await run([leafCrl], { time: T2027, trustAnchor: anchor, historicalMode: true, revocationChecker: pki.path.crlChecker([crlPastRev]) });
+  var resC35b = await run([leafCrl], { time: T2027, trustAnchors: anchor, historicalMode: true, revocationChecker: pki.path.crlChecker([crlPastRev]) });
   check("control: revocationDate at/before the instant is revoked", resC35b.valid === false && failCodes(resC35b).indexOf("path/revoked") !== -1);
 
   // an AlgorithmIdentifier is { OID, parameters? }: at most
@@ -2376,13 +2376,13 @@ async function testRfc5280ConformanceMusts() {
   // A spurious third element or non-NULL hash parameters is malformed and must
   // fail closed rather than be read leniently as its named hash.
   var pssHashExtra = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-hash-extra" });
-  var resC36a = await run([await mkCert({ subject: "C36a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashExtra })], { time: T2027, trustAnchor: anchor });
+  var resC36a = await run([await mkCert({ subject: "C36a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashExtra })], { time: T2027, trustAnchors: anchor });
   check("PSS hashAlgorithm with a spurious third element rejected", resC36a.valid === false && failCodes(resC36a).indexOf("path/unsupported-algorithm") !== -1);
   var pssHashBad = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-hash-badparams" });
-  var resC36b = await run([await mkCert({ subject: "C36b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashBad })], { time: T2027, trustAnchor: anchor });
+  var resC36b = await run([await mkCert({ subject: "C36b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssHashBad })], { time: T2027, trustAnchors: anchor });
   check("PSS hashAlgorithm with non-NULL parameters rejected", resC36b.valid === false && failCodes(resC36b).indexOf("path/unsupported-algorithm") !== -1);
   var pssMgfExtra = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-mgfhash-extra" });
-  var resC36c = await run([await mkCert({ subject: "C36c", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMgfExtra })], { time: T2027, trustAnchor: anchor });
+  var resC36c = await run([await mkCert({ subject: "C36c", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMgfExtra })], { time: T2027, trustAnchors: anchor });
   check("PSS MGF1 hash with a spurious third element rejected", resC36c.valid === false && failCodes(resC36c).indexOf("path/unsupported-algorithm") !== -1);
 
   // policyMappings is semantically processed ONLY in prepare-
@@ -2392,30 +2392,30 @@ async function testRfc5280ConformanceMusts() {
   // rejection. policyMappings is SHOULD-be-non-critical (§4.2.1.5), so this does
   // not over-reject a conforming certificate.
   var leafPmCrit = await mkCert({ subject: "PmCrit", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [pmExt([[P1m, P2m]])] });
-  var resC37a = await run([leafPmCrit], { time: T2027, trustAnchor: anchor });
+  var resC37a = await run([leafPmCrit], { time: T2027, trustAnchors: anchor });
   check("critical policyMappings on the target rejected as unprocessed", resC37a.valid === false && failCodes(resC37a).indexOf("path/unrecognized-critical-extension") !== -1);
   // the anyPolicy-mapping bypass specifically (critical):
   var leafPmAny = await mkCert({ subject: "PmAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [pmExt([[ANY_POLICY, P2m]])] });
-  var resC37b = await run([leafPmAny], { time: T2027, trustAnchor: anchor });
+  var resC37b = await run([leafPmAny], { time: T2027, trustAnchors: anchor });
   check("critical anyPolicy mapping on the target rejected", resC37b.valid === false && failCodes(resC37b).indexOf("path/unrecognized-critical-extension") !== -1);
   // a NON-critical anyPolicy mapping on the target is caught by the structural rule.
   var leafPmAnyNC = await mkCert({ subject: "PmAnyNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.33", false, b.sequence([b.sequence([b.oid(ANY_POLICY), b.oid(P2m)])]))] });
-  var resC37c = await run([leafPmAnyNC], { time: T2027, trustAnchor: anchor });
+  var resC37c = await run([leafPmAnyNC], { time: T2027, trustAnchors: anchor });
   check("non-critical anyPolicy mapping on the target rejected (structural)", resC37c.valid === false && failCodes(resC37c).indexOf("path/bad-policy") !== -1);
   // control: a critical policyMappings on an INTERMEDIATE still processes normally.
   var interPm = await mkCert({ subject: "PmInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m]), pmExt([[P1m, P2m]])]) });
   var leafPmOk = await mkCert({ subject: "PmLeaf", issuer: "PmInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
-  var resC37d = await run([interPm, leafPmOk], { time: T2027, trustAnchor: anchor });
+  var resC37d = await run([interPm, leafPmOk], { time: T2027, trustAnchors: anchor });
   check("control: critical policyMappings on an intermediate still validates", resC37d.valid === true);
 
   // each RSASSA-PSS-params field is an EXPLICIT [n] wrapper around EXACTLY
   // ONE value. A wrapper carrying more than one child is malformed: reading
   // children[0] and ignoring the rest would accept non-DER parameters.
   var pssMultiSalt = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-multichild-salt" });
-  var resC38a = await run([await mkCert({ subject: "C38a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMultiSalt })], { time: T2027, trustAnchor: anchor });
+  var resC38a = await run([await mkCert({ subject: "C38a", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMultiSalt })], { time: T2027, trustAnchors: anchor });
   check("multi-child EXPLICIT [2] saltLength wrapper rejected", resC38a.valid === false && failCodes(resC38a).indexOf("path/unsupported-algorithm") !== -1);
   var pssMultiMgf = algIdDer({ sigOid: "1.2.840.113549.1.1.10", sigParams: "pss-multichild-mgf" });
-  var resC38b = await run([await mkCert({ subject: "C38b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMultiMgf })], { time: T2027, trustAnchor: anchor });
+  var resC38b = await run([await mkCert({ subject: "C38b", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: pssMultiMgf })], { time: T2027, trustAnchors: anchor });
   check("multi-child EXPLICIT [1] maskGenAlgorithm wrapper rejected", resC38b.valid === false && failCodes(resC38b).indexOf("path/unsupported-algorithm") !== -1);
 
   // A certificate rfc822Name with more than one "@" (a quoted local part such as
@@ -2424,11 +2424,11 @@ async function testRfc5280ConformanceMusts() {
   // could slip the constraint (RFC 5280 4.2.1.6 / RFC 5321 addr-spec).
   var interEmAmb = await mkCert({ subject: "EmAmbInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("example.com")])]) });
   var leafEmAmb = await mkCert({ subject: "EmAmbLeaf", issuer: "EmAmbInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("\"a@b\"@example.com")])] });
-  var resEmAmb = await run([interEmAmb, leafEmAmb], { time: T2027, trustAnchor: anchor });
+  var resEmAmb = await run([interEmAmb, leafEmAmb], { time: T2027, trustAnchors: anchor });
   check("multi-@ rfc822Name fails closed under a name constraint", resEmAmb.valid === false && failCodes(resEmAmb).indexOf("path/name-constraint-unsupported") !== -1);
   // control: a single-@ mailbox at the excluded host is still matched and rejected.
   var leafEmOk = await mkCert({ subject: "EmOkLeaf", issuer: "EmAmbInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("u@example.com")])] });
-  var resEmOk = await run([interEmAmb, leafEmOk], { time: T2027, trustAnchor: anchor });
+  var resEmOk = await run([interEmAmb, leafEmOk], { time: T2027, trustAnchors: anchor });
   check("control: single-@ mailbox at the excluded host is rejected", resEmOk.valid === false && failCodes(resEmOk).indexOf("path/name-constraint-excluded") !== -1);
 
   // A URI authority with more than one "@" is likewise ambiguous (RFC 3986
@@ -2436,7 +2436,7 @@ async function testRfc5280ConformanceMusts() {
   // fails closed instead of extracting a guessed host.
   var interUriAmb = await mkCert({ subject: "UriAmbInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.com")])]) });
   var leafUriAmb = await mkCert({ subject: "UriAmbLeaf", issuer: "UriAmbInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://a@b@evil.com/")])] });
-  var resUriAmb = await run([interUriAmb, leafUriAmb], { time: T2027, trustAnchor: anchor });
+  var resUriAmb = await run([interUriAmb, leafUriAmb], { time: T2027, trustAnchors: anchor });
   check("multi-@ URI authority fails closed under a name constraint", resUriAmb.valid === false && failCodes(resUriAmb).indexOf("path/name-constraint-unsupported") !== -1);
 
   // RFC 5280 §6.3.3(f): cRLSign is required only when keyUsage is PRESENT. An
@@ -2446,19 +2446,19 @@ async function testRfc5280ConformanceMusts() {
   var interNoKu = await mkCert({ subject: "NoKuInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true)] });
   var leafNoKu = await mkCert({ subject: "NoKuLeaf", issuer: "NoKuInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 5151n });
   var crlNoKu = await mkCrl({ issuer: "NoKuInter", signWith: "ed25519i" });
-  var resNoKu = await run([interNoKu, leafNoKu], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlNoKu]) });
+  var resNoKu = await run([interNoKu, leafNoKu], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlNoKu]) });
   check("CRL signer that omits keyUsage is authoritative (cRLSign required only when keyUsage present)", resNoKu.valid === true);
   // a signer WITH keyUsage but WITHOUT cRLSign is not authorized -> undetermined.
   var interKuNoCrl = await mkCert({ subject: "KuNoCrlInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var leafKuNoCrl = await mkCert({ subject: "KuNoCrlLeaf", issuer: "KuNoCrlInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", serial: 5153n });
   var crlKuNoCrl = await mkCrl({ issuer: "KuNoCrlInter", signWith: "ed25519i" });
-  var resKuNoCrl = await run([interKuNoCrl, leafKuNoCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlKuNoCrl]) });
+  var resKuNoCrl = await run([interKuNoCrl, leafKuNoCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlKuNoCrl]) });
   check("CRL signer with keyUsage but no cRLSign yields undetermined", resKuNoCrl.valid === false && failCodes(resKuNoCrl).indexOf("path/revocation-undetermined") !== -1);
   // control: the same intermediate WITH keyUsage cRLSign produces an authoritative CRL.
   var interKu = await mkCert({ subject: "KuInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519j", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN, KU_CRL_SIGN])] });
   var leafKu = await mkCert({ subject: "KuLeaf", issuer: "KuInter", signWith: "ed25519j", subjectKeys: "ed25519leaf", serial: 5152n });
   var crlKu = await mkCrl({ issuer: "KuInter", signWith: "ed25519j" });
-  var resKu = await run([interKu, leafKu], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlKu]) });
+  var resKu = await run([interKu, leafKu], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([rootCrlCov, crlKu]) });
   check("control: CRL signer with keyUsage cRLSign is authoritative", resKu.valid === true);
 
   // A delta CRL (deltaCRLIndicator) lists only the changes since a base CRL;
@@ -2466,32 +2466,32 @@ async function testRfc5280ConformanceMusts() {
   // from it is NOT "good" — even when the indicator is non-critical (RFC 5280
   // 5.2.4). The critical form is likewise unusable.
   var crlDeltaNC = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [ext("2.5.29.27", false, b.integer(3n))] });
-  var resDeltaNC = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDeltaNC]) });
+  var resDeltaNC = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlDeltaNC]) });
   check("non-critical delta CRL is unusable (undetermined)", resDeltaNC.valid === false && failCodes(resDeltaNC).indexOf("path/revocation-undetermined") !== -1);
   var crlDeltaC = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [ext("2.5.29.27", true, b.integer(3n))] });
-  var resDeltaC = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDeltaC]) });
+  var resDeltaC = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlDeltaC]) });
   check("critical delta CRL is unusable (undetermined)", resDeltaC.valid === false && failCodes(resDeltaC).indexOf("path/revocation-undetermined") !== -1);
   // a clean base CRL must NOT override an AUTHORITATIVE delta that lists the
   // serial: the delta (current + verified) reveals the revocation, so the cert
   // is revoked — never "good" (else a certificate the delta revokes is accepted).
   var baseCleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519" });
   var deltaRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [ext("2.5.29.27", true, b.integer(1n))] });
-  var resBaseDelta = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, deltaRevoking]) });
+  var resBaseDelta = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, deltaRevoking]) });
   check("an authoritative delta listing the serial revokes despite a clean base", resBaseDelta.valid === false && failCodes(resBaseDelta).indexOf("path/revoked") !== -1);
   // a STALE or unverifiable delta must NOT block a good result from a valid base
   // (the delta is acted on only after its own currency/signature checks pass).
   var staleDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", nextUpdate: new Date("2026-06-01T00:00:00Z"), extensions: [ext("2.5.29.27", true, b.integer(1n))] });
-  var resStaleDelta = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, staleDelta]) });
+  var resStaleDelta = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([baseCleanCrl, staleDelta]) });
   check("a stale delta does not block a good result from a valid base", resStaleDelta.valid === true);
   // A delta that RELEASES the serial from hold (removeFromCRL) must prevent a
   // definitive revoked from a base CRL that still lists it — without base/delta
   // merging the status is undetermined, so a released cert is not stuck rejected.
   var baseRevoking = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
   var deltaRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [ext("2.5.29.27", true, b.integer(1n))] });
-  var resDeltaRel = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseRevoking, deltaRelease]) });
+  var resDeltaRel = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([baseRevoking, deltaRelease]) });
   check("delta removeFromCRL prevents a definitive revoked from the base (undetermined)", resDeltaRel.valid === false && failCodes(resDeltaRel).indexOf("path/revocation-undetermined") !== -1);
   // control: the same base revocation WITHOUT a delta removal is still revoked.
-  var resBaseOnlyRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseRevoking]) });
+  var resBaseOnlyRev = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([baseRevoking]) });
   check("control: base revocation with no delta removal is revoked", resBaseOnlyRev.valid === false && failCodes(resBaseOnlyRev).indexOf("path/revoked") !== -1);
 
   // A CRL whose issuer DN carries an embedded NUL (CVE-2009-2408) makes dnEqual
@@ -2501,7 +2501,7 @@ async function testRfc5280ConformanceMusts() {
   var nulIssuerRdn = [b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("R" + String.fromCharCode(0) + "oot")])])];
   var crlNulIssuer = await mkCrl({ issuer: nulIssuerRdn, signWith: "ed25519" });
   var crlRealRevoke = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
-  var resNulMask = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlNulIssuer, crlRealRevoke]) });
+  var resNulMask = await run([leafCrl], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlNulIssuer, crlRealRevoke]) });
   check("a malformed-issuer CRL is skipped, not masking a valid revoking CRL", resNulMask.valid === false && failCodes(resNulMask).indexOf("path/revoked") !== -1);
 
   // The internal resolveDescriptor fallback that turns an asn1/* fault from malformed
@@ -2516,8 +2516,8 @@ async function testRfc5280ConformanceMusts() {
     signatureAlgorithm: { oid: pssParsed.signatureAlgorithm.oid, name: pssParsed.signatureAlgorithm.name, parameters: Buffer.from([0x30, 0x03, 0x02, 0x81, 0x01]) },
   });
   check("a certificate with edited algorithm parameters is refused, not walked",
-    (await codeOf(run([pssEdited], { time: T2027, trustAnchor: anchorPssParam }))) === "path/bad-input");
-  var resPssOk = await run([pssParsed], { time: T2027, trustAnchor: anchorPssParam });
+    (await codeOf(run([pssEdited], { time: T2027, trustAnchors: anchorPssParam }))) === "path/bad-input");
+  var resPssOk = await run([pssParsed], { time: T2027, trustAnchors: anchorPssParam });
   check("...while the unmodified RSASSA-PSS certificate still validates", resPssOk.valid === true);
 
   // RFC 5280 4.2.1.10: the legacy emailAddress in the subject DN is checked as an
@@ -2527,16 +2527,16 @@ async function testRfc5280ConformanceMusts() {
   var interEmSan = await mkCert({ subject: "EmSanInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("banned.example")])]) });
   var emSanRdn = [b.set([atv("2.5.4.3", "EmSanLeaf")]), b.set([b.sequence([b.oid("1.2.840.113549.1.9.1"), b.ia5("user@banned.example")])])];
   var leafEmSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("good.example")])] });
-  var resEmSan = await run([interEmSan, leafEmSan], { time: T2027, trustAnchor: anchor });
+  var resEmSan = await run([interEmSan, leafEmSan], { time: T2027, trustAnchors: anchor });
   check("excluded subject-DN email is constrained when the SAN has no rfc822Name entry", resEmSan.valid === false && failCodes(resEmSan).indexOf("path/name-constraint-excluded") !== -1);
   // control: with NO SAN, the legacy emailAddress IS constrained (excluded).
   var leafEmNoSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-  var resEmNoSan = await run([interEmSan, leafEmNoSan], { time: T2027, trustAnchor: anchor });
+  var resEmNoSan = await run([interEmSan, leafEmNoSan], { time: T2027, trustAnchors: anchor });
   check("control: legacy subject emailAddress IS constrained without a SAN", resEmNoSan.valid === false && failCodes(resEmNoSan).indexOf("path/name-constraint-excluded") !== -1);
   // control: when the SAN DOES carry an rfc822Name (the authoritative email), the
   // legacy DN email is NOT additionally constrained — the SAN email is checked.
   var leafEmRfcSan = await mkCert({ subject: emSanRdn, issuer: "EmSanInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@ok.example")])] });
-  var resEmRfcSan = await run([interEmSan, leafEmRfcSan], { time: T2027, trustAnchor: anchor });
+  var resEmRfcSan = await run([interEmSan, leafEmRfcSan], { time: T2027, trustAnchors: anchor });
   check("control: an rfc822Name SAN suppresses the legacy DN-email check", resEmRfcSan.valid === true);
 
   // RFC 5280 4.2.1.10: a URI SAN whose authority host is not a FQDN (an IP
@@ -2544,32 +2544,32 @@ async function testRfc5280ConformanceMusts() {
   // URI constraint — fail closed rather than pass it as an ordinary non-match.
   var interUriFqdn = await mkCert({ subject: "UriFqdnInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("evil.com")])]) });
   var leafUriIp = await mkCert({ subject: "UriIpLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://127.0.0.1/")])] });
-  var resUriIp = await run([interUriFqdn, leafUriIp], { time: T2027, trustAnchor: anchor });
+  var resUriIp = await run([interUriFqdn, leafUriIp], { time: T2027, trustAnchors: anchor });
   check("URI SAN with an IP-literal host fails closed under a URI constraint", resUriIp.valid === false && failCodes(resUriIp).indexOf("path/name-constraint-unsupported") !== -1);
   var leafUriLocal = await mkCert({ subject: "UriLocalLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://localhost/")])] });
-  var resUriLocal = await run([interUriFqdn, leafUriLocal], { time: T2027, trustAnchor: anchor });
+  var resUriLocal = await run([interUriFqdn, leafUriLocal], { time: T2027, trustAnchors: anchor });
   check("URI SAN with a dotless host fails closed under a URI constraint", resUriLocal.valid === false && failCodes(resUriLocal).indexOf("path/name-constraint-unsupported") !== -1);
   // control: a FQDN URI host outside the excluded set validates.
   var leafUriOk = await mkCert({ subject: "UriOkLeaf", issuer: "UriFqdnInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://good.example/")])] });
-  var resUriOk = await run([interUriFqdn, leafUriOk], { time: T2027, trustAnchor: anchor });
+  var resUriOk = await run([interUriFqdn, leafUriOk], { time: T2027, trustAnchors: anchor });
   check("control: FQDN URI host outside the excluded set validates", resUriOk.valid === true);
   // RFC 5280 4.2.1.10: a URI CONSTRAINT must itself be an FQDN (a host or a
   // .domain), not a full URI. A malformed constraint cannot be matched and must
   // fail closed rather than silently never-match (ignoring a critical exclusion).
   var interUriBadC = await mkCert({ subject: "UriBadCInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnUri("http://blocked.example")])]) });
   var leafUriBadC = await mkCert({ subject: "UriBadCLeaf", issuer: "UriBadCInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnUri("https://blocked.example/")])] });
-  var resUriBadC = await run([interUriBadC, leafUriBadC], { time: T2027, trustAnchor: anchor });
+  var resUriBadC = await run([interUriBadC, leafUriBadC], { time: T2027, trustAnchors: anchor });
   check("malformed (non-FQDN) URI constraint fails closed", resUriBadC.valid === false && failCodes(resUriBadC).indexOf("path/name-constraint-unsupported") !== -1);
 
   // RFC 5280 4.2.1.11: policyConstraints MUST be critical — on the TARGET cert
   // too. The wrap-up applies it, so a non-critical policyConstraints on the leaf
   // must fail closed consistently with the intermediate path.
   var leafPcNC = await mkCert({ subject: "PcTargetNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", false, b.sequence([b.contextPrimitive(1, intContent(0))]))] });
-  var resPcNC = await run([leafPcNC], { time: T2027, trustAnchor: anchor });
+  var resPcNC = await run([leafPcNC], { time: T2027, trustAnchors: anchor });
   check("non-critical policyConstraints on the target cert rejected", resPcNC.valid === false && failCodes(resPcNC).indexOf("path/extension-not-critical") !== -1);
   // control: a critical policyConstraints on the target is accepted.
   var leafPcC = await mkCert({ subject: "PcTargetC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", true, b.sequence([b.contextPrimitive(1, intContent(0))]))] });
-  var resPcC = await run([leafPcC], { time: T2027, trustAnchor: anchor });
+  var resPcC = await run([leafPcC], { time: T2027, trustAnchors: anchor });
   check("control: critical policyConstraints on the target is accepted", resPcC.valid === true);
 
   // RFC 5321: an rfc822Name local part is case-SENSITIVE; only the host folds
@@ -2577,23 +2577,23 @@ async function testRfc5280ConformanceMusts() {
   // different-case local part.
   var interEmCase = await mkCert({ subject: "EmCaseInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt([gnEmail("Admin@example.com")], null)]) });
   var leafEmCaseBad = await mkCert({ subject: "EmCaseBad", issuer: "EmCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("admin@example.com")])] });
-  var resEmCaseBad = await run([interEmCase, leafEmCaseBad], { time: T2027, trustAnchor: anchor });
+  var resEmCaseBad = await run([interEmCase, leafEmCaseBad], { time: T2027, trustAnchors: anchor });
   check("different-case local part is not admitted by a full-mailbox permit", resEmCaseBad.valid === false && failCodes(resEmCaseBad).indexOf("path/name-constraint-not-permitted") !== -1);
   // control: the exact-case local part with a case-folded host is permitted.
   var leafEmCaseOk = await mkCert({ subject: "EmCaseOk", issuer: "EmCaseInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("Admin@EXAMPLE.com")])] });
-  var resEmCaseOk = await run([interEmCase, leafEmCaseOk], { time: T2027, trustAnchor: anchor });
+  var resEmCaseOk = await run([interEmCase, leafEmCaseOk], { time: T2027, trustAnchors: anchor });
   check("control: exact local part with a case-folded host is permitted", resEmCaseOk.valid === true);
 
   // RFC 5280 4.2.1.10: an rfc822Name host is canonicalized like dNSName/URI, so a
   // trailing-dot mailbox host must not escape an excluded rfc822 constraint.
   var interEmDot = await mkCert({ subject: "EmDotInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("evil.example.com")])]) });
   var leafEmDot = await mkCert({ subject: "EmDotLeaf", issuer: "EmDotInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@evil.example.com.")])] });
-  var resEmDot = await run([interEmDot, leafEmDot], { time: T2027, trustAnchor: anchor });
+  var resEmDot = await run([interEmDot, leafEmDot], { time: T2027, trustAnchors: anchor });
   check("trailing-dot rfc822 host does not escape an excluded host constraint", resEmDot.valid === false && failCodes(resEmDot).indexOf("path/name-constraint-excluded") !== -1);
   // a trailing-dot full mailbox likewise cannot escape a full-mailbox exclusion.
   var interEmDot2 = await mkCert({ subject: "EmDot2Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(null, [gnEmail("user@evil.example.com")])]) });
   var leafEmDot2 = await mkCert({ subject: "EmDot2Leaf", issuer: "EmDot2Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [sanExt([gnEmail("user@evil.example.com.")])] });
-  var resEmDot2 = await run([interEmDot2, leafEmDot2], { time: T2027, trustAnchor: anchor });
+  var resEmDot2 = await run([interEmDot2, leafEmDot2], { time: T2027, trustAnchors: anchor });
   check("trailing-dot full mailbox does not escape a full-mailbox exclusion", resEmDot2.valid === false && failCodes(resEmDot2).indexOf("path/name-constraint-excluded") !== -1);
 
   // A certification path longer than the maxPathCerts ceiling is rejected BEFORE
@@ -2601,23 +2601,23 @@ async function testRfc5280ConformanceMusts() {
   // untrusted bundle). A small opt-in cap makes the guard observable.
   var overLong = [];
   for (var oi = 0; oi < 4; oi++) overLong.push(await mkCert({ subject: "OL" + oi, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" }));
-  check("path exceeding maxPathCerts throws path/bad-input", (await codeOf(run(overLong, { time: T2027, trustAnchor: anchor, maxPathCerts: 3 }))) === "path/bad-input");
+  check("path exceeding maxPathCerts throws path/bad-input", (await codeOf(run(overLong, { time: T2027, trustAnchors: anchor, maxPathCerts: 3 }))) === "path/bad-input");
   // control: a path at the limit is not rejected by the cap (fails later on chain, not on the cap).
-  var atLimit = await run([leafCrl], { time: T2027, trustAnchor: anchor, maxPathCerts: 1 });
+  var atLimit = await run([leafCrl], { time: T2027, trustAnchors: anchor, maxPathCerts: 1 });
   check("control: a path within maxPathCerts is not rejected by the cap", failCodes(atLimit).indexOf("path/bad-input") === -1);
 
   // opts.requireRevocation makes the 6.1.3(a)(3) determination mandatory: with no
   // revocationChecker the step cannot run, so the path fails closed rather than
   // silently skipping revocation.
   var leafReq = await mkCert({ subject: "ReqRev", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  var resReqNoChecker = await run([leafReq], { time: T2027, trustAnchor: anchor, requireRevocation: true });
+  var resReqNoChecker = await run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: true });
   check("requireRevocation with no checker fails closed", resReqNoChecker.valid === false && failCodes(resReqNoChecker).indexOf("path/revocation-undetermined") !== -1);
   // control: without requireRevocation the same no-checker path validates (revocation opt-in).
-  var resNoReq = await run([leafReq], { time: T2027, trustAnchor: anchor });
+  var resNoReq = await run([leafReq], { time: T2027, trustAnchors: anchor });
   check("control: no checker + no requireRevocation validates", resNoReq.valid === true);
   // control: requireRevocation with a checker returning good validates.
   var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
-  var resReqGood = await run([leafReq], { time: T2027, trustAnchor: anchor, requireRevocation: true, revocationChecker: goodChecker });
+  var resReqGood = await run([leafReq], { time: T2027, trustAnchors: anchor, requireRevocation: true, revocationChecker: goodChecker });
   check("control: requireRevocation + good status validates", resReqGood.valid === true);
 
   // A partition-scoped CRL (onlySomeReasons or a specific distributionPoint)
@@ -2626,15 +2626,15 @@ async function testRfc5280ConformanceMusts() {
   // into accepting an undetermined status, not a revoked one).
   var someReasonsB = Buffer.from([0x06, 0x40]); // BIT STRING: keyCompromise only
   var crlPartRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(9), idpExt({ onlySomeReasons: someReasonsB })] });
-  var resPartRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlPartRev]) });
+  var resPartRev = await run([leafCrl], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlPartRev]) });
   check("reason-partitioned CRL listing the serial revokes even under softFail", resPartRev.valid === false && failCodes(resPartRev).indexOf("path/revoked") !== -1);
   var dpNameScope = dpnFull([gnUri("http://crl.example/partition/1")]);
   var crlDpRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }], extensions: [crlNumberExt(10), idpExt({ distributionPoint: dpNameScope })] });
-  var resDpRev = await run([leafCrl], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlDpRev]) });
+  var resDpRev = await run([leafCrl], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pki.path.crlChecker([crlDpRev]) });
   check("distributionPoint-scoped CRL listing the serial revokes even under softFail", resDpRev.valid === false && failCodes(resDpRev).indexOf("path/revoked") !== -1);
   // control: a clean partition-scoped CRL still cannot establish good.
   var crlPartClean = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(11), idpExt({ onlySomeReasons: someReasonsB })] });
-  var resPartClean = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlPartClean]) });
+  var resPartClean = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlPartClean]) });
   check("control: a clean partition-scoped CRL cannot establish good (undetermined)", resPartClean.valid === false && failCodes(resPartClean).indexOf("path/revocation-undetermined") !== -1);
 
   // -------------------------------------------------------------------------
@@ -2677,7 +2677,7 @@ async function testRfc5280ConformanceMusts() {
   var monoBase = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(10), freshestExt([distPoint(shardDpn)])] });
   var monoDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }],
     extensions: [crlNumberExt(31), deltaExt(30)] });
-  var resMono = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([monoBase, monoDelta]) });
+  var resMono = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([monoBase, monoDelta]) });
   check("R14 an unmergeable delta still revokes -- the merge never turns revoked into good",
     resMono.valid === false && failCodes(resMono).indexOf("path/revoked") !== -1);
 
@@ -2687,18 +2687,18 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(20), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 8]) })] });
   var shardB = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(21), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
-  var resR1 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
+  var resR1 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
   check("R1 two reason shards covering all eight reasons establish good", resR1.valid === true);
 
   // R3 -- one shard alone is partial coverage and still fails closed.
-  var resR3 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA]) });
+  var resR3 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([shardA]) });
   check("R3 a single reason shard cannot establish good (partial coverage)",
     resR3.valid === false && failCodes(resR3).indexOf("path/revocation-undetermined") !== -1);
 
   // R2 -- shards whose union falls short of all-reasons stay undetermined.
   var shardShort = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(22), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([3, 4]) })] });
-  var resR2 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardShort]) });
+  var resR2 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([shardA, shardShort]) });
   check("R2 shards whose union is short of all-reasons stay undetermined",
     resR2.valid === false && failCodes(resR2).indexOf("path/revocation-undetermined") !== -1);
 
@@ -2708,7 +2708,7 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(23), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5]) })] });
   var ovlB = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(24), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([4, 5, 6, 7, 8]) })] });
-  var resR4 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([ovlA, ovlB]) });
+  var resR4 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([ovlA, ovlB]) });
   check("R4 overlapping shards union to full coverage", resR4.valid === true);
 
   // R10 -- a shard that does NOT correspond to the leaf's DP contributes nothing
@@ -2716,12 +2716,12 @@ async function testRfc5280ConformanceMusts() {
   var otherDpn = dpnFull([gnUri("http://crl.example/other")]);
   var nonCorrRev = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
     extensions: [crlNumberExt(25), idpExt({ distributionPoint: otherDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
-  var resR10 = await run([leafShard], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([nonCorrRev]) });
+  var resR10 = await run([leafShard], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pki.path.crlChecker([nonCorrRev]) });
   check("R10 a non-corresponding shard still revokes a serial it lists",
     resR10.valid === false && failCodes(resR10).indexOf("path/revoked") !== -1);
   var nonCorrClean = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(26), idpExt({ distributionPoint: otherDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
-  var resR10b = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([nonCorrClean]) });
+  var resR10b = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([nonCorrClean]) });
   check("R10 a non-corresponding shard contributes nothing to coverage",
     resR10b.valid === false && failCodes(resR10b).indexOf("path/revocation-undetermined") !== -1);
 
@@ -2733,19 +2733,19 @@ async function testRfc5280ConformanceMusts() {
   var forgedNonCorr = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
     extensions: [crlNumberExt(31), idpExt({ distributionPoint: otherDpn })],
     mutateSig: function (sig) { var c = Buffer.from(sig); c[c.length - 1] ^= 0xff; return c; } });
-  var resForged = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([forgedNonCorr]) });
+  var resForged = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([forgedNonCorr]) });
   check("a non-corresponding shard with a BAD SIGNATURE cannot revoke",
     resForged.valid === false && failCodes(resForged).indexOf("path/revoked") === -1);
   var staleNonCorr = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
     nextUpdate: new Date("2026-06-01T00:00:00Z"),
     extensions: [crlNumberExt(32), idpExt({ distributionPoint: otherDpn })] });
-  var resStale = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([staleNonCorr]) });
+  var resStale = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([staleNonCorr]) });
   check("a non-corresponding shard that is STALE cannot revoke",
     resStale.valid === false && failCodes(resStale).indexOf("path/revoked") === -1);
   // ... while a properly signed, current one still does (the gates reject the bad, not the shape).
   var goodNonCorr = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
     extensions: [crlNumberExt(33), idpExt({ distributionPoint: otherDpn })] });
-  var resGoodNC = await run([leafShard], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.crlChecker([goodNonCorr]) });
+  var resGoodNC = await run([leafShard], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pki.path.crlChecker([goodNonCorr]) });
   check("control: a signed, current non-corresponding shard still revokes what it lists",
     resGoodNC.valid === false && failCodes(resGoodNC).indexOf("path/revoked") !== -1);
 
@@ -2761,7 +2761,7 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(51), deltaExt(50), idpExt({ distributionPoint: otherDpn })],
     mutateSig: function (sig) { var c = Buffer.from(sig); c[c.length - 1] ^= 0xff; return c; } });
   var cleanCoverage = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(52)] });
-  var resSuppress = await run([leafShard], { time: T2027, trustAnchor: anchor,
+  var resSuppress = await run([leafShard], { time: T2027, trustAnchors: anchor,
     revocationChecker: pki.path.crlChecker([legitRevokingBase, forgedReleasingDelta, cleanCoverage]) });
   check("a forged delta cannot suppress a genuine revocation on its base",
     resSuppress.valid === false && failCodes(resSuppress).indexOf("path/revoked") !== -1);
@@ -2772,7 +2772,7 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(27), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 8, 9]) })] });
   var restShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(28), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
-  var resR12 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([oddBitShard, restShard]) });
+  var resR12 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([oddBitShard, restShard]) });
   check("R12 an undefined ReasonFlags bit neither completes nor breaks coverage", resR12.valid === true);
 
   // R13 -- ReasonFlags bit 0 is `unused`, not a reason: sec. 6.3.2(a)'s legal set is the eight
@@ -2780,12 +2780,12 @@ async function testRfc5280ConformanceMusts() {
   // all rather than as partial coverage; and bit 0 alongside the eight must not disturb them.
   var bitZeroOnly = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(34), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([0]) })] });
-  var resBit0 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bitZeroOnly]) });
+  var resBit0 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([bitZeroOnly]) });
   check("R13 a shard asserting only ReasonFlags bit 0 establishes no coverage",
     resBit0.valid === false && failCodes(resBit0).indexOf("path/revocation-undetermined") !== -1);
   var bitZeroPlusAll = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(35), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([0, 1, 2, 3, 4, 5, 6, 7, 8]) })] });
-  var resBit0All = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bitZeroPlusAll]) });
+  var resBit0All = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([bitZeroPlusAll]) });
   check("R13 bit 0 alongside all eight named reasons still establishes good", resBit0All.valid === true);
 
   // R11 -- the criticality decision governs the WHOLE IDP scope. A NON-CRITICAL IDP is one a
@@ -2801,27 +2801,27 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(36), ncIdpExt({ onlySomeReasons: reasonBits([1, 2, 8]) })] });
   var ncShardB = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(37), ncIdpExt({ onlySomeReasons: reasonBits([3, 4, 5, 6, 7]) })] });
-  var resNcShards = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([ncShardA, ncShardB]) });
+  var resNcShards = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([ncShardA, ncShardB]) });
   check("R11 two NON-CRITICAL reason shards cannot establish good even when their masks union",
     resNcShards.valid === false && failCodes(resNcShards).indexOf("path/revocation-undetermined") !== -1);
   // ... and the same shards marked CRITICAL do, so the gate is criticality and nothing else.
-  var resCritShards = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
+  var resCritShards = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([shardA, shardB]) });
   check("control: the same reason coverage marked critical does establish good", resCritShards.valid === true);
 
   // R8 / R9 regressions -- the shipped shapes must survive the rewrite.
   var fullScopeForShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(29), idpExt({ distributionPoint: shardDpn })] });
-  var resR8 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([fullScopeForShard]) });
+  var resR8 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([fullScopeForShard]) });
   check("R8 a DP-matched CRL with no onlySomeReasons still establishes good", resR8.valid === true);
   var noIdpCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(30)] });
-  var resR9 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([noIdpCrl]) });
+  var resR9 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([noIdpCrl]) });
   check("R9 a full-scope CRL with no IDP still covers a CDP-bearing certificate", resR9.valid === true);
 
   // R15 -- clean base + clean delta -> good. Holding both must not be worse than
   // holding the base alone (which is what the shipped `sawDelta` block did).
   var mergeBase = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(40), freshestExt([distPoint(shardDpn)])] });
   var mergeDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(41), deltaExt(40)] });
-  var resR15 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mergeBase, mergeDelta]) });
+  var resR15 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([mergeBase, mergeDelta]) });
   check("R15 a clean base merged with its clean delta establishes good", resR15.valid === true);
 
   // R16 -- hold then release: (i) finds removeFromCRL on the delta, (j) is
@@ -2831,12 +2831,12 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(50), freshestExt([distPoint(shardDpn)])] });
   var releaseDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [crlNumberExt(51), deltaExt(50)] });
-  var resR16 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([holdBase, releaseDelta]) });
+  var resR16 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([holdBase, releaseDelta]) });
   check("R16 a delta releasing the serial from hold establishes good", resR16.valid === true);
 
   // R17 -- the same hold WITHOUT the delta stays revoked: (k) must not fire on
   // its own.
-  var resR17 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([holdBase]) });
+  var resR17 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([holdBase]) });
   check("R17 a certificateHold with no delta stays revoked",
     resR17.valid === false && failCodes(resR17).indexOf("path/revoked") !== -1);
 
@@ -2844,16 +2844,16 @@ async function testRfc5280ConformanceMusts() {
   // only when the certificate OR the complete CRL carries freshestCRL.
   var baseNoLocator = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(60)] });
   var deltaNoLocator = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(61), deltaExt(60)] });
-  var resR20 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseNoLocator, deltaNoLocator]) });
+  var resR20 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([baseNoLocator, deltaNoLocator]) });
   check("R20 no freshestCRL on either side means no merge (undetermined)",
     resR20.valid === false && failCodes(resR20).indexOf("path/revocation-undetermined") !== -1);
   var leafFreshest = await mkCert({ subject: "FreshL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
     extensions: [cdpExt([distPoint(shardDpn)]), freshestExt([distPoint(dpnFull([gnUri("http://crl.example/delta")]))])] });
-  var resR21 = await run([leafFreshest], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([baseNoLocator, deltaNoLocator]) });
+  var resR21 = await run([leafFreshest], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([baseNoLocator, deltaNoLocator]) });
   check("R21 a certificate-side freshestCRL is a sufficient delta locator", resR21.valid === true);
 
   // R22 -- useDeltas: false (sec. 6.3.1(b)) turns the merge off entirely.
-  var resR22 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mergeBase, mergeDelta], { useDeltas: false }) });
+  var resR22 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([mergeBase, mergeDelta], { useDeltas: false }) });
   check("R22 useDeltas:false leaves the delta unmerged (undetermined)",
     resR22.valid === false && failCodes(resR22).indexOf("path/revocation-undetermined") !== -1);
 
@@ -2884,26 +2884,26 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(72), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
   var leafTrailingZero = await mkCert({ subject: "BadReasonsL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
     extensions: [cdpExt([distPoint(shardDpn, allBitsTrailingZero)])] });
-  var resR39 = await run([leafTrailingZero], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
+  var resR39 = await run([leafTrailingZero], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
   check("R39 a DP whose ReasonFlags has a trailing zero octet cannot establish correspondence",
     resR39.valid === false && failCodes(resR39).indexOf("path/revocation-undetermined") !== -1);
   var leafWrongUnused = await mkCert({ subject: "BadUnusedL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
     extensions: [cdpExt([distPoint(shardDpn, allBitsWrongUnused)])] });
-  var resR40 = await run([leafWrongUnused], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
+  var resR40 = await run([leafWrongUnused], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
   check("R40 a DP whose ReasonFlags unused-bit count is not minimal cannot establish correspondence",
     resR40.valid === false && failCodes(resR40).indexOf("path/revocation-undetermined") !== -1);
   // The control that makes the two above meaningful: the SAME reason set, encoded
   // minimally, does correspond and does establish good.
   var leafGoodReasons = await mkCert({ subject: "GoodReasonsL", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: SER,
     extensions: [cdpExt([distPoint(shardDpn, reasonBits([1, 2, 3, 4, 5, 6, 7, 8]))])] });
-  var resR39c = await run([leafGoodReasons], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
+  var resR39c = await run([leafGoodReasons], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([allShard]) });
   check("control: the same reason set encoded minimally establishes good", resR39c.valid === true);
 
   // R41 -- the same rule on the CRL side: a non-minimal onlySomeReasons leaves the
   // IDP malformed, so the CRL is unusable for coverage AND for revocation.
   var badIdpShard = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }],
     extensions: [crlNumberExt(70), idpExt({ distributionPoint: shardDpn, onlySomeReasons: allBitsTrailingZero })] });
-  var resR41 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([badIdpShard]) });
+  var resR41 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([badIdpShard]) });
   check("R41 a CRL whose onlySomeReasons is non-minimal is unusable entirely",
     resR41.valid === false && failCodes(resR41).indexOf("path/revocation-undetermined") !== -1);
 
@@ -2914,7 +2914,7 @@ async function testRfc5280ConformanceMusts() {
     extensions: [cdpExt([distPoint(shardDpn, reasonBits([1, 2]))])] });
   var allReasonShard = await mkCrl({ issuer: "Root", signWith: "ed25519",
     extensions: [crlNumberExt(71), idpExt({ distributionPoint: shardDpn, onlySomeReasons: reasonBits([1, 2, 3, 4, 5, 6, 7, 8]) })] });
-  var resR5 = await run([leafDpReasons], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([allReasonShard]) });
+  var resR5 = await run([leafDpReasons], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([allReasonShard]) });
   check("R5 the certificate DP's reasons bound the CRL's onlySomeReasons (intersection)",
     resR5.valid === false && failCodes(resR5).indexOf("path/revocation-undetermined") !== -1);
 
@@ -2926,14 +2926,14 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(81), deltaExt(80)] });
   var deltaLateRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
     revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(82), deltaExt(80)] });
-  var resR29 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([t2Base, deltaEarlyClean, deltaLateRelease]) });
+  var resR29 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([t2Base, deltaEarlyClean, deltaLateRelease]) });
   check("R29 with two current deltas the later thisUpdate is selected (release wins)", resR29.valid === true);
   // Swap which delta is later: the clean one is selected, so (j) finds the hold.
   var deltaLateClean = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
     extensions: [crlNumberExt(83), deltaExt(80)] });
   var deltaEarlyRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-01-01T00:00:00Z"),
     revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(84), deltaExt(80)] });
-  var resR29b = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([t2Base, deltaLateClean, deltaEarlyRelease]) });
+  var resR29b = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([t2Base, deltaLateClean, deltaEarlyRelease]) });
   check("R29 selecting the later clean delta lets the base's hold stand (revoked)",
     resR29b.valid === false && failCodes(resR29b).indexOf("path/revoked") !== -1);
 
@@ -2947,7 +2947,7 @@ async function testRfc5280ConformanceMusts() {
     revoked: [{ serial: SER, exts: [reasonCodeExt(1)] }], extensions: [crlNumberExt(86), deltaExt(85)] });
   var supNewReleasing = await mkCrl({ issuer: "Root", signWith: "ed25519", thisUpdate: new Date("2027-03-01T00:00:00Z"),
     revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }], extensions: [crlNumberExt(87), deltaExt(85)] });
-  var resSuperseded = await run([leafShard], { time: T2027, trustAnchor: anchor,
+  var resSuperseded = await run([leafShard], { time: T2027, trustAnchors: anchor,
     revocationChecker: pki.path.crlChecker([supBase, supOldRevoking, supNewReleasing]) });
   check("a superseded delta's revocation does not resurrect what the selected delta released",
     resSuperseded.valid === true);
@@ -2960,7 +2960,7 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(88), freshestExt([distPoint(shardDpn)])] });
   var ncDeltaRelease = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [crlNumberExt(89), deltaExt(88, false)] });
-  var resNonCritical = await run([leafShard], { time: T2027, trustAnchor: anchor,
+  var resNonCritical = await run([leafShard], { time: T2027, trustAnchors: anchor,
     revocationChecker: pki.path.crlChecker([ncBase, ncDeltaRelease]) });
   check("a NON-CRITICAL delta indicator cannot merge, so it cannot release a held certificate",
     resNonCritical.valid === false);
@@ -2971,17 +2971,17 @@ async function testRfc5280ConformanceMusts() {
     extensions: [crlNumberExt(90), freshestExt([distPoint(shardDpn)]), idpExt({ distributionPoint: shardDpn })] });
   var mmDeltaNoIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [crlNumberExt(91), deltaExt(90)] });
-  var resR24 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mmBase, mmDeltaNoIdp]) });
+  var resR24 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([mmBase, mmDeltaNoIdp]) });
   check("R24 a delta omitting the base's IDP is not merged (never good)", resR24.valid === false);
   var mmDeltaOtherIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [crlNumberExt(92), deltaExt(90), idpExt({ distributionPoint: otherDpn })] });
-  var resR25 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([mmBase, mmDeltaOtherIdp]) });
+  var resR25 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([mmBase, mmDeltaOtherIdp]) });
   check("R25 a delta whose IDP differs from the base's is not merged", resR25.valid === false);
   var eqBase = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(6)] }],
     extensions: [crlNumberExt(95), freshestExt([distPoint(shardDpn)])] });
   var eqDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [crlNumberExt(95), deltaExt(95)] });
-  var resR27 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([eqBase, eqDelta]) });
+  var resR27 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([eqBase, eqDelta]) });
   check("R27 a delta whose cRLNumber does not exceed the base's is not merged", resR27.valid === false);
 
   // ... and a number PAST the RFC 5280 sec. 5.2.3 20-octet ceiling is non-conforming, so it does
@@ -2993,7 +2993,7 @@ async function testRfc5280ConformanceMusts() {
     extensions: [ext("2.5.29.20", false, b.integer(over)), freshestExt([distPoint(shardDpn)])] });
   var overDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [ext("2.5.29.20", false, b.integer(over + 1n)), ext("2.5.29.27", true, b.integer(over))] });
-  var resOver = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([overBase, overDelta]) });
+  var resOver = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([overBase, overDelta]) });
   check("a CRL number past the 20-octet ceiling cannot merge, so it cannot release a held certificate",
     resOver.valid === false);
 
@@ -3003,14 +3003,14 @@ async function testRfc5280ConformanceMusts() {
     extensions: [ext("2.5.29.20", false, b.integer(big)), freshestExt([distPoint(shardDpn)])] });
   var bigDelta = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER, exts: [reasonCodeExt(8)] }],
     extensions: [ext("2.5.29.20", false, b.integer(big + 1n)), ext("2.5.29.27", true, b.integer(big))] });
-  var resR36 = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([bigBase, bigDelta]) });
+  var resR36 = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([bigBase, bigDelta]) });
   check("R36 20-octet CRL numbers merge correctly (BigInt, never narrowed)", resR36.valid === true);
 
   // R49 -- the accumulator is per-CALL state, not per-checker: two checks with one
   // checker instance must agree, or a mask left over from the first would leak in.
   var reentrantChecker = pki.path.crlChecker([shardA, shardB]);
-  var reentA = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: reentrantChecker });
-  var reentB = await run([leafShard], { time: T2027, trustAnchor: anchor, revocationChecker: reentrantChecker });
+  var reentA = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: reentrantChecker });
+  var reentB = await run([leafShard], { time: T2027, trustAnchors: anchor, revocationChecker: reentrantChecker });
   check("R49 the reason mask is per-call state (a reused checker agrees with itself)",
     reentA.valid === true && reentB.valid === true);
 
@@ -3023,19 +3023,19 @@ async function testRfc5280ConformanceMusts() {
   var ecAnchorParams = { name: (await mkAnchor("p256", "EcParamRoot")).name, publicKey: p256spki, algorithm: ecKeyAlgOid, parameters: ecCurveParams(p256spki) };
   var interNoParams = await mkCert({ subject: "NoParamsInter", issuer: "EcParamRoot", signWith: "p256", subjectKeys: "p256i", spki: stripEcParams(p256iKeys.spki), extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var leafNoParams = await mkCert({ subject: "NoParamsLeaf", issuer: "NoParamsInter", signWith: "p256i", subjectKeys: "ed25519leaf" });
-  var resNoParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorParams });
+  var resNoParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchors: ecAnchorParams });
   check("EC cert inheriting its curve parameters verifies (params spliced)", resNoParams.valid === true);
   // The object algorithm form { oid, parameters } normalizes to the same flat shape: workingPublicKeyAlgorithm
   // seeds from the string OID (not an object, which would never match the child's keyAlg.oid and would clear
   // the inherited params) and the nested parameters surface at anchor.parameters, so inheritance still holds.
   var ecAnchorObjForm = { name: ecAnchorParams.name, publicKey: p256spki, algorithm: { oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) } };
-  var resObjForm = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorObjForm });
+  var resObjForm = await run([interNoParams, leafNoParams], { time: T2027, trustAnchors: ecAnchorObjForm });
   check("#74 an object-form EC anchor { oid, parameters } inherits curve params like the flat form", resObjForm.valid === true);
   // A FROZEN object-form anchor still normalizes: the OID override is defined as an OWN property, so an
   // inherited non-writable/accessor `algorithm` descriptor cannot block it (a plain assignment would throw
   // in strict mode or silently leave the object algorithm in place, breaking EC parameter inheritance).
   var frozenObjForm = Object.freeze({ name: ecAnchorParams.name, publicKey: p256spki, algorithm: Object.freeze({ oid: ecKeyAlgOid, parameters: ecCurveParams(p256spki) }) });
-  var resFrozen = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: frozenObjForm });
+  var resFrozen = await run([interNoParams, leafNoParams], { time: T2027, trustAnchors: frozenObjForm });
   check("#74 a frozen object-form EC anchor still normalizes and inherits curve params", resFrozen.valid === true);
   // The anchor's parameters are DERIVED from its publicKey SPKI, never a declared field: an object-form
   // anchor declaring a WRONG curve (P-384 params on a P-256 key) must not promote that curve into the
@@ -3044,25 +3044,25 @@ async function testRfc5280ConformanceMusts() {
   // and, worse, would let an actual P-384 child inherit P-384 and validate a chain RFC 5280 inheritance
   // from the real params rejects.
   var ecAnchorWrongParams = { name: ecAnchorParams.name, publicKey: p256spki, algorithm: { oid: ecKeyAlgOid, parameters: pki.asn1.build.oid("1.3.132.0.34") } };
-  var resWrongParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchor: ecAnchorWrongParams });
+  var resWrongParams = await run([interNoParams, leafNoParams], { time: T2027, trustAnchors: ecAnchorWrongParams });
   check("#74 a wrong declared anchor curve is ignored; the SPKI's real curve seeds child parameter inheritance", resWrongParams.valid === true);
 
   // a missing check date fails closed (never silently disables the
   // always-on validity window).
   var leafA7 = await mkCert({ subject: "A7", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  check("missing opts.time throws path/bad-input", (await codeOf(run([leafA7], { trustAnchor: anchor }))) === "path/bad-input");
+  check("missing opts.time throws path/bad-input", (await codeOf(run([leafA7], { trustAnchors: anchor }))) === "path/bad-input");
 
   // the wrap-up sets workingPublicKeyAlgorithm to the leaf's key algorithm.
   var anchorEc = await mkAnchor("p256", "EcRoot2");
   var leafA10 = await mkCert({ subject: "A10", issuer: "EcRoot2", signWith: "p256", subjectKeys: "ed25519leaf" });
-  var resA10 = await run([leafA10], { time: T2027, trustAnchor: anchorEc });
+  var resA10 = await run([leafA10], { time: T2027, trustAnchors: anchorEc });
   check("wrap-up carries the leaf key algorithm out", resA10.valid === true && resA10.workingPublicKeyAlgorithm === ALG.ed25519.sigOid);
 
   // §6.1.5(f): the user-constrained policy set is computed.
   var P1x = "1.3.6.1.4.1.99999.1";
   var interA11 = await mkCert({ subject: "A11i", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1x])]) });
   var leafA11 = await mkCert({ subject: "A11l", issuer: "A11i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1x])] });
-  var resA11 = await run([interA11, leafA11], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
+  var resA11 = await run([interA11, leafA11], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1x] });
   check("userConstrainedPolicySet computed", resA11.valid === true && Array.isArray(resA11.userConstrainedPolicySet) && resA11.userConstrainedPolicySet.indexOf(P1x) !== -1);
 
   // policy-mapping REPLACES the expected-policy set (§6.1.4(b)(1)): after
@@ -3070,11 +3070,11 @@ async function testRfc5280ConformanceMusts() {
   // the chain (the pre-mapping policy is gone). Second-pass P1.
   var interMap = await mkCert({ subject: "MapFrom", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m]), pmExt([[P1m, P2m]])]) });
   var leafFrom = await mkCert({ subject: "LeafFrom", issuer: "MapFrom", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
-  var resA12 = await run([interMap, leafFrom], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resA12 = await run([interMap, leafFrom], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("leaf asserting the mapped-FROM policy is rejected", resA12.valid === false && failCodes(resA12).indexOf("path/policy-required") !== -1);
   // control: a leaf asserting the mapped-TO policy P2 IS accepted.
   var leafTo = await mkCert({ subject: "LeafTo", issuer: "MapFrom", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
-  var resA12ok = await run([interMap, leafTo], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resA12ok = await run([interMap, leafTo], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("control: leaf asserting the mapped-TO policy validates", resA12ok.valid === true);
 
   // two mappings in one extension arriving at policy_mapping==0: the
@@ -3083,7 +3083,7 @@ async function testRfc5280ConformanceMusts() {
   var interClamp2 = await mkCert({ subject: "Clamp2", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m]), pcExt({ inhibitPolicyMapping: 0 })]) });
   var interDbl = await mkCert({ subject: "DblMap", issuer: "Clamp2", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: caExts([cpExt([P1m]), pmExt([[P1m, P2m], [P1m, P3m]])]) });
   var leafA13 = await mkCert({ subject: "LA13", issuer: "DblMap", signWith: "ed25519j", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
-  var resA13 = await run([interClamp2, interDbl, leafA13], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resA13 = await run([interClamp2, interDbl, leafA13], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("double-mapping at policy_mapping==0 fails typed, not a crash", resA13.valid === false && failCodes(resA13).every(function (c) { return c.indexOf("path/") === 0; }) && failCodes(resA13).indexOf("path/policy-required") !== -1);
 
   // the policy_mapping==0 delete arm must delete ONLY the mapped-from
@@ -3093,23 +3093,23 @@ async function testRfc5280ConformanceMusts() {
   var clampA15 = await mkCert({ subject: "ClampA15", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m, P2m]), pcExt({ inhibitPolicyMapping: 0 })]) });
   var mapA15 = await mkCert({ subject: "MapA15", issuer: "ClampA15", signWith: "ed25519i", subjectKeys: "ed25519j", extensions: caExts([cpExt([P1m, P2m]), pmExt([[P1m, P3m]])]) });
   var leafA15 = await mkCert({ subject: "LA15", issuer: "MapA15", signWith: "ed25519j", subjectKeys: "ed25519leaf", extensions: [cpExt([P2m])] });
-  var resA15 = await run([clampA15, mapA15, leafA15], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resA15 = await run([clampA15, mapA15, leafA15], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("delete arm keeps surviving unmapped policies (no over-prune)", resA15.valid === true && resA15.userConstrainedPolicySet.indexOf(P2m) !== -1);
 
   // §6.1.5(g) step 3: an all-anyPolicy chain under a restrictive user set
   // reports the user policies in userConstrainedPolicySet, not the empty set.
   var interAny14 = await mkCert({ subject: "Any14", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([ANY_POLICY])]) });
   var leafAny14 = await mkCert({ subject: "LAny14", issuer: "Any14", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([ANY_POLICY])] });
-  var resA14 = await run([interAny14, leafAny14], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
+  var resA14 = await run([interAny14, leafAny14], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
   check("anyPolicy leaf under restrictive user set expands the policy set", resA14.valid === true && resA14.userConstrainedPolicySet.indexOf(P1m) !== -1);
 
   // a clean CRL must not shadow a revoking one: with
   // both a clean and a revoking CRL for the issuer, the cert is REVOKED.
   var cleanCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 1n }] });
   var revokingCrl = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: SER }] });
-  var resCleanFirst = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([cleanCrl, revokingCrl]) });
+  var resCleanFirst = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([cleanCrl, revokingCrl]) });
   check("clean CRL does not shadow the revoking one (order A)", resCleanFirst.valid === false && failCodes(resCleanFirst).indexOf("path/revoked") !== -1);
-  var resRevFirst = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([revokingCrl, cleanCrl]) });
+  var resRevFirst = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([revokingCrl, cleanCrl]) });
   check("revoked regardless of CRL order (order B)", resRevFirst.valid === false && failCodes(resRevFirst).indexOf("path/revoked") !== -1);
 
   // §6.1.5(g): with explicit policy required and a restrictive
@@ -3118,51 +3118,51 @@ async function testRfc5280ConformanceMusts() {
   // chain asserts P1m throughout; the user set is [P3m], disjoint.
   var interC4 = await mkCert({ subject: "C4i", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([P1m])]) });
   var leafC4 = await mkCert({ subject: "C4l", issuer: "C4i", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([P1m])] });
-  var resC4 = await run([interC4, leafC4], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P3m] });
+  var resC4 = await run([interC4, leafC4], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P3m] });
   check("required policy with empty user-set intersection rejected", resC4.valid === false && failCodes(resC4).indexOf("path/policy-required") !== -1);
   // control: the SAME chain with the matching user set validates.
-  var resC4ok = await run([interC4, leafC4], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
+  var resC4ok = await run([interC4, leafC4], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true, userInitialPolicySet: [P1m] });
   check("control: matching user set validates", resC4ok.valid === true && resC4ok.userConstrainedPolicySet.indexOf(P1m) !== -1);
 
   // a LEAF with a critical MALFORMED keyUsage must fail
   // closed: the semantic gate is skipped on the leaf, but the structure is
   // still validated. keyUsage value here is an INTEGER, not a BIT STRING.
   var badKuLeaf = await mkCert({ subject: "BadKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.15", true, b.integer(1n))] });
-  var resC1 = await run([badKuLeaf], { time: T2027, trustAnchor: anchor });
+  var resC1 = await run([badKuLeaf], { time: T2027, trustAnchors: anchor });
   check("leaf critical malformed keyUsage rejected", resC1.valid === false && failCodes(resC1).indexOf("path/bad-key-usage") !== -1);
   // control: a well-formed critical keyUsage on the leaf is accepted.
   var okKuLeaf = await mkCert({ subject: "OkKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [kuExt([KU_DIGITAL_SIGNATURE])] });
-  var resC1ok = await run([okKuLeaf], { time: T2027, trustAnchor: anchor });
+  var resC1ok = await run([okKuLeaf], { time: T2027, trustAnchors: anchor });
   check("control: well-formed critical keyUsage on the leaf accepted", resC1ok.valid === true);
 
   // a CRL scoped to a specific distributionPoint cannot be
   // confirmed in-scope for this cert -> not authoritative -> undetermined.
   var dpName = dpnFull([gnUri("http://crl.example/partition/1")]);
   var crlDp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(1), idpExt({ distributionPoint: dpName })] });
-  var resC2 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlDp]) });
+  var resC2 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlDp]) });
   check("partitioned CRL (distributionPoint IDP) yields undetermined", resC2.valid === false && failCodes(resC2).indexOf("path/revocation-undetermined") !== -1);
 
   // a validly-signed CRL carrying an UNHANDLED critical
   // extension is unusable -> undetermined, never authoritative "good".
   var crlUnkCrit = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(2), unknownCriticalCrlExt()] });
-  var resC3 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlUnkCrit]) });
+  var resC3 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlUnkCrit]) });
   check("CRL with unhandled critical extension yields undetermined", resC3.valid === false && failCodes(resC3).indexOf("path/revocation-undetermined") !== -1);
 
   // a CRL scoped onlyContainsAttributeCerts is out of scope
   // for a public-key certificate -> undetermined, never authoritative "good".
   var crlAttrOnly = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(4), idpExt({ onlyAttr: true })] });
-  var resC5 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlAttrOnly]) });
+  var resC5 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlAttrOnly]) });
   check("attribute-cert-only CRL out of scope for a public-key cert", resC5.valid === false && failCodes(resC5).indexOf("path/revocation-undetermined") !== -1);
 
   // a critical IDP whose value is not a SEQUENCE leaves the
   // scope unknown: the CRL is unusable, not treated as unrestricted.
   var crlBadIdp = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(5), ext("2.5.29.28", true, b.integer(1n))] });
-  var resC8 = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlBadIdp]) });
+  var resC8 = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlBadIdp]) });
   check("malformed IDP CRL is unusable (undetermined)", resC8.valid === false && failCodes(resC8).indexOf("path/revocation-undetermined") !== -1);
   // ...and it must not let a revoked serial read good either — a revoking CRL
   // with an unhandled critical extension is unusable, so the cert is undetermined.
   var crlRevUnk = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9911n }], extensions: [crlNumberExt(3), unknownCriticalCrlExt()] });
-  var resC3b = await run([leafCrl], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlRevUnk]) });
+  var resC3b = await run([leafCrl], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlRevUnk]) });
   check("unusable revoking CRL does not read as revoked either (undetermined)", resC3b.valid === false && failCodes(resC3b).indexOf("path/revocation-undetermined") !== -1);
 }
 
@@ -3191,7 +3191,7 @@ async function testInitialInputsAndTargetGates() {
   // ---- 6.1.1(b,c) initial permitted / excluded subtrees --------------------
   // A correct-shape excluded seed rejects a matching SAN.
   var leafEvil = await mkCert({ subject: "SeedEvil", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("www.evil.example")])] });
-  var resSeedEx = await run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ tag: 2, base: "evil.example" }] });
+  var resSeedEx = await run([leafEvil], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 2, base: "evil.example" }] });
   check("initialExcludedSubtrees rejects a matching dNSName SAN", resSeedEx.valid === false && failCodes(resSeedEx).indexOf("path/name-constraint-excluded") !== -1);
   // An iPAddress excluded seed whose base (address+mask) arrives as an ArrayBuffer must
   // exclude a matching iPAddress SAN exactly as a Buffer base does: it is normalized to a
@@ -3199,7 +3199,7 @@ async function testInitialInputsAndTargetGates() {
   // vacuously false and the configured exclusion would silently not apply.
   function _seedAB(bytes) { var ab = new ArrayBuffer(bytes.length); new Uint8Array(ab).set(bytes); return ab; }
   var leafIp = await mkCert({ subject: "SeedIp", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnIp([192, 0, 2, 5])])] });
-  var resSeedIpAB = await run([leafIp], { time: T2027, trustAnchor: anchor,
+  var resSeedIpAB = await run([leafIp], { time: T2027, trustAnchors: anchor,
     initialExcludedSubtrees: [{ tag: 7, base: _seedAB([192, 0, 2, 0, 255, 255, 255, 0]) }] });
   check("initialExcludedSubtrees with an ArrayBuffer iPAddress base excludes a matching SAN (#68 A34)",
     resSeedIpAB.valid === false && failCodes(resSeedIpAB).indexOf("path/name-constraint-excluded") !== -1);
@@ -3207,60 +3207,60 @@ async function testInitialInputsAndTargetGates() {
   // shape) must throw at the entry point — absorbed raw it would never match
   // and the configured exclusion would silently not apply.
   check("mis-shaped excluded seed throws path/bad-input",
-    (await codeOf(run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ base: { tagNumber: 2, value: "evil.example" } }] }))) === "path/bad-input");
+    (await codeOf(run([leafEvil], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ base: { tagNumber: 2, value: "evil.example" } }] }))) === "path/bad-input");
   check("excluded seed with a wrong-typed base throws path/bad-input",
-    (await codeOf(run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: [{ tag: 2, base: 42 }] }))) === "path/bad-input");
+    (await codeOf(run([leafEvil], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: [{ tag: 2, base: 42 }] }))) === "path/bad-input");
   check("non-array initialExcludedSubtrees throws path/bad-input",
-    (await codeOf(run([leafEvil], { time: T2027, trustAnchor: anchor, initialExcludedSubtrees: { tag: 2, base: "evil.example" } }))) === "path/bad-input");
+    (await codeOf(run([leafEvil], { time: T2027, trustAnchors: anchor, initialExcludedSubtrees: { tag: 2, base: "evil.example" } }))) === "path/bad-input");
   // An initial permitted generation constrains the form for the whole path.
   var leafOutside = await mkCert({ subject: "SeedOut", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.other.example")])] });
-  var resSeedPerm = await run([leafOutside], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 2, base: "good.example" }] });
+  var resSeedPerm = await run([leafOutside], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 2, base: "good.example" }] });
   check("initialPermittedSubtrees rejects a name outside the seed", resSeedPerm.valid === false && failCodes(resSeedPerm).indexOf("path/name-constraint-not-permitted") !== -1);
   var leafInside = await mkCert({ subject: "SeedIn", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("host.good.example")])] });
-  var resSeedPermOk = await run([leafInside], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 2, base: "good.example" }] });
+  var resSeedPermOk = await run([leafInside], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 2, base: "good.example" }] });
   check("control: a name within the permitted seed validates", resSeedPermOk.valid === true);
   check("mis-shaped permitted seed throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: "2", base: "good.example" }] }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: "2", base: "good.example" }] }))) === "path/bad-input");
 
   // ---- maxPolicyNodes is entry-point-validated ------------------------------
   check("maxPolicyNodes 0 throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: 0 }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPolicyNodes: 0 }))) === "path/bad-input");
   check("negative maxPolicyNodes throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: -5 }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPolicyNodes: -5 }))) === "path/bad-input");
   check("non-numeric maxPolicyNodes throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: "4096" }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPolicyNodes: "4096" }))) === "path/bad-input");
   // A fractional count is not an integer node/cert budget -- it must fail closed
   // like 0 / negative / non-numeric, not be silently tolerated (the shared
   // guard.limits.cap integer floor the hand-rolled isFinite check had dropped).
   check("fractional maxPolicyNodes throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPolicyNodes: 1.5 }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPolicyNodes: 1.5 }))) === "path/bad-input");
   check("fractional maxPathCerts throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, maxPathCerts: 1.5 }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, maxPathCerts: 1.5 }))) === "path/bad-input");
 
   // ---- userInitialPolicySet is entry-point-validated -------------------------
   // A raw string would be consulted via indexOf — a SUBSTRING match, not set
   // membership — so a non-array (or empty / non-string-element) set throws.
   check("string userInitialPolicySet throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: "1.3.6.1.4.1.99999.61" }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, userInitialPolicySet: "1.3.6.1.4.1.99999.61" }))) === "path/bad-input");
   check("empty userInitialPolicySet throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: [] }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, userInitialPolicySet: [] }))) === "path/bad-input");
   check("non-string userInitialPolicySet element throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: [42] }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, userInitialPolicySet: [42] }))) === "path/bad-input");
   // A non-canonical OID key can never match the canonical decoder output it is
   // compared against (a silent false-reject) -- so a leading-zero / non-dotted
   // policy or EKU string fails closed at the entry point ("catch the typo at boot").
   check("non-canonical userInitialPolicySet entry throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, userInitialPolicySet: ["1.3.6.1.4.1.99999.061"] }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, userInitialPolicySet: ["1.3.6.1.4.1.99999.061"] }))) === "path/bad-input");
   check("leading-zero requiredEku entry throws path/bad-input",
-    (await codeOf(run([leafInside], { time: T2027, trustAnchor: anchor, requiredEku: ["1.3.6.1.5.5.7.3.01"] }))) === "path/bad-input");
+    (await codeOf(run([leafInside], { time: T2027, trustAnchors: anchor, requiredEku: ["1.3.6.1.5.5.7.3.01"] }))) === "path/bad-input");
 
   // ---- 6.1.1(e) initial-any-policy-inhibit ----------------------------------
   // With the inhibit set, a cert-asserted anyPolicy is not expanded ((d)(2)
   // gated from the start), so an anyPolicy-only leaf leaves the tree empty.
   var leafAnyOnly = await mkCert({ subject: "IapiLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [cpExt([ANY_POLICY])] });
-  var resIapi = await run([leafAnyOnly], { time: T2027, trustAnchor: anchor, initialAnyPolicyInhibit: true, initialExplicitPolicy: true });
+  var resIapi = await run([leafAnyOnly], { time: T2027, trustAnchors: anchor, initialAnyPolicyInhibit: true, initialExplicitPolicy: true });
   check("initialAnyPolicyInhibit suppresses a cert-asserted anyPolicy", resIapi.valid === false && failCodes(resIapi).indexOf("path/policy-required") !== -1);
-  var resIapiCtl = await run([leafAnyOnly], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resIapiCtl = await run([leafAnyOnly], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("control: without the inhibit the anyPolicy leaf validates", resIapiCtl.valid === true);
 
   // ---- 6.1.1(e) initial-policy-mapping-inhibit -------------------------------
@@ -3268,9 +3268,9 @@ async function testInitialInputsAndTargetGates() {
   // (6.1.4(b)(2)) instead of remapped, emptying the tree.
   var interMapI = await mkCert({ subject: "IpmiInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpExt([Pq1]), pmExt([[Pq1, Pq2]])]) });
   var leafMapped = await mkCert({ subject: "IpmiLeaf", issuer: "IpmiInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([Pq2])] });
-  var resIpmi = await run([interMapI, leafMapped], { time: T2027, trustAnchor: anchor, initialPolicyMappingInhibit: true, initialExplicitPolicy: true });
+  var resIpmi = await run([interMapI, leafMapped], { time: T2027, trustAnchors: anchor, initialPolicyMappingInhibit: true, initialExplicitPolicy: true });
   check("initialPolicyMappingInhibit forces the (b)(2) deletion arm", resIpmi.valid === false && failCodes(resIpmi).indexOf("path/policy-required") !== -1);
-  var resIpmiCtl = await run([interMapI, leafMapped], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resIpmiCtl = await run([interMapI, leafMapped], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   check("control: without the inhibit the mapped chain validates", resIpmiCtl.valid === true && resIpmiCtl.userConstrainedPolicySet.indexOf(Pq2) !== -1);
 
   // ---- 6.1.3(d)(2): expansion children carry AP-Q ---------------------------
@@ -3279,7 +3279,7 @@ async function testInitialInputsAndTargetGates() {
   var cpsQual = b.sequence([b.sequence([b.oid("1.3.6.1.5.5.7.2.1"), b.ia5("https://cps.example/cps")])]);
   var interQ = await mkCert({ subject: "ApqInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([cpQualExt([ANY_POLICY], "https://cps.example/cps")]) });
   var leafQ = await mkCert({ subject: "ApqLeaf", issuer: "ApqInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt([Pq1])] });
-  var resApq = await run([interQ, leafQ], { time: T2027, trustAnchor: anchor, initialExplicitPolicy: true });
+  var resApq = await run([interQ, leafQ], { time: T2027, trustAnchors: anchor, initialExplicitPolicy: true });
   var apqNode = resApq.validPolicyTree && resApq.validPolicyTree.children[0];
   check("(d)(2) expansion node carries the anyPolicy qualifiers (AP-Q)",
     resApq.valid === true && !!apqNode && apqNode.validPolicy === ANY_POLICY &&
@@ -3289,17 +3289,17 @@ async function testInitialInputsAndTargetGates() {
   // nameConstraints and inhibitAnyPolicy MUST be critical wherever they appear;
   // the target leg applies the same check the intermediate path does.
   var leafNcNC = await mkCert({ subject: "NcTargetNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.30", false, ncVal([gnDns("example.com")], null))] });
-  var resNcNC = await run([leafNcNC], { time: T2027, trustAnchor: anchor });
+  var resNcNC = await run([leafNcNC], { time: T2027, trustAnchors: anchor });
   check("non-critical nameConstraints on the target rejected", resNcNC.valid === false && failCodes(resNcNC).indexOf("path/extension-not-critical") !== -1);
   var leafIapNC = await mkCert({ subject: "IapTargetNC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.54", false, b.integer(0n))] });
-  var resIapNC = await run([leafIapNC], { time: T2027, trustAnchor: anchor });
+  var resIapNC = await run([leafIapNC], { time: T2027, trustAnchors: anchor });
   check("non-critical inhibitAnyPolicy on the target rejected", resIapNC.valid === false && failCodes(resIapNC).indexOf("path/extension-not-critical") !== -1);
   // controls: the critical forms are accepted (semantically inert on a leaf,
   // structure still validated).
   var leafNcC = await mkCert({ subject: "NcTargetC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ncExt([gnDns("example.com")], null)] });
-  check("control: critical nameConstraints on the target accepted", (await run([leafNcC], { time: T2027, trustAnchor: anchor })).valid === true);
+  check("control: critical nameConstraints on the target accepted", (await run([leafNcC], { time: T2027, trustAnchors: anchor })).valid === true);
   var leafIapCr = await mkCert({ subject: "IapTargetC", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [iapExt(0)] });
-  check("control: critical inhibitAnyPolicy on the target accepted", (await run([leafIapCr], { time: T2027, trustAnchor: anchor })).valid === true);
+  check("control: critical inhibitAnyPolicy on the target accepted", (await run([leafIapCr], { time: T2027, trustAnchors: anchor })).valid === true);
 
   // ---- 4.2.1.12 extendedKeyUsage --------------------------------------------
   // EKU is RECOGNIZED: the critical form is legal ('MAY ... be either critical
@@ -3307,17 +3307,17 @@ async function testInitialInputsAndTargetGates() {
   // responders), so it must not fail as unrecognized. RFC 5280 6.1 defines no
   // EKU processing step — purpose enforcement is the caller's opts.requiredEku.
   var leafEkuCrit = await mkCert({ subject: "EkuCrit", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], true)] });
-  var resEkuCrit = await run([leafEkuCrit], { time: T2027, trustAnchor: anchor });
+  var resEkuCrit = await run([leafEkuCrit], { time: T2027, trustAnchors: anchor });
   check("critical extendedKeyUsage is recognized", resEkuCrit.valid === true);
   // a critical MALFORMED EKU still fails closed structurally.
   var leafEkuBad = await mkCert({ subject: "EkuBad", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.37", true, b.integer(1n))] });
-  var resEkuBad = await run([leafEkuBad], { time: T2027, trustAnchor: anchor });
+  var resEkuBad = await run([leafEkuBad], { time: T2027, trustAnchors: anchor });
   check("critical malformed extendedKeyUsage rejected", resEkuBad.valid === false && failCodes(resEkuBad).indexOf("path/bad-extension-value") !== -1);
   // requiredEku: every named purpose must be asserted by the target's EKU.
-  check("requiredEku satisfied by the asserted purpose", (await run([leafEkuCrit], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
-  check("requiredEku accepts a dotted purpose OID", (await run([leafEkuCrit], { time: T2027, trustAnchor: anchor, requiredEku: [EKU_SERVER_AUTH] })).valid === true);
+  check("requiredEku satisfied by the asserted purpose", (await run([leafEkuCrit], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  check("requiredEku accepts a dotted purpose OID", (await run([leafEkuCrit], { time: T2027, trustAnchors: anchor, requiredEku: [EKU_SERVER_AUTH] })).valid === true);
   var leafEkuCode = await mkCert({ subject: "EkuCode", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_CODE_SIGNING], false)] });
-  var resEkuMiss = await run([leafEkuCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] });
+  var resEkuMiss = await run([leafEkuCode], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] });
   check("required purpose missing from the EKU fails path/eku-not-permitted", resEkuMiss.valid === false && failCodes(resEkuMiss).indexOf("path/eku-not-permitted") !== -1);
   // The purpose test is a RULE, so it is decided by comparison rather than by a prototype method.
   // Written as `purposes.indexOf(p) !== -1`, the answer came from `Array.prototype.indexOf` as it
@@ -3327,36 +3327,36 @@ async function testInitialInputsAndTargetGates() {
   var realIndexOf = Array.prototype.indexOf;
   Array.prototype.indexOf = function () { return 0; };
   var resEkuSwapped;
-  try { resEkuSwapped = await run([leafEkuCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] }); }
+  try { resEkuSwapped = await run([leafEkuCode], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] }); }
   finally { Array.prototype.indexOf = realIndexOf; }
   check("...and still fails with Array.prototype.indexOf replaced after load", resEkuSwapped.valid === false);
   // anyExtendedKeyUsage satisfies a required purpose (4.2.1.12: rejecting it is
   // an application MAY, not the default).
   var leafEkuAny = await mkCert({ subject: "EkuAny", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_ANY], false)] });
-  check("anyExtendedKeyUsage satisfies a required purpose", (await run([leafEkuAny], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  check("anyExtendedKeyUsage satisfies a required purpose", (await run([leafEkuAny], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] })).valid === true);
   // an ABSENT EKU leaves the key unrestricted (4.2.1.12 restricts only when present).
   var leafNoEku = await mkCert({ subject: "EkuNone", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  check("absent EKU is unrestricted under requiredEku", (await run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  check("absent EKU is unrestricted under requiredEku", (await run([leafNoEku], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] })).valid === true);
   // RFC 5280 4.2.1.12 EKU chaining: an intermediate CA carrying an EKU
   // constrains the purposes of the certs beneath it. An intermediate whose EKU
   // is {codeSigning} cannot issue a serverAuth path -- the required purpose must
   // be in every CA cert's EKU too, not only the target's.
   var interEkuCode = await mkCert({ subject: "EkuCodeInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ekuExt([EKU_CODE_SIGNING], true)] });
   var leafUnderCode = await mkCert({ subject: "LeafUnderCode", issuer: "EkuCodeInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
-  var resEkuChain = await run([interEkuCode, leafUnderCode], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] });
+  var resEkuChain = await run([interEkuCode, leafUnderCode], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] });
   check("intermediate EKU excluding the required purpose fails the path", resEkuChain.valid === false && failCodes(resEkuChain).indexOf("path/eku-not-permitted") !== -1);
   // an intermediate whose EKU INCLUDES the purpose (or anyExtendedKeyUsage) chains fine.
   var interEkuBoth = await mkCert({ subject: "EkuBothInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN]), ekuExt([EKU_SERVER_AUTH, EKU_CODE_SIGNING], true)] });
   var leafUnderBoth = await mkCert({ subject: "LeafUnderBoth", issuer: "EkuBothInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
-  check("intermediate EKU including the required purpose chains", (await run([interEkuBoth, leafUnderBoth], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  check("intermediate EKU including the required purpose chains", (await run([interEkuBoth, leafUnderBoth], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] })).valid === true);
   // an intermediate with NO EKU is unconstrained (chaining restricts only when present).
   var interNoEku = await mkCert({ subject: "NoEkuInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
   var leafUnderNone = await mkCert({ subject: "LeafUnderNone", issuer: "NoEkuInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [ekuExt([EKU_SERVER_AUTH], false)] });
-  check("intermediate without an EKU does not constrain the path", (await run([interNoEku, leafUnderNone], { time: T2027, trustAnchor: anchor, requiredEku: ["serverAuth"] })).valid === true);
+  check("intermediate without an EKU does not constrain the path", (await run([interNoEku, leafUnderNone], { time: T2027, trustAnchors: anchor, requiredEku: ["serverAuth"] })).valid === true);
 
   // requiredEku is entry-point-validated.
-  check("empty requiredEku throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: [] }))) === "path/bad-input");
-  check("unregistered requiredEku name throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchor: anchor, requiredEku: ["no-such-purpose-name"] }))) === "path/bad-input");
+  check("empty requiredEku throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchors: anchor, requiredEku: [] }))) === "path/bad-input");
+  check("unregistered requiredEku name throws path/bad-input", (await codeOf(run([leafNoEku], { time: T2027, trustAnchors: anchor, requiredEku: ["no-such-purpose-name"] }))) === "path/bad-input");
 }
 
 // ---------------------------------------------------------------------------
@@ -3370,7 +3370,7 @@ async function testOcspRevocation() {
   var leaf = await mkCert({ subject: "OcspLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 100n });
   function goodSingle(extra) { return Object.assign({ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 100, status: "good" }, extra || {}); }
   function ocspRun(resp, extra) {
-    return run([leaf], Object.assign({ time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker([resp]) }, extra || {}));
+    return run([leaf], Object.assign({ time: T2027, trustAnchors: anchor, revocationChecker: pki.path.ocspChecker([resp]) }, extra || {}));
   }
   function undetermined(res) { return res.valid === false && failCodes(res).indexOf("path/revocation-undetermined") !== -1; }
   function revoked(res) { return res.valid === false && failCodes(res).indexOf("path/revoked") !== -1; }
@@ -3427,7 +3427,7 @@ async function testOcspRevocation() {
   check("O17c historical mode, past revocationTime -> path/revoked", revoked(await ocspRun(o17c, { historicalMode: true })));
 
   // O18 — empty bundle.
-  check("O18 ocspChecker([]) -> undetermined", undetermined(await run([leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker([]) })));
+  check("O18 ocspChecker([]) -> undetermined", undetermined(await run([leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.ocspChecker([]) })));
 
   // O19 — a successful, authoritative response that covers only other serials.
   var o19 = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ serial: 999 })] });
@@ -3437,7 +3437,7 @@ async function testOcspRevocation() {
   var o20bad = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle()], mutateSig: function (s) { var c = Buffer.from(s); c[c.length - 1] ^= 0xff; return c; } });
   var o20rev = await mkOcsp({ responderID: { byName: "Root" }, signWith: "ed25519", single: [goodSingle({ status: "revoked", revocationReason: 1 })] });
   check("O20b unusable response does not mask a revoking one under softFail -> path/revoked",
-    revoked(await run([leaf], { time: T2027, trustAnchor: anchor, softFail: true, revocationChecker: pki.path.ocspChecker([o20bad, o20rev]) })));
+    revoked(await run([leaf], { time: T2027, trustAnchors: anchor, softFail: true, revocationChecker: pki.path.ocspChecker([o20bad, o20rev]) })));
 
   // O22 — a non-basic responseType throws at construction (config-tier parity with crl.parse).
   var nonBasic = b.sequence([b.enumerated(0n), b.explicit(0, b.sequence([b.oid("1.3.6.1.5.5.7.48.1.2"), b.octetString(Buffer.from([1]))]))]);
@@ -3667,27 +3667,27 @@ async function testTrustAnchorConstraints() {
 
   // Entry-point: a bad checkPurpose is rejected like requiredEku.
   check("bad checkPurpose throws path/bad-input",
-    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor, checkPurpose: "bogusPurpose" }))) === "path/bad-input");
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchors: anchor, checkPurpose: "bogusPurpose" }))) === "path/bad-input");
 
   var taSA = withMeta({ distrustAfter: { serverAuth: D } });
   // T19/T21 -- leaf notBefore one second AFTER distrustAfter -> distrusted (strict >).
-  var r19 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  var r19 = await run([await leafAt(AFTER)], { time: T2027, trustAnchors: taSA, checkPurpose: "serverAuth" });
   check("T19 leaf after distrustAfter -> distrusted", r19.valid === false && failCodes(r19).indexOf("path/distrusted-after") !== -1);
   // T20 -- boundary: notBefore EXACTLY == distrustAfter -> TRUSTED; one second before -> trusted.
-  var r20eq = await run([await leafAt(D)], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  var r20eq = await run([await leafAt(D)], { time: T2027, trustAnchors: taSA, checkPurpose: "serverAuth" });
   check("T20 notBefore == distrustAfter -> trusted", r20eq.valid === true && failCodes(r20eq).indexOf("path/distrusted-after") === -1);
-  var r20lt = await run([await leafAt(new Date("2026-05-31T23:59:59Z"))], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  var r20lt = await run([await leafAt(new Date("2026-05-31T23:59:59Z"))], { time: T2027, trustAnchors: taSA, checkPurpose: "serverAuth" });
   check("T20 notBefore before distrustAfter -> trusted", r20lt.valid === true);
   // T22 -- purpose not a delegator purpose -> path/purpose-not-trusted.
   var taNot = withMeta({ purposes: { serverAuth: false, emailProtection: false, codeSigning: false } });
-  var r22 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taNot, checkPurpose: "serverAuth" });
+  var r22 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: taNot, checkPurpose: "serverAuth" });
   check("T22 purpose not trusted -> path/purpose-not-trusted", r22.valid === false && failCodes(r22).indexOf("path/purpose-not-trusted") !== -1);
   // Constraint metadata that is NON-ENUMERABLE on an object-form-algorithm anchor must survive
   // normalization: the flat copy inherits from the entry, so a purpose restriction the validator reads
   // through normal property access is still enforced rather than silently dropped (a fail-open).
   var taObjAlgHidden = withMeta({ algorithm: { oid: anchor.algorithm } });
   Object.defineProperty(taObjAlgHidden, "purposes", { value: { serverAuth: false }, enumerable: false, configurable: true });
-  var rHidden = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taObjAlgHidden, checkPurpose: "serverAuth" });
+  var rHidden = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: taObjAlgHidden, checkPurpose: "serverAuth" });
   check("#74 a non-enumerable anchor purposes map survives object-form-algorithm normalization",
     rHidden.valid === false && failCodes(rHidden).indexOf("path/purpose-not-trusted") !== -1);
   // The purposes map is the operator's restriction, so it must answer from its OWN entries: a name
@@ -3695,7 +3695,7 @@ async function testTrustAnchorConstraints() {
   var taOmits = withMeta({ purposes: { emailProtection: false } });
   var t22Opts = Object.create(null);
   t22Opts.time = T2027;
-  t22Opts.trustAnchor = taOmits;
+  t22Opts.trustAnchors = taOmits;
   t22Opts.checkPurpose = "serverAuth";
   var leafT22 = await leafAt(BEFORE);
   var r22p;
@@ -3705,7 +3705,7 @@ async function testTrustAnchorConstraints() {
     r22p.valid === false && failCodes(r22p).indexOf("path/purpose-not-trusted") !== -1);
   // T23 -- delegator for the purpose + leaf before D -> valid.
   var taOk = withMeta({ purposes: { serverAuth: true, emailProtection: false, codeSigning: false }, distrustAfter: { serverAuth: D } });
-  var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taOk, checkPurpose: "serverAuth" });
+  var r23 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: taOk, checkPurpose: "serverAuth" });
   check("T23 delegator + before D -> valid", r23.valid === true);
   // A distrustAfter that is an ACCESSOR (a getter) is REFUSED with path/bad-input, not materialized: a
   // constraint map must be an own DATA property so it is captured from its descriptor without invoking the
@@ -3717,7 +3717,7 @@ async function testTrustAnchorConstraints() {
     enumerable: true, configurable: true, get: function () { return { serverAuth: D }; }
   });
   check("#74 an accessor-backed distrustAfter is refused with path/bad-input (constraint maps must be own data)",
-    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taTocDistrust, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchors: taTocDistrust, checkPurpose: "serverAuth" }))) === "path/bad-input");
   // An accessor algorithm.oid is refused before its getter runs, so a getter that would setTime() the caller's
   // own distrust Date to the future never executes: the anchor is refused for the accessor and the cutoff Date
   // is never moved.
@@ -3725,7 +3725,7 @@ async function testTrustAnchorConstraints() {
   var setTimeAnchor74 = withMeta({ distrustAfter: { serverAuth: mutCutoff74 } });
   setTimeAnchor74.algorithm = { get oid() { mutCutoff74.setTime(new Date("2030-01-01T00:00:00Z").getTime()); return anchor.algorithm; } };
   check("#74 an accessor algorithm.oid is refused before its getter can setTime the caller's distrust Date (getter never invoked)",
-    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: setTimeAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && mutCutoff74.getTime() === D.getTime());
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchors: setTimeAnchor74, checkPurpose: "serverAuth" }))) === "path/bad-input" && mutCutoff74.getTime() === D.getTime());
   // The purpose-scoped-metadata guard -- which refuses an anchor carrying purpose metadata when no
   // checkPurpose selects one -- reads the SAME value it enforces: an always-restriction accessor is refused
   // exactly like the data form, so a restriction cannot be hidden from the guard behind a getter.
@@ -3734,7 +3734,7 @@ async function testTrustAnchorConstraints() {
     enumerable: true, configurable: true, get: function () { return { serverAuth: false }; }
   });
   check("#74 an always-restriction purposes accessor is refused without checkPurpose (guard reads what it enforces)",
-    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taGetterRestrict }))) === "path/bad-input");
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchors: taGetterRestrict }))) === "path/bad-input");
   // A field OUTSIDE the anchor contract is never read during normalization or validation: an unrelated
   // caller accessor (here one that throws) is dropped, so a valid anchor still validates and the getter is
   // never spent -- normalization consumes only the contract fields it will bind.
@@ -3743,11 +3743,11 @@ async function testTrustAnchorConstraints() {
   Object.defineProperty(taUnrelated, "customTag", {
     enumerable: true, configurable: true, get: function () { unrelReads++; throw new Error("unrelated anchor accessor evaluated"); }
   });
-  var rUnrel = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taUnrelated });
+  var rUnrel = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: taUnrelated });
   check("#74 an unrelated anchor accessor is never evaluated during validate (dropped, not read)",
     rUnrel.valid === true && unrelReads === 0);
   // T24 -- bare anchor (no metadata), no checkPurpose -> identical to today (valid, no new checks).
-  var r24 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
+  var r24 = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: anchor });
   check("T24 bare anchor preserved -> valid", r24.valid === true && failCodes(r24).indexOf("path/distrusted-after") === -1 && failCodes(r24).indexOf("path/purpose-not-trusted") === -1);
   // T25 -- an anchor CARRYING purpose-scoped trust metadata, validated with no checkPurpose to
   // select which purpose, is a configuration fault rather than a silent non-enforcement. The
@@ -3755,22 +3755,22 @@ async function testTrustAnchorConstraints() {
   // who attached a distrustAfter to their root has stated an intent that would otherwise be
   // discarded without a word. A root Mozilla distrusted in 2020 validated a 2026 leaf.
   check("T25 purpose-scoped anchor metadata without checkPurpose -> path/bad-input",
-    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA }))) === "path/bad-input");
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchors: taSA }))) === "path/bad-input");
   check("T25 ...and a purposes map without checkPurpose likewise",
-    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchor: withMeta({ purposes: { serverAuth: true } }) }))) === "path/bad-input");
+    (await codeOf(run([await leafAt(BEFORE)], { time: T2027, trustAnchors: withMeta({ purposes: { serverAuth: true } }) }))) === "path/bad-input");
   // ...and the verdict SAYS which purpose the anchor's metadata was judged under, so an archived
   // result can be re-read to tell an anchor that was checked from one that carried nothing.
-  var r25p = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: taSA, checkPurpose: "serverAuth" });
+  var r25p = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: taSA, checkPurpose: "serverAuth" });
   check("T25 the verdict names the purpose the anchor was judged under",
     r25p.anchorConstraints && r25p.anchorConstraints.checkedPurpose === "serverAuth" &&
     r25p.anchorConstraints.distrustAfterApplied === true);
-  var r25bare = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: anchor });
+  var r25bare = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: anchor });
   check("T25 a bare anchor says it carried no constraints, rather than saying nothing",
     r25bare.anchorConstraints && r25bare.anchorConstraints.checkedPurpose === null &&
     r25bare.anchorConstraints.distrustAfterApplied === false &&
     r25bare.anchorConstraints.purposeTrustApplied === false);
   // T26 -- checkPurpose emailProtection but only serverAuth distrust present -> unaffected.
-  var r26 = await run([await leafAt(AFTER)], { time: T2027, trustAnchor: taSA, checkPurpose: "emailProtection" });
+  var r26 = await run([await leafAt(AFTER)], { time: T2027, trustAnchors: taSA, checkPurpose: "emailProtection" });
   check("T26 wrong-purpose distrust key -> unaffected", r26.valid === true);
   // T27 -- a PRESENT-but-malformed distrustAfter (an Invalid Date) must fail CLOSED.
   // An Invalid Date is instanceof Date, but `notBefore > InvalidDate` is NaN-false,
@@ -3779,7 +3779,7 @@ async function testTrustAnchorConstraints() {
   // config-time reject (guard.time.assertValid), not a silent bypass.
   var taBad = withMeta({ distrustAfter: { serverAuth: new Date("not-a-date") } });
   check("T27 malformed distrustAfter (Invalid Date) -> path/bad-input",
-    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchor: taBad, checkPurpose: "serverAuth" }))) === "path/bad-input");
+    (await codeOf(run([await leafAt(AFTER)], { time: T2027, trustAnchors: taBad, checkPurpose: "serverAuth" }))) === "path/bad-input");
 
   // T27 -- checkPurpose is an UNREGISTERED canonical dotted OID: oid.name returns
   // undefined, so it resolves through the fallback to the dotted string ITSELF,
@@ -3793,9 +3793,9 @@ async function testTrustAnchorConstraints() {
   // literal, so a delegator entry -> valid and a non-delegator -> not trusted.
   var CP_PURPOSE = "1.3.6.1.4.1.99999.424242";
   function purposesFor(v) { var p = {}; p[CP_PURPOSE] = v; return p; }
-  var r27ok = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: withMeta({ purposes: purposesFor(true) }), checkPurpose: CP_PURPOSE });
+  var r27ok = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: withMeta({ purposes: purposesFor(true) }), checkPurpose: CP_PURPOSE });
   check("T27 unregistered dotted checkPurpose trusted via fallback -> valid", r27ok.valid === true);
-  var r27no = await run([await leafAt(BEFORE)], { time: T2027, trustAnchor: withMeta({ purposes: purposesFor(false) }), checkPurpose: CP_PURPOSE });
+  var r27no = await run([await leafAt(BEFORE)], { time: T2027, trustAnchors: withMeta({ purposes: purposesFor(false) }), checkPurpose: CP_PURPOSE });
   check("T27 unregistered dotted checkPurpose not a delegator -> purpose-not-trusted", r27no.valid === false && failCodes(r27no).indexOf("path/purpose-not-trusted") !== -1);
 }
 
@@ -3812,7 +3812,7 @@ async function testCrlDpIdpCorrespondence() {
   var URL1 = "http://crl.example/a.crl", URL2 = "http://crl.example/b.crl";
   var someReasons = Buffer.from([0x06, 0x40]); // keyCompromise only
   function chk(crls, extra) {
-    return Object.assign({ time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker(crls) }, extra || {});
+    return Object.assign({ time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker(crls) }, extra || {});
   }
   var leafDp = await mkCert({ subject: "DpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: DSER,
     extensions: [cdpExt([distPoint(dpnFull([gnUri(URL1)]))])] });
@@ -3937,7 +3937,7 @@ async function testCrlDpIdpCorrespondence() {
   // an unrecognized critical extension.
   var leafCritDp = await mkCert({ subject: "CritDpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
     extensions: [ext("2.5.29.31", true, b.sequence([distPoint(dpnFull([gnUri(URL1)]))]))] });
-  var rD19 = await run([leafCritDp], { time: T2027, trustAnchor: anchor });
+  var rD19 = await run([leafCritDp], { time: T2027, trustAnchors: anchor });
   check("D19 critical cRLDistributionPoints is recognized (processed)",
     rD19.valid === true && failCodes(rD19).indexOf("path/unrecognized-critical-extension") === -1);
   // D19b -- recognized means VALIDATED: a critical CDP whose value is malformed
@@ -3945,7 +3945,7 @@ async function testCrlDpIdpCorrespondence() {
   // check, never passes the criticality gate unprocessed.
   var leafBadCritDp = await mkCert({ subject: "BadCritDpLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
     extensions: [ext("2.5.29.31", true, b.sequence([]))] });
-  var rD19b = await run([leafBadCritDp], { time: T2027, trustAnchor: anchor });
+  var rD19b = await run([leafBadCritDp], { time: T2027, trustAnchors: anchor });
   check("D19b malformed critical cRLDistributionPoints fails typed",
     rD19b.valid === false && failCodes(rD19b).indexOf("path/bad-crl-distribution-points") !== -1);
   // D19c -- freshestCRL stays OUT of the processed set: sec. 4.2.1.15 says the
@@ -3953,7 +3953,7 @@ async function testCrlDpIdpCorrespondence() {
   // delta merge), so a critical instance keeps failing unrecognized-critical.
   var leafCritFresh = await mkCert({ subject: "CritFreshLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf",
     extensions: [ext("2.5.29.46", true, b.sequence([distPoint(dpnFull([gnUri(URL2)]))]))] });
-  var rD19c = await run([leafCritFresh], { time: T2027, trustAnchor: anchor });
+  var rD19c = await run([leafCritFresh], { time: T2027, trustAnchors: anchor });
   check("D19c critical freshestCRL still unrecognized-critical (MUST be non-critical)",
     rD19c.valid === false && failCodes(rD19c).indexOf("path/unrecognized-critical-extension") !== -1);
 }
@@ -3998,18 +3998,18 @@ async function testUnknownOptionsRefused() {
   };
   var anchor = { name: "x", publicKey: Buffer.alloc(1), algorithm: "Ed25519" };
 
-  check("validate refuses the plural trustAnchors",
-        await codeOf(pki.path.validate([], { time: new Date(), trustAnchors: [anchor] })) === "path/bad-input");
-  check("validate's refusal names the singular it wants and the verb taking the plural",
-        /trustAnchor.*singular/.test(await msgOf(
-          pki.path.validate([], { time: new Date(), trustAnchors: [anchor] }))));
-  check("build refuses the singular trustAnchor",
+  check("validate refuses the removed singular trustAnchor",
+        await codeOf(pki.path.validate([], { time: new Date(), trustAnchor: anchor })) === "path/bad-input");
+  check("validate's refusal names the trustAnchors option it wants",
+        /trustAnchors/.test(await msgOf(
+          pki.path.validate([], { time: new Date(), trustAnchor: anchor }))));
+  check("build refuses the removed singular trustAnchor",
         await codeOf(pki.path.build(Buffer.alloc(1), { time: new Date(), trustAnchor: anchor })) === "path/bad-input");
-  check("build's refusal names the plural it wants",
-        /trustAnchors.*plural/.test(await msgOf(
+  check("build's refusal names the trustAnchors option it wants",
+        /trustAnchors/.test(await msgOf(
           pki.path.build(Buffer.alloc(1), { time: new Date(), trustAnchor: anchor }))));
   check("validate refuses a misspelled option generally",
-        await codeOf(pki.path.validate([], { time: new Date(), trustAnchor: anchor, softFale: true })) === "path/bad-input");
+        await codeOf(pki.path.validate([], { time: new Date(), trustAnchors: anchor, softFale: true })) === "path/bad-input");
   // build forwards every validate option, so a validate-only option must still be accepted by
   // build. The union is what stops this gate rejecting the toolkit's own internal calls.
   // The assertion is on the message rather than the code: this fixture's leaf is not a
@@ -4037,7 +4037,7 @@ async function testCoverageEdges() {
   // ---- RSASSA-PSS parameter resolution (a signatureAlgorithm bypass surface) --
   async function pssLeaf(paramsChild, subj) {
     var alg = paramsChild ? b.sequence([b.oid(PSS_OID), paramsChild]) : b.sequence([b.oid(PSS_OID)]);
-    return run([await mkCert({ subject: subj, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: alg })], { time: T2027, trustAnchor: anchor });
+    return run([await mkCert({ subject: subj, issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: alg })], { time: T2027, trustAnchors: anchor });
   }
   await cap("206 PSS absent parameters", async function () { return pssLeaf(null, "Pss206"); });
   await cap("213 PSS param field not context-tagged", async function () { return pssLeaf(b.sequence([b.integer(1n)]), "Pss213"); });
@@ -4048,10 +4048,10 @@ async function testCoverageEdges() {
 
   // ---- fixed-shape signatureAlgorithm parameters (RFC 4055 / 5758 / 8410) -----
   await cap("267 RSA PKCS1 with absent params", async function () {
-    return run([await mkCert({ subject: "P267", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.113549.1.1.11")]) })], { time: T2027, trustAnchor: anchor });
+    return run([await mkCert({ subject: "P267", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.113549.1.1.11")]) })], { time: T2027, trustAnchors: anchor });
   });
   await cap("268 Ed25519 with present params", async function () {
-    return run([await mkCert({ subject: "P268", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.3.101.112"), b.nullValue()]) })], { time: T2027, trustAnchor: anchor });
+    return run([await mkCert({ subject: "P268", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.3.101.112"), b.nullValue()]) })], { time: T2027, trustAnchors: anchor });
   });
 
   // ---- 284 algorithm-confusion issuer-key read fault (one-shot sameKeyOid) ----
@@ -4059,30 +4059,30 @@ async function testCoverageEdges() {
     var badAnchor = { name: anchor.name, publicKey: Buffer.from([0x30, 0x00]), algorithm: "1.3.101.112" };
     return (async function () {
       var leaf = await mkCert({ subject: "Akm284", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-      return run([leaf], { time: T2027, trustAnchor: badAnchor });
+      return run([leaf], { time: T2027, trustAnchors: badAnchor });
     })();
   });
 
   // ---- ECDSA DER->P1363 bridge rejections ------------------------------------
   await cap("298 ECDSA signature not a DER SEQUENCE", async function () {
-    return run([await mkCert({ subject: "Ec298", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", mutateSig: function () { return Buffer.from([0xff, 0x01, 0x02]); } })], { time: T2027, trustAnchor: anchorEc });
+    return run([await mkCert({ subject: "Ec298", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", mutateSig: function () { return Buffer.from([0xff, 0x01, 0x02]); } })], { time: T2027, trustAnchors: anchorEc });
   });
   await cap("299 ECDSA signature not two INTEGERs", async function () {
-    return run([await mkCert({ subject: "Ec299", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", mutateSig: function () { return b.sequence([b.integer(1n)]); } })], { time: T2027, trustAnchor: anchorEc });
+    return run([await mkCert({ subject: "Ec299", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", mutateSig: function () { return b.sequence([b.integer(1n)]); } })], { time: T2027, trustAnchors: anchorEc });
   });
 
   // ---- RFC 5280 sec. 4.2.1.10 name-form comparison edges ----------------------
   async function ncCase(permitted, excluded, leafSanGns, leafSubject) {
     var inter = await mkCert({ subject: "NcI", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([ncExt(permitted, excluded)]) });
     var leaf = await mkCert({ subject: leafSubject || "NcL", issuer: "NcI", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: leafSanGns ? [sanExt(leafSanGns)] : [] });
-    return run([inter, leaf], { time: T2027, trustAnchor: anchor });
+    return run([inter, leaf], { time: T2027, trustAnchors: anchor });
   }
   await cap("401+544 rfc822 SAN without '@' vs host constraint", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("noatsign")]); });
   await cap("418 rfc822 SAN without '@' vs full-mailbox constraint", async function () { return ncCase([gnEmail("user@example.com")], null, [gnEmail("noat")]); });
   await cap("426 rfc822 SAN with empty host", async function () { return ncCase([gnEmail("example.com")], null, [gnEmail("user@")]); });
   await cap("441 empty dNSName permitted seed matches all", async function () {
     var leaf = await mkCert({ subject: "Empty441", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [sanExt([gnDns("anything.example")])] });
-    return run([leaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 2, base: "" }] });
+    return run([leaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 2, base: "" }] });
   });
   await cap("442 leading-dot dNSName permitted matches subdomain", async function () { return ncCase([gnDns(".example.com")], null, [gnDns("www.example.com")]); });
   await cap("488 URI SAN multi-'@' authority", async function () { return ncCase([gnUri("example.com")], null, [gnUri("http://a@b@evil.example/")]); });
@@ -4094,23 +4094,23 @@ async function testCoverageEdges() {
   var plainLeaf = await mkCert({ subject: "SeedLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   var seedName2 = pki.schema.x509.parse(await mkCert({ subject: "Seed668", issuer: "Seed668", signWith: "ed25519" })).subject;
   var leaf668 = await mkCert({ subject: [b.set([atv("2.5.4.3", "Seed668")]), b.set([atv("2.5.4.11", "Unit")])], issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  await cap("666 iPAddress seed 8-octet base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 7, base: Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]) }] }); });
-  await cap("666 iPAddress seed 4-octet base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 7, base: Buffer.from([10, 0, 0, 0]) }] }); });
-  await cap("668 directoryName seed Name base accepted", async function () { return run([leaf668], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 4, base: seedName2 }] }); });
-  await cap("668 directoryName seed non-Name base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 4, base: {} }] }); });
-  await cap("669 registeredID seed base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 8, base: "1.2.3.4" }] }); });
-  await cap("669 default-form seed undefined base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 5 }] }); });
+  await cap("666 iPAddress seed 8-octet base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 7, base: Buffer.from([10, 0, 0, 0, 255, 0, 0, 0]) }] }); });
+  await cap("666 iPAddress seed 4-octet base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 7, base: Buffer.from([10, 0, 0, 0]) }] }); });
+  await cap("668 directoryName seed Name base accepted", async function () { return run([leaf668], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 4, base: seedName2 }] }); });
+  await cap("668 directoryName seed non-Name base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 4, base: {} }] }); });
+  await cap("669 registeredID seed base accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 8, base: "1.2.3.4" }] }); });
+  await cap("669 default-form seed undefined base rejected", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 5 }] }); });
 
   // ---- 838 malformed extendedKeyUsage under requiredEku ----------------------
   await cap("838 malformed EKU with requiredEku", async function () {
-    return run([await mkCert({ subject: "Eku838", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.37", false, b.integer(1n))] })], { time: T2027, trustAnchor: anchor, requiredEku: ["1.3.6.1.5.5.7.3.1"] });
+    return run([await mkCert({ subject: "Eku838", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.37", false, b.integer(1n))] })], { time: T2027, trustAnchors: anchor, requiredEku: ["1.3.6.1.5.5.7.3.1"] });
   });
 
   // ---- prepareNext extension-decode faults on an intermediate (i != n) -------
   async function interCase(interExts) {
     var inter = await mkCert({ subject: "MInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: interExts });
     var leaf = await mkCert({ subject: "MLeaf", issuer: "MInter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
-    return run([inter, leaf], { time: T2027, trustAnchor: anchor });
+    return run([inter, leaf], { time: T2027, trustAnchors: anchor });
   }
   await cap("860 intermediate malformed policyMappings", async function () { return interCase(caExts([ext("2.5.29.33", false, b.integer(5n))])); });
   await cap("889 intermediate malformed policyConstraints", async function () { return interCase(caExts([ext("2.5.29.36", true, b.integer(5n))])); });
@@ -4118,7 +4118,7 @@ async function testCoverageEdges() {
     return (async function () {
       var inter = await mkCert({ subject: "PcInter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: caExts([pcExt({ requireExplicitPolicy: 0 }), cpExt(["1.3.6.1.4.1.99999.1"])]) });
       var leaf = await mkCert({ subject: "PcLeaf", issuer: "PcInter", signWith: "ed25519i", subjectKeys: "ed25519leaf", extensions: [cpExt(["1.3.6.1.4.1.99999.1"])] });
-      return run([inter, leaf], { time: T2027, trustAnchor: anchor });
+      return run([inter, leaf], { time: T2027, trustAnchors: anchor });
     })();
   });
   await cap("898 intermediate malformed inhibitAnyPolicy", async function () { return interCase(caExts([ext("2.5.29.54", true, b.sequence([]))])); });
@@ -4126,30 +4126,30 @@ async function testCoverageEdges() {
   await cap("926 intermediate malformed keyUsage", async function () { return interCase([bcExt(true), ext("2.5.29.15", true, b.sequence([]))]); });
 
   // ---- 6.1.5 wrap-up extension-decode faults on the target cert (i == n) -----
-  await cap("1234 target malformed policyConstraints", async function () { return run([await mkCert({ subject: "T1234", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", true, b.integer(5n))] })], { time: T2027, trustAnchor: anchor }); });
-  await cap("1246 target malformed policyMappings", async function () { return run([await mkCert({ subject: "T1246", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.33", false, b.integer(5n))] })], { time: T2027, trustAnchor: anchor }); });
-  await cap("1256 target malformed nameConstraints", async function () { return run([await mkCert({ subject: "T1256", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.30", true, b.integer(5n))] })], { time: T2027, trustAnchor: anchor }); });
-  await cap("1260 target malformed inhibitAnyPolicy", async function () { return run([await mkCert({ subject: "T1260", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.54", true, b.sequence([]))] })], { time: T2027, trustAnchor: anchor }); });
+  await cap("1234 target malformed policyConstraints", async function () { return run([await mkCert({ subject: "T1234", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.36", true, b.integer(5n))] })], { time: T2027, trustAnchors: anchor }); });
+  await cap("1246 target malformed policyMappings", async function () { return run([await mkCert({ subject: "T1246", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.33", false, b.integer(5n))] })], { time: T2027, trustAnchors: anchor }); });
+  await cap("1256 target malformed nameConstraints", async function () { return run([await mkCert({ subject: "T1256", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.30", true, b.integer(5n))] })], { time: T2027, trustAnchors: anchor }); });
+  await cap("1260 target malformed inhibitAnyPolicy", async function () { return run([await mkCert({ subject: "T1260", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", extensions: [ext("2.5.29.54", true, b.sequence([]))] })], { time: T2027, trustAnchors: anchor }); });
 
   // ---- validate() entry-point validation -------------------------------------
   var e1Leaf = await mkCert({ subject: "E1", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
   await cap("1055+1062+1065 no opts + DER path element", async function () { return pki.path.validate([e1Leaf]); });
-  await cap("1056 non-array path", async function () { return pki.path.validate("nope", { time: T2027, trustAnchor: anchor }); });
-  await cap("1102 requiredEku non-string entry", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, requiredEku: [123] }); });
-  await cap("1119 checkPurpose non-string", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: 123 }); });
+  await cap("1056 non-array path", async function () { return pki.path.validate("nope", { time: T2027, trustAnchors: anchor }); });
+  await cap("1102 requiredEku non-string entry", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, requiredEku: [123] }); });
+  await cap("1119 checkPurpose non-string", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, checkPurpose: 123 }); });
   var directLeaf = await mkCert({ subject: "DirectCP", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-  await cap("1122 checkPurpose dotted OID normalized", async function () { return run([directLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: "1.3.6.1.5.5.7.3.1" }); });
+  await cap("1122 checkPurpose dotted OID normalized", async function () { return run([directLeaf], { time: T2027, trustAnchors: anchor, checkPurpose: "1.3.6.1.5.5.7.3.1" }); });
 
   // ---- verifier / revocationChecker that throw -------------------------------
-  await cap("1160 custom verifier throws", async function () { return run([directLeaf], { time: T2027, trustAnchor: anchor, verifier: { verify: function () { throw new Error("boom"); } } }); });
-  await cap("1198 revocationChecker throws", async function () { return run([directLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: { check: function () { throw new Error("boom"); } } }); });
+  await cap("1160 custom verifier throws", async function () { return run([directLeaf], { time: T2027, trustAnchors: anchor, verifier: { verify: function () { throw new Error("boom"); } } }); });
+  await cap("1198 revocationChecker throws", async function () { return run([directLeaf], { time: T2027, trustAnchors: anchor, revocationChecker: { check: function () { throw new Error("boom"); } } }); });
 
   // ---- 1179 name chaining over a control-byte issuer DN ----------------------
   await cap("1179 control-byte issuer DN fails name chaining", async function () {
     var badIssuer = [b.set([atv("2.5.4.3", "Bad" + String.fromCharCode(1) + "CA")])];
     return (async function () {
       var leaf = await mkCert({ subject: "CtrlLeaf", issuer: badIssuer, signWith: "ed25519", subjectKeys: "ed25519leaf" });
-      return run([leaf], { time: T2027, trustAnchor: anchor });
+      return run([leaf], { time: T2027, trustAnchors: anchor });
     })();
   });
 
@@ -4157,19 +4157,19 @@ async function testCoverageEdges() {
   var crlLeaf = await mkCert({ subject: "CrlEdgeLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5001n, extensions: [cdpExt([distPoint(dpnFull([gnUri("http://crl.example/a")]))])] });
   await cap("1393 IDP distributionPoint wrapping two DPNs", async function () {
     var crl2 = mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(30), idpExt({ distributionPoint: Buffer.concat([dpnFull([gnUri("http://crl.example/a")]), dpnFull([gnUri("http://crl.example/b")])]) })] });
-    return (async function () { return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([await crl2]) }); })();
+    return (async function () { return run([crlLeaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([await crl2]) }); })();
   });
-  await cap("1498 crlChecker() no-arg -> undetermined", async function () { return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker() }); });
+  await cap("1498 crlChecker() no-arg -> undetermined", async function () { return run([crlLeaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker() }); });
   await cap("1498 crlChecker with pre-parsed CRL -> revoked", async function () {
     return (async function () {
       var parsedCrl = pki.schema.crl.parse(await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 5001n }] }));
-      return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([parsedCrl]) });
+      return run([crlLeaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([parsedCrl]) });
     })();
   });
   await cap("1594 critical unknown CRL-entry extension -> unusable", async function () {
     return (async function () {
       var crlE = await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 5001n, exts: [ext("1.3.6.1.4.1.99999.55", true, b.octetString(Buffer.from([1])))] }], extensions: [crlNumberExt(31)] });
-      return run([crlLeaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlE]) });
+      return run([crlLeaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlE]) });
     })();
   });
   // 1438/1439 cert DistributionPoint cRLIssuer gating (correspondingCertDp)
@@ -4178,7 +4178,7 @@ async function testCoverageEdges() {
       var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(nameDer("OtherCA")))]);
       var leafCi = await mkCert({ subject: "CrlIssuerLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5101n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
       var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(32), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
-      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+      return run([leafCi], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
     })();
   });
   await cap("1438 cert DP without distributionPoint (cRLIssuer only) -> revocation-only", async function () {
@@ -4186,7 +4186,7 @@ async function testCoverageEdges() {
       var dp = b.sequence([b.contextConstructed(2, gnDirectoryName(nameDer("Root")))]);
       var leafCi = await mkCert({ subject: "CrlIssuerOnlyLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5102n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
       var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(33), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
-      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+      return run([leafCi], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
     })();
   });
   // 1466 the cRLIssuer directoryName carries an embedded control byte, so the RFC 5280 sec. 7.1
@@ -4200,7 +4200,7 @@ async function testCoverageEdges() {
       var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(badCrlIssuer))]);
       var leafCi = await mkCert({ subject: "CrlIssuerCtrlByteLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5103n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
       var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(34), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
-      return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+      return run([leafCi], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
     })();
   });
 
@@ -4213,11 +4213,11 @@ async function testCoverageEdges() {
   function goodSingle700(extra) { return Object.assign({ issuerName: "Root", issuerKeyAlg: "ed25519", serial: 700, status: "good" }, extra || {}); }
   var delegateOk = await mkCert({ subject: "OcspResponder", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 50n, extensions: [ekuExt([EKU_OCSP_SIGNING], false), nocheckExt()] });
 
-  await cap("1932 ocspChecker() no-arg -> undetermined", async function () { return run([e1Leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker() }); });
+  await cap("1932 ocspChecker() no-arg -> undetermined", async function () { return run([e1Leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.ocspChecker() }); });
   await cap("1962 non-successful OCSP response -> undetermined", async function () {
     return (async function () {
       var o = await mkOcsp({ responseStatus: 3 });
-      return run([e1Leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.ocspChecker([o]) });
+      return run([e1Leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.ocspChecker([o]) });
     })();
   });
   await cap("1948 unreadable issuer key -> unknown", async function () {
@@ -4265,7 +4265,7 @@ async function testCoverageEdges() {
   // first), an ECDSA signatureAlgorithm with a spurious NULL survives parsing and
   // reaches resolveDescriptor, which rejects the "absent"-shaped algorithm.
   await cap("268b ECDSA sigAlg with NULL params", async function () {
-    return run([await mkCert({ subject: "Ecdsa268b", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.10045.4.3.2"), b.nullValue()]) })], { time: T2027, trustAnchor: anchorEc });
+    return run([await mkCert({ subject: "Ecdsa268b", issuer: "EcRoot", signWith: "p256", subjectKeys: "ed25519leaf", sigAlgOverride: b.sequence([b.oid("1.2.840.10045.4.3.2"), b.nullValue()]) })], { time: T2027, trustAnchors: anchorEc });
   });
 
   // ---- 488 URI SAN with a SINGLE-'@' authority (userinfo stripped to host) -----
@@ -4274,30 +4274,30 @@ async function testCoverageEdges() {
   await cap("488b URI SAN single-'@' authority within a URI subtree", async function () { return ncCase([gnUri("host.example.com")], null, [gnUri("http://user@host.example.com/")]); });
 
   // ---- 665/666 subtree-seed base validation for the string + Uint8Array forms --
-  await cap("665 rfc822Name (tag 1) string seed accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 1, base: "user@host.example" }] }); });
-  await cap("665 URI (tag 6) string seed accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 6, base: "host.example" }] }); });
-  await cap("666 iPAddress seed base as a plain Uint8Array accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, initialPermittedSubtrees: [{ tag: 7, base: new Uint8Array([10, 0, 0, 0, 255, 0, 0, 0]) }] }); });
+  await cap("665 rfc822Name (tag 1) string seed accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 1, base: "user@host.example" }] }); });
+  await cap("665 URI (tag 6) string seed accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 6, base: "host.example" }] }); });
+  await cap("666 iPAddress seed base as a plain Uint8Array accepted", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, initialPermittedSubtrees: [{ tag: 7, base: new Uint8Array([10, 0, 0, 0, 255, 0, 0, 0]) }] }); });
 
   // ---- 812 a certificate whose own SPKI carries explicit key parameters --------
   // An EC subject key SPKI states its namedCurve as AlgorithmIdentifier
   // parameters, so updateWorkingKey copies them rather than inheriting/clearing.
-  await cap("812 EC subject-key parameters copied into the working key", async function () { return run([await mkCert({ subject: "EcKeyLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 812n })], { time: T2027, trustAnchor: anchor }); });
+  await cap("812 EC subject-key parameters copied into the working key", async function () { return run([await mkCert({ subject: "EcKeyLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "p256", serial: 812n })], { time: T2027, trustAnchors: anchor }); });
 
   // ---- 1124 checkPurpose is a canonical dotted OID with no registered name -----
-  await cap("1124 unregistered dotted checkPurpose kept as the dotted OID", async function () { return run([plainLeaf], { time: T2027, trustAnchor: anchor, checkPurpose: "1.3.6.1.4.1.99999.77" }); });
+  await cap("1124 unregistered dotted checkPurpose kept as the dotted OID", async function () { return run([plainLeaf], { time: T2027, trustAnchors: anchor, checkPurpose: "1.3.6.1.4.1.99999.77" }); });
 
   // ---- composite ML-DSA keyUsage gate at the leaf (draft sec. 5.2) ------------
   // 475 a composite-keyed leaf with NO keyUsage places no restriction (RFC 5280
   // sec. 4.2.1.3): compositeKeyUsageCheck returns ok, the ed25519 anchor signs the
   // leaf so the signature verifies, and the 1-cert path is valid.
   await cap("475 composite-keyed leaf without keyUsage -> path valid", async function () {
-    return run([await mkCert({ subject: "CompNoKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki() })], { time: T2027, trustAnchor: anchor });
+    return run([await mkCert({ subject: "CompNoKu", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki() })], { time: T2027, trustAnchors: anchor });
   });
   // 481 a composite keyUsage asserting ONLY a reserved bit (>= 9) decodes with every
   // NAMED flag false: it clears the encryption gate but asserts no signature bit, so
   // the sec. 5.2 signature-only rule rejects the composite key. (bit 9: 03 03 06 00 40.)
   await cap("481 composite keyUsage asserts no signature bit -> rejected", async function () {
-    return run([await mkCert({ subject: "CompBit9", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki(), extensions: [ext("2.5.29.15", true, b.bitString(Buffer.from([0x00, 0x40]), 6))] })], { time: T2027, trustAnchor: anchor });
+    return run([await mkCert({ subject: "CompBit9", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", spki: compositeSpki(), extensions: [ext("2.5.29.15", true, b.bitString(Buffer.from([0x00, 0x40]), 6))] })], { time: T2027, trustAnchors: anchor });
   });
 
   // ---- ML-KEM keyUsage gate (RFC 9935 sec. 5) ---------------------------------
@@ -4313,30 +4313,30 @@ async function testCoverageEdges() {
     return mkCert(o);
   }
   await cap("9935 ML-KEM leaf keyUsage=keyEncipherment only -> valid", async function () {
-    return run([await kemLeaf("KemOk", [KU_KEY_ENCIPHERMENT])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemOk", [KU_KEY_ENCIPHERMENT])], { time: T2027, trustAnchors: anchor });
   });
   await cap("9935 ML-KEM leaf without keyUsage -> valid (unconstrained)", async function () {
-    return run([await kemLeaf("KemNoKu", null)], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemNoKu", null)], { time: T2027, trustAnchors: anchor });
   });
   await cap("9935 ML-KEM leaf keyUsage=digitalSignature -> rejected", async function () {
-    return run([await kemLeaf("KemDs", [KU_DIGITAL_SIGNATURE])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemDs", [KU_DIGITAL_SIGNATURE])], { time: T2027, trustAnchors: anchor });
   });
   await cap("9935 ML-KEM leaf keyUsage=digitalSignature+keyEncipherment -> rejected", async function () {
-    return run([await kemLeaf("KemDsKe", [KU_DIGITAL_SIGNATURE, KU_KEY_ENCIPHERMENT])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemDsKe", [KU_DIGITAL_SIGNATURE, KU_KEY_ENCIPHERMENT])], { time: T2027, trustAnchors: anchor });
   });
   await cap("9935 ML-KEM leaf keyUsage=keyAgreement -> rejected", async function () {
-    return run([await kemLeaf("KemKa", [KU_KEY_AGREEMENT])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemKa", [KU_KEY_AGREEMENT])], { time: T2027, trustAnchors: anchor });
   });
   await cap("9935 ML-KEM leaf keyUsage=dataEncipherment -> rejected", async function () {
-    return run([await kemLeaf("KemDe", [KU_DATA_ENCIPHERMENT])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemDe", [KU_DATA_ENCIPHERMENT])], { time: T2027, trustAnchors: anchor });
   });
   await cap("9935 ML-KEM leaf keyUsage=nonRepudiation -> rejected (keyEncipherment not set)", async function () {
-    return run([await kemLeaf("KemNr", [KU_NON_REPUDIATION])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemNr", [KU_NON_REPUDIATION])], { time: T2027, trustAnchors: anchor });
   });
   // "the ONLY key usage set" binds unnamed bits too: keyEncipherment + a reserved
   // bit (>= 9) is not keyEncipherment-only.
   await cap("9935 ML-KEM leaf keyUsage=keyEncipherment+reserved bit 9 -> rejected", async function () {
-    return run([await kemLeaf("KemBit9", [KU_KEY_ENCIPHERMENT, 9])], { time: T2027, trustAnchor: anchor });
+    return run([await kemLeaf("KemBit9", [KU_KEY_ENCIPHERMENT, 9])], { time: T2027, trustAnchors: anchor });
   });
   // The gate runs at the INTERMEDIATE position too: an ML-KEM "CA" asserting
   // keyCertSign is rejected explicitly (its inability to sign also fails the
@@ -4344,12 +4344,12 @@ async function testCoverageEdges() {
   await cap("9935 ML-KEM intermediate keyUsage=keyCertSign -> rejected", async function () {
     var kemCa = await mkCert({ subject: "KemCa", issuer: "Root", signWith: "ed25519", spki: mlkemSpki, extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
     var leaf = await mkCert({ subject: "KemCaLeaf", issuer: "KemCa", signWith: "ed25519", subjectKeys: "ed25519leaf" });
-    return run([kemCa, leaf], { time: T2027, trustAnchor: anchor });
+    return run([kemCa, leaf], { time: T2027, trustAnchors: anchor });
   });
   // A MALFORMED keyUsage extension on an ML-KEM leaf: the decode throws, and the gate maps it to
   // path/kem-key-usage rather than letting a raw error escape (kemKeyUsageCheck's catch arm).
   await cap("9935 ML-KEM leaf with a malformed (non-BIT-STRING) keyUsage -> rejected", async function () {
-    return run([await mkCert({ subject: "KemBadKu", issuer: "Root", signWith: "ed25519", spki: mlkemSpki, extensions: [ext("2.5.29.15", true, b.integer(5))] })], { time: T2027, trustAnchor: anchor });
+    return run([await mkCert({ subject: "KemBadKu", issuer: "Root", signWith: "ed25519", spki: mlkemSpki, extensions: [ext("2.5.29.15", true, b.integer(5))] })], { time: T2027, trustAnchors: anchor });
   });
 
   // ---- 1462 cert DistributionPoint cRLIssuer names a NON-directoryName ---------
@@ -4360,7 +4360,7 @@ async function testCoverageEdges() {
     var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnUri("http://other.example/"))]);
     var leafCi = await mkCert({ subject: "CrlIssuerUriLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5110n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
     var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(40), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
-    return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+    return run([leafCi], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
   });
 
   // ---- 1465 cert DP cRLIssuer directoryName EQUALS the issuer, DP corresponds --
@@ -4370,13 +4370,13 @@ async function testCoverageEdges() {
     var dp = b.sequence([b.contextConstructed(0, dpnFull([gnUri("http://crl.example/a")])), b.contextConstructed(2, gnDirectoryName(nameDer("Root")))]);
     var leafCi = await mkCert({ subject: "CrlIssuerRootLeaf", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519leaf", serial: 5111n, extensions: [ext("2.5.29.31", false, b.sequence([dp]))] });
     var crlCi = await mkCrl({ issuer: "Root", signWith: "ed25519", extensions: [crlNumberExt(41), idpExt({ distributionPoint: dpnFull([gnUri("http://crl.example/a")]) })] });
-    return run([leafCi], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
+    return run([leafCi], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlCi]) });
   });
 
   // ---- 1744 a CRL whose signature BIT STRING is not octet-aligned -------------
   await cap("1744 CRL non-octet-aligned signature -> undetermined", async function () {
     var crlUn = reSignUnaligned(await mkCrl({ issuer: "Root", signWith: "ed25519", revoked: [{ serial: 9999n }] }));
-    return run([e1Leaf], { time: T2027, trustAnchor: anchor, revocationChecker: pki.path.crlChecker([crlUn]) });
+    return run([e1Leaf], { time: T2027, trustAnchors: anchor, revocationChecker: pki.path.crlChecker([crlUn]) });
   });
 
   // ---- 1783+1788 delegate key inherits nothing (EC-no-params key, Ed25519 CA) --
@@ -4542,6 +4542,45 @@ async function testCoverageEdges() {
   });
 }
 
+// #74 trustAnchors (plural) is the canonical option; the singular trustAnchor is removed + rejected.
+async function testTrustAnchorsPlural() {
+  var anchor = await mkAnchor("ed25519", "Root");
+  var inter = await mkCert({ subject: "Inter", issuer: "Root", signWith: "ed25519", subjectKeys: "ed25519i", extensions: [bcExt(true), kuExt([KU_KEY_CERT_SIGN])] });
+  var leaf = await mkCert({ subject: "Leaf", issuer: "Inter", signWith: "ed25519i", subjectKeys: "ed25519leaf" });
+  check("#74 trustAnchors accepts an array of anchors", (await run([inter, leaf], { time: T2027, trustAnchors: [anchor] })).valid === true);
+  check("#74 trustAnchors accepts a single anchor (not wrapped in an array)", (await run([inter, leaf], { time: T2027, trustAnchors: anchor })).valid === true);
+  // the removed singular key is REFUSED and NAMED (fail closed, not silently ignored -- a fail-open today).
+  var singErr = null;
+  try { await run([inter, leaf], { time: T2027, trustAnchor: anchor }); } catch (e) { singErr = e; }
+  check("#74 the removed singular trustAnchor is refused as an unknown option, naming it",
+    singErr && singErr.code === "path/bad-input" && singErr.message.indexOf("trustAnchor") !== -1);
+  // multi-anchor selection: the anchor whose subject issued the top path cert is chosen from the list.
+  var other = await mkAnchor("ed25519", "OtherRoot");
+  check("#74 selects the matching anchor from a multi-anchor list", (await run([inter, leaf], { time: T2027, trustAnchors: [other, anchor] })).valid === true);
+  check("#74 selection is order-independent (matching anchor last)", (await run([inter, leaf], { time: T2027, trustAnchors: [anchor, other] })).valid === true);
+  // two anchors share the subject DN "Root" but carry DIFFERENT keys (a rotated / cross-signed root);
+  // the chain is signed by only one. A valid chain must not be rejected because the wrong same-name
+  // anchor is tried first -- validate tries each, order-independent for validity.
+  var sameNameWrongKey = await mkAnchor("ed25519i", "Root");   // name "Root", but the ed25519i key
+  check("#74 a same-subject anchor with the wrong key does not shadow the right one (wrong first)",
+    (await run([inter, leaf], { time: T2027, trustAnchors: [sameNameWrongKey, anchor] })).valid === true);
+  check("#74 ...and with the wrong-key same-subject anchor last",
+    (await run([inter, leaf], { time: T2027, trustAnchors: [anchor, sameNameWrongKey] })).valid === true);
+  // no anchor in the list matches the chain terminus -> untrusted (valid false), not a throw.
+  check("#74 a list with no matching anchor is untrusted (valid false)", (await run([inter, leaf], { time: T2027, trustAnchors: [other] })).valid === false);
+  // a malformed anchor ANYWHERE in the list is refused, even when a valid matching anchor precedes it:
+  // the complete array is normalized before any validation runs, so acceptance is not order-dependent.
+  var malformed74 = { name: anchor.name };   // no publicKey / algorithm -> toAnchor refuses it
+  var malErr = null;
+  try { await run([inter, leaf], { time: T2027, trustAnchors: [anchor, malformed74] }); } catch (e) { malErr = e; }
+  check("#74 a malformed anchor is refused even after a valid matching one (order-independent)",
+    malErr && malErr.code === "path/bad-input");
+  // an empty list / absent option fails closed.
+  var emptyErr = null;
+  try { await run([inter, leaf], { time: T2027, trustAnchors: [] }); } catch (e) { emptyErr = e; }
+  check("#74 an empty trustAnchors list is refused", emptyErr && emptyErr.code === "path/bad-input");
+}
+
 async function runSuite() {
   await testAcceptChains();
   await testSelfIssuedAndConstraints();
@@ -4561,6 +4600,7 @@ async function runSuite() {
   await testCrlDpIdpCorrespondence();
   await testCoverageEdges();
   await testUnknownOptionsRefused();
+  await testTrustAnchorsPlural();
 }
 
 module.exports = { run: runSuite };

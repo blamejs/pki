@@ -174,19 +174,19 @@ async function run() {
     for (var i = 0; i < res.results.length; i++) for (var j = 0; j < res.results[i].checks.length; j++) if (res.results[i].checks[j].name === "ct") return res.results[i].checks[j];
     return null;
   }
-  var r15 = await pki.path.validate([certB], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
+  var r15 = await pki.path.validate([certB], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
   var c15 = ctCheckOf(r15);
   check("VL15. path.validate with a valid embedded SCT -> a ct check ok:true, path valid", c15 !== null && c15.ok === true && r15.valid === true);
 
-  var r16 = await pki.path.validate([certA], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
+  var r16 = await pki.path.validate([certA], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
   var c16 = ctCheckOf(r16);
   check("VL16. path.validate on a leaf with no SCT extension + ctPolicy -> ct ok:false code path/ct-required, valid:false",
     c16 !== null && c16.ok === false && c16.code === "path/ct-required" && r16.valid === false);
 
-  var r17 = await pki.path.validate([certB], { trustAnchor: caCert, time: atTime });
+  var r17 = await pki.path.validate([certB], { trustAnchors: caCert, time: atTime });
   check("VL17. no ctLogList/ctPolicy -> no ct check is added (behavior-preserving)", ctCheckOf(r17) === null);
 
-  var r18 = await pki.path.validate([certB], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 2, minOperators: 1 } });
+  var r18 = await pki.path.validate([certB], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 2, minOperators: 1 } });
   var c18 = ctCheckOf(r18);
   check("VL18. an unmet CT policy (minScts:2, one SCT) -> ct ok:false code path/ct-policy-not-met, valid:false",
     c18 !== null && c18.ok === false && c18.code === "path/ct-policy-not-met" && r18.valid === false);
@@ -203,7 +203,7 @@ async function run() {
   // VL20 (P2): a CT policy supplied without a log-list cannot be enforced -> refused at entry, never a
   // silently-skipped CT gate that returns a valid path.
   check("VL20. path.validate with ctPolicy but no ctLogList -> path/bad-input (fail-closed)",
-    (await code(function () { return pki.path.validate([certB], { trustAnchor: caCert, time: atTime, ctPolicy: { minScts: 1 } }); })) === "path/bad-input");
+    (await code(function () { return pki.path.validate([certB], { trustAnchors: caCert, time: atTime, ctPolicy: { minScts: 1 } }); })) === "path/bad-input");
 
   // VL21 (dedup): the same SCT repeated cannot inflate the count -- each distinct trusted log counts
   // once, so a duplicated SCT does not satisfy a higher minScts. Both rows are kept for diagnostics.
@@ -215,7 +215,7 @@ async function run() {
   // VL22 (P1): a misspelled ctPolicy key would read as undefined and silently default the threshold to
   // the RFC floor of 1 -- refuse it at entry so the caller cannot get a weaker policy than requested.
   check("VL22. path.validate with a misspelled ctPolicy key (minSCTs) -> path/bad-input, not silently defaulted",
-    (await code(function () { return pki.path.validate([certB], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minSCTs: 2 } }); })) === "path/bad-input");
+    (await code(function () { return pki.path.validate([certB], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minSCTs: 2 } }); })) === "path/bad-input");
 
   // VL23 (P2a): a mis-shaped shared entry (valid entryType, missing required fields) is a caller error
   // that throws up front, even when the SCT list is empty (never a verdict rendered without examining it).
@@ -225,7 +225,7 @@ async function run() {
   // VL24 (P2b): an invalid CT policy value reaches verifySctList through the path gate; the path
   // boundary surfaces it as path/bad-input, never leaking the ct/* domain code of a layer not called.
   check("VL24. path.validate with an invalid ctPolicy value (minScts:0) -> path/bad-input, not a leaked ct/*",
-    (await code(function () { return pki.path.validate([certB], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 0 } }); })) === "path/bad-input");
+    (await code(function () { return pki.path.validate([certB], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 0 } }); })) === "path/bad-input");
 
   // VL25 (P2): the bare { subjectPublicKeyInfo: { bytes } } issuer form whose bytes is not a BufferSource
   // fails through the typed CT error contract, not a native TypeError from the downstream SHA-256 update.
@@ -264,7 +264,7 @@ async function run() {
   certFutSct.signature = crypto.sign("sha256", pki.ct.reconstructSignedData({ entryType: 1, tbsCertificate: tbsA, issuerKeyHash: issuerKeyHash }, certFutSct), logKp.privateKey);
   var futSctExt = pki.asn1.build.sequence([pki.asn1.build.oid(pki.oid.byName("signedCertificateTimestampList")), pki.asn1.build.octetString(pki.ct.encodeSctList([certFutSct]))]);
   var certFuture = await pki.x509.sign(Object.assign({}, common, { extensions: [futSctExt, otherExt] }), issuerArg);
-  var rFut = await pki.path.validate([certFuture], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
+  var rFut = await pki.path.validate([certFuture], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 1, minOperators: 1 } });
   var cFut = ctCheckOf(rFut);
   check("VL28. the path gate rejects a future-dated SCT (opts.time forwarded as at) -> ct ok:false, path invalid",
     cFut !== null && cFut.ok === false && rFut.valid === false);
@@ -278,7 +278,7 @@ async function run() {
   // VL30: the CT configuration is validated independent of the target certificate -- a cert with no SCT
   // extension plus a bad policy value is path/bad-input at entry, not masked as path/ct-required.
   check("VL30. no-SCT cert + an invalid ctPolicy value -> path/bad-input (config validated before the cert)",
-    (await code(function () { return pki.path.validate([certA], { trustAnchor: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 0 } }); })) === "path/bad-input");
+    (await code(function () { return pki.path.validate([certA], { trustAnchors: caCert, time: atTime, ctLogList: ctLogList, ctPolicy: { minScts: 0 } }); })) === "path/bad-input");
 
   // VL31: a non-Date opts.certNotAfter is a caller mis-shape that throws, never silently ignored (which
   // would substitute the certificate's own notAfter and defeat the caller's intended override).

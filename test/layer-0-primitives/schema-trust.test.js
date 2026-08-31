@@ -687,10 +687,10 @@ async function testRealCertdataSlice() {
   var anchorA = pki.trust.anchor(entryA, { purpose: "serverAuth" });
   var T = new Date("2027-07-01T00:00:00Z");
 
-  var resBefore = await pki.path.validate([fx.leafBefore], { time: T, trustAnchor: anchorA, checkPurpose: "serverAuth" });
+  var resBefore = await pki.path.validate([fx.leafBefore], { time: T, trustAnchors: anchorA, checkPurpose: "serverAuth" });
   check("T27: a leaf issued BEFORE the distrust date validates", resBefore.valid === true);
 
-  var resAfter = await pki.path.validate([fx.leafAfter], { time: T, trustAnchor: anchorA, checkPurpose: "serverAuth" });
+  var resAfter = await pki.path.validate([fx.leafAfter], { time: T, trustAnchors: anchorA, checkPurpose: "serverAuth" });
   check("T27: a leaf issued AFTER the distrust date is rejected",
     resAfter.valid === false && failCodes(resAfter).indexOf("path/distrusted-after") !== -1);
 

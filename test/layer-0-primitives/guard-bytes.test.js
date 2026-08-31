@@ -1379,7 +1379,7 @@ async function testCallerCannotRewriteAfterEntry() {
     var c = pki.schema.x509.parse(der);
     return pki.path.validate([c], {
       time: new Date(1000),
-      trustAnchor: { name: c.subject, publicKey: c.subjectPublicKeyInfo.bytes, algorithm: c.subjectPublicKeyInfo.algorithm },
+      trustAnchors: { name: c.subject, publicKey: c.subjectPublicKeyInfo.bytes, algorithm: c.subjectPublicKeyInfo.algorithm },
     }).then(function (r) { return r.valid; }, function () { return false; });
   }
   check("the self-validation premise holds for an unswapped certificate",

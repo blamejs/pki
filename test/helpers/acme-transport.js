@@ -56,6 +56,24 @@ async function makeAccount() {
   };
 }
 
+// A real RSA account key set for the badSignatureAlgorithm re-sign (opts.resignKeys). ONE key material,
+// imported under RS256 (primary) plus PS256 / PS512 (the alternatives). The RSA public JWK {n,e} is
+// padding-agnostic, so the single accountJwk verifies a signature made under any of the three algs --
+// which is exactly why a re-sign against the SAME registered account key is possible for RSA.
+async function makeRsaAccount() {
+  var kp = await subtle.generateKey({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" }, true, ["sign", "verify"]);
+  var privJwk = await subtle.exportKey("jwk", kp.privateKey);
+  delete privJwk.alg;   // the RS256 hint would conflict with an RSA-PSS reimport
+  async function asAlg(name, hash) { return subtle.importKey("jwk", privJwk, { name: name, hash: hash }, false, ["sign"]); }
+  return {
+    key: kp.privateKey,   // RS256 primary
+    jwk: await subtle.exportKey("jwk", kp.publicKey),
+    spki: Buffer.from(await subtle.exportKey("spki", kp.publicKey)),
+    ps256Key: await asAlg("RSA-PSS", "SHA-256"),
+    ps512Key: await asAlg("RSA-PSS", "SHA-512"),
+  };
+}
+
 // ---- response builders (each stamps content-type; nonce/location added by the server) -----------
 function json(status, obj, headers) { return { status: status, headers: Object.assign({ "content-type": "application/json" }, headers || {}), body: JSON.stringify(obj) }; }
 function problem(status, type, detail, extra) { return { status: status, headers: { "content-type": "application/problem+json" }, body: JSON.stringify(Object.assign({ type: "urn:ietf:params:acme:error:" + type, detail: detail || type }, extra || {})) }; }
@@ -65,7 +83,8 @@ function pemChain(pems, headers) { return { status: 200, headers: Object.assign(
 //   directory: the directory object (default full); orderStates: the status sequence a GET /order/1
 //   walks (default pending->ready->valid); challenges: the /authz challenge list; certPems: the
 //   download chain; badNonceRounds: N leading POSTs answered with a badNonce+fresh nonce; problemOn:
-//   { pathname: problem-response } to force a problem on a route.
+//   { pathname: problem-response } to force a problem on a route; badSigAlgRounds: N leading POSTs
+//   answered with a badSignatureAlgorithm carrying serverAlgs as the supported-alg array (sec. 6.2).
 function acmeServer(opts) {
   opts = opts || {};
   var nonceSeq = 0;
@@ -75,6 +94,7 @@ function acmeServer(opts) {
   var orderPoll = -1;   // index into orderStates for GET /order/1
   var authzPoll = -1;   // index into opts.authzStates for GET /authz/1 (when set)
   var badLeft = opts.badNonceRounds || 0;
+  var sigAlgLeft = opts.badSigAlgRounds || 0;
   var EXPIRES = "2030-01-01T00:00:00Z";
   var TOKEN = Buffer.from("acme-challenge-token-000001").toString("base64url");   // canonical base64url, > 128 bits
   var challenges = opts.challenges || [{ type: "http-01", url: URLS.challenge, status: "pending", token: TOKEN }];
@@ -129,6 +149,10 @@ function acmeServer(opts) {
 
     // a bounded run of badNonce on the first N POSTs
     if (method === "POST" && badLeft > 0) { badLeft--; return withNonce(problem(400, "badNonce", "bad nonce, retry")); }
+
+    // a bounded run of badSignatureAlgorithm on the first N POSTs, carrying the supported-alg array
+    // (RFC 8555 sec. 6.2); serverAlgs is that array. Exercises the client's opts.resignKeys re-sign.
+    if (method === "POST" && sigAlgLeft > 0) { sigAlgLeft--; return withNonce(problem(400, "badSignatureAlgorithm", "unsupported JWS alg", { algorithms: opts.serverAlgs || ["PS256"] })); }
 
     // POST /new-authz (pre-authorization, RFC 8555 sec. 7.4.1): 201 + Location(authz) + the authz object, or a
     // configured problem (e.g. 403 rejectedIdentifier via newAuthzProblem).
@@ -212,7 +236,7 @@ function clientOpts(acct, server, extra) {
 }
 
 module.exports = {
-  URLS: URLS, directory: directory, makeAccount: makeAccount,
+  URLS: URLS, directory: directory, makeAccount: makeAccount, makeRsaAccount: makeRsaAccount,
   json: json, problem: problem, pemChain: pemChain,
   acmeServer: acmeServer, clientOpts: clientOpts,
 };

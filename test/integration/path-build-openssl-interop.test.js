@@ -74,7 +74,7 @@ async function run() {
     check("openssl verify builds + validates the chain from the untrusted pool", vOk.code === 0 && /:\s*OK\s*$/.test(vOk.stdout.trim()));
     var rBuild = await pki.path.build(der(leafPem), { candidates: [der(interPem)], trustAnchors: [der(rootPem)], time: T });
     check("pki.path.build reaches valid:true on the same pool (agrees with openssl)", rBuild.valid === true);
-    var green = await pki.path.validate(rBuild.path, { time: T, trustAnchor: rBuild.trustAnchor });
+    var green = await pki.path.validate(rBuild.path, { time: T, trustAnchors: rBuild.trustAnchor });
     check("the built path round-trips through the shipped pki.path.validate", green.valid === true);
 
     // ---- (b) no path to the configured anchor: openssl non-zero AND build throws path/no-path ----

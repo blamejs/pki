@@ -180,7 +180,7 @@ function signToken(tsa, extra) {
 async function testVerifyAccept() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));   // critical, exclusive id-kp-timeStamping
   var token = await signToken(tsa);
-  var res = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor });
+  var res = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor });
   check("valid with trust anchor", res.valid === true);
   check("genTime from verified eContent", res.genTime instanceof Date && res.genTime.toISOString() === "2027-01-01T00:00:00.000Z");
   check("serialNumber surfaced (lossless)", res.serialNumber === 7n);
@@ -206,7 +206,7 @@ async function testVerifyAccept() {
     res.trusted === true && res.revocationChecked === false);
   check("no anchor at all reports revocationChecked false", res6.revocationChecked === false);
   var goodChecker = { check: function () { return Promise.resolve({ status: "good" }); } };
-  var revRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: goodChecker });
+  var revRes = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, revocationChecker: goodChecker });
   check("a revocationChecker that establishes the TSA reports revocationChecked determined",
     revRes.valid === true && revRes.trusted === true && revRes.revocationChecked === "determined");
   // A REFUSAL reports what the path established too. The case that matters is a TSA the checker
@@ -214,7 +214,7 @@ async function testVerifyAccept() {
   // claiming nothing was checked would misdescribe the very reason the token was refused -- and it
   // is the archived-verdict question the field exists to answer.
   var revokedChecker = { check: function () { return Promise.resolve({ status: "revoked" }); } };
-  var revokedRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: revokedChecker });
+  var revokedRes = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, revocationChecker: revokedChecker });
   check("a TSA established REVOKED is untrusted", revokedRes.trusted === false && revokedRes.code === "tsp/untrusted-tsa");
   check("...and the refusal still reports that revocation WAS checked, not that it was not",
     revokedRes.revocationChecked === "determined");
@@ -238,7 +238,7 @@ async function testVerifyAccept() {
   var decoyIssuer = makeTsa(ekuExt([TS_EKU], true), { serial: 0x9d, name: "TSA" });
   var callN = 0;
   var fadingChecker = { check: function () { callN++; return Promise.resolve(callN === 1 ? { status: "revoked" } : { status: "unknown" }); } };
-  var fadeRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: fadingChecker, certs: [decoyIssuer.cert] });
+  var fadeRes = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, revocationChecker: fadingChecker, certs: [decoyIssuer.cert] });
   check("the multi-candidate premise holds: more than one attempt consulted the checker", callN > 1);
   check("a multi-candidate refusal reports an established state, never the false that means nothing ran",
     fadeRes.trusted === false && fadeRes.revocationChecked !== false);
@@ -247,11 +247,11 @@ async function testVerifyAccept() {
   // waive it: this verb does not forward softFail, so "the responder could not be reached" cannot
   // become a trusted timestamp.
   var unknownChecker = { check: function () { return Promise.resolve({ status: "unknown" }); } };
-  var unknownRes = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker });
+  var unknownRes = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, revocationChecker: unknownChecker });
   check("an undetermined revocation status leaves the TSA untrusted, not trusted-unchecked",
     unknownRes.trusted === false && unknownRes.revocationChecked === "undetermined");
   var softFailCode = await (async function () {
-    try { await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, revocationChecker: unknownChecker, softFail: true }); return null; }
+    try { await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, revocationChecker: unknownChecker, softFail: true }); return null; }
     catch (e) { return e && e.code; }
   })();
   check("softFail is not an option here -- an undetermined status cannot be waived into trust",
@@ -259,7 +259,7 @@ async function testVerifyAccept() {
   // The anchor's own constraints travel with the verdict rather than being computed and discarded.
   check("anchorConstraints is carried from the path result", "anchorConstraints" in res);
   var otherAnchorRes = await (async function () {
-    try { return await pki.tsp.verify(token, DATA, { trustAnchor: makeTsa(ekuExt([TS_EKU], true)).anchor }); }
+    try { return await pki.tsp.verify(token, DATA, { trustAnchors: makeTsa(ekuExt([TS_EKU], true)).anchor }); }
     catch (e) { return { threw: e && e.code }; }
   })();
   check("a token whose TSA does not chain to the supplied anchor is refused, not merely untrusted",
@@ -270,11 +270,11 @@ async function testVerifyAccept() {
   // that has no such option would make the metadata unreachable rather than enforced.
   var taMeta = Object.assign({}, tsa.anchor, { purposes: { timeStamping: true } });
   check("an anchor whose trust metadata delegates timestamping verifies",
-    (await pki.tsp.verify(token, DATA, { trustAnchor: taMeta })).trusted === true);
+    (await pki.tsp.verify(token, DATA, { trustAnchors: taMeta })).trusted === true);
   // ...and the metadata now REACHES: an anchor not trusted for timestamping is refused, which is
   // the whole point of consulting it.
   var taNotTs = Object.assign({}, tsa.anchor, { purposes: { timeStamping: false } });
-  var notTs = await pki.tsp.verify(token, DATA, { trustAnchor: taNotTs });
+  var notTs = await pki.tsp.verify(token, DATA, { trustAnchors: taNotTs });
   check("an anchor NOT delegated for timestamping is refused", notTs.valid === false && notTs.trusted === false);
   // ...and the refusal reports WHICH anchor checks ran. This case establishes anchor constraints
   // while establishing nothing about revocation -- no revocationChecker is configured -- so the two
@@ -286,26 +286,25 @@ async function testVerifyAccept() {
   // distrust date stays trusted -- so the date has to sit before it to distrust anything.
   var taDistrust = Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2019-01-01T00:00:00Z") } });
   check("a timestamping distrust date older than the TSA certificate is refused",
-    (await pki.tsp.verify(token, DATA, { trustAnchor: taDistrust })).valid === false);
+    (await pki.tsp.verify(token, DATA, { trustAnchors: taDistrust })).valid === false);
   check("...and one on the TSA certificate's own notBefore keeps it trusted (the boundary day)",
-    (await pki.tsp.verify(token, DATA, { trustAnchor: Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2020-01-01T00:00:00Z") } }) })).trusted === true);
+    (await pki.tsp.verify(token, DATA, { trustAnchors: Object.assign({}, tsa.anchor, { distrustAfter: { timeStamping: new Date("2020-01-01T00:00:00Z") } }) })).trusted === true);
 
   // Every refusal answers the same question too. An `undefined` on the failure branch is the same
   // "cannot tell what was checked" the field exists to remove.
-  var badImprint = await pki.tsp.verify(token, Buffer.alloc(32, 0xee), { trustAnchor: tsa.anchor });
+  var badImprint = await pki.tsp.verify(token, Buffer.alloc(32, 0xee), { trustAnchors: tsa.anchor });
   check("a refused token still answers the trusted question rather than leaving it undefined",
     badImprint.valid === false && badImprint.trusted === false);
 
-  // This verb spells its anchor option SINGULAR and takes an anchor tuple; pki.cms.verify and
-  // pki.cmp.verify spell it `trustAnchors` and take certificate DER. Carrying the plural spelling
-  // here used to mean no anchoring and no error -- an unchained TSA certificate under valid: true.
-  // The refusal names the difference, which is the only place it costs nothing to learn.
-  var plural = await (async function () {
-    try { await pki.tsp.verify(token, DATA, { trustAnchors: [tsa.anchor] }); return "NO-THROW"; }
+  // This verb spells its anchor option `trustAnchors` (a single anchor tuple, or a non-empty array of
+  // them), the same spelling pki.cms.verify and pki.cmp.verify use. The removed singular is refused and
+  // named, not silently ignored -- which would leave an unchained TSA certificate under valid: true.
+  var singular = await (async function () {
+    try { await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor }); return "NO-THROW"; }
     catch (e) { return e && e.code; }
   })();
-  check("the plural trustAnchors spelling is refused here, not silently ignored", plural === "tsp/bad-input");
-  check("...and the singular one this verb defines still works", res.valid === true);
+  check("the removed singular trustAnchor spelling is refused here, not silently ignored", singular === "tsp/bad-input");
+  check("...and the plural one this verb now defines still works", res.valid === true);
   var res7 = await pki.tsp.verify(token, imprint("sha256"), {});
   check("precomputed imprint matches", res7.valid === true);
 }
@@ -326,7 +325,7 @@ async function testVerifyNonce() {
 async function testVerifyAlgAgnostic() {
   var edTsa = makeTsa(ekuExt([TS_EKU], true), { keyType: "ed25519" });
   var token = await signToken(edTsa);
-  check("Ed25519 TSA verifies", (await pki.tsp.verify(token, DATA, { trustAnchor: edTsa.anchor })).valid === true);
+  check("Ed25519 TSA verifies", (await pki.tsp.verify(token, DATA, { trustAnchors: edTsa.anchor })).valid === true);
 }
 
 // ---- message-imprint mismatch ----
@@ -364,7 +363,7 @@ async function testVerifyEkuGate() {
 async function testVerifyExpired() {
   var expired = makeTsa(ekuExt([TS_EKU], true), { notBefore: new Date("2018-01-01T00:00:00Z"), notAfter: new Date("2019-01-01T00:00:00Z") });
   var token = await signToken(expired);   // genTime 2027 is outside 2018..2019
-  var r6 = await pki.tsp.verify(token, DATA, { trustAnchor: expired.anchor });
+  var r6 = await pki.tsp.verify(token, DATA, { trustAnchors: expired.anchor });
   check("expired TSA at genTime -> tsp/untrusted-tsa", r6.valid === false && r6.code === "tsp/untrusted-tsa");
 }
 
@@ -388,7 +387,7 @@ async function testVerifyUntrusted() {
   var tsa = makeTsa(ekuExt([TS_EKU], true));
   var other = makeTsa(ekuExt([TS_EKU], true), { name: "OtherRoot" });   // a different key
   var token = await signToken(tsa);
-  var r9 = await pki.tsp.verify(token, DATA, { trustAnchor: other.anchor });
+  var r9 = await pki.tsp.verify(token, DATA, { trustAnchors: other.anchor });
   check("TSA does not chain to the anchor -> tsp/untrusted-tsa", r9.valid === false && r9.code === "tsp/untrusted-tsa");
 }
 
@@ -401,7 +400,7 @@ async function testVerifyDesync() {
   parsed.tstInfo.nonce = 0x99n;
   // verify takes the TOKEN BYTES and re-decodes TSTInfo from the authenticated eContent, so the
   // mutation to the separate parsed object has no effect on the verdict.
-  var res = await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, nonce: 0x11223344n });
+  var res = await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, nonce: 0x11223344n });
   check("verify ignores a mutated parsed object (reads verified eContent)", res.valid === true);
 }
 
@@ -423,7 +422,7 @@ async function testTspCoverage() {
   // verify data config error -> throw tsp/bad-input.
   await rejects("verify with a non-Buffer/imprint data", function () { return pki.tsp.verify(token, 12345, {}); }, "tsp/bad-input");
   // verify reqPolicy match + mismatch (M15).
-  check("verify reqPolicy match", (await pki.tsp.verify(token, DATA, { trustAnchor: tsa.anchor, reqPolicy: "1.2.3.4.1" })).valid === true);
+  check("verify reqPolicy match", (await pki.tsp.verify(token, DATA, { trustAnchors: tsa.anchor, reqPolicy: "1.2.3.4.1" })).valid === true);
   var pm = await pki.tsp.verify(token, DATA, { reqPolicy: "9.9.9" });
   check("verify reqPolicy mismatch -> tsp/policy-mismatch", pm.valid === false && pm.code === "tsp/policy-mismatch");
   // verify with no opts arg (opts defaults) + a bad opts type.
@@ -494,7 +493,7 @@ async function testTspCoverage() {
   var gtRaw = Buffer.concat([Buffer.from([0x18, 0x14]), Buffer.from("20270101120000.0001Z", "latin1")]);   // genTime 0.1ms past notAfter
   var fracTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(53n), gtRaw]);
   var fracTok = await pki.cms.sign(fracTst, { cert: expTsa.cert, key: expTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [expScv2] }] });
-  check("sub-ms genTime just past cert expiry -> tsp/untrusted-tsa (ceil not floor)", (await pki.tsp.verify(fracTok, DATA, { trustAnchor: expTsa.anchor })).code === "tsp/untrusted-tsa");
+  check("sub-ms genTime just past cert expiry -> tsp/untrusted-tsa (ceil not floor)", (await pki.tsp.verify(fracTok, DATA, { trustAnchors: expTsa.anchor })).code === "tsp/untrusted-tsa");
   // symmetric boundary: a sub-ms genTime just BEFORE the cert's notBefore must not validate either --
   // the ceil rounding must not lift it into the window. notBefore 2027-01-01T12:00:00Z; genTime .9999s.
   var nbTsa = makeTsa(ekuExt([TS_EKU], true), { notBefore: new Date("2027-01-01T12:00:00Z"), notAfter: new Date("2035-01-01T00:00:00Z") });
@@ -502,7 +501,7 @@ async function testTspCoverage() {
   var nbRaw = Buffer.concat([Buffer.from([0x18, 0x14]), Buffer.from("20270101115959.9999Z", "latin1")]);   // 0.1ms before notBefore
   var nbTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(56n), nbRaw]);
   var nbTok = await pki.cms.sign(nbTst, { cert: nbTsa.cert, key: nbTsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [nbScv2] }] });
-  check("sub-ms genTime just before cert notBefore -> tsp/untrusted-tsa", (await pki.tsp.verify(nbTok, DATA, { trustAnchor: nbTsa.anchor })).code === "tsp/untrusted-tsa");
+  check("sub-ms genTime just before cert notBefore -> tsp/untrusted-tsa", (await pki.tsp.verify(nbTok, DATA, { trustAnchors: nbTsa.anchor })).code === "tsp/untrusted-tsa");
   // a v1-only SigningCertificate (SHA-1) binding falls back to the legacy attribute and is refused as
   // a collision-weak identity pin (the SHA-2-only binding, round-tripped from the v2 preference).
   var v1OnlyTst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(54n), b.generalizedTime(GENTIME)]);
@@ -513,7 +512,7 @@ async function testTspCoverage() {
   var gt5 = Buffer.concat([Buffer.from([0x18, 17]), Buffer.from("20270101000000.5Z", "latin1")]);
   var frac5Tst = b.sequence([b.integer(1n), b.oid("1.2.3.4.1"), goodImprint, b.integer(55n), gt5]);
   var frac5Tok = await pki.cms.sign(frac5Tst, { cert: tsa.cert, key: tsa.key }, { eContentType: "tSTInfo", additionalSignedAttributes: [{ type: "signingCertificateV2", values: [scv2] }] });
-  check("millisecond-representable genTime fraction (.5) -> no ceil, verifies", (await pki.tsp.verify(frac5Tok, DATA, { trustAnchor: tsa.anchor })).valid === true);
+  check("millisecond-representable genTime fraction (.5) -> no ceil, verifies", (await pki.tsp.verify(frac5Tok, DATA, { trustAnchors: tsa.anchor })).valid === true);
   // response: failInfo on a non-rejection status, and an unknown PKIFailureInfo name, fail closed.
   rejectsSync("response failInfo on status!=2 -> tsp/unexpected-failinfo", function () { return pki.tsp.response(null, { status: 3, failInfo: ["badAlg"] }); }, "tsp/unexpected-failinfo");
   rejectsSync("response unknown failInfo name -> tsp/bad-input", function () { return pki.tsp.response(null, { status: 2, failInfo: ["notARealBit"] }); }, "tsp/bad-input");
@@ -568,7 +567,7 @@ async function testBuilderCoverage() {
   var rEmpty = await pki.tsp.verify(await mkTok(b.sequence([b.sequence([])])), DATA, {});
   check("empty ESS certs list -> tsp/bad-signing-certificate", rEmpty.valid === false && rEmpty.code === "tsp/bad-signing-certificate");
   // verify: a malformed trustAnchor makes path.validate fault -> caught fail-closed as tsp/untrusted-tsa.
-  var ba = await pki.tsp.verify(tsTok, DATA, { trustAnchor: { name: "x", publicKey: Buffer.from([1, 2, 3]), algorithm: "1.2.840.10045.4.3.2" } });
+  var ba = await pki.tsp.verify(tsTok, DATA, { trustAnchors: { name: "x", publicKey: Buffer.from([1, 2, 3]), algorithm: "1.2.840.10045.4.3.2" } });
   check("malformed trustAnchor -> tsp/untrusted-tsa", ba.valid === false && ba.code === "tsp/untrusted-tsa");
   // M11 keyUsage (RFC 5280 sec. 4.2.1.3): a TSA cert whose keyUsage forbids signing (keyEncipherment
   // only, no digitalSignature / nonRepudiation) cannot mint a token, even with a correct EKU.
@@ -640,10 +639,10 @@ async function testChainAndBindings() {
   var anchor = { name: rootP.subject, publicKey: rootP.subjectPublicKeyInfo.bytes, algorithm: rootP.subjectPublicKeyInfo.algorithm.oid };
   var chainTok = await pki.tsp.sign(imprint("sha256"), { cert: leafCert, key: leafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
   // #1: a TSA under an intermediate -- without the intermediate embedded, it cannot chain to the root.
-  var noInter = await pki.tsp.verify(chainTok, DATA, { trustAnchor: anchor });
+  var noInter = await pki.tsp.verify(chainTok, DATA, { trustAnchors: anchor });
   check("TSA under an intermediate, chain NOT embedded -> tsp/untrusted-tsa", noInter.valid === false && noInter.code === "tsp/untrusted-tsa");
   // ...with the intermediate embedded, verify orders [leaf, inter] and validates to the root.
-  var withInter = await pki.tsp.verify(spliceCert(chainTok, interCert), DATA, { trustAnchor: anchor });
+  var withInter = await pki.tsp.verify(spliceCert(chainTok, interCert), DATA, { trustAnchors: anchor });
   check("TSA under an intermediate, chain embedded -> valid", withInter.valid === true);
 
   // #2: the extKeyUsage extnValue MUST be a SEQUENCE OF -- a SET wrapper with the same OID child
@@ -681,7 +680,7 @@ async function testChainAndBindings() {
   var ssRootP = pki.schema.x509.parse(ssRoot);
   var ssAnchor = { name: ssRootP.subject, publicKey: ssRootP.subjectPublicKeyInfo.bytes, algorithm: ssRootP.subjectPublicKeyInfo.algorithm.oid };
   var ssTok = await pki.tsp.sign(imprint("sha256"), { cert: ssLeaf, key: ssLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
-  check("intermediate reusing the leaf serial still chains (issuer+serial identity)", (await pki.tsp.verify(spliceCert(ssTok, ssInter), DATA, { trustAnchor: ssAnchor })).valid === true);
+  check("intermediate reusing the leaf serial still chains (issuer+serial identity)", (await pki.tsp.verify(spliceCert(ssTok, ssInter), DATA, { trustAnchors: ssAnchor })).valid === true);
 
   // #2b (RFC 5035): the ESSCertID issuerSerial issuer, when present, MUST equal the signer cert issuer.
   var isHash = crypto.createHash("sha256").update(essTsa.cert).digest();
@@ -768,7 +767,7 @@ async function testChainAndBindings() {
   var btRootP = pki.schema.x509.parse(btRoot);
   var btAnchor = { name: btRootP.subject, publicKey: btRootP.subjectPublicKeyInfo.bytes, algorithm: btRootP.subjectPublicKeyInfo.algorithm.oid };
   var btTok = await pki.tsp.sign(imprint("sha256"), { cert: btLeaf, key: btLeafKp.privateKey.export({ format: "der", type: "pkcs8" }) }, { policy: "1.2.3.4.1", serialNumber: 1, genTime: GENTIME });
-  check("same-subject issuer certs -> backtracking finds the real issuer", (await pki.tsp.verify(btTok, DATA, { trustAnchor: btAnchor, certs: [btDecoy, btInter] })).valid === true);
+  check("same-subject issuer certs -> backtracking finds the real issuer", (await pki.tsp.verify(btTok, DATA, { trustAnchors: btAnchor, certs: [btDecoy, btInter] })).valid === true);
 
   // MAX_TSA_CHAINS DoS bound (CWE-834): a hostile embed of interlinked same-subject certificates
   // (each a candidate issuer of the others) would explode the candidate-path search combinatorially.
@@ -781,7 +780,7 @@ async function testChainAndBindings() {
   var dosAnchorKp = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });
   var dosAnchorP = pki.schema.x509.parse(signedCert("MRoot", "MRoot", dosAnchorKp, dosAnchorKp, [bcCA]));
   var dosAnchor = { name: dosAnchorP.subject, publicKey: dosAnchorP.subjectPublicKeyInfo.bytes, algorithm: dosAnchorP.subjectPublicKeyInfo.algorithm.oid };
-  check("interlinked same-subject certs stay bounded -> verdict (MAX_TSA_CHAINS)", (await pki.tsp.verify(dosTok, DATA, { trustAnchor: dosAnchor, certs: dosCerts })).valid === false);
+  check("interlinked same-subject certs stay bounded -> verdict (MAX_TSA_CHAINS)", (await pki.tsp.verify(dosTok, DATA, { trustAnchors: dosAnchor, certs: dosCerts })).valid === false);
 
   // a keyUsage asserting a signing bit but encoded as a NON-minimal NamedBitList (a trailing zero
   // byte) is malformed DER -- the X.690 sec. 11.2.2 minimal rule the shared decoder applies must not

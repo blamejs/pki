@@ -4,6 +4,18 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.11 — 2026-08-31
+
+pki.path.validate and pki.tsp.verify now take the trust store under the option name trustAnchors, the spelling the other verify verbs already use, accepting one anchor or an array; and pki.acme.client gains opts.resignKeys, which re-signs a request under an alternative account-key algorithm when a CA reports badSignatureAlgorithm.
+
+### Added
+
+- pki.acme.client accepts opts.resignKeys, an ordered array of { alg, key } alternatives for the account key (RFC 8555 section 6.2). When a CA rejects the account's JWS algorithm with a badSignatureAlgorithm error and lists the algorithms it supports, the client re-signs the request once with the first listed alternative the CA supports and retries. Each key is a CryptoKey for the same account key material under that algorithm, so the account's registered public key still verifies the re-signed request. The caller's order selects the algorithm and the CA's list only filters it, so a spoofed badSignatureAlgorithm cannot force a weaker algorithm (RFC 8555 section 10). Without the option, or when no listed algorithm is a caller alternative, the error surfaces unchanged.
+
+### Changed
+
+- pki.path.validate and pki.tsp.verify read the trust anchor from opts.trustAnchors, the same option the other verify verbs take. It accepts a single anchor tuple or root certificate, or a non-empty array of them; when several are supplied, pki.path.validate selects the anchor that issued the path's top certificate, and a one-element array reproduces the previous single-anchor result exactly. The former singular opts.trustAnchor is removed and is refused as an unknown option rather than silently ignored, so a stale caller gets a named error instead of an unanchored valid result. To upgrade, pass { trustAnchors: anchor } (or { trustAnchors: [a, b] }) where you passed { trustAnchor: anchor }.
+
 ## v0.6.10 — 2026-08-31
 
 pki.est computes a response body's length from a single read of res.body, shared by one helper across every verb, so a caller-supplied transport whose res.body getter changes between reads cannot desync the type check from the measured length.

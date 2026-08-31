@@ -38,7 +38,7 @@ function sigCheck(res) {
 }
 async function verifyDer(der) {
   var c = pki.schema.x509.parse(der);
-  return sigCheck(await pki.path.validate([c], { time: T, trustAnchor: anchorFor(c) }));
+  return sigCheck(await pki.path.validate([c], { time: T, trustAnchors: anchorFor(c) }));
 }
 
 async function run() {
@@ -104,7 +104,7 @@ async function run() {
   var algSeq = b.sequence([b.oid(pki.oid.byName("id-MLDSA65-ECDSA-P256-SHA512"))]);
   function anchorSpki(spki) { return { name: mleaf.subject, publicKey: spki, algorithm: mleaf.subjectPublicKeyInfo.algorithm }; }
   async function sigWithAnchor(spki) {
-    return sigCheck(await pki.path.validate([mleaf], { time: T, trustAnchor: anchorSpki(spki) }));
+    return sigCheck(await pki.path.validate([mleaf], { time: T, trustAnchors: anchorSpki(spki) }));
   }
   // A composite subjectPublicKey BIT STRING with a non-zero unused-bit count.
   check("composite: anchor SPKI with unused bits fails closed",
@@ -116,7 +116,7 @@ async function run() {
   // the anchor is now refused at ENTRY with path/bad-input, rather than bound and failed closed to a
   // soft verdict when the key body is read at verify time.
   var octetAnchorCode;
-  try { await pki.path.validate([mleaf], { time: T, trustAnchor: anchorSpki(b.sequence([algSeq, b.octetString(Buffer.alloc(2100))])) }); octetAnchorCode = "NO-THROW"; }
+  try { await pki.path.validate([mleaf], { time: T, trustAnchors: anchorSpki(b.sequence([algSeq, b.octetString(Buffer.alloc(2100))])) }); octetAnchorCode = "NO-THROW"; }
   catch (e) { octetAnchorCode = e.code; }
   check("composite: anchor SPKI whose key is not a BIT STRING is refused at entry (path/bad-input)",
     octetAnchorCode === "path/bad-input");
@@ -133,7 +133,7 @@ async function run() {
   async function kuValidate(hex) {
     var d = Buffer.from(kuDer); Buffer.from(hex, "hex").copy(d, kuOff);
     var c = pki.schema.x509.parse(d);
-    return kuVerdict(await pki.path.validate([c], { time: T, trustAnchor: { name: c.subject, publicKey: c.subjectPublicKeyInfo.bytes, algorithm: c.subjectPublicKeyInfo.algorithm } }));
+    return kuVerdict(await pki.path.validate([c], { time: T, trustAnchors: { name: c.subject, publicKey: c.subjectPublicKeyInfo.bytes, algorithm: c.subjectPublicKeyInfo.algorithm } }));
   }
   check("composite keyUsage: digitalSignature-only accepted (baseline)", (await kuValidate("03020780")) === true);
   check("composite keyUsage: keyEncipherment-only rejected (sec. 5.2 forbidden bit)", (await kuValidate("03020520")) === false);
@@ -152,7 +152,7 @@ async function run() {
   async function verifyWithCompositeKey(vec, name, keyBytes) {
     var leaf = pki.schema.x509.parse(Buffer.from(vec.x5c, "base64"));
     var spki = b.sequence([b.sequence([b.oid(pki.oid.byName(name))]), b.bitString(keyBytes, 0)]);
-    return sigCheck(await pki.path.validate([leaf], { time: T, trustAnchor: { name: leaf.subject, publicKey: spki, algorithm: leaf.subjectPublicKeyInfo.algorithm } }));
+    return sigCheck(await pki.path.validate([leaf], { time: T, trustAnchors: { name: leaf.subject, publicKey: spki, algorithm: leaf.subjectPublicKeyInfo.algorithm } }));
   }
   // A 1024-bit RSA component under the RSA-2048 arm (real ML-DSA-44 half) -> rejected.
   var rsaVec = KAT.tests.find(function (x) { return x.tcId === "id-MLDSA44-RSA2048-PSS-SHA256"; });
