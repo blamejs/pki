@@ -507,6 +507,8 @@ async function testGetCACaps() {
   check("getCACaps: GET ?operation=GetCACaps", t.calls[0].method === "GET" && t.calls[0].url.indexOf("operation=GetCACaps") !== -1);
   var none = await pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 404, headers: {}, body: "" }) });
   check("getCACaps: 404 means none supported", Object.keys(none).length === 0);
+  var notImpl = await pki.scep.getCACaps("http://ca.example/scep", { transport: fakeTransport({ status: 501, headers: {}, body: "" }) });
+  check("getCACaps: 501 Not Implemented means none supported (RFC 8894 sec. 3.5.1)", Object.keys(notImpl).length === 0);
   var weak = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "SHA-1\r\nDES3\r\n" });
   check("getCACaps: expectSCEPStandard fails closed when absent", (await codeOf(pki.scep.getCACaps("http://ca.example/scep", { transport: weak, expectSCEPStandard: true }))) === "scep/weak-profile");
   var proxyHtml = fakeTransport({ status: 200, headers: { "content-type": "text/html" }, body: "<html>gateway error</html>" });
@@ -553,6 +555,25 @@ async function testEnrollSuccess() {
   check("enroll: issued certificate selected by SPKI", Buffer.compare(out.certificate, issued) === 0);
   check("enroll: POSTed a pkiMessage to PKIOperation", t.calls[0].method === "POST" && t.calls[0].url.indexOf("operation=PKIOperation") !== -1 && Buffer.isBuffer(t.calls[0].body));
   check("enroll: request carried the pkiMessage content-type", t.calls[0].headers["content-type"] === "application/x-pki-message");
+}
+
+async function testEnrollTransactionIdUnique() {
+  var cl = await rsaClient();
+  var csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: cl.pub }, { key: cl.key });
+  var issued = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  var base = { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key } };
+  function okT() {
+    return caTransport(async function (p) {
+      var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+      return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+    });
+  }
+  var out1 = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: okT() }, base));
+  var out2 = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: okT() }, base));
+  // The default transaction ID is unique per operation (RFC 8894 sec. 3.2.1.1): two enrollments of the same
+  // key must not collide, or a CA cannot tell a renewal from the original request (a caller wanting a stable
+  // per-device ID passes an explicit transactionId).
+  check("enroll: two enrollments of the same key get distinct transaction IDs (RFC 8894 sec. 3.2.1.1)", typeof out1.transactionId === "string" && out1.transactionId !== out2.transactionId);
 }
 
 async function testEnrollFailureAndPending() {
@@ -654,6 +675,18 @@ async function testEnrollSecurity() {
   });
   var swapOut = await pki.scep.enroll("http://ca.example/scep", swapOpts);
   check("enroll: a mid-flight caCert swap cannot change the trusted response signer", swapOut.status === "SUCCESS" && Buffer.compare(swapOut.certificate, swapIssued) === 0);
+  // the recipient key FIELDS are snapshotted at the entry point too: replacing opts.recipientKey.key while
+  // the POST is in flight must not switch the credential the response is decrypted with.
+  var rkSwapOpts = Object.assign({}, base);
+  rkSwapOpts.recipientKey = { cert: cl.cert, key: cl.key };
+  rkSwapOpts.transport = fakeTransport(async function (req) {
+    rkSwapOpts.recipientKey.key = other.key;   // replace the recipient private key field after build, before parse decrypts
+    var p = await pki.scep.parse(req.body, { recipientKey: { cert: F.caCert, key: F.caKey } });
+    var env = await cmsEncrypt.encrypt(certsOnly([swapIssued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return { status: 200, headers: { "content-type": "application/x-pki-message" }, body: await buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }) };
+  });
+  var rkOut = await pki.scep.enroll("http://ca.example/scep", rkSwapOpts);
+  check("enroll: a mid-flight recipientKey field swap cannot change the decryption credential", rkOut.status === "SUCCESS" && Buffer.compare(rkOut.certificate, swapIssued) === 0);
   // two returned certificates carrying the requested public key (a same-key renewal, a duplicate) are
   // ambiguous: a CMS CertificateSet states no issuance order, so the issued certificate cannot be chosen.
   var issuedA = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
@@ -714,6 +747,7 @@ async function main() {
   await testGetCACaps();
   await testGetCACert();
   await testEnrollSuccess();
+  await testEnrollTransactionIdUnique();
   await testEnrollFailureAndPending();
   await testRenew();
   await testClientTransportEdges();
