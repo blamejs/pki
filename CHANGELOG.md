@@ -6,13 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.6.5 — 2026-08-31
 
-pki.cmp.build assembles the two remaining CMP request bodies: a key-recovery request (krr) and a cross-certification request (ccr), completing the request-side arms (RFC 9810 sec. 5.3.7 / sec. 5.3.11).
+pki.cmp.build assembles a CMP key-recovery request (krr) body: a CertReqMessages under PKIBody tag [9], the key-recovery counterpart of an initialization request (RFC 9810 sec. 5.3.7).
 
 ### Added
 
-- pki.cmp.build accepts a { krr } body arm (RFC 9810 sec. 5.3.7): a key-recovery request, a CertReqMessages built through pki.crmf.build under PKIBody tag [9], identical in syntax to an initialization request. Any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof.
-- pki.cmp.build accepts a { ccr } body arm (RFC 9810 sec. 5.3.11): a cross-certification request, a CertReqMessages under PKIBody tag [13], which a CA uses to have its certificate signed by another CA. Because the requesting CA generates and keeps the key pair, the private key must not be sent to the responding CA, so a ccr carrying a private-key-transport encryptedKey proof of possession is refused; a cross-certification request holds exactly one CertReqMsg (RFC 9810 Appendix D.6).
-- A ccr certTemplate may carry the RFC 9810 Appendix D.6 cross-certification profile fields that RFC 4211 sec. 5 omits from an ordinary request: signingAlg (a pre-encoded AlgorithmIdentifier DER naming the algorithm the requesting CA asks the responding CA to sign the cross-certificate with) and a version of v1 as well as v3. Both are accepted only on the cross-certification arm and refused elsewhere. pki.crmf.build gains a crossCert option that permits the same fields.
+- pki.cmp.build accepts a { krr } body arm (RFC 9810 sec. 5.3.7): a key-recovery request, a CertReqMessages built through pki.crmf.build under PKIBody tag [9], identical in syntax to an initialization request. The proof-of-possession key is a key field on the arm spec, and any proof-of-possession arm the CRMF builder produces is permitted, including a private-key-transport encryptedKey proof.
 
 ## v0.6.4 — 2026-08-30
 

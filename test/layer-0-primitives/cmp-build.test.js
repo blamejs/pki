@@ -21,7 +21,6 @@ var nodeCrypto = require("node:crypto");
 var cmpBuild = require("../../lib/cmp-build");   // @internal buildCrlStatusList: the session composes it directly, without build()'s entry deep-copy
 var pkiBuild = require("../../lib/pki-build");    // for a direct contract test of the shared reqDenseArray guard
 var surgery = require("../helpers/der-surgery");
-var schemaCrmf = require("../../lib/schema-crmf");   // walkCertReqMessages: read a ccr's App. D.6 signingAlg back off the emitted CRMF
 
 async function codeOf(promise) {
   try { await promise; return null; }
@@ -210,64 +209,21 @@ async function run() {
   check("6f. genm body arm octet is 0xB5 ([21])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { genm: [{ infoType: "caCerts" }] } }, SIG)) === 0xb5);
   check("6g. certConf body arm octet is 0xB8 ([24])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { certConf: [{ certHash: Buffer.alloc(32, 1), certReqId: 0 }] } }, SIG)) === 0xb8);
   check("6h. pollReq body arm octet is 0xB9 ([25])", bodyTagOctet(await pki.cmp.build({ header: HDR, body: { pollReq: [{ certReqId: 0 }] } }, SIG)) === 0xb9);
-  // krr [9] (key recovery request) and ccr [13] (cross-certification request), RFC 9810 sec. 5.3.7 / 5.3.11:
-  // both are CertReqMessages like ir/cr/kur. The parser is already krr/ccr-aware, and the build round-trips
-  // through it, so a ccr's sec. 5.3.11 restrictions are enforced on the emitted bytes.
+  // krr [9] (key recovery request), RFC 9810 sec. 5.3.7: a CertReqMessages like ir/cr/kur. The parser is
+  // already krr-aware, and the build round-trips through it.
   check("6i. krr body arm octet is 0xA9 ([9]) and round-trips to body.arm krr",
     bodyTagOctet(await pki.cmp.build({ header: HDR, body: { krr: irMsg.body.ir } }, SIG)) === 0xa9 &&
     parse(await pki.cmp.build({ header: HDR, body: { krr: irMsg.body.ir } }, SIG)).body.arm === "krr");
-  check("6j. ccr body arm octet is 0xAD ([13]) and round-trips to body.arm ccr",
-    bodyTagOctet(await pki.cmp.build({ header: HDR, body: { ccr: irMsg.body.ir } }, SIG)) === 0xad &&
-    parse(await pki.cmp.build({ header: HDR, body: { ccr: irMsg.body.ir } }, SIG)).body.arm === "ccr");
-  // A ccr MUST NOT send the private key to the responding CA (RFC 9810 sec. 5.3.11): an encryptedKey POP is
-  // forbidden. The same request as a krr (key recovery) MAY carry it -- the restriction is ccr-only.
+  // A krr (key recovery) is a CertReqMessages, so it accepts any proof-of-possession the CRMF builder
+  // produces, including a private-key-transport encryptedKey proof.
   var kemKp = nodeCrypto.generateKeyPairSync("ml-kem-768");
   var kemPk8 = kemKp.privateKey.export({ format: "der", type: "pkcs8" });
   var kemSpki = kemKp.publicKey.export({ format: "der", type: "spki" });
-  var ccrRecip = makeSigner("rsa");
+  var krrRecip = makeSigner("rsa");
   var encKeyBody = { certTemplate: { subject: [{ commonName: "subca" }], publicKey: kemSpki },
-    pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPk8, identifier: "subca", recipients: [{ cert: ccrRecip.cert }], archive: true } };
-  check("6k. a ccr with an encryptedKey POP is refused (the private key must not be sent, RFC 9810 sec. 5.3.11)",
-    await codeOf(pki.cmp.build({ header: HDR, body: { ccr: encKeyBody } }, SIG)) === "cmp/bad-body");
-  check("6l. the same encryptedKey POP is accepted in a krr (the restriction is ccr-only)",
+    pop: { type: "keyEncipherment", method: "encryptedKey", privateKey: kemPk8, identifier: "subca", recipients: [{ cert: krrRecip.cert }], archive: true } };
+  check("6j. a krr accepts an encryptedKey POP (a CertReqMessages carries any CRMF proof of possession)",
     parse(await pki.cmp.build({ header: HDR, body: { krr: encKeyBody } }, SIG)).body.arm === "krr");
-  // A ccr MAY profile its template with signingAlg [2] (RFC 9810 App. D.6): the requesting CA names the
-  // algorithm it asks the responding CA to sign the cross-certificate with. This is the one arm the parser
-  // accepts it on; RFC 4211 sec. 5 omits it from every other request, and the build gates emission to ccr.
-  var sigAlgId = asn1.build.sequence([asn1.build.oid(pki.oid.byName("ecdsaWithSHA256"))]);
-  var ccrTpl = { subject: [{ commonName: "subca" }], publicKey: s.spki, signingAlg: sigAlgId };
-  var ccrWalk = schemaCrmf.walkCertReqMessages(asn1.decode(await pki.crmf.build({ certTemplate: ccrTpl }, SIG, { crossCert: true })), { allowSigningAlg: true });
-  check("6m. a ccr template carries signingAlg [2], round-trips to arm ccr, and surfaces the requested algorithm (RFC 9810 App. D.6)",
-    parse(await pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTpl } } }, SIG)).body.arm === "ccr" &&
-    ccrWalk.messages[0].certReq.certTemplate.signingAlg != null &&
-    ccrWalk.messages[0].certReq.certTemplate.signingAlg.oid === pki.oid.byName("ecdsaWithSHA256"));
-  // signingAlg outside the cross-certification arm is an unknown certTemplate field the CRMF builder rejects
-  // at build time (RFC 4211 sec. 5); cmp.build passes that fault through untranslated so it names the field.
-  check("6n. signingAlg is refused outside a ccr: in an ir, in a krr, and (at the CRMF layer) without crossCert",
-    await codeOf(pki.cmp.build({ header: HDR, body: { ir: { certTemplate: ccrTpl } } }, SIG)) === "crmf/bad-input" &&
-    await codeOf(pki.cmp.build({ header: HDR, body: { krr: { certTemplate: ccrTpl } } }, SIG)) === "crmf/bad-input" &&
-    await codeOf(pki.crmf.build({ certTemplate: ccrTpl }, SIG, {})) === "crmf/bad-input");
-  // Every malformed signingAlg shape is refused: not a SEQUENCE, a SEQUENCE whose first element is not an
-  // OID, a SEQUENCE with an element beyond the one optional parameters (AlgorithmIdentifier holds at most the
-  // OID and one parameters), and a valid AlgorithmIdentifier followed by trailing bytes (the strict decoder
-  // rejects the trailing). All fail at build time with crmf/bad-input, naming the caller's field.
-  async function ccrSigningAlgCode(sa) { return codeOf(pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: { subject: [{ commonName: "subca" }], publicKey: s.spki, signingAlg: sa } } } }, SIG)); }
-  check("6o. a malformed signingAlg is refused in a ccr: not a SEQUENCE, no OID, an extra element, or trailing bytes",
-    await ccrSigningAlgCode(asn1.build.integer(5n)) === "crmf/bad-input" &&
-    await ccrSigningAlgCode(asn1.build.sequence([asn1.build.integer(1n)])) === "crmf/bad-input" &&
-    await ccrSigningAlgCode(asn1.build.sequence([asn1.build.oid(pki.oid.byName("ecdsaWithSHA256")), asn1.build.nullValue(), asn1.build.nullValue()])) === "crmf/bad-input" &&
-    await ccrSigningAlgCode(Buffer.concat([sigAlgId, Buffer.from([0])])) === "crmf/bad-input");
-  // A ccr template accepts version v1 (0) as well as v3 (2) (RFC 9810 App. D.6 profiles "v1 or v3", v3
-  // strongly recommended); RFC 4211 sec. 5 fixes every other request at v3, so v1 is refused off the ccr
-  // arm, and v2 (1) is refused everywhere.
-  function ccrTemplate(over) { return Object.assign({ subject: [{ commonName: "subca" }], publicKey: s.spki }, over); }
-  var ccrV1Walk = schemaCrmf.walkCertReqMessages(asn1.decode(await pki.crmf.build({ certTemplate: ccrTemplate({ version: 0 }) }, SIG, { crossCert: true })), { allowSigningAlg: true, allowV1Version: true });
-  check("6p. a ccr template accepts version v1 (0) and v3 (2); v1 is refused off the ccr arm and v2 (1) is refused",
-    parse(await pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTemplate({ version: 0 }) } } }, SIG)).body.arm === "ccr" &&
-    ccrV1Walk.messages[0].certReq.certTemplate.version === 0n &&
-    parse(await pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTemplate({ version: 2 }) } } }, SIG)).body.arm === "ccr" &&
-    await codeOf(pki.cmp.build({ header: HDR, body: { ir: { certTemplate: { version: 0, subject: [{ commonName: "leaf" }], publicKey: s.spki } } } }, SIG)) === "crmf/bad-version" &&
-    await codeOf(pki.cmp.build({ header: HDR, body: { ccr: { certTemplate: ccrTemplate({ version: 1 }) } } }, SIG)) === "crmf/bad-version");
 
   // 7. envelope EXPLICIT tags: protection [0], extraCerts [1], header messageTime [0] / protectionAlg [1].
   var msgChildren = asn1.decode(irDer).children;
