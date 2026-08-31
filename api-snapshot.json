@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.3",
+  "packageVersion": "0.6.4",
   "surface": {
     "C": {
       "kind": "object",
@@ -788,6 +788,10 @@
         "tlsAlpn01Extension": {
           "kind": "function",
           "arity": 2
+        },
+        "updateAccount": {
+          "kind": "function",
+          "arity": 1
         },
         "validate": {
           "kind": "function",
@@ -3438,6 +3442,7 @@
     "pki.acme.finalize": "0.1.25",
     "pki.acme.challengeResponse": "0.1.25",
     "pki.acme.deactivate": "0.1.25",
+    "pki.acme.updateAccount": "0.6.4",
     "pki.acme.revokeCert": "0.1.25",
     "pki.acme.keyChange": "0.1.25",
     "pki.acme.ariCertId": "0.1.25",

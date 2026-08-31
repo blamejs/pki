@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.4 — 2026-08-30
+
+The ACME client gains account update and order listing: pki.acme.client updates an account's contacts (RFC 8555 sec. 7.3.2) and fetches the account's orders list, following the paginated Link: rel="next" chain (sec. 7.1.2.1).
+
+### Added
+
+- pki.acme.client(...).updateAccount(opts) updates an ACME account (RFC 8555 sec. 7.3.2): a kid-signed POST to the account URL that sets opts.contact (RFC 6068 mailto hygiene applies; an empty array clears all contacts) and returns the resulting account object. The fields the server MUST ignore are refused at the door with a typed acme/bad-input naming the correct path: status (use deactivateAccount, sec. 7.3.6 is the only client-settable status), termsOfServiceAgreed (not client-updatable; a changed-terms CA answers a request with a userActionRequired problem, surfaced as acme/server-problem, rather than a client re-agreement), orders (server-assigned), and externalAccountBinding (not client-updatable). An unrecognized option is refused rather than sent.
+- pki.acme.client(...).listOrders(ordersUrl, opts?) fetches an account's orders list (RFC 8555 sec. 7.1.2.1) via POST-as-GET and returns { orders, pages, truncated }: orders is the aggregated array of order URLs, pages is how many pages were read, and truncated is true when the list was cut short by the page cap. It follows the sec. 7.1.2.1 Link: rel="next" pagination, bounded by opts.maxPages (default 50) and a visited-page dedupe so a looping or over-long next chain stops rather than fetching without end. Because the next header is delivered over TLS but not signed, and it steers an account-key-signed POST-as-GET, each next is https-gated and confined to the orders URL's own origin; an off-origin or non-https next is refused with acme/bad-link, and two distinct next targets (a singleton relation, RFC 8288 sec. 3.3) are ambiguous and refused.
+- pki.acme.updateAccount(opts) is a new message-layer builder (a top-level export alongside pki.acme.deactivate): it builds the kid-signed account-update JWS the client composes, so the message layer is usable without the stateful client.
+
+### Changed
+
+- The RFC 8288 Link response-header parser is now relation-parameterized: the sec. 7.4.2 alternate certificate-chain reader and the sec. 7.1.2.1 next orders-page reader share one hardened scan (byte cap, control-octet reject, relation-type well-formedness, anchor-context check, resolve, https gate, origin gate, and dedupe), so the same untrusted-header defenses cover both relations. Behavior for the alternate relation is unchanged.
+
 ## v0.6.3 — 2026-08-30
 
 pki.cms builds and reads certs-only certificate-management messages: a degenerate CMS SignedData that conveys certificates and CRLs without signing anything (RFC 8551 sec. 3.8).
