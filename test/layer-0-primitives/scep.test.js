@@ -871,6 +871,13 @@ async function testCertPollMessage() {
   ]);
   check("CertPoll: a non-IssuerAndSubject payload is refused", (await codeOf(pki.scep.parse(badPayload, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
   check("CertPoll: build requires a transactionId", (await codeOf(pki.scep.build({ messageType: "CertPoll", requestSubject: reqSubject, recipient: F.caCert, signer: F.signer, transactionId: "" }))) === "scep/bad-input");
+  check("CertPoll: build with a requestSubject that is a SEQUENCE but not an X.509 Name refused", (await codeOf(pki.scep.build({ messageType: "CertPoll", requestSubject: b.sequence([b.integer(1n)]), recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("CertPoll: build with an explicit issuer that is a SEQUENCE but not an X.509 Name refused", (await codeOf(pki.scep.build({ messageType: "CertPoll", requestSubject: reqSubject, issuer: b.sequence([b.integer(1n)]), recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var badCpIssuer = await signWith(await cmsEncrypt.encrypt(b.sequence([b.sequence([b.integer(1n)]), reqSubject]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("20")] },
+    { type: O("scepTransactionId"), values: [b.printable("t")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("CertPoll: parse rejects an issuer that is a SEQUENCE but not an X.509 Name", (await codeOf(pki.scep.parse(badCpIssuer, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
 }
 
 async function pollFixture() {
@@ -1032,6 +1039,27 @@ async function testGetCertGetCrlMessage() {
   check("GetCert: build with a non-Name issuer (INTEGER DER) refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: b.integer(5n), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
   check("GetCert: build with an undecodable issuer DER refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: Buffer.from([0x30, 0x82, 0xff, 0xff]), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
   check("GetCert: build with a negative serialNumber refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: -1n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with a zero serialNumber refused (RFC 5280 positive)", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: 0n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var dsSerial = require("../helpers/der-surgery");
+  var zeroSerialCert = dsSerial.replaceTlv(F.issuedCert, b.integer(serial), b.integer(0n)).der;
+  check("GetCert: the crafted certificate parses with a zero serial", pki.schema.x509.parse(zeroSerialCert).serialNumber === 0n);
+  check("GetCert: build from a certificate whose serial is non-positive is refused", (await codeOf(pki.scep.build({ messageType: "GetCert", certificate: zeroSerialCert, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with a SEQUENCE issuer that is not an X.509 Name refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: b.sequence([b.integer(1n)]), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  async function getCertPayload(payloadDer) {
+    return signWith(await cmsEncrypt.encrypt(payloadDer, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+      { type: O("scepMessageType"), values: [b.printable("21")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  }
+  var badIssuerParse = await getCertPayload(b.sequence([b.sequence([b.integer(1n)]), b.integer(5n)]));
+  check("GetCert: parse rejects an issuer that is a SEQUENCE but not an X.509 Name", (await codeOf(pki.scep.parse(badIssuerParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var nonMinSerialParse = await getCertPayload(b.sequence([issuerBytes, Buffer.from([0x02, 0x02, 0x00, 0x05])]));
+  check("GetCert: parse rejects a non-minimal INTEGER serial (strict DER decode)", (await codeOf(pki.scep.parse(nonMinSerialParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var constructedSerialParse = await getCertPayload(b.sequence([issuerBytes, Buffer.from([0x22, 0x03, 0x02, 0x01, 0x05])]));
+  check("GetCert: parse rejects a constructed INTEGER serial", (await codeOf(pki.scep.parse(constructedSerialParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var zeroSerialParse = await getCertPayload(b.sequence([issuerBytes, b.integer(0n)]));
+  check("GetCert: parse rejects a non-positive INTEGER serial", (await codeOf(pki.scep.parse(zeroSerialParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var undecodableParse = await getCertPayload(Buffer.from([0x30, 0x05]));
+  check("GetCert: parse rejects an undecodable IssuerAndSerialNumber payload", (await codeOf(pki.scep.parse(undecodableParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  check("GetCert: build with an unsafe-integer number serialNumber refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: Number.MAX_SAFE_INTEGER + 2, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
 }
 
 async function testGetCertVerb() {
@@ -1124,6 +1152,7 @@ async function testGetQuerySync() {
   check("getCert: an unparseable certificate refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: Buffer.from([0x30, 0x01, 0x00]), transport: t26 }, f.base)))) === "scep/bad-input");
   check("getCert: an explicit issuer without a serialNumber refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ issuer: pki.schema.x509.parse(F.issuedCert).issuer.bytes, transport: t26 }, f.base)))) === "scep/bad-input");
   check("getCrl: an undecodable issuer DER refused at the door", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ issuer: Buffer.from([0x30, 0x82, 0xff, 0xff]), serialNumber: 5n, transport: t26 }, f.base)))) === "scep/bad-input");
+  check("getCert: a zero serialNumber refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ issuer: pki.schema.x509.parse(F.issuedCert).issuer.bytes, serialNumber: 0n, transport: t26 }, f.base)))) === "scep/bad-input");
   check("getCert: no POST was made for the invalid inputs", t26.calls.length === 0);
 }
 
