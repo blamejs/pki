@@ -172,6 +172,8 @@ async function run() {
   check("verifyBundle surfaces the in-toto subject digest", v && v.subjects && v.subjects.length >= 1 && /^[0-9a-f]{64,128}$/.test(v.subjects[0].digest.sha512 || v.subjects[0].digest.sha256 || ""));
   check("verifyBundle surfaces the SLSA predicateType", v && v.predicateType === "https://slsa.dev/provenance/v1");
   check("#78 predicateTypeChecked is false when no predicateType is pinned", v.predicateTypeChecked === false);
+  check("#78 the verdict identifies the attested Rekor entry (logIndex + logId)",
+    typeof v.logIndex === "number" && v.logIndex >= 0 && typeof v.logId === "string" && v.logId.length > 0);
   var vPin78 = await pki.sigstore.verifyBundle(BUNDLE, Object.assign({ predicateType: "https://slsa.dev/provenance/v1" }, TM));
   check("#78 predicateTypeChecked is true when a matching predicateType is pinned", vPin78.valid === true && vPin78.predicateTypeChecked === true);
   // The verified payload bytes are surfaced RAW (never a re-serialization).

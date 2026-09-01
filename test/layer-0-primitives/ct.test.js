@@ -403,6 +403,11 @@ async function testVerifySct() {
   var ecSpki = ec.publicKey.export({ format: "der", type: "spki" });
   var ecSct = await signedSct(ec.privateKey, "sha256", 4, "ecdsa", 3);
   check("67. verifySct accepts a valid ECDSA SCT", (await vres(function () { return pki.ct.verifySct(entry, ecSct, ecSpki); })) === true);
+  // #78 carve-out (E): verifySct -- like pki.shbs.verify / verifyLms and pki.merkle.verifyInclusion /
+  // verifyConsistency -- is a SINGLE cryptographic check with no hidden remainder, so it stays a bare
+  // BOOLEAN and is deliberately NOT promoted to a verdict object; malformed input throws a typed PkiError.
+  check("#78 verifySct stays a bare boolean (single-check carve-out, not an object verdict)",
+    typeof (await pki.ct.verifySct(entry, ecSct, ecSpki)) === "boolean");
   var corrupt = Buffer.from(ecSct.signature); corrupt[corrupt.length - 1] ^= 0xff;
   check("68. verifySct rejects a corrupted signature (false, not throw)", (await vres(function () { return pki.ct.verifySct(entry, Object.assign({}, ecSct, { signature: corrupt }), ecSpki); })) === false);
   var ec2 = crypto.generateKeyPairSync("ec", { namedCurve: "prime256v1" });

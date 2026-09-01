@@ -1,0 +1,10 @@
+{
+  "version": "0.6.13",
+  "headline": "pki.sigstore.verifyBundle now reports which transparency-log entry attested a bundle: the verdict carries `logIndex` and `logId` so a caller can locate the exact Rekor record it verified against.",
+  "summary": "A verified Sigstore bundle rests on one Rekor transparency-log entry, but the verdict named only the entry's integratedTime, so a caller auditing provenance had to re-derive which log record it verified against. The verdict now also carries `logIndex` (the entry's global log index) and `logId` (the log's key id in hex), the record identity the verification already resolved.",
+  "sections": {
+    "Added": [
+      "pki.sigstore.verifyBundle's verdict carries `logIndex` (the attested Rekor entry's global log index) and `logId` (the log's key id, hex) beside `integratedTime`, so a caller can fetch or audit the exact transparency-log record the bundle was verified against instead of re-deriving it."
+    ]
+  }
+}
