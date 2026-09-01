@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.21 — 2026-09-01
+
+WebCrypto and the signing and format builders refuse an algorithm, curve, digest, or profile name that collides with an inherited Object.prototype property name.
+
+### Fixed
+
+- pki.webcrypto (generateKey, sign, verify, encrypt, decrypt, deriveBits, deriveKey, wrapKey, unwrapKey, importKey, encapsulateBits, decapsulateBits) refuses an algorithm name or namedCurve that collides with an inherited Object.prototype property name, returning webcrypto/not-supported instead of a bare Node error. The digest, PBMAC1 PRF, CMP body, PKCS#12 MAC hash, PBES2 PRF, and lint-profile lookups behind pki.tsp.sign, pki.cmp.build, pki.pkcs12.build, pki.key.encrypt, pki.lint.certificate, and the RSA-PSS and C509 builders are hardened the same way, each returning the verb's typed error for such a name.
+
 ## v0.6.20 — 2026-09-01
 
 A vulnerable build-time dependency is refreshed; it is not part of the published package.

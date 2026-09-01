@@ -40,6 +40,7 @@ async function testParamByteExactness() {
   // #4 prf == the DEFAULT (hmacWithSHA1) -> the prf element is OMITTED: params are exactly [salt, iter].
   var kp1 = pbkdf2ParamsOf(await pki.key.encrypt(rsaDer, "pw", { prf: "hmacWithSHA1" }));
   check("#4 hmacWithSHA1 prf is omitted (PBKDF2-params = salt + iterationCount only)", kp1.children.length === 2);
+  check("an inherited-property prf (toString) -> key/bad-input, not a bare TypeError", (await (async function () { try { await pki.key.encrypt(rsaDer, "pw", { prf: "toString" }); return "NO-THROW"; } catch (e) { return e && e.code; } })()) === "key/bad-input");
   check("#4 PBKDF2-params[0] is the salt OCTET STRING", kp1.children[0].tagNumber === TAGS.OCTET_STRING);
   check("#4 PBKDF2-params[1] is the iterationCount INTEGER", kp1.children[1].tagNumber === TAGS.INTEGER);
 

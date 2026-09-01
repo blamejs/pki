@@ -1,0 +1,10 @@
+{
+  "version": "0.6.21",
+  "headline": "WebCrypto and the signing and format builders refuse an algorithm, curve, digest, or profile name that collides with an inherited Object.prototype property name.",
+  "summary": "The lookup tables that resolve a caller-supplied algorithm, curve, digest, PBMAC1 PRF, CMP body, or lint-profile name are now prototype-free. A name such as \"toString\" or \"constructor\" no longer resolves to an inherited Object.prototype method and slip past the unknown-value check; it is refused with the module's own typed error (webcrypto/not-supported, tsp/unsupported-algorithm, cmp/bad-input, pkcs12/unsupported-algorithm, key/bad-input, or lint/unknown-profile) instead of surfacing a bare TypeError or an unrelated Node error. Valid algorithm names resolve exactly as before.",
+  "sections": {
+    "Fixed": [
+      "pki.webcrypto (generateKey, sign, verify, encrypt, decrypt, deriveBits, deriveKey, wrapKey, unwrapKey, importKey, encapsulateBits, decapsulateBits) refuses an algorithm name or namedCurve that collides with an inherited Object.prototype property name, returning webcrypto/not-supported instead of a bare Node error. The digest, PBMAC1 PRF, CMP body, PKCS#12 MAC hash, PBES2 PRF, and lint-profile lookups behind pki.tsp.sign, pki.cmp.build, pki.pkcs12.build, pki.key.encrypt, pki.lint.certificate, and the RSA-PSS and C509 builders are hardened the same way, each returning the verb's typed error for such a name."
+    ]
+  }
+}

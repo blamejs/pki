@@ -226,6 +226,10 @@ async function testPqcSign() {
     (await code(function () { return subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(1568)); })) === "webcrypto/bad-kem-ciphertext");
   check("encapsulateBits/decapsulateBits reject a non-ML-KEM algorithm -> not-supported",
     (await code(function () { return subtle.encapsulateBits({ name: "AES-GCM" }, kp768.publicKey); })) === "webcrypto/not-supported");
+  check("generateKey rejects an inherited-property algorithm name (toString) -> not-supported",
+    (await code(function () { return subtle.generateKey({ name: "toString" }, true, ["sign", "verify"]); })) === "webcrypto/not-supported");
+  check("generateKey rejects an inherited-property namedCurve (constructor) -> not-supported",
+    (await code(function () { return subtle.generateKey({ name: "ECDSA", namedCurve: "constructor" }, true, ["sign", "verify"]); })) === "webcrypto/not-supported");
   // FO implicit rejection: a right-length tampered ciphertext decapsulates to a DIFFERENT
   // (pseudo-random) shared key, never a throw -- the property the CMS uniform verdict relies on.
   var ssGarbage = await subtle.decapsulateBits({ name: "ML-KEM-768" }, kp768.privateKey, Buffer.alloc(1088, 0xAB));

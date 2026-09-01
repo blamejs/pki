@@ -110,6 +110,7 @@ function run() {
 
   // Config-time misuse is the ONLY throw path (a typed LintError).
   check("an unknown profile throws lint/unknown-profile", throwsCode(function () { pki.lint.certificate(REAL, { profile: "does-not-exist" }); }) === "lint/unknown-profile");
+  check("an inherited-property profile (toString) throws lint/unknown-profile, not a bare TypeError", throwsCode(function () { pki.lint.certificate(REAL, { profile: "toString" }); }) === "lint/unknown-profile");
   check("a wrong-type input throws lint/bad-input", throwsCode(function () { pki.lint.certificate(42); }) === "lint/bad-input");
   check("a bad severity threshold throws lint/bad-severity", throwsCode(function () { pki.lint.certificate(REAL, { severity: "nope" }); }) === "lint/bad-severity");
 

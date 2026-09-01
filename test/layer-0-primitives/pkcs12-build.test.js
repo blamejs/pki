@@ -56,6 +56,7 @@ async function testPbmac1RoundTrip() {
   var s = signer();
   var p12 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key, encrypt: { password: "1234" } }] }] },
     { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256" } });
+  check("#2 an inherited-property pbmac1 hash (toString) -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", mac: { algorithm: "pbmac1", hash: "toString" } }))) === "pkcs12/unsupported-algorithm");
   var m = pki.schema.pkcs12.parse(p12);
   check("#2 mac.kind is pbmac1", m.mac.kind === "pbmac1");
   check("#2 PBMAC1 keyLength is 32", m.mac.pbmac1.kdf.keyLength === 32);

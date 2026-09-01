@@ -373,6 +373,7 @@ async function run() {
   check("19e. mac.keyLength below the RFC 9579 floor (< 20) -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 16 } })) === "cmp/bad-input");
   check("19e. an unsupported mac.algorithm -> cmp/unsupported-algorithm", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", algorithm: "passwordBasedMac" } })) === "cmp/unsupported-algorithm");
   check("19f. a bad mac.prf -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", prf: "MD5" } })) === "cmp/bad-input");
+  check("19f2. an inherited-property mac.prf (toString) -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", prf: "toString" } })) === "cmp/bad-input");
   check("19g. a non-integer mac.iterationCount -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 1.5 } })) === "cmp/bad-input");
   check("19h. a non-integer mac.keyLength -> cmp/bad-input", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", keyLength: 0 } })) === "cmp/bad-input");
   check("19h2. a below-minimum mac.iterationCount -> cmp/bad-input (RFC 8018 floor)", await codeOf(pki.cmp.build(macMsg, { mac: { secret: "x", iterationCount: 100 } })) === "cmp/bad-input");
