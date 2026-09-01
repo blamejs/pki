@@ -4,7 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.13 — 2026-09-01
+## v0.6.14 — 2026-09-01
+
+pki.scep.getNextCACert retrieves a SCEP CA's next (rollover) certificate and authenticates it against the current CA key, so a client can obtain and hold the CA certificate to install before the current one expires.
+
+### Added
+
+- pki.scep.getNextCACert(baseUrl, opts) performs the RFC 8894 sec. 4.7 GetNextCACert exchange for CA key rollover: a GET for the CA's next certificate whose SignedData response is verified and pinned to the current CA certificate (opts.caCertificate) before the next CA certificate(s) are returned in certificates. opts.caCertificate is required, and a response signed by any key other than the current CA is refused (scep/untrusted-signer), so a rollover certificate that would become a future trust anchor is never returned without authentication.
+
+## v0.6.13 — 2026-08-31
 
 pki.sigstore.verifyBundle now reports which transparency-log entry attested a bundle: the verdict carries `logIndex` and `logId` so a caller can locate the exact Rekor record it verified against.
 

@@ -557,6 +557,79 @@ async function testGetCACert() {
   check("getCACert: a mid-GET fingerprint swap cannot repoint the pin", Buffer.compare(gcOut.caCertificate, F.caCert) === 0);
 }
 
+async function testGetNextCACert() {
+  // The RFC 8894 sec. 4.7.1 rollover response: an outer SignedData signed by the CURRENT CA key whose
+  // content is a degenerate certs-only SignedData carrying the next CA certificate. Constructed offline
+  // from the CMS verbs (no live SCEP CA in the stack), the same way the CertRep fixtures are.
+  var nextKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var nextCaCert = await pki.x509.sign({ subject: "SCEP CA (next)", subjectPublicKey: await pki.key.export(nextKp.publicKey), notBefore: new Date("2029-06-01"), notAfter: new Date("2035-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, { key: await pki.key.export(nextKp.privateKey) });
+  var inner = await pki.cms.certsOnly([nextCaCert]);
+  var outer = await cmsSign.sign(inner, { cert: F.caCert, key: F.caKey }, {});
+  var NEXT_CT = { "content-type": "application/x-x509-next-ca-cert" };
+
+  // 1. Happy path: the current CA signs, the next CA is returned byte-identical.
+  var r = await pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: outer }) });
+  check("getNextCACert: the next CA certificate is returned", r.certificates.length === 1 && Buffer.compare(r.certificates[0], nextCaCert) === 0);
+
+  // 2. The security MUST (sec. 4.7.1): a response signed by any key other than the current CA is refused,
+  // even though the CMS is internally self-consistent under its embedded (attacker) certificate.
+  var atkKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var atkKey = await pki.key.export(atkKp.privateKey);
+  var atkCert = await pki.x509.sign({ subject: "Rogue CA", subjectPublicKey: await pki.key.export(atkKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "digitalSignature"] } }, { key: atkKey });
+  var rogue = await cmsSign.sign(inner, { cert: atkCert, key: atkKey }, {});
+  check("getNextCACert: a response not signed by the current CA is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: rogue }) }))) === "scep/untrusted-signer");
+
+  // 3. A tampered outer signature (well-formed DER, invalid signature) is refused. The RSA-2048 signature
+  // is the trailing OCTET STRING; a byte flipped well inside it keeps the DER well-formed.
+  var tampered = Buffer.from(outer);
+  tampered[tampered.length - 20] ^= 0x40;
+  check("getNextCACert: a tampered outer signature is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: tampered }) }))) === "scep/bad-signature");
+
+  // 4. The wrong content-type is refused (sec. 4.7.1 names application/x-x509-next-ca-cert).
+  check("getNextCACert: wrong content-type refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: { "content-type": "application/x-x509-ca-cert" }, body: outer }) }))) === "scep/bad-content-type");
+
+  // 5. The current CA certificate is required: an unauthenticated rollover certificate becomes a future
+  // trust anchor, so it is refused at the synchronous door, before any GET.
+  check("getNextCACert: a missing caCertificate is refused before the GET", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { transport: fakeTransport({ status: 200, headers: NEXT_CT, body: outer }) }))) === "scep/bad-input");
+
+  // 6. An empty inner certs-only bag is refused, never an empty success.
+  var emptyOuter = await cmsSign.sign(certsOnly([]), { cert: F.caCert, key: F.caKey }, {});
+  check("getNextCACert: an empty certificate bag is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: emptyOuter }) }))) === "scep/no-certificates");
+
+  // 7. A detached outer (no content) is refused: the rollover certificates ARE the content.
+  var detached = await cmsSign.sign(inner, { cert: F.caCert, key: F.caKey }, { detached: true });
+  check("getNextCACert: a detached outer (no content) is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: detached }) }))) === "scep/bad-response");
+
+  // 8. An HTTP error is surfaced, not swallowed.
+  check("getNextCACert: HTTP error refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 500, headers: {}, body: "oops" }) }))) === "scep/http-error");
+
+  // 9. An unknown option is refused.
+  check("getNextCACert: unknown option refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, bogus: 1, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: outer }) }))) === "scep/bad-input");
+
+  // 10. The caCertificate is captured at the synchronous door: a caller swapping it while the GET is in
+  // flight cannot repoint the authentication away from the value supplied at the call.
+  var gnOpts = { caCertificate: F.caCert };
+  gnOpts.transport = fakeTransport(function () { gnOpts.caCertificate = atkCert; return Promise.resolve({ status: 200, headers: NEXT_CT, body: outer }); });
+  var gnOut = await pki.scep.getNextCACert("http://ca.example/scep", gnOpts);
+  check("getNextCACert: a mid-GET caCertificate swap cannot repoint the authentication", gnOut.certificates.length === 1 && Buffer.compare(gnOut.certificates[0], nextCaCert) === 0);
+
+  // 11. A current CA whose keyUsage omits digitalSignature cannot authenticate a signature, so it is
+  // refused at the door (RFC 8894 sec. 2.3), before the GET.
+  var noSignKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var noSignCa = await pki.x509.sign({ subject: "SCEP CA (no sign)", subjectPublicKey: await pki.key.export(noSignKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, { key: await pki.key.export(noSignKp.privateKey) });
+  check("getNextCACert: a current CA that cannot sign is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: noSignCa, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: outer }) }))) === "scep/bad-signer-usage");
+
+  // 12. A response body that is not a CMS SignedData at all is refused as a bad response.
+  check("getNextCACert: a non-CMS response body is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: Buffer.from("not a CMS message") }) }))) === "scep/bad-response");
+
+  // 13. A response carrying more than one signer is refused, even when one signer IS the current CA. A
+  // GetNextCACert response is signed by the current CA alone (sec. 4.7.1); requiring exactly one signer
+  // binds the signature-verified check and the current-CA key pin to the same SignerInfo, so a second
+  // signer's valid signature cannot stand in for a current-CA identity whose own signature does not verify.
+  var twoSigner = await cmsSign.sign(inner, [{ cert: F.caCert, key: F.caKey }, { cert: atkCert, key: atkKey }], {});
+  check("getNextCACert: a multi-signer response is refused", (await codeOf(pki.scep.getNextCACert("http://ca.example/scep", { caCertificate: F.caCert, transport: fakeTransport({ status: 200, headers: NEXT_CT, body: twoSigner }) }))) === "scep/bad-signer");
+}
+
 async function testEnrollSuccess() {
   var cl = await rsaClient();
   var csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: cl.pub, challengePassword: "s3cret" }, { key: cl.key });
@@ -795,6 +868,7 @@ async function main() {
   await testInputGuards();
   await testGetCACaps();
   await testGetCACert();
+  await testGetNextCACert();
   await testEnrollSuccess();
   await testEnrollTransactionIdUnique();
   await testEnrollFailureAndPending();
