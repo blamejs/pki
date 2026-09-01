@@ -1054,6 +1054,104 @@ async function testRenewalWindow() {
   check("#15 RW-22 a matching-window previous with a malformed selectedTime is rejected", (await codeOf(clientAt(sReuse, T).renewalWindow(certDer, { previous: { suggestedWindow: { start: iso(T + 10 * DAY), end: iso(T + 20 * DAY) }, selectedTime: "not-a-date" } }))) === "acme/bad-input");
 }
 
+// ---- 16 scheduleRenewal: the RFC 9773 sec. 4.1 auto-sleeping renewal loop ----
+// The timer renewalWindow deliberately omits: fetch ARI, sleep to the selected instant (or the
+// Retry-After, whichever is sooner), refetch, until renewNow -- bounded by the caller's budget, the
+// cert's notAfter (MUST NOT check after expiry), and a shouldStop() replaced-signal (sec. 4.3). Driven
+// with a mutable clock + a recording sleeper, so virtual time advances only when the loop sleeps.
+async function testScheduleRenewal() {
+  var DAY = 24 * 60 * 60 * 1000, HOUR = 60 * 60 * 1000;
+  var aki = require("node:crypto").createHash("sha1").update("sched-issuer-key").digest();
+  var certDer = signing.makeSigner("ec-p256", { cn: "sched.example", exts: [akiExt(aki)] }).cert;   // notAfter 2040
+  function iso(ms) { return new Date(ms).toISOString(); }
+  function riResp(startMs, endMs, extra) {
+    return { status: 200, headers: Object.assign({ "content-type": "application/json" }, extra || {}),
+      body: JSON.stringify({ suggestedWindow: { start: iso(startMs), end: iso(endMs) } }) };
+  }
+  function harness(atMs) { var st = { now: atMs, slept: [] };
+    return { st: st, clock: function () { return st.now; }, sleep: function (ms) { st.slept.push(ms); st.now += ms; return Promise.resolve(); } }; }
+  function clientWith(server, h) { return pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, server, { clock: h.clock, sleep: h.sleep })); }
+  var T = Date.parse("2027-06-01T00:00:00Z");
+
+  // SR-1 a past window -> renew-now on the first iteration, NO sleep.
+  var h1 = harness(T);
+  var r1 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T - 20 * DAY, T - 10 * DAY) }), h1).scheduleRenewal(certDer, { random: function () { return 0.5; } });
+  check("#16 SR-1 a past window resolves renew-now at once", r1.reason === "renew-now" && r1.decision.renewNow === true);
+  check("#16 SR-1 an already-due renewal never sleeps", h1.st.slept.length === 0);
+
+  // SR-2 a near future window (< the 6h default Retry-After) -> ONE sleep to the selected instant, then
+  // the advanced clock makes the refetch renew-now (sec. 4.1 step 4).
+  var h2 = harness(T);
+  var r2 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 1 * HOUR, T + 3 * HOUR) }), h2).scheduleRenewal(certDer, { random: function () { return 0.5; }, maxChecks: 10 });
+  check("#16 SR-2 a near window sleeps once to the selected instant then renews", r2.reason === "renew-now" && h2.st.slept.length === 1 && h2.st.slept[0] === 2 * HOUR);
+
+  // SR-3 an expired certificate resolves "expired" (renewalWindow's sec. 4.3 gate, caught by the loop).
+  var h3 = harness(Date.parse("2041-01-01T00:00:00Z"));
+  var r3 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), h3).scheduleRenewal(certDer, {});
+  check("#16 SR-3 an expired certificate stops with reason expired", r3.reason === "expired");
+
+  // SR-4 shouldStop() (the caller's "replaced" signal) resolves "stopped" before any fetch (sec. 4.3).
+  var h4 = harness(T), s4 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  var r4 = await clientWith(s4, h4).scheduleRenewal(certDer, { shouldStop: function () { return true; } });
+  check("#16 SR-4 shouldStop resolves stopped with no fetch", r4.reason === "stopped" && s4.calls.filter(function (c) { return new URL(c.url).pathname.indexOf("/renewal-info") === 0; }).length === 0);
+
+  // SR-4b shouldStop() that flips true DURING the ARI fetch stops with "stopped", not a stale renew-now:
+  // the loop rechecks the replaced-signal after the await before acting on the decision.
+  var n4b = 0, h4b = harness(T);
+  var r4b = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T - 5 * DAY, T - 1 * DAY) }), h4b).scheduleRenewal(certDer, { random: function () { return 0.5; }, shouldStop: function () { return n4b++ >= 1; } });
+  check("#16 SR-4b a replaced-signal during the fetch stops, not a stale renew-now", r4b.reason === "stopped");
+
+  // SR-5 an inverted window (sec. 4.2 invalid) is a long-term error: sleep the long-term interval and
+  // retry, never throwing acme/bad-renewal-window out; bounded by maxChecks -> "budget".
+  var h5 = harness(T);
+  var r5 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 20 * DAY, T + 10 * DAY) }), h5).scheduleRenewal(certDer, { maxChecks: 3, longTermRetrySeconds: 3600 });
+  check("#16 SR-5 an invalid window retries on the long-term schedule to the budget", r5.reason === "budget" && h5.st.slept.length === 2 && h5.st.slept.every(function (m) { return m === 3600 * 1000; }));
+
+  // SR-6 a renew callback drives the re-enroll: called at renew-now with the decision; returning a new
+  // certDer reschedules on it, returning nothing resolves "renewed".
+  var h6 = harness(T), seen = null;
+  var r6 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T - 5 * DAY, T - 1 * DAY) }), h6).scheduleRenewal(certDer, { random: function () { return 0.5; }, renew: function (d) { seen = d; return null; } });
+  check("#16 SR-6 the renew callback runs at renew-now and resolves renewed", r6.reason === "renewed" && seen && seen.renewNow === true);
+  // SR-6b a renew callback that keeps returning an immediately-due certificate MUST still respect maxChecks
+  // (the reschedule path cannot bypass the check budget) rather than loop forever.
+  var h6b = harness(T), renews = 0;
+  var r6b = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T - 5 * DAY, T - 1 * DAY) }), h6b).scheduleRenewal(certDer, { random: function () { return 0.5; }, maxChecks: 2, renew: function () { renews += 1; return certDer; } });
+  check("#16 SR-6b a repeatedly-due renew loop is bounded by maxChecks", r6b.reason === "budget" && renews === 2);
+
+  // SR-7 an ever-future far window sleeps the Retry-After each round (sec. 4.1 step 6) to the budget.
+  var h7 = harness(T);
+  var r7 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 100 * DAY, T + 200 * DAY, { "retry-after": "3600" }) }), h7).scheduleRenewal(certDer, { random: function () { return 0.5; }, maxChecks: 4 });
+  check("#16 SR-7 a far window sleeps the Retry-After to the budget", r7.reason === "budget" && h7.st.slept.length === 3 && h7.st.slept.every(function (m) { return m === 3600 * 1000; }));
+  // SR-7b the final allowed check does NOT sleep before reporting the budget (maxChecks 1 -> one fetch, zero sleeps).
+  var h7b = harness(T);
+  var r7b = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 100 * DAY, T + 200 * DAY) }), h7b).scheduleRenewal(certDer, { random: function () { return 0.5; }, maxChecks: 1 });
+  check("#16 SR-7b maxChecks 1 reports budget without sleeping", r7b.reason === "budget" && h7b.st.slept.length === 0);
+  // SR-7c a synchronous sleeper (returns undefined, advances the clock itself) is normalized, not a TypeError.
+  var syncNow = { v: T };
+  var cSync = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, A.acmeServer({ renewalInfoResponse: riResp(T + 1 * HOUR, T + 3 * HOUR) }), { clock: function () { return syncNow.v; }, sleep: function (ms) { syncNow.v += ms; } }));
+  var r7c = await cSync.scheduleRenewal(certDer, { random: function () { return 0.5; }, maxChecks: 10 });
+  check("#16 SR-7c a synchronous sleeper is normalized and the loop completes", r7c.reason === "renew-now");
+
+  // SR-8 an unknown option fails closed.
+  check("#16 SR-8 an unknown scheduleRenewal option is refused", (await codeOf(clientWith(A.acmeServer({}), harness(T)).scheduleRenewal(certDer, { maxCheck: 3 }))) === "acme/bad-input");
+
+  // SR-10 a sleep MUST NOT overshoot the maxWait total-wait budget: with maxWait 60s and a far window
+  // whose Retry-After is hours, the single sleep is clamped to the 60s remaining, then the budget stops.
+  var h10 = harness(T);
+  var r10 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 100 * DAY, T + 200 * DAY) }), h10).scheduleRenewal(certDer, { random: function () { return 0.5; }, maxWait: 60 });
+  check("#16 SR-10 a sleep is clamped to the remaining maxWait, not the full Retry-After", r10.reason === "budget" && h10.st.slept.length === 1 && h10.st.slept[0] === 60 * 1000);
+
+  // SR-11 a caller error (malformed certificate DER) REJECTS rather than entering the retry schedule.
+  check("#16 SR-11 a malformed certificate DER is rejected, not retried", (await codeOf(clientWith(A.acmeServer({}), harness(T)).scheduleRenewal(Buffer.from([0x30, 0x01, 0xff]), { maxChecks: 2 }))) === "x509/bad-der");
+  // SR-12 a caller error (random outside [0, 1]) REJECTS.
+  check("#16 SR-12 a random outside [0, 1] is rejected, not retried", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), harness(T)).scheduleRenewal(certDer, { random: function () { return 2; }, maxChecks: 2 }))) === "acme/bad-input");
+
+  // SR-9 a 5xx renewalInfo is a temporary error: exponential backoff (sec. 4.3.3 SHOULD), bounded.
+  var h9 = harness(T);
+  var r9 = await clientWith(A.acmeServer({ renewalInfoResponse: { status: 503, headers: {}, body: "{}" } }), h9).scheduleRenewal(certDer, { maxChecks: 3, temporaryBaseSeconds: 10 });
+  check("#16 SR-9 a 5xx backs off exponentially to the budget", r9.reason === "budget" && h9.st.slept.length === 2 && h9.st.slept[0] === 10000 && h9.st.slept[1] === 20000);
+}
+
 // ---- 17 the downloaded certificate answers THIS order (RFC 8555 sec. 7.4 / sec. 7.4.2) ------
 // The outbound direction already binds: finalize refuses a CSR whose identifier set is not the
 // order's (acme/csr-identifier-mismatch) and refuses the account key (acme/key-reuse). Nothing bound
@@ -1882,6 +1980,7 @@ async function main() {
   await testHappyFlow();
   await testNewAuthz();
   await testRenewalWindow();
+  await testScheduleRenewal();
   await testAlternateChains();
   await testIssuedCertificateBinding();
   await testRemainingVerbs();

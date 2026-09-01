@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.22 — 2026-09-01
+
+pki.acme.client gains scheduleRenewal, the RFC 9773 auto-sleeping certificate-renewal loop.
+
+### Added
+
+- pki.acme.client(...).scheduleRenewal(certDer, { random, shouldStop, renew, maxChecks, maxWait, longTermRetrySeconds, temporaryBaseSeconds }) is the RFC 9773 sec. 4.1 auto-sleeping renewal loop. It composes renewalWindow and the client's injectable sleep/clock: fetch the ARI decision, sleep until the sooner of the selected instant and the clamped Retry-After, refetch until renewNow, then resolve { reason: "renew-now", decision }. It resolves { reason: "expired" } once the certificate passes its notAfter (a client must not check RenewalInfo after expiry, RFC 9773 sec. 4.3), { reason: "stopped" } when shouldStop() signals the certificate is replaced, and { reason: "budget" } at the optional maxChecks or maxWait bound. An invalid suggested window or a transport error retries on the sec. 4.3.3 schedule, with a 5xx backing off exponentially from temporaryBaseSeconds and every other error waiting longTermRetrySeconds (default six hours). A supplied renew(decision) callback is awaited at renew-now instead of resolving, and returning a new certificate DER reschedules on it.
+
 ## v0.6.21 — 2026-09-01
 
 WebCrypto and the signing and format builders refuse an algorithm, curve, digest, or profile name that collides with an inherited Object.prototype property name.
