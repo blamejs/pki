@@ -638,12 +638,20 @@ async function run() {
 
   // An otherName SAN whose [0] EXPLICIT value is a non-string (INTEGER) clears the
   // chain leg's otherName gate (which checks the [0] shape but not the inner type)
-  // and reaches _sanValue: read.string throws, the raw content is decoded to UTF-8
-  // best-effort, and the identity is still surfaced as an otherName (verified true).
+  // and reaches _sanValue: read.string throws, so the value surfaces as null. The
+  // identity is still surfaced as an otherName type, and with no identity pinned the
+  // bundle verifies. A null value cannot equal a pinned san, so it stays un-matchable.
   var synOtherInt = buildSynBundle({ san: [B.contextConstructed(0, Buffer.concat([B.oid("1.3.6.1.4.1.57264.1.7"), B.explicit(0, B.integer(5n))]))] });
   var svOtherInt = await pki.sigstore.verifyBundle(synOtherInt.bundle, synOtherInt.trust);
-  check("synthetic otherName SAN with a non-string value -> otherName identity (verified)",
-    svOtherInt && svOtherInt.verified === true && svOtherInt.identity.san && svOtherInt.identity.san.type === "otherName");
+  check("synthetic otherName SAN with a non-string value -> otherName identity, null value (verified)",
+    svOtherInt && svOtherInt.verified === true && svOtherInt.identity.san && svOtherInt.identity.san.type === "otherName" && svOtherInt.identity.san.value === null);
+  // A non-string otherName value whose raw content bytes spell a pinned identity must
+  // not satisfy the san pin: read.string rejects the non-string type, the value is
+  // null, and the pin fails closed rather than matching the fabricated bytes.
+  var SAN_SPOOF = "https://github.com/blamejs/pki";
+  var synOtherSpoof = buildSynBundle({ san: [B.contextConstructed(0, Buffer.concat([B.oid("1.3.6.1.4.1.57264.1.7"), B.explicit(0, B.octetString(Buffer.from(SAN_SPOOF, "ascii")))]))] });
+  check("a non-string otherName value spelling a pinned san is refused, not matched",
+    await codeOf(pki.sigstore.verifyBundle(synOtherSpoof.bundle, Object.assign({ identity: { san: SAN_SPOOF } }, synOtherSpoof.trust))) === "sigstore/identity-mismatch");
 
   // in-toto statement leg: a non-in-toto payloadType, a wrong statement _type, and
   // an empty subject each fail closed with sigstore/bad-statement.

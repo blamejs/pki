@@ -165,6 +165,7 @@ var VALID_ALLOW_CLASSES = {
   // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
   // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
   "swallow-unverified": 1,
+  "narrative-comment": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -256,11 +257,40 @@ function _scanLib(regex, opts) {
 // docstring or a token that only appears inside a quoted example.
 function _stripCommentsAndLiterals(content) {
   var out = content
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, " "); })
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
     .replace(/'(?:[^'\\]|\\.)*'/g, "''")
     .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+  return out;
+}
+
+// Enumerate the comments in a JS source, string- and template-aware so a `//` inside a "http://" literal
+// is never mistaken for one. lib/ carries no regex literal (project rule 11, enforced by testNoRegexInLib
+// including inside a `${...}` substitution), so a `/` never opens a regex here and the scan needs no
+// regex lexing: it tracks strings, template literals, and comments. Each template `${...}` substitution
+// carries a brace-depth counter (tl stack), so a nested object or block inside a substitution does not
+// end it early and a comment after that nested brace is still seen. Returns [{ line, text }] with the
+// comment's starting line.
+function _scanComments(src) {
+  var out = [], i = 0, n = src.length, line = 1, state = "code", tl = [];
+  while (i < n) {
+    var c = src[i], c2 = src[i + 1];
+    if (c === "\n") { line += 1; i += 1; continue; }
+    if (state === "code") {
+      if (c === "'") { state = "sq"; i += 1; continue; }
+      if (c === '"') { state = "dq"; i += 1; continue; }
+      if (c === "`") { state = "tl"; i += 1; continue; }
+      if (c === "{" && tl.length) { tl[tl.length - 1] += 1; i += 1; continue; }
+      if (c === "}" && tl.length) { if (tl[tl.length - 1] > 0) { tl[tl.length - 1] -= 1; } else { tl.pop(); state = "tl"; } i += 1; continue; }
+      if (c === "/" && c2 === "/") { var s = i; i += 2; while (i < n && src[i] !== "\n") i += 1; out.push({ line: line, text: src.slice(s, i) }); continue; }
+      if (c === "/" && c2 === "*") { var bs = i, bl = line; i += 2; while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { if (src[i] === "\n") line += 1; i += 1; } i += 2; out.push({ line: bl, text: src.slice(bs, i) }); continue; }
+      i += 1; continue;
+    }
+    if (state === "sq") { if (c === "\\") { i += 2; continue; } if (c === "'") state = "code"; i += 1; continue; }
+    if (state === "dq") { if (c === "\\") { i += 2; continue; } if (c === '"') state = "code"; i += 1; continue; }
+    if (state === "tl") { if (c === "\\") { i += 2; continue; } if (c === "`") { state = "code"; i += 1; continue; } if (c === "$" && c2 === "{") { tl.push(0); state = "code"; i += 2; continue; } i += 1; continue; }
+  }
   return out;
 }
 
@@ -3468,6 +3498,45 @@ function testNoInternalProvenanceInComments() {
   _report("no shipped comment cites internal provenance (a memory slug, a working-directory path, a review round)", bad);
 }
 
+// class: narrative-comment
+// Every comment in lib/ must be machine-functional: read by the wiki generator, the doc gate, the
+// guard/validator enforcement detectors, or the license tooling. A narrative comment (an explanation of
+// what the code does, a rationale for a design choice, a note about a past state) drifts from the code it
+// describes and tells a story a reader arriving cold has no context for, so it is not carried. The
+// permitted markers are the SPDX/copyright header, a @module or @primitive wiki JSDoc block, an @internal
+// marker, the @enforced-by / @guard-* / @validator-* enforcement tags, and the allow:<class> exemption
+// tags. Any other comment is flagged. A genuine, unavoidable exception carries `allow:narrative-comment`.
+function testNoNarrativeCommentsInLib() {
+  var FUNCTIONAL = ["SPDX-License-Identifier", "Copyright (c)", "@module", "@primitive", "@internal",
+    "@enforced-by", "@guard-", "@validator-", "allow:"];
+  function isFunctional(text) {
+    for (var i = 0; i < FUNCTIONAL.length; i++) if (text.indexOf(FUNCTIONAL[i]) !== -1) return true;
+    return false;
+  }
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var comments = _scanComments(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < comments.length; i++) {
+      if (isFunctional(comments[i].text)) continue;
+      bad.push({ file: _relPath(f), line: comments[i].line,
+        content: "narrative comment in lib/ (permitted: the license header, @module/@primitive wiki JSDoc, @internal, guard/validator metadata, allow: tags): " + comments[i].text.replace(/\s+/g, " ").trim().slice(0, 70) });
+    }
+  });
+  bad = _filterMarkers(bad, "narrative-comment");
+  _report("every lib/ comment is machine-functional (no narrative comments; only license, wiki JSDoc, @internal, guard/validator metadata, and allow: tags)", bad);
+}
+
+// Guards the _scanComments tokenizer that testNoNarrativeCommentsInLib depends on: a `//` comment
+// inside a template `${...}` substitution, placed after a nested object literal, must still be
+// enumerated. The substitution's own closing brace ends it, not the nested object's. Without
+// brace-depth tracking the nested `}` ends the substitution early and the comment is read as
+// template text, so a narrative comment hidden behind a nested brace escapes the gate.
+function testScanCommentsHandlesNestedSubstitutions() {
+  var src = "var s = `head ${ ({a: 1}) // NARRATIVE_MARKER\n} tail`;\n";
+  var found = _scanComments(src).some(function (cm) { return cm.text.indexOf("NARRATIVE_MARKER") !== -1; });
+  check("_scanComments enumerates a comment after a nested-brace template substitution", found);
+}
+
 function testProseCadenceDensity() {
   // class: prose-cadence-density
   //
@@ -3592,20 +3661,51 @@ function testGuardErrorFactoryNotClass() {
 // Keywords after which a `/` begins a regex literal rather than a division (an operand cannot follow them).
 var _REGEX_CTX_KEYWORDS = {
   "return": 1, "typeof": 1, "instanceof": 1, "in": 1, "of": 1, "new": 1, "delete": 1, "void": 1,
-  "do": 1, "else": 1, "yield": 1, "case": 1, "throw": 1, "await": 1
+  "do": 1, "else": 1, "yield": 1, "case": 1, "throw": 1, "await": 1,
+  // A statement keyword that ends its statement: a `/` beginning the next statement (`break\n/re/`, which
+  // ASI splits) opens a regex, not a division.
+  "break": 1, "continue": 1, "debugger": 1,
+  // A `/` opening the expression these introduce is a regex: `class X extends /re/`, `export default /re/`.
+  "extends": 1, "default": 1
 };
+// `if`/`while`/`for` head a control statement whose body can be a bare expression. The `)` that closes
+// their header is NOT an operand: a `/` after it opens a regex body (`if (x) /re/.test(v)`), not a
+// division, so that `)` must leave `/` in regex position where a call or grouping `)` leaves it in
+// division position.
+var _CONTROL_HEADER_KEYWORDS = { "if": 1, "while": 1, "for": 1 };
+// A `RegExp` reached through one of these global-object names (`globalThis.RegExp(...)`) is the native
+// constructor; through any other receiver it is an arbitrary method named RegExp and is left alone.
+var _GLOBAL_OBJECTS = { "globalThis": 1, "window": 1, "self": 1, "global": 1 };
 // Walk a source file with just enough lexing to tell a regex literal from a division: skip comments and
 // string/template literals, track whether the previous significant token was an OPERAND (identifier, number,
-// `)`/`]`, or a string -- after which `/` is division) and record every regex literal and `RegExp` reference
-// with its 1-based line. Returns [{ line, what }].
+// a call or grouping `)`, `]`, or a string -- after which `/` is division) and record every regex literal
+// and `RegExp` construction with its 1-based line. Returns [{ line, what }]. Telling a regex from a division
+// is undecidable without a full parser, so this is a heuristic backstop for a lib-hygiene rule that
+// recognizes regex literals in every standard position; the whole-lib scan is the ground truth.
 function _libRegexHits(content) {
   var hits = [], n = content.length, i = 0, line = 1, prevOperand = false, pendingNew = false, c, rc;
+  // tl holds the brace depth of each open `${...}` substitution; template TEXT resumes only when a
+  // substitution's own brace closes, so a regex inside a substitution is lexed as code and caught.
+  var tl = [], state = "code";
+  // parenStack records, per open `(`, whether it heads a control statement (if/while/for); its `)` then
+  // leaves `/` in regex position. controlPending marks that the next `(` follows a control keyword.
+  // afterDot marks that the next identifier follows a `.` (member access), so it is a property name, an
+  // operand, never a keyword: `obj.if(x) / y` and `obj.break / y` are divisions, not regexes.
+  // labelPending marks that an optional label may follow a `break`/`continue` on the same line; the label
+  // is not an operand, so the next statement's `/` still opens a regex (`break outer\n/re/`).
+  var parenStack = [], controlPending = false, afterDot = false, lastId = "", labelPending = false;
   var isIdStart = function (ch) { return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_" || ch === "$"; };
   var isIdPart = function (ch) { return isIdStart(ch) || (ch >= "0" && ch <= "9"); };
   var isDigit = function (ch) { return ch >= "0" && ch <= "9"; };
   while (i < n) {
     c = content.charAt(i);
-    if (c === "\n") { line++; i++; continue; }
+    if (c === "\n") { line++; labelPending = false; i++; continue; }   // a newline after break/continue ends the statement (ASI): no label follows
+    if (state === "tl") {   // template TEXT: only an escape, the closing backtick, and ${ are significant
+      if (c === "\\") { i += 2; continue; }
+      if (c === "`") { state = "code"; i++; prevOperand = true; pendingNew = false; continue; }
+      if (c === "$" && content.charAt(i + 1) === "{") { tl.push(0); state = "code"; prevOperand = false; pendingNew = false; i += 2; continue; }
+      i++; continue;
+    }
     if (c === " " || c === "\t" || c === "\r") { i++; continue; }
     if (c === "/" && content.charAt(i + 1) === "*") {   // block comment
       i += 2;
@@ -3613,22 +3713,53 @@ function _libRegexHits(content) {
       i += 2; continue;
     }
     if (c === "/" && content.charAt(i + 1) === "/") { i += 2; while (i < n && content.charAt(i) !== "\n") i++; continue; }   // line comment
-    if (c === "\"" || c === "'" || c === "`") {   // string / template literal
+    // afterDot is set by a `.` for the property that immediately follows it; whitespace and comments (which
+    // `continue` above) preserve it, every other token clears it here, so it cannot leak past a computed
+    // access (`a?.["x"]`) onto a later real keyword.
+    var dotHere = afterDot; afterDot = false;
+    var labelHere = labelPending; labelPending = false;
+    if (c === "\"" || c === "'") {   // string literal
       var q = c; i++;
       while (i < n && content.charAt(i) !== q) { if (content.charAt(i) === "\\") i++; else if (content.charAt(i) === "\n") line++; i++; }
       i++; prevOperand = true; pendingNew = false; continue;
     }
+    if (c === "`") { state = "tl"; i++; pendingNew = false; continue; }   // enter template text
+    if (c === "{" && tl.length) { tl[tl.length - 1] += 1; prevOperand = false; pendingNew = false; i++; continue; }
+    if (c === "}" && tl.length) { if (tl[tl.length - 1] > 0) { tl[tl.length - 1] -= 1; } else { tl.pop(); state = "tl"; } prevOperand = false; pendingNew = false; i++; continue; }
     if (isIdStart(c)) {   // identifier or keyword
       var id = "";
       while (i < n && isIdPart(content.charAt(i))) { id += content.charAt(i); i++; }
-      // `new RegExp(...)` is banned; a bare `RegExp` reference (util.types.isRegExp, or reflecting on the type
-      // to GUARD against it) is not a regex and is allowed.
-      if (id === "RegExp" && pendingNew) hits.push({ line: line, what: "new RegExp" });
+      // A regex CONSTRUCTION is banned: `new RegExp(...)`, a bare `RegExp(...)` call, or the native
+      // constructor reached through a global object (`globalThis.RegExp("x")`); a `RegExp` reached through
+      // any other receiver is an arbitrary method and is left alone. A `RegExp` reference that constructs
+      // nothing is allowed (util.types.isRegExp is a different identifier; `x instanceof RegExp`,
+      // `RegExp.prototype` reflect on the type to GUARD against it). Construction that hides the identifier
+      // from a lexical scan (`new (RegExp)`, `Reflect.construct(RegExp, ...)`, an aliased global) is out of scope.
+      if (id === "RegExp") {
+        var peek = i;   // skip ASCII trivia (whitespace, newlines, comments) so `RegExp\n(...)` reads as a call; a lib file cannot carry non-ASCII whitespace, the shipped-source ASCII gate rejects it
+        while (peek < n) {
+          var pc = content.charAt(peek);
+          if (pc === " " || pc === "\t" || pc === "\n" || pc === "\r") { peek++; continue; }
+          if (pc === "/" && content.charAt(peek + 1) === "/") { peek += 2; while (peek < n && content.charAt(peek) !== "\n") peek++; continue; }
+          if (pc === "/" && content.charAt(peek + 1) === "*") { peek += 2; while (peek < n && !(content.charAt(peek) === "*" && content.charAt(peek + 1) === "/")) peek++; peek += 2; continue; }
+          break;
+        }
+        var isCall = content.charAt(peek) === "(";
+        if (dotHere ? (isCall && _GLOBAL_OBJECTS[lastId]) : (pendingNew || isCall)) hits.push({ line: line, what: "RegExp construction" });
+      }
+      lastId = id;
+      if (dotHere) { prevOperand = true; pendingNew = false; controlPending = false; continue; }   // a property name is an operand, not a keyword
+      if (labelHere) { prevOperand = false; pendingNew = false; controlPending = false; continue; }   // a label after break/continue keeps the next statement's regex context
       pendingNew = (id === "new");
       prevOperand = !_REGEX_CTX_KEYWORDS[id];   // a regex-context keyword leaves `/` in regex position
+      if (_CONTROL_HEADER_KEYWORDS[id]) controlPending = true;   // the next `(` heads a control statement
+      else if (id !== "await") controlPending = false;   // `await` may sit between `for` and its `(` (for await)
+      labelPending = (id === "break" || id === "continue");   // an optional label may follow on the same line
       continue;
     }
     if (isDigit(c)) { while (i < n && (isIdPart(content.charAt(i)) || content.charAt(i) === ".")) i++; prevOperand = true; pendingNew = false; continue; }
+    if (c === "." && content.charAt(i + 1) !== ".") { afterDot = true; prevOperand = false; pendingNew = false; controlPending = false; i++; continue; }   // member access: the next identifier is a property, not a keyword
+    if ((c === "+" || c === "-") && content.charAt(i + 1) === c) { i += 2; continue; }   // ++/-- leaves the operand context: a++/b is division, not a regex
     if (c === "/") {
       pendingNew = false;
       if (!prevOperand) {   // regex literal position
@@ -3653,8 +3784,17 @@ function _libRegexHits(content) {
       }
       i++; prevOperand = false; continue;   // division; a regex may follow it
     }
-    prevOperand = (c === ")" || c === "]");   // ) and ] are operands; every other operator is not
+    if (c === "(") { parenStack.push(controlPending); controlPending = false; prevOperand = false; pendingNew = false; i++; continue; }
+    if (c === ")") { prevOperand = !(parenStack.length ? parenStack.pop() : false); pendingNew = false; controlPending = false; i++; continue; }
+    // A call or grouping ) and ] are operands, so a following / is division; a control-header ) is handled
+    // above. Every other token, a bare } included, leaves / in regex position. A } is deliberately NOT an
+    // operand: a regex after a block close (`if (x) {} /re/`) must be caught, so the gate accepts a rare
+    // over-flag of a division after an object- or function-expression } (write `({...}) / x` to
+    // disambiguate) rather than a false negative that would let a regex through. The regex-vs-division call
+    // is undecidable without a full parser; a no-regex gate errs toward flagging.
+    prevOperand = (c === "]");
     pendingNew = false;
+    controlPending = false;
     i++;
   }
   return hits;
@@ -3680,6 +3820,58 @@ function testNoRegexInLib() {
     }
   }
   _report("no regular expression in lib/ (rule #11)", matches);
+}
+
+// Guards the lexing in _libRegexHits: a regex inside a `${...}` template substitution must be caught
+// (the template body is not opaque), a division inside a substitution must not be read as a regex, a
+// bare `RegExp(...)` construction call must be caught, and a `RegExp` type reference must be allowed.
+// testNoNarrativeCommentsInLib relies on this: no regex reaching lib is what lets its comment scanner
+// stay regex-unaware.
+function testLibRegexHitsLexing() {
+  var hitRegex = _libRegexHits("var x = `head ${ /[//]allow:/.test(v) } tail`;\n").length;
+  var hitDiv = _libRegexHits("var y = `${ (a) / (b) }`;\n").length;
+  var hitCall = _libRegexHits("var z = RegExp(\"x\").test(v);\n").length;
+  var hitRef = _libRegexHits("var ok = (v instanceof RegExp);\n").length;
+  var hitPostfix = _libRegexHits("var w = `${ a++ / b / c }`;\n").length;
+  var hitAfterBlock = _libRegexHits("if (x) {} /re/.test(y);\n").length;
+  var hitControlBody = _libRegexHits("if (x) /[//]allow:/.test(y);\n").length;
+  var hitWhileBody = _libRegexHits("while (n) /re/.test(s);\n").length;
+  var hitCallDiv = _libRegexHits("var q = foo(a) / bar(b);\n").length;
+  var hitForAwait = _libRegexHits("for await (const it of items) /re/.test(it);\n").length;
+  var hitBreakStmt = _libRegexHits("if (done) break\n/re/.test(line);\n").length;
+  var hitPropIf = _libRegexHits("var q = obj.if(x) / y / z;\n").length;
+  var hitPropBreak = _libRegexHits("var q = obj.break / y / z;\n").length;
+  var hitAfterComputed = _libRegexHits("a?.[\"x\"]; return /re/.test(y);\n").length;
+  var hitDottedRegExp = _libRegexHits("var r = globalThis.RegExp(\"x\").test(v);\n").length;
+  var hitMethodRegExp = _libRegexHits("var r = parser.RegExp(\"x\").node;\n").length;
+  var hitExtends = _libRegexHits("class X extends /[//]allow:/.source {}\n").length;
+  var hitPropExtends = _libRegexHits("var q = obj.extends / y / z;\n").length;
+  var hitRegExpNewline = _libRegexHits("var r = RegExp\n(\"x\").test(v);\n").length;
+  var hitRegExpComment = _libRegexHits("var r = RegExp/* reason */(\"x\");\n").length;
+  var hitLabelBreak = _libRegexHits("if (d) break outer\n/re/.test(v);\n").length;
+  var hitBreakThenDiv = _libRegexHits("break\nx / y / z;\n").length;
+  check("_libRegexHits catches a regex inside a template substitution", hitRegex >= 1);
+  check("_libRegexHits does not read a division inside a substitution as a regex", hitDiv === 0);
+  check("_libRegexHits catches a bare RegExp(...) construction call", hitCall >= 1);
+  check("_libRegexHits allows a RegExp type reference that constructs nothing", hitRef === 0);
+  check("_libRegexHits reads division after a postfix ++/-- as division, not a regex", hitPostfix === 0);
+  check("_libRegexHits catches a regex after a block close (favor flag over a false negative)", hitAfterBlock >= 1);
+  check("_libRegexHits catches a regex body after an if (...) header", hitControlBody >= 1);
+  check("_libRegexHits catches a regex body after a while (...) header", hitWhileBody >= 1);
+  check("_libRegexHits reads division after a call ) as division, not a regex", hitCallDiv === 0);
+  check("_libRegexHits catches a regex body after a for await (...) header", hitForAwait >= 1);
+  check("_libRegexHits catches a regex statement after a semicolonless break", hitBreakStmt >= 1);
+  check("_libRegexHits treats a control keyword used as a property name as an operand (obj.if(x) / y)", hitPropIf === 0);
+  check("_libRegexHits treats a statement-word property as an operand (obj.break / y)", hitPropBreak === 0);
+  check("_libRegexHits does not leak a computed member access onto a later keyword", hitAfterComputed >= 1);
+  check("_libRegexHits catches RegExp construction through a dotted global (globalThis.RegExp)", hitDottedRegExp >= 1);
+  check("_libRegexHits leaves an arbitrary object's RegExp method alone (parser.RegExp)", hitMethodRegExp === 0);
+  check("_libRegexHits catches a regex in a class extends clause", hitExtends >= 1);
+  check("_libRegexHits treats extends used as a property name as an operand (obj.extends / y)", hitPropExtends === 0);
+  check("_libRegexHits catches a RegExp call split from its parens by a newline", hitRegExpNewline >= 1);
+  check("_libRegexHits catches a RegExp call split from its parens by a comment", hitRegExpComment >= 1);
+  check("_libRegexHits catches a regex statement after a labeled break", hitLabelBreak >= 1);
+  check("_libRegexHits reads division on the next statement after a bare break as division", hitBreakThenDiv === 0);
 }
 
 function testNoInstanceofArrayBuffer() {
@@ -3770,6 +3962,8 @@ function run() {
   testBase64DecodeNotViaGuard();
   testJsonParseNotViaGuard();
   testNoInternalProvenanceInComments();
+  testNoNarrativeCommentsInLib();
+  testScanCommentsHandlesNestedSubstitutions();
   testProseCadenceDensity();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
@@ -3780,6 +3974,7 @@ function run() {
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoRegexInLib();
+  testLibRegexHitsLexing();
   testNoInstanceofArrayBuffer();
   testNoPartialByteAcceptance();
   testNoDuplicateCodeBlocks();
