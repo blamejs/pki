@@ -165,6 +165,7 @@ var VALID_ALLOW_CLASSES = {
   // Enforced by scripts/check-swallow-coverage.js (the execution-traced swallow gate), not a
   // detector in this file; registered here so testAllowMarkersAreRegistered accepts the marker.
   "swallow-unverified": 1,
+  "narrative-comment": 1,
 };
 
 // Split content into lines, tolerant of CRLF vs LF (some helpers ship
@@ -256,11 +257,35 @@ function _scanLib(regex, opts) {
 // docstring or a token that only appears inside a quoted example.
 function _stripCommentsAndLiterals(content) {
   var out = content
-    .replace(/\/\*[\s\S]*?\*\//g, " ")
+    .replace(/\/\*[\s\S]*?\*\//g, function (m) { return m.replace(/[^\n]/g, " "); })
     .replace(/(^|[^:])\/\/[^\n]*/g, "$1")
     .replace(/"(?:[^"\\]|\\.)*"/g, '""')
     .replace(/'(?:[^'\\]|\\.)*'/g, "''")
     .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+  return out;
+}
+
+// Enumerate the comments in a JS source, string- and template-aware so a `//` inside a "http://" literal
+// is never mistaken for one. lib/ carries no regex literals (project rule 11), so the scan tracks only
+// strings, template literals, and comments. Returns [{ line, text }] with the comment's starting line.
+function _scanComments(src) {
+  var out = [], i = 0, n = src.length, line = 1, state = "code", tl = [];
+  while (i < n) {
+    var c = src[i], c2 = src[i + 1];
+    if (c === "\n") { line += 1; i += 1; continue; }
+    if (state === "code") {
+      if (c === "'") { state = "sq"; i += 1; continue; }
+      if (c === '"') { state = "dq"; i += 1; continue; }
+      if (c === "`") { state = "tl"; i += 1; continue; }
+      if (c === "}" && tl.length) { tl.pop(); state = "tl"; i += 1; continue; }
+      if (c === "/" && c2 === "/") { var s = i; i += 2; while (i < n && src[i] !== "\n") i += 1; out.push({ line: line, text: src.slice(s, i) }); continue; }
+      if (c === "/" && c2 === "*") { var bs = i, bl = line; i += 2; while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { if (src[i] === "\n") line += 1; i += 1; } i += 2; out.push({ line: bl, text: src.slice(bs, i) }); continue; }
+      i += 1; continue;
+    }
+    if (state === "sq") { if (c === "\\") { i += 2; continue; } if (c === "'") state = "code"; i += 1; continue; }
+    if (state === "dq") { if (c === "\\") { i += 2; continue; } if (c === '"') state = "code"; i += 1; continue; }
+    if (state === "tl") { if (c === "\\") { i += 2; continue; } if (c === "`") { state = "code"; i += 1; continue; } if (c === "$" && c2 === "{") { tl.push(1); state = "code"; i += 2; continue; } i += 1; continue; }
+  }
   return out;
 }
 
@@ -3468,6 +3493,34 @@ function testNoInternalProvenanceInComments() {
   _report("no shipped comment cites internal provenance (a memory slug, a working-directory path, a review round)", bad);
 }
 
+// class: narrative-comment
+// Every comment in lib/ must be machine-functional: read by the wiki generator, the doc gate, the
+// guard/validator enforcement detectors, or the license tooling. A narrative comment (an explanation of
+// what the code does, a rationale for a design choice, a note about a past state) drifts from the code it
+// describes and tells a story a reader arriving cold has no context for, so it is not carried. The
+// permitted markers are the SPDX/copyright header, a @module or @primitive wiki JSDoc block, an @internal
+// marker, the @enforced-by / @guard-* / @validator-* enforcement tags, and the allow:<class> exemption
+// tags. Any other comment is flagged. A genuine, unavoidable exception carries `allow:narrative-comment`.
+function testNoNarrativeCommentsInLib() {
+  var FUNCTIONAL = ["SPDX-License-Identifier", "Copyright (c)", "@module", "@primitive", "@internal",
+    "@enforced-by", "@guard-", "@validator-", "allow:"];
+  function isFunctional(text) {
+    for (var i = 0; i < FUNCTIONAL.length; i++) if (text.indexOf(FUNCTIONAL[i]) !== -1) return true;
+    return false;
+  }
+  var bad = [];
+  _libFiles().forEach(function (f) {
+    var comments = _scanComments(fs.readFileSync(f, "utf8"));
+    for (var i = 0; i < comments.length; i++) {
+      if (isFunctional(comments[i].text)) continue;
+      bad.push({ file: _relPath(f), line: comments[i].line,
+        content: "narrative comment in lib/ (permitted: the license header, @module/@primitive wiki JSDoc, @internal, guard/validator metadata, allow: tags): " + comments[i].text.replace(/\s+/g, " ").trim().slice(0, 70) });
+    }
+  });
+  bad = _filterMarkers(bad, "narrative-comment");
+  _report("every lib/ comment is machine-functional (no narrative comments; only license, wiki JSDoc, @internal, guard/validator metadata, and allow: tags)", bad);
+}
+
 function testProseCadenceDensity() {
   // class: prose-cadence-density
   //
@@ -3770,6 +3823,7 @@ function run() {
   testBase64DecodeNotViaGuard();
   testJsonParseNotViaGuard();
   testNoInternalProvenanceInComments();
+  testNoNarrativeCommentsInLib();
   testProseCadenceDensity();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();

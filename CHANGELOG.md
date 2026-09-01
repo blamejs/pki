@@ -4,7 +4,16 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.14 — 2026-09-01
+## v0.6.15 — 2026-09-01
+
+The library source ships without explanatory comments, keeping the JSDoc blocks that generate the API reference and the license headers, so the installed package is leaner with no change to runtime behavior.
+
+### Changed
+
+- The library source no longer carries explanatory comments; the wiki-generating JSDoc blocks and SPDX license headers are unchanged, so the installed package is smaller with identical behavior.
+- Internal cleanup with no observable difference: a dead helper was removed, and the android-safetynet certificate decoder now passes its message factory to the base64 input guard rather than an error class.
+
+## v0.6.14 — 2026-08-31
 
 pki.scep.getNextCACert retrieves a SCEP CA's next (rollover) certificate and authenticates it against the current CA key, so a client can obtain and hold the CA certificate to install before the current one expires.
 

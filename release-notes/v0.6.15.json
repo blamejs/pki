@@ -1,0 +1,11 @@
+{
+  "version": "0.6.15",
+  "headline": "The library source ships without explanatory comments, keeping the JSDoc blocks that generate the API reference and the license headers, so the installed package is leaner with no change to runtime behavior.",
+  "summary": "Every module's source is stripped of prose comments; the JSDoc blocks that drive the API wiki and the SPDX license headers remain, and the runtime is unchanged. Two internal corrections ride along with no observable difference: a dead helper is removed, and one input guard is handed its message factory instead of an error class.",
+  "sections": {
+    "Changed": [
+      "The library source no longer carries explanatory comments; the wiki-generating JSDoc blocks and SPDX license headers are unchanged, so the installed package is smaller with identical behavior.",
+      "Internal cleanup with no observable difference: a dead helper was removed, and the android-safetynet certificate decoder now passes its message factory to the base64 input guard rather than an error class."
+    ]
+  }
+}
