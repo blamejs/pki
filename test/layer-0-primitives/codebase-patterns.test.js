@@ -266,8 +266,10 @@ function _stripCommentsAndLiterals(content) {
 }
 
 // Enumerate the comments in a JS source, string- and template-aware so a `//` inside a "http://" literal
-// is never mistaken for one. lib/ carries no regex literals (project rule 11), so the scan tracks only
-// strings, template literals, and comments. Returns [{ line, text }] with the comment's starting line.
+// is never mistaken for one. lib/ carries no regex literals (project rule 11), so the scan tracks
+// strings, template literals, and comments. Each template `${...}` substitution carries a brace-depth
+// counter (tl stack), so a nested object or block inside a substitution does not end it early and a
+// comment after that nested brace is still seen. Returns [{ line, text }] with the comment's starting line.
 function _scanComments(src) {
   var out = [], i = 0, n = src.length, line = 1, state = "code", tl = [];
   while (i < n) {
@@ -277,14 +279,15 @@ function _scanComments(src) {
       if (c === "'") { state = "sq"; i += 1; continue; }
       if (c === '"') { state = "dq"; i += 1; continue; }
       if (c === "`") { state = "tl"; i += 1; continue; }
-      if (c === "}" && tl.length) { tl.pop(); state = "tl"; i += 1; continue; }
+      if (c === "{" && tl.length) { tl[tl.length - 1] += 1; i += 1; continue; }
+      if (c === "}" && tl.length) { if (tl[tl.length - 1] > 0) { tl[tl.length - 1] -= 1; } else { tl.pop(); state = "tl"; } i += 1; continue; }
       if (c === "/" && c2 === "/") { var s = i; i += 2; while (i < n && src[i] !== "\n") i += 1; out.push({ line: line, text: src.slice(s, i) }); continue; }
       if (c === "/" && c2 === "*") { var bs = i, bl = line; i += 2; while (i < n && !(src[i] === "*" && src[i + 1] === "/")) { if (src[i] === "\n") line += 1; i += 1; } i += 2; out.push({ line: bl, text: src.slice(bs, i) }); continue; }
       i += 1; continue;
     }
     if (state === "sq") { if (c === "\\") { i += 2; continue; } if (c === "'") state = "code"; i += 1; continue; }
     if (state === "dq") { if (c === "\\") { i += 2; continue; } if (c === '"') state = "code"; i += 1; continue; }
-    if (state === "tl") { if (c === "\\") { i += 2; continue; } if (c === "`") { state = "code"; i += 1; continue; } if (c === "$" && c2 === "{") { tl.push(1); state = "code"; i += 2; continue; } i += 1; continue; }
+    if (state === "tl") { if (c === "\\") { i += 2; continue; } if (c === "`") { state = "code"; i += 1; continue; } if (c === "$" && c2 === "{") { tl.push(0); state = "code"; i += 2; continue; } i += 1; continue; }
   }
   return out;
 }
@@ -3521,6 +3524,17 @@ function testNoNarrativeCommentsInLib() {
   _report("every lib/ comment is machine-functional (no narrative comments; only license, wiki JSDoc, @internal, guard/validator metadata, and allow: tags)", bad);
 }
 
+// Guards the _scanComments tokenizer that testNoNarrativeCommentsInLib depends on: a `//` comment
+// inside a template `${...}` substitution, placed after a nested object literal, must still be
+// enumerated. The substitution's own closing brace ends it, not the nested object's. Without
+// brace-depth tracking the nested `}` ends the substitution early and the comment is read as
+// template text, so a narrative comment hidden behind a nested brace escapes the gate.
+function testScanCommentsHandlesNestedSubstitutions() {
+  var src = "var s = `head ${ ({a: 1}) // NARRATIVE_MARKER\n} tail`;\n";
+  var found = _scanComments(src).some(function (cm) { return cm.text.indexOf("NARRATIVE_MARKER") !== -1; });
+  check("_scanComments enumerates a comment after a nested-brace template substitution", found);
+}
+
 function testProseCadenceDensity() {
   // class: prose-cadence-density
   //
@@ -3824,6 +3838,7 @@ function run() {
   testJsonParseNotViaGuard();
   testNoInternalProvenanceInComments();
   testNoNarrativeCommentsInLib();
+  testScanCommentsHandlesNestedSubstitutions();
   testProseCadenceDensity();
   testNoRemovedWebCryptoNamespace();
   testReleaseWaitsForCodex();
