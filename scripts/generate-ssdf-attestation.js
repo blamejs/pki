@@ -201,8 +201,8 @@ function _attestationStatements() {
       "statements": [
         {
           "ssdf": ["RV.1.1", "RV.1.2", "PW.7.2"],
-          "claim": "Every release is scanned for known vulnerabilities before publish: OSV-Scanner runs against the committed lockfiles that pin the build toolchain, and against the vendored tree whenever lib/vendor/ carries content; the release fails on any finding. A vendored-dependency currency gate refuses a stale, potentially-vulnerable pin.",
-          "control": "OSV-Scanner steps in npm-publish.yml (--lockfile=package-lock.json + --lockfile=fuzz/package-lock.json; -r lib/vendor/ when vendored content is present); scripts/check-vendor-currency.js.",
+          "claim": "Every release is scanned for known vulnerabilities before publish: OSV-Scanner runs against the committed root lockfile that pins the build and release toolchain the publish executes, and against the vendored tree whenever lib/vendor/ carries content; the release fails on any finding. The fuzz harness under fuzz/ is a separate development project that is not part of the published package and does not run during publish; changes to its dependency tree are reviewed at pull-request time by dependency review, which fails the pull request on a high-severity addition, and Dependabot opens updates for new advisories against it. A vendored-dependency currency gate refuses a stale, potentially-vulnerable pin.",
+          "control": "OSV-Scanner step in npm-publish.yml (--lockfile=package-lock.json; -r lib/vendor/ when vendored content is present); actions/dependency-review-action in dependency-review.yml and Dependabot for fuzz/package-lock.json; scripts/check-vendor-currency.js.",
         },
         {
           "ssdf": ["PW.8.2", "PW.7.1"],
