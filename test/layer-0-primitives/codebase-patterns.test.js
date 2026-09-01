@@ -3664,7 +3664,9 @@ var _REGEX_CTX_KEYWORDS = {
   "do": 1, "else": 1, "yield": 1, "case": 1, "throw": 1, "await": 1,
   // A statement keyword that ends its statement: a `/` beginning the next statement (`break\n/re/`, which
   // ASI splits) opens a regex, not a division.
-  "break": 1, "continue": 1, "debugger": 1
+  "break": 1, "continue": 1, "debugger": 1,
+  // A `/` opening the expression these introduce is a regex: `class X extends /re/`, `export default /re/`.
+  "extends": 1, "default": 1
 };
 // `if`/`while`/`for` head a control statement whose body can be a bare expression. The `)` that closes
 // their header is NOT an operand: a `/` after it opens a regex body (`if (x) /re/.test(v)`), not a
@@ -3731,7 +3733,14 @@ function _libRegexHits(content) {
       // `RegExp.prototype` reflect on the type to GUARD against it). Construction that hides the identifier
       // from a lexical scan (`new (RegExp)`, `Reflect.construct(RegExp, ...)`, an aliased global) is out of scope.
       if (id === "RegExp") {
-        var peek = i; while (peek < n && (content.charAt(peek) === " " || content.charAt(peek) === "\t")) peek++;
+        var peek = i;   // skip ASCII trivia (whitespace, newlines, comments) so `RegExp\n(...)` reads as a call; a lib file cannot carry non-ASCII whitespace, the shipped-source ASCII gate rejects it
+        while (peek < n) {
+          var pc = content.charAt(peek);
+          if (pc === " " || pc === "\t" || pc === "\n" || pc === "\r") { peek++; continue; }
+          if (pc === "/" && content.charAt(peek + 1) === "/") { peek += 2; while (peek < n && content.charAt(peek) !== "\n") peek++; continue; }
+          if (pc === "/" && content.charAt(peek + 1) === "*") { peek += 2; while (peek < n && !(content.charAt(peek) === "*" && content.charAt(peek + 1) === "/")) peek++; peek += 2; continue; }
+          break;
+        }
         var isCall = content.charAt(peek) === "(";
         if (dotHere ? (isCall && _GLOBAL_OBJECTS[lastId]) : (pendingNew || isCall)) hits.push({ line: line, what: "RegExp construction" });
       }
@@ -3830,6 +3839,10 @@ function testLibRegexHitsLexing() {
   var hitAfterComputed = _libRegexHits("a?.[\"x\"]; return /re/.test(y);\n").length;
   var hitDottedRegExp = _libRegexHits("var r = globalThis.RegExp(\"x\").test(v);\n").length;
   var hitMethodRegExp = _libRegexHits("var r = parser.RegExp(\"x\").node;\n").length;
+  var hitExtends = _libRegexHits("class X extends /[//]allow:/.source {}\n").length;
+  var hitPropExtends = _libRegexHits("var q = obj.extends / y / z;\n").length;
+  var hitRegExpNewline = _libRegexHits("var r = RegExp\n(\"x\").test(v);\n").length;
+  var hitRegExpComment = _libRegexHits("var r = RegExp/* reason */(\"x\");\n").length;
   check("_libRegexHits catches a regex inside a template substitution", hitRegex >= 1);
   check("_libRegexHits does not read a division inside a substitution as a regex", hitDiv === 0);
   check("_libRegexHits catches a bare RegExp(...) construction call", hitCall >= 1);
@@ -3846,6 +3859,10 @@ function testLibRegexHitsLexing() {
   check("_libRegexHits does not leak a computed member access onto a later keyword", hitAfterComputed >= 1);
   check("_libRegexHits catches RegExp construction through a dotted global (globalThis.RegExp)", hitDottedRegExp >= 1);
   check("_libRegexHits leaves an arbitrary object's RegExp method alone (parser.RegExp)", hitMethodRegExp === 0);
+  check("_libRegexHits catches a regex in a class extends clause", hitExtends >= 1);
+  check("_libRegexHits treats extends used as a property name as an operand (obj.extends / y)", hitPropExtends === 0);
+  check("_libRegexHits catches a RegExp call split from its parens by a newline", hitRegExpNewline >= 1);
+  check("_libRegexHits catches a RegExp call split from its parens by a comment", hitRegExpComment >= 1);
 }
 
 function testNoInstanceofArrayBuffer() {
