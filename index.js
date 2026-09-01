@@ -160,7 +160,7 @@ module.exports = {
   // `kem` is composite ML-KEM key establishment (draft-ietf-lamps-pq-composite-kem):
   // pki.kem.encapsulate / decapsulate over a post-quantum ML-KEM hybridized with a
   // traditional RSA-OAEP / ECDH / X25519 / X448, mixed through the SHA3-256 combiner.
-  kem:       compositeKem,
+  kem:       { encapsulate: compositeKem.encapsulate, decapsulate: compositeKem.decapsulate },
   // `sigstore` verifies a Sigstore bundle (the npm --provenance artifact): a
   // keyless Fulcio signature over a DSSE-wrapped in-toto SLSA attestation with a
   // Rekor inclusion proof -- offline, zero-dep, against caller-pinned trust.
