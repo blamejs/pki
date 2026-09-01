@@ -63,4 +63,12 @@ jobs:
           # dev-only uri-js transitive; a compound `A AND B` license passes only
           # when every clause is allow-listed.
           allow-licenses: Apache-2.0, MIT, BSD-2-Clause, BSD-2-Clause-Views, BSD-3-Clause, ISC, 0BSD, Unlicense, CC0-1.0, BlueOak-1.0.0, Python-2.0
+          # caniuse-lite is the browser-compatibility dataset that browserslist
+          # reads, pulled in only through the fuzz harness under fuzz/. It is
+          # CC-BY-4.0 (a data-attribution license), is not part of the published
+          # package, and is never redistributed, so its attribution term does
+          # not apply here. dependency-review-action cannot exclude a manifest
+          # path, so the fuzz-only dataset is exempted by name; the publish OSV
+          # scan is scoped to the shipped lockfile separately.
+          allow-dependencies-licenses: pkg:npm/caniuse-lite
           comment-summary-in-pr: on-failure
