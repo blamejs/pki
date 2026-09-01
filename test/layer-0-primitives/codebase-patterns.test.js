@@ -266,10 +266,12 @@ function _stripCommentsAndLiterals(content) {
 }
 
 // Enumerate the comments in a JS source, string- and template-aware so a `//` inside a "http://" literal
-// is never mistaken for one. lib/ carries no regex literals (project rule 11), so the scan tracks
-// strings, template literals, and comments. Each template `${...}` substitution carries a brace-depth
-// counter (tl stack), so a nested object or block inside a substitution does not end it early and a
-// comment after that nested brace is still seen. Returns [{ line, text }] with the comment's starting line.
+// is never mistaken for one. lib/ carries no regex literal (project rule 11, enforced by testNoRegexInLib
+// including inside a `${...}` substitution), so a `/` never opens a regex here and the scan needs no
+// regex lexing: it tracks strings, template literals, and comments. Each template `${...}` substitution
+// carries a brace-depth counter (tl stack), so a nested object or block inside a substitution does not
+// end it early and a comment after that nested brace is still seen. Returns [{ line, text }] with the
+// comment's starting line.
 function _scanComments(src) {
   var out = [], i = 0, n = src.length, line = 1, state = "code", tl = [];
   while (i < n) {
@@ -3667,12 +3669,21 @@ var _REGEX_CTX_KEYWORDS = {
 // with its 1-based line. Returns [{ line, what }].
 function _libRegexHits(content) {
   var hits = [], n = content.length, i = 0, line = 1, prevOperand = false, pendingNew = false, c, rc;
+  // tl holds the brace depth of each open `${...}` substitution; template TEXT resumes only when a
+  // substitution's own brace closes, so a regex inside a substitution is lexed as code and caught.
+  var tl = [], state = "code";
   var isIdStart = function (ch) { return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_" || ch === "$"; };
   var isIdPart = function (ch) { return isIdStart(ch) || (ch >= "0" && ch <= "9"); };
   var isDigit = function (ch) { return ch >= "0" && ch <= "9"; };
   while (i < n) {
     c = content.charAt(i);
     if (c === "\n") { line++; i++; continue; }
+    if (state === "tl") {   // template TEXT: only an escape, the closing backtick, and ${ are significant
+      if (c === "\\") { i += 2; continue; }
+      if (c === "`") { state = "code"; i++; prevOperand = true; pendingNew = false; continue; }
+      if (c === "$" && content.charAt(i + 1) === "{") { tl.push(0); state = "code"; prevOperand = false; pendingNew = false; i += 2; continue; }
+      i++; continue;
+    }
     if (c === " " || c === "\t" || c === "\r") { i++; continue; }
     if (c === "/" && content.charAt(i + 1) === "*") {   // block comment
       i += 2;
@@ -3680,22 +3691,31 @@ function _libRegexHits(content) {
       i += 2; continue;
     }
     if (c === "/" && content.charAt(i + 1) === "/") { i += 2; while (i < n && content.charAt(i) !== "\n") i++; continue; }   // line comment
-    if (c === "\"" || c === "'" || c === "`") {   // string / template literal
+    if (c === "\"" || c === "'") {   // string literal
       var q = c; i++;
       while (i < n && content.charAt(i) !== q) { if (content.charAt(i) === "\\") i++; else if (content.charAt(i) === "\n") line++; i++; }
       i++; prevOperand = true; pendingNew = false; continue;
     }
+    if (c === "`") { state = "tl"; i++; pendingNew = false; continue; }   // enter template text
+    if (c === "{" && tl.length) { tl[tl.length - 1] += 1; prevOperand = false; pendingNew = false; i++; continue; }
+    if (c === "}" && tl.length) { if (tl[tl.length - 1] > 0) { tl[tl.length - 1] -= 1; } else { tl.pop(); state = "tl"; } prevOperand = false; pendingNew = false; i++; continue; }
     if (isIdStart(c)) {   // identifier or keyword
       var id = "";
       while (i < n && isIdPart(content.charAt(i))) { id += content.charAt(i); i++; }
-      // `new RegExp(...)` is banned; a bare `RegExp` reference (util.types.isRegExp, or reflecting on the type
-      // to GUARD against it) is not a regex and is allowed.
-      if (id === "RegExp" && pendingNew) hits.push({ line: line, what: "new RegExp" });
+      // A regex CONSTRUCTION is banned: `new RegExp(...)` or a bare `RegExp(...)` call. A `RegExp` reference
+      // that constructs nothing is allowed (util.types.isRegExp is a different identifier; `x instanceof
+      // RegExp`, `RegExp.prototype` reflect on the type to GUARD against it). Construction that hides the
+      // identifier from a lexical scan (`new (RegExp)`, `Reflect.construct(RegExp, ...)`) is out of scope.
+      if (id === "RegExp") {
+        var peek = i; while (peek < n && (content.charAt(peek) === " " || content.charAt(peek) === "\t")) peek++;
+        if (pendingNew || content.charAt(peek) === "(") hits.push({ line: line, what: "RegExp construction" });
+      }
       pendingNew = (id === "new");
       prevOperand = !_REGEX_CTX_KEYWORDS[id];   // a regex-context keyword leaves `/` in regex position
       continue;
     }
     if (isDigit(c)) { while (i < n && (isIdPart(content.charAt(i)) || content.charAt(i) === ".")) i++; prevOperand = true; pendingNew = false; continue; }
+    if ((c === "+" || c === "-") && content.charAt(i + 1) === c) { i += 2; continue; }   // ++/-- leaves the operand context: a++/b is division, not a regex
     if (c === "/") {
       pendingNew = false;
       if (!prevOperand) {   // regex literal position
@@ -3720,7 +3740,13 @@ function _libRegexHits(content) {
       }
       i++; prevOperand = false; continue;   // division; a regex may follow it
     }
-    prevOperand = (c === ")" || c === "]");   // ) and ] are operands; every other operator is not
+    // ) and ] are operands, so a following / is division. Every other token, a bare } included, leaves /
+    // in regex position. A } is deliberately NOT an operand: a regex after a block close (`if (x) {} /re/`)
+    // must be caught, so the gate accepts a rare over-flag of a division after an object- or
+    // function-expression } (write `({...}) / x` to disambiguate) rather than a false negative that would
+    // let a regex through. The regex-vs-division call is undecidable without a full parser; a no-regex gate
+    // errs toward flagging.
+    prevOperand = (c === ")" || c === "]");
     pendingNew = false;
     i++;
   }
@@ -3747,6 +3773,26 @@ function testNoRegexInLib() {
     }
   }
   _report("no regular expression in lib/ (rule #11)", matches);
+}
+
+// Guards the lexing in _libRegexHits: a regex inside a `${...}` template substitution must be caught
+// (the template body is not opaque), a division inside a substitution must not be read as a regex, a
+// bare `RegExp(...)` construction call must be caught, and a `RegExp` type reference must be allowed.
+// testNoNarrativeCommentsInLib relies on this: no regex reaching lib is what lets its comment scanner
+// stay regex-unaware.
+function testLibRegexHitsLexing() {
+  var hitRegex = _libRegexHits("var x = `head ${ /[//]allow:/.test(v) } tail`;\n").length;
+  var hitDiv = _libRegexHits("var y = `${ (a) / (b) }`;\n").length;
+  var hitCall = _libRegexHits("var z = RegExp(\"x\").test(v);\n").length;
+  var hitRef = _libRegexHits("var ok = (v instanceof RegExp);\n").length;
+  var hitPostfix = _libRegexHits("var w = `${ a++ / b / c }`;\n").length;
+  var hitAfterBlock = _libRegexHits("if (x) {} /re/.test(y);\n").length;
+  check("_libRegexHits catches a regex inside a template substitution", hitRegex >= 1);
+  check("_libRegexHits does not read a division inside a substitution as a regex", hitDiv === 0);
+  check("_libRegexHits catches a bare RegExp(...) construction call", hitCall >= 1);
+  check("_libRegexHits allows a RegExp type reference that constructs nothing", hitRef === 0);
+  check("_libRegexHits reads division after a postfix ++/-- as division, not a regex", hitPostfix === 0);
+  check("_libRegexHits catches a regex after a block close (favor flag over a false negative)", hitAfterBlock >= 1);
 }
 
 function testNoInstanceofArrayBuffer() {
@@ -3849,6 +3895,7 @@ function run() {
   testAllowMarkersAreRegistered();
   testKnownAntipatterns();
   testNoRegexInLib();
+  testLibRegexHitsLexing();
   testNoInstanceofArrayBuffer();
   testNoPartialByteAcceptance();
   testNoDuplicateCodeBlocks();
