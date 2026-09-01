@@ -289,6 +289,7 @@ async function testEncryptCorners() {
   check("encrypt of a public CryptoKey -> key/bad-input", (await codeOf(pki.key.encrypt(pair.publicKey, "pw"))) === "key/bad-input");
   // encrypt with an unsupported cipher.
   check("encrypt with an unsupported cipher -> key/bad-input", (await codeOf(pki.key.encrypt(rsaDer, "pw", { cipher: "des-cbc" }))) === "key/bad-input");
+  check("encrypt with an inherited-property cipher (toString) -> key/bad-input", (await codeOf(pki.key.encrypt(rsaDer, "pw", { cipher: "toString" }))) === "key/bad-input");
   // encrypt honoring an explicit iteration count and salt round-trips.
   var enc = await pki.key.encrypt(rsaDer, "pw", { iterations: 120000, salt: Buffer.alloc(16, 5) });
   check("encrypt with explicit iterations + salt round-trips", Buffer.compare(await pki.key.decrypt(enc, "pw"), rsaDer) === 0);

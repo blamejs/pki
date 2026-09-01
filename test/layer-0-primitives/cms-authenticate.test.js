@@ -160,6 +160,8 @@ async function testMacAlgorithmStrictness() {
   // splice the macAlgorithm OID hmacWithSHA256 -> hmac-SHA1 by re-encoding (simplest: assert the
   // producer refuses to emit a weak/unknown macAlgorithm at build time as the primary guard).
   check("#12 authenticate refuses an unknown macAlgorithm", (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { macAlgorithm: "hmac-sha1" }); })) === "cms/bad-input");
+  check("#12 authenticate refuses an inherited-property macAlgorithm (toString)", (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { macAlgorithm: "toString" }); })) === "cms/bad-input");
+  check("#12 authenticate refuses an inherited-property digestAlgorithm (toString)", (await codeOf(function () { return pki.cms.authenticate(MSG, [{ kek: kek, kekId: Buffer.from("k") }], { digestAlgorithm: "toString" }); })) === "cms/bad-input");
   // decrypt-side: a message whose macAlgorithm OID is unregistered is refused with the DISTINCT
   // cms/unsupported-algorithm BEFORE any secret step -- swap the hmacWithSHA256 OID's last arc.
   var oidBytes = Buffer.from([0x06, 0x08, 0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x02, 0x09]);
