@@ -878,6 +878,15 @@ async function testCertPollMessage() {
     { type: O("scepTransactionId"), values: [b.printable("t")] },
     { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
   check("CertPoll: parse rejects an issuer that is a SEQUENCE but not an X.509 Name", (await codeOf(pki.scep.parse(badCpIssuer, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  check("CertPoll: build with an empty explicit issuer Name refused (an issuer must be non-empty)", (await codeOf(pki.scep.build({ messageType: "CertPoll", requestSubject: reqSubject, issuer: b.sequence([]), recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var cpEmptySubject = await pki.scep.build({ messageType: "CertPoll", requestSubject: b.sequence([]), recipient: F.caCert, signer: F.signer, transactionId: "cp-empty-subj" });
+  var cpEmptySubjectV = await pki.scep.parse(cpEmptySubject, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("CertPoll: an empty requestSubject is allowed (a subject may be empty)", cpEmptySubjectV.messageType === "CertPoll" && pki.asn1.decode(cpEmptySubjectV.messageData).children[1].children.length === 0);
+  var cpEmptyIssuerParse = await signWith(await cmsEncrypt.encrypt(b.sequence([b.sequence([]), reqSubject]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("20")] },
+    { type: O("scepTransactionId"), values: [b.printable("t")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("CertPoll: parse rejects an empty issuer Name", (await codeOf(pki.scep.parse(cpEmptyIssuerParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
 }
 
 async function pollFixture() {
@@ -1044,13 +1053,18 @@ async function testGetCertGetCrlMessage() {
   var zeroSerialCert = dsSerial.replaceTlv(F.issuedCert, b.integer(serial), b.integer(0n)).der;
   check("GetCert: the crafted certificate parses with a zero serial", pki.schema.x509.parse(zeroSerialCert).serialNumber === 0n);
   check("GetCert: build from a certificate whose serial is non-positive is refused", (await codeOf(pki.scep.build({ messageType: "GetCert", certificate: zeroSerialCert, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var emptyIssuerCert = dsSerial.replaceTlv(F.issuedCert, pki.schema.x509.parse(F.issuedCert).issuer.bytes, b.sequence([])).der;
+  check("GetCert: build from a certificate whose issuer is empty is refused (the certificate parser enforces a non-empty issuer)", (await codeOf(pki.scep.build({ messageType: "GetCert", certificate: emptyIssuerCert, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
   check("GetCert: build with a SEQUENCE issuer that is not an X.509 Name refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: b.sequence([b.integer(1n)]), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with an empty issuer Name refused (an issuer must be non-empty)", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: b.sequence([]), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
   async function getCertPayload(payloadDer) {
     return signWith(await cmsEncrypt.encrypt(payloadDer, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
       { type: O("scepMessageType"), values: [b.printable("21")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
   }
   var badIssuerParse = await getCertPayload(b.sequence([b.sequence([b.integer(1n)]), b.integer(5n)]));
   check("GetCert: parse rejects an issuer that is a SEQUENCE but not an X.509 Name", (await codeOf(pki.scep.parse(badIssuerParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var emptyIssuerParse = await getCertPayload(b.sequence([b.sequence([]), b.integer(5n)]));
+  check("GetCert: parse rejects an empty issuer Name", (await codeOf(pki.scep.parse(emptyIssuerParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
   var nonMinSerialParse = await getCertPayload(b.sequence([issuerBytes, Buffer.from([0x02, 0x02, 0x00, 0x05])]));
   check("GetCert: parse rejects a non-minimal INTEGER serial (strict DER decode)", (await codeOf(pki.scep.parse(nonMinSerialParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
   var constructedSerialParse = await getCertPayload(b.sequence([issuerBytes, Buffer.from([0x22, 0x03, 0x02, 0x01, 0x05])]));
