@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.13",
+  "packageVersion": "0.6.14",
   "surface": {
     "C": {
       "kind": "object",
@@ -2808,6 +2808,10 @@
           "kind": "function",
           "arity": 2
         },
+        "getNextCACert": {
+          "kind": "function",
+          "arity": 2
+        },
         "parse": {
           "kind": "function",
           "arity": 2
@@ -3616,6 +3620,7 @@
     "pki.scep.parseCapabilities": "0.6.7",
     "pki.scep.getCACaps": "0.6.7",
     "pki.scep.getCACert": "0.6.7",
+    "pki.scep.getNextCACert": "0.6.14",
     "pki.scep.enroll": "0.6.7",
     "pki.scep.renew": "0.6.7",
     "pki.schema.all": "0.1.7",

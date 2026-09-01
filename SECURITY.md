@@ -974,6 +974,14 @@ security-only patches after the next major releases.
   `signerCert` itself before acting on the transaction state. A message carrying
   more than one signer is refused, and passing `expectedSenderNonce` refuses a
   recipientNonce that does not echo the nonce sent (RFC 8894 §3.1, §3.2.1).
+  `pki.scep.getNextCACert` authenticates the CA rollover exchange the same way: it
+  verifies the response SignedData signature, requires exactly one signer, and
+  pins that signer to the current CA certificate the caller passes
+  (`caCertificate`), refusing a response signed by any other key
+  (`scep/untrusted-signer`). The current CA certificate is required, so the next
+  CA certificate a client installs when the current one expires, and would then
+  trust as a certification authority, is never returned unless the current CA
+  signed for it (RFC 8894 §4.7.1).
 - **Enrolling an unprovable request (SCEP).** `pki.scep.build` verifies that the
   PKCS#10 `messageData` is a well-formed CertificationRequest whose self-signature
   is a valid proof-of-possession before it encrypts it, through the same inbound

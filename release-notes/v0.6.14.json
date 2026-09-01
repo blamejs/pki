@@ -1,0 +1,10 @@
+{
+  "version": "0.6.14",
+  "headline": "pki.scep.getNextCACert retrieves a SCEP CA's next (rollover) certificate and authenticates it against the current CA key, so a client can obtain and hold the CA certificate to install before the current one expires.",
+  "summary": "When a SCEP CA's certificate is nearing expiry, a client fetches the CA's next certificate ahead of the changeover (RFC 8894 sec. 4.7). pki.scep.getNextCACert performs that exchange: it retrieves the SignedData the CA returns, verifies the outer signature under the current CA certificate the caller already holds, and returns the next CA certificate(s) from the verified content. The current CA certificate is required, and a response not signed by the current CA key is refused, so an unauthenticated rollover certificate is never returned as trusted.",
+  "sections": {
+    "Added": [
+      "pki.scep.getNextCACert(baseUrl, opts) performs the RFC 8894 sec. 4.7 GetNextCACert exchange for CA key rollover: a GET for the CA's next certificate whose SignedData response is verified and pinned to the current CA certificate (opts.caCertificate) before the next CA certificate(s) are returned in certificates. opts.caCertificate is required, and a response signed by any key other than the current CA is refused (scep/untrusted-signer), so a rollover certificate that would become a future trust anchor is never returned without authentication."
+    ]
+  }
+}
