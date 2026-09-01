@@ -212,15 +212,17 @@ jobs:
       - name: Vulnerability scan (OSV-Scanner)
         # The published tarball ships zero runtime dependencies (the gate
         # above refuses the publish otherwise), so its SBOM is empty by
-        # construction and gives the scanner nothing to read — the scannable
-        # dependency surface is the dev/build toolchain the committed
-        # lockfiles pin, which is exactly the supply chain that runs during
-        # this publish.
+        # construction and gives the scanner nothing to read. The scannable
+        # surface for the publish is the root dev and build toolchain that
+        # the committed root lockfile pins and that runs during this publish.
+        # The fuzz harness under fuzz/ is a separate dev project: it is not
+        # part of the published package and does not run during publish, so
+        # its lockfile is out of scope here (the PR-time dependency-review
+        # and Dependabot still track it).
         uses: google/osv-scanner-action/osv-scanner-action@6e4298ebc4db23e847df9b2e2de2939d6f066c67  # v2.5.1
         with:
           scan-args: |-
             --lockfile=package-lock.json
-            --lockfile=fuzz/package-lock.json
 
       - name: Vulnerability scan (OSV-Scanner, vendored bundles)
         # lib/vendor/ is the bundled-but-not-in-SBOM surface — vendored
