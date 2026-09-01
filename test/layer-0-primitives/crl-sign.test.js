@@ -308,17 +308,17 @@ async function testVerifyPerAlgorithm() {
     var alg = arms[k];
     var s = makeSigner(alg);
     var der = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n, revoked: [{ serialNumber: 3n, revocationDate: RD, reason: "keyCompromise" }] }, issuerOf(s));
-    check(alg + " verify true with the correct key", (await pki.crl.verify(der, { publicKey: s.spki })) === true);
+    check(alg + " verify true with the correct key", (await pki.crl.verify(der, { publicKey: s.spki })).valid === true);
     var spkiAB = new ArrayBuffer(s.spki.length); new Uint8Array(spkiAB).set(s.spki);   // #68: a raw SPKI issuer as any BufferSource
-    check(alg + " verify true with a raw SPKI issuer as an ArrayBuffer (#68)", (await pki.crl.verify(der, spkiAB)) === true);
+    check(alg + " verify true with a raw SPKI issuer as an ArrayBuffer (#68)", (await pki.crl.verify(der, spkiAB)).valid === true);
     var bad = Buffer.from(der); bad[bad.length - 1] ^= 0xff;
-    check(alg + " verify false on a tampered signature", (await pki.crl.verify(bad, { publicKey: s.spki })) === false);
-    check(alg + " verify false with a wrong key", (await pki.crl.verify(der, { publicKey: makeSigner(alg).spki })) === false);
+    check(alg + " verify false on a tampered signature", (await pki.crl.verify(bad, { publicKey: s.spki })).valid === false);
+    check(alg + " verify false with a wrong key", (await pki.crl.verify(der, { publicKey: makeSigner(alg).spki })).valid === false);
   }
   // RSA-PSS arm (opts.pss)
   var rp = makeSigner("rsa");
   var pssDer = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, issuerOf(rp), { pss: true });
-  check("RSA-PSS CRL verifies", (await pki.crl.verify(pssDer, { publicKey: rp.spki })) === true);
+  check("RSA-PSS CRL verifies", (await pki.crl.verify(pssDer, { publicKey: rp.spki })).valid === true);
 }
 
 // ---- RFC 9814 sec. 4 -- algorithm-confusion fails closed ----
@@ -326,7 +326,7 @@ async function testVerifyPerAlgorithm() {
 async function testVerifyAlgorithmConfusion() {
   var ec = makeSigner("ec-p256"), ed = makeSigner("ed25519");
   var der = await pki.crl.sign({ thisUpdate: TU, nextUpdate: NU, crlNumber: 1n }, issuerOf(ec));
-  check("ECDSA CRL against an Ed25519 SPKI -> verify false", (await pki.crl.verify(der, { publicKey: ed.spki })) === false);
+  check("ECDSA CRL against an Ed25519 SPKI -> verify false", (await pki.crl.verify(der, { publicKey: ed.spki })).valid === false);
 }
 
 // ---- verify accepts every documented crl / issuer shape, and rejects the rest ----
@@ -337,15 +337,15 @@ async function testVerifyInputShapes() {
   var der = await pki.crl.sign(spec, issuerOf(s));
   var pem = await pki.crl.sign(spec, issuerOf(s), { pem: true });
   // The crl argument: DER Buffer (covered above), PEM string, or an already-parsed CRL.
-  check("verify accepts a PEM CRL string", (await pki.crl.verify(pem, { publicKey: s.spki })) === true);
-  check("verify accepts a parsed CRL object", (await pki.crl.verify(pki.schema.crl.parse(der), { publicKey: s.spki })) === true);
+  check("verify accepts a PEM CRL string", (await pki.crl.verify(pem, { publicKey: s.spki })).valid === true);
+  check("verify accepts a parsed CRL object", (await pki.crl.verify(pki.schema.crl.parse(der), { publicKey: s.spki })).valid === true);
   check("verify of a non-CRL value -> crl/bad-input", await codeOf(pki.crl.verify(5, { publicKey: s.spki })) === "crl/bad-input");
   // An object that merely looks like a parsed CRL but is missing a signed field is not accepted as one.
   var shallow = pki.schema.crl.parse(der);
   check("verify of a parsed CRL missing signatureValue -> crl/bad-input",
     await codeOf(pki.crl.verify({ tbsBytes: shallow.tbsBytes, signatureAlgorithm: shallow.signatureAlgorithm }, { publicKey: s.spki })) === "crl/bad-input");
   // The issuer argument: raw SPKI Buffer, { publicKey }, { cert } (DER or parsed), or a parsed certificate.
-  check("verify accepts a raw SPKI Buffer issuer", (await pki.crl.verify(der, s.spki)) === true);
+  check("verify accepts a raw SPKI Buffer issuer", (await pki.crl.verify(der, s.spki)).valid === true);
   check("verify with no issuer -> crl/bad-input", await codeOf(pki.crl.verify(der, null)) === "crl/bad-input");
   check("verify with an unrecognized issuer shape -> crl/bad-input", await codeOf(pki.crl.verify(der, {})) === "crl/bad-input");
   var ca = makeSigner("ec-p256");
@@ -355,11 +355,11 @@ async function testVerifyInputShapes() {
   }, { key: ca.key });
   var caParsed = pki.schema.x509.parse(caDer);
   var crlByCa = await pki.crl.sign(spec, { cert: caParsed, key: ca.key });
-  check("verify accepts a { cert } DER issuer", (await pki.crl.verify(crlByCa, { cert: caDer })) === true);
-  check("verify accepts a { cert } parsed-certificate issuer", (await pki.crl.verify(crlByCa, { cert: caParsed })) === true);
-  check("verify accepts a parsed certificate as the issuer", (await pki.crl.verify(crlByCa, caParsed)) === true);
+  check("verify accepts a { cert } DER issuer", (await pki.crl.verify(crlByCa, { cert: caDer })).valid === true);
+  check("verify accepts a { cert } parsed-certificate issuer", (await pki.crl.verify(crlByCa, { cert: caParsed })).valid === true);
+  check("verify accepts a parsed certificate as the issuer", (await pki.crl.verify(crlByCa, caParsed)).valid === true);
   // Every accepted issuer shape still resolves to a real key -- the wrong CA's cert fails closed.
-  check("a parsed-certificate issuer for the wrong CA -> verify false", (await pki.crl.verify(crlByCa, pki.schema.x509.parse(s.cert))) === false);
+  check("a parsed-certificate issuer for the wrong CA -> verify false", (await pki.crl.verify(crlByCa, pki.schema.x509.parse(s.cert))).valid === false);
 
   // A CRL signature verifying says only that SOME key signed these bytes. Whether that key was
   // ALLOWED to sign a CRL, and whether it belongs to the issuer this CRL names, are separate
@@ -376,18 +376,30 @@ async function testVerifyInputShapes() {
   // cannot refuse, since no certificate is offered to it.
   var crlByEe = await pki.crl.sign(spec, { publicKey: ee.spki, name: "CA verify shapes", key: ee.key });
   check("a CRL signed by a certificate whose keyUsage omits cRLSign does not verify under it",
-    (await pki.crl.verify(crlByEe, { cert: eeDer })) === false);
+    (await pki.crl.verify(crlByEe, { cert: eeDer })).valid === false);
   // ...and the signature itself is still sound, so the refusal is about authority, not about maths:
   // handed only the KEY, with no certificate to carry the restriction, the same CRL verifies.
   check("the same CRL verifies under the bare key -- a key carries no authority to restrict",
-    (await pki.crl.verify(crlByEe, ee.spki)) === true);
+    (await pki.crl.verify(crlByEe, ee.spki)).valid === true);
   // An absent keyUsage places no restriction (sec. 4.2.1.3), so it must not read as a refusal.
   var noKuDer = await pki.x509.sign({
     subject: "CA verify shapes", subjectPublicKey: ca.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2030-01-01T00:00:00Z"),
     extensions: { basicConstraints: { cA: true } },
   }, { key: ca.key });
   check("an issuer certificate with no keyUsage at all still verifies its CRL",
-    (await pki.crl.verify(crlByCa, { cert: noKuDer })) === true);
+    (await pki.crl.verify(crlByCa, { cert: noKuDer })).valid === true);
+
+  // #78: the verdict is an object surfacing the two checks it used to hide behind one boolean.
+  var okShape78 = await pki.crl.verify(crlByCa, { cert: caDer });
+  check("#78 crl.verify returns { valid, issuerMaySign, signatureValid, issuer }",
+    okShape78 && typeof okShape78 === "object" && okShape78.valid === true &&
+    okShape78.issuerMaySign === true && okShape78.signatureValid === true && !!okShape78.issuer);
+  var noAuth78 = await pki.crl.verify(crlByEe, { cert: eeDer });
+  check("#78 a sound signature under a non-cRLSign cert: valid false, issuerMaySign false, signatureValid true",
+    noAuth78.valid === false && noAuth78.issuerMaySign === false && noAuth78.signatureValid === true);
+  var bareKey78 = await pki.crl.verify(crlByEe, ee.spki);
+  check("#78 a bare-key issuer reports issuerMaySign true (no cert to restrict) with a real signatureValid",
+    bareKey78.valid === true && bareKey78.issuerMaySign === true && bareKey78.signatureValid === true);
   // The SAME keyUsage must read the same on every side. keyUsage is a NamedBitList, so DER drops
   // its trailing zero bits (X.690 sec. 11.2.2) and requires at least one bit set (sec. 4.2.1.3) --
   // rules the shared extension decoder enforces, and which the signing side and pki.path.validate
@@ -440,7 +452,7 @@ async function testVerifyInputShapes() {
   // ...and the well-formed minimal encoding of the same permission still verifies, so the rule is
   // about the encoding rather than about the bit.
   check("the minimal encoding of the same cRLSign permission still verifies",
-    (await pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x02]), 1)))) === true);
+    (await pki.crl.verify(crlByCa, caWithRawKu(b.bitString(Buffer.from([0x02]), 1)))).valid === true);
 }
 
 // ---- the signing key must actually match the resolved scheme -- faults are typed, never a partial CRL ----
@@ -471,7 +483,7 @@ async function testSignerKeyFaults() {
   // issuer.key may be a CryptoKey rather than PKCS#8 bytes; the CRL it produces must verify like any other.
   var ck = await pki.webcrypto.subtle.importKey("pkcs8", ec.key, { name: "ECDSA", namedCurve: "P-256" }, false, ["sign"]);
   var ckDer = await pki.crl.sign(spec, { name: "CN=X", publicKey: ec.spki, key: ck });
-  check("a CryptoKey issuer.key signs a CRL that verifies", (await pki.crl.verify(ckDer, { publicKey: ec.spki })) === true);
+  check("a CryptoKey issuer.key signs a CRL that verifies", (await pki.crl.verify(ckDer, { publicKey: ec.spki })).valid === true);
   check("a CryptoKey of the wrong algorithm -> crl/bad-input",
     await codeOf(withIssuer({ name: "CN=X", publicKey: ec.spki, key: await pki.webcrypto.subtle.importKey("pkcs8", ed.key, { name: "Ed25519" }, false, ["sign"]) })) === "crl/bad-input");
 }

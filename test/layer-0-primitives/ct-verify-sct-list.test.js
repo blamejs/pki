@@ -64,6 +64,7 @@ async function run() {
 
   var v2 = await pki.ct.verifySctList(ENTRY, [signedSct(opA)], listAB, { certNotAfter: NOT_AFTER });
   check("VL2. one valid SCT, default policy -> policyOk", v2.policyOk === true && v2.validScts === 1 && v2.operatorCount === 1);
+  check("#78 valid aliases policyOk on the SCT-list verdict", v2.valid === true && v2.valid === v2.policyOk);
 
   // ---- Policy (verdict, not throw) ----
   var opC1 = makeLog(), opC2 = makeLog();

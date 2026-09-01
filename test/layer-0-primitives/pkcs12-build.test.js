@@ -43,12 +43,12 @@ async function testClassicRoundTrip() {
   check("#1 mac.hashName is sha256", m.mac.hashName === "sha256");
   check("#1 mac.iterations is 2048", m.mac.iterations === 2048);
   check("#1 safeBags carry a certBag + a pkcs8ShroudedKeyBag", m.safeBags.map(function (x) { return x.type; }).sort().join(",") === "certBag,pkcs8ShroudedKeyBag");
-  check("#1 verifyMac accepts the correct password", (await pki.pkcs12.verifyMac(p12, "1234")) === true);
-  check("#1 verifyMac rejects a wrong password", (await pki.pkcs12.verifyMac(p12, "wrong")) === false);
+  check("#1 verifyMac accepts the correct password", (await pki.pkcs12.verifyMac(p12, "1234")).valid === true);
+  check("#1 verifyMac rejects a wrong password", (await pki.pkcs12.verifyMac(p12, "wrong")).valid === false);
   // PEM round-trip
   var pem = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", pem: true });
   check("#1 pem output carries the PKCS12 armor", /-----BEGIN PKCS12-----/.test(pem));
-  check("#1 verifyMac accepts a PEM store", (await pki.pkcs12.verifyMac(pem, "1234")) === true);
+  check("#1 verifyMac accepts a PEM store", (await pki.pkcs12.verifyMac(pem, "1234")).valid === true);
 }
 
 // ---- #2 PBMAC1-SHA256 round-trip -------------------------------------------
@@ -61,11 +61,11 @@ async function testPbmac1RoundTrip() {
   check("#2 PBMAC1 keyLength is 32", m.mac.pbmac1.kdf.keyLength === 32);
   check("#2 PBMAC1 prfName is hmacWithSHA256", m.mac.pbmac1.kdf.prfName === "hmacWithSHA256");
   check("#2 PBMAC1 schemeName is hmacWithSHA256", m.mac.pbmac1.schemeName === "hmacWithSHA256");
-  check("#2 verifyMac accepts the correct password", (await pki.pkcs12.verifyMac(p12, "1234")) === true);
-  check("#2 verifyMac rejects a wrong password", (await pki.pkcs12.verifyMac(p12, "nope")) === false);
+  check("#2 verifyMac accepts the correct password", (await pki.pkcs12.verifyMac(p12, "1234")).valid === true);
+  check("#2 verifyMac rejects a wrong password", (await pki.pkcs12.verifyMac(p12, "nope")).valid === false);
   // PBMAC1 over SHA-384 / SHA-512
   var p384 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha384" } });
-  check("#2 PBMAC1-SHA384 keyLength is 48 + verifies", pki.schema.pkcs12.parse(p384).mac.pbmac1.kdf.keyLength === 48 && (await pki.pkcs12.verifyMac(p384, "1234")) === true);
+  check("#2 PBMAC1-SHA384 keyLength is 48 + verifies", pki.schema.pkcs12.parse(p384).mac.pbmac1.kdf.keyLength === 48 && (await pki.pkcs12.verifyMac(p384, "1234")).valid === true);
 }
 
 // ---- #7 macedBytes exactness (off-by-the-TLV-header) -----------------------
@@ -84,9 +84,9 @@ async function testClassicBmpStringPassword() {
   var s = signer();
   var pw = String.fromCharCode(0x63, 0x61, 0x66, 0xe9);   // "cafe" + U+00E9  (non-ASCII, built at runtime)
   var p12 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: pw, mac: { algorithm: "hmac", hash: "sha256" } });
-  check("#8 verifyMac with the string (BMPString-encoded) passes", (await pki.pkcs12.verifyMac(p12, pw)) === true);
+  check("#8 verifyMac with the string (BMPString-encoded) passes", (await pki.pkcs12.verifyMac(p12, pw)).valid === true);
   // Passing the raw UTF-8 BYTES as a Buffer is a DIFFERENT key than the BMPString the classic KDF derives.
-  check("#8 verifyMac with the raw UTF-8 bytes fails (proves BMPString, not UTF-8)", (await pki.pkcs12.verifyMac(p12, Buffer.from(pw, "utf8"))) === false);
+  check("#8 verifyMac with the raw UTF-8 bytes fails (proves BMPString, not UTF-8)", (await pki.pkcs12.verifyMac(p12, Buffer.from(pw, "utf8"))).valid === false);
 }
 
 // ---- #9 / #10 PBES2 hosts round-trip through the parser --------------------
@@ -102,7 +102,7 @@ async function testPbes2Hosts() {
   var p10 = await pki.pkcs12.build({ safeContents: [{ encrypt: { password: "1234", cipher: "aes-256-cbc" }, bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" });
   var m10 = pki.schema.pkcs12.parse(p10);
   check("#10 an encryptedData safe is present", m10.encryptedSafes.length === 1 && m10.encryptedSafes[0].type === "encryptedData");
-  check("#10 verifyMac still holds over the encrypted safe", (await pki.pkcs12.verifyMac(p10, "1234")) === true);
+  check("#10 verifyMac still holds over the encrypted safe", (await pki.pkcs12.verifyMac(p10, "1234")).valid === true);
 }
 
 // ---- #12 no-MAC store + verifyMac fail-closed ------------------------------
@@ -291,7 +291,7 @@ async function testUnknownBuildKeys() {
   check("an option open forwards to the CMS layer is still accepted",
     (await pki.pkcs12.open(p12, "1234", { recipientIndex: 0 })) != null);
   check("the documented verifyMac option is still accepted",
-    (await pki.pkcs12.verifyMac(p12, "1234", { maxIterations: 200000 })) === true);
+    (await pki.pkcs12.verifyMac(p12, "1234", { maxIterations: 200000 })).valid === true);
 
   // The shorthand form and every real build option still work.
   check("the { key, cert } shorthand still builds",
@@ -313,6 +313,15 @@ async function testMacFailClosed() {
   check("#14 PBMAC1 keyLength over the cap -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", keyLength: 2000 } }))) === "pkcs12/bad-input");
   // classic HMAC with SHA-1 IS allowed (legacy interop), so this must NOT throw.
   check("#14 classic HMAC with sha1 is allowed", typeof (await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha1" } })) === "object");
+
+  // #78 verifyMac names the MAC algorithm the store used, so a caller can reject a legacy SHA-1 integrity.
+  var sha1Store78 = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha1" } });
+  var sha1Res78 = await pki.pkcs12.verifyMac(sha1Store78, "1234");
+  check("#78 verifyMac returns { valid, macAlgorithm, macAlgorithmName, iterationCount } naming sha1",
+    sha1Res78.valid === true && sha1Res78.macAlgorithm === "hmac" && sha1Res78.macAlgorithmName === "sha1" && typeof sha1Res78.iterationCount === "number");
+  var sha256Store78 = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "hmac", hash: "sha256" } });
+  check("#78 verifyMac names sha256 for a SHA-256 classic MAC",
+    (await pki.pkcs12.verifyMac(sha256Store78, "1234")).macAlgorithmName === "sha256");
 }
 
 // ---- #15 friendlyName / localKeyId attributes -----------------------------
@@ -362,7 +371,7 @@ async function testFailClosedInputs() {
   check("a non-object opts.mac -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234", mac: "yes" }))) === "pkcs12/bad-input");
   // a shroudedKey with no encrypt block inherits opts.password + the default cipher (the bag.encrypt || {} arm).
   var pdef = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key }] }] }, { password: "1234" });
-  check("a shroudedKey with no encrypt block uses opts.password + defaults", (await pki.pkcs12.verifyMac(pdef, "1234")) === true);
+  check("a shroudedKey with no encrypt block uses opts.password + defaults", (await pki.pkcs12.verifyMac(pdef, "1234")).valid === true);
   check("a certBag with non-cert bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a crlBag with non-CRL bytes -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "crl", crl: Buffer.from([1, 2, 3]) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   check("a secret bag with a garbage secretTypeId -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "not an oid", secretValue: b.octetString(Buffer.from("x")) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
@@ -375,11 +384,11 @@ async function testFailClosedInputs() {
   check("localKeyId 'ski' auto-derive -> pkcs12/bad-input (deferred)", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert, localKeyId: "ski" }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   // a safeContents bag with no nested list (the bag.nested || [] arm).
   var pnn = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }, { type: "safeContents" }] }] }, { password: "1234" });
-  check("a safeContents bag with no nested list is tolerated", (await pki.pkcs12.verifyMac(pnn, "1234")) === true);
+  check("a safeContents bag with no nested list is tolerated", (await pki.pkcs12.verifyMac(pnn, "1234")).valid === true);
   check("a secret bag with no secretTypeId -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretValue: b.octetString(Buffer.from("x")) }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   // a shroudedKey whose encrypt omits its own password inherits opts.password.
   var pski = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key, encrypt: { cipher: "aes-256-cbc" } }] }] }, { password: "1234" });
-  check("a shroudedKey encrypt inherits opts.password", (await pki.pkcs12.verifyMac(pski, "1234")) === true);
+  check("a shroudedKey encrypt inherits opts.password", (await pki.pkcs12.verifyMac(pski, "1234")).valid === true);
   // nesting past the depth cap fails closed.
   var deep = { type: "cert", cert: s.cert };
   for (var d = 0; d < 18; d++) deep = { type: "safeContents", nested: [deep] };
@@ -392,7 +401,7 @@ async function testFailClosedInputs() {
   check("an unsupported bag cipher -> pkcs12/bad-input (not a silent default)", (await codeOf(pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key, encrypt: { password: "1234", cipher: "des-cbc" } }] }] }, { password: "1234" }))) === "pkcs12/bad-input");
   // AES-128/192 bag ciphers + an explicit salt/iterations exercise the PBES2 encrypt arms.
   var p128 = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "shroudedKey", key: s.key, encrypt: { password: "1234", cipher: "aes-128-cbc", salt: Buffer.alloc(8, 9), iterations: 4096 } }] }] }, { password: "1234" });
-  check("aes-128-cbc bag with explicit salt + iterations round-trips", (await pki.pkcs12.verifyMac(p128, "1234")) === true);
+  check("aes-128-cbc bag with explicit salt + iterations round-trips", (await pki.pkcs12.verifyMac(p128, "1234")).valid === true);
 }
 
 // ---- bag-type coverage: keyBag, crl, secret, nested safeContents ----------
@@ -411,13 +420,13 @@ async function testBagTypes() {
   check("bag types: crlBag present", types.indexOf("crlBag") !== -1);
   check("bag types: secretBag present", types.indexOf("secretBag") !== -1);
   check("bag types: safeContentsBag present", types.indexOf("safeContentsBag") !== -1);
-  check("nested safeContents + verifyMac holds", (await pki.pkcs12.verifyMac(p12, "1234")) === true);
+  check("nested safeContents + verifyMac holds", (await pki.pkcs12.verifyMac(p12, "1234")).valid === true);
   // convenience (OpenSSL-style) form
   var conv = await pki.pkcs12.build({ key: s.key, cert: s.cert, friendlyName: "k" }, { password: "1234" });
-  check("convenience form { key, cert } builds + verifies", (await pki.pkcs12.verifyMac(conv, "1234")) === true);
+  check("convenience form { key, cert } builds + verifies", (await pki.pkcs12.verifyMac(conv, "1234")).valid === true);
   // an arbitrary (unregistered) dotted-decimal secretTypeId OID is preserved verbatim.
   var pdotted = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "secret", secretTypeId: "1.2.3.4.5", secretValue: b.octetString(Buffer.from("s")) }] }] }, { password: "1234" });
-  check("a secret bag with an arbitrary OID secretTypeId round-trips", (await pki.pkcs12.verifyMac(pdotted, "1234")) === true && pki.schema.pkcs12.parse(pdotted).safeBags[0].secretTypeId === "1.2.3.4.5");
+  check("a secret bag with an arbitrary OID secretTypeId round-trips", (await pki.pkcs12.verifyMac(pdotted, "1234")).valid === true && pki.schema.pkcs12.parse(pdotted).safeBags[0].secretTypeId === "1.2.3.4.5");
 }
 
 // ---- option/verifyMac reachable edges --------------------------------------
@@ -428,7 +437,7 @@ async function testEdges() {
   check("classic MAC with an unknown hash -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { hash: "md5" } }))) === "pkcs12/unsupported-algorithm");
   // PBMAC1 with an explicit iteration count + keyLength, and a too-short keyLength.
   var pex = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", iterations: 3000, keyLength: 32 } });
-  check("PBMAC1 with explicit iterations + keyLength round-trips", (await pki.pkcs12.verifyMac(pex, "1234")) === true);
+  check("PBMAC1 with explicit iterations + keyLength round-trips", (await pki.pkcs12.verifyMac(pex, "1234")).valid === true);
   check("PBMAC1 with keyLength < 20 -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", keyLength: 10 } }))) === "pkcs12/bad-input");
   // An OMITTED password is refused rather than silently encoded as the empty one. Without this a
   // caller who misspells the option -- or threads it through a layer that drops it -- gets a store
@@ -440,7 +449,7 @@ async function testEdges() {
   // The empty password remains available -- it just has to be asked for.
   var pEmptyPw = await pki.pkcs12.build(spec, { password: "" });
   check("an explicit empty password still builds a MACed store", pki.schema.pkcs12.parse(pEmptyPw).integrityMode === "password");
-  check("verifyMac with the empty password accepts it", (await pki.pkcs12.verifyMac(pEmptyPw, "")) === true);
+  check("verifyMac with the empty password accepts it", (await pki.pkcs12.verifyMac(pEmptyPw, "")).valid === true);
   // The integrity mode is validated against the permitted value, not compared to one literal: any
   // other spelling silently selected password integrity and dropped the signer with it.
   check("integrity.mode 'publicKey' -> pkcs12/bad-integrity-mode, not a silent password MAC",
@@ -453,9 +462,9 @@ async function testEdges() {
   // that. The parser marks what it returns and the door asks for the mark, so the documented parsed
   // form keeps working and only a rebuilt one is refused.
   var p12 = await pki.pkcs12.build(spec, { password: "1234" });
-  check("the parser's own result is still accepted", (await pki.pkcs12.verifyMac(pki.schema.pkcs12.parse(p12), "1234")) === true);
+  check("the parser's own result is still accepted", (await pki.pkcs12.verifyMac(pki.schema.pkcs12.parse(p12), "1234")).valid === true);
   check("...by open too", (await pki.pkcs12.open(pki.schema.pkcs12.parse(p12), "1234")).macVerified === true);
-  check("bytes and PEM are unchanged", (await pki.pkcs12.verifyMac(p12, "1234")) === true);
+  check("bytes and PEM are unchanged", (await pki.pkcs12.verifyMac(p12, "1234")).valid === true);
   // Object.assign and spread copy own ENUMERABLE properties, which is exactly how the mixed object
   // is built -- and exactly what the mark does not survive.
   check("an Object.assign copy is refused: it is no longer the store the parser produced",
@@ -470,7 +479,7 @@ async function testEdges() {
   var mutated = pki.schema.pkcs12.parse(p12);
   mutated.macedBytes = Buffer.alloc(8, 9);
   check("editing a parsed store in place does not change the verdict: it is re-derived",
-    (await pki.pkcs12.verifyMac(mutated, "1234")) === true);
+    (await pki.pkcs12.verifyMac(mutated, "1234")).valid === true);
   var shadowed = Object.create(pki.schema.pkcs12.parse(p12));
   shadowed.macedBytes = Buffer.alloc(8, 9);
   check("an Object.create shadow does not inherit provenance it did not earn",
@@ -481,13 +490,13 @@ async function testEdges() {
     (await pki.pkcs12.open(openedMutated, "1234")).certs.length === 1);
   // a safeContents element with no bags (the sc.bags || [] arm) alongside a real one.
   var pempty = await pki.pkcs12.build({ safeContents: [{ bags: [{ type: "cert", cert: s.cert }] }, {}] }, { password: "1234" });
-  check("an empty safeContents element is tolerated", (await pki.pkcs12.verifyMac(pempty, "1234")) === true);
+  check("an empty safeContents element is tolerated", (await pki.pkcs12.verifyMac(pempty, "1234")).valid === true);
   // an encrypted safe that omits its own password falls back to opts.password.
   var pshared = await pki.pkcs12.build({ safeContents: [{ encrypt: { cipher: "aes-256-cbc" }, bags: [{ type: "cert", cert: s.cert }] }] }, { password: "1234" });
-  check("an encrypted safe inherits opts.password", (await pki.pkcs12.verifyMac(pshared, "1234")) === true);
+  check("an encrypted safe inherits opts.password", (await pki.pkcs12.verifyMac(pshared, "1234")).valid === true);
   // a MAC-specific password (mac.password) overrides the shared password; an explicit MAC salt is honored.
   var pmacpw = await pki.pkcs12.build(spec, { password: "privpw", mac: { password: "macpw", salt: Buffer.alloc(8, 2) } });
-  check("mac.password overrides the shared password", (await pki.pkcs12.verifyMac(pmacpw, "macpw")) === true && (await pki.pkcs12.verifyMac(pmacpw, "privpw")) === false);
+  check("mac.password overrides the shared password", (await pki.pkcs12.verifyMac(pmacpw, "macpw")).valid === true && (await pki.pkcs12.verifyMac(pmacpw, "privpw")).valid === false);
   // an empty or over-cap MAC salt is rejected on build.
   check("an empty MAC salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { salt: Buffer.alloc(0) } }))) === "pkcs12/bad-input");
   check("an over-cap MAC salt -> pkcs12/bad-input", (await codeOf(pki.pkcs12.build(spec, { password: "1234", mac: { salt: Buffer.alloc(pki.constants.LIMITS.PBKDF2_MAX_SALT + 1) } }))) === "pkcs12/bad-input");
@@ -503,7 +512,7 @@ async function testVerifyHardening() {
   // A hostile store's iteration count must be bounded BEFORE deriving. opts.maxIterations lowers the cap.
   var p = await pki.pkcs12.build(spec, { password: "1234", mac: { algorithm: "pbmac1", hash: "sha256", iterations: 2048 } });
   check("verifyMac with maxIterations below the count -> pkcs12/iteration-limit", (await codeOf(pki.pkcs12.verifyMac(p, "1234", { maxIterations: 1000 }))) === "pkcs12/iteration-limit");
-  check("verifyMac without a cap still verifies", (await pki.pkcs12.verifyMac(p, "1234")) === true);
+  check("verifyMac without a cap still verifies", (await pki.pkcs12.verifyMac(p, "1234")).valid === true);
 
   // Craft a store around a real AuthenticatedSafe: an over-the-hard-cap PBMAC1 iteration count is rejected
   // before any derivation (a hostile store cannot force a multi-second CPU burn).
@@ -533,9 +542,9 @@ async function testVerifyHardening() {
   var dk = nc.pbkdf2Sync(pw, salt, iter, keyLen, "sha512");
   var mac = nc.createHmac("sha256", dk).update(macedBytes).digest();
   var differing = craft(salt, iter, keyLen, "hmacWithSHA512", "hmacWithSHA256", mac);
-  check("verifyMac honors a differing PBMAC1 prf / messageAuthScheme (SHA-512 PRF + SHA-256 HMAC)", (await pki.pkcs12.verifyMac(differing, "1234")) === true);
+  check("verifyMac honors a differing PBMAC1 prf / messageAuthScheme (SHA-512 PRF + SHA-256 HMAC)", (await pki.pkcs12.verifyMac(differing, "1234")).valid === true);
   // the same store with the wrong password still fails.
-  check("the differing-scheme store fails on a wrong password", (await pki.pkcs12.verifyMac(differing, "nope")) === false);
+  check("the differing-scheme store fails on a wrong password", (await pki.pkcs12.verifyMac(differing, "nope")).valid === false);
   // a downgraded SHA-1 PBMAC1 store is refused on verify (RFC 9579 sec. 5/7 forbids a <= 160-bit digest).
   var sha1Store = craft(salt, iter, keyLen, "hmacWithSHA1", "hmacWithSHA1", Buffer.alloc(20));
   check("verifyMac refuses a SHA-1 PBMAC1 -> pkcs12/unsupported-algorithm", (await codeOf(pki.pkcs12.verifyMac(sha1Store, "1234"))) === "pkcs12/unsupported-algorithm");

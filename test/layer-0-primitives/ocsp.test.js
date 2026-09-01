@@ -111,6 +111,7 @@ async function run() {
   var rev = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: { revoked: new Date("2027-03-01Z"), revocationReason: "keyCompromise" }, thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   var vr = await verify(w, rev);
   check("verify revoked surfaces the status + reason", vr.status === "revoked" && vr.revocationReason === "keyCompromise");
+  check("#78 verify revoked surfaces revocationTime (the LTV instant)", vr.revocationTime instanceof Date && vr.revocationTime.getTime() === new Date("2027-03-01Z").getTime());
   var unk = await pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "unknown", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 });
   check("verify explicit unknown status", (await verify(w, unk)).status === "unknown");
   // raw-exactness: mutate one byte of the signed response -> signature no longer verifies.
@@ -334,6 +335,7 @@ async function run() {
   }
   var vrOk = await pki.ocsp.verifyRequest(await mkSignedReq(w.targetCertDer));
   check("VR1. a signed request verifies: signed + signatureValid, signerSubject decoded", vrOk.signed === true && vrOk.signatureValid === true && vrOk.signerSubject.dn === "CN=OCSP Mini CA");
+  check("#78 valid = signed AND signatureValid on the ocsp.verifyRequest verdict", vrOk.valid === true && vrOk.valid === (vrOk.signed && vrOk.signatureValid));
   check("VR1b. signerCert is surfaced raw + requestList/version decoded", Buffer.compare(vrOk.signerCert, w.issuerCertDer) === 0 && vrOk.requestList.length === 1 && vrOk.version === 1);
   // VR2: splice tbsRequest of A onto the optionalSignature (over a DIFFERENT tbs) of B -> the
   // signature does not verify over the message's own tbsRequest.

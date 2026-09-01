@@ -78,9 +78,15 @@ async function run() {
 
   // ==== End-to-end resolve+verify (the headline, M9/M10/M11) ========================================
   var sct = signedSct(L);
-  check("6. verifySctWithLogList resolves the key by logId + verifies -> true", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, sct, list, { certNotAfter: NOT_AFTER }); })) === true);
+  check("6. verifySctWithLogList resolves the key by logId + verifies -> true", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, sct, list, { certNotAfter: NOT_AFTER }); })).valid === true);
+  // #78: the verdict surfaces the resolved log record it used to drop to a bare boolean.
+  var wlShape78 = await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, sct, list, { certNotAfter: NOT_AFTER }); });
+  check("#78 verifySctWithLogList returns { valid, logId, logIdHex, operator, logState, timestamp }",
+    wlShape78 && typeof wlShape78 === "object" && wlShape78.valid === true &&
+    typeof wlShape78.logIdHex === "string" && wlShape78.operator != null &&
+    typeof wlShape78.logState === "string" && typeof wlShape78.timestamp === "bigint");
   var badSig = Object.assign({}, sct, { signature: (function (b) { var c = Buffer.from(b); c[c.length - 1] ^= 0xff; return c; })(sct.signature) });
-  check("7. a flipped signature byte -> false (a verdict, not a throw)", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, badSig, list, { certNotAfter: NOT_AFTER }); })) === false);
+  check("7. a flipped signature byte -> false (a verdict, not a throw)", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, badSig, list, { certNotAfter: NOT_AFTER }); })).valid === false);
 
   // ==== The identity binding (M-BIND / M3) =========================================================
   var flip = makeLog();
@@ -101,7 +107,7 @@ async function run() {
   var retired = makeLog({ state: { retired: { timestamp: "2023-06-01T00:00:00Z" } } });   // retired 2023-06-01
   var retList = pki.ct.parseLogList(logListJson([retired.entry]));
   var before = signedSct(retired, BigInt(Date.parse("2023-01-01T00:00:00Z")));
-  check("14. a retired log verifies an SCT timestamped BEFORE retirement", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, before, retList, { certNotAfter: NOT_AFTER }); })) === true);
+  check("14. a retired log verifies an SCT timestamped BEFORE retirement", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, before, retList, { certNotAfter: NOT_AFTER }); })).valid === true);
   var after = signedSct(retired, BigInt(Date.parse("2024-01-01T00:00:00Z")));
   check("15. a retired log refuses an SCT timestamped AT/AFTER retirement -> ct/log-untrusted", (await code(function () { return pki.ct.verifySctWithLogList(ENTRY, after, retList, { certNotAfter: NOT_AFTER }); })) === "ct/log-untrusted");
   check("16. a state {} (zero members) -> ct/bad-state", (await code(function () { return pki.ct.parseLogList(logListJson([makeLog({ state: {} }).entry])); })) === "ct/bad-state");
@@ -155,7 +161,7 @@ async function run() {
   // the entryType-0 leafCert notAfter auto-derive path (no certNotAfter passed): a windowed log covering
   // the leaf's notAfter (2036) verifies purely from the parsed leafCert.
   var autoWin = makeLog({ temporal_interval: { start_inclusive: "2020-01-01T00:00:00Z", end_exclusive: "2040-01-01T00:00:00Z" } });
-  check("42. entryType-0 derives the cert notAfter from leafCert (no certNotAfter opt)", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, signedSct(autoWin), pki.ct.parseLogList(logListJson([autoWin.entry]))); })) === true);
+  check("42. entryType-0 derives the cert notAfter from leafCert (no certNotAfter opt)", (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, signedSct(autoWin), pki.ct.parseLogList(logListJson([autoWin.entry]))); })).valid === true);
   // dedup where one duplicate has a temporal_interval and the other does not (same recomputed id) -> disagree
   var tiA = makeLog({ temporal_interval: { start_inclusive: "2020-01-01T00:00:00Z", end_exclusive: "2040-01-01T00:00:00Z" } });
   var tiB = makeLog({ log_id: tiA.logId.toString("base64"), key: tiA.spki.toString("base64") });   // no temporal_interval
@@ -179,9 +185,9 @@ async function run() {
 
   // ==== the qualified / readonly trusted states also verify (all three trusted states, not just usable) ====
   var qualified = makeLog({ state: { qualified: { timestamp: "2022-01-01T00:00:00Z" } } });
-  check("50. a qualified log is trusted + verifies an SCT", pki.ct.parseLogList(logListJson([qualified.entry])).logs[0].trusted === true && (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, signedSct(qualified), pki.ct.parseLogList(logListJson([qualified.entry])), { certNotAfter: NOT_AFTER }); })) === true);
+  check("50. a qualified log is trusted + verifies an SCT", pki.ct.parseLogList(logListJson([qualified.entry])).logs[0].trusted === true && (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, signedSct(qualified), pki.ct.parseLogList(logListJson([qualified.entry])), { certNotAfter: NOT_AFTER }); })).valid === true);
   var readonly = makeLog({ state: { readonly: { timestamp: "2022-01-01T00:00:00Z", final_tree_head: { tree_size: 10, sha256_root_hash: Buffer.alloc(32, 5).toString("base64") } } } });
-  check("51. a readonly log is trusted + verifies an SCT", pki.ct.parseLogList(logListJson([readonly.entry])).logs[0].trusted === true && (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, signedSct(readonly), pki.ct.parseLogList(logListJson([readonly.entry])), { certNotAfter: NOT_AFTER }); })) === true);
+  check("51. a readonly log is trusted + verifies an SCT", pki.ct.parseLogList(logListJson([readonly.entry])).logs[0].trusted === true && (await vres(function () { return pki.ct.verifySctWithLogList(ENTRY, signedSct(readonly), pki.ct.parseLogList(logListJson([readonly.entry])), { certNotAfter: NOT_AFTER }); })).valid === true);
 
   console.log("CHECKS " + helpers.getChecks());
 }

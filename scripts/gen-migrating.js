@@ -221,6 +221,33 @@ function _build() {
 //   migration:  multi-line markdown migration recipe
 var OUT_OF_BAND_BREAKS = [
   {
+    release: "v0.6.12",
+    surface: "pki.crl.verify, pki.pkcs12.verifyMac, and pki.ct.verifySctWithLogList",
+    summary: "Each returned a bare boolean and now returns a verdict object; read `res.valid` where you read the boolean.",
+    migration: [
+      "A bare boolean hides which checks ran. Each of these three verbs now returns an object whose",
+      "`valid` field is the boolean it used to return, alongside the checks and data it had dropped:",
+      "",
+      "- `pki.crl.verify` -> `{ valid, issuerMaySign, signatureValid, issuer, code?, reason? }`",
+      "- `pki.pkcs12.verifyMac` -> `{ valid, macAlgorithm, macAlgorithmName, iterationCount }`",
+      "- `pki.ct.verifySctWithLogList` -> `{ valid, logId, logIdHex, operator, logState, timestamp }`",
+      "",
+      "```js",
+      "if (await pki.crl.verify(crl, { cert }))       // used to be the verdict; now an always-true object",
+      "",
+      "var res = await pki.crl.verify(crl, { cert });",
+      "if (res.valid) { /* ... */ }",
+      "```",
+      "",
+      "This is a SILENT break: the old return was a boolean, so an unmigrated `if (await verify(...))`",
+      "reads the new object as truthy and accepts what it used to reject. Switch every such test to",
+      "`res.valid`. The new fields let a caller act on the detail the boolean hid: `pki.crl.verify`",
+      "reports whether the certificate was allowed to sign the CRL (`issuerMaySign`) separately from the",
+      "signature (`signatureValid`); `pki.pkcs12.verifyMac` names the integrity algorithm so a legacy",
+      "SHA-1 MAC can be refused; `pki.ct.verifySctWithLogList` carries the resolved trusted-log record.",
+    ].join("\n"),
+  },
+  {
     release: "v0.6.11",
     surface: "pki.path.validate(path, opts) and pki.tsp.verify(token, data, opts)",
     summary: "The trust anchor option is now `trustAnchors` (a single anchor or an array); the former singular `trustAnchor` is removed and refused by name.",

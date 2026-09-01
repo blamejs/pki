@@ -47,6 +47,7 @@ async function testRoundTrip() {
   var pfx = await buildStore();
   var o = await pki.pkcs12.open(pfx, "P");
   check("#1 integrityMode is public-key", o.integrityMode === "public-key");
+  check("#78 valid is true for a verified public-key store (not aliased to the absent MAC)", o.valid === true && o.macVerified === false);
   check("#1 macVerified is false (integrity is the signature, not a MAC)", o.macVerified === false);
   check("#1 the signer verdict is surfaced ok", o.signers && o.signers.length === 1 && o.signers[0].ok === true);
   check("#1 the signer cert is surfaced", Buffer.isBuffer(o.signers[0].cert));

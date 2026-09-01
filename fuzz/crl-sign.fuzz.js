@@ -62,5 +62,5 @@ module.exports.fuzz = async function (data) {
   }
   // sign() succeeded: the CRL MUST round-trip through the strict parser AND verify under the issuer key.
   pki.schema.crl.parse(der);
-  if ((await pki.crl.verify(der, { publicKey: ca.spki })) !== true) throw new Error("crl-sign fuzz: an emitted CRL failed self-verify under its issuer key");
+  if ((await pki.crl.verify(der, { publicKey: ca.spki })).valid !== true) throw new Error("crl-sign fuzz: an emitted CRL failed self-verify under its issuer key");
 };

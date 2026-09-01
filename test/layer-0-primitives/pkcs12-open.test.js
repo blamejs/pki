@@ -35,6 +35,7 @@ async function testClassicRoundTrip() {
     { password: "1234", mac: { algorithm: "hmac", hash: "sha256" } });
   var o = await pki.pkcs12.open(p12, "1234");
   check("#1 macVerified is true", o.macVerified === true);
+  check("#78 valid aliases macVerified on the pkcs12.open result", o.valid === true && o.valid === o.macVerified);
   check("#1 integrityMode is password", o.integrityMode === "password");
   check("#1 recovers one key + one cert + one crl", o.keys.length === 1 && o.certs.length === 1 && o.crls.length === 1);
   check("#5 shrouded key decrypts to the exact PrivateKeyInfo DER", Buffer.compare(o.keys[0].pkcs8, s.key) === 0);

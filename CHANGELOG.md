@@ -4,6 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.12 — 2026-09-01
+
+Three verify verbs that returned a bare boolean now return a verdict object naming the checks they had hidden, a canonical `valid` field is present on every object verify verdict so `if (res.valid)` reads the same everywhere, and revocation, digest, and provenance data omitted before is surfaced.
+
+### Added
+
+- Every object verify verdict now carries a canonical `valid` boolean beside its existing terminal, so `if (res.valid)` reads the verdict the same way across the toolkit: pki.sigstore.verifyBundle, pki.csr.verify, pki.crmf.verifyPop (top and per message), pki.attrcert.verify, pki.webauthn.verify, pki.webauthn.verifyAssertion, pki.ocsp.verifyRequest (`valid` is `signed && signatureValid`), pki.ct.verifySctList (`valid` is `policyOk`), and pki.pkcs12.open (`valid` is `macVerified`). The existing fields (`verified`, `policyOk`, `macVerified`, and the rest) are unchanged. The multi-state string verdicts (pki.ocsp.verify `status`, pki.scep `status`) keep their terminal and do not gain a `valid` alias, since a boolean cannot carry their states.
+- pki.ocsp.verify and pki.path.verifyOcspResponse surface `revocationTime` (the revocation instant) beside `revocationReason` on a revoked verdict, for long-term validation.
+- pki.cms.verify's primary signer node carries `digestAlgorithm`, the digest the countersignature node already reported, so a caller reading a signer's verdict learns it without a second parse.
+- pki.sigstore.verifyBundle carries `predicateTypeChecked`, so a caller that did not pin `opts.predicateType` learns the in-toto predicate went unverified rather than assuming it was checked.
+
+### Changed
+
+- pki.crl.verify returns `{ valid, issuerMaySign, signatureValid, issuer, code?, reason? }` instead of a bare boolean. The boolean hid whether the signing certificate was this CRL's issuer and asserted `cRLSign` in its keyUsage, so a CRL minted under an end-entity certificate of the same CA verified as that CA's own. `valid` is `issuerMaySign && signatureValid`; the signature is now checked even when the issuer may not sign, so `signatureValid` is always reported. To upgrade, read `res.valid` where you read the boolean. This is a silent break for an unmigrated `if (await pki.crl.verify(...))`, which now reads an object as always-true.
+- pki.pkcs12.verifyMac returns `{ valid, macAlgorithm, macAlgorithmName, iterationCount }` instead of a bare boolean, so a caller can reject a legacy SHA-1 integrity MAC by inspecting `macAlgorithmName` rather than accepting any authenticated store. To upgrade, read `res.valid`. Silent break for an unmigrated boolean test.
+- pki.ct.verifySctWithLogList returns `{ valid, logId, logIdHex, operator, logState, timestamp }` instead of a bare boolean, surfacing which trusted log accepted the SCT and when for a policy decision. To upgrade, read `res.valid`. Silent break for an unmigrated boolean test.
+
 ## v0.6.11 — 2026-08-31
 
 pki.path.validate and pki.tsp.verify now take the trust store under the option name trustAnchors, the spelling the other verify verbs already use, accepting one anchor or an array; and pki.acme.client gains opts.resignKeys, which re-signs a request under an alternative account-key algorithm when a CA reports badSignatureAlgorithm.
