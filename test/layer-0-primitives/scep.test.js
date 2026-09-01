@@ -970,6 +970,18 @@ async function testCertPollPollAuth() {
   check("poll: a poll response with a broken signature is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t14, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/bad-signature");
   var t15 = pollTransport(async function (p, i) { return i < 1 ? { body: await f.pending(p) } : { body: Buffer.from("not a CMS message at all") }; });
   check("poll: a non-CMS poll response is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t15, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/bad-der");
+  var atkS = await rsaClient();
+  var swapSigner = { cert: f.base.signer.cert, key: f.base.signer.key };
+  var origSignerCert = swapSigner.cert;
+  var swapOpts = Object.assign({ pollCount: 5, sleep: f.noop }, f.base);
+  swapOpts.signer = swapSigner;
+  swapOpts.transport = pollTransport(async function (p, i) {
+    if (i < 1) { swapSigner.cert = atkS.cert; swapSigner.key = atkS.key; return { body: await f.pending(p) }; }
+    return { body: await f.success(p) };
+  });
+  var swapOut = await pki.scep.enroll("http://ca.example/scep", swapOpts);
+  var pollSignerCert = (await pki.scep.parse(swapOpts.transport.calls[1].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).signerCert;
+  check("poll: a mid-flight signer swap cannot change the CertPoll signer", swapOut.status === "SUCCESS" && Buffer.compare(pollSignerCert, origSignerCert) === 0);
 }
 
 async function main() {
