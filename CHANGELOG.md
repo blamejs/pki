@@ -4,6 +4,20 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.17 — 2026-09-01
+
+pki.scep.getCert and pki.scep.getCrl retrieve an already-issued certificate or a CA's CRL over SCEP, sending RFC 8894 GetCert and GetCRL queries and reading the result out of the CA's signed CertRep.
+
+### Added
+
+- pki.scep.getCert(baseUrl, opts) retrieves an issued certificate over SCEP (RFC 8894 sec. 3.3.4). Name the target by { certificate } (the certificate whose issuer and serial identify it) or by { issuer, serialNumber } directly; the serial accepts a BigInt, a number, or a hex string. The CA response is verified against caCert (or responderCert), its recipientNonce must echo the query's fresh senderNonce, and the returned certificate is matched to the requested issuer and serial before it is handed back. A response carrying no matching certificate throws scep/cert-not-found; more than one throws scep/ambiguous-cert.
+- pki.scep.getCrl(baseUrl, opts) retrieves a CA's CRL over SCEP (RFC 8894 sec. 3.3.4), named the same way as getCert. The response is authenticated identically, and the returned CRL is bound to the query: getCrl returns the CRL whose issuer matches the requested CA, throwing scep/no-crl when the response carries no such CRL and scep/ambiguous-crl when it carries more than one. Per RFC 8894 sec. 2.7 a client should compose a GetCRL only when the CA supports neither a CRL distribution point nor HTTP access; prefer those and pki.schema.crl.parse where available.
+- pki.scep.build and pki.scep.parse now handle the GetCert (messageType 21) and GetCRL (messageType 22) queries: a pkcsPKIEnvelope carrying an IssuerAndSerialNumber (a CMS SEQUENCE of the issuer Name and the certificate serial), signed under the transaction attributes (RFC 8894 sec. 3.3.4).
+
+### Changed
+
+- pki.scep.parse accepts every messageType the RFC 8894 registry defines, including GetCert and GetCRL. A messageType outside the registry is still refused with scep/bad-message-type.
+
 ## v0.6.16 — 2026-09-01
 
 pki.scep.enroll and pki.scep.renew poll a PENDING enrollment to its issued certificate, sending RFC 8894 CertPoll requests until the CA answers or a bounded poll-count and wait budget is exhausted.

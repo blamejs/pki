@@ -2217,8 +2217,12 @@ function testNoDuplicateCodeBlocks() {
       reason: "the per-format pkix.makeRecordingParser({ pemLabel, PemError, ErrorClass, prefix, what, topSchema, ns }, kind) footer: the parse logic lives once in schema-pkix and the provenance record once in guard-parsed, while each module supplies its own label, error class, domain prefix, top schema and provenance kind. Attribution names the nearest enclosing function because the call is module-level.",
     },
     {
-      files: ["lib/cms-verify.js:verify", "lib/ocsp.js:_signerVerdict", "lib/scep.js:_buildIssuerAndSubject"],
-      reason: "The guard-then-parse-then-typed-throw idiom: take the caller's bytes through a guard, decode or parse them inside a try, and re-type any decode fault as the module's own domain error before composing the shared tag predicate. Each function parses a different structure toward a different result (a CMS SignedData verdict, an OCSP signer verdict, a CertPoll IssuerAndSubject); the repeated shape is the fail-closed convention, not extractable logic.",
+      files: [
+        "lib/cms-verify.js:verify", "lib/ocsp.js:_signerVerdict",
+        "lib/scep.js:_buildIssuerAndSubject", "lib/scep.js:_buildIssuerAndSerial",
+      ],
+      mode: "family-subset",
+      reason: "The guard-then-parse-then-typed-throw idiom: take the caller's bytes through a guard, decode or parse them inside a try, and re-type any decode fault as the module's own domain error before composing the shared tag predicate. Each function parses a different structure toward a different result (a CMS SignedData verdict, an OCSP signer verdict, a CertPoll IssuerAndSubject, a GetCert / GetCRL IssuerAndSerialNumber); the repeated shape is the fail-closed convention, not extractable logic. family-subset so the SCEP builder the largest shingle lands in is covered.",
     },
   ];
 
