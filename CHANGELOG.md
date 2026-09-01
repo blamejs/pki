@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.20 — 2026-09-01
+
+A vulnerable build-time dependency is refreshed; it is not part of the published package.
+
+### Security
+
+- browserslist, a transitive development dependency of the fuzzing harness, is updated from 4.28.4 to 4.28.8, clearing GHSA-73wf-gq98-2v4g and GHSA-c83g-rgw3-j3cx (both High). browserslist is a build-time and test-time dependency and is not part of the published package.
+
 ## v0.6.19 — 2026-09-01
 
 pki.scep.build issues the CA-side CertRep response, so the toolkit produces the SCEP certification-authority reply the client enrollment verbs consume.
