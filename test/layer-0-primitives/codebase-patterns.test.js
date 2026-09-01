@@ -3691,13 +3691,15 @@ function _libRegexHits(content) {
   // leaves `/` in regex position. controlPending marks that the next `(` follows a control keyword.
   // afterDot marks that the next identifier follows a `.` (member access), so it is a property name, an
   // operand, never a keyword: `obj.if(x) / y` and `obj.break / y` are divisions, not regexes.
-  var parenStack = [], controlPending = false, afterDot = false, lastId = "";
+  // labelPending marks that an optional label may follow a `break`/`continue` on the same line; the label
+  // is not an operand, so the next statement's `/` still opens a regex (`break outer\n/re/`).
+  var parenStack = [], controlPending = false, afterDot = false, lastId = "", labelPending = false;
   var isIdStart = function (ch) { return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_" || ch === "$"; };
   var isIdPart = function (ch) { return isIdStart(ch) || (ch >= "0" && ch <= "9"); };
   var isDigit = function (ch) { return ch >= "0" && ch <= "9"; };
   while (i < n) {
     c = content.charAt(i);
-    if (c === "\n") { line++; i++; continue; }
+    if (c === "\n") { line++; labelPending = false; i++; continue; }   // a newline after break/continue ends the statement (ASI): no label follows
     if (state === "tl") {   // template TEXT: only an escape, the closing backtick, and ${ are significant
       if (c === "\\") { i += 2; continue; }
       if (c === "`") { state = "code"; i++; prevOperand = true; pendingNew = false; continue; }
@@ -3715,6 +3717,7 @@ function _libRegexHits(content) {
     // `continue` above) preserve it, every other token clears it here, so it cannot leak past a computed
     // access (`a?.["x"]`) onto a later real keyword.
     var dotHere = afterDot; afterDot = false;
+    var labelHere = labelPending; labelPending = false;
     if (c === "\"" || c === "'") {   // string literal
       var q = c; i++;
       while (i < n && content.charAt(i) !== q) { if (content.charAt(i) === "\\") i++; else if (content.charAt(i) === "\n") line++; i++; }
@@ -3746,10 +3749,12 @@ function _libRegexHits(content) {
       }
       lastId = id;
       if (dotHere) { prevOperand = true; pendingNew = false; controlPending = false; continue; }   // a property name is an operand, not a keyword
+      if (labelHere) { prevOperand = false; pendingNew = false; controlPending = false; continue; }   // a label after break/continue keeps the next statement's regex context
       pendingNew = (id === "new");
       prevOperand = !_REGEX_CTX_KEYWORDS[id];   // a regex-context keyword leaves `/` in regex position
       if (_CONTROL_HEADER_KEYWORDS[id]) controlPending = true;   // the next `(` heads a control statement
       else if (id !== "await") controlPending = false;   // `await` may sit between `for` and its `(` (for await)
+      labelPending = (id === "break" || id === "continue");   // an optional label may follow on the same line
       continue;
     }
     if (isDigit(c)) { while (i < n && (isIdPart(content.charAt(i)) || content.charAt(i) === ".")) i++; prevOperand = true; pendingNew = false; continue; }
@@ -3843,6 +3848,8 @@ function testLibRegexHitsLexing() {
   var hitPropExtends = _libRegexHits("var q = obj.extends / y / z;\n").length;
   var hitRegExpNewline = _libRegexHits("var r = RegExp\n(\"x\").test(v);\n").length;
   var hitRegExpComment = _libRegexHits("var r = RegExp/* reason */(\"x\");\n").length;
+  var hitLabelBreak = _libRegexHits("if (d) break outer\n/re/.test(v);\n").length;
+  var hitBreakThenDiv = _libRegexHits("break\nx / y / z;\n").length;
   check("_libRegexHits catches a regex inside a template substitution", hitRegex >= 1);
   check("_libRegexHits does not read a division inside a substitution as a regex", hitDiv === 0);
   check("_libRegexHits catches a bare RegExp(...) construction call", hitCall >= 1);
@@ -3863,6 +3870,8 @@ function testLibRegexHitsLexing() {
   check("_libRegexHits treats extends used as a property name as an operand (obj.extends / y)", hitPropExtends === 0);
   check("_libRegexHits catches a RegExp call split from its parens by a newline", hitRegExpNewline >= 1);
   check("_libRegexHits catches a RegExp call split from its parens by a comment", hitRegExpComment >= 1);
+  check("_libRegexHits catches a regex statement after a labeled break", hitLabelBreak >= 1);
+  check("_libRegexHits reads division on the next statement after a bare break as division", hitBreakThenDiv === 0);
 }
 
 function testNoInstanceofArrayBuffer() {
