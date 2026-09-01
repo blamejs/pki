@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.16 — 2026-09-01
+
+pki.scep.enroll and pki.scep.renew poll a PENDING enrollment to its issued certificate, sending RFC 8894 CertPoll requests until the CA answers or a bounded poll-count and wait budget is exhausted.
+
+### Added
+
+- pki.scep.build and pki.scep.parse now handle the CertPoll (GetCertInitial, messageType 20) request: a pkcsPKIEnvelope carrying an IssuerAndSubject (the CA's subject name and the request's subject name), signed under the transaction attributes with the original transactionID (RFC 8894 sec. 3.3.3).
+- pki.scep.enroll and pki.scep.renew poll a PENDING response to a terminal status. New options bound the loop: pollCount (maximum CertPoll requests, default 5), maxTotalWait (total Retry-After sleep budget in seconds), sleep (an injectable (ms) -> Promise sleeper), and onRetryAfter (an observer of each delay). A budget exhausted with no terminal response throws scep/poll-exhausted carrying the transactionId to resume with. For a deployment whose request is encrypted to a separate RA certificate, issuerCert names the issuing CA the CertPoll must carry (default caCert).
+
+### Changed
+
+- pki.scep.enroll and pki.scep.renew poll by default when the CA answers PENDING: a PENDING enrollment now resolves to the issued certificate or throws, rather than returning { status: "PENDING" } for the caller to retry. Pass pollCount: 0 to restore the single-shot PENDING return and drive the retry yourself.
+
 ## v0.6.15 — 2026-09-01
 
 Verifying a Sigstore bundle no longer matches a pinned identity against a non-text subjectAltName value; the value is surfaced as null so the policy fails closed instead of comparing raw bytes. The library source also ships without its explanatory comments, keeping the JSDoc that generates the API reference and the SPDX license headers.

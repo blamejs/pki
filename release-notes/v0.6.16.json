@@ -1,0 +1,14 @@
+{
+  "version": "0.6.16",
+  "headline": "pki.scep.enroll and pki.scep.renew poll a PENDING enrollment to its issued certificate, sending RFC 8894 CertPoll requests until the CA answers or a bounded poll-count and wait budget is exhausted.",
+  "summary": "A SCEP CA that holds an enrollment in the PENDING state (manual authorization) is now polled automatically: enroll and renew issue CertPoll (GetCertInitial) messages that reuse the original transactionID until the CA returns the issued certificate, a FAILURE, or the poll-count / total-wait budget runs out (scep/poll-exhausted). Every poll response is authenticated against the CA certificate and must echo the poll's fresh nonce, and the Retry-After delay is slept through an injectable sleeper. Polling is on by default; pass pollCount: 0 to keep the previous single-shot PENDING return. pki.scep.build and pki.scep.parse gain the CertPoll message type.",
+  "sections": {
+    "Added": [
+      "pki.scep.build and pki.scep.parse now handle the CertPoll (GetCertInitial, messageType 20) request: a pkcsPKIEnvelope carrying an IssuerAndSubject (the CA's subject name and the request's subject name), signed under the transaction attributes with the original transactionID (RFC 8894 sec. 3.3.3).",
+      "pki.scep.enroll and pki.scep.renew poll a PENDING response to a terminal status. New options bound the loop: pollCount (maximum CertPoll requests, default 5), maxTotalWait (total Retry-After sleep budget in seconds), sleep (an injectable (ms) -> Promise sleeper), and onRetryAfter (an observer of each delay). A budget exhausted with no terminal response throws scep/poll-exhausted carrying the transactionId to resume with. For a deployment whose request is encrypted to a separate RA certificate, issuerCert names the issuing CA the CertPoll must carry (default caCert)."
+    ],
+    "Changed": [
+      "pki.scep.enroll and pki.scep.renew poll by default when the CA answers PENDING: a PENDING enrollment now resolves to the issued certificate or throws, rather than returning { status: \"PENDING\" } for the caller to retry. Pass pollCount: 0 to restore the single-shot PENDING return and drive the retry yourself."
+    ]
+  }
+}

@@ -333,9 +333,10 @@ async function testFailInfoOnlyOnFailure() {
 }
 
 async function testUnsupportedMessageTypes() {
-  // CertPoll (20), GetCert (21), GetCRL (22) are client queries this release's parser does not read.
+  // GetCert (21) and GetCRL (22) are client queries this release's parser does not read; CertPoll (20)
+  // is read (it drives the PENDING poll loop).
   var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
-  var codes = ["20", "21", "22"], i;
+  var codes = ["21", "22"], i;
   for (i = 0; i < codes.length; i++) {
     var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable(codes[i])] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
     check("messageType " + codes[i] + " (query) refused", (await codeOf(pki.scep.parse(msg))) === "scep/unsupported-message-type");
@@ -674,8 +675,8 @@ async function testEnrollFailureAndPending() {
   check("enroll: a FAILURE CertRep throws scep/enrollment-failed", failErr && failErr.code === "scep/enrollment-failed");
   check("enroll: the failure error carries the structured failInfo and failInfoText", failErr && failErr.failInfo === "badRequest" && failErr.failInfoText === "bad request");
   var pT = caTransport(function (p) { return buildCertRep({ statusCode: "3", transactionId: p.transactionId, recipientNonce: p.senderNonce }); });
-  var pend = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: pT }, base));
-  check("enroll: a PENDING CertRep returns the pending status", pend.status === "PENDING" && typeof pend.transactionId === "string");
+  var pend = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: pT, pollCount: 0 }, base));
+  check("enroll: a PENDING CertRep with pollCount 0 returns the pending status", pend.status === "PENDING" && typeof pend.transactionId === "string");
 }
 
 async function testRenew() {
@@ -828,6 +829,161 @@ async function testClientInputGuards() {
   check("client: an unparseable base URL is refused", (await codeOf(pki.scep.getCACaps("not a url", { transport: okT }))) === "scep/bad-url");
 }
 
+// A stateful CA transport for the poll loop: it parses + decrypts each POST (reading the CertPolls once
+// parse supports them) and hands the parsed request to responder(reqParsed, callIndex), which returns
+// { body, retryAfter? }. A retryAfter sets the Retry-After header on that response.
+function pollTransport(responder) {
+  return fakeTransport(async function (req, i) {
+    var reqParsed = await pki.scep.parse(req.body, { recipientKey: { cert: F.caCert, key: F.caKey } });
+    var r = await responder(reqParsed, i);
+    var headers = { "content-type": "application/x-pki-message" };
+    if (r.retryAfter != null) headers["retry-after"] = String(r.retryAfter);
+    return { status: 200, headers: headers, body: r.body };
+  });
+}
+
+async function testCertPollMessage() {
+  var reqSubject = pki.schema.csr.parse(F.csr).subject.bytes;
+  var caSubject = pki.schema.x509.parse(F.caCert).subject.bytes;
+  var cp = await pki.scep.build({ messageType: "CertPoll", requestSubject: reqSubject, recipient: F.caCert, signer: F.signer, transactionId: "txn-1" });
+  var v = await pki.scep.parse(cp, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("CertPoll: messageType is CertPoll", v.messageType === "CertPoll");
+  check("CertPoll: transactionId echoed", v.transactionId === "txn-1");
+  var ias = pki.asn1.decode(v.messageData);
+  check("CertPoll: messageData is a two-Name IssuerAndSubject SEQUENCE", ias.tagNumber === pki.asn1.TAGS.SEQUENCE && ias.children.length === 2);
+  check("CertPoll: issuer is the recipient CA subject", Buffer.compare(ias.children[0].bytes, caSubject) === 0);
+  check("CertPoll: subject is the request subject", Buffer.compare(ias.children[1].bytes, reqSubject) === 0);
+  var otherIssuer = pki.schema.x509.parse(F.clientCert).subject.bytes;
+  var cpRa = await pki.scep.build({ messageType: "CertPoll", requestSubject: reqSubject, issuer: otherIssuer, recipient: F.caCert, signer: F.signer, transactionId: "txn-ra" });
+  var iasRa = pki.asn1.decode((await pki.scep.parse(cpRa, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageData);
+  check("CertPoll: an explicit issuer names the issuing CA, not the recipient (RA deployment)", Buffer.compare(iasRa.children[0].bytes, otherIssuer) === 0 && Buffer.compare(iasRa.children[0].bytes, caSubject) !== 0);
+  check("CertPoll: fresh 16-byte senderNonce", Buffer.isBuffer(v.senderNonce) && v.senderNonce.length === 16);
+  check("CertPoll: carries no recipientNonce (a request)", v.recipientNonce === null);
+  var iasDer = b.sequence([caSubject, reqSubject]);
+  var withStatus = await signWith(await cmsEncrypt.encrypt(iasDer, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("20")] },
+    { type: O("scepTransactionId"), values: [b.printable("t")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] },
+    { type: O("scepPkiStatus"), values: [b.printable("0")] },
+  ]);
+  check("CertPoll: a CertRep-only attribute is refused", (await codeOf(pki.scep.parse(withStatus))) === "scep/unexpected-attribute");
+  var badPayload = await signWith(await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("20")] },
+    { type: O("scepTransactionId"), values: [b.printable("t")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] },
+  ]);
+  check("CertPoll: a non-IssuerAndSubject payload is refused", (await codeOf(pki.scep.parse(badPayload, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  check("CertPoll: build requires a transactionId", (await codeOf(pki.scep.build({ messageType: "CertPoll", requestSubject: reqSubject, recipient: F.caCert, signer: F.signer, transactionId: "" }))) === "scep/bad-input");
+}
+
+async function pollFixture() {
+  var cl = await rsaClient();
+  var csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: cl.pub }, { key: cl.key });
+  var issued = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  var base = { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key } };
+  function pending(p) { return buildCertRep({ statusCode: "3", transactionId: p.transactionId, recipientNonce: p.senderNonce }); }
+  async function success(p) {
+    var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+  }
+  return { cl: cl, issued: issued, base: base, pending: pending, success: success, noop: function () { return Promise.resolve(); } };
+}
+
+async function testCertPollPolling() {
+  var f = await pollFixture();
+  var N = 2;
+  var t5 = pollTransport(async function (p, i) { return { body: i < N ? await f.pending(p) : await f.success(p) }; });
+  var out5 = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t5, pollCount: 5, sleep: f.noop }, f.base));
+  check("poll: PENDING then SUCCESS resolves to the issued certificate", out5.status === "SUCCESS" && Buffer.compare(out5.certificate, f.issued) === 0);
+  check("poll: made one request plus N polls", t5.calls.length === N + 1);
+  var firstTxn = (await pki.scep.parse(t5.calls[0].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).transactionId;
+  var pollParsed = await pki.scep.parse(t5.calls[1].body, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("poll: each poll is a CertPoll to PKIOperation reusing the request transactionId", pollParsed.messageType === "CertPoll" && pollParsed.transactionId === firstTxn && t5.calls[1].url.indexOf("operation=PKIOperation") !== -1);
+  var t6 = pollTransport(async function (p, i) { return { body: i < 1 ? await f.pending(p) : await buildCertRep({ statusCode: "2", failCode: "2", failText: "bad request", transactionId: p.transactionId, recipientNonce: p.senderNonce }) }; });
+  var fail6 = null;
+  try { await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t6, pollCount: 5, sleep: f.noop }, f.base)); } catch (e) { fail6 = e; }
+  check("poll: a FAILURE on a poll throws scep/enrollment-failed and stops", fail6 && fail6.code === "scep/enrollment-failed" && fail6.failInfo === "badRequest" && t6.calls.length === 2);
+  var t7 = pollTransport(async function (p, i) {
+    if (i < 1) return { body: await f.pending(p) };
+    var env = await cmsEncrypt.encrypt(certsOnly([f.issued]), [{ cert: f.cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return { body: await buildCertRep({ statusCode: "0", transactionId: "a-different-transaction", recipientNonce: p.senderNonce, content: env }) };
+  });
+  check("poll: a mismatched transactionID on a poll response is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t7, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/transaction-id-mismatch");
+  var t8 = pollTransport(async function (p, i) {
+    if (i < 1) return { body: await f.pending(p) };
+    var env = await cmsEncrypt.encrypt(certsOnly([f.issued]), [{ cert: f.cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return { body: await buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: nodeCrypto.randomBytes(16), content: env }) };
+  });
+  check("poll: a poll response not echoing the CertPoll senderNonce is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t8, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/nonce-mismatch");
+  var t8b = pollTransport(async function (p, i) { return { body: i < 2 ? await f.pending(p) : await f.success(p) }; });
+  var out8b = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t8b, pollCount: 5, sleep: f.noop }, f.base));
+  check("poll: a conforming per-message echo across two polls succeeds (no cross-poll chaining demanded)", out8b.status === "SUCCESS");
+  var slept = [];
+  var t11 = pollTransport(async function (p, i) { return i < 1 ? { body: await f.pending(p), retryAfter: 5 } : { body: await f.success(p) }; });
+  var out11 = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t11, pollCount: 5, sleep: function (ms) { slept.push(ms); return Promise.resolve(); } }, f.base));
+  check("poll: Retry-After honored, the sleeper receives the parsed delay", out11.status === "SUCCESS" && slept.length === 1 && slept[0] === 5000);
+  var t12 = pollTransport(async function (p) { return { body: await f.pending(p) }; });
+  var out12 = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t12, pollCount: 0 }, f.base));
+  check("poll: pollCount 0 preserves the single-shot PENDING return", out12.status === "PENDING" && t12.calls.length === 1);
+  var raIssuer = pki.schema.x509.parse(F.clientCert).subject.bytes;
+  var tRa = pollTransport(async function (p, i) { return { body: i < 1 ? await f.pending(p) : await f.success(p) }; });
+  var outRa = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: tRa, issuerCert: F.clientCert, pollCount: 5, sleep: f.noop }, f.base));
+  var raPoll = pki.asn1.decode((await pki.scep.parse(tRa.calls[1].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageData);
+  check("poll: a distinct issuerCert names the issuing CA in each CertPoll (RA deployment)", outRa.status === "SUCCESS" && Buffer.compare(raPoll.children[0].bytes, raIssuer) === 0);
+}
+
+async function testCertPollBudgets() {
+  var f = await pollFixture();
+  var t9 = pollTransport(async function (p) { return { body: await f.pending(p) }; });
+  var e9 = null;
+  try { await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t9, pollCount: 3, sleep: f.noop }, f.base)); } catch (e) { e9 = e; }
+  check("poll: exhausting the poll count throws scep/poll-exhausted", e9 && e9.code === "scep/poll-exhausted" && typeof e9.transactionId === "string");
+  check("poll: poll-count exhaustion made one request plus three polls", t9.calls.length === 1 + 3);
+  var delays = [];
+  var t10 = pollTransport(async function (p) { return { body: await f.pending(p), retryAfter: 120 }; });
+  var e10 = null;
+  try { await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t10, pollCount: 100, maxTotalWait: 200, sleep: f.noop, onRetryAfter: function (s) { delays.push(s); } }, f.base)); } catch (e) { e10 = e; }
+  check("poll: exhausting the total-wait budget throws scep/poll-exhausted naming the wait", e10 && e10.code === "scep/poll-exhausted" && e10.message.indexOf("wait") !== -1);
+  check("poll: the Retry-After delay was surfaced to onRetryAfter", delays.length >= 1 && delays[0] === 120);
+  var t16 = pollTransport(async function () { throw new Error("transport must not be called when a budget is invalid"); });
+  check("poll: a negative pollCount is refused at the door", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t16, pollCount: -1 }, f.base)))) === "scep/bad-input");
+  check("poll: a NaN maxTotalWait is refused at the door", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t16, maxTotalWait: NaN }, f.base)))) === "scep/bad-input");
+  check("poll: no request was sent when a budget is invalid", t16.calls.length === 0);
+}
+
+async function testCertPollPollAuth() {
+  var f = await pollFixture();
+  var atk = await rsaClient();
+  var t13 = pollTransport(async function (p, i) {
+    if (i < 1) return { body: await f.pending(p) };
+    var env = await cmsEncrypt.encrypt(certsOnly([f.issued]), [{ cert: f.cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return { body: await buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env, signer: { cert: atk.cert, key: atk.key } }) };
+  });
+  check("poll: a poll response signed by an untrusted key is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t13, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/untrusted-signer");
+  var t14 = pollTransport(async function (p, i) {
+    if (i < 1) return { body: await f.pending(p) };
+    var env = await cmsEncrypt.encrypt(certsOnly([f.issued]), [{ cert: f.cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    var good = Buffer.from(await buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }));
+    good[good.length - 4] ^= 0x40;
+    return { body: good };
+  });
+  check("poll: a poll response with a broken signature is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t14, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/bad-signature");
+  var t15 = pollTransport(async function (p, i) { return i < 1 ? { body: await f.pending(p) } : { body: Buffer.from("not a CMS message at all") }; });
+  check("poll: a non-CMS poll response is refused", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: t15, pollCount: 5, sleep: f.noop }, f.base)))) === "scep/bad-der");
+  var atkS = await rsaClient();
+  var swapSigner = { cert: f.base.signer.cert, key: f.base.signer.key };
+  var origSignerCert = swapSigner.cert;
+  var swapOpts = Object.assign({ pollCount: 5, sleep: f.noop }, f.base);
+  swapOpts.signer = swapSigner;
+  swapOpts.transport = pollTransport(async function (p, i) {
+    if (i < 1) { swapSigner.cert = atkS.cert; swapSigner.key = atkS.key; return { body: await f.pending(p) }; }
+    return { body: await f.success(p) };
+  });
+  var swapOut = await pki.scep.enroll("http://ca.example/scep", swapOpts);
+  var pollSignerCert = (await pki.scep.parse(swapOpts.transport.calls[1].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).signerCert;
+  check("poll: a mid-flight signer swap cannot change the CertPoll signer", swapOut.status === "SUCCESS" && Buffer.compare(pollSignerCert, origSignerCert) === 0);
+}
+
 async function main() {
   await setup();
   await testPkcsReqRoundTrip();
@@ -876,6 +1032,10 @@ async function main() {
   await testClientTransportEdges();
   await testEnrollSecurity();
   await testClientInputGuards();
+  await testCertPollMessage();
+  await testCertPollPolling();
+  await testCertPollBudgets();
+  await testCertPollPollAuth();
   console.log("CHECKS " + helpers.getChecks());
 }
 
