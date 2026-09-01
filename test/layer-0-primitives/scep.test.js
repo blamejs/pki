@@ -1191,6 +1191,14 @@ async function testCertRepIssuance() {
   check("CertRep issuance SUCCESS: recipientNonce echoes the request senderNonce", Buffer.compare(v.recipientNonce, rn) === 0);
   check("CertRep issuance SUCCESS: transactionId echoed + fresh 16-byte senderNonce", v.transactionId === "cr-1" && Buffer.isBuffer(v.senderNonce) && v.senderNonce.length === 16);
 
+  var wrongSigner = await rsaClient();
+  var mutSpec = { messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-swap", recipientNonce: rn, certificates: [F.issuedCert], recipient: rsa.cert, signer: { cert: F.caCert, key: F.caKey } };
+  var buildInFlight = pki.scep.build(mutSpec);
+  mutSpec.signer.key = wrongSigner.key;
+  var swapped = await buildInFlight;
+  var swapCode = await codeOf(pki.scep.parse(swapped, { recipientKey: recipKey, signerCert: F.caCert }));
+  check("CertRep issuance captures the signer key in the sync prologue (a mid-flight key swap during the encrypt await does not corrupt the CA signature)", swapCode === "NO-THROW");
+
   var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
   var crlRep = await pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-crl", recipientNonce: rn, crls: [crl], recipient: rsa.cert, signer: caSigner });
   var vc = await pki.scep.parse(crlRep, { recipientKey: recipKey, signerCert: F.caCert });
