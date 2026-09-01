@@ -4,13 +4,21 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.12 — 2026-09-01
+## v0.6.13 — 2026-09-01
+
+pki.sigstore.verifyBundle now reports which transparency-log entry attested a bundle: the verdict carries `logIndex` and `logId` so a caller can locate the exact Rekor record it verified against.
+
+### Added
+
+- pki.sigstore.verifyBundle's verdict carries `logIndex` (the attested Rekor entry's global log index) and `logId` (the log's key id, hex) beside `integratedTime`, so a caller can fetch or audit the exact transparency-log record the bundle was verified against instead of re-deriving it.
+
+## v0.6.12 — 2026-08-31
 
 Three verify verbs that returned a bare boolean now return a verdict object naming the checks they had hidden, a canonical `valid` field is present on every object verify verdict so `if (res.valid)` reads the same everywhere, and revocation, digest, and provenance data omitted before is surfaced.
 
 ### Added
 
-- Every object verify verdict now carries a canonical `valid` boolean beside its existing terminal, so `if (res.valid)` reads the verdict the same way across the toolkit: pki.sigstore.verifyBundle, pki.csr.verify, pki.crmf.verifyPop (top and per message), pki.attrcert.verify, pki.webauthn.verify, pki.webauthn.verifyAssertion, pki.ocsp.verifyRequest (`valid` is `signed && signatureValid`), pki.ct.verifySctList (`valid` is `policyOk`), and pki.pkcs12.open (`valid` is `macVerified`). The existing fields (`verified`, `policyOk`, `macVerified`, and the rest) are unchanged. The multi-state string verdicts (pki.ocsp.verify `status`, pki.scep `status`) keep their terminal and do not gain a `valid` alias, since a boolean cannot carry their states.
+- Every object verify verdict now carries a canonical `valid` boolean beside its existing terminal, so `if (res.valid)` reads the verdict the same way across the toolkit: pki.sigstore.verifyBundle, pki.csr.verify, pki.crmf.verifyPop (top and per message), pki.attrcert.verify, pki.webauthn.verify, pki.webauthn.verifyAssertion, pki.ocsp.verifyRequest (`valid` is `signed && signatureValid`), pki.ct.verifySctList (`valid` is `policyOk`), and pki.pkcs12.open (`valid` is the store's verified integrity: the password MAC for a password store, or the CMS signature for a public-key store). The existing fields (`verified`, `policyOk`, `macVerified`, and the rest) are unchanged. The multi-state string verdicts (pki.ocsp.verify `status`, pki.scep `status`) keep their terminal and do not gain a `valid` alias, since a boolean cannot carry their states.
 - pki.ocsp.verify and pki.path.verifyOcspResponse surface `revocationTime` (the revocation instant) beside `revocationReason` on a revoked verdict, for long-term validation.
 - pki.cms.verify's primary signer node carries `digestAlgorithm`, the digest the countersignature node already reported, so a caller reading a signer's verdict learns it without a second parse.
 - pki.sigstore.verifyBundle carries `predicateTypeChecked`, so a caller that did not pin `opts.predicateType` learns the in-toto predicate went unverified rather than assuming it was checked.
