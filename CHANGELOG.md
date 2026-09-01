@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.18 — 2026-09-01
+
+pki.cms.encrypt and pki.cms.decrypt envelope to and open a composite ML-KEM recipient, extending the CMS KEMRecipientInfo arm to the hybrid post-quantum key-establishment algorithms.
+
+### Added
+
+- pki.cms.encrypt accepts a recipient certificate carrying a composite ML-KEM public key (id-MLKEM768-* or id-MLKEM1024-*, twelve algorithms pairing ML-KEM-768/1024 with RSA-OAEP 2048/3072/4096, ECDH over P-256/P-384/P-521 and brainpoolP256r1/P384r1, X25519, or X448) and emits an id-ori-kem KEMRecipientInfo: the composite as the kem algorithm with absent parameters, the composite ciphertext, HKDF-SHA256 as the kdf, and AES-256 key wrap with a 32-octet key-encryption key (RFC 9629 / RFC 9936). The recipient certificate must assert the keyEncipherment key usage.
+- pki.cms.decrypt opens a composite ML-KEM KEMRecipientInfo with the recipient's composite PKCS#8 key, recovering the content-encryption key through the same KDF and unwrap. A wrong key, a tampered ciphertext, or a traditional-component decapsulation failure returns the uniform cms/decrypt-failed verdict, never a distinguishing error.
+
 ## v0.6.17 — 2026-09-01
 
 pki.scep.getCert and pki.scep.getCrl retrieve an already-issued certificate or a CA's CRL over SCEP, sending RFC 8894 GetCert and GetCRL queries and reading the result out of the CA's signed CertRep.
