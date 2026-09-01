@@ -15,6 +15,7 @@ pki.scep.build issues the CA-side CertRep response, so the toolkit produces the 
 ### Fixed
 
 - An enumerated option whose value collides with an inherited Object.prototype property name, such as a pkiStatus, contentEncryptionAlgorithm, macAlgorithm, digestAlgorithm, PKCS#8 cipher, or ACME resource kind of "toString" or "constructor", is now refused with the verb's own typed bad-input error across pki.scep.build, pki.cms.encrypt, pki.cms.authenticate, pki.key.encrypt, pki.acme.validate, and pki.acme.assertTransition. Such a value previously resolved to the inherited method and the call surfaced an unrelated error, and pki.acme.validate accepted the kind and returned without checking any field.
+- pki.scep.build now requires a primitive-string pkiStatus. A boxed String or an object that coerces to a status name is refused with scep/bad-input, instead of building a CertRep whose signed pkiStatus attribute claims SUCCESS while the pkcsPKIEnvelope that a SUCCESS response requires is absent.
 
 ## v0.6.18 — 2026-09-01
 
