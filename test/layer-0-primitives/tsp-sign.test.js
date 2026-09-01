@@ -86,6 +86,8 @@ async function testUnknownSignKeys() {
     (await code(function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, nonsenseOption: 1 }); })) === "tsp/bad-input");
   check("a one-letter option typo (odering) -> tsp/bad-input",
     (await code(function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, odering: true }); })) === "tsp/bad-input");
+  check("an inherited-property messageImprint hashAlgorithm (toString) -> tsp/unsupported-algorithm",
+    (await code(function () { return pki.tsp.sign({ hashAlgorithm: "toString", hashedMessage: Buffer.alloc(32) }, tsa); })) === "tsp/unsupported-algorithm");
   check("the TSA's own two fields still sign",
     (await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 3, ordering: true })) != null);
   // A signing OPTION misplaced onto the TSA. Without the door this signed, and the token was the
