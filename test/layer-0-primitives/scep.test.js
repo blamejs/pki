@@ -37,7 +37,7 @@ function certsOnly(certs) {
 function certsOnlyBag(certs, crls) {
   var sd = [b.integer(1n), b.set([]), b.sequence([b.oid(ID_DATA)])];
   if (certs && certs.length) sd.push(b.contextConstructed(0, Buffer.concat(certs.slice().sort(Buffer.compare))));
-  if (crls && crls.length) sd.push(b.contextConstructed(1, Buffer.concat(crls.slice())));
+  if (crls && crls.length) sd.push(b.contextConstructed(1, Buffer.concat(crls.slice().sort(Buffer.compare))));
   sd.push(b.set([]));
   return b.sequence([b.oid(ID_SIGNED_DATA), b.explicit(0, b.sequence(sd))]);
 }
@@ -333,14 +333,11 @@ async function testFailInfoOnlyOnFailure() {
 }
 
 async function testUnsupportedMessageTypes() {
-  // GetCert (21) and GetCRL (22) are client queries this release's parser does not read; CertPoll (20)
-  // is read (it drives the PENDING poll loop).
+  // CertPoll (20), GetCert (21) and GetCRL (22) are all read now; a messageType code the registry does
+  // not define is still refused.
   var env = await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
-  var codes = ["21", "22"], i;
-  for (i = 0; i < codes.length; i++) {
-    var msg = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable(codes[i])] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
-    check("messageType " + codes[i] + " (query) refused", (await codeOf(pki.scep.parse(msg))) === "scep/unsupported-message-type");
-  }
+  var unknown = await signWith(env, [{ type: O("scepMessageType"), values: [b.printable("99")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("an unknown messageType code is refused", (await codeOf(pki.scep.parse(unknown))) === "scep/bad-message-type");
 }
 
 async function testRequestRejectsResponseAttrs() {
@@ -984,6 +981,152 @@ async function testCertPollPollAuth() {
   check("poll: a mid-flight signer swap cannot change the CertPoll signer", swapOut.status === "SUCCESS" && Buffer.compare(pollSignerCert, origSignerCert) === 0);
 }
 
+async function queryFixture() {
+  var rsa = await rsaClient();
+  var base = { caCert: F.caCert, signer: F.signer, recipientKey: { cert: rsa.cert, key: rsa.key } };
+  async function certResp(p, certs) {
+    var env = await cmsEncrypt.encrypt(certsOnly(certs), [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+  }
+  async function crlResp(p, crl) {
+    var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl]), [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+  }
+  return { rsa: rsa, base: base, certResp: certResp, crlResp: crlResp };
+}
+
+async function testGetCertGetCrlMessage() {
+  var issuerBytes = pki.schema.x509.parse(F.issuedCert).issuer.bytes;
+  var serial = pki.schema.x509.parse(F.issuedCert).serialNumber;
+  var gc = await pki.scep.build({ messageType: "GetCert", certificate: F.issuedCert, recipient: F.caCert, signer: F.signer, transactionId: "gc-1" });
+  var v = await pki.scep.parse(gc, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("GetCert: messageType", v.messageType === "GetCert");
+  check("GetCert: transactionId echoed", v.transactionId === "gc-1");
+  var ias = pki.asn1.decode(v.messageData);
+  check("GetCert: messageData is IssuerAndSerialNumber (Name + INTEGER)", ias.tagNumber === pki.asn1.TAGS.SEQUENCE && ias.children.length === 2 && ias.children[1].tagNumber === pki.asn1.TAGS.INTEGER);
+  check("GetCert: issuer is the cert issuer", Buffer.compare(ias.children[0].bytes, issuerBytes) === 0);
+  check("GetCert: serial matches", pki.asn1.read.integer(ias.children[1]) === serial);
+  check("GetCert: fresh senderNonce, no recipientNonce", v.senderNonce.length === 16 && v.recipientNonce === null);
+  var gr = await pki.scep.build({ messageType: "GetCRL", certificate: F.issuedCert, recipient: F.caCert, signer: F.signer, transactionId: "gr-1" });
+  var vr = await pki.scep.parse(gr, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("GetCRL: messageType + same IssuerAndSerialNumber payload", vr.messageType === "GetCRL" && Buffer.compare(vr.messageData, v.messageData) === 0);
+  var gc2 = await pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: serial, recipient: F.caCert, signer: F.signer, transactionId: "gc-2" });
+  check("GetCert: explicit issuer+serial produces the same IssuerAndSerialNumber", Buffer.compare((await pki.scep.parse(gc2, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageData, v.messageData) === 0);
+  var gc2h = await pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: serial.toString(16), recipient: F.caCert, signer: F.signer, transactionId: "gc-2h" });
+  check("GetCert: a hex-string serialNumber normalizes to the same payload", Buffer.compare((await pki.scep.parse(gc2h, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageData, v.messageData) === 0);
+  var withStatus = await signWith(await cmsEncrypt.encrypt(v.messageData, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("21")] }, { type: O("scepTransactionId"), values: [b.printable("t")] },
+    { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }, { type: O("scepPkiStatus"), values: [b.printable("0")] }]);
+  check("GetCert: a CertRep-only attribute is refused", (await codeOf(pki.scep.parse(withStatus))) === "scep/unexpected-attribute");
+  var badPkcs = await signWith(await cmsEncrypt.encrypt(F.csr, [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("21")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("GetCert: a non-IssuerAndSerialNumber payload (PKCS#10) is refused", (await codeOf(pki.scep.parse(badPkcs, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var badType = await signWith(await cmsEncrypt.encrypt(b.sequence([issuerBytes, issuerBytes]), [{ cert: F.caCert }], { contentEncryptionAlgorithm: "aes-128-cbc" }), [
+    { type: O("scepMessageType"), values: [b.printable("21")] }, { type: O("scepTransactionId"), values: [b.printable("t")] }, { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] }]);
+  check("GetCert: a SEQUENCE{Name,Name} payload is refused (INTEGER tag check)", (await codeOf(pki.scep.parse(badType, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  check("GetCert: build with no cert and no issuer/serial refused", (await codeOf(pki.scep.build({ messageType: "GetCert", recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with issuer but no serial refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with both forms refused", (await codeOf(pki.scep.build({ messageType: "GetCert", certificate: F.issuedCert, issuer: issuerBytes, serialNumber: 1n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build requires a transactionId", (await codeOf(pki.scep.build({ messageType: "GetCert", certificate: F.issuedCert, recipient: F.caCert, signer: F.signer, transactionId: "" }))) === "scep/bad-input");
+  check("GetCert: build with an unparseable certificate refused", (await codeOf(pki.scep.build({ messageType: "GetCert", certificate: Buffer.from([0x30, 0x01, 0x00]), recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with a non-Name issuer (INTEGER DER) refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: b.integer(5n), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with an undecodable issuer DER refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: Buffer.from([0x30, 0x82, 0xff, 0xff]), serialNumber: 5n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  check("GetCert: build with a negative serialNumber refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: -1n, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+}
+
+async function testGetCertVerb() {
+  var f = await queryFixture();
+  var t9 = caTransport(function (p) { return f.certResp(p, [F.issuedCert]); });
+  var out9 = await pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t9 }, f.base));
+  check("getCert: retrieves the certificate", Buffer.compare(out9.certificate, F.issuedCert) === 0 && typeof out9.transactionId === "string");
+  check("getCert: POSTed a GetCert to PKIOperation", t9.calls[0].method === "POST" && t9.calls[0].url.indexOf("operation=PKIOperation") !== -1 && (await pki.scep.parse(t9.calls[0].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageType === "GetCert");
+  var t10 = caTransport(function (p) { return f.certResp(p, [F.issuedCert]); });
+  var out10 = await pki.scep.getCert("http://ca.example/scep", Object.assign({ issuer: pki.schema.x509.parse(F.issuedCert).issuer.bytes, serialNumber: pki.schema.x509.parse(F.issuedCert).serialNumber, transport: t10 }, f.base));
+  check("getCert: explicit issuer+serial retrieves the certificate", Buffer.compare(out10.certificate, F.issuedCert) === 0);
+  var t11 = caTransport(function (p) { return buildCertRep({ statusCode: "2", transactionId: p.transactionId, recipientNonce: p.senderNonce, failCode: "4", failText: "unknown certificate" }); });
+  var e11 = null; try { await pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t11 }, f.base)); } catch (e) { e11 = e; }
+  check("getCert: a FAILURE throws scep/query-failed carrying failInfo and failInfoText", e11 && e11.code === "scep/query-failed" && e11.failInfo === "badCertId" && e11.failInfoText === "unknown certificate");
+  var t12 = caTransport(function (p) { return f.certResp({ transactionId: "different-txn", senderNonce: p.senderNonce }, [F.issuedCert]); });
+  check("getCert: transactionID mismatch refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t12 }, f.base)))) === "scep/transaction-id-mismatch");
+  var t12b = caTransport(async function (p) {
+    var env = await cmsEncrypt.encrypt(F.csr, [{ cert: f.rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+    return cmsSign.sign(env, { cert: F.caCert, key: F.caKey }, { additionalSignedAttributes: [
+      { type: O("scepMessageType"), values: [b.printable("19")] },
+      { type: O("scepTransactionId"), values: [b.printable(p.transactionId)] },
+      { type: O("scepSenderNonce"), values: [b.octetString(nodeCrypto.randomBytes(16))] },
+      { type: O("scepRecipientNonce"), values: [b.octetString(p.senderNonce)] }
+    ] });
+  });
+  check("getCert: a request-typed response carrying a response-only recipientNonce is refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t12b }, f.base)))) === "scep/unexpected-attribute");
+  var atk = await rsaClient();
+  var t13 = caTransport(async function (p) { var env = await cmsEncrypt.encrypt(certsOnly([F.issuedCert]), [{ cert: f.rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" }); return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env, signer: { cert: atk.cert, key: atk.key } }); });
+  check("getCert: untrusted signer refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t13 }, f.base)))) === "scep/untrusted-signer");
+  var t14 = caTransport(function (p) { return f.certResp({ transactionId: p.transactionId, senderNonce: nodeCrypto.randomBytes(16) }, [F.issuedCert]); });
+  check("getCert: nonce mismatch refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t14 }, f.base)))) === "scep/nonce-mismatch");
+  var t15 = caTransport(function (p) { return buildCertRep({ statusCode: "3", transactionId: p.transactionId, recipientNonce: p.senderNonce }); });
+  check("getCert: a PENDING response refused (a query does not pend)", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t15 }, f.base)))) === "scep/unexpected-pending");
+  var t16 = caTransport(function (p) { return f.certResp(p, [F.clientCert]); });
+  check("getCert: a SUCCESS without the requested cert -> cert-not-found", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t16 }, f.base)))) === "scep/cert-not-found");
+  var t16b = caTransport(function (p) { return f.certResp(p, [F.issuedCert, F.issuedCert]); });
+  check("getCert: two certificates matching the requested issuer and serial -> ambiguous-cert", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t16b }, f.base)))) === "scep/ambiguous-cert");
+  var t17 = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "not a pki message" });
+  check("getCert: wrong content-type refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t17 }, f.base)))) === "scep/bad-content-type");
+  var t18 = caTransport(async function (p) { var good = Buffer.from(await f.certResp(p, [F.issuedCert])); good[good.length - 4] ^= 0x40; return good; });
+  check("getCert: broken signature refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t18 }, f.base)))) === "scep/bad-signature");
+  var t19 = caTransport(function () { return Buffer.from("not a CMS message at all"); });
+  check("getCert: non-CMS response refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t19 }, f.base)))) === "scep/bad-der");
+}
+
+async function testGetCrlVerb() {
+  var f = await queryFixture();
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var t20 = caTransport(function (p) { return f.crlResp(p, crl); });
+  var out20 = await pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t20 }, f.base));
+  check("getCrl: retrieves the CRL", Buffer.compare(out20.crl, crl) === 0 && out20.crls.length === 1 && (await pki.scep.parse(t20.calls[0].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageType === "GetCRL");
+  var t21 = caTransport(function (p) { return f.certResp(p, [F.issuedCert]); });
+  check("getCrl: a SUCCESS with no CRL -> no-crl", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t21 }, f.base)))) === "scep/no-crl");
+  var t22 = caTransport(function (p) { return buildCertRep({ statusCode: "2", transactionId: p.transactionId, recipientNonce: p.senderNonce, failCode: "2" }); });
+  var e22 = null; try { await pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t22 }, f.base)); } catch (e) { e22 = e; }
+  check("getCrl: a FAILURE throws scep/query-failed", e22 && e22.code === "scep/query-failed" && e22.failInfo === "badRequest");
+  var atk = await rsaClient();
+  var t23 = caTransport(async function (p) { var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl]), [{ cert: f.rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" }); return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env, signer: { cert: atk.cert, key: atk.key } }); });
+  check("getCrl: untrusted signer refused (shared _queryOperation auth)", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t23 }, f.base)))) === "scep/untrusted-signer");
+  var otherKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var otherKey = await pki.key.export(otherKp.privateKey);
+  var otherCert = await pki.x509.sign({ subject: "Other CA", subjectPublicKey: await pki.key.export(otherKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2030-01-01"), extensions: { basicConstraints: { cA: true }, keyUsage: ["keyCertSign", "cRLSign"] } }, { key: otherKey });
+  var otherCrl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: otherKey, cert: otherCert });
+  var t24c = caTransport(function (p) { return f.crlResp(p, otherCrl); });
+  check("getCrl: a CRL issued by a different CA than the one queried -> no-crl", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t24c }, f.base)))) === "scep/no-crl");
+  var t24d = caTransport(async function (p) { var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [crl, crl]), [{ cert: f.rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" }); return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }); });
+  check("getCrl: two CRLs from the requested CA -> ambiguous-crl", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t24d }, f.base)))) === "scep/ambiguous-crl");
+  var t24e = caTransport(async function (p) { var env = await cmsEncrypt.encrypt(certsOnlyBag(null, [otherCrl, crl]), [{ cert: f.rsa.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" }); return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }); });
+  var out24e = await pki.scep.getCrl("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, transport: t24e }, f.base));
+  check("getCrl: selects the CRL issued by the requested CA when the response carries several", Buffer.compare(out24e.crl, crl) === 0);
+}
+
+async function testGetQuerySync() {
+  var f = await queryFixture();
+  var swapOpts = Object.assign({ certificate: F.issuedCert }, f.base);
+  swapOpts.transport = caTransport(function (p) { swapOpts.certificate = F.clientCert; return f.certResp(p, [F.issuedCert]); });
+  var out24 = await pki.scep.getCert("http://ca.example/scep", swapOpts);
+  var reqIas = pki.asn1.decode((await pki.scep.parse(swapOpts.transport.calls[0].body, { recipientKey: { cert: F.caCert, key: F.caKey } })).messageData);
+  check("getCert: a mid-flight certificate swap cannot change the queried issuer+serial", Buffer.compare(reqIas.children[0].bytes, pki.schema.x509.parse(F.issuedCert).issuer.bytes) === 0 && Buffer.compare(out24.certificate, F.issuedCert) === 0);
+  check("getCert: unknown option refused", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, bogus: 1 }, f.base)))) === "scep/bad-input");
+  var t26 = fakeTransport(function () { throw new Error("must not POST for invalid inputs"); });
+  check("getCert: missing caCert refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", { certificate: F.issuedCert, signer: F.signer, recipientKey: { cert: f.rsa.cert, key: f.rsa.key }, transport: t26 }))) === "scep/bad-input");
+  check("getCert: missing signer refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", { certificate: F.issuedCert, caCert: F.caCert, recipientKey: f.base.recipientKey, transport: t26 }))) === "scep/bad-input");
+  check("getCert: missing recipientKey refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", { certificate: F.issuedCert, caCert: F.caCert, signer: F.signer, transport: t26 }))) === "scep/bad-input");
+  var t27 = caTransport(function (p) { return f.certResp(p, [F.issuedCert]); });
+  var out27 = await pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: F.issuedCert, responderCert: F.caCert, transactionId: "fixed-txn", tls: {}, transport: t27 }, f.base));
+  check("getCert: an explicit transactionId, responderCert, and tls are honored", Buffer.compare(out27.certificate, F.issuedCert) === 0 && out27.transactionId === "fixed-txn");
+  check("getCrl: no certificate and no issuer/serial refused", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ transport: t26 }, f.base)))) === "scep/bad-input");
+  check("getCert: a malformed hex serial refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ issuer: pki.schema.x509.parse(F.issuedCert).issuer.bytes, serialNumber: "zz", transport: t26 }, f.base)))) === "scep/bad-input");
+  check("getCert: an unparseable certificate refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ certificate: Buffer.from([0x30, 0x01, 0x00]), transport: t26 }, f.base)))) === "scep/bad-input");
+  check("getCert: an explicit issuer without a serialNumber refused at the door", (await codeOf(pki.scep.getCert("http://ca.example/scep", Object.assign({ issuer: pki.schema.x509.parse(F.issuedCert).issuer.bytes, transport: t26 }, f.base)))) === "scep/bad-input");
+  check("getCrl: an undecodable issuer DER refused at the door", (await codeOf(pki.scep.getCrl("http://ca.example/scep", Object.assign({ issuer: Buffer.from([0x30, 0x82, 0xff, 0xff]), serialNumber: 5n, transport: t26 }, f.base)))) === "scep/bad-input");
+  check("getCert: no POST was made for the invalid inputs", t26.calls.length === 0);
+}
+
 async function main() {
   await setup();
   await testPkcsReqRoundTrip();
@@ -1036,6 +1179,10 @@ async function main() {
   await testCertPollPolling();
   await testCertPollBudgets();
   await testCertPollPollAuth();
+  await testGetCertGetCrlMessage();
+  await testGetCertVerb();
+  await testGetCrlVerb();
+  await testGetQuerySync();
   console.log("CHECKS " + helpers.getChecks());
 }
 

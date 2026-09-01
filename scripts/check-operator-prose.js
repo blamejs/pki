@@ -217,6 +217,26 @@ var REVIEWED = [
     contexts: ["**Contact channel:** `security@pkijs.com` per SECURITY.md."],
     reason: "the same published reporting address, named where the governance document " +
             "describes who controls the mailbox."
+  },
+  {
+    file: "CHANGELOG.md", check: "identifiers", match: "ISO/IEC 9796",
+    contexts: [
+      "ISO/IEC 9796-2 RSA signature scheme is now refused",
+      "ISO/IEC 9796-2 RSA signature-with-message-recovery scheme",
+      "ISO/IEC 9796-1 (1.3.36.3.4.1)"
+    ],
+    reason: "each reference names a part of the multi-part ISO/IEC 9796 standard (part 2, part 1), " +
+            "and the entry identifies the schemes by their object-identifier arcs " +
+            "(1.3.36.3.4.2, 1.3.36.3.4.3, 1.3.36.3.4.1), which is the stable identifier the code " +
+            "matches on. The OID fixes the scheme independently of edition, so an edition year would " +
+            "not make the citation more precise, and the changelog entry is released history."
+  },
+  {
+    file: "SECURITY.md", check: "identifiers", match: "ISO/IEC 9796",
+    contexts: ["ISO/IEC 9796-2 RSA signatures giving message recovery"],
+    reason: "a reference to part 2 of the multi-part ISO/IEC 9796 standard, naming the " +
+            "signature-with-message-recovery family the toolkit refuses by OID arc rather than " +
+            "citing a specific edition to verify against."
   }
 ];
 
