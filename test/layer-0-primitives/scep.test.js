@@ -1060,6 +1060,13 @@ async function testGetCertGetCrlMessage() {
   var undecodableParse = await getCertPayload(Buffer.from([0x30, 0x05]));
   check("GetCert: parse rejects an undecodable IssuerAndSerialNumber payload", (await codeOf(pki.scep.parse(undecodableParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
   check("GetCert: build with an unsafe-integer number serialNumber refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: Number.MAX_SAFE_INTEGER + 2, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var bigSerial = 1n << 168n;
+  check("GetCert: the oversized serial encodes to more than 20 octets", pki.asn1.decode(b.integer(bigSerial)).content.length > 20);
+  check("GetCert: build with a serialNumber longer than 20 octets refused", (await codeOf(pki.scep.build({ messageType: "GetCert", issuer: issuerBytes, serialNumber: bigSerial, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
+  var bigSerialParse = await getCertPayload(b.sequence([issuerBytes, b.integer(bigSerial)]));
+  check("GetCert: parse rejects a serialNumber longer than 20 octets", (await codeOf(pki.scep.parse(bigSerialParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "scep/bad-request-payload");
+  var okSerialParse = await getCertPayload(b.sequence([issuerBytes, b.integer((1n << 158n) + 7n)]));
+  check("GetCert: parse accepts a 20-octet serial at the boundary", (await codeOf(pki.scep.parse(okSerialParse, { recipientKey: { cert: F.caCert, key: F.caKey } }))) === "NO-THROW");
 }
 
 async function testGetCertVerb() {
