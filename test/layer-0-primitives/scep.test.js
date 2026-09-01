@@ -467,7 +467,7 @@ async function testInputGuards() {
   check("unknown build option refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t", bogus: 1 }))) === "scep/bad-input");
   check("unknown parse option refused", (await codeOf(pki.scep.parse(await pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" }), { nope: 1 }))) === "scep/bad-input");
   check("unknown messageType refused", (await codeOf(pki.scep.build({ messageType: "Nope", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-message-type");
-  check("CertRep not built by this release", (await codeOf(pki.scep.build({ messageType: "CertRep", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-message-type");
+  check("a CertRep spec without a pkiStatus refused", (await codeOf(pki.scep.build({ messageType: "CertRep", recipient: F.caCert, signer: F.signer, transactionId: "t" }))) === "scep/bad-input");
   check("empty transactionId refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "" }))) === "scep/bad-input");
   var long = new Array(300).join("x");
   check("over-long transactionId refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: long }))) === "scep/bad-input");
@@ -1177,6 +1177,81 @@ async function testGetQuerySync() {
   check("getCert: no POST was made for the invalid inputs", t26.calls.length === 0);
 }
 
+async function testCertRepIssuance() {
+  var rsa = await rsaClient();
+  var caSigner = { cert: F.caCert, key: F.caKey };
+  var rn = nodeCrypto.randomBytes(16);
+  var recipKey = { cert: rsa.cert, key: rsa.key };
+
+  var success = await pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-1", recipientNonce: rn, certificates: [F.issuedCert], recipient: rsa.cert, signer: caSigner });
+  var v = await pki.scep.parse(success, { recipientKey: recipKey, signerCert: F.caCert });
+  check("CertRep issuance SUCCESS: messageType CertRep + pkiStatus SUCCESS", v.messageType === "CertRep" && v.pkiStatus === "SUCCESS");
+  check("CertRep issuance SUCCESS: outer signature verifies", v.signatureValid === true);
+  check("CertRep issuance SUCCESS: certificates[0] is the issued (leaf) cert", Buffer.compare(v.certificates[0], F.issuedCert) === 0);
+  check("CertRep issuance SUCCESS: recipientNonce echoes the request senderNonce", Buffer.compare(v.recipientNonce, rn) === 0);
+  check("CertRep issuance SUCCESS: transactionId echoed + fresh 16-byte senderNonce", v.transactionId === "cr-1" && Buffer.isBuffer(v.senderNonce) && v.senderNonce.length === 16);
+
+  var wrongSigner = await rsaClient();
+  var mutSpec = { messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-swap", recipientNonce: rn, certificates: [F.issuedCert], recipient: rsa.cert, signer: { cert: F.caCert, key: F.caKey } };
+  var buildInFlight = pki.scep.build(mutSpec);
+  mutSpec.signer.key = wrongSigner.key;
+  var swapped = await buildInFlight;
+  var swapCode = await codeOf(pki.scep.parse(swapped, { recipientKey: recipKey, signerCert: F.caCert }));
+  check("CertRep issuance captures the signer key in the sync prologue (a mid-flight key swap during the encrypt await does not corrupt the CA signature)", swapCode === "NO-THROW");
+
+  var crl = await pki.crl.sign({ thisUpdate: new Date("2026-06-01"), nextUpdate: new Date("2026-07-01"), revoked: [] }, { key: F.caKey, cert: F.caCert });
+  var crlRep = await pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-crl", recipientNonce: rn, crls: [crl], recipient: rsa.cert, signer: caSigner });
+  var vc = await pki.scep.parse(crlRep, { recipientKey: recipKey, signerCert: F.caCert });
+  check("CertRep issuance SUCCESS (GetCRL response): crls[0] is the CRL", Buffer.compare(vc.crls[0], crl) === 0);
+
+  var chainRep = await pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "cr-chain", recipientNonce: rn, certificates: [F.issuedCert, F.caCert], recipient: rsa.cert, signer: caSigner });
+  var vch = await pki.scep.parse(chainRep, { recipientKey: recipKey, signerCert: F.caCert });
+  check("CertRep issuance SUCCESS: a chain is carried and the issued cert is present (the certificate SET is DER-sorted, so the client selects the leaf by content, not position)", vch.certificates.length === 2 && vch.certificates.some(function (c) { return Buffer.compare(c, F.issuedCert) === 0; }) && vch.certificates.some(function (c) { return Buffer.compare(c, F.caCert) === 0; }));
+
+  var reqCsr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: rsa.pub }, { key: rsa.key });
+  var issuedForReq = await pki.x509.sign({ subject: "device.example", subjectPublicKey: rsa.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  var caT = caTransport(function (p) { return pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: p.transactionId, recipientNonce: p.senderNonce, certificates: [issuedForReq], recipient: rsa.cert, signer: caSigner }); });
+  var enrolled = await pki.scep.enroll("http://ca.example/scep", { csr: reqCsr, caCert: F.caCert, signer: { cert: rsa.cert, key: rsa.key }, recipientKey: recipKey, transport: caT });
+  check("CertRep issuance: enroll recovers the issued cert from a build-issued CertRep (shipped issuance <-> shipped client)", enrolled.status === "SUCCESS" && Buffer.compare(enrolled.certificate, issuedForReq) === 0);
+
+  var fail = await pki.scep.build({ messageType: "CertRep", pkiStatus: "FAILURE", transactionId: "cr-f", recipientNonce: rn, failInfo: "badCertId", failInfoText: "unknown certificate", signer: caSigner });
+  var vf = await pki.scep.parse(fail, { signerCert: F.caCert });
+  check("CertRep issuance FAILURE: pkiStatus + failInfo + failInfoText, no envelope", vf.pkiStatus === "FAILURE" && vf.failInfo === "badCertId" && vf.failInfoText === "unknown certificate" && vf.messageData === null);
+
+  var pend = await pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "cr-p", recipientNonce: rn, signer: caSigner });
+  var vp = await pki.scep.parse(pend, { signerCert: F.caCert });
+  check("CertRep issuance PENDING: pkiStatus PENDING, no envelope", vp.pkiStatus === "PENDING" && vp.messageData === null);
+
+  check("CertRep FAILURE without failInfo refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "FAILURE", transactionId: "t", recipientNonce: rn, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep FAILURE carrying certificates refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "FAILURE", transactionId: "t", recipientNonce: rn, failInfo: "badRequest", certificates: [F.issuedCert], recipient: rsa.cert, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep SUCCESS without certificates or crls refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, recipient: rsa.cert, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep SUCCESS without a recipient refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: [F.issuedCert], signer: caSigner }))) === "scep/bad-input");
+  check("CertRep with an unknown pkiStatus refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "MAYBE", transactionId: "t", recipientNonce: rn, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep with an inherited-property pkiStatus (toString) refused with the typed error", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "toString", transactionId: "t", recipientNonce: rn, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep with a boxed-String pkiStatus refused, never a detached SUCCESS the parse rejects", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: new String("SUCCESS"), transactionId: "t", recipientNonce: rn, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep with an object-toString pkiStatus refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: { toString: function () { return "SUCCESS"; } }, transactionId: "t", recipientNonce: rn, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep FAILURE with an inherited-property failInfo (constructor) refused with the typed error", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "FAILURE", transactionId: "t", recipientNonce: rn, failInfo: "constructor", signer: caSigner }))) === "scep/bad-input");
+  check("CertRep FAILURE with an unknown failInfo name refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "FAILURE", transactionId: "t", recipientNonce: rn, failInfo: "badVibes", signer: caSigner }))) === "scep/bad-input");
+  check("CertRep without a recipientNonce refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "t", signer: caSigner }))) === "scep/bad-input");
+  check("CertRep without a transactionId refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", recipientNonce: rn, signer: caSigner }))) === "scep/bad-input");
+  check("a PKCSReq carrying a CertRep-only field (pkiStatus) refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t", pkiStatus: "SUCCESS" }))) === "scep/bad-input");
+  check("a PKCSReq carrying a CertRep-only field (certificates) refused", (await codeOf(pki.scep.build({ messageType: "PKCSReq", messageData: F.csr, recipient: F.caCert, signer: F.signer, transactionId: "t", certificates: [F.issuedCert] }))) === "scep/bad-input");
+  check("a CertRep carrying a request-only field (messageData) refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "t", recipientNonce: rn, signer: caSigner, messageData: F.csr }))) === "scep/bad-input");
+  check("a CertRep carrying a request-only field (serialNumber) refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "t", recipientNonce: rn, signer: caSigner, serialNumber: 5n }))) === "scep/bad-input");
+  check("CertRep without a signer refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "t", recipientNonce: rn }))) === "scep/bad-input");
+  check("CertRep SUCCESS with a non-array certificates refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: "not-an-array", recipient: rsa.cert, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep SUCCESS with an invalid certificate DER refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: [Buffer.from([0x30, 0x01, 0x00])], recipient: rsa.cert, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep FAILURE carrying crls refused (envelope omitted)", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "FAILURE", transactionId: "t", recipientNonce: rn, failInfo: "badRequest", crls: [crl], signer: caSigner }))) === "scep/bad-input");
+  check("CertRep PENDING carrying a recipient refused (envelope omitted)", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "t", recipientNonce: rn, recipient: rsa.cert, signer: caSigner }))) === "scep/bad-input");
+  check("CertRep PENDING carrying a failInfo refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "PENDING", transactionId: "t", recipientNonce: rn, failInfo: "badRequest", signer: caSigner }))) === "scep/bad-input");
+  check("CertRep SUCCESS carrying a failInfo refused (failInfo is FAILURE-only, symmetric with parse)", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: [F.issuedCert], recipient: rsa.cert, failInfo: "badRequest", signer: caSigner }))) === "scep/bad-input");
+  check("CertRep SUCCESS carrying a failInfoText refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: [F.issuedCert], recipient: rsa.cert, failInfoText: "why", signer: caSigner }))) === "scep/bad-input");
+  var noKeyEncKp = await pki.key.generate({ name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" });
+  var noKeyEncKey = await pki.key.export(noKeyEncKp.privateKey);
+  var noKeyEncCert = await pki.x509.sign({ subject: "no-keyenc", subjectPublicKey: await pki.key.export(noKeyEncKp.publicKey), notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01"), extensions: { keyUsage: ["digitalSignature"] } }, { key: noKeyEncKey });
+  check("CertRep SUCCESS with a recipient lacking keyEncipherment refused", (await codeOf(pki.scep.build({ messageType: "CertRep", pkiStatus: "SUCCESS", transactionId: "t", recipientNonce: rn, certificates: [F.issuedCert], recipient: noKeyEncCert, signer: caSigner }))) === "scep/bad-input");
+}
+
 async function main() {
   await setup();
   await testPkcsReqRoundTrip();
@@ -1233,6 +1308,7 @@ async function main() {
   await testGetCertVerb();
   await testGetCrlVerb();
   await testGetQuerySync();
+  await testCertRepIssuance();
   console.log("CHECKS " + helpers.getChecks());
 }
 

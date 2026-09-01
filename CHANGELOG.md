@@ -4,6 +4,19 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.19 — 2026-09-01
+
+pki.scep.build issues the CA-side CertRep response, so the toolkit produces the SCEP certification-authority reply the client enrollment verbs consume.
+
+### Added
+
+- pki.scep.build({ messageType: "CertRep", pkiStatus, transactionId, recipientNonce, ... }) issues a SCEP CertRep response (RFC 8894 sec. 3.3.2). SUCCESS takes certificates (and/or crls, leaf identified by content since the CMS certificate SET is DER-ordered) plus the requester's recipient certificate and the CA signer; the issued certificates ride a certs-only SignedData inside a pkcsPKIEnvelope encrypted to the requester. FAILURE takes a failInfo (and optional failInfoText) and PENDING takes neither; both omit the pkcsPKIEnvelope and are signed detached. recipientNonce (echoing the request's senderNonce) and transactionId are required; a missing failInfo on a FAILURE, a SUCCESS without a certificate/CRL or recipient, an envelope field on a FAILURE or PENDING, or an unknown pkiStatus or failInfo is refused with a typed scep/bad-input.
+
+### Fixed
+
+- An enumerated option whose value collides with an inherited Object.prototype property name, such as a pkiStatus, contentEncryptionAlgorithm, macAlgorithm, digestAlgorithm, PKCS#8 cipher, or ACME resource kind of "toString" or "constructor", is now refused with the verb's own typed bad-input error across pki.scep.build, pki.cms.encrypt, pki.cms.authenticate, pki.key.encrypt, pki.acme.validate, and pki.acme.assertTransition. Such a value previously resolved to the inherited method and the call surfaced an unrelated error, and pki.acme.validate accepted the kind and returned without checking any field.
+- pki.scep.build now requires a primitive-string pkiStatus. A boxed String or an object that coerces to a status name is refused with scep/bad-input, instead of building a CertRep whose signed pkiStatus attribute claims SUCCESS while the pkcsPKIEnvelope that a SUCCESS response requires is absent.
+
 ## v0.6.18 — 2026-09-01
 
 pki.cms.encrypt and pki.cms.decrypt envelope to and open a composite ML-KEM recipient, extending the CMS KEMRecipientInfo arm to the hybrid post-quantum key-establishment algorithms.

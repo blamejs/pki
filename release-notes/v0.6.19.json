@@ -1,0 +1,14 @@
+{
+  "version": "0.6.19",
+  "headline": "pki.scep.build issues the CA-side CertRep response, so the toolkit produces the SCEP certification-authority reply the client enrollment verbs consume.",
+  "summary": "pki.scep.build gains messageType \"CertRep\", the responder side of the SCEP exchange (RFC 8894 sec. 3.3.2). A CA (or a test harness or RA) can now produce the CertRep a client's enroll, renew, getCert, or getCrl reads back. A SUCCESS response carries a certs-only CMS SignedData of the issued certificate (or the CRL for a GetCRL) inside a pkcsPKIEnvelope encrypted to the requester, signed under the CA's key; a FAILURE carries a failInfo (badAlg, badMessageCheck, badRequest, badTime, or badCertId) and a PENDING carries neither, both signed detached with the pkcsPKIEnvelope omitted. Every CertRep echoes the request's senderNonce as recipientNonce and its transactionID. It composes the shipped pki.cms.certsOnly, pki.cms.encrypt, and pki.cms.sign, and round-trips through the shipped pki.scep.parse and the enroll client verb.",
+  "sections": {
+    "Added": [
+      "pki.scep.build({ messageType: \"CertRep\", pkiStatus, transactionId, recipientNonce, ... }) issues a SCEP CertRep response (RFC 8894 sec. 3.3.2). SUCCESS takes certificates (and/or crls, leaf identified by content since the CMS certificate SET is DER-ordered) plus the requester's recipient certificate and the CA signer; the issued certificates ride a certs-only SignedData inside a pkcsPKIEnvelope encrypted to the requester. FAILURE takes a failInfo (and optional failInfoText) and PENDING takes neither; both omit the pkcsPKIEnvelope and are signed detached. recipientNonce (echoing the request's senderNonce) and transactionId are required; a missing failInfo on a FAILURE, a SUCCESS without a certificate/CRL or recipient, an envelope field on a FAILURE or PENDING, or an unknown pkiStatus or failInfo is refused with a typed scep/bad-input."
+    ],
+    "Fixed": [
+      "An enumerated option whose value collides with an inherited Object.prototype property name, such as a pkiStatus, contentEncryptionAlgorithm, macAlgorithm, digestAlgorithm, PKCS#8 cipher, or ACME resource kind of \"toString\" or \"constructor\", is now refused with the verb's own typed bad-input error across pki.scep.build, pki.cms.encrypt, pki.cms.authenticate, pki.key.encrypt, pki.acme.validate, and pki.acme.assertTransition. Such a value previously resolved to the inherited method and the call surfaced an unrelated error, and pki.acme.validate accepted the kind and returned without checking any field.",
+      "pki.scep.build now requires a primitive-string pkiStatus. A boxed String or an object that coerces to a status name is refused with scep/bad-input, instead of building a CertRep whose signed pkiStatus attribute claims SUCCESS while the pkcsPKIEnvelope that a SUCCESS response requires is absent."
+    ]
+  }
+}

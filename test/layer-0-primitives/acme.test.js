@@ -235,6 +235,10 @@ function testTransitions() {
   check("48k. order ready->valid ok (synchronous issuance)", code(function () { pki.acme.assertTransition("order", "ready", "valid"); }) === "NO-THROW");
   // an unknown resource kind has no transition table -- fail closed, never accept the edge.
   check("48l. assertTransition unknown kind rejected", code(function () { pki.acme.assertTransition("account", "valid", "revoked"); }) === "acme/bad-input");
+  // an inherited Object.prototype name as the kind or the from-status must take the same fail-closed path, not a bare TypeError or a silently skipped validation.
+  check("48m. assertTransition inherited-property kind (toString) rejected", code(function () { pki.acme.assertTransition("toString", "pending", "ready"); }) === "acme/bad-input");
+  check("48n. assertTransition inherited-property from-status (toString) rejected", code(function () { pki.acme.assertTransition("order", "toString", "ready"); }) === "acme/bad-transition");
+  check("48o. validate inherited-property kind (toString) rejected, never a silent pass", code(function () { pki.acme.validate("toString", {}); }) === "acme/bad-input");
 }
 
 // ---- problem documents (RFC 8555 sec. 6.7) ---------------------------
@@ -461,6 +465,7 @@ async function testBuilders() {
   var eabHdr = b64uJson(eab.protected);
   check("67c. EAB header: HS256, kid, url==outer, no nonce", eabHdr.alg === "HS256" && eabHdr.kid === "mac-kid-1" && eabHdr.url === base.url && !("nonce" in eabHdr));
   check("67d. EAB rejects a signature alg", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acct.jwk, alg: "ES256" }); })) === "acme/bad-input");
+  check("67e. EAB rejects an inherited-property alg (toString)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: macKey, kid: "k", url: base.url, accountJwk: acct.jwk, alg: "toString" }); })) === "acme/bad-input");
   check("67d2. EAB rejects a non-key macKey (fail closed, no raw TypeError)", (await acode(function () { return pki.acme.externalAccountBinding({ macKey: "notakey", kid: "k", url: base.url, accountJwk: acct.jwk }); })) === "acme/bad-input");
   // a non-Buffer object that is not a secret CryptoKey (e.g. a public key) is rejected on the
   // key.type check; a null macKey is rejected on the falsy-key check -- both fail closed.

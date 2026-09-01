@@ -90,6 +90,7 @@ async function run() {
   // ---- config-time ----
   check("encrypt with an empty recipients array -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, []); })) === "cms/bad-input");
   check("encrypt with an unsupported content algorithm -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "rc4" }); })) === "cms/bad-input");
+  check("encrypt with an inherited-property content algorithm (toString) -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert }], { contentEncryptionAlgorithm: "toString" }); })) === "cms/bad-input");
   check("a recipient with neither cert/password/kek -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{}]); })) === "cms/bad-input");
   check("a kek recipient without a kekId -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ kek: Buffer.alloc(32) }]); })) === "cms/bad-input");
   check("EncryptedData given an AEAD content algorithm -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, { cek: Buffer.alloc(32) }, { contentEncryptionAlgorithm: "aes-256-gcm" }); })) === "cms/bad-input");
@@ -133,7 +134,9 @@ async function run() {
   var pbesSha1 = await pki.cms.encrypt(MSG, { password: "p", prf: "hmacWithSHA1" }, { contentEncryptionAlgorithm: "aes-256-cbc" });
   check("EncryptedData PBES2 with an explicit hmacWithSHA1 prf round-trips", Buffer.compare((await pki.cms.decrypt(pbesSha1, { password: "p" })).content, MSG) === 0);
   check("pwri with an unsupported prf -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: "p", prf: "hmacWithMD5" }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
+  check("pwri with an inherited-property prf (toString) -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: "p", prf: "toString" }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("encrypt with a bad oaepHash -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "md5" }]); })) === "cms/bad-input");
+  check("encrypt with an inherited-property oaepHash (toString) -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, oaepHash: "toString" }]); })) === "cms/bad-input");
   check("encrypt with a non-string/Buffer password -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ password: 42 }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
   check("encrypt with a bad recipient cert type -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: 42 }]); })) === "cms/bad-input");
   check("subjectKeyIdentifier requested but the cert lacks the extension -> cms/bad-input", (await codeOf(function () { return pki.cms.encrypt(MSG, [{ cert: rsa.cert, keyIdentifier: "subjectKeyIdentifier" }], { contentEncryptionAlgorithm: "aes-256-cbc" }); })) === "cms/bad-input");
