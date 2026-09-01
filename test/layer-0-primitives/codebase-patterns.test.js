@@ -3661,17 +3661,35 @@ function testGuardErrorFactoryNotClass() {
 // Keywords after which a `/` begins a regex literal rather than a division (an operand cannot follow them).
 var _REGEX_CTX_KEYWORDS = {
   "return": 1, "typeof": 1, "instanceof": 1, "in": 1, "of": 1, "new": 1, "delete": 1, "void": 1,
-  "do": 1, "else": 1, "yield": 1, "case": 1, "throw": 1, "await": 1
+  "do": 1, "else": 1, "yield": 1, "case": 1, "throw": 1, "await": 1,
+  // A statement keyword that ends its statement: a `/` beginning the next statement (`break\n/re/`, which
+  // ASI splits) opens a regex, not a division.
+  "break": 1, "continue": 1, "debugger": 1
 };
+// `if`/`while`/`for` head a control statement whose body can be a bare expression. The `)` that closes
+// their header is NOT an operand: a `/` after it opens a regex body (`if (x) /re/.test(v)`), not a
+// division, so that `)` must leave `/` in regex position where a call or grouping `)` leaves it in
+// division position.
+var _CONTROL_HEADER_KEYWORDS = { "if": 1, "while": 1, "for": 1 };
+// A `RegExp` reached through one of these global-object names (`globalThis.RegExp(...)`) is the native
+// constructor; through any other receiver it is an arbitrary method named RegExp and is left alone.
+var _GLOBAL_OBJECTS = { "globalThis": 1, "window": 1, "self": 1, "global": 1 };
 // Walk a source file with just enough lexing to tell a regex literal from a division: skip comments and
 // string/template literals, track whether the previous significant token was an OPERAND (identifier, number,
-// `)`/`]`, or a string -- after which `/` is division) and record every regex literal and `RegExp` reference
-// with its 1-based line. Returns [{ line, what }].
+// a call or grouping `)`, `]`, or a string -- after which `/` is division) and record every regex literal
+// and `RegExp` construction with its 1-based line. Returns [{ line, what }]. Telling a regex from a division
+// is undecidable without a full parser, so this is a heuristic backstop for a lib-hygiene rule that
+// recognizes regex literals in every standard position; the whole-lib scan is the ground truth.
 function _libRegexHits(content) {
   var hits = [], n = content.length, i = 0, line = 1, prevOperand = false, pendingNew = false, c, rc;
   // tl holds the brace depth of each open `${...}` substitution; template TEXT resumes only when a
   // substitution's own brace closes, so a regex inside a substitution is lexed as code and caught.
   var tl = [], state = "code";
+  // parenStack records, per open `(`, whether it heads a control statement (if/while/for); its `)` then
+  // leaves `/` in regex position. controlPending marks that the next `(` follows a control keyword.
+  // afterDot marks that the next identifier follows a `.` (member access), so it is a property name, an
+  // operand, never a keyword: `obj.if(x) / y` and `obj.break / y` are divisions, not regexes.
+  var parenStack = [], controlPending = false, afterDot = false, lastId = "";
   var isIdStart = function (ch) { return (ch >= "A" && ch <= "Z") || (ch >= "a" && ch <= "z") || ch === "_" || ch === "$"; };
   var isIdPart = function (ch) { return isIdStart(ch) || (ch >= "0" && ch <= "9"); };
   var isDigit = function (ch) { return ch >= "0" && ch <= "9"; };
@@ -3691,6 +3709,10 @@ function _libRegexHits(content) {
       i += 2; continue;
     }
     if (c === "/" && content.charAt(i + 1) === "/") { i += 2; while (i < n && content.charAt(i) !== "\n") i++; continue; }   // line comment
+    // afterDot is set by a `.` for the property that immediately follows it; whitespace and comments (which
+    // `continue` above) preserve it, every other token clears it here, so it cannot leak past a computed
+    // access (`a?.["x"]`) onto a later real keyword.
+    var dotHere = afterDot; afterDot = false;
     if (c === "\"" || c === "'") {   // string literal
       var q = c; i++;
       while (i < n && content.charAt(i) !== q) { if (content.charAt(i) === "\\") i++; else if (content.charAt(i) === "\n") line++; i++; }
@@ -3702,19 +3724,27 @@ function _libRegexHits(content) {
     if (isIdStart(c)) {   // identifier or keyword
       var id = "";
       while (i < n && isIdPart(content.charAt(i))) { id += content.charAt(i); i++; }
-      // A regex CONSTRUCTION is banned: `new RegExp(...)` or a bare `RegExp(...)` call. A `RegExp` reference
-      // that constructs nothing is allowed (util.types.isRegExp is a different identifier; `x instanceof
-      // RegExp`, `RegExp.prototype` reflect on the type to GUARD against it). Construction that hides the
-      // identifier from a lexical scan (`new (RegExp)`, `Reflect.construct(RegExp, ...)`) is out of scope.
+      // A regex CONSTRUCTION is banned: `new RegExp(...)`, a bare `RegExp(...)` call, or the native
+      // constructor reached through a global object (`globalThis.RegExp("x")`); a `RegExp` reached through
+      // any other receiver is an arbitrary method and is left alone. A `RegExp` reference that constructs
+      // nothing is allowed (util.types.isRegExp is a different identifier; `x instanceof RegExp`,
+      // `RegExp.prototype` reflect on the type to GUARD against it). Construction that hides the identifier
+      // from a lexical scan (`new (RegExp)`, `Reflect.construct(RegExp, ...)`, an aliased global) is out of scope.
       if (id === "RegExp") {
         var peek = i; while (peek < n && (content.charAt(peek) === " " || content.charAt(peek) === "\t")) peek++;
-        if (pendingNew || content.charAt(peek) === "(") hits.push({ line: line, what: "RegExp construction" });
+        var isCall = content.charAt(peek) === "(";
+        if (dotHere ? (isCall && _GLOBAL_OBJECTS[lastId]) : (pendingNew || isCall)) hits.push({ line: line, what: "RegExp construction" });
       }
+      lastId = id;
+      if (dotHere) { prevOperand = true; pendingNew = false; controlPending = false; continue; }   // a property name is an operand, not a keyword
       pendingNew = (id === "new");
       prevOperand = !_REGEX_CTX_KEYWORDS[id];   // a regex-context keyword leaves `/` in regex position
+      if (_CONTROL_HEADER_KEYWORDS[id]) controlPending = true;   // the next `(` heads a control statement
+      else if (id !== "await") controlPending = false;   // `await` may sit between `for` and its `(` (for await)
       continue;
     }
     if (isDigit(c)) { while (i < n && (isIdPart(content.charAt(i)) || content.charAt(i) === ".")) i++; prevOperand = true; pendingNew = false; continue; }
+    if (c === "." && content.charAt(i + 1) !== ".") { afterDot = true; prevOperand = false; pendingNew = false; controlPending = false; i++; continue; }   // member access: the next identifier is a property, not a keyword
     if ((c === "+" || c === "-") && content.charAt(i + 1) === c) { i += 2; continue; }   // ++/-- leaves the operand context: a++/b is division, not a regex
     if (c === "/") {
       pendingNew = false;
@@ -3740,14 +3770,17 @@ function _libRegexHits(content) {
       }
       i++; prevOperand = false; continue;   // division; a regex may follow it
     }
-    // ) and ] are operands, so a following / is division. Every other token, a bare } included, leaves /
-    // in regex position. A } is deliberately NOT an operand: a regex after a block close (`if (x) {} /re/`)
-    // must be caught, so the gate accepts a rare over-flag of a division after an object- or
-    // function-expression } (write `({...}) / x` to disambiguate) rather than a false negative that would
-    // let a regex through. The regex-vs-division call is undecidable without a full parser; a no-regex gate
-    // errs toward flagging.
-    prevOperand = (c === ")" || c === "]");
+    if (c === "(") { parenStack.push(controlPending); controlPending = false; prevOperand = false; pendingNew = false; i++; continue; }
+    if (c === ")") { prevOperand = !(parenStack.length ? parenStack.pop() : false); pendingNew = false; controlPending = false; i++; continue; }
+    // A call or grouping ) and ] are operands, so a following / is division; a control-header ) is handled
+    // above. Every other token, a bare } included, leaves / in regex position. A } is deliberately NOT an
+    // operand: a regex after a block close (`if (x) {} /re/`) must be caught, so the gate accepts a rare
+    // over-flag of a division after an object- or function-expression } (write `({...}) / x` to
+    // disambiguate) rather than a false negative that would let a regex through. The regex-vs-division call
+    // is undecidable without a full parser; a no-regex gate errs toward flagging.
+    prevOperand = (c === "]");
     pendingNew = false;
+    controlPending = false;
     i++;
   }
   return hits;
@@ -3787,12 +3820,32 @@ function testLibRegexHitsLexing() {
   var hitRef = _libRegexHits("var ok = (v instanceof RegExp);\n").length;
   var hitPostfix = _libRegexHits("var w = `${ a++ / b / c }`;\n").length;
   var hitAfterBlock = _libRegexHits("if (x) {} /re/.test(y);\n").length;
+  var hitControlBody = _libRegexHits("if (x) /[//]allow:/.test(y);\n").length;
+  var hitWhileBody = _libRegexHits("while (n) /re/.test(s);\n").length;
+  var hitCallDiv = _libRegexHits("var q = foo(a) / bar(b);\n").length;
+  var hitForAwait = _libRegexHits("for await (const it of items) /re/.test(it);\n").length;
+  var hitBreakStmt = _libRegexHits("if (done) break\n/re/.test(line);\n").length;
+  var hitPropIf = _libRegexHits("var q = obj.if(x) / y / z;\n").length;
+  var hitPropBreak = _libRegexHits("var q = obj.break / y / z;\n").length;
+  var hitAfterComputed = _libRegexHits("a?.[\"x\"]; return /re/.test(y);\n").length;
+  var hitDottedRegExp = _libRegexHits("var r = globalThis.RegExp(\"x\").test(v);\n").length;
+  var hitMethodRegExp = _libRegexHits("var r = parser.RegExp(\"x\").node;\n").length;
   check("_libRegexHits catches a regex inside a template substitution", hitRegex >= 1);
   check("_libRegexHits does not read a division inside a substitution as a regex", hitDiv === 0);
   check("_libRegexHits catches a bare RegExp(...) construction call", hitCall >= 1);
   check("_libRegexHits allows a RegExp type reference that constructs nothing", hitRef === 0);
   check("_libRegexHits reads division after a postfix ++/-- as division, not a regex", hitPostfix === 0);
   check("_libRegexHits catches a regex after a block close (favor flag over a false negative)", hitAfterBlock >= 1);
+  check("_libRegexHits catches a regex body after an if (...) header", hitControlBody >= 1);
+  check("_libRegexHits catches a regex body after a while (...) header", hitWhileBody >= 1);
+  check("_libRegexHits reads division after a call ) as division, not a regex", hitCallDiv === 0);
+  check("_libRegexHits catches a regex body after a for await (...) header", hitForAwait >= 1);
+  check("_libRegexHits catches a regex statement after a semicolonless break", hitBreakStmt >= 1);
+  check("_libRegexHits treats a control keyword used as a property name as an operand (obj.if(x) / y)", hitPropIf === 0);
+  check("_libRegexHits treats a statement-word property as an operand (obj.break / y)", hitPropBreak === 0);
+  check("_libRegexHits does not leak a computed member access onto a later keyword", hitAfterComputed >= 1);
+  check("_libRegexHits catches RegExp construction through a dotted global (globalThis.RegExp)", hitDottedRegExp >= 1);
+  check("_libRegexHits leaves an arbitrary object's RegExp method alone (parser.RegExp)", hitMethodRegExp === 0);
 }
 
 function testNoInstanceofArrayBuffer() {
