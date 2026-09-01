@@ -61,6 +61,7 @@ async function testAcceptsCompleteTemplateAcrossArms() {
     var s = makeSigner(arms[i]);
     var m = await firstOf(await completeRequest(s));
     check("a " + arms[i] + " complete-template request verifies", m.verified === true);
+    check("#78 valid aliases verified on the crmf message verdict", m.valid === true && m.valid === m.verified);
     check("a " + arms[i] + " request reports the signature method", m.method === "signature");
   }
 }

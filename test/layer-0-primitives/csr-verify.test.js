@@ -162,6 +162,7 @@ async function testVerdictCarriesTheVerifiedFields() {
   var r = await pki.csr.verify(der);
   check("the verdict is an object, not a bare boolean", r !== null && typeof r === "object");
   check("verified is true for an honest request", r.verified === true);
+  check("#78 valid aliases verified on the csr verdict", r.valid === true && r.valid === r.verified);
   check("the verdict carries the subject", /honest.example/.test(r.subject.dn));
   check("the verdict carries the subject key", Buffer.compare(r.subjectPublicKeyInfo.bytes, s.spki) === 0);
   check("the verdict carries the attributes", Array.isArray(r.attributes) && r.attributes.length > 0);

@@ -168,8 +168,12 @@ async function run() {
   // --- Full verify against the real trust root -> a structured verified verdict ---
   var v = await pki.sigstore.verifyBundle(BUNDLE, TM);
   check("verifyBundle: the real bundle verifies (all legs)", v && v.verified === true);
+  check("#78 valid aliases verified on the sigstore verdict", v.valid === true && v.valid === v.verified);
   check("verifyBundle surfaces the in-toto subject digest", v && v.subjects && v.subjects.length >= 1 && /^[0-9a-f]{64,128}$/.test(v.subjects[0].digest.sha512 || v.subjects[0].digest.sha256 || ""));
   check("verifyBundle surfaces the SLSA predicateType", v && v.predicateType === "https://slsa.dev/provenance/v1");
+  check("#78 predicateTypeChecked is false when no predicateType is pinned", v.predicateTypeChecked === false);
+  var vPin78 = await pki.sigstore.verifyBundle(BUNDLE, Object.assign({ predicateType: "https://slsa.dev/provenance/v1" }, TM));
+  check("#78 predicateTypeChecked is true when a matching predicateType is pinned", vPin78.valid === true && vPin78.predicateTypeChecked === true);
   // The verified payload bytes are surfaced RAW (never a re-serialization).
   check("verified payload bytes equal the decoded envelope payload", v && Buffer.isBuffer(v.payload) && v.payload.equals(Buffer.from(BUNDLE.dsseEnvelope.payload, "base64")));
 

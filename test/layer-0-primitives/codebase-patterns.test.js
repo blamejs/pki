@@ -3014,7 +3014,7 @@ function testGuardReadsRuntimeLive() {
     "lib/attrcert-sign.js": 91,
     "lib/tsp-sign.js": 71,
     "lib/http-digest.js": 73,
-    "lib/pkcs12-build.js": 77,
+    "lib/pkcs12-build.js": 76,
     "lib/ct.js": 76,
     "lib/cms-verify.js": 21,
     "lib/cms-encrypt.js": 72,

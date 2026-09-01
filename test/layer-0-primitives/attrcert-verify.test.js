@@ -62,6 +62,7 @@ async function testAcceptsEveryAlgorithmArm() {
     var der = await pki.attrcert.sign(spec(), aaOf(aa));
     var r = await pki.attrcert.verify(der, trusted(aa), OK);
     check("a " + arms[i] + " attribute certificate verifies", r.verified === true);
+    check("#78 valid aliases verified on the attrcert verdict", r.valid === true && r.valid === r.verified);
     check("a " + arms[i] + " verdict reports the signature checked", r.signatureValid === true);
   }
 }

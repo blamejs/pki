@@ -127,6 +127,7 @@ async function run() {
   // --- verify: the packed x5c attestation signature verifies over the KAT ---
   var v = await pki.webauthn.verify(attObj("packed"), clientHash("packed"), {});
   check("verify: packed KAT verifies (verified true)", v.attestationVerified === true);
+  check("#78 valid aliases attestationVerified on the webauthn verdict", v.valid === true && v.valid === v.attestationVerified);
   check("verify: packed reports fmt + attestation type + trust path", v.fmt === "packed" && typeof v.attestationType === "string" && Array.isArray(v.trustPath));
   check("verify: packed surfaces the aaguid + credentialPublicKey", Buffer.isBuffer(v.aaguid) && v.credentialPublicKey);
 
@@ -2074,6 +2075,7 @@ async function testAssertion() {
     signature: sig, credentialPublicKey: stored });
   check("assertion: a genuine signature over authenticatorData || SHA-256(clientDataJSON) verifies",
     res.signatureVerified === true && res.signCount === 9);
+  check("#78 valid aliases signatureVerified on the webauthn assertion verdict", res.valid === true && res.valid === res.signatureVerified);
 
   // The registration -> store -> login round trip. `verify` hands back a credential key, the relying
   // party persists it, and a login months later needs it again. Bytes are the durable form: the

@@ -1182,9 +1182,9 @@ async function testOcspAndPkcs12Doors() {
   check("pkcs12.build leaves the caller's password buffer intact",
     Buffer.compare(callerPw, Buffer.from("s3cr3t-p4ss")) === 0);
   check("the store opens with the password that was passed",
-    (await pki.pkcs12.verifyMac(store, Buffer.from("s3cr3t-p4ss"))) === true);
+    (await pki.pkcs12.verifyMac(store, Buffer.from("s3cr3t-p4ss"))).valid === true);
   check("the store does not open with a different password",
-    (await pki.pkcs12.verifyMac(store, Buffer.from("wrong-pass"))) === false);
+    (await pki.pkcs12.verifyMac(store, Buffer.from("wrong-pass"))).valid === false);
 
   // A secret nested BELOW the top level of an options object is the case a one-level copy misses:
   // `opts.mac.secret` is read by the PBMAC1 derivation after the first turn, so a shallow copy

@@ -50,6 +50,7 @@ async function testAcceptKats() {
     var res = await pki.cms.verify(fx(cases[i][0]));
     check(cases[i][1] + " -> valid", res.valid === true);
     check(cases[i][1] + " -> one signer ok", res.signers.length === 1 && res.signers[0].ok === true);
+    check("#78 " + cases[i][1] + " -> primary signer node carries digestAlgorithm", typeof res.signers[0].digestAlgorithm === "string" && res.signers[0].digestAlgorithm.length > 0);
     check(cases[i][1] + " -> signer cert surfaced", Buffer.isBuffer(res.signers[0].cert));
   }
 }
