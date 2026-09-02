@@ -4,6 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.27 — 2026-09-02
+
+The SCEP client can reach a CA through an authenticating forward HTTP proxy.
+
+### Added
+
+- pki.transport gains forward HTTP proxy support: request.proxy = { url, auth? } opens a CONNECT tunnel to an http proxy and negotiates the origin's TLS inside the tunnel under the same trust anchors and rejectUnauthorized as a direct connection, so the proxy relays the encrypted origin session without visibility into it and cannot substitute the origin certificate. A 407 is answered with Basic (RFC 7617) or Digest (RFC 7616) proxy authentication over the CONNECT request; with blockPrivateAddresses the address guard applies to the proxy hop.
+- pki.scep threads opts.proxy through every network verb (getCACaps, getCACert, getNextCACert, enroll, renew, getCert, getCrl), so a SCEP enrollment reaches an https CA through an authenticating proxy. A malformed proxy option (scep/bad-proxy), a non-2xx CONNECT (scep/proxy-connect-failed), a 407 with no usable credentials (scep/proxy-auth-required), and a credential the proxy rejects (scep/proxy-auth-failed) each fail closed. An https proxy URL and a plaintext-http origin are not supported in this release and are refused (scep/proxy-unsupported-scheme, scep/insecure-url).
+
 ## v0.6.26 — 2026-09-02
 
 pki.path.build can prefer the certification path whose policies satisfy a caller-supplied policy set.
