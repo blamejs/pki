@@ -10,7 +10,7 @@ The SCEP client can reach a CA through a forward proxy, with Basic authenticatio
 
 ### Added
 
-- pki.transport gains forward-proxy support: request.proxy = { url, auth?, tls? } opens a CONNECT tunnel to the proxy and negotiates the origin's TLS inside the tunnel under the same trust anchors and rejectUnauthorized as a direct connection, so the proxy relays the encrypted origin session without visibility into it and cannot substitute the origin certificate.
+- pki.transport gains forward-proxy support: request.proxy = { url, auth?, tls? } opens a CONNECT tunnel to the proxy and negotiates the origin's TLS inside the tunnel under the same trust anchors and rejectUnauthorized as a direct connection, so the proxy relays the encrypted origin session without being able to read it and cannot substitute the origin certificate.
 - Basic proxy authentication (RFC 7617) is sent only over an https:// proxy, whose certificate is verified against proxy.tls (its own trust anchors, separate from the origin's), so credentials ride the authenticated TLS-to-proxy channel. A plaintext http:// proxy is tunnel-only; supplying auth for one is refused with transport/proxy-auth-requires-tls rather than exposing the credentials to the proxy hop. A proxy certificate that does not verify is transport/proxy-tls-failed.
 - pki.scep threads opts.proxy through every network verb (getCACaps, getCACert, getNextCACert, enroll, renew, getCert, getCrl). A malformed proxy option (scep/bad-proxy), a non-2xx CONNECT (scep/proxy-connect-failed), a 407 with no or rejected credentials (scep/proxy-auth-required, scep/proxy-auth-failed), and a plaintext-http origin (scep/insecure-url) each fail closed. Digest proxy authentication is not included in this release.
 
