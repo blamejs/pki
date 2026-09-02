@@ -66,7 +66,7 @@
   "lib/hpke.js": "2026-09-02",
   "lib/http-digest.js": "2026-09-01",
   "lib/http-retry-after.js": "2026-09-01",
-  "lib/http-transport.js": "2026-09-01",
+  "lib/http-transport.js": "2026-09-02",
   "lib/inspect.js": "2026-09-01",
   "lib/ip-utils.js": "2026-09-01",
   "lib/jose.js": "2026-09-01",

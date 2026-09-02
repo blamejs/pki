@@ -31,6 +31,18 @@ async function selfSigned(cn) {
   return { certDer: certDer, certPem: pki.schema.x509.pemEncode(certDer, "CERTIFICATE"), keyPem: pki.schema.pkcs8.pemEncode(s.key, "PRIVATE KEY") };
 }
 
+// A cert whose only SAN is an iPAddress (no dNSName), to prove the proxy identity is verified against a configured
+// IP servername rather than the connect host name.
+async function selfSignedIpSan(cn, ip) {
+  var s = signing.makeSigner("ec-p256", { cn: cn });
+  var certDer = await pki.x509.sign({
+    subject: cn, subjectPublicKey: s.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyEncipherment", "keyCertSign"], subjectAltName: [{ iPAddress: ip }], subjectKeyIdentifier: true },
+  }, { key: s.key });
+  return { certDer: certDer, certPem: pki.schema.x509.pemEncode(certDer, "CERTIFICATE"), keyPem: pki.schema.pkcs8.pemEncode(s.key, "PRIVATE KEY") };
+}
+
 function startServer(tls, handler, extra) {
   return new Promise(function (resolve) {
     var srv = https.createServer(Object.assign({ cert: tls.certPem, key: tls.keyPem }, extra || {}), handler);
@@ -379,6 +391,210 @@ async function testBlockPrivateAddresses() {
   } finally { s.srv.close(); }
 }
 
+// ---- CONNECT-proxy support: a real localhost proxy that speaks the CONNECT tunnel ---------------------------
+// A server that reads a CONNECT request, optionally demands Basic via a 407, and on success pipes the socket to a
+// loopback upstream so the client's TLS-in-tunnel handshake reaches the real origin. With opts.tls it is a TLS
+// server (an https proxy), so proxy credentials ride an authenticated channel.
+function startConnectProxy(opts) {
+  opts = opts || {};
+  var net = require("node:net");
+  var seen = [];
+  function onConn(client) {
+    var buf = "";
+    var handled = false;
+    function onData(chunk) {
+      if (handled) return;
+      buf += chunk.toString("latin1");
+      var idx = buf.indexOf("\r\n\r\n");
+      if (idx === -1) return;
+      handled = true;
+      client.removeListener("data", onData);
+      var headerBlock = buf.slice(0, idx);
+      var rest = buf.slice(idx + 4);
+      var lines = headerBlock.split("\r\n");
+      var reqLine = lines[0];
+      var headers = {};
+      for (var i = 1; i < lines.length; i++) { var c = lines[i].indexOf(":"); if (c !== -1) headers[lines[i].slice(0, c).trim().toLowerCase()] = lines[i].slice(c + 1).trim(); }
+      seen.push({ requestLine: reqLine, headers: headers, sni: client.servername || null });
+      var pa = headers["proxy-authorization"] || "";
+      if (opts.rejectStatus) { client.write("HTTP/1.1 " + opts.rejectStatus + " Blocked\r\nContent-Length: 0\r\n\r\n"); client.end(); return; }
+      if (opts.requireAuth === "basic" && pa !== ("Basic " + Buffer.from(opts.username + ":" + opts.password).toString("base64"))) {
+        client.write('HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm="proxy"\r\nContent-Length: 0\r\n\r\n');
+        client.end();
+        return;
+      }
+      var target = reqLine.split(" ")[1] || "";
+      var lastColon = target.lastIndexOf(":");
+      var thost = target.slice(0, lastColon);
+      if (thost.charAt(0) === "[" && thost.charAt(thost.length - 1) === "]") thost = thost.slice(1, -1);
+      var tport = parseInt(target.slice(lastColon + 1), 10);
+      var upstream = net.connect(tport, thost, function () {
+        client.write("HTTP/1.1 200 Connection Established\r\n\r\n");
+        if (rest.length) upstream.write(Buffer.from(rest, "latin1"));
+        client.pipe(upstream); upstream.pipe(client);
+      });
+      upstream.on("error", function () { try { client.destroy(); } catch (_e) { } });
+    }
+    client.on("data", onData);
+    client.on("error", function () { });
+  }
+  var srv = opts.tls ? require("node:tls").createServer({ cert: opts.tls.certPem, key: opts.tls.keyPem }, onConn) : net.createServer(onConn);
+  srv.on("tlsClientError", function () { });
+  return new Promise(function (resolve) { srv.listen(0, opts.listenHost || "127.0.0.1", function () { resolve({ srv: srv, port: srv.address().port, seen: seen }); }); });
+}
+
+async function testProxyConnect() {
+  var tls = await selfSigned("Origin A");
+  var proxyTls = await selfSigned("Proxy");
+  var origin = await startServer(tls, function (req, res) {
+    res.setHeader("x-had-proxy-auth", req.headers["proxy-authorization"] ? "yes" : "no");
+    res.end("TUNNELED");
+  });
+  var t = pki.transport.https({ tls: { anchors: [tls.certPem], servername: "localhost" } });
+  var originUrl = "https://127.0.0.1:" + origin.port + "/x";
+  var pTrust = { anchors: [proxyTls.certPem], servername: "localhost" };
+  try {
+    // PX-1 control: no proxy still reaches the origin directly
+    var r1 = await t({ method: "GET", url: originUrl });
+    check("PX-1 no proxy: the direct GET still succeeds", r1.status === 200 && r1.body.toString() === "TUNNELED");
+
+    // PX-2 Basic proxy auth over an authenticated https-proxy CONNECT tunnel
+    var pxBasic = await startConnectProxy({ tls: proxyTls, requireAuth: "basic", username: "u", password: "p" });
+    try {
+      var r2 = await t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxBasic.port, auth: { scheme: "basic", username: "u", password: "p" }, tls: pTrust } });
+      check("PX-2 Basic proxy auth over an https proxy: the tunneled GET succeeds", r2.status === 200 && r2.body.toString() === "TUNNELED");
+      check("PX-2b the CONNECT carried a Basic Proxy-Authorization", pxBasic.seen.some(function (s) { return (s.headers["proxy-authorization"] || "").slice(0, 6) === "Basic "; }));
+      check("PX-4 the origin request carried NO Proxy-Authorization (hop-by-hop)", r2.headers["x-had-proxy-auth"] === "no");
+      check("PX-12 the tls report reflects the ORIGIN handshake over the tunnel", !!(r2.tls && r2.tls.cipher && r2.tls.cipher.name));
+    } finally { pxBasic.srv.close(); }
+
+    // PX-3 an open http proxy (no auth) is tunnel-only and still works
+    var pxOpen = await startConnectProxy({});
+    try {
+      var r3 = await t({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxOpen.port } });
+      check("PX-3 an open http proxy tunnels (no credentials sent)", r3.status === 200 && r3.body.toString() === "TUNNELED");
+      check("PX-3b the tunnel-only CONNECT carried NO Proxy-Authorization", pxOpen.seen.every(function (s) { return !s.headers["proxy-authorization"]; }));
+    } finally { pxOpen.srv.close(); }
+
+    // PX-18 an IP-literal proxy.tls.servername verifies the proxy cert against the configured IP (SNI omitted for an
+    // IP), not the connect host name: the proxy is reached by the loopback name but its cert covers only the IP.
+    var lh18 = await new Promise(function (res) { require("node:dns").lookup("localhost", function (e, addr) { res(e ? "127.0.0.1" : addr); }); });
+    var proxyIp = await selfSignedIpSan("Proxy IP", "127.0.0.1");
+    var pxByName = await startConnectProxy({ tls: proxyIp, listenHost: lh18 });
+    try {
+      var r18 = await t({ method: "GET", url: originUrl, proxy: { url: "https://localhost:" + pxByName.port, tls: { anchors: [proxyIp.certPem], servername: "127.0.0.1" } } });
+      check("PX-18 an IP proxy.tls.servername verifies the proxy cert against the IP, not the connect host", r18.status === 200 && r18.body.toString() === "TUNNELED");
+    } finally { pxByName.srv.close(); }
+
+    // PX-19 the CONNECT asks for a persistent connection (Connection: keep-alive) rather than the Node default of
+    // Connection: close, so a proxy honoring that hop-by-hop directive does not tear the tunnel down after its 200.
+    var pxKA = await startConnectProxy({});
+    try {
+      var r19 = await t({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxKA.port } });
+      check("PX-19 the CONNECT requests keep-alive (not Connection: close)", r19.status === 200 && (pxKA.seen[0].headers.connection || "").toLowerCase() === "keep-alive");
+    } finally { pxKA.srv.close(); }
+
+    // PX-20 an IP-addressed https proxy is sent NO SNI: Node must not infer it from the origin Host header (which
+    // would leak the origin name to the proxy or misselect its certificate).
+    var pxIpSni = await startConnectProxy({ tls: proxyIp, listenHost: "127.0.0.1" });
+    try {
+      await codeOf(t({ method: "GET", url: "https://origin-name.example:8443/x", proxy: { url: "https://127.0.0.1:" + pxIpSni.port, tls: { anchors: [proxyIp.certPem] } } }));
+      check("PX-20 an IP-addressed https proxy receives no SNI (the origin name is not leaked as the proxy SNI)", pxIpSni.seen.length > 0 && pxIpSni.seen[0].sni === null);
+    } finally { pxIpSni.srv.close(); }
+
+    // PX-14 the proxy channel is authenticated: an untrusted https-proxy certificate is refused
+    var pxUntrusted = await startConnectProxy({ tls: proxyTls });
+    try {
+      check("PX-14 an untrusted https-proxy certificate -> proxy-tls-failed", (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxUntrusted.port, auth: { scheme: "basic", username: "u", password: "p" }, tls: { anchors: [tls.certPem], servername: "localhost" } } }))) === "transport/proxy-tls-failed");
+    } finally { pxUntrusted.srv.close(); }
+
+    // PX-21 a caller-supplied Proxy-Authorization header is hop-by-hop; it must be stripped from the tunneled origin
+    // request, never forwarded to the origin.
+    var pxHdr = await startConnectProxy({});
+    try {
+      var r21 = await t({ method: "GET", url: originUrl, headers: { "Proxy-Authorization": "Basic Y2FsbGVy" }, proxy: { url: "http://127.0.0.1:" + pxHdr.port } });
+      check("PX-21 a caller Proxy-Authorization header is not forwarded to the origin over the tunnel", r21.status === 200 && r21.headers["x-had-proxy-auth"] === "no");
+    } finally { pxHdr.srv.close(); }
+
+    // PX-6 a non-2xx CONNECT is fail-closed
+    var px502 = await startConnectProxy({ rejectStatus: 502 });
+    try {
+      check("PX-6 a non-2xx CONNECT (502) -> proxy-connect-failed", (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + px502.port } }))) === "transport/proxy-connect-failed");
+    } finally { px502.srv.close(); }
+
+    // PX-7 an http proxy that demands auth, with no credentials -> proxy-auth-required (open-proxy path)
+    var pxNoCred = await startConnectProxy({ requireAuth: "basic", username: "u", password: "p" });
+    try {
+      check("PX-7 a 407 with no credentials -> proxy-auth-required", (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxNoCred.port } }))) === "transport/proxy-auth-required");
+    } finally { pxNoCred.srv.close(); }
+
+    // PX-8 a wrong Basic password over an https proxy -> proxy-auth-failed (single attempt, no loop)
+    var pxWrong = await startConnectProxy({ tls: proxyTls, requireAuth: "basic", username: "u", password: "correct" });
+    try {
+      check("PX-8 a wrong Basic password -> proxy-auth-failed", (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxWrong.port, auth: { scheme: "basic", username: "u", password: "wrong" }, tls: pTrust } }))) === "transport/proxy-auth-failed");
+    } finally { pxWrong.srv.close(); }
+
+    // PX-5 the security anchor: the origin cert is validated over the tunnel, never bypassed by the proxy
+    var pxTrust = await startConnectProxy({});
+    try {
+      var otherTls = await selfSigned("Untrusted Origin");
+      var tNoTrust = pki.transport.https({ tls: { anchors: [otherTls.certPem], servername: "localhost" } });
+      check("PX-5 an untrusted origin cert over the tunnel -> server-auth-failed (trust NOT bypassed)", (await codeOf(tNoTrust({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxTrust.port } }))) === "transport/server-auth-failed");
+    } finally { pxTrust.srv.close(); }
+
+    // PX-17 the tunnel verifies the origin cert IDENTITY for an IP-literal origin with no servername (the cert covers
+    // dNSName localhost, not the IP): tls.connect would otherwise skip the identity check without SNI, so it is done
+    // explicitly, matching the direct path.
+    var pxIp = await startConnectProxy({});
+    try {
+      var tIp = pki.transport.https({ tls: { anchors: [tls.certPem] } });
+      check("PX-17 an IP-literal origin whose cert does not cover the IP -> server-auth-failed (identity checked over the tunnel)", (await codeOf(tIp({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxIp.port } }))) === "transport/server-auth-failed");
+    } finally { pxIp.srv.close(); }
+
+    // PX-13 an IPv6 origin: the CONNECT authority brackets the host (RFC 9112 sec. 3.2.3), so the proxy can parse it
+    var ok6 = await new Promise(function (res) { var p = require("node:net").createServer(); p.once("error", function () { res(false); }); p.listen(0, "::1", function () { p.close(); res(true); }); });
+    if (ok6) {
+      var origin6 = await new Promise(function (resolve) {
+        var srv = https.createServer({ cert: tls.certPem, key: tls.keyPem }, function (req, r) { r.end("V6"); });
+        srv.on("clientError", function () { });
+        srv.listen(0, "::1", function () { resolve({ srv: srv, port: srv.address().port }); });
+      });
+      var px6 = await startConnectProxy({});
+      try {
+        var r6 = await t({ method: "GET", url: "https://[::1]:" + origin6.port + "/x", proxy: { url: "http://127.0.0.1:" + px6.port } });
+        check("PX-13 IPv6 origin: the tunneled GET succeeds", r6.status === 200 && r6.body.toString() === "V6");
+        check("PX-13b the CONNECT authority brackets the IPv6 host ([::1]:port)", px6.seen.some(function (s) { return s.requestLine.indexOf("[::1]:" + origin6.port) !== -1; }));
+      } finally { px6.srv.close(); origin6.srv.close(); }
+    }
+  } finally { origin.srv.close(); }
+
+  // PX-9 config-time rejects (no socket opened)
+  check("PX-9a a non-object proxy is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: "http://p:8080" }))) === "transport/bad-proxy");
+  check("PX-9b an unparseable proxy.url is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "::::" } }))) === "transport/bad-proxy");
+  check("PX-9c auth over a plaintext http proxy is refused -> proxy-auth-requires-tls", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", auth: { scheme: "basic", username: "u", password: "p" } } }))) === "transport/proxy-auth-requires-tls");
+  check("PX-9d Digest proxy auth is refused -> proxy-unsupported-scheme", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "digest", username: "u", password: "p" } } }))) === "transport/proxy-unsupported-scheme");
+  check("PX-9e an unknown proxy.auth.scheme is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "ntlm", username: "u", password: "p" } } }))) === "transport/bad-proxy");
+  check("PX-9f a mistyped proxy key is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", usernam: "x" } }))) === "transport/bad-proxy");
+  check("PX-9g a Basic user-id with a colon is refused (RFC 7617)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "a:b", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-9h an https proxy with no tls trust is refused -> bad-proxy", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080" } }))) === "transport/bad-proxy");
+  check("PX-9i a non-string proxy.tls.servername is refused at config time (never reaches the socket)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true, servername: 7 } } }))) === "transport/bad-proxy");
+  check("PX-9j proxy.tls on a plaintext http proxy is refused (never silently ignored)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-9k a malformed proxy CA anchor (null in the array) is refused as bad-proxy, not a connect error", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { anchors: [null] } } }))) === "transport/bad-proxy");
+  check("PX-9l a non-byte proxy CA anchor (a plain object) is refused as bad-proxy", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { anchors: {} } } }))) === "transport/bad-proxy");
+  check("PX-9m a proxy CA anchor must be a PEM string or DER Buffer (a Uint8Array view is refused)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { anchors: [new Uint8Array([1, 2, 3])] } } }))) === "transport/bad-proxy");
+  check("PX-9n an invalid proxy.tls.minVersion is a proxy config error (bad-proxy), consistent with other proxy options", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true, minVersion: "TLSv1.1" } } }))) === "transport/bad-proxy");
+  check("PX-9o a proxy URL carrying userinfo credentials is refused, not silently dropped", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://user:pass@p:8080", tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-10 an http origin with a proxy is refused (https-only) -> insecure-url", (await codeOf(t({ method: "GET", url: "http://ca.example/x", proxy: { url: "http://p:8080" } }))) === "transport/insecure-url");
+
+  // PX-11 blockPrivateAddresses is incompatible with a proxy: the proxy resolves the origin, so the transport cannot
+  // enforce the private-address block on it. The combination is refused rather than silently unenforced.
+  check("PX-11 blockPrivateAddresses + an https proxy is refused (block cannot be enforced through a proxy)", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true } }, blockPrivateAddresses: true }))) === "transport/bad-proxy");
+  check("PX-11b blockPrivateAddresses + an http proxy is refused too (before any socket)", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://p:8080" }, blockPrivateAddresses: true }))) === "transport/bad-proxy");
+  // PX-16 a connectivity failure to a proxy whose hostname contains "tls"/"ssl" is a connect error, not a cert error:
+  // classification reads the error CODE (ENOTFOUND), never the hostname carried in the message.
+  check("PX-16 a DNS failure to a TLS-named proxy is proxy-connect-failed, not misread as proxy-tls-failed", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://tls.invalid:9", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/proxy-connect-failed");
+}
+
 async function main() {
   await testConfigGates();
   await testResolutionFilterUnits();
@@ -400,6 +616,7 @@ async function main() {
   await testTlsFloor();
   await testSystemStore();
   await testErrorFactoryParam();
+  await testProxyConnect();
   console.log("CHECKS " + helpers.getChecks());
 }
 
