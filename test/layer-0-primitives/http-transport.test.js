@@ -479,10 +479,10 @@ async function testProxyConnect() {
     // PX-18 an IP-literal proxy.tls.servername verifies the proxy cert against the configured IP (SNI omitted for an
     // IP), not the connect host name: the proxy is reached by the loopback name but its cert covers only the IP.
     var lh18 = await new Promise(function (res) { require("node:dns").lookup("localhost", function (e, addr) { res(e ? "127.0.0.1" : addr); }); });
-    var proxyIp = await selfSignedIpSan("Proxy IP", lh18);
+    var proxyIp = await selfSignedIpSan("Proxy IP", "127.0.0.1");
     var pxByName = await startConnectProxy({ tls: proxyIp, listenHost: lh18 });
     try {
-      var r18 = await t({ method: "GET", url: originUrl, proxy: { url: "https://localhost:" + pxByName.port, tls: { anchors: [proxyIp.certPem], servername: lh18 } } });
+      var r18 = await t({ method: "GET", url: originUrl, proxy: { url: "https://localhost:" + pxByName.port, tls: { anchors: [proxyIp.certPem], servername: "127.0.0.1" } } });
       check("PX-18 an IP proxy.tls.servername verifies the proxy cert against the IP, not the connect host", r18.status === 200 && r18.body.toString() === "TUNNELED");
     } finally { pxByName.srv.close(); }
 
