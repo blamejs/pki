@@ -533,6 +533,8 @@ async function testProxyConnect() {
   check("PX-9h an https proxy with no tls trust is refused -> no-trust-anchors", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080" } }))) === "transport/no-trust-anchors");
   check("PX-9i a non-string proxy.tls.servername is refused at config time (never reaches the socket)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true, servername: 7 } } }))) === "transport/bad-proxy");
   check("PX-9j proxy.tls on a plaintext http proxy is refused (never silently ignored)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
+  check("PX-9k a malformed proxy CA anchor (null in the array) is refused as bad-proxy, not a connect error", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { anchors: [null] } } }))) === "transport/bad-proxy");
+  check("PX-9l a non-byte proxy CA anchor (a plain object) is refused as bad-proxy", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { anchors: {} } } }))) === "transport/bad-proxy");
   check("PX-10 an http origin with a proxy is refused (https-only) -> insecure-url", (await codeOf(t({ method: "GET", url: "http://ca.example/x", proxy: { url: "http://p:8080" } }))) === "transport/insecure-url");
 
   // PX-11 blockPrivateAddresses is incompatible with a proxy: the proxy resolves the origin, so the transport cannot
