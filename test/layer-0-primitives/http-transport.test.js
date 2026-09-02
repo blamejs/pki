@@ -526,6 +526,9 @@ async function testProxyConnect() {
 
   // PX-11 SSRF: a private proxy address is blocked when blockPrivateAddresses is on (the block moves to the proxy hop)
   check("PX-11 blockPrivateAddresses on: a private proxy literal -> blocked-address", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://127.0.0.1:8080" }, blockPrivateAddresses: true }))) === "transport/blocked-address");
+  // PX-11b a proxy HOSTNAME that resolves to a private address is blocked at CONNECT (the DNS-resolution path), and
+  // the address-policy rejection keeps its blocked-address verdict rather than collapsing to proxy-connect-failed.
+  check("PX-11b blockPrivateAddresses on: a proxy hostname resolving to loopback -> blocked-address", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://localhost:9" }, blockPrivateAddresses: true }))) === "transport/blocked-address");
 }
 
 async function main() {
