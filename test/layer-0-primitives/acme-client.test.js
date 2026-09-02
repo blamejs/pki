@@ -1143,6 +1143,15 @@ async function testScheduleRenewal() {
 
   // SR-11 a caller error (malformed certificate DER) REJECTS rather than entering the retry schedule.
   check("#16 SR-11 a malformed certificate DER is rejected, not retried", (await codeOf(clientWith(A.acmeServer({}), harness(T)).scheduleRenewal(Buffer.from([0x30, 0x01, 0xff]), { maxChecks: 2 }))) === "x509/bad-der");
+  // SR-11b a deterministic certificate error (valid DER, but no authorityKeyIdentifier so no ARI certID)
+  // REJECTS rather than retrying until expiry.
+  var noAkiCert = signing.makeSigner("ec-p256", { cn: "no-aki.example" }).cert;
+  check("#16 SR-11b a certificate that cannot produce an ARI certID is rejected, not retried", (await codeOf(clientWith(A.acmeServer({}), harness(T)).scheduleRenewal(noAkiCert, { maxChecks: 2 }))) === "acme/bad-certid");
+  // SR-11c a malformed renewalInfo response body (HTTP 200, non-JSON) is a transient server error:
+  // it retries on the sec. 4.3.3 schedule rather than aborting the renewal.
+  var h11c = harness(T);
+  var r11c = await clientWith(A.acmeServer({ renewalInfoResponse: { status: 200, headers: { "content-type": "application/json" }, body: "{not json" } }), h11c).scheduleRenewal(certDer, { maxChecks: 2, longTermRetrySeconds: 60 });
+  check("#16 SR-11c a malformed renewalInfo body is retried, not fatal", r11c.reason === "budget" && h11c.st.slept.length === 1 && h11c.st.slept[0] === 60000);
   // SR-12 a caller error (random outside [0, 1]) REJECTS.
   check("#16 SR-12 a random outside [0, 1] is rejected, not retried", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), harness(T)).scheduleRenewal(certDer, { random: function () { return 2; }, maxChecks: 2 }))) === "acme/bad-input");
 
