@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.29 — 2026-09-02
+
+The EST, ACME, and CMP clients reach a CA through a forward HTTP proxy, with the same opts.proxy the SCEP client already accepts.
+
+### Added
+
+- pki.est.cacerts / simpleenroll / simplereenroll / serverkeygen / csrattrs / fullcmc, pki.acme.client, and pki.cmp.transfer accept opts.proxy = { url, auth?, tls? } to reach the CA through a forward HTTP proxy, the same option pki.scep accepts. The origin TLS is negotiated inside the proxy's CONNECT tunnel under the identical origin trust policy; Basic authentication (RFC 7617) is sent only over an https:// proxy verified against proxy.tls, and an http:// proxy is tunnel-only. The option is deep-copied at the call so a later change to the caller's object cannot alter the proxy in use.
+
 ## v0.6.28 — 2026-09-02
 
 pki.path.build returns the best accepted path when the candidate cap is reached during policy ranking, instead of discarding it.
