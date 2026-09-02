@@ -3039,9 +3039,9 @@ function testGuardReadsRuntimeLive() {
   // budget nobody tightens is a number that stops meaning anything, and the next reader would take
   // it for the real count. A module reaching zero is deleted from the map and held to zero forever.
   var MIGRATING = {
-    "lib/acme.js": 205,
-    "lib/est.js": 168,
-    "lib/cmp-build.js": 141,
+    "lib/acme.js": 201,
+    "lib/est.js": 167,
+    "lib/cmp-build.js": 139,
     "lib/crmf-sign.js": 44,
     "lib/path-validate.js": 181,
     "lib/webauthn.js": 174,
@@ -3050,7 +3050,7 @@ function testGuardReadsRuntimeLive() {
     "lib/cms-sign.js": 60,
     "lib/webauthn-mds.js": 90,
     "lib/attrcert-sign.js": 89,
-    "lib/tsp-sign.js": 68,
+    "lib/tsp-sign.js": 65,
     "lib/http-digest.js": 73,
     "lib/pkcs12-build.js": 69,
     "lib/ct.js": 76,
@@ -3059,7 +3059,7 @@ function testGuardReadsRuntimeLive() {
     "lib/crl-sign.js": 67,
     "lib/cmc-build.js": 59,
     "lib/pki-build.js": 36,
-    "lib/hpke.js": 53,
+    "lib/hpke.js": 52,
     "lib/cms-decrypt.js": 50,
     "lib/cmc-verify.js": 38,
     "lib/x509-sign.js": 27,

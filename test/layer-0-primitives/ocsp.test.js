@@ -51,6 +51,12 @@ async function run() {
   check("sparse buildRequest batch -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.buildRequest(_spQ); })) === "ocsp/bad-input");
   var _spR = [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }]; _spR[2] = _spR[0];
   check("sparse responses -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: _spR }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  // A caller date option of an unexpected type (a BigInt has no numeric Date form) is refused with the
+  // typed ocsp/bad-input, not the native TypeError the Date constructor throws on a BigInt.
+  check("BigInt thisUpdate -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: 1n, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  check("BigInt producedAt -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.sign({ responderID: "byName", producedAt: 1n, responses: [{ cert: w.targetCertDer, issuer: w.issuerCertDer, status: "good", thisUpdate: TU, nextUpdate: NU }] }, { cert: w.responderCertDer, key: w.responderKeyPkcs8 }); })) === "ocsp/bad-input");
+  var _goodResp = await signGood(w);
+  check("BigInt verify time -> typed ocsp/bad-input", (await codeOfAsync(function () { return pki.ocsp.verify(_goodResp, { cert: w.targetCertDer, issuer: w.issuerCertDer, time: 1n }); })) === "ocsp/bad-input");
   check("buildRequest round-trips: one Request with the target serial",
     pr.requestList.length === 1 && pr.requestList[0].certID.serialNumberHex === pki.schema.x509.parse(w.targetCertDer).serialNumberHex);
   var reqN = await pki.ocsp.buildRequest({ cert: w.targetCertDer, issuer: w.issuerCertDer }, { nonce: true });

@@ -6,11 +6,11 @@ project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## v0.6.24 — 2026-09-02
 
-An option value the toolkit cannot render in a diagnostic now yields the typed error, not a native TypeError.
+A caller option of an unexpected type now yields the module's typed error, not a native TypeError.
 
 ### Fixed
 
-- A caller option value that JSON cannot serialize (a BigInt, or an object with a cycle) is rendered in the rejection message through a formatter that never throws, so a bad option to the build, sign, export, and enrollment APIs is reported as the module's typed error instead of a native TypeError leaking from the diagnostic.
+- An option of an unexpected type passed to a build, sign, export, or enrollment verb (a BigInt, an object with no primitive form, or one whose Symbol.toPrimitive throws) is reported as the module's typed bad-input error instead of a native TypeError leaking from a diagnostic string, a lookup-table key, a Date conversion, or a numeric coercion. This covers the timestamp, OCSP, CMP, CMC, SCEP, EST, ACME, PKCS#12, S/MIME, attribute-certificate, HPKE, Certificate Transparency, and Sigstore APIs.
 
 ## v0.6.23 — 2026-09-01
 
