@@ -415,7 +415,7 @@ function startConnectProxy(opts) {
       var reqLine = lines[0];
       var headers = {};
       for (var i = 1; i < lines.length; i++) { var c = lines[i].indexOf(":"); if (c !== -1) headers[lines[i].slice(0, c).trim().toLowerCase()] = lines[i].slice(c + 1).trim(); }
-      seen.push({ requestLine: reqLine, headers: headers });
+      seen.push({ requestLine: reqLine, headers: headers, sni: client.servername || null });
       var pa = headers["proxy-authorization"] || "";
       if (opts.rejectStatus) { client.write("HTTP/1.1 " + opts.rejectStatus + " Blocked\r\nContent-Length: 0\r\n\r\n"); client.end(); return; }
       if (opts.requireAuth === "basic" && pa !== ("Basic " + Buffer.from(opts.username + ":" + opts.password).toString("base64"))) {
@@ -486,11 +486,35 @@ async function testProxyConnect() {
       check("PX-18 an IP proxy.tls.servername verifies the proxy cert against the IP, not the connect host", r18.status === 200 && r18.body.toString() === "TUNNELED");
     } finally { pxByName.srv.close(); }
 
+    // PX-19 the CONNECT asks for a persistent connection (Connection: keep-alive) rather than the Node default of
+    // Connection: close, so a proxy honoring that hop-by-hop directive does not tear the tunnel down after its 200.
+    var pxKA = await startConnectProxy({});
+    try {
+      var r19 = await t({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxKA.port } });
+      check("PX-19 the CONNECT requests keep-alive (not Connection: close)", r19.status === 200 && (pxKA.seen[0].headers.connection || "").toLowerCase() === "keep-alive");
+    } finally { pxKA.srv.close(); }
+
+    // PX-20 an IP-addressed https proxy is sent NO SNI: Node must not infer it from the origin Host header (which
+    // would leak the origin name to the proxy or misselect its certificate).
+    var pxIpSni = await startConnectProxy({ tls: proxyIp, listenHost: "127.0.0.1" });
+    try {
+      await codeOf(t({ method: "GET", url: "https://origin-name.example:8443/x", proxy: { url: "https://127.0.0.1:" + pxIpSni.port, tls: { anchors: [proxyIp.certPem] } } }));
+      check("PX-20 an IP-addressed https proxy receives no SNI (the origin name is not leaked as the proxy SNI)", pxIpSni.seen.length > 0 && pxIpSni.seen[0].sni === null);
+    } finally { pxIpSni.srv.close(); }
+
     // PX-14 the proxy channel is authenticated: an untrusted https-proxy certificate is refused
     var pxUntrusted = await startConnectProxy({ tls: proxyTls });
     try {
       check("PX-14 an untrusted https-proxy certificate -> proxy-tls-failed", (await codeOf(t({ method: "GET", url: originUrl, proxy: { url: "https://127.0.0.1:" + pxUntrusted.port, auth: { scheme: "basic", username: "u", password: "p" }, tls: { anchors: [tls.certPem], servername: "localhost" } } }))) === "transport/proxy-tls-failed");
     } finally { pxUntrusted.srv.close(); }
+
+    // PX-21 a caller-supplied Proxy-Authorization header is hop-by-hop; it must be stripped from the tunneled origin
+    // request, never forwarded to the origin.
+    var pxHdr = await startConnectProxy({});
+    try {
+      var r21 = await t({ method: "GET", url: originUrl, headers: { "Proxy-Authorization": "Basic Y2FsbGVy" }, proxy: { url: "http://127.0.0.1:" + pxHdr.port } });
+      check("PX-21 a caller Proxy-Authorization header is not forwarded to the origin over the tunnel", r21.status === 200 && r21.headers["x-had-proxy-auth"] === "no");
+    } finally { pxHdr.srv.close(); }
 
     // PX-6 a non-2xx CONNECT is fail-closed
     var px502 = await startConnectProxy({ rejectStatus: 502 });
