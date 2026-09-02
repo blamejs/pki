@@ -130,11 +130,28 @@ function testShowValue() {
   check("showValue names undefined by type", text.showValue(undefined) === "a value of type undefined");
 }
 
+function testKeyOf() {
+  check("keyOf passes a string through", text.keyOf("aes-256-cbc") === "aes-256-cbc");
+  check("keyOf passes a number through", text.keyOf(1) === 1);
+  check("keyOf maps an object with no primitive coercion to undefined", text.keyOf(Object.create(null)) === undefined);
+  check("keyOf maps an object whose Symbol.toPrimitive throws to undefined", text.keyOf({ [Symbol.toPrimitive]: function () { throw new Error("x"); } }) === undefined);
+  check("keyOf maps a plain object to undefined", text.keyOf({ a: 1 }) === undefined);
+  check("keyOf maps a bigint to undefined", text.keyOf(1n) === undefined);
+  check("keyOf maps null to undefined", text.keyOf(null) === undefined);
+  var MAP = { "aes-256-cbc": 1 };
+  var patho = Object.create(null);
+  var safe = true;
+  try { void MAP[text.keyOf(patho)]; } catch (_e) { safe = false; }
+  check("a table indexed by keyOf(a coercion-unsafe object) misses without throwing", safe && MAP[text.keyOf(patho)] === undefined);
+  check("a table indexed by keyOf(a valid key) still hits", MAP[text.keyOf("aes-256-cbc")] === 1);
+}
+
 function run() {
   testDecode();
   testAuthoringBounds();
   testDecodeNotCallerReplaceable();
   testShowValue();
+  testKeyOf();
 }
 
 module.exports = { run: run };
