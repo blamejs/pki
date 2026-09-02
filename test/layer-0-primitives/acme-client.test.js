@@ -932,6 +932,10 @@ async function testRenewalWindow() {
   var r2 = await clientAt(s2, T).renewalWindow(certDer, { random: function () { return 0.5; } });
   check("#15 RW-2 a past window forces renewNow", r2.renewNow === true);
 
+  // RW-23 a random callback that throws is surfaced as a typed caller error, not the raw exception.
+  var sRw23 = A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) });
+  check("#15 RW-23 a throwing random is rejected as a typed acme/bad-input", (await codeOf(clientAt(sRw23, T).renewalWindow(certDer, { random: function () { throw new Error("entropy failed"); } }))) === "acme/bad-input");
+
   // RW-3 an inverted window fails closed (validateRenewalInfo, sec. 4.2).
   var s3 = A.acmeServer({ renewalInfoResponse: riResp(T + 20 * DAY, T + 10 * DAY) });
   check("#15 RW-3 an inverted window fails closed", (await codeOf(clientAt(s3, T).renewalWindow(certDer, {}))) === "acme/bad-renewal-window");
@@ -1159,6 +1163,33 @@ async function testScheduleRenewal() {
   var h9 = harness(T);
   var r9 = await clientWith(A.acmeServer({ renewalInfoResponse: { status: 503, headers: {}, body: "{}" } }), h9).scheduleRenewal(certDer, { maxChecks: 3, temporaryBaseSeconds: 10 });
   check("#16 SR-9 a 5xx backs off exponentially to the budget", r9.reason === "budget" && h9.st.slept.length === 2 && h9.st.slept[0] === 10000 && h9.st.slept[1] === 20000);
+
+  // SR-13 a random callback that THROWS (a failing entropy source) is a caller error: reject, not retry.
+  check("#16 SR-13 a throwing random callback is rejected, not retried", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), harness(T)).scheduleRenewal(certDer, { random: function () { throw new Error("entropy source failed"); }, maxChecks: 2 }))) === "acme/bad-input");
+
+  // SR-14 the certificate is snapshotted at entry, so mutating the caller buffer during a sleep does not
+  // change which certificate the scheduler continues to renew (without the snapshot the aliased buffer
+  // parses as x509/bad-der on the next iteration and the loop rejects instead of continuing).
+  var mutCert = signing.makeSigner("ec-p256", { cn: "mut.example", exts: [akiExt(aki)] }).cert;
+  var h14 = harness(T); var z14 = false; var _sleep14 = h14.sleep;
+  h14.sleep = function (ms) { if (!z14) { z14 = true; mutCert.fill(0); } return _sleep14(ms); };
+  var e14 = null, r14 = null;
+  try { r14 = await clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), h14).scheduleRenewal(mutCert, { maxChecks: 2, random: function () { return 0; } }); }
+  catch (err) { e14 = (err && err.code) || "THREW"; }
+  check("#16 SR-14 the certificate is snapshotted, so a mid-sleep caller-buffer mutation is ignored", e14 === null && r14 != null && r14.reason === "budget" && h14.st.slept.length === 1);
+
+  // SR-15 shouldStop must return a boolean; an async (Promise-returning) shouldStop is a caller contract
+  // violation, rejected rather than silently coerced to "do not stop" (Promise !== true).
+  check("#16 SR-15 a non-boolean (async) shouldStop is rejected, not ignored", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), harness(T)).scheduleRenewal(certDer, { shouldStop: function () { return Promise.resolve(true); }, maxChecks: 2 }))) === "acme/bad-input");
+
+  // SR-16 a caller callback that THROWS is surfaced as a typed caller error carrying the cause, not the
+  // raw exception: shouldStop, renew (sync throw), and renew (async rejection) all reject acme/bad-input.
+  check("#16 SR-16 a throwing shouldStop is rejected as a typed acme/bad-input", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), harness(T)).scheduleRenewal(certDer, { shouldStop: function () { throw new Error("stop check failed"); }, maxChecks: 2 }))) === "acme/bad-input");
+  check("#16 SR-17 a throwing renew is rejected as a typed acme/bad-input", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T - 10 * DAY, T - 5 * DAY) }), harness(T)).scheduleRenewal(certDer, { renew: function () { throw new Error("renew failed"); }, maxChecks: 2 }))) === "acme/bad-input");
+  check("#16 SR-18 a rejecting renew is rejected as a typed acme/bad-input", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T - 10 * DAY, T - 5 * DAY) }), harness(T)).scheduleRenewal(certDer, { renew: function () { return Promise.reject(new Error("async renew failed")); }, maxChecks: 2 }))) === "acme/bad-input");
+  // SR-19 a random that returns a non-number (an async/Promise-returning random) violates the [0, 1]
+  // contract and is rejected, not coerced.
+  check("#16 SR-19 a non-number (async) random is rejected", (await codeOf(clientWith(A.acmeServer({ renewalInfoResponse: riResp(T + 10 * DAY, T + 20 * DAY) }), harness(T)).scheduleRenewal(certDer, { random: function () { return Promise.resolve(0.5); }, maxChecks: 2 }))) === "acme/bad-input");
 }
 
 // ---- 17 the downloaded certificate answers THIS order (RFC 8555 sec. 7.4 / sec. 7.4.2) ------
