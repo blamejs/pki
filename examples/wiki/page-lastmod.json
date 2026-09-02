@@ -55,7 +55,7 @@
   "lib/guard-identifier.js": "2026-09-01",
   "lib/guard-intrinsic.js": "2026-09-01",
   "lib/guard-json.js": "2026-09-01",
-  "lib/guard-limits.js": "2026-09-01",
+  "lib/guard-limits.js": "2026-09-02",
   "lib/guard-list.js": "2026-09-01",
   "lib/guard-name.js": "2026-09-01",
   "lib/guard-parsed.js": "2026-09-01",
