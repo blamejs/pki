@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.25 — 2026-09-02
+
+pki.path.build can search from a trust anchor toward the leaf, not only from the leaf toward an anchor.
+
+### Added
+
+- pki.path.build accepts opts.direction: "forward" (default), "reverse" (search from a trust anchor toward the leaf, RFC 4158 sec. 3.1), or "auto" (pick by first-hop fan-out). Every direction hands each assembled path to pki.path.validate, so the direction changes only search order, never which paths are accepted; the anchor is excluded from the returned path. Reverse building is pool-only and does not combine with fetchAia.
+
 ## v0.6.24 — 2026-09-02
 
 A caller option of an unexpected type now yields the module's typed error, not a native TypeError.

@@ -1,0 +1,10 @@
+{
+  "version": "0.6.25",
+  "headline": "pki.path.build can search from a trust anchor toward the leaf, not only from the leaf toward an anchor.",
+  "summary": "pki.path.build accepts an opts.direction of \"forward\" (the default, unchanged), \"reverse\", or \"auto\". Reverse building (RFC 4158 sec. 3.1) searches from a trust anchor down to the leaf, which is narrower when the anchor set is small and the leaf's issuer options fan out, such as a leaf with no authority key identifier or a cross-certified bridge mesh. Auto picks the direction by comparing the first-hop candidate counts. Reverse building reuses the same candidate pool, cycle-detecting visited-set, work caps, and validate gate as forward building, so the direction changes only the search order, never which paths are accepted: every assembled path is handed to pki.path.validate, and the anchor is excluded from the returned path. Reverse building is pool-only and does not combine with fetchAia.",
+  "sections": {
+    "Added": [
+      "pki.path.build accepts opts.direction: \"forward\" (default), \"reverse\" (search from a trust anchor toward the leaf, RFC 4158 sec. 3.1), or \"auto\" (pick by first-hop fan-out). Every direction hands each assembled path to pki.path.validate, so the direction changes only search order, never which paths are accepted; the anchor is excluded from the returned path. Reverse building is pool-only and does not combine with fetchAia."
+    ]
+  }
+}
