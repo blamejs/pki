@@ -1,0 +1,10 @@
+{
+  "version": "0.6.24",
+  "headline": "An option value the toolkit cannot render in a diagnostic now yields the typed error, not a native TypeError.",
+  "summary": "When a caller passed an option of an unexpected type that JSON cannot serialize, such as a BigInt or an object with a cycle, some validators built the rejection message with a raw JSON.stringify of that value, which threw a native TypeError before the toolkit's own typed error was raised. The option validators across the build, sign, export, and enrollment APIs now render such a value through a shared formatter that never throws, so a bad option is always reported as the module's typed error. The value is quoted when it is a string and named by its type otherwise, and the formatter never invokes a method on the supplied value.",
+  "sections": {
+    "Fixed": [
+      "A caller option value that JSON cannot serialize (a BigInt, or an object with a cycle) is rendered in the rejection message through a formatter that never throws, so a bad option to the build, sign, export, and enrollment APIs is reported as the module's typed error instead of a native TypeError leaking from the diagnostic."
+    ]
+  }
+}

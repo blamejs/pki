@@ -4,7 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.23 — 2026-09-02
+## v0.6.24 — 2026-09-02
+
+An option value the toolkit cannot render in a diagnostic now yields the typed error, not a native TypeError.
+
+### Fixed
+
+- A caller option value that JSON cannot serialize (a BigInt, or an object with a cycle) is rendered in the rejection message through a formatter that never throws, so a bad option to the build, sign, export, and enrollment APIs is reported as the module's typed error instead of a native TypeError leaking from the diagnostic.
+
+## v0.6.23 — 2026-09-01
 
 The SCEP client can carry a PKIOperation over HTTP GET for a CA that does not support POST.
 

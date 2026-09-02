@@ -114,10 +114,27 @@ function testDecodeNotCallerReplaceable() {
   check("a replaced Buffer.isBuffer cannot route a Buffer down the string arm", armOut === "abc");
 }
 
+function testShowValue() {
+  check("showValue quotes a string", text.showValue("pem") === "\"pem\"");
+  check("showValue prints a number", text.showValue(42) === "42");
+  check("showValue prints a bigint without throwing", text.showValue(1n) === "1");
+  check("showValue prints a boolean", text.showValue(true) === "true");
+  check("showValue names null", text.showValue(null) === "null");
+  check("showValue names a plain object by type", text.showValue({ a: 1 }) === "a value of type object");
+  var cyclic = {}; cyclic.self = cyclic;
+  check("showValue never throws on a cyclic object", text.showValue(cyclic) === "a value of type object");
+  var throwsToJson = { toJSON: function () { throw new Error("boom"); } };
+  check("showValue does not invoke a caller toJSON", text.showValue(throwsToJson) === "a value of type object");
+  check("showValue names a symbol by type", text.showValue(Symbol("s")) === "a value of type symbol");
+  check("showValue names a function by type", text.showValue(function () {}) === "a value of type function");
+  check("showValue names undefined by type", text.showValue(undefined) === "a value of type undefined");
+}
+
 function run() {
   testDecode();
   testAuthoringBounds();
   testDecodeNotCallerReplaceable();
+  testShowValue();
 }
 
 module.exports = { run: run };
