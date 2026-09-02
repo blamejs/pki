@@ -489,7 +489,7 @@ async function rsaClient() {
 // opts.proxy threads through the verb -> _client -> _drive -> the transport request, unchanged, and the
 // unknown-option gate accepts it. The real transport (not the injected double) is what establishes the tunnel.
 async function testProxyThreadsThrough() {
-  var proxy = { url: "http://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "p" } };
+  var proxy = { url: "https://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } };
   var t = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\nSHA-256\r\n" });
   var caps = await pki.scep.getCACaps("http://ca.example/scep", { transport: t, proxy: proxy });
   check("proxy: opts.proxy threads through to the transport request unchanged", t.calls[0].proxy === proxy && caps.AES === true);
@@ -665,14 +665,17 @@ async function testEnrollProxySnapshot() {
     var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
     return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
   });
-  var proxyObj = { url: "http://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "pw" } };
+  var proxyObj = { url: "https://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "pw" }, tls: { anchors: ["TRUSTED"], servername: "proxy.example" } };
   var pProm = pki.scep.enroll("http://ca.example/scep", { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key }, transport: t, proxy: proxyObj });
-  proxyObj.url = "http://evil.example:9999";
+  proxyObj.url = "https://evil.example:9999";
   proxyObj.auth.password = "stolen";
+  proxyObj.tls.servername = "evil.example";
+  proxyObj.tls.anchors.push("ROGUE");
   await pProm;
-  check("enroll: a mid-flight proxy.url mutation does not repoint the request (snapshotted at entry)", t.calls[0].proxy.url === "http://proxy.example:3128");
+  check("enroll: a mid-flight proxy.url mutation does not repoint the request (snapshotted at entry)", t.calls[0].proxy.url === "https://proxy.example:3128");
   check("enroll: a mid-flight proxy.auth mutation is ignored (nested snapshot)", t.calls[0].proxy.auth.password === "pw");
-  check("enroll: the snapshot is a distinct object, not the caller's reference", t.calls[0].proxy !== proxyObj && t.calls[0].proxy.auth !== proxyObj.auth);
+  check("enroll: a mid-flight proxy.tls mutation is ignored (nested tls trust snapshot)", t.calls[0].proxy.tls.servername === "proxy.example" && t.calls[0].proxy.tls.anchors.length === 1);
+  check("enroll: the snapshot is a distinct object, not the caller's reference", t.calls[0].proxy !== proxyObj && t.calls[0].proxy.auth !== proxyObj.auth && t.calls[0].proxy.tls !== proxyObj.tls && t.calls[0].proxy.tls.anchors !== proxyObj.tls.anchors);
 }
 
 async function testEnrollTransactionIdUnique() {
