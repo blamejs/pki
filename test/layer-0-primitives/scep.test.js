@@ -505,6 +505,10 @@ async function testProxyThreadsThrough() {
   var t2 = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\n" });
   await pki.scep.getCACaps("http://ca.example/scep", { transport: t2 });
   check("proxy: an absent proxy leaves request.proxy unset (no-op)", t2.calls[0].proxy === undefined);
+  // A DataView proxy CA anchor is preserved through the snapshot (not element-corrupted by Buffer.from) so the real
+  // transport rejects it as a config error rather than accepting a truncated anchor and failing at connect.
+  var dvCode = await codeOf(pki.scep.getCACaps("https://ca.example/scep", { tls: { useSystemStore: true }, proxy: { url: "https://p:8080", tls: { anchors: [new DataView(new ArrayBuffer(4))] } } }));
+  check("proxy: a DataView CA anchor is refused as scep/bad-proxy (snapshot preserves it for validation)", dvCode === "scep/bad-proxy");
 }
 
 // A CA transport double: decrypt the POSTed request to echo its senderNonce, encrypt the payload to the
