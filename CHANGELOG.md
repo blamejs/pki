@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.23 — 2026-09-02
+
+The SCEP client can carry a PKIOperation over HTTP GET for a CA that does not support POST.
+
+### Added
+
+- pki.scep.enroll / renew / getCert / getCrl accept httpMethod: "POST" (default) or "GET". Under "GET" the client sends the PKIOperation message as GET SCEPPATH?operation=PKIOperation&message=<base64-CMS> with no body (RFC 8894 sec. 4.1), for a CA that does not advertise POST support. POST stays the default and the recommended transport; a bad httpMethod is refused with scep/bad-input.
+
 ## v0.6.22 — 2026-09-01
 
 pki.acme.client gains scheduleRenewal, the RFC 9773 auto-sleeping certificate-renewal loop.
