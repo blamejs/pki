@@ -486,13 +486,22 @@ async function rsaClient() {
   return { key: key, pub: pub, cert: cert };
 }
 
-// opts.proxy threads through the verb -> _client -> _drive -> the transport request, unchanged, and the
-// unknown-option gate accepts it. The real transport (not the injected double) is what establishes the tunnel.
+// opts.proxy threads through the verb -> _client -> _drive -> the transport request, and the unknown-option gate
+// accepts it. It is snapshotted ONCE at the start of the drive, so a caller mutating opts.proxy while a request is
+// in flight cannot repoint a later redirect within the same operation. The real transport establishes the tunnel.
 async function testProxyThreadsThrough() {
   var proxy = { url: "https://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } };
-  var t = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\nSHA-256\r\n" });
-  var caps = await pki.scep.getCACaps("http://ca.example/scep", { transport: t, proxy: proxy });
-  check("proxy: opts.proxy threads through to the transport request unchanged", t.calls[0].proxy === proxy && caps.AES === true);
+  var opts9 = { proxy: proxy };
+  var callN = 0;
+  opts9.transport = fakeTransport(function () {
+    callN += 1;
+    if (callN === 1) { opts9.proxy = { url: "https://evil:3128" }; return Promise.resolve({ status: 302, headers: { location: "http://ca.example/scep2", "content-type": "text/plain" }, body: "" }); }
+    return Promise.resolve({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\nSHA-256\r\n" });
+  });
+  var caps = await pki.scep.getCACaps("http://ca.example/scep", opts9);
+  check("proxy: opts.proxy threads through to the transport request", opts9.transport.calls[0].proxy.url === proxy.url && caps.AES === true);
+  check("proxy: it is a snapshot copy, not the caller's reference", opts9.transport.calls[0].proxy !== proxy);
+  check("proxy: a redirect uses the entry-time proxy snapshot, not a mid-flight mutation", opts9.transport.calls.length === 2 && opts9.transport.calls[1].proxy.url === "https://proxy.example:3128");
   var t2 = fakeTransport({ status: 200, headers: { "content-type": "text/plain" }, body: "AES\r\n" });
   await pki.scep.getCACaps("http://ca.example/scep", { transport: t2 });
   check("proxy: an absent proxy leaves request.proxy unset (no-op)", t2.calls[0].proxy === undefined);
@@ -665,17 +674,20 @@ async function testEnrollProxySnapshot() {
     var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
     return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
   });
-  var proxyObj = { url: "https://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "pw" }, tls: { anchors: ["TRUSTED"], servername: "proxy.example" } };
+  var caBuf = Buffer.from("TRUSTED-CA-BYTES");
+  var proxyObj = { url: "https://proxy.example:3128", auth: { scheme: "basic", username: "u", password: "pw" }, tls: { anchors: [caBuf], servername: "proxy.example" } };
   var pProm = pki.scep.enroll("http://ca.example/scep", { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key }, transport: t, proxy: proxyObj });
   proxyObj.url = "https://evil.example:9999";
   proxyObj.auth.password = "stolen";
   proxyObj.tls.servername = "evil.example";
   proxyObj.tls.anchors.push("ROGUE");
+  caBuf.fill(0x21);
   await pProm;
   check("enroll: a mid-flight proxy.url mutation does not repoint the request (snapshotted at entry)", t.calls[0].proxy.url === "https://proxy.example:3128");
   check("enroll: a mid-flight proxy.auth mutation is ignored (nested snapshot)", t.calls[0].proxy.auth.password === "pw");
   check("enroll: a mid-flight proxy.tls mutation is ignored (nested tls trust snapshot)", t.calls[0].proxy.tls.servername === "proxy.example" && t.calls[0].proxy.tls.anchors.length === 1);
-  check("enroll: the snapshot is a distinct object, not the caller's reference", t.calls[0].proxy !== proxyObj && t.calls[0].proxy.auth !== proxyObj.auth && t.calls[0].proxy.tls !== proxyObj.tls && t.calls[0].proxy.tls.anchors !== proxyObj.tls.anchors);
+  check("enroll: a mid-flight proxy CA buffer mutation is ignored (anchor bytes snapshotted)", t.calls[0].proxy.tls.anchors[0].toString() === "TRUSTED-CA-BYTES");
+  check("enroll: the snapshot is a distinct object, not the caller's reference", t.calls[0].proxy !== proxyObj && t.calls[0].proxy.auth !== proxyObj.auth && t.calls[0].proxy.tls !== proxyObj.tls && t.calls[0].proxy.tls.anchors !== proxyObj.tls.anchors && t.calls[0].proxy.tls.anchors[0] !== caBuf);
 }
 
 async function testEnrollTransactionIdUnique() {

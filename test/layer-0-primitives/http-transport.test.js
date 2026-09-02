@@ -522,6 +522,7 @@ async function testProxyConnect() {
   check("PX-9f a mistyped proxy key is refused", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", usernam: "x" } }))) === "transport/bad-proxy");
   check("PX-9g a Basic user-id with a colon is refused (RFC 7617)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "a:b", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-9h an https proxy with no tls trust is refused -> no-trust-anchors", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080" } }))) === "transport/no-trust-anchors");
+  check("PX-9i a non-string proxy.tls.servername is refused at config time (never reaches the socket)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true, servername: 7 } } }))) === "transport/bad-proxy");
   check("PX-10 an http origin with a proxy is refused (https-only) -> insecure-url", (await codeOf(t({ method: "GET", url: "http://ca.example/x", proxy: { url: "http://p:8080" } }))) === "transport/insecure-url");
 
   // PX-11 SSRF: a private proxy address is blocked when blockPrivateAddresses is on (the block moves to the proxy hop)
@@ -529,6 +530,9 @@ async function testProxyConnect() {
   // PX-11b a proxy HOSTNAME that resolves to a private address is blocked at CONNECT (the DNS-resolution path), and
   // the address-policy rejection keeps its blocked-address verdict rather than collapsing to proxy-connect-failed.
   check("PX-11b blockPrivateAddresses on: a proxy hostname resolving to loopback -> blocked-address", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://localhost:9" }, blockPrivateAddresses: true }))) === "transport/blocked-address");
+  // PX-16 a connectivity failure to a proxy whose hostname contains "tls"/"ssl" is a connect error, not a cert error:
+  // classification reads the error CODE (ENOTFOUND), never the hostname carried in the message.
+  check("PX-16 a DNS failure to a TLS-named proxy is proxy-connect-failed, not misread as proxy-tls-failed", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://tls.invalid:9", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/proxy-connect-failed");
 }
 
 async function main() {
