@@ -1177,6 +1177,68 @@ async function testGetQuerySync() {
   check("getCert: no POST was made for the invalid inputs", t26.calls.length === 0);
 }
 
+// A CA transport double that reads the request CMS from the POST body OR, under GET-carried PKIOperation
+// (RFC 8894 sec. 4.1), from the base64 `message=` query parameter -- so one double drives both transports.
+function caTransportAny(build) {
+  return fakeTransport(async function (req) {
+    var cms = req.body != null ? req.body : Buffer.from(new URL(req.url).searchParams.get("message"), "base64");
+    var reqParsed = await pki.scep.parse(cms, { recipientKey: { cert: F.caCert, key: F.caKey } });
+    var rep = await build(reqParsed);
+    return { status: 200, headers: { "content-type": "application/x-pki-message" }, body: rep };
+  });
+}
+
+async function testGetCarried() {
+  var cl = await rsaClient();
+  var csr = await pki.csr.sign({ subject: "device.example", subjectPublicKey: cl.pub, challengePassword: "s3cret" }, { key: cl.key });
+  var issued = await pki.x509.sign({ subject: "device.example", subjectPublicKey: cl.pub, notBefore: new Date("2026-01-01"), notAfter: new Date("2027-01-01") }, { key: F.caKey, cert: F.caCert });
+  function successBuild() {
+    return async function (p) {
+      var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" });
+      return buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env });
+    };
+  }
+  var base = { csr: csr, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key } };
+
+  // GET-1 httpMethod:"GET" enrolls over a GET whose message= carries the base64 CMS; end to end still SUCCESS.
+  var tg = caTransportAny(successBuild());
+  var outG = await pki.scep.enroll("http://ca.example/scep", Object.assign({ httpMethod: "GET", transport: tg }, base));
+  check("scep GET-1: GET enroll still yields SUCCESS", outG.status === "SUCCESS" && Buffer.compare(outG.certificate, issued) === 0);
+  check("scep GET-1: the request is GET with no body and operation=PKIOperation&message=", tg.calls[0].method === "GET" && tg.calls[0].body == null && tg.calls[0].url.indexOf("operation=PKIOperation") !== -1 && tg.calls[0].url.indexOf("message=") !== -1);
+  var carried = Buffer.from(new URL(tg.calls[0].url).searchParams.get("message"), "base64");
+  var reparsed = await pki.scep.parse(carried, { recipientKey: { cert: F.caCert, key: F.caKey } });
+  check("scep GET-1: the message decodes (standard base64) to the exact request CMS", reparsed.messageType === "PKCSReq" && carried.length > 0);
+
+  // GET-2 the default (no httpMethod) is still POST with a body -- a regression guard on the branch.
+  var tp = caTransportAny(successBuild());
+  var outP = await pki.scep.enroll("http://ca.example/scep", Object.assign({ transport: tp }, base));
+  check("scep GET-2: the default transport is POST with a body", outP.status === "SUCCESS" && tp.calls[0].method === "POST" && Buffer.isBuffer(tp.calls[0].body) && tp.calls[0].url.indexOf("message=") === -1);
+
+  // GET-3 a GET enroll that goes PENDING polls with GET CertPolls too (the method threads through the loop).
+  var polls = 0;
+  var tPending = fakeTransport(async function (req) {
+    var cms = req.body != null ? req.body : Buffer.from(new URL(req.url).searchParams.get("message"), "base64");
+    var p = await pki.scep.parse(cms, { recipientKey: { cert: F.caCert, key: F.caKey } });
+    polls += 1;
+    if (polls >= 2) { var env = await cmsEncrypt.encrypt(certsOnly([issued]), [{ cert: cl.cert }], { contentEncryptionAlgorithm: "aes-128-cbc" }); return { status: 200, headers: { "content-type": "application/x-pki-message" }, body: await buildCertRep({ statusCode: "0", transactionId: p.transactionId, recipientNonce: p.senderNonce, content: env }) }; }
+    return { status: 200, headers: { "content-type": "application/x-pki-message" }, body: await buildCertRep({ statusCode: "3", transactionId: p.transactionId, recipientNonce: p.senderNonce }) };
+  });
+  var outPend = await pki.scep.enroll("http://ca.example/scep", Object.assign({ httpMethod: "GET", pollCount: 3, sleep: async function () {}, transport: tPending }, base));
+  check("scep GET-3: a GET enroll polls to SUCCESS over GET CertPolls", outPend.status === "SUCCESS" && tPending.calls.length === 2 && tPending.calls.every(function (c) { return c.method === "GET" && c.body == null && c.url.indexOf("message=") !== -1; }));
+
+  // GET-4 getCert honors httpMethod:"GET" for its query (asserted on the recorded request shape).
+  var tq = fakeTransport({ status: 500, headers: {}, body: "x" });
+  await codeOf(pki.scep.getCert("http://ca.example/scep", { certificate: F.issuedCert, caCert: F.caCert, signer: { cert: cl.cert, key: cl.key }, recipientKey: { cert: cl.cert, key: cl.key }, httpMethod: "GET", transport: tq }));
+  check("scep GET-4: getCert issues a GET with a message= query", tq.calls.length === 1 && tq.calls[0].method === "GET" && tq.calls[0].body == null && tq.calls[0].url.indexOf("operation=PKIOperation") !== -1 && tq.calls[0].url.indexOf("message=") !== -1);
+
+  // GET-5 a bad httpMethod is refused at the door.
+  check("scep GET-5: a non-GET/POST httpMethod is rejected", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ httpMethod: "PUT", transport: caTransportAny(successBuild()) }, base)))) === "scep/bad-input");
+  // GET-6 an httpMethod the error formatter cannot JSON-serialize (a BigInt) is still the typed scep/bad-input,
+  // not a native TypeError from formatting the diagnostic. Same class at every caller-value error message.
+  check("scep GET-6: a BigInt httpMethod is a typed scep/bad-input, not a raw TypeError", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ httpMethod: 1n, transport: caTransportAny(successBuild()) }, base)))) === "scep/bad-input");
+  check("scep GET-6: a BigInt messageType to build is a typed scep/bad-message-type", (await codeOf(pki.scep.build({ messageType: 1n, messageData: csr, recipient: F.caCert, signer: { cert: cl.cert, key: cl.key } }))) === "scep/bad-message-type");
+}
+
 async function testCertRepIssuance() {
   var rsa = await rsaClient();
   var caSigner = { cert: F.caCert, key: F.caKey };
@@ -1308,6 +1370,7 @@ async function main() {
   await testGetCertVerb();
   await testGetCrlVerb();
   await testGetQuerySync();
+  await testGetCarried();
   await testCertRepIssuance();
   console.log("CHECKS " + helpers.getChecks());
 }

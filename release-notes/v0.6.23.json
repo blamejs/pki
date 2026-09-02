@@ -1,0 +1,10 @@
+{
+  "version": "0.6.23",
+  "headline": "The SCEP client can carry a PKIOperation over HTTP GET for a CA that does not support POST.",
+  "summary": "pki.scep.enroll, renew, getCert, and getCrl gain an httpMethod option. It defaults to \"POST\", which RFC 8894 sec. 4.1 requires whenever the CA supports it. Passing httpMethod: \"GET\" base64-encodes the CMS request into the message query parameter of a GET, for a legacy CA that only accepts the older GET transport. The choice threads through the enrollment request, the CertPoll polling loop, and the getCert/getCrl query, so a whole transaction uses one transport. The request build, response authentication, and CertRep dispatch are identical to POST; only the wire method changes.",
+  "sections": {
+    "Added": [
+      "pki.scep.enroll / renew / getCert / getCrl accept httpMethod: \"POST\" (default) or \"GET\". Under \"GET\" the client sends the PKIOperation message as GET SCEPPATH?operation=PKIOperation&message=<base64-CMS> with no body (RFC 8894 sec. 4.1), for a CA that does not advertise POST support. POST stays the default and the recommended transport; a bad httpMethod is refused with scep/bad-input."
+    ]
+  }
+}
