@@ -72,6 +72,14 @@ async function run() {
   check("tsp.response status=Symbol -> typed", (await typed(function () { return pki.tsp.response(null, { status: Symbol("s") }); })) === true);
   check("tsp.response status=poison -> typed", (await typed(function () { return pki.tsp.response(null, { status: poison() }); })) === true);
 
+  // ---- an inherited property name must miss the lookup, not resolve to Object.prototype ----
+  // The lookup tables are null-proto, so "toString" / "constructor" / "__proto__" are unknown keys.
+  check("ocsp.buildErrorResponse('toString') -> typed", (await typed(function () { return pki.ocsp.buildErrorResponse("toString"); })) === true);
+  check("ocsp.buildErrorResponse('__proto__') -> typed", (await typed(function () { return pki.ocsp.buildErrorResponse("__proto__"); })) === true);
+  check("hpke.setupS kem='constructor' -> typed", (await typed(function () { return pki.hpke.setupS({ kem: "constructor", kdf: 1, aead: 1 }, buf32, {}); })) === true);
+  check("tsp.response failInfo=['toString'] -> typed", (await typed(function () { return pki.tsp.response(null, { status: 2, failInfo: ["toString"] }); })) === true);
+  check("scep.build messageType='__proto__' -> typed", (await typed(function () { return pki.scep.build({ messageType: "__proto__" }); })) === true);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 
