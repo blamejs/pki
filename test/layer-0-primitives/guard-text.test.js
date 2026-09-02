@@ -114,10 +114,44 @@ function testDecodeNotCallerReplaceable() {
   check("a replaced Buffer.isBuffer cannot route a Buffer down the string arm", armOut === "abc");
 }
 
+function testShowValue() {
+  check("showValue quotes a string", text.showValue("pem") === "\"pem\"");
+  check("showValue prints a number", text.showValue(42) === "42");
+  check("showValue prints a bigint without throwing", text.showValue(1n) === "1");
+  check("showValue prints a boolean", text.showValue(true) === "true");
+  check("showValue names null", text.showValue(null) === "null");
+  check("showValue names a plain object by type", text.showValue({ a: 1 }) === "a value of type object");
+  var cyclic = {}; cyclic.self = cyclic;
+  check("showValue never throws on a cyclic object", text.showValue(cyclic) === "a value of type object");
+  var throwsToJson = { toJSON: function () { throw new Error("boom"); } };
+  check("showValue does not invoke a caller toJSON", text.showValue(throwsToJson) === "a value of type object");
+  check("showValue names a symbol by type", text.showValue(Symbol("s")) === "a value of type symbol");
+  check("showValue names a function by type", text.showValue(function () {}) === "a value of type function");
+  check("showValue names undefined by type", text.showValue(undefined) === "a value of type undefined");
+}
+
+function testKeyOf() {
+  check("keyOf passes a string through", text.keyOf("aes-256-cbc") === "aes-256-cbc");
+  check("keyOf passes a number through", text.keyOf(1) === 1);
+  check("keyOf maps an object with no primitive coercion to undefined", text.keyOf(Object.create(null)) === undefined);
+  check("keyOf maps an object whose Symbol.toPrimitive throws to undefined", text.keyOf({ [Symbol.toPrimitive]: function () { throw new Error("x"); } }) === undefined);
+  check("keyOf maps a plain object to undefined", text.keyOf({ a: 1 }) === undefined);
+  check("keyOf maps a bigint to undefined", text.keyOf(1n) === undefined);
+  check("keyOf maps null to undefined", text.keyOf(null) === undefined);
+  var MAP = { "aes-256-cbc": 1 };
+  var patho = Object.create(null);
+  var safe = true;
+  try { void MAP[text.keyOf(patho)]; } catch (_e) { safe = false; }
+  check("a table indexed by keyOf(a coercion-unsafe object) misses without throwing", safe && MAP[text.keyOf(patho)] === undefined);
+  check("a table indexed by keyOf(a valid key) still hits", MAP[text.keyOf("aes-256-cbc")] === 1);
+}
+
 function run() {
   testDecode();
   testAuthoringBounds();
   testDecodeNotCallerReplaceable();
+  testShowValue();
+  testKeyOf();
 }
 
 module.exports = { run: run };

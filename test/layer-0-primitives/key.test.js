@@ -169,6 +169,23 @@ async function testUnsupportedAlgorithms() {
   check("#11 non-AES-CBC PBES2 encryptionScheme -> key/unsupported-algorithm", (await codeOf(pki.key.decrypt(gcm, "pw"))) === "key/unsupported-algorithm");
 }
 
+// An option value the diagnostic cannot JSON-serialize (a BigInt, a cyclic object) is rendered into the
+// typed key/bad-input, never a native TypeError out of a raw JSON.stringify.
+async function testOptionValueRendering() {
+  var pair = await pki.key.generate("Ed25519");
+  var pk = await pki.key.export(pair.privateKey);
+  check("#12 an unserializable format option is a typed key/bad-input, not a raw TypeError", (await codeOf(pki.key.export(pair.privateKey, { format: 1n }))) === "key/bad-input");
+  var cyclic = {}; cyclic.self = cyclic;
+  check("#12 a cyclic format option is a typed key/bad-input", (await codeOf(pki.key.export(pair.privateKey, { format: cyclic }))) === "key/bad-input");
+  check("#12 an unserializable cipher option is a typed key/bad-input", (await codeOf(pki.key.export(pair.privateKey, { format: "pem", cipher: 1n, passphrase: "x" }))) === "key/bad-input");
+  check("#12 key.encrypt with a cipher that has no primitive coercion is a typed key/bad-input, not a raw TypeError from the lookup", (await codeOf(pki.key.encrypt(pk, "x", { cipher: Object.create(null) }))) === "key/bad-input");
+  check("#12 key.encrypt with a cipher whose Symbol.toPrimitive throws is a typed key/bad-input", (await codeOf(pki.key.encrypt(pk, "x", { cipher: { [Symbol.toPrimitive]: function () { throw new Error("boom"); } } }))) === "key/bad-input");
+  check("#12 key.encrypt with a prf that has no primitive coercion is a typed key/bad-input", (await codeOf(pki.key.encrypt(pk, "x", { prf: Object.create(null) }))) === "key/bad-input");
+  void pk;
+  check("#12 a normal bad format string still reports key/bad-input", (await codeOf(pki.key.export(pair.privateKey, { format: "xml" }))) === "key/bad-input");
+  void pk;
+}
+
 // ---- import / generate / publicFromPrivate verbs ---------------------------
 async function testVerbs() {
   var ed = await pki.key.generate("Ed25519");
@@ -587,6 +604,7 @@ async function main() {
   await testAlgIdParams();
   await testDecryptFailClosed();
   await testUnsupportedAlgorithms();
+  await testOptionValueRendering();
   await testVerbs();
   await testEdges();
   await testOptionsAndUsages();

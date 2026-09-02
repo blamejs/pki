@@ -1,0 +1,10 @@
+{
+  "version": "0.6.24",
+  "headline": "A caller option of an unexpected type now yields the module's typed error, not a native TypeError.",
+  "summary": "An option passed to a build, sign, export, or enrollment verb could carry a type the option path did not expect: a BigInt, an object with no primitive form, or one whose Symbol.toPrimitive throws. Such a value could reach a diagnostic string, a lookup-table key, a Date conversion, or a numeric coercion before the module raised its own error, so the caller saw a native TypeError in place of the typed bad-input error. These paths now render the value through a formatter that never throws, narrow a lookup key without coercing the value, convert a date without throwing on a non-date, and reject a non-numeric field with the typed error. A malformed option is reported as the module's typed error across the timestamp, OCSP, CMP, CMC, SCEP, EST, ACME, PKCS#12, S/MIME, attribute-certificate, HPKE, Certificate Transparency, and Sigstore APIs.",
+  "sections": {
+    "Fixed": [
+      "An option of an unexpected type passed to a build, sign, export, or enrollment verb (a BigInt, an object with no primitive form, or one whose Symbol.toPrimitive throws) is reported as the module's typed bad-input error instead of a native TypeError leaking from a diagnostic string, a lookup-table key, a Date conversion, or a numeric coercion. This covers the timestamp, OCSP, CMP, CMC, SCEP, EST, ACME, PKCS#12, S/MIME, attribute-certificate, HPKE, Certificate Transparency, and Sigstore APIs."
+    ]
+  }
+}

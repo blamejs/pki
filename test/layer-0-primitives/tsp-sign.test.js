@@ -207,6 +207,7 @@ async function testBadInput() {
   await rejects("imprint with an unsupported hash", function () { return pki.tsp.sign({ hashAlgorithm: "md5", hashedMessage: Buffer.alloc(16) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("imprint hashedMessage not a Buffer", function () { return pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: "x" }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("imprint hashedMessage wrong length for the hash", function () { return pki.tsp.sign({ hashAlgorithm: "sha256", hashedMessage: Buffer.alloc(16) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/bad-input");
+  await rejects("imprint hashAlgorithm a non-coercible key -> typed, not a native lookup throw", function () { return pki.tsp.sign({ hashAlgorithm: Object.create(null), hashedMessage: Buffer.alloc(32) }, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("no policy", function () { return pki.tsp.sign(imprint("sha256"), tsa, { serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("policy not a string", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: 123, serialNumber: 1 }); }, "tsp/bad-input");
   await rejects("no serialNumber", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3" }); }, "tsp/bad-input");
@@ -219,6 +220,13 @@ async function testBadInput() {
   await rejects("Accuracy millis above 999", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { millis: 1000 } }); }, "tsp/bad-input");
   await rejects("Accuracy millis zero", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { millis: 0 } }); }, "tsp/bad-input");
   await rejects("Accuracy seconds negative", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { seconds: -1 } }); }, "tsp/bad-input");
+  await rejects("Accuracy seconds a Symbol -> typed, not a native Number() throw", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { seconds: Symbol("s") } }); }, "tsp/bad-input");
+  await rejects("Accuracy millis a Symbol -> typed, not a native Number() throw", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, accuracy: { millis: Symbol("m") } }); }, "tsp/bad-input");
+  // A BigInt accuracy/status is the value pki.schema.tsp.parseTstInfo returns, so a parse-then-re-sign
+  // round-trip must be accepted, not rejected: the type-guard admits number and bigint before Number().
+  check("BigInt accuracy round-trips (parseTstInfo re-sign)",
+    (await pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 25, accuracy: { seconds: 1n, millis: 500n, micros: 5n } })) != null);
+  check("BigInt PKIStatus is accepted", pki.tsp.response(null, { status: 2n, failInfo: ["badAlg"] }) != null);
   await rejects("no options at all", function () { return pki.tsp.sign(imprint("sha256"), tsa); }, "tsp/bad-input");
   await rejects("a null messageImprint", function () { return pki.tsp.sign(null, tsa, { policy: "1.2.3", serialNumber: 1 }); }, "tsp/unsupported-algorithm");
   await rejects("an invalid genTime Date", function () { return pki.tsp.sign(imprint("sha256"), tsa, { policy: "1.2.3", serialNumber: 1, genTime: new Date("not a date") }); }, "tsp/bad-input");

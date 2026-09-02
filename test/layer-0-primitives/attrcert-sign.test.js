@@ -164,6 +164,7 @@ async function testHolderForms() {
   check("2 holder forms -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: { entityName: { dNSName: "a" }, objectDigestInfo: { digestedObjectType: "publicKey", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32) } } }), aaOf(aa))) === "attrcert/bad-input");
   check("unknown holder key -> attrcert/bad-input", await codeOf(pki.attrcert.sign(spec({ holder: { notAForm: 1 } }), aaOf(aa))) === "attrcert/bad-input");
   check("objectDigestInfo otherObjectTypes rejected", await codeOf(pki.attrcert.sign(spec({ holder: { objectDigestInfo: { digestedObjectType: "other", digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32) } } }), aaOf(aa))) === "attrcert/bad-input");
+  check("objectDigestInfo digestedObjectType a non-coercible key -> typed, not a native lookup throw", await codeOf(pki.attrcert.sign(spec({ holder: { objectDigestInfo: { digestedObjectType: Object.create(null), digestAlgorithm: "sha256", objectDigest: Buffer.alloc(32) } } }), aaOf(aa))) === "attrcert/bad-input");
 }
 
 // ---- issuer v2Form profile --------------------------------------------------

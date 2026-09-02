@@ -102,6 +102,22 @@ function run() {
   check("31. instantOf reads the slot through the intrinsic",
         guard.instantOf(new Drifting(1234)) === 1234);
 
+  // ==== toDate -- coercion-safe conversion: never invokes the Date constructor on a
+  // value it would throw on, so a pathological caller option becomes an Invalid Date
+  // the downstream isNaN(instantOf(...)) check refuses with the caller's typed error.
+  var invalidInstant = function (dt) { return Number.isNaN(guard.instantOf(dt)); };
+  check("32. toDate returns the same Date for a real Date", guard.toDate(valid) === valid);
+  check("33. toDate converts a numeric timestamp to a valid Date", guard.instantOf(guard.toDate(0)) === 0);
+  check("34. toDate converts an ISO string to a valid Date", guard.instantOf(guard.toDate("2026-01-01T00:00:00Z")) === guard.instantOf(valid));
+  check("35. toDate yields an Invalid Date (not a throw) for a BigInt", invalidInstant(guard.toDate(1n)));
+  check("36. toDate yields an Invalid Date for an Object.create(null)", invalidInstant(guard.toDate(Object.create(null))));
+  check("37. toDate yields an Invalid Date for a symbol", invalidInstant(guard.toDate(Symbol("t"))));
+  // A value whose Symbol.toPrimitive throws must never be coerced; toDate never touches it.
+  var hostileSym = 0; var poison = {};
+  Object.defineProperty(poison, Symbol.toPrimitive, { value: function () { hostileSym = 1; throw new RangeError("poison"); } });
+  check("38. toDate yields an Invalid Date for a throwing-toPrimitive value without invoking it",
+        invalidInstant(guard.toDate(poison)) && hostileSym === 0);
+
   console.log("CHECKS " + helpers.getChecks());
 }
 

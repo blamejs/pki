@@ -4,7 +4,15 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.23 — 2026-09-02
+## v0.6.24 — 2026-09-02
+
+A caller option of an unexpected type now yields the module's typed error, not a native TypeError.
+
+### Fixed
+
+- An option of an unexpected type passed to a build, sign, export, or enrollment verb (a BigInt, an object with no primitive form, or one whose Symbol.toPrimitive throws) is reported as the module's typed bad-input error instead of a native TypeError leaking from a diagnostic string, a lookup-table key, a Date conversion, or a numeric coercion. This covers the timestamp, OCSP, CMP, CMC, SCEP, EST, ACME, PKCS#12, S/MIME, attribute-certificate, HPKE, Certificate Transparency, and Sigstore APIs.
+
+## v0.6.23 — 2026-09-01
 
 The SCEP client can carry a PKIOperation over HTTP GET for a CA that does not support POST.
 
