@@ -178,6 +178,10 @@ async function testOptionValueRendering() {
   var cyclic = {}; cyclic.self = cyclic;
   check("#12 a cyclic format option is a typed key/bad-input", (await codeOf(pki.key.export(pair.privateKey, { format: cyclic }))) === "key/bad-input");
   check("#12 an unserializable cipher option is a typed key/bad-input", (await codeOf(pki.key.export(pair.privateKey, { format: "pem", cipher: 1n, passphrase: "x" }))) === "key/bad-input");
+  check("#12 key.encrypt with a cipher that has no primitive coercion is a typed key/bad-input, not a raw TypeError from the lookup", (await codeOf(pki.key.encrypt(pk, "x", { cipher: Object.create(null) }))) === "key/bad-input");
+  check("#12 key.encrypt with a cipher whose Symbol.toPrimitive throws is a typed key/bad-input", (await codeOf(pki.key.encrypt(pk, "x", { cipher: { [Symbol.toPrimitive]: function () { throw new Error("boom"); } } }))) === "key/bad-input");
+  check("#12 key.encrypt with a prf that has no primitive coercion is a typed key/bad-input", (await codeOf(pki.key.encrypt(pk, "x", { prf: Object.create(null) }))) === "key/bad-input");
+  void pk;
   check("#12 a normal bad format string still reports key/bad-input", (await codeOf(pki.key.export(pair.privateKey, { format: "xml" }))) === "key/bad-input");
   void pk;
 }
