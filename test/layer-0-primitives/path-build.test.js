@@ -722,8 +722,103 @@ async function run() {
   check("AIA G3: at the depth cap (maxDepth 0) no fetch is attempted (transport uncalled)", (await codeOf(pki.path.build(aLeaf, Object.assign({}, aBase, { transport: g3t, maxDepth: 0 })))) === "path/no-path" && g3t.calls.length === 0);
 
   testUnderPollutedPrototype();
+  await testReverseBuild();
 
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- reverse building (RFC 4158 sec. 3.1): search from the trust anchor DOWN to the leaf ----
+async function testReverseBuild() {
+  var rootKp = await freshKeys(), interKp = await freshKeys(), leafKp = await freshKeys();
+  var root = await mkCert({ signer: rootKp, subjectKp: rootKp, issuerName: "RRoot", subjectName: "RRoot", extensions: caExts() });
+  var inter = await mkCert({ signer: rootKp, subjectKp: interKp, issuerName: "RRoot", subjectName: "RInter", extensions: caExts() });
+  var leaf = await mkCert({ signer: interKp, subjectKp: leafKp, issuerName: "RInter", subjectName: "RLeaf" });
+
+  // RB-1: reverse finds the 2-level chain [inter, leaf] (anchor-proximal first, leaf last, anchor excluded).
+  var rb1 = await pki.path.build(leaf, { direction: "reverse", candidates: [inter], trustAnchors: [root], time: T });
+  check("RB-1 reverse builds [inter, leaf] valid, leaf last, anchor excluded",
+    rb1.valid === true && rb1.path.length === 2 &&
+    Buffer.from(rb1.path[0].subjectPublicKeyInfo.bytes).equals(interKp.spki) &&
+    Buffer.from(rb1.path[1].subjectPublicKeyInfo.bytes).equals(leafKp.spki));
+  var rb1g = await pki.path.validate(rb1.path, { time: T, trustAnchors: rb1.trustAnchor });
+  check("RB-1 the reverse-built path validates through pki.path.validate (round-trip GREEN oracle)", rb1g.valid === true);
+
+  // RB-2: reverse and forward return the same path on a plain chain (a search-order change, not a result change).
+  var fwd = await pki.path.build(leaf, { direction: "forward", candidates: [inter], trustAnchors: [root], time: T });
+  check("RB-2 reverse and forward return the same anchor-proximal issuer on a plain chain",
+    fwd.valid === true && Buffer.from(fwd.path[0].subjectPublicKeyInfo.bytes).equals(Buffer.from(rb1.path[0].subjectPublicKeyInfo.bytes)));
+
+  // RB-3: reverse direct -- the anchor issues the leaf, so the path is [leaf] (goal met at the seed, empty chain).
+  var directLeafKp = await freshKeys();
+  var directLeaf = await mkCert({ signer: rootKp, subjectKp: directLeafKp, issuerName: "RRoot", subjectName: "RDirect" });
+  var rb3 = await pki.path.build(directLeaf, { direction: "reverse", trustAnchors: [root], time: T });
+  check("RB-3 reverse direct: anchor issues the leaf -> path [leaf]",
+    rb3.valid === true && rb3.path.length === 1 && Buffer.from(rb3.path[0].subjectPublicKeyInfo.bytes).equals(directLeafKp.spki));
+
+  // RB-4: reverse with multiple anchors selects the one that actually issues the chain (a dead anchor's branch exhausts).
+  var otherRootKp = await freshKeys();
+  var otherRoot = await mkCert({ signer: otherRootKp, subjectKp: otherRootKp, issuerName: "ROther", subjectName: "ROther", extensions: caExts() });
+  var rb4 = await pki.path.build(leaf, { direction: "reverse", candidates: [inter], trustAnchors: [otherRoot, root], time: T });
+  check("RB-4 reverse multi-anchor selects the issuing anchor (only root validates)", rb4.valid === true);
+
+  // RB-5: reverse through a cross-cert cycle finds the valid path and terminates (the visited-set dedupes A<->B).
+  var mA = await freshKeys(), mB = await freshKeys(), mLeafKp = await freshKeys();
+  var rootIssuesA = await mkCert({ signer: rootKp, subjectKp: mA, issuerName: "RRoot", subjectName: "MA", extensions: caExts() });
+  var aIssuesB = await mkCert({ signer: mA, subjectKp: mB, issuerName: "MA", subjectName: "MB", extensions: caExts() });
+  var bIssuesA = await mkCert({ signer: mB, subjectKp: mA, issuerName: "MB", subjectName: "MA", extensions: caExts() });
+  var bIssuesLeaf = await mkCert({ signer: mB, subjectKp: mLeafKp, issuerName: "MB", subjectName: "MLeaf" });
+  var t5 = Date.now();
+  var rb5 = await pki.path.build(bIssuesLeaf, { direction: "reverse", candidates: [rootIssuesA, aIssuesB, bIssuesA], trustAnchors: [root], time: T });
+  check("RB-5 reverse through a cross-cert cycle finds the valid path + terminates (no hang)",
+    rb5.valid === true && (Date.now() - t5) < 5000);
+
+  // RB-6: a reverse-assembled path that validate rejects -> {valid:false} with the failing result (discovery/gate split).
+  var expInterKp = await freshKeys(), expLeafKp = await freshKeys();
+  var expInter = await mkCert({ signer: rootKp, subjectKp: expInterKp, issuerName: "RRoot", subjectName: "RExp", extensions: caExts(), notBefore: new Date("2020-01-01T00:00:00Z"), notAfter: new Date("2021-01-01T00:00:00Z") });
+  var expLeaf = await mkCert({ signer: expInterKp, subjectKp: expLeafKp, issuerName: "RExp", subjectName: "RExpLeaf" });
+  var rb6 = await pki.path.build(expLeaf, { direction: "reverse", candidates: [expInter], trustAnchors: [root], time: T });
+  check("RB-6 reverse assembles a path validate rejects -> {valid:false} with the failing result",
+    rb6.valid === false && rb6.result && rb6.result.valid === false);
+
+  // RB-7: opts.validate:false returns the reverse-assembled path unvalidated (no verdict), exactly as forward.
+  var rb7 = await pki.path.build(leaf, { direction: "reverse", candidates: [inter], trustAnchors: [root], time: T, validate: false });
+  check("RB-7 reverse validate:false returns the ordered path without a verdict",
+    rb7.valid === undefined && rb7.path.length === 2 && Buffer.from(rb7.path[1].subjectPublicKeyInfo.bytes).equals(leafKp.spki));
+
+  // RB-8: an unsupported direction is a typed path/bad-input.
+  check("RB-8 an unsupported direction -> path/bad-input",
+    (await codeOf(pki.path.build(leaf, { direction: "sideways", candidates: [inter], trustAnchors: [root], time: T }))) === "path/bad-input");
+
+  // RB-9: direction:'auto' picks a direction and finds the path.
+  var rb9 = await pki.path.build(leaf, { direction: "auto", candidates: [inter], trustAnchors: [root], time: T });
+  check("RB-9 direction:auto finds a valid path", rb9.valid === true && rb9.path.length === 2);
+
+  // RB-10: reverse with no chain from any anchor to the leaf -> path/no-path.
+  check("RB-10 reverse with no chain to the leaf -> path/no-path",
+    (await codeOf(pki.path.build(leaf, { direction: "reverse", candidates: [], trustAnchors: [root], time: T }))) === "path/no-path");
+
+  // RB-11: the self-signed anchor cert also present in an unordered candidate pool is NOT re-introduced into the
+  // path. A 3-level chain where the anchor and the real first hop tie at the seed and the pool order lets the
+  // anchor branch be explored first: without the anchor exclusion, reverse returns [root, I1, I2, leaf] (length 4);
+  // the anchor is excluded, so the path is [I1, I2, leaf] (length 3, I1 first).
+  var i1Kp = await freshKeys(), i2Kp = await freshKeys(), leaf11Kp = await freshKeys();
+  var i1 = await mkCert({ signer: rootKp, subjectKp: i1Kp, issuerName: "RRoot", subjectName: "RI1", extensions: caExts() });
+  var i2 = await mkCert({ signer: i1Kp, subjectKp: i2Kp, issuerName: "RI1", subjectName: "RI2", extensions: caExts() });
+  var leaf11 = await mkCert({ signer: i2Kp, subjectKp: leaf11Kp, issuerName: "RI2", subjectName: "RLeaf11" });
+  var rb11 = await pki.path.build(leaf11, { direction: "reverse", candidates: [i1, i2, root], trustAnchors: [root], time: T });
+  check("RB-11 the anchor cert in the pool is excluded from the reverse path ([I1, I2, leaf], not [root, ...])",
+    rb11.valid === true && rb11.path.length === 3 && Buffer.from(rb11.path[0].subjectPublicKeyInfo.bytes).equals(i1Kp.spki));
+
+  // RB-12: a key-rollover intermediate whose subject DN equals the anchor name but whose key DIFFERS (the old-key
+  // anchor signs a new-key cert with the same subject, which signs the leaf) is NOT the anchor and MUST be kept
+  // (RFC 4158 sec. 5.4). The exclusion compares name AND key, not name alone.
+  var rollOldKp = await freshKeys(), rollNewKp = await freshKeys(), rollLeafKp = await freshKeys();
+  var rollRoot = await mkCert({ signer: rollOldKp, subjectKp: rollOldKp, issuerName: "RollRoot", subjectName: "RollRoot", extensions: caExts() });
+  var rollNew = await mkCert({ signer: rollOldKp, subjectKp: rollNewKp, issuerName: "RollRoot", subjectName: "RollRoot", extensions: caExts() });
+  var rollLeaf = await mkCert({ signer: rollNewKp, subjectKp: rollLeafKp, issuerName: "RollRoot", subjectName: "RollLeaf" });
+  var rb12 = await pki.path.build(rollLeaf, { direction: "reverse", candidates: [rollNew], trustAnchors: [rollRoot], time: T });
+  check("RB-12 a same-name key-rollover intermediate (different key) is kept, not pruned as the anchor",
+    rb12.valid === true && rb12.path.length === 2 && Buffer.from(rb12.path[0].subjectPublicKeyInfo.bytes).equals(rollNewKp.spki));
 }
 
 module.exports = { run: run };
