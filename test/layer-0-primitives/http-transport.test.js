@@ -496,6 +496,15 @@ async function testProxyConnect() {
       check("PX-5 an untrusted origin cert over the tunnel -> server-auth-failed (trust NOT bypassed)", (await codeOf(tNoTrust({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxTrust.port } }))) === "transport/server-auth-failed");
     } finally { pxTrust.srv.close(); }
 
+    // PX-17 the tunnel verifies the origin cert IDENTITY for an IP-literal origin with no servername (the cert covers
+    // dNSName localhost, not the IP): tls.connect would otherwise skip the identity check without SNI, so it is done
+    // explicitly, matching the direct path.
+    var pxIp = await startConnectProxy({});
+    try {
+      var tIp = pki.transport.https({ tls: { anchors: [tls.certPem] } });
+      check("PX-17 an IP-literal origin whose cert does not cover the IP -> server-auth-failed (identity checked over the tunnel)", (await codeOf(tIp({ method: "GET", url: originUrl, proxy: { url: "http://127.0.0.1:" + pxIp.port } }))) === "transport/server-auth-failed");
+    } finally { pxIp.srv.close(); }
+
     // PX-13 an IPv6 origin: the CONNECT authority brackets the host (RFC 9112 sec. 3.2.3), so the proxy can parse it
     var ok6 = await new Promise(function (res) { var p = require("node:net").createServer(); p.once("error", function () { res(false); }); p.listen(0, "::1", function () { p.close(); res(true); }); });
     if (ok6) {
@@ -523,13 +532,13 @@ async function testProxyConnect() {
   check("PX-9g a Basic user-id with a colon is refused (RFC 7617)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", auth: { scheme: "basic", username: "a:b", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-9h an https proxy with no tls trust is refused -> no-trust-anchors", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080" } }))) === "transport/no-trust-anchors");
   check("PX-9i a non-string proxy.tls.servername is refused at config time (never reaches the socket)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true, servername: 7 } } }))) === "transport/bad-proxy");
+  check("PX-9j proxy.tls on a plaintext http proxy is refused (never silently ignored)", (await codeOf(t({ method: "GET", url: "https://ca.example/x", proxy: { url: "http://p:8080", tls: { useSystemStore: true } } }))) === "transport/bad-proxy");
   check("PX-10 an http origin with a proxy is refused (https-only) -> insecure-url", (await codeOf(t({ method: "GET", url: "http://ca.example/x", proxy: { url: "http://p:8080" } }))) === "transport/insecure-url");
 
-  // PX-11 SSRF: a private proxy address is blocked when blockPrivateAddresses is on (the block moves to the proxy hop)
-  check("PX-11 blockPrivateAddresses on: a private proxy literal -> blocked-address", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://127.0.0.1:8080" }, blockPrivateAddresses: true }))) === "transport/blocked-address");
-  // PX-11b a proxy HOSTNAME that resolves to a private address is blocked at CONNECT (the DNS-resolution path), and
-  // the address-policy rejection keeps its blocked-address verdict rather than collapsing to proxy-connect-failed.
-  check("PX-11b blockPrivateAddresses on: a proxy hostname resolving to loopback -> blocked-address", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://localhost:9" }, blockPrivateAddresses: true }))) === "transport/blocked-address");
+  // PX-11 blockPrivateAddresses is incompatible with a proxy: the proxy resolves the origin, so the transport cannot
+  // enforce the private-address block on it. The combination is refused rather than silently unenforced.
+  check("PX-11 blockPrivateAddresses + an https proxy is refused (block cannot be enforced through a proxy)", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://p:8080", tls: { useSystemStore: true } }, blockPrivateAddresses: true }))) === "transport/bad-proxy");
+  check("PX-11b blockPrivateAddresses + an http proxy is refused too (before any socket)", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "http://p:8080" }, blockPrivateAddresses: true }))) === "transport/bad-proxy");
   // PX-16 a connectivity failure to a proxy whose hostname contains "tls"/"ssl" is a connect error, not a cert error:
   // classification reads the error CODE (ENOTFOUND), never the hostname carried in the message.
   check("PX-16 a DNS failure to a TLS-named proxy is proxy-connect-failed, not misread as proxy-tls-failed", (await codeOf(t({ method: "GET", url: "https://example.com/x", proxy: { url: "https://tls.invalid:9", auth: { scheme: "basic", username: "u", password: "p" }, tls: { useSystemStore: true } } }))) === "transport/proxy-connect-failed");
