@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.28 — 2026-09-02
+
+pki.path.build returns the best accepted path when the candidate cap is reached during policy ranking, instead of discarding it.
+
+### Fixed
+
+- pki.path.build with userInitialPolicySet no longer throws path/build-limit after it has already accepted a valid path. When the candidate cap is reached during policy ranking, it returns the best-policy accepted path (forward and reverse directions), and candidatesConsidered reflects the full expansion count. It throws path/build-limit only when no valid path was accepted before the cap. This restores the pre-0.6.26 behavior for a policy set that no single path fully covers under a bounded search.
+
 ## v0.6.27 — 2026-09-02
 
 The SCEP client can reach a CA through a forward proxy, with Basic authentication over an https proxy.

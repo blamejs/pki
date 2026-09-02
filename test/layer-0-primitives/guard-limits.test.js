@@ -43,8 +43,11 @@ function testCapAuthoringBounds() {
 
 function testCounter() {
   var c = limits.counter(2, E, "x/many", "item");
+  check("counter count() starts at 0", c.count() === 0);
   c.tick(); c.tick();
+  check("counter count() reports the ticks so far", c.count() === 2);
   check("counter throws past the cap", typeErr(function () { c.tick(); }) === "x/many");
+  check("counter count() reflects the tick that overran the cap", c.count() === 3);
   // The ceiling is an authoring input: an undefined / NaN / fractional max
   // builds a counter that NEVER fires (n > NaN is false) -- a dead fanout
   // defense. Reject at construction with a config-time TypeError.

@@ -1,0 +1,10 @@
+{
+  "version": "0.6.28",
+  "headline": "pki.path.build returns the best accepted path when the candidate cap is reached during policy ranking, instead of discarding it.",
+  "summary": "In 0.6.26, when userInitialPolicySet was supplied and the policy-ranking search reached maxCandidatesConsidered after a valid path had already been accepted, pki.path.build threw path/build-limit and discarded that path, a regression since the same call returned a path before 0.6.26. The candidate cap means stop looking, not that nothing was found: build now finalizes the best-policy accepted path when the cap is reached, in both the forward and reverse directions, and reports the accurate candidatesConsidered. It still throws path/build-limit only when the cap is hit before any valid path is accepted.",
+  "sections": {
+    "Fixed": [
+      "pki.path.build with userInitialPolicySet no longer throws path/build-limit after it has already accepted a valid path. When the candidate cap is reached during policy ranking, it returns the best-policy accepted path (forward and reverse directions), and candidatesConsidered reflects the full expansion count. It throws path/build-limit only when no valid path was accepted before the cap. This restores the pre-0.6.26 behavior for a policy set that no single path fully covers under a bounded search."
+    ]
+  }
+}

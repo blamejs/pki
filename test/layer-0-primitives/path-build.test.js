@@ -776,12 +776,31 @@ async function testPolicySelection() {
   check("PS-5 a maximal policy match is returned before a fan-out branch exceeds the work cap",
     ps5.valid === true && ps5.result.userConstrainedPolicySet.indexOf(P1) !== -1);
 
-  // PS-6: policy ranking is bounded by the candidate-expansion cap like the rest of build. A partial-match search
-  // (no full-match short-circuit) that exceeds maxCandidatesConsidered throws the documented path/build-limit; the
-  // caller sizes the cap for the richer ranking search (the default is high).
+  // PS-6: the candidate cap means "stop looking", not "there was nothing" (issue #244). When ranking exceeds
+  // maxCandidatesConsidered AFTER a valid path was already accepted, build finalizes the best accepted path rather
+  // than discarding it and throwing. Here scLeaf->scI1->scRoot (policy P1, a partial match) is accepted, then the
+  // scDx fan-out exceeds the cap; build returns the accepted path instead of path/build-limit.
   var P9 = "1.3.6.1.4.1.99999.7.9";
-  check("PS-6 policy ranking honors the candidate cap: exceeding it throws path/build-limit",
-    (await codeOf(pki.path.build(scLeaf, { candidates: [scI1, scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [P1, P9], maxCandidatesConsidered: 3 }))) === "path/build-limit");
+  var ps6 = await pki.path.build(scLeaf, { candidates: [scI1, scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [P1, P9], maxCandidatesConsidered: 3 });
+  check("PS-6 hitting the candidate cap after accepting a valid path returns that path, not path/build-limit (issue #244)",
+    ps6.valid === true && ps6.result.userConstrainedPolicySet.indexOf(P1) !== -1 && ps6.candidatesConsidered >= 3);
+  // PS-6b: throwing is still right when nothing has been accepted. With only the scDx decoy (whose key never signed
+  // scLeaf) no path validates, and the fan-out exceeds the cap before any accept -> path/build-limit.
+  check("PS-6b the cap still throws path/build-limit when no valid path was accepted before it",
+    (await codeOf(pki.path.build(scLeaf, { candidates: [scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [P1], maxCandidatesConsidered: 3 }))) === "path/build-limit");
+  // PS-6c: the reverse search finalizes the best accepted path on the cap the same way (issue #244). RRoot->RInter
+  // (P1)->RLeaf is accepted first, then RInter fans out to three decoys (issued-by RInter) that exceed the cap.
+  var rRootKp = await freshKeys(), rInterKp = await freshKeys(), rLeafKp = await freshKeys();
+  var rD1Kp = await freshKeys(), rD2Kp = await freshKeys(), rD3Kp = await freshKeys();
+  var rRoot = await mkCert({ signer: rRootKp, subjectKp: rRootKp, issuerName: "RR", subjectName: "RR", extensions: caExts() });
+  var rInter = await mkCert({ signer: rRootKp, subjectKp: rInterKp, issuerName: "RR", subjectName: "RInter", extensions: caExts([policiesExt([P1])]) });
+  var rLeaf = await mkCert({ signer: rInterKp, subjectKp: rLeafKp, issuerName: "RInter", subjectName: "RLeaf", extensions: [policiesExt([ANYPOL])] });
+  var rD1 = await mkCert({ signer: rRootKp, subjectKp: rD1Kp, issuerName: "RInter", subjectName: "RD1", extensions: caExts() });
+  var rD2 = await mkCert({ signer: rRootKp, subjectKp: rD2Kp, issuerName: "RInter", subjectName: "RD2", extensions: caExts() });
+  var rD3 = await mkCert({ signer: rRootKp, subjectKp: rD3Kp, issuerName: "RInter", subjectName: "RD3", extensions: caExts() });
+  var ps6c = await pki.path.build(rLeaf, { candidates: [rInter, rD1, rD2, rD3], trustAnchors: [rRoot], time: T, direction: "reverse", userInitialPolicySet: [P1, P9], maxCandidatesConsidered: 3 });
+  check("PS-6c reverse-direction: hitting the cap after an accepted path returns it, not path/build-limit",
+    ps6c.valid === true && ps6c.result.userConstrainedPolicySet.indexOf(P1) !== -1);
 
   // PS-7: userInitialPolicySet containing anyPolicy is unconstrained, so ranking is disabled (first accept); a tight
   // cap that the ranking search would exhaust is not tripped, because anyPolicy short-circuits on the first path.
