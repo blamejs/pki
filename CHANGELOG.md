@@ -4,6 +4,14 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## v0.6.26 — 2026-09-02
+
+pki.path.build can prefer the certification path whose policies satisfy a caller-supplied policy set.
+
+### Added
+
+- pki.path.build now uses opts.userInitialPolicySet to select the best-policy valid path across trust anchors and intermediates (RFC 4158 sec. 4), not only to constrain pki.path.validate's policy processing. It returns the accepted path whose user-constrained policy set best satisfies the requested set, with the existing candidate ordering as a deterministic tie-break; validate still gates every path. An anyPolicy entry is unconstrained (first accepted path); the ranking is bounded by maxCandidatesConsidered; a malformed userInitialPolicySet is refused with path/bad-input.
+
 ## v0.6.25 — 2026-09-02
 
 pki.path.build can search from a trust anchor toward the leaf, not only from the leaf toward an anchor.
