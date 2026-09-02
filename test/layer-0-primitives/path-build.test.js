@@ -75,6 +75,8 @@ function kuExt(bits) {
 function skiExt(keyId) { return ext("2.5.29.14", false, b.octetString(keyId)); }
 function akiExt(keyId) { return ext("2.5.29.35", false, b.sequence([b.contextPrimitive(0, keyId)])); }
 function sanExt(names) { return ext("2.5.29.17", false, b.sequence(names.map(function (nm) { return b.contextPrimitive(2, Buffer.from(nm, "ascii")); }))); }
+// certificatePolicies (RFC 5280 sec. 4.2.1.4): SEQUENCE OF PolicyInformation { policyIdentifier OID }.
+function policiesExt(oids) { return ext("2.5.29.32", false, b.sequence(oids.map(function (o) { return b.sequence([b.oid(o)]); }))); }
 var KU_KEY_CERT_SIGN = 5;
 var T = new Date("2027-06-01T00:00:00Z");
 var NB = new Date("2026-01-01T00:00:00Z"), NA = new Date("2030-01-01T00:00:00Z");
@@ -723,8 +725,84 @@ async function run() {
 
   testUnderPollutedPrototype();
   await testReverseBuild();
+  await testPolicySelection();
 
   console.log("CHECKS " + helpers.getChecks());
+}
+
+// ---- multiple-anchor policy selection (RFC 4158 sec. 4): with userInitialPolicySet, build returns the
+// best-policy valid path across all anchors, not the first accepted; the scorer ORDERS, validate still GATES.
+async function testPolicySelection() {
+  var P1 = "1.3.6.1.4.1.99999.7.1", P2 = "1.3.6.1.4.1.99999.7.2", ANYPOL = "2.5.29.32.0";
+  var a1Kp = await freshKeys(), a2Kp = await freshKeys(), pInterKp = await freshKeys(), pLeafKp = await freshKeys();
+  var a1 = await mkCert({ signer: a1Kp, subjectKp: a1Kp, issuerName: "PA1", subjectName: "PA1", extensions: caExts() });
+  var a2 = await mkCert({ signer: a2Kp, subjectKp: a2Kp, issuerName: "PA2", subjectName: "PA2", extensions: caExts() });
+  // A cross-certified intermediate "PInter" (SAME key) issued by A1 (policy P1) and by A2 (policy P2). The leaf
+  // asserts anyPolicy, so BOTH root->inter->leaf paths validate; userInitialPolicySet then selects which one.
+  var interViaA1 = await mkCert({ signer: a1Kp, subjectKp: pInterKp, issuerName: "PA1", subjectName: "PInter", extensions: caExts([policiesExt([P1])]) });
+  var interViaA2 = await mkCert({ signer: a2Kp, subjectKp: pInterKp, issuerName: "PA2", subjectName: "PInter", extensions: caExts([policiesExt([P2])]) });
+  var pLeaf = await mkCert({ signer: pInterKp, subjectKp: pLeafKp, issuerName: "PInter", subjectName: "PLeaf", extensions: [policiesExt([ANYPOL])] });
+  var base = { candidates: [interViaA1, interViaA2], trustAnchors: [a1, a2], time: T };
+
+  // PS-1/PS-2: the returned path's user-constrained policy set satisfies the requested policy. On the pre-feature
+  // code build returns the same first-accepted path for both, so one of these fails; with selection each matches.
+  var ps1 = await pki.path.build(pLeaf, Object.assign({}, base, { userInitialPolicySet: [P1] }));
+  check("PS-1 policy selection returns the path satisfying userInitialPolicySet=[P1]",
+    ps1.valid === true && ps1.result.userConstrainedPolicySet.indexOf(P1) !== -1);
+  var ps2 = await pki.path.build(pLeaf, Object.assign({}, base, { userInitialPolicySet: [P2] }));
+  check("PS-2 policy selection returns the path satisfying userInitialPolicySet=[P2]",
+    ps2.valid === true && ps2.result.userConstrainedPolicySet.indexOf(P2) !== -1);
+  // PS-3: no userInitialPolicySet -> unchanged default (the first accepted valid path).
+  var ps3 = await pki.path.build(pLeaf, base);
+  check("PS-3 no userInitialPolicySet: default first-accept behavior, a valid 2-cert path", ps3.valid === true && ps3.path.length === 2);
+  // PS-4: policy selection also works in the reverse direction.
+  var ps4 = await pki.path.build(pLeaf, Object.assign({}, base, { direction: "reverse", userInitialPolicySet: [P2] }));
+  check("PS-4 reverse-direction policy selection returns the [P2] path",
+    ps4.valid === true && ps4.result.userConstrainedPolicySet.indexOf(P2) !== -1);
+
+  // PS-5: an early path matching EVERY requested policy is returned immediately, before a later fan-out branch
+  // would exceed maxCandidatesConsidered. Without the maximal-match short-circuit build would throw path/build-limit
+  // exploring the decoy 'PSInter' (issued by 'PSMid', which fans out to three 'PSMid' certs) after the optimal.
+  var scRootKp = await freshKeys(), scI1Kp = await freshKeys(), scDxKp = await freshKeys(), scLeafKp = await freshKeys();
+  var scM1Kp = await freshKeys(), scM2Kp = await freshKeys(), scM3Kp = await freshKeys();
+  var scRoot = await mkCert({ signer: scRootKp, subjectKp: scRootKp, issuerName: "PSR", subjectName: "PSR", extensions: caExts() });
+  var scI1 = await mkCert({ signer: scRootKp, subjectKp: scI1Kp, issuerName: "PSR", subjectName: "PSInter", extensions: caExts([policiesExt([P1])]) });
+  var scLeaf = await mkCert({ signer: scI1Kp, subjectKp: scLeafKp, issuerName: "PSInter", subjectName: "PSLeaf", extensions: [policiesExt([ANYPOL])] });
+  var scDx = await mkCert({ signer: scM1Kp, subjectKp: scDxKp, issuerName: "PSMid", subjectName: "PSInter", extensions: caExts() });
+  var scM1 = await mkCert({ signer: scRootKp, subjectKp: scM1Kp, issuerName: "PSR", subjectName: "PSMid", extensions: caExts() });
+  var scM2 = await mkCert({ signer: scRootKp, subjectKp: scM2Kp, issuerName: "PSR", subjectName: "PSMid", extensions: caExts() });
+  var scM3 = await mkCert({ signer: scRootKp, subjectKp: scM3Kp, issuerName: "PSR", subjectName: "PSMid", extensions: caExts() });
+  var ps5 = await pki.path.build(scLeaf, { candidates: [scI1, scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [P1], maxCandidatesConsidered: 3 });
+  check("PS-5 a maximal policy match is returned before a fan-out branch exceeds the work cap",
+    ps5.valid === true && ps5.result.userConstrainedPolicySet.indexOf(P1) !== -1);
+
+  // PS-6: policy ranking is bounded by the candidate-expansion cap like the rest of build. A partial-match search
+  // (no full-match short-circuit) that exceeds maxCandidatesConsidered throws the documented path/build-limit; the
+  // caller sizes the cap for the richer ranking search (the default is high).
+  var P9 = "1.3.6.1.4.1.99999.7.9";
+  check("PS-6 policy ranking honors the candidate cap: exceeding it throws path/build-limit",
+    (await codeOf(pki.path.build(scLeaf, { candidates: [scI1, scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [P1, P9], maxCandidatesConsidered: 3 }))) === "path/build-limit");
+
+  // PS-7: userInitialPolicySet containing anyPolicy is unconstrained, so ranking is disabled (first accept); a tight
+  // cap that the ranking search would exhaust is not tripped, because anyPolicy short-circuits on the first path.
+  var ps7 = await pki.path.build(scLeaf, { candidates: [scI1, scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [ANYPOL], maxCandidatesConsidered: 3 });
+  check("PS-7 anyPolicy in userInitialPolicySet is unconstrained: a valid path is returned under a tight cap", ps7.valid === true);
+  // PS-8: duplicate userInitialPolicySet entries are set-deduplicated, so the full-match short-circuit still fires.
+  var ps8 = await pki.path.build(scLeaf, { candidates: [scI1, scDx, scM1, scM2, scM3], trustAnchors: [scRoot], time: T, userInitialPolicySet: [P1, P1], maxCandidatesConsidered: 3 });
+  check("PS-8 duplicate policy OIDs are deduplicated: a valid path is returned under a tight cap",
+    ps8.valid === true && ps8.result.userConstrainedPolicySet.indexOf(P1) !== -1);
+  // PS-9: a malformed userInitialPolicySet yields the typed path/bad-input (via validate), never a raw TypeError
+  // out of the build-side policy setup.
+  check("PS-9 a null userInitialPolicySet yields the typed path/bad-input, not a raw TypeError",
+    (await codeOf(pki.path.build(pLeaf, Object.assign({}, base, { userInitialPolicySet: null })))) === "path/bad-input");
+  // PS-10: a malformed userInitialPolicySet is rejected at build entry even under validate:false (pure-builder
+  // mode never calls validate, so the check cannot be deferred to it).
+  check("PS-10 malformed userInitialPolicySet with validate:false -> path/bad-input, not silently accepted",
+    (await codeOf(pki.path.build(pLeaf, Object.assign({}, base, { validate: false, userInitialPolicySet: null })))) === "path/bad-input");
+  // PS-11: a malformed userInitialPolicySet is rejected at build entry even when no path can be assembled (validate
+  // is never reached), rather than surfacing as path/no-path.
+  check("PS-11 malformed userInitialPolicySet with an unbuildable pool -> path/bad-input, not path/no-path",
+    (await codeOf(pki.path.build(pLeaf, { candidates: [], trustAnchors: [a1], time: T, userInitialPolicySet: ["not a canonical oid"] }))) === "path/bad-input");
 }
 
 // ---- reverse building (RFC 4158 sec. 3.1): search from the trust anchor DOWN to the leaf ----

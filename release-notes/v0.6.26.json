@@ -1,0 +1,10 @@
+{
+  "version": "0.6.26",
+  "headline": "pki.path.build can prefer the certification path whose policies satisfy a caller-supplied policy set.",
+  "summary": "When pki.path.build is given opts.userInitialPolicySet (a set of acceptable certificate-policy OIDs) and more than one trust anchor or intermediate yields a valid path, it now returns the accepted path whose user-constrained policy set best satisfies that set, rather than the first accepted path (RFC 4158 sec. 4 forward policy chaining). Every candidate path still passes pki.path.validate unchanged, so this selects among valid paths and never accepts an invalid one. The ranking explores more of the candidate graph than a first-accept build, so it stays bounded by maxCandidatesConsidered like the rest of the search. An anyPolicy entry makes the set unconstrained, so ranking is skipped and the first accepted path is returned. A malformed userInitialPolicySet is refused with the typed path/bad-input.",
+  "sections": {
+    "Added": [
+      "pki.path.build now uses opts.userInitialPolicySet to select the best-policy valid path across trust anchors and intermediates (RFC 4158 sec. 4), not only to constrain pki.path.validate's policy processing. It returns the accepted path whose user-constrained policy set best satisfies the requested set, with the existing candidate ordering as a deterministic tie-break; validate still gates every path. An anyPolicy entry is unconstrained (first accepted path); the ranking is bounded by maxCandidatesConsidered; a malformed userInitialPolicySet is refused with path/bad-input."
+    ]
+  }
+}
