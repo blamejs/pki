@@ -22,6 +22,7 @@ var fakeTransport = require("../helpers/fake-transport").fakeTransport;
 var acmeH = require("../helpers/acme-transport");
 var cmpH = require("../helpers/cmp-transport");
 var httpTransport = require("../../lib/http-transport");
+var nodeUtil = require("node:util");
 
 async function codeOf(p) { try { await p; return "NO-THROW"; } catch (e) { return (e && e.code) || ("RAW:" + (e && e.message)); } }
 
@@ -95,6 +96,38 @@ async function testEst() {
   // transport's typed code, surfaced under the est namespace.
   check("est does not bypass _validateProxy (auth over an http proxy is refused)",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "http://p.example:3128", auth: { username: "u", password: "p" } } }))) === "est/proxy-auth-requires-tls");
+
+  // 5 an exotic (Proxy) proxy option is refused, not laundered by the snapshot into a plain object that then
+  // passes assertPlainRecord. Over the REAL transport the exotic record is refused with est/bad-proxy.
+  check("est refuses a Proxy proxy option (not laundered by the snapshot)",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: new Proxy({ url: "https://p.example", tls: { useSystemStore: true } }, {}) }))) === "est/bad-proxy");
+  var dateProxy = new Date(); dateProxy.url = "https://p.example"; dateProxy.tls = { useSystemStore: true };
+  check("est refuses a Date-shaped proxy option (not laundered by the snapshot)",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: dateProxy }))) === "est/bad-proxy");
+  check("est refuses a __proto__-laundering JSON proxy (unknown key survives the snapshot)",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: JSON.parse('{"__proto__":{"url":"https://evil.example","tls":{"useSystemStore":true}}}') }))) === "est/bad-proxy");
+  var inheritedUnknown = Object.create({ unexpectedKey: 1 });
+  inheritedUnknown.url = "https://p.example"; inheritedUnknown.tls = { useSystemStore: true };
+  check("est refuses a proxy with an inherited unknown key (snapshot passes it through to validation)",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: inheritedUnknown }))) === "est/bad-proxy");
+  // A proxy that is otherwise valid but not a simple data record (a non-enumerable url, an accessor field, a
+  // custom prototype) is refused, so every ACCEPTED proxy is one the snapshot can isolate.
+  var nonEnumUrl = { tls: { useSystemStore: true } };
+  Object.defineProperty(nonEnumUrl, "url", { value: "https://p.example", enumerable: false });
+  check("est refuses a valid-but-non-enumerable-url proxy (accepted set equals the isolable set)",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: nonEnumUrl }))) === "est/bad-proxy");
+  var accessorUrl = { tls: { useSystemStore: true } };
+  Object.defineProperty(accessorUrl, "url", { get: function () { return "https://p.example"; }, enumerable: true });
+  check("est refuses an accessor-url proxy",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: accessorUrl }))) === "est/bad-proxy");
+
+  // 6 a throwing proxy accessor yields a REJECTING promise, never a synchronous throw (the snapshot is taken
+  // in the call frame but inside the rejection boundary).
+  var threwSync = false, pth;
+  try { pth = pki.est.cacerts(BASE, { get proxy() { throw new Error("boom"); }, transport: fakeTransport({ status: 200, headers: {}, body: "" }) }); }
+  catch (_e) { threwSync = true; }
+  var rejected = !!pth && typeof pth.then === "function" && (await pth.then(function () { return false; }, function () { return true; }));
+  check("est snapshot throw becomes a rejection, not a synchronous throw", threwSync === false && rejected === true);
 }
 
 // ---- ACME ------------------------------------------------------------------
@@ -169,6 +202,59 @@ function testSnapshotProxy() {
   var arr = [Buffer.from("A1"), "PEM"];
   var ta = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: arr } });
   check("snapshotProxy copies an anchor array element-wise", ta.tls.anchors !== arr && ta.tls.anchors[0] !== arr[0] && ta.tls.anchors[0].toString("latin1") === "A1" && ta.tls.anchors[1] === "PEM");
+  // A caller-overridden .map on the anchors array cannot alias the original into the snapshot (a manual index
+  // loop is used, not the instance method).
+  var poisoned = [Buffer.from("A1")];
+  poisoned.map = function () { return this; };
+  var snPoison = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: poisoned } });
+  check("snapshotProxy copies anchors without the caller's .map (poison cannot alias)",
+    snPoison.tls.anchors !== poisoned && snPoison.tls.anchors[0] !== poisoned[0] && snPoison.tls.anchors[0].toString("latin1") === "A1");
+  // A Proxy is passed through, NOT Object.assign-laundered into a plain object -- else it would slip past the
+  // transport's assertPlainRecord exotic-object refusal. The proxy option and each nested auth/tls member.
+  var proxP = new Proxy({ url: "https://p", tls: { useSystemStore: true } }, {});
+  check("snapshotProxy passes a Proxy proxy option through unchanged", httpTransport.snapshotProxy(proxP) === proxP && nodeUtil.types.isProxy(httpTransport.snapshotProxy(proxP)));
+  var authP = new Proxy({ scheme: "basic", username: "u", password: "p" }, {});
+  var snAuth = httpTransport.snapshotProxy({ url: "https://p", auth: authP });
+  check("snapshotProxy does not launder a Proxy auth member", nodeUtil.types.isProxy(snAuth.auth));
+  var tlsP = new Proxy({ useSystemStore: true }, {});
+  var snTls = httpTransport.snapshotProxy({ url: "https://p", tls: tlsP });
+  check("snapshotProxy does not launder a Proxy tls member", nodeUtil.types.isProxy(snTls.tls));
+  // A built-in exotic (Date, Map, ...) with data properties is likewise passed through, never copied into a
+  // plain record: assertPlainRecord refuses an exotic, and Object.assign would launder it into a valid one.
+  var dp = new Date(); dp.url = "https://p"; dp.tls = { useSystemStore: true };
+  check("snapshotProxy passes a Date-shaped proxy option through unchanged", httpTransport.snapshotProxy(dp) === dp && nodeUtil.types.isDate(httpTransport.snapshotProxy(dp)));
+  var dAuth = { url: "https://p", auth: (function () { var d = new Date(); d.scheme = "basic"; d.username = "u"; d.password = "p"; return d; })() };
+  check("snapshotProxy does not launder a Date auth member", nodeUtil.types.isDate(httpTransport.snapshotProxy(dAuth).auth));
+  // A mutable URL-like proxy.url (the transport reads it via String()) is frozen to a string at snapshot time,
+  // so a post-call mutation of the URL object cannot redirect a later proxy connection.
+  var urlObj = new URL("https://proxy.example:8080");
+  var snUrl = httpTransport.snapshotProxy({ url: urlObj, tls: { useSystemStore: true } });
+  var frozen = snUrl.url;
+  urlObj.hostname = "evil.example";
+  check("snapshotProxy freezes an object-valued url to a string", typeof frozen === "string" && frozen === "https://proxy.example:8080/" && snUrl.url === frozen);
+  // A string url is carried unchanged (no coercion of the normal case).
+  check("snapshotProxy leaves a string url unchanged", httpTransport.snapshotProxy({ url: "https://p", tls: { useSystemStore: true } }).url === "https://p");
+  // A JSON object carrying an own enumerable __proto__ key is copied into a null-prototype target, so the key
+  // stays an OWN property (unknown-key validation refuses it) instead of being laundered into the prototype
+  // (which would make url/tls inherited and slip past the key check).
+  var jsonProxy = JSON.parse('{"__proto__":{"url":"https://evil.example","tls":{"useSystemStore":true}}}');
+  var snJson = httpTransport.snapshotProxy(jsonProxy);
+  check("snapshotProxy preserves an own __proto__ key (not laundered to the prototype)",
+    Object.prototype.hasOwnProperty.call(snJson, "__proto__") && snJson.url === undefined && Object.getPrototypeOf(snJson) === null);
+  // A record whose keys/values the shallow copy cannot reproduce faithfully (a non-enumerable, inherited, or
+  // accessor field) is passed through unchanged, so _validateProxy reads the original and its verdict is
+  // identical to the snapshot's -- Object.assign would otherwise drop those and diverge from validation.
+  var nonEnum = { tls: { useSystemStore: true } };
+  Object.defineProperty(nonEnum, "url", { value: "https://p", enumerable: false });
+  check("snapshotProxy passes a non-enumerable-field record through unchanged", httpTransport.snapshotProxy(nonEnum) === nonEnum);
+  var inheritedRec = Object.create({ url: "https://p" }); inheritedRec.tls = { useSystemStore: true };
+  check("snapshotProxy passes an inherited-field record through unchanged", httpTransport.snapshotProxy(inheritedRec) === inheritedRec);
+  var accessorRec = { tls: { useSystemStore: true } };
+  Object.defineProperty(accessorRec, "url", { get: function () { return "https://p"; }, enumerable: true });
+  check("snapshotProxy passes an accessor-field record through unchanged", httpTransport.snapshotProxy(accessorRec) === accessorRec);
+  // A copyable record with a nested non-copyable auth/tls copies the outer but passes the nested through.
+  var nestedWeird = { url: "https://p", tls: Object.create({ useSystemStore: true }) };
+  check("snapshotProxy passes a non-copyable nested tls through", httpTransport.snapshotProxy(nestedWeird).tls === nestedWeird.tls);
 }
 
 async function run() {
