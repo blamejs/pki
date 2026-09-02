@@ -1233,6 +1233,10 @@ async function testGetCarried() {
 
   // GET-5 a bad httpMethod is refused at the door.
   check("scep GET-5: a non-GET/POST httpMethod is rejected", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ httpMethod: "PUT", transport: caTransportAny(successBuild()) }, base)))) === "scep/bad-input");
+  // GET-6 an httpMethod the error formatter cannot JSON-serialize (a BigInt) is still the typed scep/bad-input,
+  // not a native TypeError from formatting the diagnostic. Same class at every caller-value error message.
+  check("scep GET-6: a BigInt httpMethod is a typed scep/bad-input, not a raw TypeError", (await codeOf(pki.scep.enroll("http://ca.example/scep", Object.assign({ httpMethod: 1n, transport: caTransportAny(successBuild()) }, base)))) === "scep/bad-input");
+  check("scep GET-6: a BigInt messageType to build is a typed scep/bad-message-type", (await codeOf(pki.scep.build({ messageType: 1n, messageData: csr, recipient: F.caCert, signer: { cert: cl.cert, key: cl.key } }))) === "scep/bad-message-type");
 }
 
 async function testCertRepIssuance() {
