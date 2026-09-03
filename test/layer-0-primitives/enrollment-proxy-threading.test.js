@@ -136,6 +136,14 @@ async function testEst() {
   var revokedAnchors = Proxy.revocable([Buffer.from("A1")], {}); revokedAnchors.revoke();
   check("est refuses a revoked Proxy anchors array with the typed error, not a native throw",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: revokedAnchors.proxy } } }))) === "est/bad-proxy");
+  check("est refuses a Proxy-wrapped Buffer anchor element with the typed error",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [new Proxy(Buffer.from("A1"), {})] } } }))) === "est/bad-proxy");
+  // A falsy-but-present proxy.tls.minVersion is refused, not silently replaced by the default (a `|| default`
+  // would have accepted false/0/"" as "unset").
+  check("est refuses a falsy proxy.tls.minVersion instead of defaulting it",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { useSystemStore: true, minVersion: false } } }))) === "est/bad-proxy");
+  check("est refuses a non-string proxy.tls.minVersion without a raw throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { useSystemStore: true, minVersion: 12 } } }))) === "est/bad-proxy");
   // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
   // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
   var optsBase = { totallyUnknownOption: 1 };
@@ -250,6 +258,11 @@ function testSnapshotProxy() {
   revoked.revoke();
   var snRevoked = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: revoked.proxy } });
   check("snapshotProxy passes a revoked Proxy anchors through without throwing", snRevoked.tls.anchors === revoked.proxy);
+  // A Proxy-wrapped Buffer ELEMENT inside a plain array is not Buffer.from-copied (which would throw or
+  // launder it); it is carried unchanged for validation to refuse.
+  var proxyBuf = new Proxy(Buffer.from("A1"), {});
+  var snElem = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: [proxyBuf] } });
+  check("snapshotProxy does not Buffer.from a Proxy-wrapped Buffer element", Array.isArray(snElem.tls.anchors) && snElem.tls.anchors[0] === proxyBuf);
   // A Proxy is passed through, NOT Object.assign-laundered into a plain object -- else it would slip past the
   // transport's assertPlainRecord exotic-object refusal. The proxy option and each nested auth/tls member.
   var proxP = new Proxy({ url: "https://p", tls: { useSystemStore: true } }, {});
