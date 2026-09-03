@@ -180,6 +180,12 @@ async function testEst() {
   var protoThrowsForged = new Proxy({}, { getPrototypeOf: function () { throw forgedErr; } });
   check("est does not trust a forged isPkiError marker (typed bad-proxy, not the forged code)",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(protoThrowsForged)] } } }))) === "est/bad-proxy");
+  // A custom transport error factory returning plain Errors: its specific proxy error code (proxy-auth-requires-tls)
+  // is preserved by the boundary catch, not re-wrapped to a generic bad-proxy.
+  var customE = function (code, message, cause) { var e = new Error(message); e.code = code; if (cause) e.cause = cause; return e; };
+  var customTransport = httpTransport.https({ E: customE, errPrefix: "custom" });
+  var customCode = await customTransport({ url: "https://ca.example", tls: { anchors: [ANCHOR] }, proxy: { url: "http://p.example", auth: { username: "u", password: "p" } } }).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
+  check("a custom error factory's specific proxy code is preserved, not re-wrapped", customCode === "custom/proxy-auth-requires-tls");
   // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
   // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
   var optsBase = { totallyUnknownOption: 1 };
