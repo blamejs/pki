@@ -130,6 +130,12 @@ async function testEst() {
   Object.defineProperty(throwAnchors, "0", { get: function () { throw new Error("boom"); }, enumerable: true, configurable: true });
   check("est refuses a getter-backed anchors array with the typed error, not a raw throw",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: throwAnchors } } }))) === "est/bad-proxy");
+  var proxyArrAnchors = new Proxy([Buffer.from("A1")], { getPrototypeOf: function () { throw new Error("boom"); }, ownKeys: function () { throw new Error("boom"); } });
+  check("est refuses a Proxy anchors array with the typed error, not a raw throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: proxyArrAnchors } } }))) === "est/bad-proxy");
+  var revokedAnchors = Proxy.revocable([Buffer.from("A1")], {}); revokedAnchors.revoke();
+  check("est refuses a revoked Proxy anchors array with the typed error, not a native throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: revokedAnchors.proxy } } }))) === "est/bad-proxy");
   // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
   // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
   var optsBase = { totallyUnknownOption: 1 };
@@ -233,6 +239,17 @@ function testSnapshotProxy() {
   Object.defineProperty(getterAnchors, "0", { get: function () { throw new Error("boom"); }, enumerable: true, configurable: true });
   var snGetter = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: getterAnchors } });
   check("snapshotProxy passes a getter-index anchors array through without reading it", snGetter.tls.anchors === getterAnchors);
+  // A Proxy-wrapped anchors array is detected before any trap-invoking introspection, so snapshotProxy neither
+  // launders it nor triggers a throwing trap; it is passed through for validation to refuse.
+  var proxyArr = new Proxy([Buffer.from("A1")], { getPrototypeOf: function () { throw new Error("boom"); }, ownKeys: function () { throw new Error("boom"); } });
+  var snProxyArr = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: proxyArr } });
+  check("snapshotProxy passes a Proxy anchors array through without invoking its traps", snProxyArr.tls.anchors === proxyArr);
+  // A REVOKED Proxy anchors array (Array.isArray throws natively on it) is still detected via isProxy first,
+  // so snapshotProxy does not throw a native error.
+  var revoked = Proxy.revocable([Buffer.from("A1")], {});
+  revoked.revoke();
+  var snRevoked = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: revoked.proxy } });
+  check("snapshotProxy passes a revoked Proxy anchors through without throwing", snRevoked.tls.anchors === revoked.proxy);
   // A Proxy is passed through, NOT Object.assign-laundered into a plain object -- else it would slip past the
   // transport's assertPlainRecord exotic-object refusal. The proxy option and each nested auth/tls member.
   var proxP = new Proxy({ url: "https://p", tls: { useSystemStore: true } }, {});
