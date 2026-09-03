@@ -295,6 +295,8 @@ async function testVerifyAccept() {
   var badImprint = await pki.tsp.verify(token, Buffer.alloc(32, 0xee), { trustAnchors: tsa.anchor });
   check("a refused token still answers the trusted question rather than leaving it undefined",
     badImprint.valid === false && badImprint.trusted === false);
+  check("a refused token surfaces policyName like the success verdict, not undefined",
+    Object.prototype.hasOwnProperty.call(badImprint, "policyName") && badImprint.policyName === res.policyName);
 
   // This verb spells its anchor option `trustAnchors` (a single anchor tuple, or a non-empty array of
   // them), the same spelling pki.cms.verify and pki.cmp.verify use. The removed singular is refused and
