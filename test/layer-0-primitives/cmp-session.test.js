@@ -89,6 +89,13 @@ async function run() {
     sQ.transport.calls[0].proxy.auth.password === "s3cret" &&
     sQ.transport.calls[1].proxy.auth.password === "s3cret");
 
+  // ===== 1r. an accessor-backed proxy is refused with a typed error, never invoked by the options copy =====
+  var invoked = false;
+  var accessorOpts = { url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: mk([]).transport };
+  Object.defineProperty(accessorOpts, "proxy", { enumerable: true, configurable: true, get: function () { invoked = true; throw new Error("getter-side-effect"); } });
+  var accessorCode = await codeOf(Promise.resolve().then(function () { return pki.cmp.session(accessorOpts); }));
+  check("1r. an accessor-backed proxy is refused with cmp/bad-input and its getter is never invoked", accessorCode === "cmp/bad-input" && invoked === false);
+
   // ===== 2. nonce + transactionID chaining across legs (sec. 5.1.1) =====
   var s2 = mk([H.ip(0, 1, certDer), H.pkiconf()]);   // grantedWithMods
   var r2 = await s2.session.enroll(H.irRequest(CLIENT.spki));
