@@ -164,6 +164,9 @@
             "PKCS12_MAX_REDECODES": {
               "kind": "number"
             },
+            "PROXY_MAX_TLS_ANCHORS": {
+              "kind": "number"
+            },
             "SAFETYNET_CERT_MAX_BYTES": {
               "kind": "number"
             },
@@ -1476,6 +1479,9 @@
               "kind": "number"
             },
             "PKCS12_MAX_REDECODES": {
+              "kind": "number"
+            },
+            "PROXY_MAX_TLS_ANCHORS": {
               "kind": "number"
             },
             "SAFETYNET_CERT_MAX_BYTES": {

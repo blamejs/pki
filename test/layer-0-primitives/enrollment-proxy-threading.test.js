@@ -163,6 +163,23 @@ async function testEst() {
   var protoThrowsErr = new Proxy({}, { getPrototypeOf: function () { throw errThrowGetter; } });
   check("est refuses an input that throws an error whose isPkiError getter throws, typed",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(protoThrowsErr)] } } }))) === "est/bad-proxy");
+  // An opts bag whose `proxy` getter throws is rejected as the typed est/bad-input, not the trap's raw throw.
+  var trapOpts = new Proxy({ transport: fakeTransport({ status: 200, headers: {}, body: "" }) }, { get: function (t, k) { if (k === "proxy") throw new Error("boom"); return t[k]; } });
+  check("est wraps a throwing opts.proxy read to est/bad-input", (await codeOf(pki.est.cacerts(BASE, trapOpts))) === "est/bad-input");
+  // fullcmc reads opts.proxy after _knownOpts but before the request is processed; a throwing getter is wrapped
+  // to est/bad-input by its own try, not passed through raw by the outer catch.
+  var fullcmcTrap = { transport: fakeTransport({ status: 200, headers: {}, body: "" }) };
+  Object.defineProperty(fullcmcTrap, "proxy", { get: function () { throw new Error("boom"); }, enumerable: true, configurable: true });
+  check("est fullcmc wraps a throwing opts.proxy read to est/bad-input", (await codeOf(pki.est.fullcmc(BASE, null, fullcmcTrap))) === "est/bad-input");
+  // An over-long trust-anchor array is refused (bounded) rather than iterated (a DoS).
+  check("est refuses an over-long anchors array without iterating it",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: new Array(50000000) } } }))) === "est/bad-proxy");
+  // A thrown object forging { isPkiError: true } is not trusted; it is wrapped as the typed bad-proxy, not
+  // rethrown with the forged code.
+  var forgedErr = { isPkiError: true, code: "evil/raw" };
+  var protoThrowsForged = new Proxy({}, { getPrototypeOf: function () { throw forgedErr; } });
+  check("est does not trust a forged isPkiError marker (typed bad-proxy, not the forged code)",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(protoThrowsForged)] } } }))) === "est/bad-proxy");
   // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
   // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
   var optsBase = { totallyUnknownOption: 1 };
@@ -205,6 +222,12 @@ async function testAcme() {
   var acme3 = pki.acme.client(acmeH.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", tls: { anchors: [ANCHOR] }, proxy: { url: "http://p.example:3128", auth: { username: "u", password: "p" } } });
   check("acme does not bypass _validateProxy (auth over an http proxy is refused)",
     (await codeOf(acme3.directory())) === "acme/proxy-auth-requires-tls");
+  // An accessor `proxy` option is refused as acme/bad-input by the client's optionsObject accessor gate before
+  // the value is ever read, so a throwing getter never runs.
+  var acmeTrapCode = null;
+  try { pki.acme.client(acmeH.URLS.directory, { accountKey: ACCT.key, accountJwk: ACCT.jwk, alg: "ES256", get proxy() { throw new Error("boom"); } }); }
+  catch (e) { acmeTrapCode = e && e.code; }
+  check("acme refuses an accessor opts.proxy as acme/bad-input", acmeTrapCode === "acme/bad-input");
 }
 
 // ---- CMP -------------------------------------------------------------------
@@ -231,6 +254,10 @@ async function testCmp() {
   // 4 no validation bypass over the real transport.
   check("cmp does not bypass _validateProxy (auth over an http proxy is refused)",
     (await codeOf(pki.cmp.transfer(BASE, f.irDer, { tls: { anchors: [ANCHOR] }, proxy: { url: "http://p.example:3128", auth: { username: "u", password: "p" } } }))) === "cmp/proxy-auth-requires-tls");
+  // A throwing opts.proxy getter is wrapped to cmp/bad-input, not a raw error.
+  var cmpTrap = cmpH.cmpOpts(cmpH.pkixcmp(200, f.ipDer));
+  Object.defineProperty(cmpTrap.opts, "proxy", { get: function () { throw new Error("boom"); }, enumerable: true, configurable: true });
+  check("cmp wraps a throwing opts.proxy read to cmp/bad-input", (await codeOf(pki.cmp.transfer(BASE, f.irDer, cmpTrap.opts))) === "cmp/bad-input");
 }
 
 // ---- snapshotProxy (the shared deep-copy the clients thread) --------------
