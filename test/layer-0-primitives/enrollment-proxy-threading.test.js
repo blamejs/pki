@@ -120,6 +120,24 @@ async function testEst() {
   Object.defineProperty(accessorUrl, "url", { get: function () { return "https://p.example"; }, enumerable: true });
   check("est refuses an accessor-url proxy",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: accessorUrl }))) === "est/bad-proxy");
+  // proxy.url must be a string: an object-valued url (even a URL instance) is refused with the typed
+  // est/bad-proxy, not coerced -- and a url whose toString throws yields the same typed error, never the raw one.
+  check("est refuses a URL-instance proxy.url with the typed error",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: new URL("https://p.example"), tls: { useSystemStore: true } } }))) === "est/bad-proxy");
+  check("est refuses a throwing-toString proxy.url with the typed error, not a raw throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: { toString: function () { throw new Error("boom"); } }, tls: { useSystemStore: true } } }))) === "est/bad-proxy");
+  var throwAnchors = [];
+  Object.defineProperty(throwAnchors, "0", { get: function () { throw new Error("boom"); }, enumerable: true, configurable: true });
+  check("est refuses a getter-backed anchors array with the typed error, not a raw throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: throwAnchors } } }))) === "est/bad-proxy");
+  // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
+  // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
+  var optsBase = { totallyUnknownOption: 1 };
+  var optsInh = Object.create(optsBase);
+  optsInh.proxy = { url: "https://p.example", tls: { useSystemStore: true } };
+  optsInh.transport = fakeTransport({ status: 200, headers: { "content-type": "application/pkcs7-mime" }, body: "" });
+  check("est refuses an inherited unknown option even with proxy present (opts not laundered)",
+    (await codeOf(pki.est.cacerts(BASE, optsInh))) === "est/bad-input");
 
   // 6 a throwing proxy accessor yields a REJECTING promise, never a synchronous throw (the snapshot is taken
   // in the call frame but inside the rejection boundary).
@@ -209,6 +227,12 @@ function testSnapshotProxy() {
   var snPoison = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: poisoned } });
   check("snapshotProxy copies anchors without the caller's .map (poison cannot alias)",
     snPoison.tls.anchors !== poisoned && snPoison.tls.anchors[0] !== poisoned[0] && snPoison.tls.anchors[0].toString("latin1") === "A1");
+  // A getter-backed anchor index is NOT read by the snapshot (only a simple array is copied), so a throwing
+  // accessor cannot make snapshotProxy throw; the array is passed through for validation to refuse.
+  var getterAnchors = [];
+  Object.defineProperty(getterAnchors, "0", { get: function () { throw new Error("boom"); }, enumerable: true, configurable: true });
+  var snGetter = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: getterAnchors } });
+  check("snapshotProxy passes a getter-index anchors array through without reading it", snGetter.tls.anchors === getterAnchors);
   // A Proxy is passed through, NOT Object.assign-laundered into a plain object -- else it would slip past the
   // transport's assertPlainRecord exotic-object refusal. The proxy option and each nested auth/tls member.
   var proxP = new Proxy({ url: "https://p", tls: { useSystemStore: true } }, {});
@@ -225,14 +249,8 @@ function testSnapshotProxy() {
   check("snapshotProxy passes a Date-shaped proxy option through unchanged", httpTransport.snapshotProxy(dp) === dp && nodeUtil.types.isDate(httpTransport.snapshotProxy(dp)));
   var dAuth = { url: "https://p", auth: (function () { var d = new Date(); d.scheme = "basic"; d.username = "u"; d.password = "p"; return d; })() };
   check("snapshotProxy does not launder a Date auth member", nodeUtil.types.isDate(httpTransport.snapshotProxy(dAuth).auth));
-  // A mutable URL-like proxy.url (the transport reads it via String()) is frozen to a string at snapshot time,
-  // so a post-call mutation of the URL object cannot redirect a later proxy connection.
-  var urlObj = new URL("https://proxy.example:8080");
-  var snUrl = httpTransport.snapshotProxy({ url: urlObj, tls: { useSystemStore: true } });
-  var frozen = snUrl.url;
-  urlObj.hostname = "evil.example";
-  check("snapshotProxy freezes an object-valued url to a string", typeof frozen === "string" && frozen === "https://proxy.example:8080/" && snUrl.url === frozen);
-  // A string url is carried unchanged (no coercion of the normal case).
+  // A string url is carried unchanged; proxy.url must be a string (an object-valued url is refused by
+  // validation, not coerced, so there is no mutable url object to isolate and no coercion that can throw).
   check("snapshotProxy leaves a string url unchanged", httpTransport.snapshotProxy({ url: "https://p", tls: { useSystemStore: true } }).url === "https://p");
   // A JSON object carrying an own enumerable __proto__ key is copied into a null-prototype target, so the key
   // stays an OWN property (unknown-key validation refuses it) instead of being laundered into the prototype
