@@ -144,6 +144,25 @@ async function testEst() {
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { useSystemStore: true, minVersion: false } } }))) === "est/bad-proxy");
   check("est refuses a non-string proxy.tls.minVersion without a raw throw",
     (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { useSystemStore: true, minVersion: 12 } } }))) === "est/bad-proxy");
+  var revProxyRec = Proxy.revocable({ url: "https://p.example", tls: { useSystemStore: true } }, {}); revProxyRec.revoke();
+  check("est refuses a revoked Proxy proxy record with the typed error, not a native throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: revProxyRec.proxy }))) === "est/bad-proxy");
+  var revTlsRec = Proxy.revocable({ useSystemStore: true }, {}); revTlsRec.revoke();
+  check("est refuses a revoked Proxy tls record with the typed error, not a native throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: revTlsRec.proxy } }))) === "est/bad-proxy");
+  var inhRevEl = Proxy.revocable({}, {}); inhRevEl.revoke();
+  check("est refuses an anchor inheriting from a revoked Proxy with the typed error, not a native throw",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(inhRevEl.proxy)] } } }))) === "est/bad-proxy");
+  // An input whose introspection throws a HOSTILE PROXY as the error: the boundary catch must not read
+  // .isPkiError on it (re-triggering the trap); it checks isProxy first and yields the typed error.
+  var hostileErr = new Proxy({}, { get: function () { throw new Error("boom"); } });
+  var throwingProto = new Proxy({}, { getPrototypeOf: function () { throw hostileErr; } });
+  check("est refuses an input that throws a hostile Proxy error, with the typed error",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(throwingProto)] } } }))) === "est/bad-proxy");
+  var errThrowGetter = {}; Object.defineProperty(errThrowGetter, "isPkiError", { get: function () { throw new Error("boom"); } });
+  var protoThrowsErr = new Proxy({}, { getPrototypeOf: function () { throw errThrowGetter; } });
+  check("est refuses an input that throws an error whose isPkiError getter throws, typed",
+    (await codeOf(pki.est.cacerts(BASE, { tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(protoThrowsErr)] } } }))) === "est/bad-proxy");
   // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
   // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
   var optsBase = { totallyUnknownOption: 1 };
@@ -258,11 +277,39 @@ function testSnapshotProxy() {
   revoked.revoke();
   var snRevoked = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: revoked.proxy } });
   check("snapshotProxy passes a revoked Proxy anchors through without throwing", snRevoked.tls.anchors === revoked.proxy);
+  // A revoked Proxy as the proxy RECORD (or a nested tls record) is passed through without a native throw
+  // (isPlainRecord checks isProxy before Array.isArray, which throws on a revoked proxy).
+  var revokedRec = Proxy.revocable({ url: "https://p", tls: { useSystemStore: true } }, {}); revokedRec.revoke();
+  check("snapshotProxy passes a revoked Proxy record through without throwing", httpTransport.snapshotProxy(revokedRec.proxy) === revokedRec.proxy);
   // A Proxy-wrapped Buffer ELEMENT inside a plain array is not Buffer.from-copied (which would throw or
   // launder it); it is carried unchanged for validation to refuse.
   var proxyBuf = new Proxy(Buffer.from("A1"), {});
   var snElem = httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: [proxyBuf] } });
   check("snapshotProxy does not Buffer.from a Proxy-wrapped Buffer element", Array.isArray(snElem.tls.anchors) && snElem.tls.anchors[0] === proxyBuf);
+  // An anchor element that INHERITS from a revoked Proxy makes Buffer.isBuffer traverse the chain and throw;
+  // the snapshotProxy boundary catch returns the input unchanged rather than throwing a native error.
+  var inhRev = Proxy.revocable({}, {}); inhRev.revoke();
+  var didThrow = false;
+  try { httpTransport.snapshotProxy({ url: "https://p", tls: { anchors: [Object.create(inhRev.proxy)] } }); } catch (_e) { didThrow = true; }
+  check("snapshotProxy does not throw on an anchor inheriting from a revoked Proxy", didThrow === false);
+  // Under Object.prototype pollution a record inherits an enumerable property; _copyableRecord treats it as
+  // non-copyable, so snapshotProxy passes it through instead of stripping the pollution into a null-prototype
+  // copy that would slip past validation (which walks the prototype chain).
+  Object.prototype.pollutedOpt = "evil";
+  var polluteHandled;
+  try { var polP = { url: "https://p", tls: { useSystemStore: true } }; polluteHandled = httpTransport.snapshotProxy(polP) === polP; }
+  finally { delete Object.prototype.pollutedOpt; }
+  check("snapshotProxy passes a pollution-inheriting record through unchanged", polluteHandled === true);
+  // Non-enumerable Object.prototype pollution is caught too (the own-property-count changes, not just Object.keys).
+  Object.defineProperty(Object.prototype, "nePollute", { value: "x", enumerable: false, configurable: true });
+  var nePolluteHandled;
+  try { var neP = { url: "https://p", tls: { useSystemStore: true } }; nePolluteHandled = httpTransport.snapshotProxy(neP) === neP; }
+  finally { delete Object.prototype.nePollute; }
+  check("snapshotProxy passes a record through under non-enumerable proto pollution", nePolluteHandled === true);
+  // An own property equal to the inherited method is de-shadowed in the original's readable-name surface but
+  // not in a null-prototype copy; the record is non-copyable, so the copy cannot diverge from validation.
+  var deShadow = { toString: Object.prototype.toString, url: "https://p", tls: { useSystemStore: true } };
+  check("snapshotProxy passes a de-shadowing own-property record through", httpTransport.snapshotProxy(deShadow) === deShadow);
   // A Proxy is passed through, NOT Object.assign-laundered into a plain object -- else it would slip past the
   // transport's assertPlainRecord exotic-object refusal. The proxy option and each nested auth/tls member.
   var proxP = new Proxy({ url: "https://p", tls: { useSystemStore: true } }, {});
