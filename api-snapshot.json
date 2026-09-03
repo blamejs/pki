@@ -1,6 +1,6 @@
 {
   "generator": "scripts/refresh-api-snapshot.js",
-  "packageVersion": "0.6.28",
+  "packageVersion": "0.6.29",
   "surface": {
     "C": {
       "kind": "object",
@@ -162,6 +162,9 @@
               "kind": "number"
             },
             "PKCS12_MAX_REDECODES": {
+              "kind": "number"
+            },
+            "PROXY_MAX_TLS_ANCHORS": {
               "kind": "number"
             },
             "SAFETYNET_CERT_MAX_BYTES": {
@@ -1476,6 +1479,9 @@
               "kind": "number"
             },
             "PKCS12_MAX_REDECODES": {
+              "kind": "number"
+            },
+            "PROXY_MAX_TLS_ANCHORS": {
               "kind": "number"
             },
             "SAFETYNET_CERT_MAX_BYTES": {

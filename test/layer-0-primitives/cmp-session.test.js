@@ -63,6 +63,39 @@ async function run() {
   check("1c. exactly two request legs crossed the seam (ir + certConf)", s1.transport.calls.length === 2);
   check("1d. the transcript records both directions of both legs", r1.transcript.length === 4 && r1.transcript[0].direction === "out" && r1.transcript[1].direction === "in");
 
+  // ===== 1p. a session forwards opts.proxy to the transport on every leg =====
+  var sP = mk([H.ip(0, 0, certDer), H.pkiconf()], { proxy: { url: "https://p.example", tls: { useSystemStore: true } } });
+  await sP.session.enroll(H.irRequest(CLIENT.spki));
+  check("1p. opts.proxy reaches the transport on both legs", sP.transport.calls.length === 2 &&
+    !!sP.transport.calls[0].proxy && sP.transport.calls[0].proxy.url === "https://p.example" &&
+    !!sP.transport.calls[1].proxy && sP.transport.calls[1].proxy.url === "https://p.example");
+  var sNoP = mk([H.ip(0, 0, certDer), H.pkiconf()]);
+  await sNoP.session.enroll(H.irRequest(CLIENT.spki));
+  check("1p. a session with no proxy forwards none", sNoP.transport.calls[0].proxy === undefined);
+  check("1p. a session refuses an unknown option (proxy whitelist did not widen the gate)",
+    (await codeOf(Promise.resolve().then(function () { return pki.cmp.session({ url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: mk([]).transport, bogusOpt: 1 }); }))) === "cmp/bad-input");
+
+  // ===== 1q. the proxy is snapshotted at construction; a mutation during the transaction cannot repoint or re-credential a leg =====
+  var pxy = { url: "https://p.example", auth: { username: "u", password: "s3cret" } };
+  var sQ = mk([H.ip(0, 0, certDer), H.pkiconf()], { proxy: pxy });
+  var pQ = sQ.session.enroll(H.irRequest(CLIENT.spki));
+  pxy.url = "https://evil.example";           // mutate while the first leg's build is still awaited
+  pxy.auth.password = "leaked";
+  await pQ;
+  check("1q. a construction-time proxy snapshot isolates every leg from a later caller mutation",
+    sQ.transport.calls.length === 2 &&
+    sQ.transport.calls[0].proxy.url === "https://p.example" &&
+    sQ.transport.calls[1].proxy.url === "https://p.example" &&
+    sQ.transport.calls[0].proxy.auth.password === "s3cret" &&
+    sQ.transport.calls[1].proxy.auth.password === "s3cret");
+
+  // ===== 1r. an accessor-backed proxy is refused with a typed error, never invoked by the options copy =====
+  var invoked = false;
+  var accessorOpts = { url: URL, key: CLIENT.key, cert: CLIENT.cert, trustAnchors: [H.caCert], transport: mk([]).transport };
+  Object.defineProperty(accessorOpts, "proxy", { enumerable: true, configurable: true, get: function () { invoked = true; throw new Error("getter-side-effect"); } });
+  var accessorCode = await codeOf(Promise.resolve().then(function () { return pki.cmp.session(accessorOpts); }));
+  check("1r. an accessor-backed proxy is refused with cmp/bad-input and its getter is never invoked", accessorCode === "cmp/bad-input" && invoked === false);
+
   // ===== 2. nonce + transactionID chaining across legs (sec. 5.1.1) =====
   var s2 = mk([H.ip(0, 1, certDer), H.pkiconf()]);   // grantedWithMods
   var r2 = await s2.session.enroll(H.irRequest(CLIENT.spki));
