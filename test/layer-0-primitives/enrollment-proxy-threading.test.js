@@ -186,6 +186,13 @@ async function testEst() {
   var customTransport = httpTransport.https({ E: customE, errPrefix: "custom" });
   var customCode = await customTransport({ url: "https://ca.example", tls: { anchors: [ANCHOR] }, proxy: { url: "http://p.example", auth: { username: "u", password: "p" } } }).then(function () { return "NO-THROW"; }, function (e) { return e && e.code; });
   check("a custom error factory's specific proxy code is preserved, not re-wrapped", customCode === "custom/proxy-auth-requires-tls");
+  // A forged PLAIN OBJECT carrying a valid proxy code (not a real Error) is not rethrown; the transport
+  // replaces it with its own real, typed bad-proxy Error.
+  var forgedCoded = { code: "custom/bad-proxy" };
+  var protoThrowsCoded = new Proxy({}, { getPrototypeOf: function () { throw forgedCoded; } });
+  var forgedResult = await customTransport({ url: "https://ca.example", tls: { anchors: [ANCHOR] }, proxy: { url: "https://p.example", tls: { anchors: [Object.create(protoThrowsCoded)] } } })
+    .then(function () { return "NO-THROW"; }, function (e) { return (e instanceof Error) && e !== forgedCoded && e.code === "custom/bad-proxy"; });
+  check("a forged plain-object error with a valid code is replaced by a real typed bad-proxy Error", forgedResult === true);
   // Threading proxy must not launder the OPTS bag past _knownOpts: an inherited unknown option is still
   // refused when a proxy is present (the snapshot is threaded separately, opts is not cloned).
   var optsBase = { totallyUnknownOption: 1 };
