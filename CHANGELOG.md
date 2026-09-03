@@ -4,7 +4,23 @@ All notable changes to `@blamejs/pki` are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); this
 project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## v0.6.29 — 2026-09-03
+## v0.6.30 — 2026-09-03
+
+Reference documentation is corrected across the toolkit: a mistyped signed-attribute field name, and options and return fields the code accepts or returns that the reference had omitted.
+
+### Changed
+
+- Options and return fields the code accepts or returns are now documented across pki.cms, pki.tsp, pki.pkcs12, pki.hpke, pki.path, pki.ocsp, pki.asn1, pki.est, pki.acme, and pki.webauthn. In particular, pki.webauthn.verifyAssertion is documented as checking the challenge and origin when expectedChallenge / expectedOrigin / expectedTopOrigin are supplied with clientDataJSON.
+- Reference prose across the toolkit and the documentation site is reworded for consistency; no behavior changed.
+
+### Fixed
+
+- pki.smime.sign documented additionalSignedAttributes as [{ oid, values }]; the code reads the type field, so a caller following the reference would pass an unrecognized field. The correct form is [{ type, values }].
+- pki.ocsp.buildErrorResponse is documented as returning a Buffer; the signature previously showed Buffer | string, but the verb has no PEM option and every path returns DER.
+- The pki.schema.all example output lists csrattrs, which the enumeration returns between cmp and ocsp-request.
+- The pki.acme.client method list documents updateAccount and listOrders, which the client returns.
+
+## v0.6.29 — 2026-09-02
 
 The EST, ACME, and CMP clients reach a CA through a forward HTTP proxy, with the same opts.proxy the SCEP client already accepts.
 
