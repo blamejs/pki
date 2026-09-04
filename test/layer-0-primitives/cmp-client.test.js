@@ -263,6 +263,20 @@ async function run() {
   var plain = Object.assign({}, A.cmpOpts(A.pkixcmp(200, f.ipDer)).opts, { transport: function () { return { status: 200, headers: {}, body: "" }; } });
   check("a transport returning a non-promise response is refused the same way",
     (await codeOf(pki.cmp.transfer(BASE, f.irDer, plain))) === "cmp/bad-input");
+  // Ordinary promise assimilation QUEUES the call to a foreign then rather than running it inline. This
+  // verb reaches the transport synchronously, so it is where an inline call would be observable: a
+  // thenable expecting to run after transfer() returned would instead see reentrant execution.
+  var order = [];
+  var deferredThenable = Object.assign({}, A.cmpOpts(A.pkixcmp(200, f.ipDer)).opts, {
+    transport: function () {
+      return { then: function (res) { order.push("then"); res({ status: 200, headers: { "content-type": A.PKIXCMP }, body: f.ipDer }); } };
+    },
+  });
+  var pendingTransfer = pki.cmp.transfer(BASE, f.irDer, deferredThenable);
+  order.push("verb-returned");
+  await pendingTransfer;
+  check("a foreign then is invoked after transfer returns, not inline during the call",
+    order.join(",") === "verb-returned,then");
 
   console.log("CHECKS " + helpers.getChecks());
 }

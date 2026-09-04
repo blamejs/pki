@@ -1046,6 +1046,7 @@ async function testInjectedTransportMustReturnAPromise() {
   var r2 = await pki.est.cacerts(BASE, { transport: oneShot });
   check("IT-4 a thenable whose then is a one-shot getter still works, so it is read exactly once",
     reads === 1 && r2.certificates.length === 1 && r2.certificates[0].equals(S.cert));
+
 }
 
 async function main() {
