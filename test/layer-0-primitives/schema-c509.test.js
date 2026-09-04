@@ -537,6 +537,20 @@ async function run() {
     var sk = signing.makeSigner("ec-p256");
     return Buffer.from(await pki.x509.sign({ subject: [{ commonName: "ext-test" }], subjectPublicKey: sk.spki, notBefore: new Date("2026-01-01T00:00:00Z"), notAfter: new Date("2027-01-01T00:00:00Z"), extensions: extsArray }, { key: sk.key }));
   }
+  // Mint a certificate carrying an extension value THIS toolkit's x509 builder refuses to emit, which
+  // is how such a certificate reaches us in the first place: from another implementation. The value is
+  // signed under an unallocated OID (2.5.29.99, so the builder passes it through opaquely) and the
+  // three OID content octets are then patched to the real extension, leaving the value untouched.
+  var DECOY_OID_BYTES = Buffer.from("551d63", "hex");
+  async function certWithForeignExt(realOidDotted, valueDer) {
+    var der = await certWithExts([b.sequence([b.oid("2.5.29.99"), b.octetString(valueDer)])]);
+    var at = der.indexOf(DECOY_OID_BYTES);
+    var real = pki.asn1.encodeOidContent(realOidDotted);
+    if (at < 0 || real.length !== DECOY_OID_BYTES.length) return null;
+    var patched = Buffer.from(der);
+    real.copy(patched, at);
+    return patched;
+  }
   // The [extID, value] pair for an int extID of magnitude absId in an encoded C509's extensions node.
   function extPair(enc, absId) {
     var kids = CB.decode(enc).children[9].children || [];
@@ -655,6 +669,40 @@ async function run() {
     scPatched[scPatched.indexOf(scEnt.value)] = 0x02;   // the extnValue SEQUENCE tag -> INTEGER (non-compact)
     var scEnc = pki.schema.c509.encode(scPatched, { issuerCurve: "P-256" });
     check("130." + si + " a non-SEQUENCE " + structCerts[si][0] + " value falls back to ~oid and double-inverts", extPair(scEnc, structCerts[si][1]) == null && pki.schema.c509.parse(scEnc).reconstructedDer.equals(scPatched));
+  }
+
+  // ---- foreign extension values the compact forms cannot carry ----------------------------------
+  // Every one of these is a shape this toolkit's own x509 builder refuses to emit, so it can only
+  // arrive from another implementation. None may be squeezed into a compact form: the encoder has to
+  // notice it cannot represent the value, fall back to the generic ~oid form, and still invert to the
+  // original bytes. A wrong compaction here would silently rewrite a signed certificate.
+  var foreignCases = [
+    ["a DistributionPoint that is not a SEQUENCE", "2.5.29.31",
+      b.sequence([b.contextConstructed(0, Buffer.alloc(0))])],
+    ["a distributionPoint [0] wrapping two names", "2.5.29.31",
+      b.sequence([b.sequence([b.explicit(0, Buffer.concat([
+        b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1"))),
+        b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://b", "latin1")))]))])])],
+    ["a reasons bit string with an impossible unused-bit count", "2.5.29.31",
+      b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1")))),
+        b.contextPrimitive(1, Buffer.from([0x09, 0x80]))])])],
+    ["a DistributionPoint field tagged outside [0..2]", "2.5.29.31",
+      b.sequence([b.sequence([
+        b.contextConstructed(0, b.contextConstructed(0, b.contextPrimitive(6, Buffer.from("http://a", "latin1")))),
+        b.contextPrimitive(3, Buffer.from([0x01]))])])],
+    ["a nameConstraints subtree list holding no GeneralSubtree", "2.5.29.30",
+      b.sequence([b.contextConstructed(0, Buffer.alloc(0))])],
+    ["a GeneralSubtree carrying more than the base name", "2.5.29.30",
+      b.sequence([b.contextConstructed(0, b.sequence([
+        b.contextPrimitive(2, Buffer.from("a.example", "latin1")),
+        b.contextPrimitive(0, Buffer.from([0x01]))]))])],
+  ];
+  for (var fi = 0; fi < foreignCases.length; fi++) {
+    var fDer = await certWithForeignExt(foreignCases[fi][1], foreignCases[fi][2]);
+    var fEnc = fDer && pki.schema.c509.encode(fDer, { issuerCurve: "P-256" });
+    check("131." + fi + " " + foreignCases[fi][0] + " falls back to ~oid and inverts byte-exactly",
+      !!fDer && pki.schema.c509.parse(fEnc).reconstructedDer.equals(fDer));
   }
 
   // a conformant single-dNSName subjectAltName is a BARE text string (draft-20 sec. 3.3): [3, "example.com"];
