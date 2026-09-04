@@ -105,6 +105,44 @@ async function run() {
     var r = pki.schema.c509.parse(V.mk({ 6: CBLD.array([CBLD.int(8n), CBLD.byteString(Buffer.from("abcd", "hex"))]).toString("hex") }));
     return r.subject.dn === "O=abcd";
   })());
+
+  // ---- extension-decoder refusals, one per decoder --------------------------------------------
+  // Each of these is the arm that decides a structurally well-formed CBOR item is still not the
+  // extension it claims to be, so a malformed value cannot reach the X.509 reconstruction.
+  function extReject(node) { return parseWith(9, node); }
+  check("21m. an authorityKeyIdentifier keyIdentifier that is not a byte string",
+    extReject(CBLD.array([CBLD.uint(7n), CBLD.array([CBLD.uint(1n), CBLD.array([CBLD.uint(2n), CBLD.textString("a.example")]), CBLD.byteString(Buffer.from("01", "hex"))])])) === "c509/bad-extensions");
+  check("21n. a nameConstraints carrying neither permitted nor excluded subtrees",
+    extReject(CBLD.array([CBLD.uint(26n), CBLD.array([CBLD.nullValue(), CBLD.nullValue()])])) === "c509/bad-extensions");
+  check("21o. an authorityInfoAccess value that is not an array",
+    extReject(CBLD.array([CBLD.uint(9n), CBLD.uint(5n)])) === "c509/bad-extensions");
+  check("21p. an empty authorityInfoAccess array",
+    extReject(CBLD.array([CBLD.uint(9n), CBLD.array([])])) === "c509/bad-extensions");
+  check("21q. an authorityInfoAccess array leaving a dangling accessMethod",
+    extReject(CBLD.array([CBLD.uint(9n), CBLD.array([CBLD.uint(1n)])])) === "c509/bad-extensions");
+  check("21r. a cRLDistributionPoints value that is neither a bare URI nor an array",
+    extReject(CBLD.array([CBLD.uint(5n), CBLD.uint(5n)])) === "c509/bad-extensions");
+  check("21s. an empty cRLDistributionPoints array",
+    extReject(CBLD.array([CBLD.uint(5n), CBLD.array([])])) === "c509/bad-extensions");
+  check("21t. an ipAddrBlocks value that is not an array",
+    extReject(CBLD.array([CBLD.uint(32n), CBLD.uint(5n)])) === "c509/bad-extensions");
+  check("21u. an ipAddrBlocks SAFI wider than the one octet RFC 3779 allots it",
+    extReject(CBLD.array([CBLD.uint(32n), CBLD.array([CBLD.uint(1n), CBLD.uint(256n), CBLD.nullValue()])])) === "c509/bad-extensions");
+  check("21v. an ASIdentifiers range that is not exactly [min, max]",
+    extReject(CBLD.array([CBLD.uint(33n), CBLD.array([CBLD.array([CBLD.uint(1n)])])])) === "c509/bad-extensions");
+  check("21w. ASIdentifiers members that are not maximally merged",
+    extReject(CBLD.array([CBLD.uint(33n), CBLD.array([CBLD.uint(64500n), CBLD.array([CBLD.uint(1n), CBLD.uint(5n)])])])) === "c509/bad-extensions");
+  // Two accept arms the reject vectors above never reach.
+  check("21x. a subjectAltName registeredID rebuilds its compact OID value", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 9: CBLD.array([CBLD.int(3n), CBLD.array([CBLD.int(8n), CBLD.byteString(pki.asn1.encodeOidContent("1.3.6.1.4.1"))])]).toString("hex") }));
+    return r.extensions[0].name === "subjectAltName" && r.extensions[0].value.toString("hex") === "300788052b06010401";
+  })());
+  check("21y. a zero authorityKeyIdentifier serial reconstructs as a single 0x00 octet", (function () {
+    var r = pki.schema.c509.parse(V.mk({ 9: CBLD.array([CBLD.uint(7n), CBLD.array([CBLD.byteString(Buffer.from("aabb", "hex")), CBLD.array([CBLD.uint(2n), CBLD.textString("a.example")]), CBLD.byteString(Buffer.alloc(0))])]).toString("hex") }));
+    return r.extensions[0].name === "authorityKeyIdentifier" && r.extensions[0].value.toString("hex").indexOf("820100") !== -1;
+  })());
+  check("21z. an uncompressed EC point whose length does not match the curve -> c509/non-invertible",
+    codeSync(function () { return pki.schema.c509.parse(V.mk({ 8: "5821" + "04" + "00".repeat(32) })); }) === "c509/non-invertible");
   check("23. notBefore a negative (major-type-1) ~time -> c509/bad-validity", codeSync(function () { return pki.schema.c509.parse(V.mk({ 4: "3a63b0cd00" })); }) === "c509/bad-validity");
   check("24. an unknown signatureAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 2: "18ff" })); }) === "c509/unknown-algorithm");
   check("25. an unknown subjectPublicKeyAlgorithm int -> c509/unknown-algorithm", codeSync(function () { return pki.schema.c509.parse(V.mk({ 7: "18ff" })); }) === "c509/unknown-algorithm");
