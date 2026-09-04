@@ -2015,8 +2015,21 @@ async function testAlternateChains() {
   check("#16 AL-82 the same bracketed-userinfo reject applies to a target", (await codeForLink("<http://[::1]:80@acme.example/cert>;rel=\"alternate\"")) === "acme/bad-link");
 }
 
+// An injected transport that yields no promise is a wiring fault in the caller's own code, so it is
+// reported as a typed option error naming the option rather than a raw TypeError from the internals.
+async function testInjectedTransportMustReturnAPromise() {
+  var s = A.acmeServer({ orderStates: ["pending"] });
+  var noReturn = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s, { transport: function () { } }));
+  check("a transport returning nothing is a typed option fault",
+    (await codeOf(noReturn.newAccount({ termsOfServiceAgreed: true }))) === "acme/bad-input");
+  var plain = pki.acme.client(A.URLS.directory, A.clientOpts(ACCT, s, { transport: function () { return { status: 200, headers: {}, body: "" }; } }));
+  check("a transport returning a non-promise response is refused the same way",
+    (await codeOf(plain.newAccount({ termsOfServiceAgreed: true }))) === "acme/bad-input");
+}
+
 async function main() {
   await setup();
+  await testInjectedTransportMustReturnAPromise();
   await testHappyFlow();
   await testNewAuthz();
   await testRenewalWindow();

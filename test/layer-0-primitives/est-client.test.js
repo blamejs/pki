@@ -1010,6 +1010,25 @@ async function testChannelBoundBackwardCompatible() {
   check("CBE-25 and no channel object was involved", typeof t.calls[0].body === "string");
 }
 
+// An injected transport is a documented seam, so a caller who wires one incorrectly gets the toolkit's
+// own typed verdict naming the option, not a raw TypeError from the internals. The same rule holds in
+// every client that accepts one.
+async function testInjectedTransportMustReturnAPromise() {
+  var noReturn = function () { };
+  check("IT-1 a transport returning nothing is a typed option fault",
+    (await codeOf(pki.est.cacerts(BASE, { transport: noReturn }))) === "est/bad-input");
+  var plainObject = function () { return { status: 200, headers: {}, body: "" }; };
+  check("IT-2 a transport returning a non-promise response is refused the same way",
+    (await codeOf(pki.est.cacerts(BASE, { transport: plainObject }))) === "est/bad-input");
+  // A foreign thenable is accepted and adopted, so the rule tests thenability rather than Promise
+  // identity, and a then() that returns nothing chainable still works.
+  var ok = cacertsOK([S.cert]);
+  var thenable = function () { return { then: function (res) { res(ok); } }; };
+  var r = await pki.est.cacerts(BASE, { transport: thenable });
+  check("IT-3 a non-native thenable is accepted and adopted, not rejected for lacking Promise identity",
+    r.certificates.length === 1 && r.certificates[0].equals(S.cert));
+}
+
 async function main() {
   await setup();
   await testCsrFormsAndDefaultTransport();
@@ -1047,6 +1066,7 @@ async function main() {
   await testChannelBoundResponseNeverPreemptsBuilder();
   await testChannelBoundOverRealTransport();
   await testChannelBoundBackwardCompatible();
+  await testInjectedTransportMustReturnAPromise();
   console.log("CHECKS " + helpers.getChecks());
 }
 
