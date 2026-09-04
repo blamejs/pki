@@ -10,6 +10,7 @@
 // transport.calls proves a fail-closed gate ran BEFORE the transport (calls.length === 0). The
 // socket-lifecycle branches (timeout / TLS floor / server-auth) are http-transport.test.js.
 
+var https = require("https");
 var helpers = require("../helpers");
 var pki = helpers.pki;
 var check = helpers.check;
@@ -646,6 +647,369 @@ async function testDigestAuth() {
   check("#D-space-bound an endless stream of new Digest realms is bounded (never an open loop)", (await codeOf(pki.est.cacerts(BASE, { transport: fakeTransport(manyRealms), auth: { scheme: "digest", username: "u", password: "p" }, maxRedirects: 3 }))) === "est/auth-required");
 }
 
+// ---- channel-bound enrollment (RFC 7030 sec. 3.5) ---------------------------
+// The CSR argument may be a BUILDER `(tls) -> csr | Promise<csr>`. The transport runs it after the
+// handshake with that connection's channel object, so the challenge-password carries the tls-unique of
+// the very connection the CSR is POSTed over. A new connection (redirect, auth retry) MUST rebuild it
+// (RFC 7030 sec. 3.2.1 "the CSR will need to be recreated to incorporate the tls-unique from the new,
+// redirected session"), which is why the builder is re-invoked per connection rather than cached.
+var CB_B1 = Buffer.alloc(12, 0x5a);
+var CB_B2 = Buffer.alloc(12, 0xa5);
+function chan(tlsUnique, proto) {
+  return { protocol: proto || "TLSv1.2", cipher: { name: "TLS_AES_128_GCM_SHA256" }, peerCertificate: null, tlsUnique: tlsUnique };
+}
+function boundBuilder(o) {
+  o = o || {};
+  return async function (tls) {
+    return pki.csr.sign({
+      subject: o.subject || "enroll.example",
+      subjectPublicKey: o.spki || S.spki,
+      challengePassword: tls.tlsUnique.toString("base64"),
+    }, { key: o.key || S.key });
+  };
+}
+// The posted body is the base64 EST payload; decode it and look for the exact challengePassword
+// attribute challengePasswordFromTlsUnique builds, which is byte-identical to what csr.sign encodes.
+function postedCarriesBinding(bodyStr, binding) {
+  if (typeof bodyStr !== "string" || bodyStr === "") return false;
+  var der = pki.est.transferDecode(bodyStr);
+  return der.indexOf(pki.est.challengePasswordFromTlsUnique(binding)) !== -1;
+}
+
+async function testChannelBoundEnrollHappy() {
+  var t = fakeTransport(enrollOK([S.cert, DECOY.cert]), { channel: chan(CB_B1) });
+  var r = await pki.est.simpleenroll(BASE, boundBuilder(), { transport: t });
+  check("CBE-1 a builder-produced CSR enrolls and the issued cert is the SPKI match", r.certificate.equals(S.cert));
+  check("CBE-2 the POSTed CSR carries the challenge-password of THIS connection's tls-unique",
+    postedCarriesBinding(t.bodies[0], CB_B1));
+  check("CBE-3 it is not bound to any other connection's value", !postedCarriesBinding(t.bodies[0], CB_B2));
+  check("CBE-4 one POST of application/pkcs10 to /simpleenroll", t.calls.length === 1 &&
+    t.calls[0].method === "POST" && t.calls[0].headers["content-type"] === "application/pkcs10");
+}
+
+async function testChannelBoundRebindsPerConnection() {
+  // 307 keeps the method and body, so the second connection re-runs the builder with ITS tls-unique.
+  var t = fakeTransport(function (req, i) {
+    return i === 0 ? { status: 307, headers: { location: BASE + "/.well-known/est/simpleenroll" } } : enrollOK([S.cert]);
+  }, { channel: function (i) { return chan(i === 0 ? CB_B1 : CB_B2); } });
+  var r = await pki.est.simpleenroll(BASE, boundBuilder(), { transport: t });
+  check("CBE-5 a redirected channel-bound enroll resolves", r.certificate.equals(S.cert));
+  check("CBE-6 the builder re-ran on the redirected connection", t.calls.length === 2);
+  check("CBE-7 the accepted CSR is bound to the SECOND connection (RFC 7030 sec. 3.2.1 recreation)",
+    postedCarriesBinding(t.bodies[1], CB_B2) && !postedCarriesBinding(t.bodies[1], CB_B1));
+  check("CBE-8 the first attempt carried the first connection's binding", postedCarriesBinding(t.bodies[0], CB_B1));
+}
+
+// A 303 turns the follow-up into a GET that carries no request body, so there is no second CSR to
+// bind: the certification request was posted, and bound, on the POST connection, and the GET only
+// collects the result. Pinned so the "rebuilt on every new connection" rule is not read as covering a
+// hop that posts nothing.
+async function testChannelBoundSeeOtherCarriesNoCsr() {
+  var t = fakeTransport(function (req, i) {
+    return i === 0 ? { status: 303, headers: { location: BASE + "/.well-known/est/simpleenroll" } } : enrollOK([S.cert]);
+  }, { channel: function (i) { return chan(i === 0 ? CB_B1 : CB_B2); } });
+  var r = await pki.est.simpleenroll(BASE, boundBuilder(), { transport: t });
+  check("CBE-32 a 303 after the bound POST still resolves", r.certificate.equals(S.cert));
+  check("CBE-33 the CSR was posted, and bound, on the POST connection", postedCarriesBinding(t.bodies[0], CB_B1));
+  check("CBE-34 the redirected hop is a GET carrying no certification request",
+    t.calls.length === 2 && t.calls[1].method === "GET" && (t.bodies[1] === null || t.bodies[1] === undefined));
+}
+
+async function testChannelBoundRebindsOnAuthRetry() {
+  var t = fakeTransport(function (req, i) {
+    return i === 0 ? { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" } } : enrollOK([S.cert]);
+  }, { channel: function (i) { return chan(i === 0 ? CB_B1 : CB_B2); } });
+  var r = await pki.est.simpleenroll(BASE, boundBuilder(), { transport: t, username: "u", password: "p" });
+  check("CBE-9 a Basic-auth retry of a channel-bound enroll resolves", r.certificate.equals(S.cert));
+  check("CBE-10 the CSR was rebound to the authenticated connection",
+    t.calls.length === 2 && postedCarriesBinding(t.bodies[1], CB_B2));
+}
+
+async function testChannelBoundReenroll() {
+  var reSpki = pki.asn1.decode(REAL_CERT).children[0].children[6].bytes;
+  var okBuilder = async function () { return GOOD_REENROLL; };
+  var t = fakeTransport(enrollOK([REAL_CERT]), { channel: chan(CB_B1) });
+  var r = await pki.est.simplereenroll(BASE, okBuilder, { transport: t, oldCert: REAL_CERT });
+  check("CBE-11 a builder re-enroll passes the identity check and resolves", r.certificate.equals(REAL_CERT));
+  check("CBE-11b the re-enroll SPKI came from the builder's CSR", Buffer.isBuffer(reSpki));
+
+  // The identity gate moves INSIDE the callback for a builder, so it must still abort before any POST.
+  var drift = reenrollCsr({ subjectDer: b.sequence([b.set([b.sequence([b.oid("2.5.4.3"), b.utf8("Drift")])])]), san: OLD_SAN });
+  var t2 = fakeTransport(enrollOK([REAL_CERT]), { channel: chan(CB_B1) });
+  check("CBE-12 a drifted subject from the builder is refused",
+    (await codeOf(pki.est.simplereenroll(BASE, async function () { return drift; }, { transport: t2, oldCert: REAL_CERT }))) === "est/reenroll-subject-mismatch");
+  check("CBE-13 and no CSR was written to the wire", t2.bodies[0] === undefined);
+
+  var t3 = fakeTransport(enrollOK([REAL_CERT]), { channel: chan(CB_B1) });
+  check("CBE-14 a builder re-enroll still requires oldCert",
+    (await codeOf(pki.est.simplereenroll(BASE, okBuilder, { transport: t3 }))) === "est/bad-input");
+  check("CBE-15 and the transport was never called", t3.calls.length === 0);
+}
+
+async function testChannelBoundFailClosed() {
+  var t1 = fakeTransport(enrollOK([S.cert]), { channel: chan(CB_B1) });
+  check("CBE-16 Digest auth with a builder is refused (the header hashes a body that does not exist yet)",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: t1, auth: { scheme: "digest", username: "u", password: "p" } }))) === "est/channel-binding-digest-unsupported");
+  check("CBE-17 and it is refused before the transport is called", t1.calls.length === 0);
+
+  var t2 = fakeTransport(enrollOK([S.cert]), { channel: chan(CB_B1) });
+  check("CBE-18 a builder that throws is a typed builder failure",
+    (await codeOf(pki.est.simpleenroll(BASE, function () { throw new Error("boom"); }, { transport: t2 }))) === "est/csr-builder-failed");
+  check("CBE-19 and no CSR was posted", t2.bodies[0] === undefined);
+
+  var t3 = fakeTransport(enrollOK([S.cert]), { channel: chan(CB_B1) });
+  check("CBE-20 a builder returning a non-CSR is refused",
+    (await codeOf(pki.est.simpleenroll(BASE, async function () { return 123; }, { transport: t3 }))) === "est/bad-input");
+
+  // TLS 1.3 has no tls-unique; a builder that asks for it gets the toolkit's own typed error, which must
+  // survive rather than be flattened into the generic builder-failure code.
+  var t4 = fakeTransport(enrollOK([S.cert]), { channel: chan(null, "TLSv1.3") });
+  check("CBE-21 on TLS 1.3 the binding is unavailable and the typed est/bad-input passes through",
+    (await codeOf(pki.est.simpleenroll(BASE, async function (tls) { return pki.est.challengePasswordFromTlsUnique(tls.tlsUnique); }, { transport: t4 }))) === "est/bad-input");
+  check("CBE-22 and no unbound CSR reached the wire", t4.bodies[0] === undefined);
+
+  // A hostile error object must not decide its own classification through a throwing property read.
+  var hostile = new Error("hostile");
+  Object.defineProperty(hostile, "isPkiError", { get: function () { throw new Error("getter-side-effect"); } });
+  var t5 = fakeTransport(enrollOK([S.cert]), { channel: chan(CB_B1) });
+  check("CBE-23 an error whose isPkiError read throws is still classified fail-closed",
+    (await codeOf(pki.est.simpleenroll(BASE, function () { throw hostile; }, { transport: t5 }))) === "est/csr-builder-failed");
+
+  // Deciding whether a failure came from the builder walks the cause chain of an error the transport
+  // handed back. That read is caller-controlled too, so an unreadable chain must fall back to
+  // reporting the transport's own fault rather than throwing out of the classifier.
+  var t6 = function (request) {
+    return Promise.resolve()
+      .then(function () { return request.body(chan(CB_B1)); })
+      .then(function () { return null; }, function () { return null; })
+      .then(function () {
+        var e = new Error("transport failed, cause unreadable");
+        e.code = "est/transport-error";
+        e.isPkiError = true;
+        Object.defineProperty(e, "cause", { get: function () { throw new Error("cause-getter-side-effect"); } });
+        throw e;
+      });
+  };
+  check("CBE-35 an unreadable cause chain still reports the transport's own fault",
+    (await codeOf(pki.est.simpleenroll(BASE, function () { throw new Error("boom"); }, { transport: t6 }))) === "est/transport-error");
+}
+
+// The fake transport proves the est-side logic. This one proves the SHIPPED composition: a real TLS 1.2
+// handshake through pki.transport.https, the real post-handshake body hook, and a real tls-unique. The
+// server independently derives the same value (its peer-Finished is the client's Finished, RFC 5929), so
+// the assertion cannot pass by echoing whatever the client happened to send.
+// An injected transport is a supported seam, and one may swallow a body-callback rejection and carry on.
+// The verdict must then describe the attempt that actually failed, not a builder error stashed from an
+// earlier connection, or the caller is told the wrong thing went wrong.
+async function testChannelBoundStaleErrorNotSurfaced() {
+  var invocations = 0;
+  var builder = function (tls) {
+    invocations += 1;
+    if (invocations === 1) throw new Error("first-connection builder failure");
+    return pki.csr.sign({ subject: "enroll.example", subjectPublicKey: S.spki, challengePassword: tls.tlsUnique.toString("base64") }, { key: S.key });
+  };
+  var seen = 0;
+  var transport = function (request) {
+    var i = seen++;
+    return Promise.resolve()
+      .then(function () { return typeof request.body === "function" ? request.body(chan(CB_B1)) : request.body; })
+      .then(function () { return null; }, function () { return null; })   // swallow, as an injected transport may
+      .then(function () {
+        if (i === 0) return { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" };
+        // The second attempt REJECTS (a dropped connection), which is the path that consults the
+        // stashed builder error; a failing status code resolves instead and never reaches it.
+        var netErr = new Error("connection reset on the second attempt");
+        netErr.code = "est/transport-error";
+        netErr.isPkiError = true;
+        throw netErr;
+      });
+  };
+  var code = await codeOf(pki.est.simpleenroll(BASE, builder, { transport: transport, username: "u", password: "p" }));
+  check("CBE-28 the verdict describes the failed attempt, not a builder error stashed on an earlier connection",
+    code !== "est/csr-builder-failed");
+  check("CBE-29 and it is the fault the last attempt actually raised", code === "est/transport-error");
+
+  // The harder shape: the second attempt fails BEFORE the body callback is reached at all (a TLS
+  // setup failure), so nothing on that attempt can clear a stash left by the first one.
+  var invoked2 = 0;
+  var builder2 = function () { invoked2 += 1; throw new Error("first-connection builder failure"); };
+  var seen2 = 0;
+  var transport2 = function (request) {
+    var i = seen2++;
+    if (i === 0) {
+      return Promise.resolve()
+        .then(function () { return request.body(chan(CB_B1)); })
+        .then(function () { return null; }, function () { return null; })
+        .then(function () { return { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" }; });
+    }
+    var tlsErr = new Error("TLS handshake failed before the request body was requested");
+    tlsErr.code = "est/transport-error";
+    tlsErr.isPkiError = true;
+    return Promise.reject(tlsErr);
+  };
+  var code2 = await codeOf(pki.est.simpleenroll(BASE, builder2, { transport: transport2, username: "u", password: "p" }));
+  check("CBE-30 an attempt that fails before the builder runs reports its own fault, not the earlier builder error",
+    code2 === "est/transport-error");
+  check("CBE-31 and the builder really was not invoked on that attempt", invoked2 === 1 && seen2 === 2);
+}
+
+// A transport that swallows the builder's failure and answers anyway must not have its response read as
+// progress: no certification request was sent, so neither a 202 "queued" verdict nor a certificate
+// matched against a key from an earlier attempt describes anything that happened.
+async function testChannelBoundSwallowedFailureIsNotProgress() {
+  var swallow202 = function (request) {
+    return Promise.resolve()
+      .then(function () { return request.body(chan(CB_B1)); })
+      .then(function () { return null; }, function () { return null; })
+      .then(function () { return { status: 202, headers: { "retry-after": "60" }, body: "" }; });
+  };
+  check("CBE-36 a swallowed builder failure is not reported as a queued enrollment",
+    (await codeOf(pki.est.simpleenroll(BASE, function () { throw new Error("builder boom"); }, { transport: swallow202 }))) === "est/csr-builder-failed");
+
+  // The sharper shape: attempt 1 builds a CSR (so an SPKI is on hand), attempt 2's builder fails and is
+  // swallowed, and the CA answers 200. The issued certificate must not be accepted against the key from
+  // the attempt that is no longer the one in flight.
+  var n = 0;
+  var builder = function (tls) {
+    n += 1;
+    if (n === 1) return pki.csr.sign({ subject: "enroll.example", subjectPublicKey: S.spki, challengePassword: tls.tlsUnique.toString("base64") }, { key: S.key });
+    throw new Error("second-connection builder failure");
+  };
+  var seen = 0;
+  var swallowThen200 = function (request) {
+    var i = seen++;
+    return Promise.resolve()
+      .then(function () { return request.body(chan(i === 0 ? CB_B1 : CB_B2)); })
+      .then(function () { return null; }, function () { return null; })
+      .then(function () {
+        return i === 0 ? { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" } : enrollOK([S.cert]);
+      });
+  };
+  check("CBE-37 a certificate is not accepted against a key from an attempt that is no longer in flight",
+    (await codeOf(pki.est.simpleenroll(BASE, builder, { transport: swallowThen200, username: "u", password: "p" }))) === "est/csr-builder-failed");
+  check("CBE-38 and both connections were attempted", seen === 2 && n === 2);
+}
+
+// A response must never be read as an outcome for an attempt whose certification request has not
+// finished being built. Each body invocation is tracked on its own, so a builder still running (or one
+// left over from an earlier connection) cannot have its state read as this attempt's result.
+async function testChannelBoundResponseNeverPreemptsBuilder() {
+  var resolveBuilder = null;
+  var pending = new Promise(function (res) { resolveBuilder = res; });
+  var builder = function () { return pending; };            // never settles before the response
+  var noWait = function (request) {
+    request.body(chan(CB_B1));                               // invoked, but deliberately not awaited
+    return Promise.resolve({ status: 202, headers: { "retry-after": "60" }, body: "" });
+  };
+  var code = await codeOf(pki.est.simpleenroll(BASE, builder, { transport: noWait }));
+  check("CBE-39 a response arriving before the builder finished is not an enrollment outcome",
+    code === "est/csr-builder-failed");
+  resolveBuilder(CSR);
+
+  // The same rule with the builder never invoked at all. A 202 needs no key to be reported as queued,
+  // so this shape is only caught by requiring an attempt to exist, not by the issued-cert key match.
+  var skipped = function () { return Promise.resolve({ status: 202, headers: { "retry-after": "60" }, body: "" }); };
+  check("CBE-40 a transport that never asks for the CSR cannot report a queued enrollment",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: skipped }))) === "est/csr-builder-failed");
+  var skipped200 = function () { return Promise.resolve(enrollOK([S.cert])); };
+  check("CBE-41 nor an issued certificate",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: skipped200 }))) === "est/csr-builder-failed");
+
+  // The shape the reference documents: a stand-in transport that requests and awaits the body, then
+  // answers 202. Pinned here because the example-execution gate skips that block.
+  var documented = async function (request) {
+    await request.body({ protocol: "TLSv1.2", cipher: null, peerCertificate: null, tlsUnique: Buffer.alloc(12, 1) });
+    return { status: 202, headers: { "retry-after": "60" }, body: "" };
+  };
+  var docRes = await pki.est.simpleenroll(BASE, boundBuilder(), { transport: documented });
+  check("CBE-42 the documented builder example really does surface the queued verdict",
+    docRes.retry === true && docRes.retryAfterSeconds === 60);
+
+  // A body-bearing retry must start with no completed attempt: a transport that does not await the
+  // first body, lets it finish during the retry, and then answers the retry WITHOUT requesting a body
+  // must not have the earlier CSR read as this hop's request.
+  var hops = 0;
+  var firstBody = null;
+  var raceTransport = function (request) {
+    var i = hops++;
+    if (i === 0) {
+      firstBody = request.body(chan(CB_B1));                      // started, deliberately not awaited here
+      return Promise.resolve({ status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" });
+    }
+    // Let the FIRST hop's builder finish, so a completed attempt is on hand, then answer this hop
+    // without ever requesting a body for it.
+    return firstBody.then(function () { return { status: 202, headers: { "retry-after": "60" }, body: "" }; });
+  };
+  // Each hop's body callback belongs to that hop. A transport that RETAINS an earlier hop's callback and
+  // invokes it late must not have that invocation stand in for the hop in flight: the issued certificate
+  // is selected by public-key match, so a late call carrying a different key would otherwise get a
+  // certificate accepted for a CSR this hop never posted.
+  var keys = [S, DECOY];
+  var picks = 0;
+  var alternating = async function (tls) {
+    var sg = keys[picks++ % keys.length];
+    return pki.csr.sign({ subject: "enroll.example", subjectPublicKey: sg.spki, challengePassword: tls.tlsUnique.toString("base64") }, { key: sg.key });
+  };
+  var retained = null;
+  var retainHops = 0;
+  var retainTransport = async function (request) {
+    var i = retainHops++;
+    if (i === 0) { retained = request.body; return { status: 401, headers: { "www-authenticate": "Basic realm=\"est\"" }, body: "" }; }
+    await request.body(chan(CB_B2));       // this hop's own CSR (first key)
+    await retained(chan(CB_B1));           // the retained earlier callback, invoked late (second key)
+    return enrollOK([DECOY.cert]);         // a certificate for the LATE call's key, not this hop's
+  };
+  check("CBE-45 a retained earlier callback cannot make this hop accept a certificate it did not request",
+    (await codeOf(pki.est.simpleenroll(BASE, alternating, { transport: retainTransport, username: "u", password: "p" }))) === "est/issued-cert-not-found");
+
+  check("CBE-43 a retry that never requests a body cannot reuse the previous hop's CSR",
+    (await codeOf(pki.est.simpleenroll(BASE, boundBuilder(), { transport: raceTransport, username: "u", password: "p" }))) === "est/csr-builder-failed");
+  check("CBE-44 and both hops were attempted", hops === 2);
+}
+
+async function testChannelBoundOverRealTransport() {
+  var s = makeSigner("ec-p256", { serial: 0x77, cn: "localhost" });
+  var certDer = await pki.x509.sign({
+    subject: "localhost", subjectPublicKey: s.spki,
+    notBefore: new Date("2024-01-01T00:00:00Z"), notAfter: new Date("2044-01-01T00:00:00Z"),
+    extensions: { basicConstraints: { cA: true }, keyUsage: ["digitalSignature", "keyEncipherment", "keyCertSign"], subjectAltName: [{ dNSName: "localhost" }], subjectKeyIdentifier: true },
+  }, { key: s.key });
+  var certPem = pki.schema.x509.pemEncode(certDer, "CERTIFICATE");
+  var keyPem = pki.schema.pkcs8.pemEncode(s.key, "PRIVATE KEY");
+
+  var serverBinding = null;
+  var received = null;
+  var srv = https.createServer({ cert: certPem, key: keyPem, minVersion: "TLSv1.2", maxVersion: "TLSv1.2" }, function (req, res) {
+    try { serverBinding = req.socket.getPeerFinished ? req.socket.getPeerFinished() : null; } catch (_e) { serverBinding = null; }
+    var chunks = [];
+    req.on("data", function (c) { chunks.push(c); });
+    req.on("end", function () {
+      received = Buffer.concat(chunks).toString("ascii");
+      var body = pki.est.transferEncode(certsOnly([S.cert]));
+      res.writeHead(200, { "content-type": "application/pkcs7-mime; smime-type=certs-only" });
+      res.end(body);
+    });
+  });
+  await new Promise(function (resolve) { srv.listen(0, "127.0.0.1", resolve); });
+  try {
+    var url = "https://127.0.0.1:" + srv.address().port;
+    var r = await pki.est.simpleenroll(url, boundBuilder(), {
+      tls: { anchors: [certPem], servername: "localhost", checkServerIdentity: function () { return undefined; } },
+    });
+    check("CBE-26 a channel-bound enroll completes over the real transport", r.certificate.equals(S.cert));
+    check("CBE-27 the server saw a CSR bound to the tls-unique it derived independently",
+      Buffer.isBuffer(serverBinding) && serverBinding.length > 0 && postedCarriesBinding(received, serverBinding));
+  } finally { srv.close(); }
+}
+
+async function testChannelBoundBackwardCompatible() {
+  var t = fakeTransport(enrollOK([S.cert, DECOY.cert]));
+  var r = await pki.est.simpleenroll(BASE, CSR, { transport: t });
+  check("CBE-24 a pre-built CSR still enrolls unchanged", r.certificate.equals(S.cert) &&
+    t.calls[0].body === pki.est.transferEncode(CSR));
+  check("CBE-25 and no channel object was involved", typeof t.calls[0].body === "string");
+}
+
 async function main() {
   await setup();
   await testCsrFormsAndDefaultTransport();
@@ -672,6 +1036,17 @@ async function main() {
   await testIssuedNotFound();
   await testStrict();
   await testBudgetGuards();
+  await testChannelBoundEnrollHappy();
+  await testChannelBoundRebindsPerConnection();
+  await testChannelBoundSeeOtherCarriesNoCsr();
+  await testChannelBoundRebindsOnAuthRetry();
+  await testChannelBoundReenroll();
+  await testChannelBoundFailClosed();
+  await testChannelBoundStaleErrorNotSurfaced();
+  await testChannelBoundSwallowedFailureIsNotProgress();
+  await testChannelBoundResponseNeverPreemptsBuilder();
+  await testChannelBoundOverRealTransport();
+  await testChannelBoundBackwardCompatible();
   console.log("CHECKS " + helpers.getChecks());
 }
 
